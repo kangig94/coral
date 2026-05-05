@@ -13,9 +13,3 @@ export interface EventsRow {
   body_version: number;
   body: Uint8Array;
 }
-
-export interface ExpansionManifestCatalogRow {
-  id: string;
-  manifest_json: string;
-  updated_at: string;
-}

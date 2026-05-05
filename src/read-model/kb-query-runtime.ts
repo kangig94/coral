@@ -27,7 +27,7 @@ import {
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
   BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
 } from '../kb/capability/constants.js';
-import type { ConsumerHandle, ConsumerRegistration } from '../store/consumer-contract.js';
+import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
@@ -55,6 +55,7 @@ export type KbQueryContext = {
 export class KbQueryRegistry {
   private cachedRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
   private cachedDb: { flavor: BuildFlavor; db: ReadonlyDatabase } | undefined;
+  private readonly cachedRuntimeDbs = new Map<KbQueryRuntime, ReadonlyDatabase>();
   private bundledLoaded = new WeakSet<KbRuntime>();
 
   getRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
@@ -70,6 +71,27 @@ export class KbQueryRegistry {
       this.cachedDb = { flavor, db: openReadOnlyStoreDatabase(this.getRuntime(flavor)) };
     }
     return this.cachedDb.db;
+  }
+
+  getRuntimeDb(runtime: KbQueryRuntime): ReadonlyDatabase {
+    const cached = this.cachedRuntimeDbs.get(runtime);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const db = openReadOnlyStoreDatabase(runtime);
+    this.cachedRuntimeDbs.set(runtime, db);
+    return db;
+  }
+
+  close(): void {
+    this.cachedDb?.db.close();
+    this.cachedDb = undefined;
+    for (const db of this.cachedRuntimeDbs.values()) {
+      db.close();
+    }
+    this.cachedRuntimeDbs.clear();
+    this.bundledLoaded = new WeakSet<KbRuntime>();
   }
 
   hasLoadedBundled(kb: KbRuntime): boolean {
@@ -115,7 +137,7 @@ export function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
     return context.readDb;
   }
   if (context.runtime !== undefined) {
-    return openReadOnlyStoreDatabase(context.runtime);
+    return defaultRegistry.getRuntimeDb(context.runtime);
   }
   return defaultRegistry.getDb(resolveQueryFlavor(context));
 }
@@ -178,22 +200,7 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
         lastApplyError: null,
         async stop() {},
         async unregister() {},
-        status: () =>
-          _reg.kind === 'stateless'
-            ? { kind: 'stateless', pending: false }
-            : _reg.authority === 'corpus'
-              ? {
-                  authority: 'corpus',
-                  corpusInterest: _reg.corpusInterest,
-                  snapshotId: null,
-                  contentSeq: 0,
-                  metadataSeq: 0,
-                  contentManifestHash: null,
-                  metadataManifestHash: null,
-                  pending: false,
-                  lastApplyError: null,
-                }
-              : { authority: 'journal', cursor: 0, pending: false, lastApplyError: null },
+        status: () => noopConsumerStatus(_reg),
       };
     },
     getJournalReader() {
@@ -250,6 +257,28 @@ function createReadOnlyKbSpawnCli(): SpawnCliFn {
   return async () => {
     throw new Error('KB query runtime is read-only and cannot spawn provider CLIs.');
   };
+}
+
+function noopConsumerStatus(reg: ConsumerRegistration): ConsumerHandleStatus {
+  if (reg.kind === 'stateless') {
+    return { kind: 'stateless', pending: false };
+  }
+
+  if (reg.authority === 'corpus') {
+    return {
+      authority: 'corpus',
+      corpusInterest: reg.corpusInterest,
+      snapshotId: null,
+      contentSeq: 0,
+      metadataSeq: 0,
+      contentManifestHash: null,
+      metadataManifestHash: null,
+      pending: false,
+      lastApplyError: null,
+    };
+  }
+
+  return { authority: 'journal', cursor: 0, pending: false, lastApplyError: null };
 }
 
 /**

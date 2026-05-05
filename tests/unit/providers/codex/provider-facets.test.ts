@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import {
-  codexArtifactCapability,
-  codexRecoveryLifecycle,
-  locateCodexRolloutArtifact,
-} from '#src/providers/codex/provider-facets.js';
+import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -100,6 +97,7 @@ describe('locateCodexRolloutArtifact', () => {
       kind: 'match',
       artifact: {
         handle: `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+        identity: { kind: 'codex-rollout', threadId: 'thread-1' },
       },
     });
   });
@@ -109,10 +107,7 @@ describe('locateCodexRolloutArtifact', () => {
       [root]: [dirent('2026', 'dir')],
       [`${root}/2026`]: [dirent('05', 'dir')],
       [`${root}/2026/05`]: [dirent('04', 'dir')],
-      [day]: [
-        dirent('rollout-a-thread-1.jsonl', 'file'),
-        dirent('rollout-b-thread-1.jsonl', 'file'),
-      ],
+      [day]: [dirent('rollout-a-thread-1.jsonl', 'file'), dirent('rollout-b-thread-1.jsonl', 'file')],
     });
 
     expect(locateCodexRolloutArtifact({ threadId: 'thread-1', sessionsRoot: root, storage })).toMatchObject({

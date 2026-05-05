@@ -236,26 +236,28 @@ export class WorkflowExecutionService {
             };
             return Object.keys(location).length === 0 ? undefined : location;
           })();
-    const intent: WorkflowFinalizationIntent =
-      workflowError?.aborted === true || workflowError?.terminalOutcome?.kind === 'aborted'
-        ? {
-            outcome: 'aborted',
-            workflowJobId: jobId,
-            reason: this.abortReasonForWorkflowError(workflowError),
-            stepDetails,
-          }
-        : {
-            outcome: 'failed',
-            workflowJobId: jobId,
-            ...(workflowError?.causeRef === undefined ? {} : { causeRef: workflowError.causeRef }),
-            lifecycleFault: {
-              kind: 'wrapper_crashed',
-              message,
-              ...(err instanceof Error && err.stack ? { stack: err.stack } : {}),
-            },
-            stepDetails,
-            ...(failureLocation === undefined ? {} : { failureLocation }),
-          };
+    let intent: WorkflowFinalizationIntent;
+    if (workflowError?.aborted === true || workflowError?.terminalOutcome?.kind === 'aborted') {
+      intent = {
+        outcome: 'aborted',
+        workflowJobId: jobId,
+        reason: this.abortReasonForWorkflowError(workflowError),
+        stepDetails,
+      };
+    } else {
+      intent = {
+        outcome: 'failed',
+        workflowJobId: jobId,
+        ...(workflowError?.causeRef === undefined ? {} : { causeRef: workflowError.causeRef }),
+        lifecycleFault: {
+          kind: 'wrapper_crashed',
+          message,
+          ...(err instanceof Error && err.stack ? { stack: err.stack } : {}),
+        },
+        stepDetails,
+        ...(failureLocation === undefined ? {} : { failureLocation }),
+      };
+    }
 
     const serialized = serializeWorkflowResult(stepDetails);
     this.commitWorkflowJobTerminal(sessionId, jobId, intent);

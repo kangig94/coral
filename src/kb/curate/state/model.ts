@@ -213,7 +213,12 @@ export function sameStringList(left: readonly string[], right: readonly string[]
     return false;
   }
 
-  return left.every((value, index) => value === right[index]);
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function retryBaseCooldownMs(error: unknown, timings: CurateTimings): number {
@@ -309,8 +314,10 @@ function samePendingDiscovery(left: PendingDiscovery, right: PendingDiscovery): 
 }
 
 export function applyAddPendingDiscovery(state: CurateState, entry: PendingDiscovery): CurateState | null {
-  if (state.pendingDiscoveries.some((pending) => samePendingDiscovery(pending, entry))) {
-    return null;
+  for (const pending of state.pendingDiscoveries) {
+    if (samePendingDiscovery(pending, entry)) {
+      return null;
+    }
   }
 
   return {
@@ -320,7 +327,12 @@ export function applyAddPendingDiscovery(state: CurateState, entry: PendingDisco
 }
 
 export function applyRemovePendingDiscovery(state: CurateState, entry: PendingDiscovery): CurateState | null {
-  const nextPendingDiscoveries = state.pendingDiscoveries.filter((pending) => !samePendingDiscovery(pending, entry));
+  const nextPendingDiscoveries: PendingDiscovery[] = [];
+  for (const pending of state.pendingDiscoveries) {
+    if (!samePendingDiscovery(pending, entry)) {
+      nextPendingDiscoveries.push(pending);
+    }
+  }
   if (nextPendingDiscoveries.length === state.pendingDiscoveries.length) {
     return null;
   }

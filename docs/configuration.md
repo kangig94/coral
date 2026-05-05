@@ -14,6 +14,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_EFFORT` | _(none)_ | Global effort fallback used only when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset. Explicit request-body effort wins over all env vars |
 | `CORAL_DEV_ASSERTIONS` | _(none)_ | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls throw instead of silently no-oping, and to throw on dispatcher corrupt-state cases. Leave unset for production behavior; never enable in production deploys |
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
+| `CORAL_MAX_QUEUE_SIZE` | `20` | Max queued launches before Coral returns `busy` (1–1000) |
 | `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
@@ -34,6 +35,10 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_EMBEDDING_MODEL` | _(provider default)_ | Embedding model override |
 | `CORAL_EMBEDDING_DIMS` | _(provider default)_ | Embedding dimensions override |
 | `CORAL_EMBEDDING_BASE_URL` | _(none)_ | Custom embedding endpoint |
+
+### HTTP Exposure
+
+The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, put Coral behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
 
 ### Shell Usage
 

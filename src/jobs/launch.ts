@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
+import { continuityRefSchema } from '../sessions/continuity.js';
 import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
 import type { LaunchPool } from './contracts/admission.js';
 
@@ -70,8 +71,8 @@ export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent
 
 export const providerJobLaunchRequestBodySchema = z
   .object({
-    sessionId: z.string(),
-    provider: z.string(),
+    sessionId: z.string().min(1),
+    provider: z.string().min(1),
     providerAction: z.enum(['exec', 'resume', 'fork']),
     projectRoot: z.string(),
     backendNamespace: z.string(),
@@ -88,7 +89,7 @@ export const providerJobLaunchRequestBodySchema = z
         effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
         bypassPermissions: z.boolean(),
         systemPrompt: z.string().optional(),
-        conversationRef: z.string().optional(),
+        conversationRef: continuityRefSchema.optional(),
         instruction: providerInstructionSchema.optional(),
         retention: retentionPolicySchema.optional(),
         coralEnv: z.record(z.string()),
@@ -137,7 +138,5 @@ export const jobLaunchRequestBodySchema = z.union([
 ]);
 
 export type ProviderJobLaunchRequestBody = z.infer<typeof providerJobLaunchRequestBodySchema>;
-export type KbSourceImportJobLaunchRequestBody = z.infer<typeof kbSourceImportJobLaunchRequestBodySchema>;
-export type KbReindexJobLaunchRequestBody = z.infer<typeof kbReindexJobLaunchRequestBodySchema>;
 export type KbSourceImportJobRequest = z.infer<typeof kbSourceImportJobRequestSchema>;
 export type JobLaunchRequestBody = z.infer<typeof jobLaunchRequestBodySchema>;

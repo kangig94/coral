@@ -25,7 +25,7 @@ import { SessionManager } from '../sessions/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
 import { WaitCoordinator } from '../jobs/shell/wait.js';
 import type { TypedEventBus } from './event-bus.js';
-import type { CoralIntent } from './services/execution-policies.js';
+import { normalizeCoralIntent, type CoralIntent } from './services/execution-policies.js';
 import { JobLaunchService } from './services/job-launch.js';
 import { WorkflowExecutionService } from './services/workflow-execution.js';
 import { JobAbortService } from './services/job-abort.js';
@@ -163,7 +163,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       executionPort: {
         coralDispatch: (providerName, coralName, input, requestCtx) =>
           this.runWithInvocationScope(requestCtx, () =>
-            this.launchService.coralDispatch(providerName, coralName, input as CoralIntent, requestCtx),
+            this.dispatchCoralIntent(providerName, coralName, input as CoralIntent, requestCtx),
           ),
         resume: (providerName, input, requestCtx) =>
           this.runWithInvocationScope(requestCtx, () =>
@@ -197,6 +197,17 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     );
   }
 
+  private async dispatchCoralIntent(
+    providerName: string,
+    coralName: string,
+    input: CoralIntent,
+    ctx: InvocationContext,
+  ): Promise<LaunchDecision> {
+    const normalized = normalizeCoralIntent(input);
+    if ('status' in normalized) return normalized;
+    return this.launchService.coralDispatch(providerName, coralName, normalized, ctx);
+  }
+
   async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx));
   }
@@ -223,9 +234,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     input: CoralIntent,
     ctx: InvocationContext,
   ): Promise<LaunchDecision> {
-    return this.runWithInvocationScope(ctx, async () =>
-      this.launchService.coralDispatch(providerName, coralName, input, ctx),
-    );
+    return this.runWithInvocationScope(ctx, async () => this.dispatchCoralIntent(providerName, coralName, input, ctx));
   }
 
   async executeWorkflow(

@@ -1,17 +1,5 @@
-import { createHash } from 'node:crypto';
-
 import { withImmediate, type Database } from '../../../store/db.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
-import {
-  extractBody,
-  extractTitle,
-  parseFrontmatter,
-  parseSourceFrontmatter,
-  parseWikiBody,
-  parseWikiFrontmatter,
-} from '../frontmatter.js';
-import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../snapshot.js';
-import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../metadata-hash.js';
+import { buildCorpusSurface } from '../surface.js';
 import type { CorpusScanView } from './scan.js';
 import type {
   CorpusAuthorityBaselineMap,
@@ -24,10 +12,6 @@ type BaselineRow = {
   content_hash: string;
   metadata_hash: string;
 };
-
-function rawSha256(raw: string): string {
-  return createHash('sha256').update(raw, 'utf8').digest('hex');
-}
 
 export function ensureCorpusAuthorityBaselineTable(db: Database): void {
   db.prepare(
@@ -52,16 +36,15 @@ export function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaseli
       `,
     )
     .all();
-  return new Map(
-    rows.map((row) => [
-      row.entry_id,
-      {
-        entryId: row.entry_id,
-        contentHash: row.content_hash,
-        metadataHash: row.metadata_hash,
-      },
-    ]),
-  );
+  const baseline: CorpusAuthorityBaselineMap = new Map();
+  for (const row of rows) {
+    baseline.set(row.entry_id, {
+      entryId: row.entry_id,
+      contentHash: row.content_hash,
+      metadataHash: row.metadata_hash,
+    });
+  }
+  return baseline;
 }
 
 export function replaceCorpusAuthorityBaseline(db: Database, records: readonly CorpusAuthorityBaselineRecord[]): void {
@@ -81,111 +64,17 @@ export function replaceCorpusAuthorityBaseline(db: Database, records: readonly C
 }
 
 export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuthorityBaselineRecord[] {
-  const records: CorpusAuthorityBaselineRecord[] = [];
-
-  for (const file of scan.markdownFiles) {
-    if (file.kind === 'note') {
-      try {
-        const frontmatter = parseFrontmatter(file.content);
-        const title = extractTitle(file.content);
-        const entry = buildNoteIndexEntry({
-          slug: file.slug,
-          title,
-          ...frontmatter,
-        });
-        records.push({
-          entryId: file.entryId,
-          contentHash: computeContentSurfaceHash({
-            title,
-            body: extractBody(file.content),
-          }),
-          metadataHash: noteMetadataHash(entry),
-        });
-      } catch {
-        const rawHash = rawSha256(file.content);
-        records.push({
-          entryId: file.entryId,
-          contentHash: rawHash,
-          metadataHash: rawHash,
-        });
-      }
-      continue;
-    }
-
-    if (file.kind === 'source') {
-      try {
-        const { title, ...metadata } = parseSourceFrontmatter(file.content);
-        const entry = buildSourceIndexEntry({
-          slug: file.slug,
-          title,
-          ...metadata,
-        });
-        records.push({
-          entryId: file.entryId,
-          contentHash: computeContentSurfaceHash({
-            title,
-            body: extractBody(file.content),
-          }),
-          metadataHash: sourceMetadataHash(entry),
-        });
-      } catch {
-        const rawHash = rawSha256(file.content);
-        records.push({
-          entryId: file.entryId,
-          contentHash: rawHash,
-          metadataHash: rawHash,
-        });
-      }
-      continue;
-    }
-
-    if (file.kind === 'wiki') {
-      try {
-        const metadata = parseWikiFrontmatter(file.content);
-        const title = extractTitle(file.content);
-        const body = extractBody(file.content);
-        parseWikiBody(body);
-        records.push({
-          entryId: file.entryId,
-          contentHash: computeContentSurfaceHash({
-            title,
-            body,
-          }),
-          metadataHash: wikiMetadataHash(metadata),
-        });
-      } catch {
-        const rawHash = rawSha256(file.content);
-        records.push({
-          entryId: file.entryId,
-          contentHash: rawHash,
-          metadataHash: rawHash,
-        });
-      }
-      continue;
-    }
-
-    records.push({
-      entryId: file.entryId,
-      contentHash: '',
-      metadataHash: computeMetadataSurfaceHash({ rawBytes: file.content }),
-    });
-  }
-
-  if (scan.entityGraph !== null) {
-    records.push({
-      entryId: scan.entityGraph.entryId,
-      contentHash: '',
-      metadataHash: computeMetadataSurfaceHash({ rawBytes: scan.entityGraph.content }),
-    });
-  }
-
-  return records;
+  return [...buildCorpusSurface(scan).baselineRecords];
 }
 
 export function rebuildCorpusAuthorityBaseline(db: Database, scan: CorpusScanView): CorpusAuthorityBaselineMap {
   const records = collectCorpusAuthorityBaseline(scan);
   replaceCorpusAuthorityBaseline(db, records);
-  return new Map(records.map((record) => [record.entryId, record]));
+  const baseline: CorpusAuthorityBaselineMap = new Map();
+  for (const record of records) {
+    baseline.set(record.entryId, record);
+  }
+  return baseline;
 }
 
 export function ensureCorpusAuthorityBaseline(

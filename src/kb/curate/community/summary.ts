@@ -1,5 +1,5 @@
 import type { KbRuntime } from '../../contract.js';
-import { isNoteEntry, isSourceEntry, type CuratableEntry, type KbIndex } from '../../entry-types.js';
+import { isNoteEntry, isSourceEntry, type KbIndex } from '../../entry-types.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
 import { compareLocale, stripMarkdownCodeFences } from '../../validation.js';
 import { communitySlugFromReference, computeTextFingerprint, uniqueSorted } from './identity.js';
@@ -48,55 +48,67 @@ function selectRepresentativeDocuments(
   members: string[],
 ): RepresentativeDocument[] {
   const memberSet = new Set(members);
-  const candidates = Object.values(index.entries)
-    .filter((entry): entry is CuratableEntry => isNoteEntry(entry) || isSourceEntry(entry))
-    .map((entry) => {
-      const overlapTags = uniqueSorted(entry.tags.filter((tag) => memberSet.has(tag)));
-      if (overlapTags.length === 0) {
-        return null;
+  const candidates: RepresentativeDocumentCandidate[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (!isNoteEntry(entry) && !isSourceEntry(entry)) {
+      continue;
+    }
+
+    const matchedTags: string[] = [];
+    for (const tag of entry.tags) {
+      if (memberSet.has(tag)) {
+        matchedTags.push(tag);
       }
+    }
+    const overlapTags = uniqueSorted(matchedTags);
+    if (overlapTags.length === 0) {
+      continue;
+    }
 
-      return {
-        kind: entry.kind,
-        slug: entry.slug,
-        title: entry.title,
-        overlapTags,
-      };
-    })
-    .filter((entry): entry is RepresentativeDocumentCandidate => entry !== null)
-    .sort((left, right) => {
-      const overlapDiff = right.overlapTags.length - left.overlapTags.length;
-      if (overlapDiff !== 0) {
-        return overlapDiff;
-      }
+    candidates.push({
+      kind: entry.kind,
+      slug: entry.slug,
+      title: entry.title,
+      overlapTags,
+    });
+  }
 
-      if (left.kind !== right.kind) {
-        return left.kind === 'note' ? -1 : 1;
-      }
+  candidates.sort((left, right) => {
+    const overlapDiff = right.overlapTags.length - left.overlapTags.length;
+    if (overlapDiff !== 0) {
+      return overlapDiff;
+    }
 
-      const titleCompare = compareLocale(left.title, right.title);
-      if (titleCompare !== 0) {
-        return titleCompare;
-      }
+    if (left.kind !== right.kind) {
+      return left.kind === 'note' ? -1 : 1;
+    }
 
-      return compareLocale(left.slug, right.slug);
-    })
-    .slice(0, COMMUNITY_SUMMARY_DOCUMENT_LIMIT);
+    const titleCompare = compareLocale(left.title, right.title);
+    if (titleCompare !== 0) {
+      return titleCompare;
+    }
 
-  return candidates.map((candidate) => {
+    return compareLocale(left.slug, right.slug);
+  });
+
+  const documents: RepresentativeDocument[] = [];
+  const candidateCount = Math.min(COMMUNITY_SUMMARY_DOCUMENT_LIMIT, candidates.length);
+  for (let index = 0; index < candidateCount; index += 1) {
+    const candidate = candidates[index];
     const loaded =
       candidate.kind === 'note'
         ? loadKbNote(kb.storagePort, kb.notePath(candidate.slug))
         : loadKbSource(kb.storagePort, kb.sourcePath(candidate.slug));
 
-    return {
+    documents.push({
       kind: candidate.kind,
       slug: candidate.slug,
       title: loaded.title,
       overlapTags: candidate.overlapTags,
       excerpt: trimSummaryExcerpt(loaded.body, COMMUNITY_SUMMARY_EXCERPT_MAX_CHARS),
-    };
-  });
+    });
+  }
+  return documents;
 }
 
 function representativeDocumentFingerprint(document: RepresentativeDocument): string {
@@ -116,24 +128,32 @@ function leafSummaryFingerprintPayload(
   documents: RepresentativeDocument[],
 ): string {
   const entityMeta = index.entityMeta;
+  const members = uniqueSorted(community.members);
+  const entityMetaPayload: Array<{ member: string; type: string; description: string; aliases: string[] }> = [];
+  for (const member of members) {
+    const meta = entityMeta[member];
+    entityMetaPayload.push({
+      member,
+      type: meta?.type ?? '',
+      description: meta?.description ?? '',
+      aliases: [...(meta?.aliases ?? [])].sort(compareLocale),
+    });
+  }
 
-  return JSON.stringify({
-    kind: 'leaf',
-    members: uniqueSorted(community.members),
-    entityMeta: uniqueSorted(community.members).map((member) => {
-      const meta = entityMeta[member];
-      return {
-        member,
-        type: meta?.type ?? '',
-        description: meta?.description ?? '',
-        aliases: [...(meta?.aliases ?? [])].sort(compareLocale),
-      };
-    }),
-    excerpts: documents.map((document) => ({
+  const excerpts: Array<{ kind: 'note' | 'source'; slug: string; fingerprint: string }> = [];
+  for (const document of documents) {
+    excerpts.push({
       kind: document.kind,
       slug: document.slug,
       fingerprint: representativeDocumentFingerprint(document),
-    })),
+    });
+  }
+
+  return JSON.stringify({
+    kind: 'leaf',
+    members,
+    entityMeta: entityMetaPayload,
+    excerpts,
   });
 }
 
@@ -149,7 +169,8 @@ function childCommunitiesForCommunity(
     compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)),
   );
 
-  return childReferences.map((reference) => {
+  const children: ChildCommunitySummary[] = [];
+  for (const reference of childReferences) {
     const slug = communitySlugFromReference(reference);
     const child = communitiesBySlug.get(slug);
     if (child === undefined) {
@@ -159,26 +180,32 @@ function childCommunitiesForCommunity(
       throw new Error(`Missing child summary for ${reference} while computing parent summary dependencies.`);
     }
 
-    return {
+    children.push({
       slug: child.slug,
       title: child.title,
       members: child.members,
       summary: child.summary,
-    };
-  });
+    });
+  }
+  return children;
 }
 
 function parentSummaryFingerprintPayload(
   community: Pick<SummaryCommunity, 'members'>,
   childCommunities: ChildCommunitySummary[],
 ): string {
+  const children: Array<{ slug: string; summaryFingerprint: string }> = [];
+  for (const child of childCommunities) {
+    children.push({
+      slug: child.slug,
+      summaryFingerprint: summaryTextFingerprint(child.summary),
+    });
+  }
+
   return JSON.stringify({
     kind: 'parent',
     members: uniqueSorted(community.members),
-    children: childCommunities.map((child) => ({
-      slug: child.slug,
-      summaryFingerprint: summaryTextFingerprint(child.summary),
-    })),
+    children,
   });
 }
 
@@ -204,7 +231,10 @@ export function computeCommunitySummaryInputFingerprints(
   kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
 ): Record<string, string> {
-  const communitiesBySlug = new Map(communities.map((community) => [community.slug, community] as const));
+  const communitiesBySlug = new Map<string, SummaryCommunity>();
+  for (const community of communities) {
+    communitiesBySlug.set(community.slug, community);
+  }
   const orderedCommunities = [...communities].sort((left, right) => {
     if (left.level !== right.level) {
       return left.level - right.level;
@@ -212,12 +242,16 @@ export function computeCommunitySummaryInputFingerprints(
     return compareLocale(left.slug, right.slug);
   });
 
-  return Object.fromEntries(
-    orderedCommunities.map((community) => [
-      community.slug,
-      computeCommunitySummaryInputFingerprintForCommunity(community, communitiesBySlug, kb, index),
-    ]),
-  );
+  const fingerprints: Record<string, string> = {};
+  for (const community of orderedCommunities) {
+    fingerprints[community.slug] = computeCommunitySummaryInputFingerprintForCommunity(
+      community,
+      communitiesBySlug,
+      kb,
+      index,
+    );
+  }
+  return fingerprints;
 }
 
 function buildLeafCommunitySummaryPrompt(
@@ -226,21 +260,25 @@ function buildLeafCommunitySummaryPrompt(
   documents: RepresentativeDocument[],
 ): string {
   const entityMeta = index.entityMeta;
-  const entityLines = uniqueSorted(community.members).map((member) => {
+  const entityLines: string[] = [];
+  for (const member of uniqueSorted(community.members)) {
     const meta = entityMeta[member];
     const typeSegment = meta?.type === undefined ? '' : ` (${meta.type})`;
     const description = meta?.description ?? 'No stored description.';
-    return `- ${member}${typeSegment}: ${description}`;
-  });
-  const excerptBlocks = documents.map((document) =>
-    [
-      `## ${document.kind}:${document.slug}`,
-      `Title: ${document.title}`,
-      `Overlap entities: ${document.overlapTags.join(', ')}`,
-      'Excerpt:',
-      document.excerpt,
-    ].join('\n'),
-  );
+    entityLines.push(`- ${member}${typeSegment}: ${description}`);
+  }
+  const excerptBlocks: string[] = [];
+  for (const document of documents) {
+    excerptBlocks.push(
+      [
+        `## ${document.kind}:${document.slug}`,
+        `Title: ${document.title}`,
+        `Overlap entities: ${document.overlapTags.join(', ')}`,
+        'Excerpt:',
+        document.excerpt,
+      ].join('\n'),
+    );
+  }
 
   return [
     'Return plain text only. No heading, bullets, or code fences.',
@@ -260,15 +298,23 @@ function buildParentCommunitySummaryPrompt(
   community: Pick<SummaryCommunity, 'members'>,
   childCommunities: ChildCommunitySummary[],
 ): string {
-  const childBlocks = childCommunities.map((child) =>
-    [
-      `## ${child.slug}`,
-      `Title: ${child.title}`,
-      `Members: ${child.members.join(', ')}`,
-      'Summary:',
-      child.summary,
-    ].join('\n'),
-  );
+  const childBlocks: string[] = [];
+  for (const child of childCommunities) {
+    childBlocks.push(
+      [
+        `## ${child.slug}`,
+        `Title: ${child.title}`,
+        `Members: ${child.members.join(', ')}`,
+        'Summary:',
+        child.summary,
+      ].join('\n'),
+    );
+  }
+
+  const memberLines: string[] = [];
+  for (const member of community.members) {
+    memberLines.push(`- ${member}`);
+  }
 
   return [
     'Return plain text only. No heading, bullets, or code fences.',
@@ -277,7 +323,7 @@ function buildParentCommunitySummaryPrompt(
     'Synthesize the shared abstraction across the children without inventing unsupported details.',
     '',
     'Parent members:',
-    ...community.members.map((member) => `- ${member}`),
+    ...memberLines,
     '',
     'Child community summaries:',
     ...childBlocks,

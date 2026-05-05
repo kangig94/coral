@@ -256,12 +256,12 @@ export async function collectBids(
     return { shouldResume: false };
   }
 
-  const bidders = Object.entries(snapshot.state.current_bids)
-    .filter(
-      ([agentName, score]) =>
-        score === null && !snapshot.state.agents[agentName]?.banned && !isManualParticipant(snapshot, agentName),
-    )
-    .map(([agentName]) => agentName);
+  const bidders: string[] = [];
+  for (const [agentName, score] of Object.entries(snapshot.state.current_bids)) {
+    if (score === null && !snapshot.state.agents[agentName]?.banned && !isManualParticipant(snapshot, agentName)) {
+      bidders.push(agentName);
+    }
+  }
 
   if (bidders.length === 0) {
     return { shouldResume: false };

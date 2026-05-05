@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { continuitySnapshotSchema } from '#src/sessions/continuity.js';
+import { sessionContinuityMutationSchema } from '#src/sessions/continuity-mutation.js';
 import { sessionContinuityCheckpointedBodySchema } from '#src/sessions/event-bodies.js';
 
 describe('Invariant #9 — continuity bodies are full snapshots', () => {
@@ -37,6 +38,22 @@ describe('Invariant #9 — continuity bodies are full snapshots', () => {
       patchSeq: 7, // a patch-style versioning hint must NOT be acceptable
     };
     expect(continuitySnapshotSchema.safeParse(withExtra).success).toBe(false);
+  });
+
+  it('rejects empty continuity refs instead of treating them as absence or clear', () => {
+    expect(
+      continuitySnapshotSchema.safeParse({
+        conversationRef: '',
+        resumable: true,
+        providerContinuity: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      sessionContinuityMutationSchema.safeParse({
+        kind: 'set_resumable',
+        conversationRef: '',
+      }).success,
+    ).toBe(false);
   });
 
   it('session.continuity.checkpointed body requires entry + full snapshot', () => {

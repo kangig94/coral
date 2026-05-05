@@ -28,7 +28,7 @@ function parseRemoteSource(remote: string): string | null {
   const rawPath = sshPath ?? parseRemoteUrlPath(normalized);
   if (!rawPath) return null;
 
-  const segments = rawPath.split('/').filter(Boolean);
+  const segments = rawPath.split('/').filter((segment) => segment.length > 0);
   if (segments.length < 2) return null;
 
   return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;

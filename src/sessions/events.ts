@@ -88,6 +88,13 @@ function retentionDiscardKindForType(type: string): RetentionDiscardKind | null 
   }
 }
 
+function retentionDiscardAttemptState(
+  state: Map<string, RetentionDiscardAttemptState>,
+  key: string,
+): RetentionDiscardAttemptState {
+  return state.get(key) ?? { requested: false, terminal: null };
+}
+
 function parseRetentionDiscardInput(input: CoralEventInput): ParsedRetentionDiscardInput | null {
   switch (input.type) {
     case 'session.retention.discard.requested': {
@@ -128,11 +135,7 @@ function assertRetentionDiscardStream(input: CoralEventInput, sessionId: string)
   });
 }
 
-function retentionDiscardViolation(
-  code: string,
-  message: string,
-  context: Record<string, unknown>,
-): CoralSetupError {
+function retentionDiscardViolation(code: string, message: string, context: Record<string, unknown>): CoralSetupError {
   return new CoralSetupError({
     code,
     userMessage: message,
@@ -222,7 +225,7 @@ function readExistingRetentionDiscardState(
     }
 
     const key = retentionDiscardKey(sessionId, row.attempt);
-    const current = state.get(key) ?? { requested: false, terminal: null };
+    const current = retentionDiscardAttemptState(state, key);
     if (kind === 'requested') {
       current.requested = true;
     } else {
@@ -235,20 +238,29 @@ function readExistingRetentionDiscardState(
 }
 
 export const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs) => {
-  const parsed = inputs.map(parseRetentionDiscardInput).filter((input) => input !== null);
+  const parsed: ParsedRetentionDiscardInput[] = [];
+  const sessionIds = new Set<string>();
+  for (const input of inputs) {
+    const event = parseRetentionDiscardInput(input);
+    if (event === null) {
+      continue;
+    }
+    parsed.push(event);
+    sessionIds.add(event.sessionId);
+  }
+
   if (parsed.length === 0) {
     return;
   }
 
-  const sessionIds = [...new Set(parsed.map((input) => input.sessionId))];
-  const state = readExistingRetentionDiscardState(ctx, sessionIds);
+  const state = readExistingRetentionDiscardState(ctx, [...sessionIds]);
 
   for (const event of parsed) {
     if (event.kind !== 'requested') {
       continue;
     }
     const key = retentionDiscardKey(event.sessionId, event.attempt);
-    const current = state.get(key) ?? { requested: false, terminal: null };
+    const current = retentionDiscardAttemptState(state, key);
     if (current.requested) {
       throw duplicateRetentionDiscardAttempt(event);
     }
@@ -260,7 +272,7 @@ export const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx,
       continue;
     }
     const key = retentionDiscardKey(event.sessionId, event.attempt);
-    const current = state.get(key) ?? { requested: false, terminal: null };
+    const current = retentionDiscardAttemptState(state, key);
     if (!current.requested) {
       throw missingRetentionDiscardRequest(event);
     }

@@ -53,6 +53,7 @@ import {
 import { KbIndexStore, writeJsonAtomic } from './corpus/index-store.js';
 import { writeFileAtomic } from './corpus/file-atomic.js';
 import { readEntityGraphFile } from './corpus/entity-graph-store.js';
+import { resolveCorpusStructuralKey, type CorpusStructuralKey } from './corpus/structural-key.js';
 import { CorpusPublicationQueue } from './corpus/publication.js';
 import { createCorpusStorage, type CorpusStorage } from './corpus/rescan/storage.js';
 import { type EntityGraph, type KbIndex } from './entry-types.js';
@@ -67,6 +68,7 @@ import { CorpusFreshnessService } from './corpus/freshness-service.js';
 import { CorpusInboundSyncService } from './corpus/inbound-sync-service.js';
 import { CorpusMutationFinalizer, type KbRuntimeMutationLockContext } from './corpus/mutation-finalizer.js';
 import { CorpusPublicationService } from './corpus/publication-service.js';
+import { buildCurrentCorpusSurface } from './corpus/surface.js';
 
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
@@ -289,12 +291,9 @@ class KbRuntimeImpl implements KbRuntime {
       mutationLockController: this.mutationLockController,
       mutationEffects: this.mutationFinalizer.mutationEffects,
       target: {
+        markdownRoot: this.markdownRoot,
+        corpusStorage: this.corpusStorage,
         storagePort: this.storagePort,
-        notesDir: () => this.notesDir(),
-        wikiDir: () => this.wikiDir(),
-        sourcesDir: () => this.sourcesDir(),
-        communitiesDir: () => this.communitiesDir(),
-        principlesDir: () => this.principlesDir(),
         entityGraphPath: () => this.entityGraphPath(),
         notePath: (note) => this.notePath(note),
         wikiPath: (slug) => this.wikiPath(slug),
@@ -312,13 +311,13 @@ class KbRuntimeImpl implements KbRuntime {
 
     roleRegistry.registerBuiltin(createBuiltinTextRole(this), { criticality: 'core' });
     roleRegistry.registerBuiltin(createBuiltinVectorRole(this), { criticality: 'core' });
-    roleRegistry.registerBuiltin(createBuiltinGraphRole(() => this.readEntityGraph()));
+    roleRegistry.registerBuiltin(createBuiltinGraphRole());
 
     storage.mkdirSync(this.runtimeDir, { recursive: true });
     if (corpusPublishCallbacks !== undefined) {
       this.register(corpusPublishCallbacks);
     }
-    this.manifestAuthority.seedFromFullCollectors(this);
+    this.manifestAuthority.replaceCurrentSurfaceHashes(buildCurrentCorpusSurface(this).manifest);
   }
 
   notesDir(): string {
@@ -360,6 +359,15 @@ class KbRuntimeImpl implements KbRuntime {
 
   readEntityGraph(): EntityGraph | null {
     return readEntityGraphFile(this.storagePort, this.entityGraphPath());
+  }
+
+  readCorpusStructuralKey(index: KbIndex, currentGraph?: EntityGraph | null): CorpusStructuralKey | null {
+    return resolveCorpusStructuralKey({
+      index,
+      manifestAuthority: this.manifestAuthority,
+      ...(currentGraph === undefined ? {} : { currentGraph }),
+      readCurrentGraph: () => this.readEntityGraph(),
+    });
   }
 
   async writeEntityGraph(graph: EntityGraph): Promise<void> {
@@ -429,16 +437,18 @@ class KbRuntimeImpl implements KbRuntime {
   recordReindexSuccess(
     startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
     externalMutation?: KbIndexMutationLane,
+    surface?: ReturnType<typeof buildCurrentCorpusSurface>,
   ): KbIndexState {
     const state = this.readIndexState();
     if (!indexStateMatchesSnapshot(state, startState)) {
       return state;
     }
 
-    this.manifestAuthority.seedFromFullCollectors(this);
+    const finalSurface = surface ?? buildCurrentCorpusSurface(this);
+    this.manifestAuthority.replaceCurrentSurfaceHashes(finalSurface.manifest);
     const nextState = applyMutationLane(withoutTextStaleReason(state), externalMutation ?? null);
     this.writeIndexState(nextState);
-    this.authorityBaselineRefresh.rebuildAuthorityBaselineFromDisk();
+    this.corpusAuthorityBaseline.replace(finalSurface.baselineRecords);
     return nextState;
   }
 

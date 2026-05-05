@@ -1,8 +1,8 @@
 import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
-import type { ProviderContinuityBlob } from '../../../sessions/continuity.js';
+import { readContinuityRef, type ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
-import { errorMessage } from '../../../infra/error-format.js';
+import { assertNever, errorMessage } from '../../../infra/error-format.js';
 import type { SessionInterruptedFault } from '../../../sessions/fault.js';
 import {
   isAppServerRuntime,
@@ -49,6 +49,22 @@ function requireProviderLaunchRecord(
 ): asserts launchRecord is ProviderLaunchRecord {
   if (launchRecord.jobKind === 'kb' || launchRecord.sessionId === null || launchRecord.provider === null) {
     throw new Error(`${operation} requires a provider launch record.`);
+  }
+}
+
+function interruptedContinuityState(
+  probeOutcome: InterruptedProbeOutcome,
+  mutation: SessionContinuityMutation,
+): SessionInterruptedFault['continuity'] {
+  switch (probeOutcome) {
+    case 'verified':
+    case 'missing':
+    case 'unavailable':
+      return probeOutcome;
+    case 'waiting':
+      return mutation.kind === 'clear_non_resumable' ? 'pre_checkpoint_empty' : 'pre_checkpoint_preserved';
+    default:
+      return assertNever(probeOutcome);
   }
 }
 
@@ -162,7 +178,8 @@ export class RecoveryService {
       ({
         conversationRef: launchRecord.request.conversationRef,
       } as Pick<SessionEntry, 'conversationRef' | 'providerContinuity'>);
-    const preservedConversationRef = session.conversationRef ?? launchRecord.request.conversationRef;
+    const preservedConversationRef =
+      readContinuityRef(session.conversationRef) ?? readContinuityRef(launchRecord.request.conversationRef);
     const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
 
     let mutation: SessionContinuityMutation;
@@ -174,13 +191,13 @@ export class RecoveryService {
         mutation =
           recovery.finalizeInterrupted?.(
             {
-              resumable: Boolean(preservedConversationRef ?? continuity),
+              resumable: preservedConversationRef !== undefined || continuity !== undefined,
               updatedContinuity: continuity,
             },
             continuity,
             { preservedConversationRef },
           ) ??
-          (preservedConversationRef
+          (preservedConversationRef !== undefined
             ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
             : { kind: 'preserve' });
       } else {
@@ -201,11 +218,14 @@ export class RecoveryService {
           try {
             const probeResult = recovery.probe
               ? await recovery.probe(lease, continuity)
-              : { resumable: Boolean(preservedConversationRef ?? continuity), updatedContinuity: continuity };
+              : {
+                  resumable: preservedConversationRef !== undefined || continuity !== undefined,
+                  updatedContinuity: continuity,
+                };
             probeOutcome = probeResult.resumable ? 'verified' : 'missing';
             mutation =
               recovery.finalizeInterrupted?.(probeResult, continuity, { preservedConversationRef }) ??
-              (preservedConversationRef
+              (preservedConversationRef !== undefined
                 ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
                 : { kind: 'preserve' });
           } finally {
@@ -225,12 +245,12 @@ export class RecoveryService {
               continuity,
               { preservedConversationRef },
             ) ??
-            (preservedConversationRef
+            (preservedConversationRef !== undefined
               ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
               : { kind: 'preserve' });
         }
       }
-    } else if (preservedConversationRef) {
+    } else if (preservedConversationRef !== undefined) {
       probeOutcome = 'waiting';
       mutation = {
         kind: 'set_resumable',
@@ -243,16 +263,7 @@ export class RecoveryService {
 
     const fault: SessionInterruptedFault = {
       trigger: options.reason,
-      continuity:
-        probeOutcome === 'verified'
-          ? 'verified'
-          : probeOutcome === 'missing'
-            ? 'missing'
-            : probeOutcome === 'unavailable'
-              ? 'unavailable'
-              : mutation.kind === 'clear_non_resumable'
-                ? 'pre_checkpoint_empty'
-                : 'pre_checkpoint_preserved',
+      continuity: interruptedContinuityState(probeOutcome, mutation),
     };
 
     let reportConversationRef: string | undefined;
@@ -338,6 +349,7 @@ export class RecoveryService {
         expectedVersion,
         provider: input.provider,
         handle: artifact.handle,
+        ...(artifact.identity === undefined ? {} : { identity: artifact.identity }),
         sourceJobId: artifact.sourceJobId ?? input.jobId,
       });
       if (!recorded.ok) {
@@ -411,13 +423,14 @@ export class RecoveryService {
     this.deps.jobPools.delete(jobId);
 
     const continuity = options?.continuity ?? null;
+    const continuityConversationRef = readContinuityRef(continuity?.conversationRef);
     if (continuity?.providerContinuity) {
       this.deps.sessionManager.checkpointProviderContinuity(sessionId, {
         providerContinuity: continuity.providerContinuity,
-        ...(continuity.conversationRef === null ? {} : { conversationRef: continuity.conversationRef }),
+        ...(continuityConversationRef !== undefined ? { conversationRef: continuityConversationRef } : {}),
       });
-    } else if (continuity?.conversationRef) {
-      this.deps.sessionManager.setConversationRef(sessionId, continuity.conversationRef);
+    } else if (continuityConversationRef !== undefined) {
+      this.deps.sessionManager.setConversationRef(sessionId, continuityConversationRef);
     }
     if (continuity && !continuity.resumable) {
       this.deps.sessionManager.setNonResumable(sessionId);

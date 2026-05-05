@@ -1,4 +1,5 @@
 import { normalizeWhitespace } from '../text-normalization.js';
+import type { CorpusStructuralKey } from '../corpus/structural-key.js';
 import type { EntityGraph, KbIndex, KbSearchScope, RelationshipType } from '../entry-types.js';
 import type { GraphRetrieval, GraphRetrievalResult, RetrievalDiagnostic, RetrievalRole } from './contract.js';
 import {
@@ -71,69 +72,31 @@ function addLookupValue(lookup: Map<string, Set<string>>, key: string, value: st
 
   const existing = lookup.get(key);
   if (existing === undefined) {
-    lookup.set(key, new Set([value]));
+    const values = new Set<string>();
+    values.add(value);
+    lookup.set(key, values);
     return;
   }
 
   existing.add(value);
 }
 
-function stableEntityGraph(graph: EntityGraph): EntityGraph {
-  return {
-    entityMeta: Object.fromEntries(
-      Object.entries(graph.entityMeta)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([entityName, meta]) => [
-          entityName,
-          {
-            type: meta.type,
-            description: meta.description,
-            ...(meta.aliases === undefined
-              ? {}
-              : { aliases: [...new Set(meta.aliases)].sort((left, right) => left.localeCompare(right)) }),
-          },
-        ]),
-    ),
-    relationships: [...graph.relationships]
-      .map((relationship) => ({
-        source: relationship.source,
-        target: relationship.target,
-        type: relationship.type,
-        description: relationship.description,
-        evidence: [...new Set(relationship.evidence)].sort((left, right) => left.localeCompare(right)),
-      }))
-      .sort(
-        (left, right) =>
-          left.source.localeCompare(right.source) ||
-          left.target.localeCompare(right.target) ||
-          left.type.localeCompare(right.type) ||
-          left.description.localeCompare(right.description),
-      ),
-  };
+export function isGraphSearchFresh(index: KbIndex, structuralKey: CorpusStructuralKey | null): boolean {
+  return structuralKey !== null && Object.keys(index.entityMeta).length > 0;
 }
 
-function graphStateMatchesIndex(index: KbIndex, currentGraph: EntityGraph): boolean {
-  const loadedGraph = stableEntityGraph({
-    entityMeta: index.entityMeta,
-    relationships: index.relationships,
-  });
-
-  return JSON.stringify(loadedGraph) === JSON.stringify(stableEntityGraph(currentGraph));
-}
-
-export function isGraphSearchFresh(index: KbIndex, currentGraph: EntityGraph | null): currentGraph is EntityGraph {
-  return (
-    currentGraph !== null &&
-    Object.keys(currentGraph.entityMeta).length > 0 &&
-    graphStateMatchesIndex(index, currentGraph)
-  );
-}
-
-export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGraph | null): GraphSearchContext | null {
-  if (!isGraphSearchFresh(index, currentGraph)) {
+export function buildGraphSearchContext(
+  index: KbIndex,
+  structuralKey: CorpusStructuralKey | null,
+): GraphSearchContext | null {
+  if (!isGraphSearchFresh(index, structuralKey)) {
     return null;
   }
 
+  const indexedGraph: EntityGraph = {
+    entityMeta: index.entityMeta,
+    relationships: index.relationships,
+  };
   const adjacencyBuilders = new Map<
     string,
     Map<string, { weight: number; relationshipTypes: Set<RelationshipType> }>
@@ -152,7 +115,7 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
     return next;
   };
 
-  for (const [entityName, meta] of Object.entries(currentGraph.entityMeta)) {
+  for (const [entityName, meta] of Object.entries(indexedGraph.entityMeta)) {
     addLookupValue(phraseLookup, normalizeGraphPhrase(entityName), entityName);
 
     for (const alias of meta.aliases ?? []) {
@@ -161,10 +124,10 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
     }
   }
 
-  for (const relationship of currentGraph.relationships) {
+  for (const relationship of indexedGraph.relationships) {
     if (
-      currentGraph.entityMeta[relationship.source] === undefined ||
-      currentGraph.entityMeta[relationship.target] === undefined ||
+      indexedGraph.entityMeta[relationship.source] === undefined ||
+      indexedGraph.entityMeta[relationship.target] === undefined ||
       relationship.source === relationship.target
     ) {
       continue;
@@ -178,9 +141,11 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
       const neighbors = ensureNeighbors(source);
       const existing = neighbors.get(target);
       if (existing === undefined) {
+        const relationshipTypes = new Set<RelationshipType>();
+        relationshipTypes.add(relationship.type);
         neighbors.set(target, {
           weight: relationshipWeight,
-          relationshipTypes: new Set([relationship.type]),
+          relationshipTypes,
         });
         continue;
       }
@@ -191,24 +156,26 @@ export function buildGraphSearchContext(index: KbIndex, currentGraph: EntityGrap
   }
 
   const adjacency = new Map<string, GraphNeighbor[]>();
-  for (const entityName of Object.keys(currentGraph.entityMeta)) {
-    const neighbors = [...(adjacencyBuilders.get(entityName)?.entries() ?? [])]
-      .map(([neighbor, attributes]) => ({
+  for (const entityName of Object.keys(indexedGraph.entityMeta)) {
+    const neighbors: GraphNeighbor[] = [];
+    for (const [neighbor, attributes] of adjacencyBuilders.get(entityName)?.entries() ?? []) {
+      neighbors.push({
         entity: neighbor,
         weight: attributes.weight,
         relationshipTypes: [...attributes.relationshipTypes].sort((left, right) => left.localeCompare(right)),
-      }))
-      .sort(
-        (left, right) =>
-          right.weight - left.weight ||
-          left.entity.localeCompare(right.entity) ||
-          left.relationshipTypes.join('\u0000').localeCompare(right.relationshipTypes.join('\u0000')),
-      );
+      });
+    }
+    neighbors.sort(
+      (left, right) =>
+        right.weight - left.weight ||
+        left.entity.localeCompare(right.entity) ||
+        left.relationshipTypes.join('\u0000').localeCompare(right.relationshipTypes.join('\u0000')),
+    );
     adjacency.set(entityName, neighbors);
   }
 
   return {
-    entityMeta: currentGraph.entityMeta,
+    entityMeta: indexedGraph.entityMeta,
     adjacency,
     aliasLookup,
     phraseLookup,
@@ -270,7 +237,13 @@ function expandGraphEntityScores(seeds: ReadonlyMap<string, number>, graph: Grap
   for (const [seed, seedScore] of seeds.entries()) {
     addBoundedScore(entityScores, seed, seedScore, 1.35);
 
-    for (const neighbor of (graph.adjacency.get(seed) ?? []).slice(0, GRAPH_MAX_NEIGHBORS_PER_SEED)) {
+    const neighbors = graph.adjacency.get(seed) ?? [];
+    const limit = Math.min(neighbors.length, GRAPH_MAX_NEIGHBORS_PER_SEED);
+    for (let index = 0; index < limit; index += 1) {
+      const neighbor = neighbors[index];
+      if (neighbor === undefined) {
+        continue;
+      }
       addBoundedScore(entityScores, neighbor.entity, seedScore * neighbor.weight, 1.1);
     }
   }
@@ -278,11 +251,30 @@ function expandGraphEntityScores(seeds: ReadonlyMap<string, number>, graph: Grap
   return entityScores;
 }
 
-function scoreGraphMatches(matchScores: number[]): number {
-  return [...matchScores]
-    .sort((left, right) => right - left)
-    .slice(0, GRAPH_ENTRY_MATCH_WEIGHTS.length)
-    .reduce((total, score, index) => total + score * GRAPH_ENTRY_MATCH_WEIGHTS[index], 0);
+function scoreGraphMatches(matchScores: readonly number[]): number {
+  const topScores: number[] = [];
+
+  for (const score of matchScores) {
+    let insertAt = topScores.length;
+    while (insertAt > 0 && score > (topScores[insertAt - 1] ?? 0)) {
+      insertAt -= 1;
+    }
+
+    if (insertAt >= GRAPH_ENTRY_MATCH_WEIGHTS.length) {
+      continue;
+    }
+
+    topScores.splice(insertAt, 0, score);
+    if (topScores.length > GRAPH_ENTRY_MATCH_WEIGHTS.length) {
+      topScores.length = GRAPH_ENTRY_MATCH_WEIGHTS.length;
+    }
+  }
+
+  let total = 0;
+  for (let index = 0; index < topScores.length; index += 1) {
+    total += (topScores[index] ?? 0) * (GRAPH_ENTRY_MATCH_WEIGHTS[index] ?? 0);
+  }
+  return total;
 }
 
 function buildGraphHits(
@@ -312,9 +304,20 @@ function buildGraphHits(
       continue;
     }
 
-    const matchScores = [...new Set(entry.tags)]
-      .map((tag) => entityScores.get(tag))
-      .filter((score): score is number => score !== undefined);
+    const seenTags = new Set<string>();
+    const matchScores: number[] = [];
+    for (const tag of entry.tags) {
+      if (seenTags.has(tag)) {
+        continue;
+      }
+      seenTags.add(tag);
+
+      const score = entityScores.get(tag);
+      if (score !== undefined) {
+        matchScores.push(score);
+      }
+    }
+
     if (matchScores.length === 0) {
       continue;
     }
@@ -325,7 +328,7 @@ function buildGraphHits(
     });
   }
 
-  return [...hits].sort(compareRetrievalRoleHits);
+  return hits.sort(compareRetrievalRoleHits);
 }
 
 export class RuntimeGraphRetrieval implements GraphRetrieval {
@@ -349,21 +352,30 @@ function graphStaleDiagnostic(): RetrievalDiagnostic {
   };
 }
 
-export function createBuiltinGraphRole(currentGraph: () => EntityGraph | null): RetrievalRole {
+export function createBuiltinGraphRole(): RetrievalRole {
+  let cachedGraphContext: { entityGraphHash: string; graphContext: GraphSearchContext } | null = null;
+
   return {
     id: BUILTIN_GRAPH_ROLE_DESCRIPTOR.id,
     descriptor: BUILTIN_GRAPH_ROLE_DESCRIPTOR,
     async search(ctx) {
       const index = ctx.index();
-      const graph = currentGraph();
-      if (!isGraphSearchFresh(index, graph)) {
-        return {
-          hits: [],
-          diagnostic: graphStaleDiagnostic(),
-        };
+      const structuralKey = ctx.corpusStructuralKey();
+      let graphContext: GraphSearchContext | null = null;
+      if (structuralKey !== null) {
+        if (cachedGraphContext?.entityGraphHash === structuralKey.entityGraphHash) {
+          graphContext = cachedGraphContext.graphContext;
+        } else {
+          graphContext = buildGraphSearchContext(index, structuralKey);
+          if (graphContext !== null) {
+            cachedGraphContext = {
+              entityGraphHash: structuralKey.entityGraphHash,
+              graphContext,
+            };
+          }
+        }
       }
 
-      const graphContext = buildGraphSearchContext(index, graph);
       if (graphContext === null) {
         return {
           hits: [],

@@ -21,7 +21,13 @@ export function releaseSessionJobClaim(options: {
   sessionId: string;
   jobId: string;
 }): void {
-  SessionManager.forProduction(options.projectRoot, options.runtime, options.commitEvents, options.emitSessionReleased, {
-    db: options.db,
-  }).releaseJob(options.sessionId, options.jobId);
+  SessionManager.forProduction(
+    options.projectRoot,
+    options.runtime,
+    options.commitEvents,
+    options.emitSessionReleased,
+    {
+      db: options.db,
+    },
+  ).releaseJob(options.sessionId, options.jobId);
 }

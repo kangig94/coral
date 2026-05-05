@@ -38,15 +38,6 @@ type ResolvedPluginRegistryDeps = {
   registryPath?: string;
   homeDir?: string;
 };
-function defaultStorage(): Pick<StoragePort, 'existsSync' | 'readFileSync'> {
-  return { existsSync, readFileSync };
-}
-
-function defaultEnv(): Pick<EnvPort, 'get'> {
-  return {
-    get: (key) => process.env[key],
-  };
-}
 
 function resolvePluginRegistryDeps(deps?: PluginRegistryDeps): ResolvedPluginRegistryDeps {
   if (deps?.storage && deps?.env) {
@@ -59,8 +50,8 @@ function resolvePluginRegistryDeps(deps?: PluginRegistryDeps): ResolvedPluginReg
   }
 
   return {
-    storage: deps?.storage ?? defaultStorage(),
-    env: deps?.env ?? defaultEnv(),
+    storage: deps?.storage ?? { existsSync, readFileSync },
+    env: deps?.env ?? { get: (key) => process.env[key] },
     registryPath: deps?.registryPath,
     homeDir: deps?.homeDir,
   };

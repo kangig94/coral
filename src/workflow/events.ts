@@ -263,7 +263,15 @@ function validateDeclaredWorkflowPlan(
 
 function slotIdsForStoredWorkflowPlan(db: Database, workflowId: string): ReadonlySet<string> | null {
   const projection = readProjectionWorkflow(db, workflowId);
-  return projection === null ? null : new Set(projection.plan.slots.map((slot) => slot.slotId));
+  if (projection === null) {
+    return null;
+  }
+
+  const slotIds = new Set<string>();
+  for (const slot of projection.plan.slots) {
+    slotIds.add(slot.slotId);
+  }
+  return slotIds;
 }
 
 function workflowIdForSlotRef(input: CoralEventInput, parsedWorkflowId: string): string {

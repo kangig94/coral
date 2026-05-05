@@ -290,7 +290,6 @@ const expectedFailureSchema = z.object({
   stepIndex: z.number().int().nonnegative(),
   failureKind: z.string().min(1),
 });
-export type ExpectedFailure = z.infer<typeof expectedFailureSchema>;
 
 export const simulationDocumentSchema = z.object({
   world: worldConfigSchema,

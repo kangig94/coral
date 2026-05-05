@@ -27,6 +27,11 @@ type Subsystem = BackendHealth['subsystems'][number];
 type DegradedReason = Extract<Subsystem, { phase: 'degraded' }>['reason'];
 
 function formatRunningStatus(health: RunningHealth): string {
+  const subsystemLines: string[] = [];
+  for (const subsystem of health.subsystems) {
+    subsystemLines.push(...formatSubsystemLines(subsystem));
+  }
+
   const lines: string[] = [
     `Backend ${health.status}`,
     `Version: ${health.version}`,
@@ -34,7 +39,7 @@ function formatRunningStatus(health: RunningHealth): string {
     formatKernelLine(health.kernel),
     '',
     'Subsystems:',
-    ...health.subsystems.flatMap(formatSubsystemLines),
+    ...subsystemLines,
     '',
     `Active jobs: ${health.activeJobs}`,
   ];

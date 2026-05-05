@@ -1,6 +1,7 @@
 import { type JobLifecycleFault, type JobProgressFault, type TerminalOutcomeInput } from '../outcome.js';
 import { isLivePhase } from '../phase.js';
 import type { JobLaunch, JobStatus } from '../records.js';
+import { buildJobEventRefs } from '../refs.js';
 import type { JobStore } from '../store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
@@ -78,10 +79,7 @@ function recoveryFaultOutcome<Scope>(
         stream: { kind: 'job', id: status.jobId },
         namespace: status.backendNamespace,
         project: status.projectRoot,
-        refs: {
-          jobId: status.jobId,
-          ...(status.sessionId === null ? {} : { sessionId: status.sessionId }),
-        },
+        refs: buildJobEventRefs({ jobId: status.jobId, sessionId: status.sessionId }),
         bodyVersion: 1,
         body: fault,
       });
@@ -126,10 +124,7 @@ function syntheticLaunchRequestedEvent(status: JobStatus): CoralEventInput<Provi
     stream: { kind: 'job', id: status.jobId },
     namespace: launch.backendNamespace,
     project: launch.projectRoot,
-    refs: {
-      jobId: status.jobId,
-      sessionId: launch.sessionId,
-    },
+    refs: buildJobEventRefs({ jobId: status.jobId, sessionId: launch.sessionId }),
     bodyVersion: 1,
     body: {
       sessionId: launch.sessionId,

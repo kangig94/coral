@@ -1,4 +1,3 @@
-
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -220,7 +219,7 @@ describe('describeCauseRef', () => {
         },
       });
 
-      const description = renderer.describe(
+      const result = renderer.describeDetailed(
         {
           stream: { kind: 'job', id: 'job-missing-link' },
           seq: 3,
@@ -228,7 +227,12 @@ describe('describeCauseRef', () => {
         store,
       );
 
-      expect(description).toContain('<missing session/session-missing-link/2>');
+      expect(result.description).toContain('<missing session/session-missing-link/2>');
+      expect(result.missing).toEqual({
+        stream: { kind: 'session', id: 'session-missing-link' },
+        seq: 2,
+        path: ['Failed: session/session-missing-link#2'],
+      });
     } finally {
       db.close();
     }

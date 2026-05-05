@@ -300,21 +300,24 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           .waitStream(request),
       list: (filters) => {
         const progressStore = getProgressStore();
-        let jobs = progressStore
-          .listJobProjections()
-          .filter((entry) => belongsToNamespace(entry.status, world.namespace));
-
-        if (filters.all !== true) {
-          jobs = jobs.filter((entry) => isLivePhase(entry.status.phase));
-        }
-        if (filters.projectRoot !== undefined) {
-          jobs = jobs.filter((entry) => entry.status.projectRoot === filters.projectRoot);
-        }
-        if (filters.phase !== undefined) {
-          jobs = jobs.filter((entry) => entry.status.phase === filters.phase);
-        }
-        if (filters.provider !== undefined) {
-          jobs = jobs.filter((entry) => entry.status.provider === filters.provider);
+        const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
+        for (const entry of progressStore.listJobProjections()) {
+          if (!belongsToNamespace(entry.status, world.namespace)) {
+            continue;
+          }
+          if (filters.all !== true && !isLivePhase(entry.status.phase)) {
+            continue;
+          }
+          if (filters.projectRoot !== undefined && entry.status.projectRoot !== filters.projectRoot) {
+            continue;
+          }
+          if (filters.phase !== undefined && entry.status.phase !== filters.phase) {
+            continue;
+          }
+          if (filters.provider !== undefined && entry.status.provider !== filters.provider) {
+            continue;
+          }
+          jobs.push(entry);
         }
 
         return jobs;
@@ -349,7 +352,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
             if (error instanceof ZodError) {
               const first = error.issues[0];
               const path = first?.path.join('.') ?? '';
-              const message = first ? (path.length > 0 ? `${path}: ${first.message}` : first.message) : error.message;
+              let message = error.message;
+              if (first !== undefined) {
+                message = path.length > 0 ? `${path}: ${first.message}` : first.message;
+              }
               return { kind: 'invalid_request' as const, message, detail: { issues: error.issues } };
             }
             return { kind: 'invalid_request' as const, message: error.message };

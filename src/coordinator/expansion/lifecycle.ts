@@ -29,6 +29,14 @@ export interface ExpansionLifecycleView {
 
 export type CoordinatorLifecyclePhase = 'starting' | 'running' | 'draining' | 'stopped';
 
+function expansionStatus(failed: unknown | undefined, isActive: boolean): ExpansionLifecycleView['status'] {
+  if (failed !== undefined) {
+    return 'installed-not-active';
+  }
+
+  return isActive ? 'active' : 'inactive';
+}
+
 export interface ExpansionLifecycleServiceOptions {
   readonly makeHost: (manifest: EngineManifest, scope: Disposable) => ExpansionHost;
   readonly state: ExpansionStateStore;
@@ -157,8 +165,8 @@ export class ExpansionLifecycleService {
 
     if (scopes && scopes.length > 0) {
       // LIFO disposal of chained scopes for this engine.
-      for (const scope of [...scopes].reverse()) {
-        await disposeExpansionScope(scope);
+      for (let index = scopes.length - 1; index >= 0; index -= 1) {
+        await disposeExpansionScope(scopes[index]);
       }
       this.scopes.delete(name);
     }
@@ -188,8 +196,8 @@ export class ExpansionLifecycleService {
 
     const scopes = this.scopes.get(name);
     if (scopes !== undefined && scopes.length > 0) {
-      for (const scope of [...scopes].reverse()) {
-        await disposeExpansionScope(scope);
+      for (let index = scopes.length - 1; index >= 0; index -= 1) {
+        await disposeExpansionScope(scopes[index]);
       }
       this.scopes.delete(name);
     }
@@ -243,7 +251,13 @@ export class ExpansionLifecycleService {
 
   async recoverOnBoot(): Promise<void> {
     const manifest = this.manifestEntries();
-    const manifestOrder = new Map(manifest.map((entry, index) => [entry.id, index]));
+    const manifestOrder = new Map<string, number>();
+    const manifestById = new Map<string, EngineManifest>();
+    for (let index = 0; index < manifest.length; index += 1) {
+      const entry = manifest[index];
+      manifestOrder.set(entry.id, index);
+      manifestById.set(entry.id, entry);
+    }
     const orderedRows = this.options.state
       .list()
       .sort(
@@ -253,7 +267,7 @@ export class ExpansionLifecycleService {
       );
 
     for (const row of orderedRows) {
-      const entry = manifest.find((candidate) => candidate.id === row.id);
+      const entry = manifestById.get(row.id);
       if (!entry) {
         this.options.state.delete(row.id);
         this.failedRecovery.delete(row.id);
@@ -275,7 +289,11 @@ export class ExpansionLifecycleService {
 
     const fallback = await this.applyBundledFallback();
     if (fallback.failed.size > 0) {
-      const detail = [...fallback.failed.entries()].map(([id, err]) => `${id}: ${err.message}`).join('; ');
+      const details: string[] = [];
+      for (const [id, err] of fallback.failed) {
+        details.push(`${id}: ${err.message}`);
+      }
+      const detail = details.join('; ');
       throw new Error(`Bundled-engine equip failed: ${detail}`);
     }
   }
@@ -346,7 +364,7 @@ export class ExpansionLifecycleService {
         id: name,
         version: manifest?.version ?? row?.version ?? 'unknown',
         tier,
-        status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
+        status: expansionStatus(failed, isActive),
         ...(failed === undefined ? {} : { lastError: failed.message }),
         ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
         ...this.capabilityStatusFor(manifest),
@@ -357,7 +375,7 @@ export class ExpansionLifecycleService {
       id: name,
       version: row?.version ?? manifest?.version ?? 'unknown',
       tier,
-      status: failed ? 'installed-not-active' : isActive ? 'active' : 'inactive',
+      status: expansionStatus(failed, isActive),
       ...(failed === undefined ? {} : { lastError: failed.message }),
       ...(manifest?.provides === undefined ? {} : { provides: manifest.provides }),
       ...this.capabilityStatusFor(manifest),
@@ -366,22 +384,26 @@ export class ExpansionLifecycleService {
 
   list(): ExpansionLifecycleView[] {
     const manifest = this.manifestEntries();
-    const manifestOrder = new Map(manifest.map((entry, index) => [entry.id, index]));
+    const manifestOrder = new Map<string, number>();
     const ids = new Set<string>();
-    for (const entry of manifest) {
+    for (let index = 0; index < manifest.length; index += 1) {
+      const entry = manifest[index];
+      manifestOrder.set(entry.id, index);
       ids.add(entry.id);
     }
     for (const row of this.options.state.list()) {
       ids.add(row.id);
     }
 
-    return [...ids]
-      .sort(
-        (left, right) =>
-          (manifestOrder.get(left) ?? Number.POSITIVE_INFINITY) -
-          (manifestOrder.get(right) ?? Number.POSITIVE_INFINITY),
-      )
-      .map((id) => this.info(id));
+    const orderedIds = [...ids].sort(
+      (left, right) =>
+        (manifestOrder.get(left) ?? Number.POSITIVE_INFINITY) - (manifestOrder.get(right) ?? Number.POSITIVE_INFINITY),
+    );
+    const views: ExpansionLifecycleView[] = [];
+    for (const id of orderedIds) {
+      views.push(this.info(id));
+    }
+    return views;
   }
 
   has(name: string): boolean {
@@ -422,11 +444,16 @@ export class ExpansionLifecycleService {
     // dispose. The phase fence in `equipLocked` keeps NEW equips out for
     // the duration of shutdown — past engines either aborted at the fence
     // (nothing to clean up) or completed registration (visible below).
-    const engineIds = new Set<string>([
-      ...this.scopes.keys(),
-      ...this.failedRecovery.keys(),
-      ...this.engineMutex.keys(),
-    ]);
+    const engineIds = new Set<string>();
+    for (const id of this.scopes.keys()) {
+      engineIds.add(id);
+    }
+    for (const id of this.failedRecovery.keys()) {
+      engineIds.add(id);
+    }
+    for (const id of this.engineMutex.keys()) {
+      engineIds.add(id);
+    }
     for (const id of engineIds) {
       await this.runSerial(id, async () => {
         const scopes = this.scopes.get(id);
@@ -435,8 +462,8 @@ export class ExpansionLifecycleService {
         }
         this.scopes.delete(id);
         // LIFO disposal of chained scopes for this engine.
-        for (const scope of [...scopes].reverse()) {
-          await disposeExpansionScope(scope);
+        for (let index = scopes.length - 1; index >= 0; index -= 1) {
+          await disposeExpansionScope(scopes[index]);
         }
       });
     }
@@ -468,13 +495,21 @@ export class ExpansionLifecycleService {
     if (kb === null) {
       return {};
     }
-    const names = new Set<KbCapabilityName>([
-      ...(manifest.fills ?? []),
-      ...(manifest.provides?.capabilities ?? []).map((descriptor) => descriptor.name),
-    ]);
-    const statuses = [...names]
-      .map((name) => kb.capabilityRegistry.runtimeView().status(name))
-      .filter((status): status is KbCapabilityStatus => status !== undefined);
+    const names = new Set<KbCapabilityName>();
+    for (const name of manifest.fills ?? []) {
+      names.add(name);
+    }
+    for (const descriptor of manifest.provides?.capabilities ?? []) {
+      names.add(descriptor.name);
+    }
+
+    const statuses: KbCapabilityStatus[] = [];
+    for (const name of names) {
+      const status = kb.capabilityRegistry.runtimeView().status(name);
+      if (status !== undefined) {
+        statuses.push(status);
+      }
+    }
     return statuses.length === 0 ? {} : { capabilityStatus: statuses };
   }
 
@@ -498,7 +533,12 @@ export class ExpansionLifecycleService {
     if (!entry.fills || entry.fills.length === 0 || holders === null) {
       return false;
     }
-    return entry.fills.every((name) => holders.get(name) !== undefined);
+    for (const name of entry.fills) {
+      if (holders.get(name) === undefined) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private didFillFallbackBinding(
@@ -511,7 +551,12 @@ export class ExpansionLifecycleService {
     }
 
     const names = entry.fills ?? [];
-    return names.some((name) => before.get(name) === undefined && this.readKnownBindingHolder(kb, name) === entry.id);
+    for (const name of names) {
+      if (before.get(name) === undefined && this.readKnownBindingHolder(kb, name) === entry.id) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private readKnownBindingHolder(kb: KbRuntime, name: KbCapabilityName): string | undefined {
@@ -560,7 +605,10 @@ export class ExpansionLifecycleService {
   }
 
   private catalogDependents(entry: EngineManifest): Map<KbCapabilityName, CapabilityDependent[]> {
-    const declared = new Set((entry.provides?.capabilities ?? []).map((descriptor) => descriptor.name));
+    const declared = new Set<KbCapabilityName>();
+    for (const descriptor of entry.provides?.capabilities ?? []) {
+      declared.add(descriptor.name);
+    }
     if (declared.size === 0) {
       return new Map();
     }
@@ -571,7 +619,15 @@ export class ExpansionLifecycleService {
         continue;
       }
       const state: CapabilityDependent['state'] = this.isActive(candidate.id) ? 'active' : 'catalog';
-      for (const edge of [...readEdgesFor(candidate, state), ...writeEdgesFor(candidate, state)]) {
+      for (const edge of readEdgesFor(candidate, state)) {
+        if (!declared.has(edge.capability)) {
+          continue;
+        }
+        const dependents = blockers.get(edge.capability) ?? [];
+        dependents.push(edge.dependent);
+        blockers.set(edge.capability, dependents);
+      }
+      for (const edge of writeEdgesFor(candidate, state)) {
         if (!declared.has(edge.capability)) {
           continue;
         }
@@ -635,26 +691,38 @@ function readEdgesFor(manifest: EngineManifest, state: CapabilityDependent['stat
 }
 
 function writeEdgesFor(manifest: EngineManifest, state: CapabilityDependent['state']): CapabilityEdge[] {
-  return (manifest.fills ?? []).map((capability) => ({
-    capability,
-    dependent: { expansion: manifest.id, edgeKind: 'write', source: 'fills', state },
-  }));
+  const edges: CapabilityEdge[] = [];
+  for (const capability of manifest.fills ?? []) {
+    edges.push({
+      capability,
+      dependent: { expansion: manifest.id, edgeKind: 'write', source: 'fills', state },
+    });
+  }
+  return edges;
 }
 
 function blockedCatalogRemoval(
   target: string,
   blockers: ReadonlyMap<KbCapabilityName, readonly CapabilityDependent[]>,
 ): Extract<RemoveExpansionCatalogResult, { status: 'blocked' }> {
-  const capabilities: CapabilityRemovalBlocker[] = [...blockers.entries()].map(([capability, dependents]) => ({
-    capability,
-    dependents: [...dependents],
-  }));
+  const capabilities: CapabilityRemovalBlocker[] = [];
+  for (const [capability, dependents] of blockers) {
+    capabilities.push({
+      capability,
+      dependents: [...dependents],
+    });
+  }
+  const dependents: (CapabilityDependent & { readonly capability: KbCapabilityName })[] = [];
+  for (const { capability, dependents: capabilityDependents } of capabilities) {
+    for (const dependent of capabilityDependents) {
+      dependents.push({ capability, ...dependent });
+    }
+  }
+
   return {
     status: 'blocked',
     target,
     capabilities,
-    dependents: capabilities.flatMap(({ capability, dependents }) =>
-      dependents.map((dependent) => ({ capability, ...dependent })),
-    ),
+    dependents,
   };
 }

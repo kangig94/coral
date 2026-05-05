@@ -1,13 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -16,7 +8,11 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
 import { readDefaultExpansionCatalog, readExpansionCatalog } from '#src/cli/expansion/catalog.js';
 import { openReadCoralStore } from '#src/cli/read-store.js';
-import { ensureBundledEnginesLoaded, createDefaultKbQueryRuntime } from '#src/read-model/kb-query-runtime.js';
+import {
+  ensureBundledEnginesLoaded,
+  createDefaultKbQueryRuntime,
+  KbQueryRegistry,
+} from '#src/read-model/kb-query-runtime.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -81,9 +77,7 @@ function readUserVersion(dbPath: string): number {
 function tableExists(dbPath: string, name: string): boolean {
   const db = new DatabaseSync(dbPath);
   try {
-    return (
-      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(name) !== undefined
-    );
+    return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1").get(name) !== undefined;
   } finally {
     db.close();
   }
@@ -136,11 +130,15 @@ function createCorruptStore(dbPath: string): void {
 }
 
 function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthority {
-  return createBackendStoreResetAuthority(runtime, { acquiredViaHandoff: true }, {
-    path: dbPath,
-    bundleHash: BUNDLE_HASH,
-    namespace: NAMESPACE,
-  });
+  return createBackendStoreResetAuthority(
+    runtime,
+    { acquiredViaHandoff: true },
+    {
+      path: dbPath,
+      bundleHash: BUNDLE_HASH,
+      namespace: NAMESPACE,
+    },
+  );
 }
 
 function openReset(runtime: Runtime, dbPath: string) {
@@ -343,11 +341,15 @@ describe('openOrResetBackendStoreDb', () => {
 
     // Build an authority with a wrong bundleHash — represents a stale
     // authority captured before a runtime/bundle change.
-    const staleAuthority = createBackendStoreResetAuthority(runtime, { acquiredViaHandoff: true }, {
-      path: dbPath,
-      bundleHash: 'stale-bundle-hash',
-      namespace: NAMESPACE,
-    });
+    const staleAuthority = createBackendStoreResetAuthority(
+      runtime,
+      { acquiredViaHandoff: true },
+      {
+        path: dbPath,
+        bundleHash: 'stale-bundle-hash',
+        namespace: NAMESPACE,
+      },
+    );
 
     const error = captureError(() =>
       openOrResetBackendStoreDb(runtime, staleAuthority, {
@@ -412,16 +414,17 @@ describe('read-only store access', () => {
     it('ensureBundledEnginesLoaded', async () => {
       const { runtime } = makeMismatchHome();
       expectSetupCode(
-        await captureAsyncError(() =>
-          ensureBundledEnginesLoaded({} as KbRuntime, { pluginRoot: REPO_ROOT, runtime }),
-        ),
+        await captureAsyncError(() => ensureBundledEnginesLoaded({} as KbRuntime, { pluginRoot: REPO_ROOT, runtime })),
         'store_schema_outdated',
       );
     });
 
     it('readExpansionCatalog', () => {
       const { runtime } = makeMismatchHome();
-      expectSetupCode(captureError(() => readExpansionCatalog(runtime)), 'store_schema_outdated');
+      expectSetupCode(
+        captureError(() => readExpansionCatalog(runtime)),
+        'store_schema_outdated',
+      );
     });
 
     it('readDefaultExpansionCatalog', () => {
@@ -471,8 +474,14 @@ describe('openWritableStoreDbNoReset', () => {
     createLegacyStore(legacyPath);
     createMismatchStore(mismatchPath);
 
-    expectSetupCode(captureError(() => openWritableStoreDbNoReset(runtime, { path: legacyPath })), 'store_schema_outdated');
-    expectSetupCode(captureError(() => openWritableStoreDbNoReset(runtime, { path: mismatchPath })), 'store_schema_outdated');
+    expectSetupCode(
+      captureError(() => openWritableStoreDbNoReset(runtime, { path: legacyPath })),
+      'store_schema_outdated',
+    );
+    expectSetupCode(
+      captureError(() => openWritableStoreDbNoReset(runtime, { path: mismatchPath })),
+      'store_schema_outdated',
+    );
 
     expect(legacySchemaVersionRow(legacyPath)).toBe('1');
     expect(tableExists(mismatchPath, 'sentinel_before_reset')).toBe(true);
@@ -488,5 +497,23 @@ describe('openWritableStoreDbNoReset', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect(readFileSync(dbPath, 'utf-8')).toBe(before);
+  });
+});
+
+describe('KbQueryRegistry', () => {
+  it('reuses runtime-owned read-only DB handles until the registry is closed', () => {
+    const runtime = createRuntime();
+    const writable = openWritableStoreDbNoReset(runtime);
+    writable.close();
+
+    const registry = new KbQueryRegistry();
+    try {
+      const first = registry.getRuntimeDb(runtime);
+      const second = registry.getRuntimeDb(runtime);
+
+      expect(second).toBe(first);
+    } finally {
+      registry.close();
+    }
   });
 });

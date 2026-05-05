@@ -70,29 +70,36 @@ function formatCompactNumber(value: number): string {
 }
 
 function formatRetrievalEvidence(result: KbSearchResponse['results'][number]): string[] {
-  return result.evidence.slice(0, MAX_RENDERED_EVIDENCE).map((evidence) => {
+  const rendered: string[] = [];
+  const limit = Math.min(result.evidence.length, MAX_RENDERED_EVIDENCE);
+  for (let index = 0; index < limit; index += 1) {
+    const evidence = result.evidence[index];
     const weight = formatCompactNumber(evidence.weight);
     const contribution = formatCompactNumber(evidence.contribution);
-    return `[${evidence.roleId}:#${evidence.rank}(w=${weight},c=${contribution})]`;
-  });
+    rendered.push(`[${evidence.roleId}:#${evidence.rank}(w=${weight},c=${contribution})]`);
+  }
+  return rendered;
 }
 
 function formatRetrievalDiagnosticWarnings(data: KbSearchResponse, cliPrefix: string): string[] {
-  return data.retrievalDiagnostics
-    .map((diagnostic) => {
-      if (diagnostic.publicText !== undefined && diagnostic.publicText.length > 0) {
-        return `Warning: ${normalizeKbWarning(diagnostic.publicText, cliPrefix) ?? diagnostic.publicText}`;
-      }
-      if (diagnostic.recoverable) {
-        return undefined;
-      }
-      const recoveryHint =
-        diagnostic.code === 'binding_missing'
-          ? `Run 'coral-cli expansion list' to find an engine that fills the missing binding.`
-          : `Check expansion status with 'coral-cli expansion list' or run 'coral-cli kb reindex'.`;
-      return `Warning: Search role '${diagnostic.roleId}' failed (${diagnostic.code}). Results may be incomplete. ${recoveryHint}`;
-    })
-    .filter((warning): warning is string => warning !== undefined);
+  const warnings: string[] = [];
+  for (const diagnostic of data.retrievalDiagnostics) {
+    if (diagnostic.publicText !== undefined && diagnostic.publicText.length > 0) {
+      warnings.push(`Warning: ${normalizeKbWarning(diagnostic.publicText, cliPrefix) ?? diagnostic.publicText}`);
+      continue;
+    }
+    if (diagnostic.recoverable) {
+      continue;
+    }
+    const recoveryHint =
+      diagnostic.code === 'binding_missing'
+        ? `Run 'coral-cli expansion list' to find an engine that fills the missing binding.`
+        : `Check expansion status with 'coral-cli expansion list' or run 'coral-cli kb reindex'.`;
+    warnings.push(
+      `Warning: Search role '${diagnostic.roleId}' failed (${diagnostic.code}). Results may be incomplete. ${recoveryHint}`,
+    );
+  }
+  return warnings;
 }
 
 function isVerbosePrincipleRows(principles: KbPrinciplesResult['principles']): principles is KbPrincipleVerboseRow[] {
@@ -281,10 +288,6 @@ export function formatKbWikiList(data: KbWikiListResult): string {
   }
 
   return formatTable(['SLUG', 'TITLE', 'UPDATED AT', 'TAGS'], rows);
-}
-
-export function formatKbWikiRead(data: KbReadResult): string {
-  return formatKbRead(data);
 }
 
 export function formatKbWakeUp(data: KbWakeUpResponse): string {

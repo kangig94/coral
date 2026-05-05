@@ -203,6 +203,21 @@ describe('discuss reducer', () => {
     expect(ended.lastAppliedSeq).toBe(snapshot.lastAppliedSeq + 2);
   });
 
+  it('replays a forced end reason as end content when explicit content is omitted', () => {
+    const input = makeInput([{ name: 'alpha', persona: 'Alpha', participation: 'required' }]);
+    const snapshot = createSnapshot(input);
+
+    const ended = replay(snapshot, [
+      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, nextSeq(snapshot), 'session.ended', NOW, {
+        force: true,
+        reason: 'manual stop',
+      }),
+    ]);
+
+    expect(ended.state.status).toBe('ended');
+    expect(ended.state.end_reason_content).toBe('manual stop');
+  });
+
   it('projects epoch_transition into evaluate_epoch runtime control', () => {
     const input = makeInput([
       { name: 'alpha', persona: 'Alpha', participation: 'required' },

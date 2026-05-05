@@ -84,27 +84,34 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
     };
   }
 
+  const entries: KbIndex['entries'] = {};
+  for (const [entryId, entry] of Object.entries(index.entries)) {
+    entries[entryId] = cloneEntryRecord(entry);
+  }
+  const relationships: EntityRelationship[] = [];
+  for (const relationship of index.relationships) {
+    relationships.push(cloneEntityRelationship(relationship));
+  }
+
   return {
-    entries: Object.fromEntries(
-      Object.entries(index.entries).map(([entryId, entry]) => [entryId, cloneEntryRecord(entry)]),
-    ),
+    entries,
     principles: { ...index.principles },
     entityMeta: cloneEntityMetaRecord(index.entityMeta),
-    relationships: index.relationships.map(cloneEntityRelationship),
+    relationships,
+    ...(index.structuralKey === undefined ? {} : { structuralKey: { ...index.structuralKey } }),
   };
 }
 
 export function cloneEntityMetaRecord(entityMeta: Record<string, EntityMeta>): Record<string, EntityMeta> {
-  return Object.fromEntries(
-    Object.entries(entityMeta).map(([entity, meta]) => [
-      entity,
-      {
-        type: meta.type,
-        description: meta.description,
-        ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases] }),
-      },
-    ]),
-  );
+  const cloned: Record<string, EntityMeta> = {};
+  for (const [entity, meta] of Object.entries(entityMeta)) {
+    cloned[entity] = {
+      type: meta.type,
+      description: meta.description,
+      ...(meta.aliases === undefined ? {} : { aliases: [...meta.aliases] }),
+    };
+  }
+  return cloned;
 }
 
 export function cloneEntityRelationship(relationship: EntityRelationship): EntityRelationship {

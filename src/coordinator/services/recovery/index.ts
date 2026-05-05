@@ -72,6 +72,7 @@ type StartupRecoveryContext = {
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
+  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
   signal: AbortSignal;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
@@ -145,14 +146,27 @@ export function createRecoveryCoordinator({
   async function runRecoveryAdoption({
     queuedJobs,
     runningJobs,
+    sessionLookup,
     signal,
     interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
     queuedJobs.sort((a, b) => a.launchRecord.enqueueSequence - b.launchRecord.enqueueSequence);
 
-    const allRecoverableSeqs = [...queuedJobs, ...runningJobs].map((job) => job.launchRecord.enqueueSequence);
-    if (allRecoverableSeqs.length > 0) {
-      progressStore.seedEnqueueSequence(Math.max(...allRecoverableSeqs));
+    let maxRecoverableSeq: number | null = null;
+    for (const job of queuedJobs) {
+      maxRecoverableSeq =
+        maxRecoverableSeq === null
+          ? job.launchRecord.enqueueSequence
+          : Math.max(maxRecoverableSeq, job.launchRecord.enqueueSequence);
+    }
+    for (const job of runningJobs) {
+      maxRecoverableSeq =
+        maxRecoverableSeq === null
+          ? job.launchRecord.enqueueSequence
+          : Math.max(maxRecoverableSeq, job.launchRecord.enqueueSequence);
+    }
+    if (maxRecoverableSeq !== null) {
+      progressStore.seedEnqueueSequence(maxRecoverableSeq);
     }
 
     for (const { jobId, launchRecord, runtimeRecord } of runningJobs) {
@@ -261,6 +275,7 @@ export function createRecoveryCoordinator({
             provider: recovery,
             progressStore,
             runtime,
+            sessionLookup,
             log,
           });
           retainedCleanup?.();
@@ -318,7 +333,7 @@ export function createRecoveryCoordinator({
       const snapshot = buildRecoverySnapshot(progressStore, namespace, log, ctx.sessionLookup, runtime.process);
       const plan = planRecovery(snapshot);
 
-      for (const action of [...plan.register, ...plan.cleanup]) {
+      const applyPlanAction = (action: Parameters<typeof applyRecoveryAction>[0]): void => {
         try {
           applyRecoveryAction(action, {
             progressStore,
@@ -338,6 +353,13 @@ export function createRecoveryCoordinator({
         } catch (error: unknown) {
           logRecoveryActionFailure(action, error, log);
         }
+      };
+
+      for (const action of plan.register) {
+        applyPlanAction(action);
+      }
+      for (const action of plan.cleanup) {
+        applyPlanAction(action);
       }
 
       cleanupStaleJobs(bundleHash);
@@ -351,6 +373,7 @@ export function createRecoveryCoordinator({
         await runRecoveryAdoption({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
+          sessionLookup: ctx.sessionLookup,
           signal,
           interruptedAppServerReason,
         });
@@ -359,8 +382,7 @@ export function createRecoveryCoordinator({
           throw error;
         }
         log(`Recovery adoption failed: ${formatError(error)}\n`);
-        const allRecoverable = [...queuedRecoverable, ...runningRecoverable];
-        for (const { jobId } of allRecoverable) {
+        const markRecoverableAsError = (jobId: string): void => {
           try {
             const status = progressStore.readStatus(jobId);
             if (status) {
@@ -384,6 +406,12 @@ export function createRecoveryCoordinator({
           } catch {
             // best-effort
           }
+        };
+        for (const { jobId } of queuedRecoverable) {
+          markRecoverableAsError(jobId);
+        }
+        for (const { jobId } of runningRecoverable) {
+          markRecoverableAsError(jobId);
         }
         resetRecoveryState();
       }

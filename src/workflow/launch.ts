@@ -1,5 +1,5 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { slotsForStep, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
+import type { CompiledPlanSlot } from './plan.js';
 import {
   WorkflowExecutionError,
   createWorkflowExecutionError,
@@ -36,6 +36,16 @@ type LaunchFailure = Pick<WaitFailure, 'aborted' | 'message'> &
 
 function isPromptSlot(slot: CompiledPlanSlot): boolean {
   return slot.kind === 'prompt';
+}
+
+function joinPromptParts(parts: Array<string | undefined>): string {
+  const joined: string[] = [];
+  for (const part of parts) {
+    if (part !== undefined && part.length > 0) {
+      joined.push(part);
+    }
+  }
+  return joined.join('\n\n');
 }
 
 export async function readLaunchFailure(
@@ -86,10 +96,10 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     if (slot.stepIndex === 0) {
       atomPrompt = sharedContext ? `${sharedContext}\n\n${slot.instruction}` : slot.instruction;
     } else {
-      atomPrompt = [sharedContext, slot.instruction, stepPrompt].filter(Boolean).join('\n\n');
+      atomPrompt = joinPromptParts([sharedContext, slot.instruction, stepPrompt]);
     }
   } else {
-    atomPrompt = [sharedContext, stepPrompt].filter(Boolean).join('\n\n');
+    atomPrompt = joinPromptParts([sharedContext, stepPrompt]);
   }
 
   if (signal?.aborted) {
@@ -150,9 +160,8 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
   };
 }
 
-export async function launchStepAtoms(
-  plan: WorkflowPlan,
-  stepIndex: number,
+export async function launchCompiledStepAtoms(
+  stepSlots: readonly CompiledPlanSlot[],
   stepPrompt: string,
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
@@ -166,7 +175,6 @@ export async function launchStepAtoms(
 ): Promise<StepLaunchResult> {
   const launchedAtoms: LaunchedAtom[] = [];
   let launchError: unknown = null;
-  const stepSlots = slotsForStep(plan, stepIndex);
 
   await Promise.all(
     stepSlots.map(async (slot, atomIndex) => {

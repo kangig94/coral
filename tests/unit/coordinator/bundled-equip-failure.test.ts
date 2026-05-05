@@ -314,9 +314,14 @@ describe('coordinator degraded-KB propagation for bundled fallback failures', ()
       // envelope. The new wording is "Knowledge base is starting up" while
       // KB is initializing or "Knowledge base is offline" once exhausted.
       await expect(
-        requestIpcMethod<Record<string, unknown>>(info.socketPath, 'kb.entries.search', { q: 'hello' }, {
-          timeoutMs: 1_000,
-        }),
+        requestIpcMethod<Record<string, unknown>>(
+          info.socketPath,
+          'kb.entries.search',
+          { q: 'hello' },
+          {
+            timeoutMs: 1_000,
+          },
+        ),
       ).rejects.toThrow(/Knowledge base is (starting up|offline)/);
 
       await expect(

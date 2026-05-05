@@ -2,7 +2,15 @@ import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { isSnapshotFresherForInterest } from '../../kb/state/corpus-state.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ConsumerCursorRepository } from './persistence.js';
-import type { Authority, ConsumerDriverTimers, ConsumerState, ForcedCorpusFreshnessTarget } from './state.js';
+import type {
+  Authority,
+  ConsumerDriverTimers,
+  ConsumerState,
+  CorpusConsumerState,
+  ForcedCorpusFreshnessTarget,
+  JournalConsumerState,
+  Waiter,
+} from './state.js';
 import {
   consumerAuthorityMismatchError,
   consumerNotRegisteredError,
@@ -143,12 +151,7 @@ export function resolveWaiters(
     if (waiter.settled) {
       continue;
     }
-    const reached =
-      state.kind === 'journal' && typeof waiter.target === 'number' && typeof newCursor === 'number'
-        ? waiter.target <= newCursor
-        : state.kind === 'corpus' && typeof waiter.target !== 'number' && typeof newCursor !== 'number'
-          ? corpusTargetReached(state, waiter.target, newCursor)
-          : false;
+    const reached = waiterTargetReached(state, waiter, newCursor);
     if (!reached) {
       continue;
     }
@@ -158,4 +161,20 @@ export function resolveWaiters(
     timers.clearTimeout(waiter.timeoutHandle);
     waiter.resolve();
   }
+}
+
+function waiterTargetReached(
+  state: JournalConsumerState | CorpusConsumerState,
+  waiter: Waiter,
+  newCursor: number | KbCorpusSnapshot,
+): boolean {
+  if (state.kind === 'journal' && typeof waiter.target === 'number' && typeof newCursor === 'number') {
+    return waiter.target <= newCursor;
+  }
+
+  if (state.kind === 'corpus' && typeof waiter.target !== 'number' && typeof newCursor !== 'number') {
+    return corpusTargetReached(state, waiter.target, newCursor);
+  }
+
+  return false;
 }

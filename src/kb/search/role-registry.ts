@@ -16,7 +16,16 @@ function freezeArray<T>(values: readonly T[]): T[] {
 }
 
 function canonicalSetOrder<T extends string>(values: readonly T[]): T[] {
-  return Object.freeze([...new Set(values)].sort((left, right) => left.localeCompare(right))) as T[];
+  const seen = new Set<T>();
+  const unique: T[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return Object.freeze(unique.sort((left, right) => left.localeCompare(right))) as T[];
 }
 
 export function normalizeRetrievalRoleDescriptor(descriptor: RetrievalRoleDescriptor): RetrievalRoleDescriptor {
@@ -51,10 +60,26 @@ function decorateScopeDispose(scope: Disposable, onDispose: () => void): void {
 
 export function createRoleRegistry(): RoleRegistry {
   const records = new Map<string, RegisteredRetrievalRole>();
+  let listCache: readonly RegisteredRetrievalRole[] | null = null;
+  let descriptorListCache: readonly RetrievalRoleDescriptor[] | null = null;
 
-  const list = (): readonly RegisteredRetrievalRole[] => Object.freeze([...records.values()]);
+  const invalidateViews = (): void => {
+    listCache = null;
+    descriptorListCache = null;
+  };
 
-  const unregister = (id: string): boolean => records.delete(id);
+  const list = (): readonly RegisteredRetrievalRole[] => {
+    listCache ??= Object.freeze([...records.values()]);
+    return listCache;
+  };
+
+  const unregister = (id: string): boolean => {
+    const deleted = records.delete(id);
+    if (deleted) {
+      invalidateViews();
+    }
+    return deleted;
+  };
 
   const createHandle = (id: string): RoleHandle => {
     let disposed = false;
@@ -90,6 +115,7 @@ export function createRoleRegistry(): RoleRegistry {
     });
 
     records.set(role.id, record);
+    invalidateViews();
     return createHandle(role.id);
   };
 
@@ -98,7 +124,17 @@ export function createRoleRegistry(): RoleRegistry {
   });
 
   const catalogView: RoleCatalogView = Object.freeze({
-    listDescriptors: () => Object.freeze([...records.values()].map((record) => record.descriptor)),
+    listDescriptors: () => {
+      if (descriptorListCache !== null) {
+        return descriptorListCache;
+      }
+      const descriptors: RetrievalRoleDescriptor[] = [];
+      for (const record of records.values()) {
+        descriptors.push(record.descriptor);
+      }
+      descriptorListCache = Object.freeze(descriptors);
+      return descriptorListCache;
+    },
   });
 
   return {

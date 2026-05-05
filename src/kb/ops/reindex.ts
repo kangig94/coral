@@ -27,7 +27,12 @@ export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal })
         },
         { signal: lockSignal },
       );
-      const wikis = Object.values(kb.readIndexOrEmpty().entries).filter(isWikiEntry).length;
+      let wikis = 0;
+      for (const entry of Object.values(kb.readIndexOrEmpty().entries)) {
+        if (isWikiEntry(entry)) {
+          wikis += 1;
+        }
+      }
       return { ...counts, wikis };
     },
     {

@@ -20,6 +20,7 @@ Fields:
 | `message` | string | Human-readable summary. It is not guaranteed to stay on one line |
 | `code` | string | Stable programmatic error code, emitted inside the trailing tag block |
 | `http` | number, optional | HTTP status when the error came from a backend HTTP response |
+| `remediation` | string, optional | Operator-actionable hint included by subsystem-aware error paths (e.g. `kb_initializing`, `kb_offline`). Surfaced after the message so wrappers can present a concrete next step |
 | `detail` | JSON payload, optional | Extra structured detail emitted after the `Detail: ` prefix. For backend schema validation this includes `detail.issues` from Zod |
 
 Backend HTTP errors are lifted into the same envelope. There is no nested `body` wrapper in the CLI detail payload.
@@ -45,6 +46,8 @@ This only affects malformed or truncated backend responses. In normal operation 
 | `transient` | Retryable HTTP failure surfaced by the client as a `TransientHttpError` instance, covering HTTP `502`/`503`/`504`. CLI-side: any `TransientHttpError` maps to exit `75` via `instanceof` dispatch; `code === 'transient'` or backend `503` bodies also land on exit `75` |
 | `backend_shutting_down` | The backend is running but draining and refusing new work |
 | `backend_unreachable` | The backend could not be reached at all. Typical causes are not-started daemon, refused connection, or transport-level lookup/reset failures |
+| `kb_initializing` | A KB-touching command was issued while the KB subsystem is still in its retry loop (Era III boot). Transient — the daemon is healthy, only the subsystem is not yet `online`. Maps to HTTP `503` and exit `75` (retry-later); the response carries a `remediation` hint |
+| `kb_offline` | The KB subsystem exhausted its retry budget and is in the terminal `offline` phase. The daemon is otherwise healthy. Maps to HTTP `503` and exit `75`; the `remediation` hint asks the operator to restart the daemon |
 | `backend_error` | Fallback for a backend error response that did not provide a recognized `code` |
 | `internal` / `internal_error` | Unhandled CLI-side failure (`internal`) or backend `500` contract response (`internal_error`) |
 
@@ -83,6 +86,7 @@ Two "service unavailable" cases also differ on purpose:
 
 - `backend_shutting_down` means the backend answered and said it is draining. Exit code is `75`, which means retry later.
 - `backend_unreachable` means the CLI could not talk to the backend at all. Exit code is `69`, which usually means the daemon needs to be started or restarted first.
+- `kb_initializing` and `kb_offline` mean the daemon answered, but the KB subsystem specifically is not `online`. The daemon itself is healthy — only KB-touching commands surface these. Both map to exit `75`.
 
 Drain-in-progress example:
 

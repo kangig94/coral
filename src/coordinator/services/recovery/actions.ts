@@ -3,7 +3,7 @@ import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobLaunch, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
-import type { ProviderRecoveryContract } from '../../../providers/contract.js';
+import type { ProviderArtifactHandleInput, ProviderRecoveryContract } from '../../../providers/contract.js';
 import { phaseForOutcome, type TerminalOutcome } from '../../../jobs/outcome.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type { RecoveryAction } from '../../../jobs/reconcile/plan.js';
@@ -178,6 +178,7 @@ type FinalizeDeadAdoptedJobContext = {
   provider: ProviderLike;
   progressStore: JobStore;
   runtime: Runtime;
+  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
   log: (message: string) => void;
 };
 
@@ -189,6 +190,7 @@ export function finalizeDeadAdoptedJob({
   provider,
   progressStore,
   runtime,
+  sessionLookup,
   log,
 }: FinalizeDeadAdoptedJobContext): void {
   const sessionId = launchRecord.sessionId;
@@ -210,6 +212,7 @@ export function finalizeDeadAdoptedJob({
           providerMeta: runtimeRecord.providerMeta,
           env: runtime.env,
           fallbackConversationRef: launchRecord.request.conversationRef,
+          knownArtifactHandles: readKnownArtifactHandles(sessionLookup, sessionId, providerName, jobId),
           storage: runtime.storage,
         })
         .then(async (result) => {
@@ -310,4 +313,32 @@ export function finalizeDeadAdoptedJob({
     },
     'error',
   );
+}
+
+function readKnownArtifactHandles(
+  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>,
+  sessionId: string,
+  provider: string,
+  jobId: string,
+): readonly ProviderArtifactHandleInput[] | undefined {
+  const session = sessionLookup.readSessionEntry(sessionId);
+  if (session === null) {
+    return undefined;
+  }
+
+  const handles: ProviderArtifactHandleInput[] = [];
+  for (const artifact of session.artifactHandles) {
+    if (artifact.provider !== provider) {
+      continue;
+    }
+    if (artifact.sourceJobId !== undefined && artifact.sourceJobId !== jobId) {
+      continue;
+    }
+    handles.push({
+      handle: artifact.handle,
+      identity: artifact.identity,
+      ...(artifact.sourceJobId === undefined ? {} : { sourceJobId: artifact.sourceJobId }),
+    });
+  }
+  return handles.length === 0 ? undefined : handles;
 }

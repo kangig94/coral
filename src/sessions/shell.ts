@@ -12,8 +12,8 @@ import type { TimePort } from '../infra/port-types.js';
 import type { Runtime, IdPort } from '../runtime/ports.js';
 import { composeReducers } from '../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { legacyProviderArtifactIdentity, providerArtifactIdentityKey } from '../providers/artifact-identity.js';
 import {
-  DEFAULT_SESSION_CONTROLLER,
   type ProviderArtifactHandle,
   sessionControllerFromProfile,
   sessionEntrySchema,
@@ -33,7 +33,7 @@ import type {
   SessionOpenedBody,
 } from './event-bodies.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
-import type { ContinuitySnapshot, ProviderContinuityBlob } from './continuity.js';
+import { readContinuityRef, type ContinuitySnapshot, type ProviderContinuityBlob } from './continuity.js';
 import { listProjectionSessionEntries, readProjectionSession } from './projections.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
@@ -68,10 +68,38 @@ function isValidEntry(value: unknown): value is SessionEntry {
 }
 
 function normalizeEntry(entry: SessionEntry): SessionEntry {
+  const {
+    activeJobId,
+    conversationRef,
+    model,
+    agentName,
+    instruction,
+    bypassPermissions,
+    systemPrompt,
+    controllerProfile,
+    ...required
+  } = entry;
   return {
-    ...entry,
-    activeJobId: entry.activeJobId,
+    ...required,
+    ...(activeJobId !== undefined ? { activeJobId } : {}),
+    ...(conversationRef !== undefined ? { conversationRef } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(agentName !== undefined ? { agentName } : {}),
+    ...(instruction !== undefined ? { instruction } : {}),
+    ...(bypassPermissions !== undefined ? { bypassPermissions } : {}),
+    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+    ...(controllerProfile !== undefined ? { controllerProfile } : {}),
   };
+}
+
+function withoutConversationRef(entry: SessionEntry): SessionEntry {
+  const { conversationRef: _conversationRef, ...rest } = entry;
+  return rest;
+}
+
+function withoutActiveJobId(entry: SessionEntry): SessionEntry {
+  const { activeJobId: _activeJobId, ...rest } = entry;
+  return rest;
 }
 
 function snapshotFromEntry(
@@ -85,15 +113,16 @@ function snapshotFromEntry(
 }
 
 function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventInput<SessionOpenedBody> {
+  const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.opened',
-    stream: { kind: 'session', id: entry.sessionId },
-    refs: { sessionId: entry.sessionId },
+    stream: { kind: 'session', id: normalizedEntry.sessionId },
+    refs: { sessionId: normalizedEntry.sessionId },
     bodyVersion: 1,
     body: {
-      entry,
-      controller: sessionControllerFromProfile(entry.controllerProfile) || DEFAULT_SESSION_CONTROLLER,
-      provider: entry.provider,
+      entry: normalizedEntry,
+      controller: sessionControllerFromProfile(normalizedEntry.controllerProfile),
+      provider: normalizedEntry.provider,
       scope_key: scopeKey,
     },
   };
@@ -103,13 +132,14 @@ function sessionCheckpointedEvent(
   entry: SessionEntry,
   snapshot: ContinuitySnapshot,
 ): CoralEventInput<SessionContinuityCheckpointedBody> {
+  const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.continuity.checkpointed',
-    stream: { kind: 'session', id: entry.sessionId },
-    refs: { sessionId: entry.sessionId },
+    stream: { kind: 'session', id: normalizedEntry.sessionId },
+    refs: { sessionId: normalizedEntry.sessionId },
     bodyVersion: 1,
     body: {
-      entry,
+      entry: normalizedEntry,
       snapshot,
     },
   };
@@ -119,44 +149,49 @@ function sessionArtifactHandleRecordedEvent(
   entry: SessionEntry,
   artifact: ProviderArtifactHandle,
 ): CoralEventInput<SessionArtifactHandleRecordedBody> {
+  const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.artifact.handle.recorded',
-    stream: { kind: 'session', id: entry.sessionId },
+    stream: { kind: 'session', id: normalizedEntry.sessionId },
     refs: {
-      sessionId: entry.sessionId,
+      sessionId: normalizedEntry.sessionId,
       ...(artifact.sourceJobId !== undefined ? { jobId: artifact.sourceJobId } : {}),
     },
     bodyVersion: 1,
     body: {
-      entry,
+      entry: normalizedEntry,
       provider: artifact.provider,
       handle: artifact.handle,
+      identity: artifact.identity,
+      identityKey: artifact.identityKey,
       ...(artifact.sourceJobId !== undefined ? { sourceJobId: artifact.sourceJobId } : {}),
     },
   };
 }
 
 function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimedBody> {
+  const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.claimed',
-    stream: { kind: 'session', id: entry.sessionId },
-    refs: { sessionId: entry.sessionId, jobId },
+    stream: { kind: 'session', id: normalizedEntry.sessionId },
+    refs: { sessionId: normalizedEntry.sessionId, jobId },
     bodyVersion: 1,
     body: {
-      entry,
+      entry: normalizedEntry,
       jobId,
     },
   };
 }
 
 function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimReleasedBody> {
+  const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.claim.released',
-    stream: { kind: 'session', id: entry.sessionId },
-    refs: { sessionId: entry.sessionId, jobId },
+    stream: { kind: 'session', id: normalizedEntry.sessionId },
+    refs: { sessionId: normalizedEntry.sessionId, jobId },
     bodyVersion: 1,
     body: {
-      entry,
+      entry: normalizedEntry,
       jobId,
     },
   };
@@ -279,11 +314,11 @@ export class SessionManager {
       retention: options.retention ?? 'retain',
       artifactHandles: [],
       retentionDiscard: { attempts: [] },
-      model: options.model,
       cwd: options.cwd,
       projectRoot: options.projectRoot,
       backendNamespace: options.backendNamespace,
       providerContinuity: null,
+      ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.agentName !== undefined ? { agentName: options.agentName } : {}),
       ...(options.instruction !== undefined ? { instruction: options.instruction } : {}),
       ...(options.bypassPermissions !== undefined ? { bypassPermissions: options.bypassPermissions } : {}),
@@ -330,10 +365,11 @@ export class SessionManager {
     const currentEntry = this.readEntry(sessionId);
     if (!currentEntry) return;
 
+    const checkpointBase = withoutConversationRef(currentEntry);
     const nextEntry: SessionEntry = {
-      ...currentEntry,
+      ...checkpointBase,
       providerContinuity: snapshot.providerContinuity,
-      conversationRef: snapshot.conversationRef ?? undefined,
+      ...(snapshot.conversationRef === null ? {} : { conversationRef: snapshot.conversationRef }),
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
@@ -364,11 +400,12 @@ export class SessionManager {
   ): void {
     const currentEntry = this.readEntry(sessionId);
     if (!currentEntry) return;
+    const conversationRef = readContinuityRef(update.conversationRef);
 
     const nextEntry: SessionEntry = {
       ...currentEntry,
       providerContinuity: update.providerContinuity,
-      ...(update.conversationRef ? { conversationRef: update.conversationRef, state: 'ready' as const } : {}),
+      ...(conversationRef !== undefined ? { conversationRef, state: 'ready' as const } : {}),
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
     };
@@ -435,8 +472,7 @@ export class SessionManager {
           };
         case 'clear_non_resumable':
           return {
-            ...checkpointBaseEntry,
-            conversationRef: undefined,
+            ...withoutConversationRef(checkpointBaseEntry),
             state: 'non_resumable',
           };
         case 'preserve':
@@ -445,8 +481,7 @@ export class SessionManager {
     })();
 
     const releaseEntry: SessionEntry = {
-      ...checkpointEntry,
-      activeJobId: undefined,
+      ...withoutActiveJobId(checkpointEntry),
       version: this.bumpVersion(checkpointEntry),
     };
     const checkpointEvent = sessionCheckpointedEvent(checkpointEntry, snapshotFromEntry(checkpointEntry));
@@ -476,9 +511,10 @@ export class SessionManager {
     if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
     if (currentEntry.version !== expectedVersion) return { ok: false };
 
+    const checkpointBase = withoutConversationRef(currentEntry);
     const nextEntry: SessionEntry = {
-      ...currentEntry,
-      conversationRef: snapshot.conversationRef ?? undefined,
+      ...checkpointBase,
+      ...(snapshot.conversationRef === null ? {} : { conversationRef: snapshot.conversationRef }),
       providerContinuity: snapshot.providerContinuity,
       state: snapshot.resumable ? 'ready' : 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
@@ -499,9 +535,24 @@ export class SessionManager {
     if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
     if (currentEntry.version !== expectedVersion) return { ok: false };
 
+    const identity = options.identity ?? legacyProviderArtifactIdentity(handle);
+    const identityKey = providerArtifactIdentityKey(provider, identity);
+    if (
+      currentEntry.artifactHandles.some(
+        (artifact) =>
+          artifact.provider === provider &&
+          artifact.identityKey === identityKey &&
+          artifact.sourceJobId === sourceJobId,
+      )
+    ) {
+      return { ok: true, nextVersion: currentEntry.version };
+    }
+
     const artifact: ProviderArtifactHandle = {
       provider,
       handle,
+      identity,
+      identityKey,
       ...(sourceJobId !== undefined ? { sourceJobId } : {}),
       recordedAt: nowIsoString(this.time),
     };
@@ -530,8 +581,7 @@ export class SessionManager {
     if (entry.version !== expectedVersion) return false;
 
     const nextEntry: SessionEntry = {
-      ...entry,
-      activeJobId: undefined,
+      ...withoutActiveJobId(entry),
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(entry),
     };
@@ -574,8 +624,7 @@ export class SessionManager {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId !== jobId) return;
     const nextEntry: SessionEntry = {
-      ...entry,
-      activeJobId: undefined,
+      ...withoutActiveJobId(entry),
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(entry),
     };

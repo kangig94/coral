@@ -75,7 +75,12 @@ function artifactStorage(tree: Record<string, DirentLike[]>): ProviderRuntime['s
     existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
     readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
     readFileSync: () => '',
-    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+    statSync: (() => ({
+      size: 0,
+      mtimeMs: 0,
+      isDirectory: () => false,
+      isFile: () => true,
+    })) as unknown as StoragePort['statSync'],
   };
 }
 
@@ -221,6 +226,7 @@ describe('claude exec-kernel', () => {
     expect(events).toContainEqual({
       kind: 'artifact_handle',
       handle: `${projectsRoot}/-workspace/fork-session-jsonl.jsonl`,
+      identity: { kind: 'claude-jsonl', conversationRef: 'fork-session-jsonl' },
     });
     expect(getTerminal(events).terminal).toMatchObject({
       content: 'fork output',

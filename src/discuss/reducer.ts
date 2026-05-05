@@ -14,7 +14,8 @@ import type {
   SpeechRecordedEvent,
   SpeechTimedOutEvent,
 } from './events.js';
-import type { AgentState, DiscussState, TranscriptEntry } from './session-types.js';
+import { resolveSessionEndReasonContent } from './end-reasons.js';
+import type { AgentState, DiscussState, TranscriptEntry, TranscriptResolveType } from './session-types.js';
 import { appendEntry, resetBids } from './state-transitions.js';
 
 function parseDisplayName(persona: string, agentName: string): string {
@@ -154,7 +155,13 @@ function applyAgentMutations(
   }
 
   const nextAgents: Record<string, AgentState> = { ...agents };
-  const names = new Set([...Object.keys(fallbackUsed ?? {}), ...Object.keys(quotaRemaining ?? {})]);
+  const names = new Set<string>();
+  for (const name of Object.keys(fallbackUsed ?? {})) {
+    names.add(name);
+  }
+  for (const name of Object.keys(quotaRemaining ?? {})) {
+    names.add(name);
+  }
 
   for (const name of names) {
     const agent = agents[name];
@@ -172,6 +179,10 @@ function applyAgentMutations(
 function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): TranscriptEntry {
   const { outcome } = event.payload;
   const thoughts = Object.keys(event.payload.thoughts).length > 0 ? { thoughts: { ...event.payload.thoughts } } : {};
+  let resolveType: TranscriptResolveType = 'no_winner';
+  if ('winner' in outcome) {
+    resolveType = outcome.speaker_type === 'quota' ? 'normal' : outcome.speaker_type;
+  }
 
   return {
     type: 'bids',
@@ -182,8 +193,7 @@ function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): Transcr
     effective_bids: { ...event.payload.effectiveBids },
     ...thoughts,
     winner: 'winner' in outcome ? outcome.winner : null,
-    resolve_type:
-      'winner' in outcome ? (outcome.speaker_type === 'quota' ? 'normal' : outcome.speaker_type) : 'no_winner',
+    resolve_type: resolveType,
   };
 }
 
@@ -264,12 +274,12 @@ function reduceSessionEnded(snapshot: PersistedDiscussSnapshot, event: SessionEn
     };
   }
 
-  const endReasonContent =
-    event.payload.endReasonContent !== undefined
-      ? event.payload.endReasonContent
-      : event.payload.force
-        ? (event.payload.reason ?? state.end_reason_content)
-        : state.end_reason_content;
+  const endReasonContent = resolveSessionEndReasonContent({
+    currentContent: state.end_reason_content,
+    explicitContent: event.payload.endReasonContent,
+    force: event.payload.force,
+    reason: event.payload.reason,
+  });
 
   let nextState: DiscussState = {
     ...state,

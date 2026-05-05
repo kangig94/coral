@@ -110,6 +110,21 @@ describe('claude-appserver protocol helpers', () => {
       systemPromptHash: 'sha256:abc123',
       permissionMode: 'bypassPermissions',
     });
+    expect(
+      requireSessionEnsureParams({
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:abc123',
+        permissionMode: 'bypassPermissions',
+        conversationRef: '',
+      }),
+    ).not.toHaveProperty('conversationRef');
+    expect(() =>
+      requireSessionEnsureParams({
+        cwd: '',
+        systemPromptHash: 'sha256:abc123',
+        permissionMode: 'bypassPermissions',
+      }),
+    ).toThrow(ClaudeBrokerRpcError);
 
     expect(
       requireSessionProbeParams({
@@ -120,6 +135,7 @@ describe('claude-appserver protocol helpers', () => {
       brokerSessionKey: 'broker-1',
       conversationRef: 'conversation-1',
     });
+    expect(() => requireSessionProbeParams({ brokerSessionKey: '' })).toThrow(ClaudeBrokerRpcError);
 
     expect(
       requireTurnStartParams({
@@ -136,6 +152,13 @@ describe('claude-appserver protocol helpers', () => {
       model: 'claude-sonnet-4-6',
       maxThinkingTokens: null,
     });
+    expect(() =>
+      requireTurnStartParams({
+        brokerSessionKey: 'broker-1',
+        brokerTurnId: '',
+        prompt: 'Hello Claude',
+      }),
+    ).toThrow(ClaudeBrokerRpcError);
 
     expect(
       requireTurnInterruptParams({

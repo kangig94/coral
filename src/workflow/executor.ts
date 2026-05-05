@@ -13,14 +13,14 @@ import {
   type WorkflowExecutionPort,
 } from './execution-contract.js';
 import { formatStepOutput } from './command.js';
-import { handleStepLaunchFailure, launchStepAtoms } from './launch.js';
+import { handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
 import { workflowDrainEnteredEvent, workflowPlanDeclaredEvent } from './events.js';
 import {
   DEFAULT_DRAIN_DEADLINE_MS,
   DEFAULT_STALE_CHECK_INTERVAL_MS,
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
-import { buildWorkflowPlan, maxStepIndex, type WorkflowPlan } from './plan.js';
+import { buildWorkflowPlan, compileWorkflowPlan, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
 import type { WorkflowJournal } from './projections.js';
 import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recovery.js';
 import { waitForAtoms } from './wait.js';
@@ -147,7 +147,7 @@ async function awaitLaunchedStepResults(
       throw error;
     }
 
-    throw createWorkflowExecutionError(errorMessage(error), Boolean(options.signal?.aborted), [
+    throw createWorkflowExecutionError(errorMessage(error), options.signal?.aborted === true, [
       ...options.completedStepDetails,
     ]);
   }
@@ -169,6 +169,16 @@ function finalizeStep(
   };
 }
 
+function groupCompiledSlotsByStep(slots: readonly CompiledPlanSlot[]): Map<number, CompiledPlanSlot[]> {
+  const grouped = new Map<number, CompiledPlanSlot[]>();
+  for (const slot of slots) {
+    const stepSlots = grouped.get(slot.stepIndex) ?? [];
+    stepSlots.push(slot);
+    grouped.set(slot.stepIndex, stepSlots);
+  }
+  return grouped;
+}
+
 export async function executePlannedSteps(
   plan: WorkflowPlan,
   initialPrompt: string,
@@ -179,15 +189,16 @@ export async function executePlannedSteps(
   const stepDetails: StepDetail[] = [...(options.completedStepDetails ?? [])];
   let stepPrompt = initialPrompt;
   const workingPlan = plan;
-  const finalStepIndex = maxStepIndex(workingPlan);
+  const compiledSlots = compileWorkflowPlan(workingPlan);
+  const slotsByStep = groupCompiledSlotsByStep(compiledSlots);
+  const finalStepIndex = Math.max(-1, ...slotsByStep.keys());
   const startStepIndex = options.startStepIndex ?? 0;
 
   for (let stepIndex = startStepIndex; stepIndex <= finalStepIndex; stepIndex += 1) {
     options.onProgress(`step ${stepIndex} started`);
 
-    const { launchedAtoms, launchError } = await launchStepAtoms(
-      workingPlan,
-      stepIndex,
+    const { launchedAtoms, launchError } = await launchCompiledStepAtoms(
+      slotsByStep.get(stepIndex) ?? [],
       stepPrompt,
       executionSvc,
       ctx,

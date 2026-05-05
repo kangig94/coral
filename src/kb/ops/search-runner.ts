@@ -3,8 +3,8 @@ import { areCommunityDocumentsFresh } from '../curate/community/freshness.js';
 import type { Backed, EmbeddingService, FtsRetrieval, KbRuntime } from '../contract.js';
 import { KB_EMBEDDING_CAPABILITY, KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
 import type { EntityGraph, KbIndex, KbSearchMode, KbSearchResponse, KbSearchScope } from '../entry-types.js';
+import type { CorpusStructuralKey } from '../corpus/structural-key.js';
 import { normalizeWhitespace } from '../text-normalization.js';
-import { isGraphSearchFresh } from '../search/graph-retrieval.js';
 import { createHybridFusion } from '../search/hybrid.js';
 import {
   createQueryPlanner,
@@ -63,7 +63,7 @@ type SearchExecutionContext = SearchRuntime & {
   roleQueryContext: RoleQueryContext;
   getQueryContext(): QueryContext;
   getCommunitiesFresh(): boolean;
-  getGraphFresh(): boolean;
+  getCorpusStructuralKey(): CorpusStructuralKey | null;
 };
 
 type StageExecution = {
@@ -162,7 +162,7 @@ function createSearchExecutionContext(
   let communitiesFresh: boolean | undefined;
   let currentGraphLoaded = false;
   let currentGraph: EntityGraph | null = null;
-  let graphFresh: boolean | undefined;
+  let corpusStructuralKey: CorpusStructuralKey | null | undefined;
   let embeddingPromise: Promise<Float32Array> | undefined;
 
   const getNormalizedQuery = (): string => {
@@ -211,9 +211,15 @@ function createSearchExecutionContext(
     return currentGraph;
   };
 
-  const getGraphFresh = (): boolean => {
-    graphFresh ??= isGraphSearchFresh(index, getCurrentGraph());
-    return graphFresh;
+  const getCorpusStructuralKey = (): CorpusStructuralKey | null => {
+    if (corpusStructuralKey !== undefined) {
+      return corpusStructuralKey;
+    }
+
+    corpusStructuralKey = currentGraphLoaded
+      ? rt.readCorpusStructuralKey(index, currentGraph)
+      : rt.readCorpusStructuralKey(index);
+    return corpusStructuralKey;
   };
 
   const roleQueryContext: RoleQueryContext = {
@@ -240,6 +246,7 @@ function createSearchExecutionContext(
     index() {
       return index;
     },
+    corpusStructuralKey: getCorpusStructuralKey,
     graphContext: getCurrentGraph,
   };
 
@@ -250,7 +257,7 @@ function createSearchExecutionContext(
     roleQueryContext,
     getQueryContext,
     getCommunitiesFresh,
-    getGraphFresh,
+    getCorpusStructuralKey,
   };
 }
 
@@ -382,9 +389,11 @@ async function executeStage(
   ctx: SearchExecutionContext,
   invocations: readonly RoleInvocation[],
 ): Promise<StageExecution> {
-  const settled = await Promise.allSettled(
-    invocations.map((invocation) => invocation.registeredRole.role.search(ctx.roleQueryContext)),
-  );
+  const searches: Array<Promise<RoleSearchResult>> = [];
+  for (const invocation of invocations) {
+    searches.push(invocation.registeredRole.role.search(ctx.roleQueryContext));
+  }
+  const settled = await Promise.allSettled(searches);
   const execution: StageExecution = { results: [], diagnostics: [], fallbackRequired: false };
 
   for (let index = 0; index < settled.length; index += 1) {
@@ -414,11 +423,25 @@ function topKEvidenceHasTag(
   topK: number,
   tag: string,
 ): boolean {
-  return hits.slice(0, topK).some((hit) => hit.evidence.some((evidence) => roleHasTag(results, evidence.roleId, tag)));
+  const hitCount = Math.min(topK, hits.length);
+  for (let index = 0; index < hitCount; index += 1) {
+    const hit = hits[index];
+    for (const evidence of hit.evidence) {
+      if (roleHasTag(results, evidence.roleId, tag)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function hasSuccessfulSemanticContributor(results: readonly RoleExecutionResult[]): boolean {
-  return results.some((result) => 'hits' in result && result.registeredRole.descriptor.tags.includes('semantic'));
+  for (const result of results) {
+    if ('hits' in result && result.registeredRole.descriptor.tags.includes('semantic')) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function deriveResponseMode(
@@ -444,11 +467,16 @@ function deriveResponseMode(
 }
 
 function responseWarningsFromDiagnostics(diagnostics: readonly RetrievalDiagnostic[]): SearchResponseWarnings {
-  const warnings = [
-    ...new Set(
-      diagnostics.map((diagnostic) => diagnostic.publicText).filter((text): text is string => text !== undefined),
-    ),
-  ];
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (const diagnostic of diagnostics) {
+    const text = diagnostic.publicText;
+    if (text === undefined || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    warnings.push(text);
+  }
   return warnings.length === 0 ? {} : { warnings };
 }
 
@@ -481,7 +509,7 @@ function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetri
       ctx.request.topK,
       ctx.index,
       ctx.getCommunitiesFresh(),
-      ctx.getGraphFresh(),
+      ctx.getCorpusStructuralKey(),
       retrieval.responseWarnings,
       retrieval.diagnostics,
     );
@@ -492,7 +520,7 @@ function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetri
     ctx.request.topK,
     ctx.index,
     ctx.getCommunitiesFresh(),
-    ctx.getGraphFresh(),
+    ctx.getCorpusStructuralKey(),
     retrieval.responseWarnings,
     retrieval.diagnostics,
   );

@@ -24,11 +24,19 @@ type BuildCommunityDocumentsOptions = {
 };
 
 function renderMembersSection(members: string[]): string {
-  return ['## Members', '', ...members.map((member) => `- #${member}`)].join('\n');
+  const lines = ['## Members', ''];
+  for (const member of members) {
+    lines.push(`- #${member}`);
+  }
+  return lines.join('\n');
 }
 
 function renderChildrenSection(children: string[]): string {
-  return ['## Children', '', ...children.map((child) => `- ${child}`)].join('\n');
+  const lines = ['## Children', ''];
+  for (const child of children) {
+    lines.push(`- ${child}`);
+  }
+  return lines.join('\n');
 }
 
 export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir' | 'storagePort'>): {
@@ -95,17 +103,19 @@ export function buildCommunityDocuments(
   communities: DetectedCommunity[],
   options: BuildCommunityDocumentsOptions,
 ): CommunityDocument[] {
-  const priorBySlug = new Map(
-    options.priorGeneratedCommunities.map((community) => [community.slug, community] as const),
-  );
+  const priorBySlug = new Map<string, ExistingGeneratedCommunity>();
+  for (const community of options.priorGeneratedCommunities) {
+    priorBySlug.set(community.slug, community);
+  }
 
-  return communities.map((community) => {
+  const documents: CommunityDocument[] = [];
+  for (const community of communities) {
     const priorCommunity = priorBySlug.get(community.slug);
     const createdAt = priorCommunity?.createdAt ?? options.today;
     const summary = priorCommunity?.summary;
     const title = community.title;
 
-    return {
+    documents.push({
       slug: community.slug,
       title,
       level: community.level,
@@ -125,8 +135,9 @@ export function buildCommunityDocuments(
         createdAt,
         updatedAt: options.today,
       }),
-    };
-  });
+    });
+  }
+  return documents;
 }
 
 export function generateCommunityFiles(

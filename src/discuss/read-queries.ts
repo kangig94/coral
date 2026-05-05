@@ -57,18 +57,24 @@ function toDiscussDomainEvent(
 }
 
 function snapshotsForSource(db: Database, source: string): PersistedDiscussSnapshot[] {
-  return listProjectionDiscussSnapshots(db)
-    .map((row) => row.state)
-    .filter((snapshot) => snapshot.projectRoot === source || resolveProjectSource(snapshot.projectRoot) === source);
+  const snapshots: PersistedDiscussSnapshot[] = [];
+  for (const row of listProjectionDiscussSnapshots(db)) {
+    const snapshot = row.state;
+    if (snapshot.projectRoot === source || resolveProjectSource(snapshot.projectRoot) === source) {
+      snapshots.push(snapshot);
+    }
+  }
+  return snapshots;
 }
 
 function latestUpdatedAt(snapshots: PersistedDiscussSnapshot[]): string {
-  return (
-    snapshots
-      .map((snapshot) => snapshot.updatedAt)
-      .sort()
-      .at(-1) ?? UNIX_EPOCH_ISO
-  );
+  let latest = UNIX_EPOCH_ISO;
+  for (const snapshot of snapshots) {
+    if (snapshot.updatedAt > latest) {
+      latest = snapshot.updatedAt;
+    }
+  }
+  return latest;
 }
 
 export function readDiscussSnapshot(db: Database, ref: DiscussReadRef): PersistedDiscussSnapshot | null {
@@ -88,21 +94,30 @@ export function readDiscussEventLog(db: Database, ref: DiscussReadRef, ctx: Stor
     )
     .all(discussId) as EventsRow[];
 
-  return rows.map((row) => toDiscussDomainEvent(row, snapshot, ctx));
+  const events: DiscussDomainEvent[] = [];
+  for (const row of rows) {
+    events.push(toDiscussDomainEvent(row, snapshot, ctx));
+  }
+  return events;
 }
 
 export function readDiscussDiscovery(db: Database, source: string): DiscussDiscoveryData | null {
   const snapshots = snapshotsForSource(db, source);
   if (snapshots.length === 0) return null;
 
-  return {
-    source,
-    updatedAt: latestUpdatedAt(snapshots),
-    sessions: snapshots.map((snapshot) => ({
+  const sessions: DiscussDiscoveryData['sessions'] = [];
+  for (const snapshot of snapshots) {
+    sessions.push({
       sessionId: snapshot.sessionId,
       topic: snapshot.state.topic,
       createdAt: snapshot.state.created_at,
-    })),
+    });
+  }
+
+  return {
+    source,
+    updatedAt: latestUpdatedAt(snapshots),
+    sessions,
   };
 }
 
@@ -110,10 +125,9 @@ export function readDiscussSummaryIndex(db: Database, source: string): DiscussSu
   const snapshots = snapshotsForSource(db, source);
   if (snapshots.length === 0) return null;
 
-  return {
-    source,
-    updatedAt: latestUpdatedAt(snapshots),
-    sessions: snapshots.map((snapshot) => ({
+  const sessions: DiscussSummaryIndexData['sessions'] = [];
+  for (const snapshot of snapshots) {
+    sessions.push({
       sessionId: snapshot.sessionId,
       projectRoot: snapshot.projectRoot,
       topic: snapshot.state.topic,
@@ -122,6 +136,12 @@ export function readDiscussSummaryIndex(db: Database, source: string): DiscussSu
       agentCount: Object.keys(snapshot.state.agents).length,
       updatedAt: snapshot.updatedAt,
       lastSeq: snapshot.lastAppliedSeq,
-    })),
+    });
+  }
+
+  return {
+    source,
+    updatedAt: latestUpdatedAt(snapshots),
+    sessions,
   };
 }

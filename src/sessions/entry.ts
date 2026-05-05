@@ -2,7 +2,12 @@ import { z } from 'zod';
 
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
-import type { ProviderContinuityBlob } from './continuity.js';
+import {
+  legacyProviderArtifactIdentity,
+  providerArtifactIdentityKey,
+  providerArtifactIdentitySchema,
+} from '../providers/artifact-identity.js';
+import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
 
@@ -20,10 +25,20 @@ export const providerArtifactHandleSchema = z
   .object({
     provider: z.string().min(1),
     handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema.optional(),
+    identityKey: z.string().min(1).optional(),
     sourceJobId: z.string().min(1).optional(),
     recordedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .transform((artifact) => {
+    const identity = artifact.identity ?? legacyProviderArtifactIdentity(artifact.handle);
+    return {
+      ...artifact,
+      identity,
+      identityKey: artifact.identityKey ?? providerArtifactIdentityKey(artifact.provider, identity),
+    };
+  });
 
 export type ProviderArtifactHandle = z.infer<typeof providerArtifactHandleSchema>;
 
@@ -102,15 +117,15 @@ export interface SessionEntry {
 
 export const sessionEntrySchema = z
   .object({
-    sessionId: z.string(),
-    provider: z.string(),
-    name: z.string(),
+    sessionId: z.string().min(1),
+    provider: z.string().min(1),
+    name: z.string().min(1),
     state: sessionStateSchema,
     retention: retentionPolicySchema.default('retain'),
     artifactHandles: z.array(providerArtifactHandleSchema).default([]).readonly(),
     retentionDiscard: retentionDiscardStateSchema.default({ attempts: [] }),
-    activeJobId: z.string().optional(),
-    conversationRef: z.string().optional(),
+    activeJobId: z.string().min(1).optional(),
+    conversationRef: continuityRefSchema.optional(),
     providerContinuity: z.record(z.unknown()).nullable(),
     model: z.string().optional(),
     cwd: z.string(),

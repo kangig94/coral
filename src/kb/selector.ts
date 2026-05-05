@@ -88,11 +88,13 @@ export function expandKbReadSelector(selector: KbReadSelector): KbResolvedReadSe
     return [{ kind: selector.kind, slug: selector.slug }];
   }
 
-  return KB_BARE_READ_ORDER.flatMap((kind) => {
+  const candidates: KbResolvedReadSelector[] = [];
+  for (const kind of KB_BARE_READ_ORDER) {
     if (kind === 'memo' && !isKbMemoCandidateSlug(selector.slug)) {
-      return [];
+      continue;
     }
 
-    return [{ kind, slug: selector.slug }];
-  });
+    candidates.push({ kind, slug: selector.slug });
+  }
+  return candidates;
 }

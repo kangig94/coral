@@ -12,5 +12,5 @@ export async function searchKb(
   signal?: AbortSignal,
 ): Promise<KbSearchResponse> {
   const request = createSearchRequest(query, top_k, scope, intent, signal);
-  return await runRetrieval(rt, request);
+  return runRetrieval(rt, request);
 }

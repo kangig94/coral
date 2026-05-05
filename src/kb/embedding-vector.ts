@@ -14,13 +14,14 @@ export function computeEmbeddingSpecId(
 }
 
 export function normalizeEmbeddingVector(rawValues: unknown, dims: number): Float32Array {
-  const values = Array.isArray(rawValues)
-    ? rawValues
-    : ArrayBuffer.isView(rawValues)
-      ? Array.from(rawValues as unknown as Iterable<unknown>)
-      : null;
-  if (values === null || values.some((value) => typeof value !== 'number' || !Number.isFinite(value))) {
+  const values = readEmbeddingValues(rawValues);
+  if (values === null) {
     throw new Error('Embedding response did not contain a numeric vector.');
+  }
+  for (const value of values) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new Error('Embedding response did not contain a numeric vector.');
+    }
   }
   if (values.length !== dims) {
     throw new Error(`Embedding response returned ${values.length} dimensions, expected ${dims}.`);
@@ -41,4 +42,16 @@ export function normalizeEmbeddingVector(rawValues: unknown, dims: number): Floa
     vector[index] *= scale;
   }
   return vector;
+}
+
+function readEmbeddingValues(rawValues: unknown): unknown[] | null {
+  if (Array.isArray(rawValues)) {
+    return rawValues;
+  }
+
+  if (ArrayBuffer.isView(rawValues)) {
+    return Array.from(rawValues as unknown as Iterable<unknown>);
+  }
+
+  return null;
 }

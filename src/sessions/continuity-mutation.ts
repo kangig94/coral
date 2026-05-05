@@ -1,12 +1,12 @@
 import { z } from 'zod';
 
-import { providerContinuityBlobSchema } from './continuity.js';
+import { continuityRefSchema, providerContinuityBlobSchema } from './continuity.js';
 
 export const sessionContinuityMutationSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('set_resumable'),
-      conversationRef: z.string(),
+      conversationRef: continuityRefSchema,
       providerContinuity: providerContinuityBlobSchema.optional(),
     })
     .strict(),

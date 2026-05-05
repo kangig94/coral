@@ -5,7 +5,6 @@ import { CoralSetupError } from '../runtime/errors.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {
-  DEFAULT_SESSION_CONTROLLER,
   type RetentionDiscardAttempt,
   sessionControllerFromProfile,
   sessionEntrySchema,
@@ -13,6 +12,7 @@ import {
 } from './entry.js';
 import type {
   SessionArtifactHandleRecordedBody,
+  SessionClaimReleasedBody,
   SessionClaimedBody,
   SessionContinuityCheckpointedBody,
   SessionRetentionDiscardCompletedBody,
@@ -150,11 +150,7 @@ function upsertProjectionSession(
     throw prematureProjectionSessionEvent(event.stream.id);
   }
   const next = {
-    controller:
-      patch.controller ??
-      previous?.controller ??
-      sessionControllerFromProfile(entry.controllerProfile) ??
-      DEFAULT_SESSION_CONTROLLER,
+    controller: patch.controller ?? previous?.controller ?? sessionControllerFromProfile(entry.controllerProfile),
     provider: patch.provider ?? previous?.provider ?? entry.provider,
     resumable: patch.resumable ?? previous?.resumable ?? entry.state === 'ready',
     conversationRef: hasConversationRefPatch(patch)
@@ -211,7 +207,7 @@ export const reduceSessionClaimed: Reducer<SessionClaimedBody> = (db, event) => 
   });
 };
 
-export const reduceSessionClaimReleased: Reducer<SessionClaimedBody> = (db, event) => {
+export const reduceSessionClaimReleased: Reducer<SessionClaimReleasedBody> = (db, event) => {
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
   });
@@ -285,6 +281,38 @@ export const reduceSessionAdapterUnparseable: Reducer<SessionAdapterUnparseableF
 
 export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: string): SessionEntry | null {
   return readProjectionSession(db, sessionId)?.entry ?? null;
+}
+
+function sqlPlaceholders(count: number): string {
+  const placeholders: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    placeholders.push('?');
+  }
+  return placeholders.join(', ');
+}
+
+export function readProjectionSessionEntriesById(
+  db: ReadonlyDatabase,
+  sessionIds: readonly string[],
+): Map<string, SessionEntry> {
+  const uniqueSessionIds = [...new Set(sessionIds)];
+  if (uniqueSessionIds.length === 0) {
+    return new Map();
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT session_id, entry
+         FROM projection_sessions
+        WHERE session_id IN (${sqlPlaceholders(uniqueSessionIds.length)})`,
+    )
+    .all(...uniqueSessionIds) as Array<{ session_id: string; entry: string }>;
+
+  const entries = new Map<string, SessionEntry>();
+  for (const row of rows) {
+    entries.set(row.session_id, parseProjectionSessionEntry(row.session_id, row.entry));
+  }
+  return entries;
 }
 
 export function listProjectionSessionEntries(

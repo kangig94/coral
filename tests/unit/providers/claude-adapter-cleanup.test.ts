@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
-import { claudeArtifactCapability } from '#src/providers/claude/provider-facets.js';
+import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
 
 function makeRuntime(): {
   runtime: ArtifactCleanupRuntime;

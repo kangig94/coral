@@ -1,11 +1,11 @@
 import type { KbCorpusPublication, KbInboundSyncOptions, KbIndexMutationLane, KbMutationEffects } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
 import type { StoragePort } from '../../infra/port-types.js';
+import type { CorpusStorage } from './rescan/storage.js';
 import {
   buildInboundSyncIndexDelta,
-  captureCorpusFilesystemSnapshot,
   detectInboundSyncMutation,
-  detectInboundSyncMutationFromFullCollectors,
+  detectInboundSyncMutationFromSurface,
   detectInboundSyncMutationFromStructuredDiff,
   isGitSyncResult,
   type InboundSyncMutationDiff,
@@ -14,13 +14,12 @@ import type { KbIndexStore } from './index-store.js';
 import type { ManifestAuthority } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockController } from './mutation-lock.js';
+import { buildCorpusSurface, type CorpusSurface } from './surface.js';
+import { buildCorpusScanView } from './rescan/scan.js';
 
 export interface CorpusInboundSyncTarget {
-  notesDir(): string;
-  wikiDir(): string;
-  sourcesDir(): string;
-  communitiesDir(): string;
-  principlesDir(): string;
+  markdownRoot: string;
+  corpusStorage: CorpusStorage;
   entityGraphPath(): string;
   notePath(note: string): string;
   wikiPath(slug: string): string;
@@ -50,15 +49,21 @@ export class CorpusInboundSyncService {
 
   async runInboundSync<T>(fn: () => Promise<T> | T, options: KbInboundSyncOptions = {}): Promise<T> {
     let mutationDiff: InboundSyncMutationDiff | null = null;
+    let authoritativeSurface: CorpusSurface | null = null;
 
     return this.options.mutationLockController.withMutationLock(async (lockContext) => {
       const target = this.options.target;
-      const beforeSnapshot = options.structuredDiff === true ? null : captureCorpusFilesystemSnapshot(target);
+      const beforeSurface = options.structuredDiff === true ? null : this.buildCurrentSurface();
       const result = await fn();
 
       if (options.structuredDiff === true && isGitSyncResult(result)) {
         if (result.kind === 'ambiguous') {
-          mutationDiff = detectInboundSyncMutationFromFullCollectors(target, this.options.manifestAuthority, true);
+          authoritativeSurface = this.buildCurrentSurface();
+          mutationDiff = detectInboundSyncMutationFromSurface(
+            authoritativeSurface,
+            this.options.manifestAuthority,
+            true,
+          );
         } else if (result.kind === 'paths') {
           mutationDiff = detectInboundSyncMutationFromStructuredDiff(
             result.changes,
@@ -75,17 +80,16 @@ export class CorpusInboundSyncService {
         }
       } else {
         mutationDiff = detectInboundSyncMutation(
-          beforeSnapshot ?? captureCorpusFilesystemSnapshot(target),
-          captureCorpusFilesystemSnapshot(target),
+          beforeSurface ?? this.buildCurrentSurface(),
+          (authoritativeSurface = this.buildCurrentSurface()),
         );
-        if (mutationDiff.lane !== null) {
-          this.options.manifestAuthority.seedFromFullCollectors(target);
-        }
       }
 
       if (mutationDiff.lane !== null) {
         if (mutationDiff.manifestDeltas.length > 0) {
           this.options.mutationEffects.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
+        } else if (authoritativeSurface !== null) {
+          this.options.manifestAuthority.replaceCurrentSurfaceHashes(authoritativeSurface.manifest);
         }
         if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
           this.options.indexStore.writeIndex(
@@ -99,5 +103,9 @@ export class CorpusInboundSyncService {
 
       return result;
     });
+  }
+
+  private buildCurrentSurface(): CorpusSurface {
+    return buildCorpusSurface(buildCorpusScanView(this.options.target));
   }
 }

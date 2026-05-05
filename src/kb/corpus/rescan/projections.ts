@@ -38,6 +38,7 @@ import { identitySequenceDetector } from './incidents/identity.js';
 import { referenceIntegrityDetector } from './incidents/references.js';
 import type { CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
 import type { DetectedIncident, Detector } from './incidents/catalog.js';
+import { createCorpusStructuralKeyFromRawSurfaces } from '../structural-key.js';
 
 const ALL_DETECTORS: readonly Detector[] = [
   fileSyntaxDetector,
@@ -61,7 +62,13 @@ export type KbReindexWikiRecord = KbWikiFrontmatter & {
  * `applyDetectedIncidentFixesLocked` (under the mutation lock).
  */
 export function projectIncidents(scan: CorpusScanView): DetectedIncident[] {
-  return ALL_DETECTORS.flatMap((detector) => detector.detect(scan));
+  const incidents: DetectedIncident[] = [];
+  for (const detector of ALL_DETECTORS) {
+    for (const incident of detector.detect(scan)) {
+      incidents.push(incident);
+    }
+  }
+  return incidents;
 }
 
 export function loadNotes(scan: CorpusScanView): KbReindexNoteRecord[] {
@@ -197,7 +204,13 @@ export function extractWikiKnowledgeLinks(knowledge: string): KbEntryId[] {
 }
 
 function filesOfKind(scan: CorpusScanView, kind: CorpusMarkdownFileScan['kind']): CorpusMarkdownFileScan[] {
-  return scan.markdownFiles.filter((file) => file.kind === kind);
+  const files: CorpusMarkdownFileScan[] = [];
+  for (const file of scan.markdownFiles) {
+    if (file.kind === kind) {
+      files.push(file);
+    }
+  }
+  return files;
 }
 
 function asError(value: unknown, fallback: string): Error {
@@ -237,6 +250,12 @@ export function buildKbIndex(
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
   const entityGraph = scan.entityGraph?.graph ?? null;
+  const structuralKey = createCorpusStructuralKeyFromRawSurfaces({
+    entityGraphRaw: scan.entityGraph?.graph === null ? null : (scan.entityGraph?.content ?? null),
+    communityDocuments: scan.markdownFiles
+      .filter((file) => file.kind === 'community')
+      .map((file) => ({ slug: file.slug, raw: file.content })),
+  });
 
   for (const note of notes) {
     entries[noteEntryId(note.note)] = buildNoteIndexEntry({
@@ -290,11 +309,17 @@ export function buildKbIndex(
     });
   }
 
+  const principleIndex: KbIndex['principles'] = {};
+  for (const [name, statement] of principles) {
+    principleIndex[name] = statement;
+  }
+
   return {
     entries,
-    principles: Object.fromEntries(principles),
+    principles: principleIndex,
     entityMeta: entityGraph?.entityMeta ?? {},
     relationships: entityGraph?.relationships ?? [],
+    ...(structuralKey === undefined ? {} : { structuralKey }),
   };
 }
 
@@ -318,14 +343,34 @@ export function buildCounts(
   | 'entityCoverage'
 > {
   const entityMeta = index.entityMeta;
-  const uniqueTags = new Set([
-    ...notes.flatMap((note) => note.tags),
-    ...sources.flatMap((source) => source.tags),
-    ...communities.flatMap((community) => community.members),
-    ...wikis.flatMap((wiki) => wiki.tags),
-  ]);
+  const uniqueTags = new Set<string>();
+  for (const note of notes) {
+    for (const tag of note.tags) {
+      uniqueTags.add(tag);
+    }
+  }
+  for (const source of sources) {
+    for (const tag of source.tags) {
+      uniqueTags.add(tag);
+    }
+  }
+  for (const community of communities) {
+    for (const member of community.members) {
+      uniqueTags.add(member);
+    }
+  }
+  for (const wiki of wikis) {
+    for (const tag of wiki.tags) {
+      uniqueTags.add(tag);
+    }
+  }
   const entityNames = Object.keys(entityMeta);
-  const coveredTags = [...uniqueTags].filter((tag) => Object.prototype.hasOwnProperty.call(entityMeta, tag)).length;
+  let coveredTags = 0;
+  for (const tag of uniqueTags) {
+    if (Object.prototype.hasOwnProperty.call(entityMeta, tag)) {
+      coveredTags += 1;
+    }
+  }
   return {
     notes: notes.length,
     sources: sources.length,

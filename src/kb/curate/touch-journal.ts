@@ -186,9 +186,13 @@ function listOrphanSegments(storage: TouchJournalStorage, runtimeDir: string): s
     }
     throw error;
   }
-  return entries
-    .filter((name) => name.startsWith(TOUCH_JOURNAL_ORPHAN_PREFIX) && name.endsWith(TOUCH_JOURNAL_ORPHAN_SUFFIX))
-    .map((name) => join(runtimeDir, name));
+  const orphanPaths: string[] = [];
+  for (const name of entries) {
+    if (name.startsWith(TOUCH_JOURNAL_ORPHAN_PREFIX) && name.endsWith(TOUCH_JOURNAL_ORPHAN_SUFFIX)) {
+      orphanPaths.push(join(runtimeDir, name));
+    }
+  }
+  return orphanPaths;
 }
 
 function readSegmentInto(

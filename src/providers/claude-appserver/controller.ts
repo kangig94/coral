@@ -158,7 +158,7 @@ export class SingleSessionController {
       };
     }
 
-    if (params.conversationRef && params.conversationRef !== conversationRef) {
+    if (params.conversationRef !== undefined && params.conversationRef !== conversationRef) {
       return {
         status: 'missing',
         bootstrapSignature: this.bootstrapSignature,
@@ -255,7 +255,7 @@ export class SingleSessionController {
       };
     }
 
-    if (params.brokerTurnId && params.brokerTurnId !== turn.brokerTurnId) {
+    if (params.brokerTurnId !== undefined && params.brokerTurnId !== turn.brokerTurnId) {
       return {
         brokerTurnId: turn.brokerTurnId,
         interrupted: false,
@@ -570,7 +570,7 @@ export class SingleSessionController {
   }
 
   private maybeUpdateSessionId(sessionId: string | null): void {
-    if (!sessionId || sessionId === this.latestSessionId) {
+    if (sessionId === null || sessionId === this.latestSessionId) {
       return;
     }
 

@@ -89,7 +89,7 @@ When `--release` is passed, it additionally copies all artifacts from `build/` t
 | --- | --- | --- |
 | `bundle` | `true` | Single-file deployable bundles |
 | `platform` | `node` | Node.js runtime target |
-| `target` | `node18` | Matches the supported runtime floor |
+| `target` | `node22` | Matches the supported runtime floor |
 | `format` | `cjs` | Bundles are committed as `.cjs` |
 | `external` | `['node:*']` | Keep Node built-ins external |
 | `minify` | `true` | Smaller committed bundles |

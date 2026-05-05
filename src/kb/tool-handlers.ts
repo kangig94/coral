@@ -1,20 +1,5 @@
-import { join } from 'node:path';
-
 import { deleteNote } from './ops/delete.js';
-import {
-  extractBody,
-  extractPrincipleStatement,
-  extractTitle,
-  parseCommunityFrontmatter,
-  parseFrontmatter,
-  parseMembersFromBody,
-  parseSourceFrontmatter,
-  parseSummaryFromBody,
-  parseWikiBody,
-  parseWikiFrontmatter,
-} from './corpus/frontmatter.js';
 import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
-import { memoDir } from './paths.js';
 import { promote as kbPromote } from './ops/promote.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
@@ -32,7 +17,7 @@ import { generateWakeUpPacket } from './ops/wake-up.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
 import { type KbReadKind } from './selector.js';
-import { readEntry, type KbReadPathResolver } from './read.js';
+import { readEntry, readEntryByKind, type KbReadOptions, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertOwnerId } from '../infra/identifiers.js';
@@ -88,6 +73,14 @@ async function runKbAction(action: () => Promise<unknown> | unknown): Promise<Kb
   } catch (error: unknown) {
     return kbErrorResult(error);
   }
+}
+
+function runKbMutationAction(kbSubsystem: KnowledgeBaseRuntime, action: () => Promise<unknown>): Promise<KbToolResult> {
+  return runKbAction(async () => {
+    const result = await action();
+    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    return result;
+  });
 }
 
 function runKbSyncAction(action: () => unknown): KbToolResult {
@@ -161,6 +154,39 @@ function kbReadPaths(kbSubsystem: KnowledgeBaseRuntime | undefined): KbReadPathR
   };
 }
 
+function buildKbReadOptions(
+  kind: KbReadKind,
+  ctx: InvocationContext | undefined,
+  runtime: KbToolRuntime,
+  kbSubsystem: KnowledgeBaseRuntime | undefined,
+): KbReadOptions {
+  const options: KbReadOptions = {
+    ...(ctx?.projectRoot === undefined ? {} : { projectRoot: ctx.projectRoot }),
+    storage: runtime.storage,
+  };
+  return kind === 'memo' ? options : { ...options, paths: kbReadPaths(kbSubsystem) };
+}
+
+function handleKbTypedRead(
+  kind: KbReadKind,
+  slug: string,
+  ctx: InvocationContext | undefined,
+  runtime: KbToolRuntime,
+  kbSubsystem?: KnowledgeBaseRuntime,
+): KbToolResult {
+  const normalized = normalizeKbSlug(slug, kind);
+  if (!normalized.ok) {
+    return normalized.result;
+  }
+
+  try {
+    const entry = readEntryByKind(kind, normalized.slug, buildKbReadOptions(kind, ctx, runtime, kbSubsystem));
+    return entry === null ? kbNotFoundResult(kind, normalized.slug) : kbSuccess(entry);
+  } catch (error: unknown) {
+    return kbErrorResult(error);
+  }
+}
+
 export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSearchSchema.safeParse(args);
   if (!parsed.success) {
@@ -181,37 +207,11 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
 
 export function handleKbNoteRead(
   slug: string,
-  _ctx: InvocationContext,
+  ctx: InvocationContext,
   runtime: KbToolRuntime,
   kbSubsystem?: KnowledgeBaseRuntime,
 ): KbToolResult {
-  const normalized = normalizeKbSlug(slug, 'note');
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const notePath = requireKbSubsystem(kbSubsystem).kb.notePath(normalized.slug);
-    if (!runtime.storage.existsSync(notePath)) {
-      return kbNotFoundResult('note', normalized.slug);
-    }
-
-    const raw = runtime.storage.readFileSync(notePath, 'utf-8');
-    const frontmatter = parseFrontmatter(raw);
-    const title = extractTitle(raw);
-    const body = extractBody(raw);
-    return kbSuccess({
-      kind: 'note',
-      note: normalized.slug,
-      title,
-      content: body,
-      tags: frontmatter.tags,
-      principles: frontmatter.principles,
-      updatedAt: frontmatter.updatedAt,
-    });
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
+  return handleKbTypedRead('note', slug, ctx, runtime, kbSubsystem);
 }
 
 export function handleKbSourceRead(
@@ -219,32 +219,7 @@ export function handleKbSourceRead(
   kbSubsystem: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
-  const normalized = normalizeKbSlug(slug, 'source');
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const sourcePath = requireKbSubsystem(kbSubsystem).kb.sourcePath(normalized.slug);
-    if (!runtime.storage.existsSync(sourcePath)) {
-      return kbNotFoundResult('source', normalized.slug);
-    }
-
-    const raw = runtime.storage.readFileSync(sourcePath, 'utf-8');
-    const frontmatter = parseSourceFrontmatter(raw);
-    const title = frontmatter.title;
-    const body = extractBody(raw);
-    return kbSuccess({
-      kind: 'source',
-      note: normalized.slug,
-      title,
-      content: body,
-      tags: frontmatter.tags,
-      principles: [],
-    });
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
+  return handleKbTypedRead('source', slug, undefined, runtime, kbSubsystem);
 }
 
 export function handleKbCommunityRead(
@@ -252,40 +227,7 @@ export function handleKbCommunityRead(
   kbSubsystem: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
-  const normalized = normalizeKbSlug(slug, 'community');
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const communityPath = requireKbSubsystem(kbSubsystem).kb.communityPath(normalized.slug);
-    if (!runtime.storage.existsSync(communityPath)) {
-      return kbNotFoundResult('community', normalized.slug);
-    }
-
-    const raw = runtime.storage.readFileSync(communityPath, 'utf-8');
-    const frontmatter = parseCommunityFrontmatter(raw);
-    const title = extractTitle(raw);
-    const body = extractBody(raw);
-    const { level, parent, children, updatedAt } = frontmatter;
-    const summary = parseSummaryFromBody(body);
-    return kbSuccess({
-      kind: 'community',
-      note: normalized.slug,
-      title,
-      content: body,
-      tags: [],
-      principles: [],
-      members: parseMembersFromBody(body),
-      level,
-      ...(parent === undefined ? {} : { parent }),
-      ...(children === undefined ? {} : { children }),
-      ...(summary === undefined ? {} : { summary }),
-      updatedAt,
-    });
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
+  return handleKbTypedRead('community', slug, undefined, runtime, kbSubsystem);
 }
 
 export function handleKbWikiRead(
@@ -298,60 +240,11 @@ export function handleKbWikiRead(
     return kbValidationError(parsed.error);
   }
 
-  const normalized = normalizeKbSlug(parsed.data.slug, 'wiki');
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const wikiPath = requireKbSubsystem(kbSubsystem).kb.wikiPath(normalized.slug);
-    if (!runtime.storage.existsSync(wikiPath)) {
-      return kbNotFoundResult('wiki', normalized.slug);
-    }
-
-    const raw = runtime.storage.readFileSync(wikiPath, 'utf-8');
-    const frontmatter = parseWikiFrontmatter(raw);
-    const title = extractTitle(raw);
-    const body = extractBody(raw);
-    parseWikiBody(body);
-    return kbSuccess({
-      kind: 'wiki',
-      note: normalized.slug,
-      title,
-      content: body,
-      tags: frontmatter.tags,
-      principles: [],
-      updatedAt: frontmatter.updatedAt,
-    });
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
+  return handleKbTypedRead('wiki', parsed.data.slug, undefined, runtime, kbSubsystem);
 }
 
 export function handleKbMemoRead(slug: string, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
-  const normalized = normalizeKbSlug(slug, 'memo');
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const memoPath = join(memoDir(ctx.projectRoot), `${normalized.slug}.md`);
-    if (!runtime.storage.existsSync(memoPath)) {
-      return kbNotFoundResult('memo', normalized.slug);
-    }
-
-    const raw = runtime.storage.readFileSync(memoPath, 'utf-8');
-    return kbSuccess({
-      kind: 'memo',
-      note: normalized.slug,
-      title: normalized.slug,
-      content: extractBody(raw),
-      tags: [],
-      principles: [],
-    });
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
+  return handleKbTypedRead('memo', slug, ctx, runtime);
 }
 
 export function handleKbPrincipleRead(
@@ -359,32 +252,7 @@ export function handleKbPrincipleRead(
   kbSubsystem: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
-  const normalized = normalizeKbSlug(slug, 'principle');
-  if (!normalized.ok) {
-    return normalized.result;
-  }
-
-  try {
-    const principlePath = requireKbSubsystem(kbSubsystem).kb.principlePath(normalized.slug);
-    if (!runtime.storage.existsSync(principlePath)) {
-      return kbNotFoundResult('principle', normalized.slug);
-    }
-
-    const raw = runtime.storage.readFileSync(principlePath, 'utf-8');
-    const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
-    return kbSuccess({
-      kind: 'principle',
-      note: normalized.slug,
-      title: normalized.slug,
-      content: extractPrincipleStatement(raw),
-      rawContent: raw,
-      tags: [],
-      principles: [],
-      updatedAt: updatedAtMatch?.[1]?.trim(),
-    });
-  } catch (error: unknown) {
-    return kbErrorResult(error);
-  }
+  return handleKbTypedRead('principle', slug, undefined, runtime, kbSubsystem);
 }
 
 export function handleKbRead(
@@ -425,13 +293,11 @@ export async function handleKbPromote(
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+  return runKbMutationAction(kbSubsystem, () =>
+    kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
       kbSubsystem.curateScheduler.schedule();
-    });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+    }),
+  );
 }
 
 export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -440,15 +306,13 @@ export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRun
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await kbUpdate(kbSubsystem.kb, {
+  return runKbMutationAction(kbSubsystem, () =>
+    kbUpdate(kbSubsystem.kb, {
       note: parsed.data.note,
       ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
       ...(parsed.data.content !== undefined ? { content: parsed.data.content } : {}),
-    });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+    }),
+  );
 }
 
 export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -457,11 +321,7 @@ export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRun
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await deleteNote(kbSubsystem.kb, { note: parsed.data.note });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => deleteNote(kbSubsystem.kb, { note: parsed.data.note }));
 }
 
 export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -470,11 +330,7 @@ export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBas
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await createWiki(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => createWiki(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiRewrite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -483,11 +339,7 @@ export async function handleKbWikiRewrite(args: KbArgs, kbSubsystem: KnowledgeBa
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await rewriteWikiUnderstanding(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => rewriteWikiUnderstanding(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiLink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -496,11 +348,7 @@ export async function handleKbWikiLink(args: KbArgs, kbSubsystem: KnowledgeBaseR
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await linkWikiKnowledge(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => linkWikiKnowledge(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiUnlink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -509,11 +357,7 @@ export async function handleKbWikiUnlink(args: KbArgs, kbSubsystem: KnowledgeBas
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await unlinkWikiKnowledge(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => unlinkWikiKnowledge(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiCite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -522,11 +366,7 @@ export async function handleKbWikiCite(args: KbArgs, kbSubsystem: KnowledgeBaseR
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await citeWikiKnowledge(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => citeWikiKnowledge(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiAdopt(
@@ -539,13 +379,11 @@ export async function handleKbWikiAdopt(
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await adoptIntoWiki(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+  return runKbMutationAction(kbSubsystem, () =>
+    adoptIntoWiki(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
       kbSubsystem.curateScheduler.schedule();
-    });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+    }),
+  );
 }
 
 export async function handleKbWikiDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -554,11 +392,7 @@ export async function handleKbWikiDelete(args: KbArgs, kbSubsystem: KnowledgeBas
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await deleteWiki(kbSubsystem.kb, parsed.data);
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => deleteWiki(kbSubsystem.kb, parsed.data));
 }
 
 export async function handleKbWikiList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
@@ -607,11 +441,7 @@ export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeB
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(async () => {
-    const result = await deleteSource(kbSubsystem.kb, { slug: parsed.data.slug });
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
-    return result;
-  });
+  return runKbMutationAction(kbSubsystem, () => deleteSource(kbSubsystem.kb, { slug: parsed.data.slug }));
 }
 
 export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {

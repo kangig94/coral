@@ -220,7 +220,15 @@ function isNormalizableEntrySeqIncident(incident: DetectedIncident): boolean {
     return false;
   }
 
-  return reasons.length >= 1 && reasons.every((reason) => reason === 'quoted-decimal' || reason === 'leading-zeros');
+  if (reasons.length < 1) {
+    return false;
+  }
+  for (const reason of reasons) {
+    if (reason !== 'quoted-decimal' && reason !== 'leading-zeros') {
+      return false;
+    }
+  }
+  return true;
 }
 
 function applyAutoFixLocked(
@@ -285,34 +293,34 @@ function applyOrphanEntityGraphFixLocked(kb: KbRuntime, mutation: KbMutationEffe
 
   const activeEntryIds = collectActiveCorpusEntryIds(kb);
   let changed = false;
-  const nextRelationships = currentGraph.relationships.flatMap((relationship) => {
-    const dedupedEvidence = dedupe(
-      relationship.evidence.filter((reference) => {
-        const normalized = parseKbEntryId(reference);
-        const keep = normalized !== null && activeEntryIds.has(normalized);
-        if (!keep) {
-          changed = true;
-        }
-        return keep;
-      }),
-    );
+  const nextRelationships: typeof currentGraph.relationships = [];
+  for (const relationship of currentGraph.relationships) {
+    const activeEvidence: string[] = [];
+    for (const reference of relationship.evidence) {
+      const normalized = parseKbEntryId(reference);
+      const keep = normalized !== null && activeEntryIds.has(normalized);
+      if (!keep) {
+        changed = true;
+        continue;
+      }
+      activeEvidence.push(reference);
+    }
+    const dedupedEvidence = dedupe(activeEvidence);
 
     if (dedupedEvidence.length === 0) {
       changed = true;
-      return [];
+      continue;
     }
 
     if (dedupedEvidence.length !== relationship.evidence.length) {
       changed = true;
     }
 
-    return [
-      {
-        ...relationship,
-        evidence: dedupedEvidence,
-      },
-    ];
-  });
+    nextRelationships.push({
+      ...relationship,
+      evidence: dedupedEvidence,
+    });
+  }
 
   if (!changed) {
     return { kind: 'skipped' };
@@ -563,5 +571,14 @@ function extractLenientFrontmatterRegion(content: string): string {
 }
 
 function dedupe(values: readonly string[]): string[] {
-  return [...new Set(values)];
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique;
 }

@@ -4,6 +4,7 @@ import {
   type BidRoundClosedStateMutations,
   type SessionCreatedAgentExecutionConfig,
 } from './events.js';
+import { endContent, resolveSessionEndReasonContent } from './end-reasons.js';
 import type {
   AgentState,
   DiscussCreateInput,
@@ -18,18 +19,6 @@ export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
 
-const END_REASON_CONTENT: Record<EndReason, string> = {
-  all_below_threshold: 'All participants bid below the threshold. Ending discussion.',
-  max_epochs_reached: 'Maximum epochs reached. Ending discussion.',
-  all_blocked:
-    'Discussion is structurally deadlocked. Agents who want to speak have no quota, and agents with quota do not want to speak.',
-  no_participants: 'No eligible agents remaining. Ending discussion.',
-};
-
-export function endContent(reason: EndReason): string {
-  return END_REASON_CONTENT[reason];
-}
-
 export function resolveAgentName(agents: Record<string, AgentState>, name: string): string | null {
   if (agents[name]) return name;
   const baseName = name.replace(/-\d+$/, '');
@@ -37,13 +26,13 @@ export function resolveAgentName(agents: Record<string, AgentState>, name: strin
 }
 
 function collectSubmittedBids(state: DiscussState): Record<string, number> {
-  const entries: Array<[string, number]> = [];
+  const bids: Record<string, number> = {};
   for (const [name, value] of Object.entries(state.current_bids)) {
     if (!state.agents[name]?.banned && typeof value === 'number') {
-      entries.push([name, value]);
+      bids[name] = value;
     }
   }
-  return Object.fromEntries(entries);
+  return bids;
 }
 
 export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
@@ -65,7 +54,11 @@ export function computeEffectiveBids(
 
   const imbalanceWeight = 100 / participantCount;
   const recencyWeight = 50 / participantCount;
-  const averageSpeaks = names.reduce((sum, name) => sum + agents[name].total_speaks, 0) / participantCount;
+  let totalSpeaks = 0;
+  for (const name of names) {
+    totalSpeaks += agents[name].total_speaks;
+  }
+  const averageSpeaks = totalSpeaks / participantCount;
 
   const effective: Record<string, number> = {};
   for (const name of names) {
@@ -214,12 +207,19 @@ export function decideBidRoundClose(
     return { ok: false, error: 'invalid_status', detail: { current: state.status } };
   }
 
-  const requiredAgents = Object.entries(state.agents).filter(
-    ([, agent]) => !agent.banned && agent.participation === 'required',
-  );
-  const missing = requiredAgents
-    .map(([name]) => name)
-    .filter((name) => state.current_bids[name] === null || state.current_bids[name] === undefined);
+  const missing: string[] = [];
+  let allRequiredAgentsExhausted = true;
+  for (const [name, agent] of Object.entries(state.agents)) {
+    if (agent.banned || agent.participation !== 'required') {
+      continue;
+    }
+    if (state.current_bids[name] === null || state.current_bids[name] === undefined) {
+      missing.push(name);
+    }
+    if (agent.quota_remaining !== 0) {
+      allRequiredAgentsExhausted = false;
+    }
+  }
 
   if (missing.length > 0) {
     return { ok: false, error: 'quorum_not_met', detail: { missing } };
@@ -282,7 +282,13 @@ export function decideBidRoundClose(
     };
   }
 
-  const allBelowThreshold = Object.values(allBids).every((score) => score < threshold);
+  let allBelowThreshold = true;
+  for (const score of Object.values(allBids)) {
+    if (score >= threshold) {
+      allBelowThreshold = false;
+      break;
+    }
+  }
   if (allBelowThreshold) {
     if (state.cold_start) {
       const picked = coldStartPick(state);
@@ -302,8 +308,7 @@ export function decideBidRoundClose(
     };
   }
 
-  const allExhausted = requiredAgents.every(([, agent]) => agent.quota_remaining === 0);
-  if (!allExhausted) {
+  if (!allRequiredAgentsExhausted) {
     return {
       ok: true,
       value: makeNoWinnerTerminalEvent('all_blocked'),
@@ -484,12 +489,12 @@ export function decideEnd(
     };
   }
 
-  const endReasonContent =
-    endReason !== undefined
-      ? endContent(endReason)
-      : force
-        ? (reason ?? state.end_reason_content)
-        : state.end_reason_content;
+  const endReasonContent = resolveSessionEndReasonContent({
+    currentContent: state.end_reason_content,
+    explicitContent: endReason === undefined ? undefined : endContent(endReason),
+    force,
+    reason,
+  });
 
   return {
     ok: true,

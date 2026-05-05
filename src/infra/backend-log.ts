@@ -23,18 +23,19 @@ function ts(): string {
   return new Date().toISOString();
 }
 
-function captureBracketPrefix(message: string): void {
+function captureBracketPrefix(message: string, renderedLine: string): void {
   if (message.length === 0 || message.charCodeAt(0) !== 91 /* '[' */) return;
   const close = message.indexOf(']');
   if (close <= 1) return;
   // Slot stores the rendered line (timestamp + level + tag + message) so
   // the consumer reads the same shape that hit stderr.
-  _lastByPrefix.set(message.slice(1, close), `${ts()} ${_tag.trimStart()} ${message}`.trim());
+  _lastByPrefix.set(message.slice(1, close), renderedLine);
 }
 
 function write(level: string, message: string): void {
-  process.stderr.write(`${ts()} ${level}${_tag} ${message}\n`);
-  captureBracketPrefix(message);
+  const renderedLine = `${ts()} ${level}${_tag} ${message}`;
+  process.stderr.write(`${renderedLine}\n`);
+  captureBracketPrefix(message, renderedLine);
 }
 
 export const backendLog = {

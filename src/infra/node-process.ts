@@ -23,16 +23,19 @@ function parseLinuxBootTimeSeconds(): number | null {
 
   try {
     const stat = readFileSync('/proc/stat', 'utf-8');
-    const line = stat
-      .split('\n')
-      .find((entry) => entry.startsWith('btime '))
-      ?.trim();
-    if (!line) {
+    const match = /^btime\s+(\d+)\s*$/m.exec(stat);
+    if (match === null) {
       linuxBootTimeSecondsCache = null;
       return linuxBootTimeSecondsCache;
     }
 
-    const parsed = Number.parseInt(line.slice('btime '.length), 10);
+    const rawBootTime = match[1];
+    if (rawBootTime === undefined) {
+      linuxBootTimeSecondsCache = null;
+      return linuxBootTimeSecondsCache;
+    }
+
+    const parsed = Number.parseInt(rawBootTime, 10);
     linuxBootTimeSecondsCache = Number.isFinite(parsed) ? parsed : null;
     return linuxBootTimeSecondsCache;
   } catch {

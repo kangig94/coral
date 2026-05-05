@@ -24,7 +24,7 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Length', Buffer.byteLength(payload));
-  if (statusCode >= 500 || statusCode === 503) {
+  if (statusCode >= 500) {
     res.setHeader('Connection', 'close');
   }
   res.end(payload);
@@ -147,6 +147,15 @@ function sendValidationFailure(res: ServerResponse, error: ZodError): void {
   const { message, detail } = formatZodError(error);
   const response = domainResultToHttp({ ok: false, code: 'invalid_request', message, detail });
   sendJson(res, response.statusCode, response.body);
+}
+
+function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (req.headers['access-control-request-private-network'] === 'true') {
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -606,6 +615,8 @@ export function createHttpHandler(
   const localRoutes = buildTransportLocalRouteTable(deps);
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    setCorsHeaders(req, res);
+
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -618,10 +629,6 @@ export function createHttpHandler(
       sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
       return;
     }
-
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 
     if (!req.url) {
       req.resume();

@@ -70,11 +70,19 @@ export type CurateBootstrapAssignment = {
 };
 
 function sortedNoteNames(kb: Pick<KbRuntime, 'notesDir' | 'storagePort'>): string[] {
-  return sortedMarkdownEntries(kb.storagePort, kb.notesDir()).map((entry) => stripMdExt(entry));
+  const names: string[] = [];
+  for (const entry of sortedMarkdownEntries(kb.storagePort, kb.notesDir())) {
+    names.push(stripMdExt(entry));
+  }
+  return names;
 }
 
 function sortedSourceNames(kb: Pick<KbRuntime, 'sourcesDir' | 'storagePort'>): string[] {
-  return sortedMarkdownEntries(kb.storagePort, kb.sourcesDir()).map((entry) => stripMdExt(entry));
+  const names: string[] = [];
+  for (const entry of sortedMarkdownEntries(kb.storagePort, kb.sourcesDir())) {
+    names.push(stripMdExt(entry));
+  }
+  return names;
 }
 
 function scanNote(kb: Pick<KbRuntime, 'notePath' | 'storagePort'>, note: string): ScannedNote {
@@ -412,7 +420,10 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     // pipeline's post-rebuild cleanup so persistState observes a queue that reflects the
     // post-bootstrap corpus state.
     const postRewriteIncidents = projectIncidents(buildCorpusScanView(kb));
-    const stillDetected = new Set(postRewriteIncidents.map((incident) => incident.entryId));
+    const stillDetected = new Set<string>();
+    for (const incident of postRewriteIncidents) {
+      stillDetected.add(incident.entryId);
+    }
     for (const queued of readCurateRetryQueue(curateDb(kb))) {
       if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
         deleteCurateRetryEntry(curateDb(kb), queued.entryId);

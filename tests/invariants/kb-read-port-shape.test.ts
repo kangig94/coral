@@ -192,12 +192,7 @@ ${body}
 }
 
 async function createWritableKbRuntime() {
-  const [
-    { createRealRuntime },
-    { openStoreDatabase },
-    { createKbRuntime },
-    { kbRuntimeDir },
-  ] = await Promise.all([
+  const [{ createRealRuntime }, { openStoreDatabase }, { createKbRuntime }, { kbRuntimeDir }] = await Promise.all([
     import('#src/runtime/real.js'),
     import('#src/store/db.js'),
     import('#src/kb/runtime.js'),

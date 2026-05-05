@@ -31,6 +31,7 @@ import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/re
 import { SessionClaimError, type ClaimJobOptions } from '../session-claim.js';
 import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
+import { buildJobEventRefs } from '../refs.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobProgressBody | JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -43,14 +44,6 @@ const NOOP_CONTINUITY_BRIDGE: NonNullable<ProviderRuntime['continuityBridge']> =
   checkpoint: () => missingContinuityMiddleware('checkpoint'),
   transportClosed: () => missingContinuityMiddleware('transportClosed'),
 };
-
-function runProviderExecution(
-  provider: ProviderSpec,
-  request: ProviderRequest,
-  runtime: ProviderRuntime,
-): AsyncIterable<ProviderEventBody> {
-  return provider.run(request, runtime);
-}
 
 function mergeProviderMeta(
   runtimeMeta: Record<string, unknown> | undefined,
@@ -166,12 +159,12 @@ export class LaunchOrchestrator {
         namespace: metadata.namespace,
         project: metadata.project,
         correlationId: metadata.correlationId,
-        refs: {
+        refs: buildJobEventRefs({
           jobId,
           sessionId,
-          ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
-          ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
-        },
+          parentJobId: options.parentJobId,
+          workflowSlotId: options.workflowSlotId,
+        }),
         bodyVersion: 1,
         body,
       });
@@ -208,13 +201,13 @@ export class LaunchOrchestrator {
           namespace: metadata.namespace,
           project: metadata.project,
           correlationId: metadata.correlationId,
-          refs: {
+          refs: buildJobEventRefs({
             jobId,
             sessionId,
-            ...(options.parentJobId ? { parentJobId: options.parentJobId } : {}),
-            ...(workflowId ? { workflowId } : {}),
-            ...(options.workflowSlotId ? { workflowSlotId: options.workflowSlotId } : {}),
-          },
+            parentJobId: options.parentJobId,
+            workflowId,
+            workflowSlotId: options.workflowSlotId,
+          }),
           bodyVersion: 1,
           body,
         });
@@ -543,7 +536,7 @@ export class LaunchOrchestrator {
       providerName: provider.name,
       sessionId,
       initialVersion,
-      stream: runProviderExecution(provider, request, runtime),
+      stream: provider.run(request, runtime),
       sessionApi: {
         checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
           if (this.quiescedAppServerJobs.has(jobId)) {

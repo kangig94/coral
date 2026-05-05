@@ -82,13 +82,17 @@ export type DiscussSessionsListResponse = {
 };
 
 function buildDiscussAgents(state: DiscussState): DiscussAgentDto[] {
-  return Object.entries(state.agents).map(([name, agent]) => ({
-    name,
-    displayName: agent.display_name,
-    participation: agent.participation,
-    totalSpeaks: agent.total_speaks,
-    banned: agent.banned,
-  }));
+  const agents: DiscussAgentDto[] = [];
+  for (const [name, agent] of Object.entries(state.agents)) {
+    agents.push({
+      name,
+      displayName: agent.display_name,
+      participation: agent.participation,
+      totalSpeaks: agent.total_speaks,
+      banned: agent.banned,
+    });
+  }
+  return agents;
 }
 
 function buildDiscussSession(snapshot: PersistedDiscussSnapshot): DiscussSessionDto {

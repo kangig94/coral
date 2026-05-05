@@ -25,7 +25,7 @@ import {
   wikiEntryId,
 } from './entry-types.js';
 import { memoDir } from './paths.js';
-import { expandKbReadSelector, parseKbSelector, type KbResolvedReadSelector } from './selector.js';
+import { expandKbReadSelector, parseKbSelector, type KbReadKind, type KbResolvedReadSelector } from './selector.js';
 import type { StoragePort } from '../infra/port-types.js';
 
 export type KbReadStorage = Pick<StoragePort, 'existsSync' | 'readFileSync'>;
@@ -156,6 +156,45 @@ function readCommunityEntry(community: string, storage: KbReadStorage, paths: Kb
   };
 }
 
+function readMemoEntry(slug: string, storage: KbReadStorage, projectRoot: string | undefined): KbReadResult | null {
+  if (projectRoot === undefined) {
+    return null;
+  }
+
+  const memoPath = join(memoDir(projectRoot), `${slug}.md`);
+  if (!storage.existsSync(memoPath)) {
+    return null;
+  }
+
+  const raw = storage.readFileSync(memoPath, 'utf-8');
+  return {
+    kind: 'memo',
+    note: slug,
+    title: slug,
+    content: extractBody(raw),
+    tags: [],
+    principles: [],
+  };
+}
+
+function readNoteEntry(note: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
+  const notePath = paths.notePath(note);
+  if (!storage.existsSync(notePath)) {
+    return null;
+  }
+
+  const { frontmatter, title, body } = loadKbNote(storage, notePath);
+  return {
+    kind: 'note',
+    note,
+    title,
+    content: body,
+    tags: frontmatter.tags,
+    principles: frontmatter.principles,
+    updatedAt: frontmatter.updatedAt,
+  };
+}
+
 function readWikiEntry(slug: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
   const wikiPath = paths.wikiPath(slug);
   if (!storage.existsSync(wikiPath)) {
@@ -174,6 +213,48 @@ function readWikiEntry(slug: string, storage: KbReadStorage, paths: KbReadPathRe
   };
 }
 
+function readPrincipleEntry(principle: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
+  const principlePath = paths.principlePath(principle);
+  if (!storage.existsSync(principlePath)) {
+    return null;
+  }
+
+  const raw = storage.readFileSync(principlePath, 'utf-8');
+  const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
+  return {
+    kind: 'principle',
+    note: principle,
+    title: principle,
+    content: extractPrincipleStatement(raw),
+    rawContent: raw,
+    tags: [],
+    principles: [],
+    updatedAt: updatedAtMatch?.[1]?.trim(),
+  };
+}
+
+export function readEntryByKind(kind: KbReadKind, slug: string, options: KbReadOptions): KbReadResult | null {
+  const storage = options.storage;
+  if (kind === 'memo') {
+    return readMemoEntry(slug, storage, options.projectRoot);
+  }
+
+  const paths = resolveReadPaths(options.paths);
+  if (kind === 'note') {
+    return readNoteEntry(slug, storage, paths);
+  }
+  if (kind === 'wiki') {
+    return readWikiEntry(slug, storage, paths);
+  }
+  if (kind === 'community') {
+    return readCommunityEntry(slug, storage, paths);
+  }
+  if (kind === 'source') {
+    return readSourceEntry(slug, storage, paths);
+  }
+  return readPrincipleEntry(slug, storage, paths);
+}
+
 function readCandidateEntry(
   candidate: KbResolvedReadSelector,
   storage: KbReadStorage,
@@ -181,43 +262,14 @@ function readCandidateEntry(
   projectRoot?: string,
 ): KbReadResult | null {
   if (candidate.kind === 'memo') {
-    if (projectRoot === undefined || !MEMO_FILENAME_PATTERN.test(candidate.slug)) {
+    if (!MEMO_FILENAME_PATTERN.test(candidate.slug)) {
       return null;
     }
-
-    const memoPath = join(memoDir(projectRoot), `${candidate.slug}.md`);
-    if (!storage.existsSync(memoPath)) {
-      return null;
-    }
-
-    const raw = storage.readFileSync(memoPath, 'utf-8');
-    return {
-      kind: 'memo',
-      note: candidate.slug,
-      title: candidate.slug,
-      content: extractBody(raw),
-      tags: [],
-      principles: [],
-    };
+    return readMemoEntry(candidate.slug, storage, projectRoot);
   }
 
   if (candidate.kind === 'note') {
-    const notePath = paths.notePath(candidate.slug);
-    if (!storage.existsSync(notePath)) {
-      return null;
-    }
-
-    const raw = storage.readFileSync(notePath, 'utf-8');
-    const frontmatter = parseFrontmatter(raw);
-    return {
-      kind: 'note',
-      note: candidate.slug,
-      title: extractTitle(raw),
-      content: extractBody(raw),
-      tags: frontmatter.tags,
-      principles: frontmatter.principles,
-      updatedAt: frontmatter.updatedAt,
-    };
+    return readNoteEntry(candidate.slug, storage, paths);
   }
 
   if (candidate.kind === 'wiki') {
@@ -232,23 +284,7 @@ function readCandidateEntry(
     return readSourceEntry(candidate.slug, storage, paths);
   }
 
-  const principlePath = paths.principlePath(candidate.slug);
-  if (!storage.existsSync(principlePath)) {
-    return null;
-  }
-
-  const raw = storage.readFileSync(principlePath, 'utf-8');
-  const updatedAtMatch = raw.match(/^updatedAt:\s*(.+)$/m);
-  return {
-    kind: 'principle',
-    note: candidate.slug,
-    title: candidate.slug,
-    content: extractPrincipleStatement(raw),
-    rawContent: raw,
-    tags: [],
-    principles: [],
-    updatedAt: updatedAtMatch?.[1]?.trim(),
-  };
+  return readPrincipleEntry(candidate.slug, storage, paths);
 }
 
 function resolvedEntryIdForCandidate(candidate: KbResolvedReadSelector): KbEntryId | null {

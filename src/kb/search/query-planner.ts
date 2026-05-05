@@ -23,6 +23,10 @@ export interface QueryPlanner {
   plan(intent: KbSearchIntent, registry: RoleExecutionRegistryView, ctx: RoleQueryContext): QueryPlan;
 }
 
+const LEXICAL_PRIMARY_TAGS = new Set<string>(['lexical']);
+const SEMANTIC_PRIMARY_TAGS = new Set<string>(['semantic']);
+const HYBRID_PRIMARY_TAGS = new Set<string>(['lexical', 'semantic']);
+
 function supportsScope(registeredRole: RegisteredRetrievalRole, ctx: RoleQueryContext): boolean {
   return registeredRole.descriptor.supportsScopes.includes(ctx.scope);
 }
@@ -44,6 +48,24 @@ function invocation(registeredRole: RegisteredRetrievalRole, required: boolean):
   return { registeredRole, required };
 }
 
+function buildInvocations(
+  registeredRoles: readonly RegisteredRetrievalRole[],
+  ctx: RoleQueryContext,
+  includeRole: (registeredRole: RegisteredRetrievalRole) => boolean,
+  primaryTags: ReadonlySet<string> | null,
+): RoleInvocation[] {
+  const invocations: RoleInvocation[] = [];
+  for (const registeredRole of registeredRoles) {
+    if (!supportsScope(registeredRole, ctx) || !includeRole(registeredRole)) {
+      continue;
+    }
+    invocations.push(
+      invocation(registeredRole, primaryTags === null ? false : isRequiredCoreContributor(registeredRole, primaryTags)),
+    );
+  }
+  return invocations;
+}
+
 export function createQueryPlanner(): QueryPlanner {
   return {
     plan(intent, registry, ctx) {
@@ -51,45 +73,42 @@ export function createQueryPlanner(): QueryPlanner {
 
       if (intent === 'text') {
         return {
-          primaryInvocations: registeredRoles
-            .filter((registeredRole) => hasTag(registeredRole, 'lexical') && supportsScope(registeredRole, ctx))
-            .map((registeredRole) =>
-              invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['lexical']))),
-            ),
+          primaryInvocations: buildInvocations(
+            registeredRoles,
+            ctx,
+            (registeredRole) => hasTag(registeredRole, 'lexical'),
+            LEXICAL_PRIMARY_TAGS,
+          ),
         };
       }
 
       if (intent === 'vector') {
-        const fallbackInvocations = registeredRoles
-          .filter((registeredRole) => hasTag(registeredRole, 'lexical') && supportsScope(registeredRole, ctx))
-          .map((registeredRole) => invocation(registeredRole, false));
+        const fallbackInvocations = buildInvocations(
+          registeredRoles,
+          ctx,
+          (registeredRole) => hasTag(registeredRole, 'lexical'),
+          null,
+        );
 
         return {
-          primaryInvocations: registeredRoles
-            .filter((registeredRole) => hasTag(registeredRole, 'semantic') && supportsScope(registeredRole, ctx))
-            .map((registeredRole) =>
-              invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['semantic']))),
-            ),
+          primaryInvocations: buildInvocations(
+            registeredRoles,
+            ctx,
+            (registeredRole) => hasTag(registeredRole, 'semantic'),
+            SEMANTIC_PRIMARY_TAGS,
+          ),
           ...(fallbackInvocations.length === 0 ? {} : { fallbackInvocations }),
         };
       }
 
       if (intent === 'hybrid') {
         return {
-          primaryInvocations: registeredRoles
-            .filter((registeredRole) => supportsScope(registeredRole, ctx))
-            .map((registeredRole) =>
-              invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['lexical', 'semantic']))),
-            ),
+          primaryInvocations: buildInvocations(registeredRoles, ctx, () => true, HYBRID_PRIMARY_TAGS),
         };
       }
 
       return {
-        primaryInvocations: registeredRoles
-          .filter((registeredRole) => supportsScope(registeredRole, ctx))
-          .map((registeredRole) =>
-            invocation(registeredRole, isRequiredCoreContributor(registeredRole, new Set(['lexical']))),
-          ),
+        primaryInvocations: buildInvocations(registeredRoles, ctx, () => true, LEXICAL_PRIMARY_TAGS),
       };
     },
   };

@@ -29,7 +29,12 @@ function recoveryStorage(options: {
     readFileSync: (path) => files[path] ?? '',
     existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
     readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
-    statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as unknown as StoragePort['statSync'],
+    statSync: (() => ({
+      size: 0,
+      mtimeMs: 0,
+      isDirectory: () => false,
+      isFile: () => true,
+    })) as unknown as StoragePort['statSync'],
   };
 }
 
@@ -44,7 +49,7 @@ function recoveryEnv(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 
 type RecoveryLocatorCase = {
   readonly label: string;
   readonly tree: Record<string, DirentLike[]>;
-  readonly expected: readonly { readonly handle: string }[] | undefined;
+  readonly expected: readonly { readonly handle: string; readonly identity?: Record<string, string> }[] | undefined;
 };
 
 describe('registerBuiltInProviders', () => {
@@ -107,7 +112,12 @@ describe('registerBuiltInProviders', () => {
         '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
         '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-thread-from-meta.jsonl', 'file')],
       },
-      expected: [{ handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-from-meta.jsonl' }],
+      expected: [
+        {
+          handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-from-meta.jsonl',
+          identity: { kind: 'codex-rollout', threadId: 'thread-from-meta' },
+        },
+      ],
     },
     {
       label: 'ambiguous match',
@@ -126,10 +136,7 @@ describe('registerBuiltInProviders', () => {
 
   it.each(codexRecoveryCases)(
     'finalizeCodexFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
-    async ({
-      tree,
-      expected,
-    }) => {
+    async ({ tree, expected }) => {
       const codex = createBuiltInProviderRegistry().get('codex');
 
       const result = await codex?.recovery?.finalizeFromArtifacts({
@@ -147,6 +154,38 @@ describe('registerBuiltInProviders', () => {
     },
   );
 
+  it('normalizes empty Codex recovery refs before artifact lookup', async () => {
+    const codex = createBuiltInProviderRegistry().get('codex');
+
+    const result = await codex?.recovery?.finalizeFromArtifacts({
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: 0,
+      signal: null,
+      providerMeta: {
+        threadId: '',
+        providerContinuity: { threadId: '' },
+      },
+      fallbackConversationRef: 'fallback-thread',
+      env: recoveryEnv(),
+      storage: recoveryStorage({
+        tree: {
+          '/home/user/.codex/sessions': [dirent('2026', 'dir')],
+          '/home/user/.codex/sessions/2026': [dirent('05', 'dir')],
+          '/home/user/.codex/sessions/2026/05': [dirent('04', 'dir')],
+          '/home/user/.codex/sessions/2026/05/04': [dirent('rollout-a-fallback-thread.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result?.artifactHandles).toEqual([
+      {
+        handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-fallback-thread.jsonl',
+        identity: { kind: 'codex-rollout', threadId: 'fallback-thread' },
+      },
+    ]);
+  });
+
   const claudeRecoveryCases: RecoveryLocatorCase[] = [
     {
       label: 'no match',
@@ -162,7 +201,12 @@ describe('registerBuiltInProviders', () => {
         '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
         '/home/user/.claude/projects/-workspace': [dirent('conversation-from-meta.jsonl', 'file')],
       },
-      expected: [{ handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl' }],
+      expected: [
+        {
+          handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl',
+          identity: { kind: 'claude-jsonl', conversationRef: 'conversation-from-meta' },
+        },
+      ],
     },
     {
       label: 'ambiguous match',
@@ -177,10 +221,7 @@ describe('registerBuiltInProviders', () => {
 
   it.each(claudeRecoveryCases)(
     'finalizeClaudeFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
-    async ({
-      tree,
-      expected,
-    }) => {
+    async ({ tree, expected }) => {
       const claude = createBuiltInProviderRegistry().get('claude');
 
       const result = await claude?.recovery?.finalizeFromArtifacts({
@@ -203,6 +244,38 @@ describe('registerBuiltInProviders', () => {
       expect(result?.artifactHandles).toEqual(expected);
     },
   );
+
+  it('normalizes empty Claude result session ids before continuity and artifact lookup', async () => {
+    const claude = createBuiltInProviderRegistry().get('claude');
+
+    const result = await claude?.recovery?.finalizeFromArtifacts({
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: 0,
+      signal: null,
+      providerMeta: { conversationRef: 'conversation-from-meta' },
+      fallbackConversationRef: 'fallback-conversation',
+      env: recoveryEnv(),
+      storage: recoveryStorage({
+        files: {
+          '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok', session_id: '' }),
+          '/tmp/stderr': '',
+        },
+        tree: {
+          '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
+          '/home/user/.claude/projects/-workspace': [dirent('conversation-from-meta.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result?.continuity).toBeUndefined();
+    expect(result?.artifactHandles).toEqual([
+      {
+        handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl',
+        identity: { kind: 'claude-jsonl', conversationRef: 'conversation-from-meta' },
+      },
+    ]);
+  });
 
   it('is idempotent per registry instance', () => {
     const registry = new ProviderRegistry();

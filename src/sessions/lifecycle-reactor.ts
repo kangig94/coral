@@ -1,11 +1,11 @@
 import { backendLog } from '../infra/backend-log.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import { errorMessage } from '../infra/error-format.js';
-import type { ArtifactCleanupRuntime, DiscardOutcome } from '../providers/contract.js';
+import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderDefinition } from '../providers/define.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
-import { listProjectionSessionEntries, readProjectionSessionEntry } from './projections.js';
+import { listProjectionSessionEntries } from './projections.js';
 import {
   appendRetentionDiscardCompleted,
   appendRetentionDiscardFailed,
@@ -14,6 +14,14 @@ import {
   readNextRetentionDiscardAttempt,
 } from './retention-outbox.js';
 import type { RetentionDiscardCompletedOutcome } from './entry.js';
+import {
+  readSessionRetentionWorkForEntries,
+  readSessionRetentionWorkForPairs,
+  readSessionRetentionWorkForSessionIds,
+  sessionRetentionWorkKey,
+  type SessionRetentionPair,
+  type SessionRetentionWork,
+} from './retention-work.js';
 
 export type LifecycleReactorOptions = {
   readonly db: () => ReadonlyDatabase;
@@ -24,11 +32,6 @@ export type LifecycleReactorOptions = {
   readonly commitEvents: CommitEventsFn;
   readonly log?: (message: string) => void;
 };
-
-function pairKey(sessionId: string, jobId: string): string {
-  // '\0' cannot appear in UUIDs, safe composite-key separator
-  return `${sessionId}\u0000${jobId}`;
-}
 
 function relevantSessionId(event: AppendedEvent): string | null {
   if (event.type !== 'job.terminal.recorded' && event.type !== 'session.claim.released') {
@@ -44,10 +47,6 @@ function relevantSessionId(event: AppendedEvent): string | null {
   }
 
   return null;
-}
-
-function completedOutcomeFromProviderOutcome(outcome: DiscardOutcome): RetentionDiscardCompletedOutcome {
-  return outcome.kind;
 }
 
 export class LifecycleReactor {
@@ -74,19 +73,13 @@ export class LifecycleReactor {
       }
     }
 
-    for (const sessionId of sessionIds) {
-      this.evaluateSession(sessionId);
-    }
+    this.enqueueWork(readSessionRetentionWorkForSessionIds(this.options.db(), [...sessionIds]));
     this.scheduleDrain();
   };
 
   async scanStartup(): Promise<void> {
-    for (const entry of listProjectionSessionEntries(this.options.db())) {
-      if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
-        continue;
-      }
-      this.evaluateSession(entry.sessionId);
-    }
+    const db = this.options.db();
+    this.enqueueWork(readSessionRetentionWorkForEntries(db, listProjectionSessionEntries(db)));
     this.scheduleDrain();
     await this.waitForIdle();
   }
@@ -97,13 +90,13 @@ export class LifecycleReactor {
     }
   }
 
-  async enforceRetention(sessionId: string, jobId: string): Promise<void> {
+  async enforceRetention(work: SessionRetentionWork): Promise<void> {
+    const { entry, jobId, sessionId } = work;
     if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
       return;
     }
 
-    const entry = readProjectionSessionEntry(this.options.db(), sessionId);
-    if (entry === null || entry.retention !== 'discard_provider_artifacts_on_terminal') {
+    if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
       return;
     }
 
@@ -113,9 +106,12 @@ export class LifecycleReactor {
       return;
     }
 
-    const recordedHandles = entry.artifactHandles
-      .filter((artifact) => artifact.sourceJobId === undefined || artifact.sourceJobId === jobId)
-      .map((artifact) => artifact.handle);
+    const recordedHandles: string[] = [];
+    for (const artifact of entry.artifactHandles) {
+      if (artifact.sourceJobId === undefined || artifact.sourceJobId === jobId) {
+        recordedHandles.push(artifact.handle);
+      }
+    }
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
     const attempt = readNextRetentionDiscardAttempt(this.options.db(), sessionId, attemptFloor);
 
@@ -126,11 +122,11 @@ export class LifecycleReactor {
         handles: recordedHandles,
       });
       if (requested.kind === 'duplicate') {
-        this.attemptFloorBySession.set(sessionId, Math.max(attemptFloor, attempt));
+        this.raiseAttemptFloor(sessionId, attempt, attemptFloor);
         return;
       }
     } catch (error: unknown) {
-      this.attemptFloorBySession.set(sessionId, Math.max(attemptFloor, attempt));
+      this.raiseAttemptFloor(sessionId, attempt, attemptFloor);
       this.log(
         `Retention discard request append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
       );
@@ -153,7 +149,7 @@ export class LifecycleReactor {
 
     try {
       const outcome = await provider.artifacts.discardArtifacts(recordedHandles, this.options.runtime);
-      this.appendCompleted(sessionId, attempt, recordedHandles, completedOutcomeFromProviderOutcome(outcome));
+      this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);
     } catch (error: unknown) {
       this.appendFailed(
         sessionId,
@@ -163,42 +159,6 @@ export class LifecycleReactor {
         this.readTerminalCauseRef(sessionId, jobId),
       );
     }
-  }
-
-  private evaluateSession(sessionId: string): void {
-    const entry = readProjectionSessionEntry(this.options.db(), sessionId);
-    if (entry === null || entry.retention !== 'discard_provider_artifacts_on_terminal') {
-      return;
-    }
-
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
-      return;
-    }
-
-    for (const jobId of this.readTerminalReleasePairs(sessionId)) {
-      this.enqueue(sessionId, jobId);
-    }
-  }
-
-  private readTerminalReleasePairs(sessionId: string): string[] {
-    const rows = this.options
-      .db()
-      .prepare<[string, string], { job_id: string }>(
-        `SELECT DISTINCT t.stream_id AS job_id
-           FROM events AS t
-           JOIN events AS r
-             ON r.type = 'session.claim.released'
-            AND r.stream_kind = 'session'
-            AND COALESCE(json_extract(r.refs, '$.sessionId'), r.stream_id) = ?
-            AND COALESCE(json_extract(r.refs, '$.jobId'), json_extract(CAST(r.body AS TEXT), '$.jobId')) = t.stream_id
-          WHERE t.type = 'job.terminal.recorded'
-            AND t.stream_kind = 'job'
-            AND json_extract(t.refs, '$.sessionId') = ?
-          ORDER BY t.stream_id ASC`,
-      )
-      .all(sessionId, sessionId);
-
-    return rows.map((row) => row.job_id);
   }
 
   private readTerminalCauseRef(sessionId: string, jobId: string): CauseRef | undefined {
@@ -225,7 +185,7 @@ export class LifecycleReactor {
   }
 
   private enqueue(sessionId: string, jobId: string): void {
-    const key = pairKey(sessionId, jobId);
+    const key = sessionRetentionWorkKey(sessionId, jobId);
     if (this.inFlightPairs.has(key)) {
       return;
     }
@@ -264,44 +224,56 @@ export class LifecycleReactor {
     return false;
   }
 
-  private takePendingPair(): { sessionId: string; jobId: string } | null {
+  private enqueueWork(work: readonly SessionRetentionWork[]): void {
+    for (const item of work) {
+      this.enqueue(item.sessionId, item.jobId);
+    }
+  }
+
+  private takePendingPairs(): SessionRetentionPair[] {
+    const pairs: SessionRetentionPair[] = [];
     for (const [sessionId, jobIds] of this.pendingBySession) {
-      const next = jobIds.values().next();
-      if (next.done === true) {
+      if (jobIds.size === 0) {
         this.pendingBySession.delete(sessionId);
         continue;
       }
-      const jobId = next.value;
-      jobIds.delete(jobId);
-      if (jobIds.size === 0) {
-        this.pendingBySession.delete(sessionId);
+      for (const jobId of jobIds) {
+        pairs.push({ sessionId, jobId });
       }
-      return { sessionId, jobId };
+      this.pendingBySession.delete(sessionId);
     }
-    return null;
+    return pairs;
   }
 
   private async drainQueue(): Promise<void> {
     for (;;) {
-      const pair = this.takePendingPair();
-      if (pair === null) {
+      const pairs = this.takePendingPairs();
+      if (pairs.length === 0) {
         return;
       }
+      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), pairs);
 
-      const key = pairKey(pair.sessionId, pair.jobId);
-      if (this.inFlightPairs.has(key)) {
-        continue;
-      }
+      for (const pair of pairs) {
+        const key = sessionRetentionWorkKey(pair.sessionId, pair.jobId);
+        if (this.inFlightPairs.has(key)) {
+          continue;
+        }
 
-      this.inFlightPairs.add(key);
-      try {
-        await this.enforceRetention(pair.sessionId, pair.jobId);
-      } catch (error: unknown) {
-        this.log(
-          `Retention discard enforcement failed for session ${pair.sessionId} job ${pair.jobId}: ${errorMessage(error)}`,
-        );
-      } finally {
-        this.inFlightPairs.delete(key);
+        const work = workByPair.get(key);
+        if (work === undefined) {
+          continue;
+        }
+
+        this.inFlightPairs.add(key);
+        try {
+          await this.enforceRetention(work);
+        } catch (error: unknown) {
+          this.log(
+            `Retention discard enforcement failed for session ${pair.sessionId} job ${pair.jobId}: ${errorMessage(error)}`,
+          );
+        } finally {
+          this.inFlightPairs.delete(key);
+        }
       }
     }
   }
@@ -320,7 +292,7 @@ export class LifecycleReactor {
         outcome,
       });
     } catch (error: unknown) {
-      this.attemptFloorBySession.set(sessionId, Math.max(this.attemptFloorBySession.get(sessionId) ?? 0, attempt));
+      this.raiseAttemptFloor(sessionId, attempt);
       this.log(
         `Retention discard completion append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
       );
@@ -343,11 +315,19 @@ export class LifecycleReactor {
         ...(causeRef === undefined ? {} : { causeRef }),
       });
     } catch (error: unknown) {
-      this.attemptFloorBySession.set(sessionId, Math.max(this.attemptFloorBySession.get(sessionId) ?? 0, attempt));
+      this.raiseAttemptFloor(sessionId, attempt);
       this.log(
         `Retention discard failure append failed for session ${sessionId} attempt ${attempt}: ${errorMessage(error)}`,
       );
     }
+  }
+
+  private raiseAttemptFloor(
+    sessionId: string,
+    attempt: number,
+    floor = this.attemptFloorBySession.get(sessionId) ?? 0,
+  ): void {
+    this.attemptFloorBySession.set(sessionId, Math.max(floor, attempt));
   }
 
   private log(message: string): void {

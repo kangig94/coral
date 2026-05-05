@@ -4,7 +4,16 @@ import { parseKbEntryId } from '../../entry-types.js';
 import { compareLocale } from '../../validation.js';
 
 export function uniqueSorted(values: string[]): string[] {
-  return [...new Set(values)].sort(compareLocale);
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    unique.push(value);
+  }
+  return unique.sort(compareLocale);
 }
 
 export function computeTextFingerprint(value: string): string {

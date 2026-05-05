@@ -209,7 +209,7 @@ export class JobLaunchService {
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
     const bypassPermissions = input.bypassPermissions ?? true;
 
-    if (input.sessionId) {
+    if (input.sessionId !== undefined) {
       return this.resume(
         providerName,
         {
@@ -321,7 +321,7 @@ export class JobLaunchService {
         `Session ${input.sessionId} is non-resumable. Use exec to start a new session or fork to branch from it.`,
       );
     }
-    if (session.activeJobId) {
+    if (session.activeJobId !== undefined) {
       return rejectLaunch('session_busy', busyMessage);
     }
     const expectedVersion = session.version;
@@ -372,7 +372,7 @@ export class JobLaunchService {
     ctx: InvocationContext,
   ): Promise<LaunchDecision> {
     const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
-    if (sourceSession.activeJobId) {
+    if (sourceSession.activeJobId !== undefined) {
       return rejectLaunch('session_busy', sourceBusyMessage);
     }
     const sourceExpectedVersion = sourceSession.version;

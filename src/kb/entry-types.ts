@@ -1,5 +1,6 @@
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
 import type { RetrievalDiagnostic, RetrievalEvidence } from './search/contract.js';
+import type { CorpusStructuralKey } from './corpus/structural-key.js';
 
 export type KbMatchSurface = 'filename' | 'principle' | 'tag' | 'title' | 'content';
 
@@ -224,6 +225,7 @@ export interface KbIndex {
   principles: Record<string, string>;
   entityMeta: Record<string, EntityMeta>;
   relationships: EntityRelationship[];
+  structuralKey?: CorpusStructuralKey;
 }
 
 export interface KbSearchResponse {

@@ -96,7 +96,10 @@ type WaitRecoveryPlan = {
 };
 
 function readSlotJobIds(db: Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
-  const slotIds = new Set(plan.slots.map((slot) => slot.slotId));
+  const slotIds = new Set<string>();
+  for (const slot of plan.slots) {
+    slotIds.add(slot.slotId);
+  }
   const rows = db
     .prepare(
       `SELECT job_id, workflow_slot, last_seq
@@ -387,7 +390,7 @@ async function assembleRelaunch(
 
 function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
-  const pendingCursorSeqs: number[] = [];
+  let pendingCursorSeq: number | null = null;
   const drainRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.drain.entered');
   const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, snapshot.readCtx) : null;
 
@@ -400,14 +403,15 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
 
     const projection = readProjectionJob(deps.db, slot.jobId);
     if (projection) {
-      pendingCursorSeqs.push(projection.lastSeq);
+      pendingCursorSeq =
+        pendingCursorSeq === null ? projection.lastSeq : Math.min(pendingCursorSeq, projection.lastSeq);
     }
   }
 
   const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
   const initialState: Partial<WaitInternalState> = {
     completedOutputs,
-    cursor: { afterSeq: pendingCursorSeqs.length === 0 ? 0 : Math.min(...pendingCursorSeqs) },
+    cursor: { afterSeq: pendingCursorSeq ?? 0 },
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),
@@ -421,10 +425,13 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
           },
         }),
   };
-  const pendingPhases = snapshot.stepSlots.flatMap((slot) => {
+  const pendingPhases: string[] = [];
+  for (const slot of snapshot.stepSlots) {
     const phase = detailForJob(snapshot.slotDetailsByJob, slot.jobId).status?.phase;
-    return phase === null || phase === undefined ? [] : [phase];
-  });
+    if (phase !== null && phase !== undefined) {
+      pendingPhases.push(phase);
+    }
+  }
   const blockingFailure = pendingPhases.some(
     (phase) => phase !== 'running' && phase !== 'queued' && phase !== 'completed',
   )

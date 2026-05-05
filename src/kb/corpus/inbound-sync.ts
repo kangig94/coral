@@ -1,6 +1,3 @@
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
-
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
@@ -9,15 +6,7 @@ import { noteEntryId, sourceEntryId, wikiEntryId, type KbIndex } from '../entry-
 import { loadKbNote, loadKbSource } from '../read.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry, cloneKbIndex } from './index-records.js';
 import { extractKnowledgeLinks } from './wiki-links.js';
-import { stripMdExt } from '../paths.js';
-import {
-  extractBody,
-  extractTitle,
-  parseFrontmatter,
-  parseSourceFrontmatter,
-  parseWikiBody,
-  parseWikiFrontmatter,
-} from './frontmatter.js';
+import { extractBody, extractTitle, parseWikiBody, parseWikiFrontmatter } from './frontmatter.js';
 import {
   captureCommunityManifestDelta,
   captureEntityGraphManifestDelta,
@@ -30,37 +19,24 @@ import {
   captureRemovedWikiManifestDeltas,
   captureSourceManifestDeltas,
   captureWikiManifestDeltas,
-  collectFullManifestSurfaceHashes,
   type ManifestAuthority,
 } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
-import { sortedMarkdownEntries } from './markdown-entries.js';
-import { type CanonicalFrontmatterRecord, computeContentSurfaceHash, computeMetadataSurfaceHash } from './snapshot.js';
-import type { KbIndexMutationLane, KbRuntime } from '../contract.js';
+import {
+  diffCorpusSurfaceAgainstAuthority,
+  diffCorpusSurfaces,
+  type CorpusSurface,
+  type CorpusSurfaceMutationDiff,
+} from './surface.js';
+import type { KbRuntime } from '../contract.js';
 import { mergeMutationLane } from './lanes.js';
 
 type InboundSyncTarget = Pick<
   KbRuntime,
-  | 'notesDir'
-  | 'wikiDir'
-  | 'sourcesDir'
-  | 'principlesDir'
-  | 'communitiesDir'
-  | 'entityGraphPath'
-  | 'notePath'
-  | 'wikiPath'
-  | 'sourcePath'
-  | 'communityPath'
-  | 'principlePath'
-  | 'storagePort'
+  'entityGraphPath' | 'notePath' | 'wikiPath' | 'sourcePath' | 'communityPath' | 'principlePath' | 'storagePort'
 >;
 
-export type InboundSyncMutationDiff = {
-  lane: KbIndexMutationLane | null;
-  changedEntryIds: string[];
-  requiresFullInstall: boolean;
-  manifestDeltas: ManifestAuthorityDelta[];
-};
+export type InboundSyncMutationDiff = CorpusSurfaceMutationDiff;
 
 type InboundSyncTrackedPath =
   | { kind: 'note'; slug: string }
@@ -69,15 +45,6 @@ type InboundSyncTrackedPath =
   | { kind: 'community'; slug: string }
   | { kind: 'principle'; slug: string }
   | { kind: 'entity-graph' };
-
-export type CorpusFilesystemSnapshot = {
-  notes: Map<string, { contentHash: string; metadataHash: string }>;
-  wikis: Map<string, { contentHash: string; metadataHash: string }>;
-  sources: Map<string, { contentHash: string; metadataHash: string }>;
-  principles: Map<string, string>;
-  communities: Map<string, string>;
-  entityGraphHash: string | null;
-};
 
 function normalizeInboundSyncPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -136,230 +103,21 @@ export function isGitSyncResult(value: unknown): value is GitSyncResult {
   return isRecord(value) && typeof value.kind === 'string';
 }
 
-type SnapshotStorage = Pick<StoragePort, 'readFileSync' | 'readdirSync'>;
-
-function captureNoteFileSnapshot(
-  storage: SnapshotStorage,
-  dirPath: string,
-): Map<string, { contentHash: string; metadataHash: string }> {
-  const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
-
-  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(dirPath, entry), 'utf-8');
-    try {
-      snapshot.set(slug, {
-        contentHash: computeContentSurfaceHash({
-          title: extractTitle(raw),
-          body: extractBody(raw),
-        }),
-        metadataHash: computeMetadataSurfaceHash({
-          frontmatter: parseFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
-        }),
-      });
-    } catch {
-      const rawHash = createHash('sha256').update(raw).digest('hex');
-      snapshot.set(slug, {
-        contentHash: rawHash,
-        metadataHash: rawHash,
-      });
-    }
-  }
-
-  return snapshot;
-}
-
-function captureWikiFileSnapshot(
-  storage: SnapshotStorage,
-  dirPath: string,
-): Map<string, { contentHash: string; metadataHash: string }> {
-  const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
-
-  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(dirPath, entry), 'utf-8');
-    try {
-      const body = extractBody(raw);
-      parseWikiBody(body);
-      snapshot.set(slug, {
-        contentHash: computeContentSurfaceHash({
-          title: extractTitle(raw),
-          body,
-        }),
-        metadataHash: computeMetadataSurfaceHash({
-          frontmatter: parseWikiFrontmatter(raw) as unknown as CanonicalFrontmatterRecord,
-        }),
-      });
-    } catch {
-      const rawHash = createHash('sha256').update(raw).digest('hex');
-      snapshot.set(slug, {
-        contentHash: rawHash,
-        metadataHash: rawHash,
-      });
-    }
-  }
-
-  return snapshot;
-}
-
-function captureSourceFileSnapshot(
-  storage: SnapshotStorage,
-  dirPath: string,
-): Map<string, { contentHash: string; metadataHash: string }> {
-  const snapshot = new Map<string, { contentHash: string; metadataHash: string }>();
-
-  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(dirPath, entry), 'utf-8');
-    try {
-      const { title, ...metadata } = parseSourceFrontmatter(raw);
-      snapshot.set(slug, {
-        contentHash: computeContentSurfaceHash({
-          title,
-          body: extractBody(raw),
-        }),
-        metadataHash: computeMetadataSurfaceHash({
-          frontmatter: metadata as unknown as CanonicalFrontmatterRecord,
-        }),
-      });
-    } catch {
-      const rawHash = createHash('sha256').update(raw).digest('hex');
-      snapshot.set(slug, {
-        contentHash: rawHash,
-        metadataHash: rawHash,
-      });
-    }
-  }
-
-  return snapshot;
-}
-
-function captureMarkdownFileHashes(storage: SnapshotStorage, dirPath: string): Map<string, string> {
-  const snapshot = new Map<string, string>();
-
-  for (const entry of sortedMarkdownEntries(storage, dirPath)) {
-    snapshot.set(
-      stripMdExt(entry),
-      createHash('sha256')
-        .update(storage.readFileSync(join(dirPath, entry), 'utf-8'))
-        .digest('hex'),
-    );
-  }
-
-  return snapshot;
-}
-
-function captureEntityGraphHash(storage: SnapshotStorage, filePath: string): string | null {
-  try {
-    return createHash('sha256').update(storage.readFileSync(filePath, 'utf-8')).digest('hex');
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-export function captureCorpusFilesystemSnapshot(target: InboundSyncTarget): CorpusFilesystemSnapshot {
-  const storage = target.storagePort;
-  return {
-    notes: captureNoteFileSnapshot(storage, target.notesDir()),
-    wikis: captureWikiFileSnapshot(storage, target.wikiDir()),
-    sources: captureSourceFileSnapshot(storage, target.sourcesDir()),
-    principles: captureMarkdownFileHashes(storage, target.principlesDir()),
-    communities: captureMarkdownFileHashes(storage, target.communitiesDir()),
-    entityGraphHash: captureEntityGraphHash(storage, target.entityGraphPath()),
-  };
-}
-
-function inboundSnapshotMapsEqual(left: Map<string, string>, right: Map<string, string>): boolean {
-  return left.size === right.size && [...left.entries()].every(([key, value]) => right.get(key) === value);
-}
-
-export function detectInboundSyncMutation(
-  before: CorpusFilesystemSnapshot,
-  after: CorpusFilesystemSnapshot,
-): InboundSyncMutationDiff {
-  let lane: KbIndexMutationLane | null = null;
-  const changedEntryIds = new Set<string>();
-
-  const noteSlugs = new Set([...before.notes.keys(), ...after.notes.keys()]);
-  for (const slug of noteSlugs) {
-    const beforeEntry = before.notes.get(slug);
-    const afterEntry = after.notes.get(slug);
-    if (beforeEntry === undefined && afterEntry === undefined) {
+function uniqueSortedStrings(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
       continue;
     }
-
-    changedEntryIds.add(noteEntryId(slug));
-    if (beforeEntry === undefined || afterEntry === undefined) {
-      lane = mergeMutationLane(lane, 'both');
-      continue;
-    }
-    if (beforeEntry.contentHash !== afterEntry.contentHash) {
-      lane = mergeMutationLane(lane, 'content');
-    }
-    if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
-      lane = mergeMutationLane(lane, 'metadata');
-    }
+    seen.add(value);
+    unique.push(value);
   }
+  return unique.sort();
+}
 
-  const wikiSlugs = new Set([...before.wikis.keys(), ...after.wikis.keys()]);
-  for (const slug of wikiSlugs) {
-    const beforeEntry = before.wikis.get(slug);
-    const afterEntry = after.wikis.get(slug);
-    if (beforeEntry === undefined && afterEntry === undefined) {
-      continue;
-    }
-
-    changedEntryIds.add(wikiEntryId(slug));
-    if (beforeEntry === undefined || afterEntry === undefined) {
-      lane = mergeMutationLane(lane, 'both');
-      continue;
-    }
-    if (beforeEntry.contentHash !== afterEntry.contentHash) {
-      lane = mergeMutationLane(lane, 'content');
-    }
-    if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
-      lane = mergeMutationLane(lane, 'metadata');
-    }
-  }
-
-  const sourceSlugs = new Set([...before.sources.keys(), ...after.sources.keys()]);
-  for (const slug of sourceSlugs) {
-    const beforeEntry = before.sources.get(slug);
-    const afterEntry = after.sources.get(slug);
-    if (beforeEntry === undefined && afterEntry === undefined) {
-      continue;
-    }
-
-    changedEntryIds.add(sourceEntryId(slug));
-    if (beforeEntry === undefined || afterEntry === undefined) {
-      lane = mergeMutationLane(lane, 'both');
-      continue;
-    }
-    if (beforeEntry.contentHash !== afterEntry.contentHash) {
-      lane = mergeMutationLane(lane, 'content');
-    }
-    if (beforeEntry.metadataHash !== afterEntry.metadataHash) {
-      lane = mergeMutationLane(lane, 'metadata');
-    }
-  }
-
-  const principlesChanged = !inboundSnapshotMapsEqual(before.principles, after.principles);
-  const communitiesChanged = !inboundSnapshotMapsEqual(before.communities, after.communities);
-  const entityGraphChanged = before.entityGraphHash !== after.entityGraphHash;
-
-  if (principlesChanged || communitiesChanged || entityGraphChanged) {
-    lane = mergeMutationLane(lane, 'metadata');
-  }
-
-  return {
-    lane,
-    changedEntryIds: [...changedEntryIds].sort(),
-    requiresFullInstall: principlesChanged || communitiesChanged || entityGraphChanged,
-    manifestDeltas: [],
-  };
+export function detectInboundSyncMutation(before: CorpusSurface, after: CorpusSurface): InboundSyncMutationDiff {
+  return diffCorpusSurfaces(before, after);
 }
 
 function captureInboundSyncTrackedPathDeltas(
@@ -550,72 +308,16 @@ export function detectInboundSyncMutationFromStructuredDiff(
     );
   }
 
-  mutation.changedEntryIds = [...new Set(mutation.changedEntryIds)].sort();
+  mutation.changedEntryIds = uniqueSortedStrings(mutation.changedEntryIds);
   return mutation;
 }
 
-export function detectInboundSyncMutationFromFullCollectors(
-  target: InboundSyncTarget,
+export function detectInboundSyncMutationFromSurface(
+  surface: CorpusSurface,
   manifestAuthority: ManifestAuthority,
   forceFullInstall = false,
 ): InboundSyncMutationDiff {
-  const fullHashes = collectFullManifestSurfaceHashes(target);
-  const currentContent = manifestAuthority.getCurrentSurfaceHashes('content');
-  const currentMetadata = manifestAuthority.getCurrentSurfaceHashes('metadata');
-  let lane: KbIndexMutationLane | null = null;
-  let requiresFullInstall = false;
-  const changedEntryIds = new Set<string>();
-
-  for (const manifestId of new Set([...currentContent.keys(), ...fullHashes.content.keys()])) {
-    const previousHash = currentContent.get(manifestId) ?? null;
-    const nextHash = fullHashes.content.get(manifestId) ?? null;
-    if (previousHash === nextHash) {
-      continue;
-    }
-
-    lane = mergeMutationLane(lane, 'content');
-    if (manifestId.startsWith('note:') || manifestId.startsWith('source:') || manifestId.startsWith('wiki:')) {
-      changedEntryIds.add(manifestId);
-    }
-  }
-
-  for (const manifestId of new Set([...currentMetadata.keys(), ...fullHashes.metadata.keys()])) {
-    const previousHash = currentMetadata.get(manifestId) ?? null;
-    const nextHash = fullHashes.metadata.get(manifestId) ?? null;
-    if (previousHash === nextHash) {
-      continue;
-    }
-
-    lane = mergeMutationLane(lane, 'metadata');
-    if (manifestId.startsWith('note-meta:')) {
-      changedEntryIds.add(noteEntryId(manifestId.slice('note-meta:'.length)));
-      continue;
-    }
-    if (manifestId.startsWith('source-meta:')) {
-      changedEntryIds.add(sourceEntryId(manifestId.slice('source-meta:'.length)));
-      continue;
-    }
-    if (manifestId.startsWith('wiki-meta:')) {
-      changedEntryIds.add(wikiEntryId(manifestId.slice('wiki-meta:'.length)));
-      continue;
-    }
-    requiresFullInstall = true;
-  }
-
-  if (forceFullInstall && lane !== null) {
-    requiresFullInstall = true;
-  }
-
-  if (lane !== null) {
-    manifestAuthority.replaceCurrentSurfaceHashes(fullHashes);
-  }
-
-  return {
-    lane,
-    changedEntryIds: [...changedEntryIds].sort(),
-    requiresFullInstall,
-    manifestDeltas: [],
-  };
+  return diffCorpusSurfaceAgainstAuthority(surface, manifestAuthority, { forceFullInstall });
 }
 
 type InboundIndexPaths = {
@@ -698,4 +400,3 @@ export function buildInboundSyncIndexDelta(
 
   return nextIndex;
 }
-

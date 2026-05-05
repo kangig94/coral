@@ -1,12 +1,7 @@
 import { isNoEntryError } from '../../../infra/fs-errors.js';
 import { captureRemovedWikiManifestDeltas } from '../../corpus/manifest-authority.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../../corpus/index-mutations.js';
-import {
-  deleteEntry,
-  wikiEntryId,
-  type KbWikiDeleteInput,
-  type KbWikiDeleteResponse,
-} from '../../entry-types.js';
+import { deleteEntry, wikiEntryId, type KbWikiDeleteInput, type KbWikiDeleteResponse } from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
 

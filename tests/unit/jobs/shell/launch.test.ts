@@ -1603,6 +1603,21 @@ describe('ExecutionService launch', () => {
     });
   });
 
+  it('coralDispatch rejects an empty sessionId before launch resolution', async () => {
+    const service = createService(ctx);
+
+    const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello', sessionId: '' }, ctx);
+
+    expect(decision).toMatchObject({
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'invalid_request',
+      message: 'Session ID is required when provided.',
+    });
+    expect(mockState.getNewProvider).not.toHaveBeenCalled();
+    expect(mockState.resolveAgent).not.toHaveBeenCalled();
+  });
+
   it('coralDispatch persists explicit workflow atom retention into session.opened', async () => {
     const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });

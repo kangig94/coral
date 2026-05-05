@@ -205,7 +205,7 @@ describe('cleanup discipline invariants', () => {
     expect(providerContract).not.toContain('cleanupSessions');
 
     const reactor = readFileSync(resolve(REPO_ROOT, LIFECYCLE_REACTOR), 'utf8');
-    expect(reactor).toContain('enforceRetention(sessionId: string, jobId: string)');
+    expect(reactor).toContain('enforceRetention(work: SessionRetentionWork)');
     expect(reactor).not.toContain('disposeSession');
 
     expect(collectDisposalWorkflowSymbolResidue()).toEqual([]);

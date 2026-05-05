@@ -109,10 +109,6 @@ export function buildWorkflowPlan(
   return { slots };
 }
 
-export function defaultJobIdForSlot(slot: PlanSlot): string {
-  return slot.slotId;
-}
-
 export function compileWorkflowPlan(
   plan: WorkflowPlan,
   options: {
@@ -133,7 +129,7 @@ export function compileWorkflowPlan(
 
     return {
       ...slot,
-      jobId: options.jobIds?.get(slot.slotId) ?? defaultJobIdForSlot(slot),
+      jobId: options.jobIds?.get(slot.slotId) ?? slot.slotId,
       stepIndex,
       tagName,
       atomKey: `${stepIndex}:${atomIndex}`,
@@ -141,16 +137,6 @@ export function compileWorkflowPlan(
       kind,
     };
   });
-}
-
-export function slotsForStep(
-  plan: WorkflowPlan,
-  stepIndex: number,
-  options: {
-    jobIds?: ReadonlyMap<string, string>;
-  } = {},
-): CompiledPlanSlot[] {
-  return compileWorkflowPlan(plan, options).filter((slot) => slot.stepIndex === stepIndex);
 }
 
 export function maxStepIndex(plan: WorkflowPlan): number {
@@ -163,7 +149,10 @@ export function maxStepIndex(plan: WorkflowPlan): number {
 }
 
 function computeStepIndexes(plan: WorkflowPlan): Map<string, number> {
-  const slotsById = new Map(plan.slots.map((slot) => [slot.slotId, slot]));
+  const slotsById = new Map<string, WorkflowPlan['slots'][number]>();
+  for (const slot of plan.slots) {
+    slotsById.set(slot.slotId, slot);
+  }
   const memo = new Map<string, number>();
   const visiting = new Set<string>();
 
@@ -182,8 +171,10 @@ function computeStepIndexes(plan: WorkflowPlan): Map<string, number> {
     }
 
     visiting.add(slotId);
-    const stepIndex =
-      slot.dependencies.length === 0 ? 0 : Math.max(...slot.dependencies.map((dependency) => depth(dependency))) + 1;
+    let stepIndex = 0;
+    for (const dependency of slot.dependencies) {
+      stepIndex = Math.max(stepIndex, depth(dependency) + 1);
+    }
     visiting.delete(slotId);
     memo.set(slotId, stepIndex);
     return stepIndex;

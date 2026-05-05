@@ -1,8 +1,6 @@
 import type { Backed, KbRuntime } from '../contract.js';
 import { KB_EMBEDDING_CAPABILITY, KB_VECTOR_CAPABILITY } from '../capability/constants.js';
-import type { RetrievalRole, VectorRetrieval, VectorRetrievalResult } from './contract.js';
-
-export const EMPTY_VECTOR_RETRIEVAL_RESULT: VectorRetrievalResult = { hits: [] };
+import type { RetrievalRole, VectorRetrieval } from './contract.js';
 
 const BUILTIN_VECTOR_ROLE_DESCRIPTOR = {
   id: 'vector',

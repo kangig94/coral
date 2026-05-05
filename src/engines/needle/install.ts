@@ -25,6 +25,7 @@ const NEEDLE_ARCH_MAP: Record<string, string> = {
 const NEEDLE_INSTALL_LOCK_TIMEOUT_MS = 250;
 const NEEDLE_GITHUB_REPO = 'kangig94/coral-needle';
 const NEEDLE_POST_INSTALL = ['register_expansion'] as const;
+const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
 
 type InstallMethod = 'prebuild' | 'source-build';
 type InstallError = {
@@ -114,7 +115,7 @@ function isInstallPathUnwritableError(error: unknown): error is NodeJS.ErrnoExce
   return (
     error instanceof Error &&
     'code' in error &&
-    ['EACCES', 'EPERM', 'EROFS', 'ENOSPC'].includes(String((error as NodeJS.ErrnoException).code))
+    INSTALL_PATH_UNWRITABLE_CODES.has(String((error as NodeJS.ErrnoException).code))
   );
 }
 

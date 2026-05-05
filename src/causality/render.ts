@@ -134,5 +134,6 @@ function renderCauseRef(
     description: `${baseDescription} Caused by: ${next.description}`,
     chain: next.chain,
     ...(next.cycle ? { cycle: next.cycle } : {}),
+    ...(next.missing ? { missing: next.missing } : {}),
   };
 }

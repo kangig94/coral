@@ -1,8 +1,4 @@
-import {
-  parseKnowledgeBlocks,
-  serializeKnowledgeBlocks,
-  type KnowledgeBlock,
-} from '../../corpus/frontmatter.js';
+import { parseKnowledgeBlocks, serializeKnowledgeBlocks, type KnowledgeBlock } from '../../corpus/frontmatter.js';
 import type { KbWikiLinkInput, KbWikiMutationResponse } from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
@@ -15,7 +11,10 @@ export async function linkWikiKnowledge(rt: KbRuntime, input: KbWikiLinkInput): 
 
   return rewriteWiki(rt, slug, (current) => {
     const blocks = parseKnowledgeBlocks(current.sections.knowledge);
-    const present = new Set(blocks.map((block) => block.entryId));
+    const present = new Set<string>();
+    for (const block of blocks) {
+      present.add(block.entryId);
+    }
     const additions: KnowledgeBlock[] = [];
     for (const entryId of refs) {
       if (!present.has(entryId)) {

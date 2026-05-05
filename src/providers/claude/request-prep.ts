@@ -23,9 +23,13 @@ const OPUS_RANK = ABSTRACT_MODEL_TIERS.opus;
 
 /** SHA-256 hash of sorted env entries (excluding CORAL_CHILD). Shared by adapter and broker. */
 export function hashSortedEnv(env: Record<string, string>): string {
-  const sortedEntries = Object.entries(env)
-    .filter(([key]) => key !== 'CORAL_CHILD')
-    .sort(([left], [right]) => left.localeCompare(right));
+  const sortedEntries: [string, string][] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (key !== 'CORAL_CHILD') {
+      sortedEntries.push([key, value]);
+    }
+  }
+  sortedEntries.sort(([left], [right]) => left.localeCompare(right));
   return `sha256:${createHash('sha256').update(JSON.stringify(sortedEntries)).digest('hex')}`;
 }
 
@@ -63,7 +67,13 @@ export function normalizeControllerEnv(env?: Record<string, string>): Record<str
     return {};
   }
 
-  return Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string'));
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 export function resolveClaudeModel(model: string | undefined, env: Record<string, string>): string | undefined {

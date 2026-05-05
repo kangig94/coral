@@ -105,10 +105,14 @@ export function computeManifestHash(entries: Iterable<HashedManifestEntry>): str
     byManifestId.set(entry.manifestId, entry.surfaceHash);
   }
 
-  const serialized = [...byManifestId.entries()]
-    .sort(([leftId], [rightId]) => compareUtf8Lexicographically(leftId, rightId))
-    .map(([manifestId, surfaceHash]) => `${manifestId}\t${surfaceHash}`)
-    .join('\n');
+  const sortedEntries = [...byManifestId.entries()].sort(([leftId], [rightId]) =>
+    compareUtf8Lexicographically(leftId, rightId),
+  );
+  const serializedRows: string[] = [];
+  for (const [manifestId, surfaceHash] of sortedEntries) {
+    serializedRows.push(`${manifestId}\t${surfaceHash}`);
+  }
+  const serialized = serializedRows.join('\n');
 
   return sha256Hex(serialized);
 }
@@ -147,9 +151,13 @@ export function canonicalizeFrontmatterValue(value: CanonicalFrontmatterValue, f
   }
 
   if (Array.isArray(value)) {
-    const items = value
-      .map((entry) => canonicalizeFrontmatterValue(entry))
-      .filter((entry): entry is string => entry !== undefined);
+    const items: string[] = [];
+    for (const entry of value) {
+      const canonical = canonicalizeFrontmatterValue(entry);
+      if (canonical !== undefined) {
+        items.push(canonical);
+      }
+    }
 
     if (fieldName !== undefined && SET_LIKE_FRONTMATTER_ARRAY_FIELDS.has(fieldName)) {
       items.sort(compareUtf8Lexicographically);
@@ -205,15 +213,20 @@ export function compareUtf8Lexicographically(left: string, right: string): numbe
 }
 
 function canonicalizeObject(record: { [key: string]: CanonicalFrontmatterValue }): string {
-  const entries = Object.entries(record)
-    .map(([key, value]) => {
-      const canonicalValue = canonicalizeFrontmatterValue(value, key);
-      return canonicalValue === undefined ? null : ([key, canonicalValue] as const);
-    })
-    .filter((entry): entry is readonly [string, string] => entry !== null)
-    .sort(([leftKey], [rightKey]) => compareUtf8Lexicographically(leftKey, rightKey));
+  const entries: Array<readonly [string, string]> = [];
+  for (const [key, value] of Object.entries(record)) {
+    const canonicalValue = canonicalizeFrontmatterValue(value, key);
+    if (canonicalValue !== undefined) {
+      entries.push([key, canonicalValue] as const);
+    }
+  }
+  entries.sort(([leftKey], [rightKey]) => compareUtf8Lexicographically(leftKey, rightKey));
 
-  return `{${entries.map(([key, value]) => `${JSON.stringify(key)}:${value}`).join(',')}}`;
+  const rendered: string[] = [];
+  for (const [key, value] of entries) {
+    rendered.push(`${JSON.stringify(key)}:${value}`);
+  }
+  return `{${rendered.join(',')}}`;
 }
 
 function toUtf8Bytes(input: Uint8Array | string): Uint8Array {

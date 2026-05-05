@@ -119,60 +119,79 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
 
 export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter?: string): KbMemoListResult {
   const dir = memoDir(projectRoot);
-  const memos = readMemoDir(storage, projectRoot)
-    .filter((filename) => filename.endsWith('.md'))
-    .flatMap((filename) => {
+  const memos: Array<{ filename: string; summary: string; createdAt: string; sortKey: number; owner?: string }> = [];
+
+  for (const filename of readMemoDir(storage, projectRoot)) {
+    if (!filename.endsWith('.md')) {
+      continue;
+    }
+
+    try {
+      const path = join(dir, filename);
+      const raw = storage.readFileSync(path, 'utf-8');
+      const memo = parseTimestampPrefix(filename);
+
+      let owner: string | undefined;
       try {
-        const path = join(dir, filename);
-        const raw = storage.readFileSync(path, 'utf-8');
-        const memo = parseTimestampPrefix(filename);
-
-        let owner: string | undefined;
-        try {
-          const parsed = parseMemoFrontmatter(raw);
-          owner = parsed.owner;
-        } catch {
-          // Memos without valid frontmatter are treated as unowned.
-        }
-
-        if (ownerFilter !== undefined && owner !== ownerFilter) {
-          return [];
-        }
-
-        const mtimeMs = storage.statSync(path).mtimeMs;
-        const createdAt = memo?.display ?? new Date(mtimeMs).toISOString();
-        const sortKey = memo?.sortKey ?? (memo === null ? mtimeMs : Date.parse(createdAt) || 0);
-
-        return [{ filename, summary: extractSummary(raw), createdAt, sortKey, owner }];
+        const parsed = parseMemoFrontmatter(raw);
+        owner = parsed.owner;
       } catch {
-        return [];
+        // Memos without valid frontmatter are treated as unowned.
       }
-    });
+
+      if (ownerFilter !== undefined && owner !== ownerFilter) {
+        continue;
+      }
+
+      const mtimeMs = storage.statSync(path).mtimeMs;
+      const createdAt = memo?.display ?? new Date(mtimeMs).toISOString();
+      let sortKey = memo?.sortKey;
+      sortKey ??= memo === null ? mtimeMs : Date.parse(createdAt) || 0;
+
+      memos.push({ filename, summary: extractSummary(raw), createdAt, sortKey, owner });
+    } catch {
+      // Ignore unreadable or malformed memo files while listing.
+    }
+  }
 
   memos.sort((left, right) => right.sortKey - left.sortKey || compareLocale(left.filename, right.filename));
 
+  const listedMemos: KbMemoListResult['memos'] = [];
+  for (const { filename, summary, createdAt, owner } of memos) {
+    listedMemos.push({ filename, summary, createdAt, owner });
+  }
+
   return {
-    memos: memos.map(({ filename, summary, createdAt, owner }) => ({ filename, summary, createdAt, owner })),
+    memos: listedMemos,
   };
 }
 
 export function deleteMemos(storage: MemoStorage, projectRoot: string, input: KbMemoDeleteInput): KbMemoDeleteResult {
   const dir = memoDir(projectRoot);
   const matcher = globToRegex(input.pattern);
-  const deleted = readMemoDir(storage, projectRoot)
-    .filter((filename) => filename.endsWith('.md'))
-    .filter((filename) => matcher.test(filename))
-    .filter((filename) => {
-      if (input.owner === undefined) return true;
+  const deleted: string[] = [];
+
+  for (const filename of readMemoDir(storage, projectRoot)) {
+    if (!filename.endsWith('.md') || !matcher.test(filename)) {
+      continue;
+    }
+
+    if (input.owner !== undefined) {
       try {
         const raw = storage.readFileSync(join(dir, filename), 'utf-8');
         const parsed = parseMemoFrontmatter(raw);
-        return parsed.owner === input.owner;
+        if (parsed.owner !== input.owner) {
+          continue;
+        }
       } catch {
-        return false;
+        continue;
       }
-    })
-    .sort(compareLocale);
+    }
+
+    deleted.push(filename);
+  }
+
+  deleted.sort(compareLocale);
 
   for (const filename of deleted) {
     unlinkIfExists(join(dir, filename), storage);

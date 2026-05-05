@@ -106,6 +106,14 @@ import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
 
+function commaHeaderTokens(value: string | null): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+}
+
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp-${process.pid}-${Date.now()}`,
@@ -645,10 +653,7 @@ describe('execution backend server', () => {
   }
 
   function readKbSubsystem(state: MutableCoordinatorRuntimeState): unknown {
-    const result = state.subsystems.run<KnowledgeBaseRuntime, KnowledgeBaseRuntime>(
-      'kb' as never,
-      (kb) => kb,
-    );
+    const result = state.subsystems.run<KnowledgeBaseRuntime, KnowledgeBaseRuntime>('kb' as never, (kb) => kb);
     return result instanceof Object && 'ok' in result && (result as { ok: false }).ok === false ? null : result;
   }
 
@@ -666,25 +671,23 @@ describe('execution backend server', () => {
       register: vi.fn(),
       initAll: vi.fn(),
       disposeAll: vi.fn(async () => {}),
-      run: vi.fn(<T,>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => T) => {
+      run: vi.fn(<T>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => T) => {
         if (kbSubsystem === null) {
           return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
         }
         return fn(kbSubsystem);
       }),
-      runAsync: vi.fn(async <T,>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => Promise<T>) => {
+      runAsync: vi.fn(async <T>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => Promise<T>) => {
         if (kbSubsystem === null) {
           return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
         }
         return await fn(kbSubsystem);
       }),
-      list: vi.fn(() =>
-        kbSubsystem === null ? [] : [{ id: 'kb' as never, phase: 'online' as const }],
-      ),
+      list: vi.fn(() => (kbSubsystem === null ? [] : [{ id: 'kb' as never, phase: 'online' as const }])),
       status: vi.fn(() =>
         kbSubsystem === null
-          ? ({ id: 'kb' as never, phase: 'initializing' as const, attempt: 0 })
-          : ({ id: 'kb' as never, phase: 'online' as const }),
+          ? { id: 'kb' as never, phase: 'initializing' as const, attempt: 0 }
+          : { id: 'kb' as never, phase: 'online' as const },
       ),
     };
 
@@ -4583,7 +4586,36 @@ describe('execution backend server', () => {
     const response = await fetch(`${backend.baseUrl}/health`);
 
     expect(response.status).toBe(401);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+  });
+
+  it('returns CORS headers for preflight requests without requiring a token', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://example.test',
+        'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
+        'Access-Control-Request-Private-Network': 'true',
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Headers'))).toEqual([
+      'content-type',
+      'x-coral-backend-token',
+    ]);
+    expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Methods'))).toEqual([
+      'delete',
+      'get',
+      'options',
+      'post',
+      'put',
+    ]);
+    expect(response.headers.get('Access-Control-Allow-Private-Network')).toBe('true');
   });
 
   describe('shutdown policy', () => {

@@ -299,4 +299,25 @@ describe('state-machine deciders', () => {
       value: [],
     });
   });
+
+  it('uses the force reason as end content when no typed end reason is supplied', () => {
+    const snapshot = createBiddingSnapshot();
+
+    const events = unwrap(
+      decideEnd(
+        snapshot.state,
+        { force: true, reason: 'manual stop' },
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toMatchObject({
+      force: true,
+      reason: 'manual stop',
+      endReasonContent: 'manual stop',
+    });
+  });
 });

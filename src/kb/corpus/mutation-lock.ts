@@ -43,9 +43,7 @@ export interface KbMutationLockOptions<
    * Do not queue manifest authority deltas from this hook: manifest authority
    * and corpus state have already been finalized for the active mutation.
    */
-  postFinalize?: (
-    lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>,
-  ) => Promise<void>;
+  postFinalize?: (lockCtx: KbMutationLockContext<TIndex, TPublication, TLane, TOpaqueDelta>) => Promise<void>;
 }
 
 /** Reason value attached to the deadline abort on the composed signal. */

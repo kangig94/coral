@@ -1,5 +1,6 @@
 import type { EffortLevel, Provider, ProviderEventBody, ProviderRuntime } from '../contract.js';
 import type { ProviderCliRunner } from '../protocol.js';
+import { readString } from '../../infra/json.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { ParseErrorDetail } from '../middleware/adapter-parse-guard.js';
 import { streamProviderEvents } from '../stream.js';
@@ -9,7 +10,7 @@ import { extractClaudeProgressMessage } from './progress.js';
 import { buildClaudeBootstrapSignature, buildClaudeContinuity } from './request-mapping.js';
 import { buildPreparedClaudeRequest } from './request-prep.js';
 import type { ClaudeExecFailure, ClaudeExecResult, ClaudeStreamEvent } from './exec-types.js';
-import { locateClaudeJsonlArtifactFromRuntime } from './provider-facets.js';
+import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 
 const STREAM_JSON_ARGS = ['-p', '--verbose', '--output-format', 'stream-json'];
 
@@ -48,12 +49,13 @@ export const claudeExecKernel: Provider = (request, runtime) =>
     if (request.action !== 'fork') {
       throw new Error(`Claude exec kernel only supports fork actions, received ${request.action}.`);
     }
-    if (!request.conversationRef) {
+    const conversationRef = readString(request.conversationRef);
+    if (conversationRef === undefined) {
       throw new Error('fork requires conversationRef');
     }
 
     const prepared = buildPreparedClaudeRequest(request, runtime.storage, runtime.kbRoot);
-    const result = await executeClaudeFork(request.conversationRef, prepared.prompt, {
+    const result = await executeClaudeFork(conversationRef, prepared.prompt, {
       model: prepared.model,
       workingDirectory: request.cwd,
       systemPrompt: prepared.systemPrompt,
@@ -65,16 +67,17 @@ export const claudeExecKernel: Provider = (request, runtime) =>
       time: runtime.time,
     });
 
-    if (result.sessionId) {
+    const resultSessionId = readString(result.sessionId);
+    if (resultSessionId !== undefined) {
       runtime.continuityBridge.checkpoint({
-        conversationRef: result.sessionId,
+        conversationRef: resultSessionId,
         resumable: true,
         providerContinuity: buildClaudeContinuity({
           bootstrapSignature: buildClaudeBootstrapSignature(request, runtime.ids, prepared.systemPrompt),
-          conversationRef: result.sessionId,
+          conversationRef: resultSessionId,
         }),
       });
-      emitClaudeArtifactHandle(result.sessionId, runtime, emit);
+      emitClaudeArtifactHandle(resultSessionId, runtime, emit);
     }
 
     emit({
@@ -116,6 +119,7 @@ function emitClaudeArtifactHandle(
     emit({
       kind: 'artifact_handle',
       handle: result.artifact.handle,
+      ...(result.artifact.identity === undefined ? {} : { identity: result.artifact.identity }),
     });
     return;
   }

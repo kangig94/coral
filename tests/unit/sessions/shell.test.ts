@@ -428,11 +428,12 @@ describe('sessions shell store', () => {
       }),
     ).resolves.toBe(true);
 
-    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
-      activeJobId: undefined,
+    const updated = mgr.get('codex', entry.sessionId);
+    expect(updated).toMatchObject({
       state: 'ready',
       conversationRef: 'thread-1',
     });
+    expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
   });
 
   it('finalizeJobContinuityAtomic appends checkpoint and claim release in one commit and caches release entry', async () => {
@@ -469,21 +470,23 @@ describe('sessions shell store', () => {
         version: claimed.version + 1,
       },
     });
-    expect(appendedBatches[0][1].body).toMatchObject({
+    const releaseBody = appendedBatches[0][1].body as { entry: Record<string, unknown>; jobId: string };
+    expect(releaseBody).toMatchObject({
       entry: {
         sessionId: entry.sessionId,
-        activeJobId: undefined,
         version: claimed.version + 2,
       },
       jobId: 'job-1',
     });
+    expect(Object.hasOwn(releaseBody.entry, 'activeJobId')).toBe(false);
 
-    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
-      activeJobId: undefined,
+    const updated = mgr.get('codex', entry.sessionId);
+    expect(updated).toMatchObject({
       state: 'ready',
       conversationRef: 'thread-1',
       version: claimed.version + 2,
     });
+    expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
   });
 
   it('clearConversationRefAndMarkNonResumableAtomic clears conversationRef and releases the claim', async () => {
@@ -501,11 +504,12 @@ describe('sessions shell store', () => {
       mgr.clearConversationRefAndMarkNonResumableAtomic(entry.sessionId, 'job-1', claimed.version),
     ).resolves.toBe(true);
 
-    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
-      activeJobId: undefined,
+    const updated = mgr.get('codex', entry.sessionId);
+    expect(updated).toMatchObject({
       state: 'non_resumable',
     });
-    expect(mgr.get('codex', entry.sessionId)?.conversationRef).toBeUndefined();
+    expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
+    expect(Object.hasOwn(updated ?? {}, 'conversationRef')).toBe(false);
   });
 
   it('finalizeJobContinuityAtomic returns false when the version is stale', async () => {
@@ -734,9 +738,7 @@ describe('sessions shell store', () => {
         }),
       ).resolves.toBe(true);
 
-      expect(mgr.get('codex', entry.sessionId)).toMatchObject({
-        activeJobId: undefined,
-      });
+      expect(Object.hasOwn(mgr.get('codex', entry.sessionId) ?? {}, 'activeJobId')).toBe(false);
 
       const rows = db
         .prepare(

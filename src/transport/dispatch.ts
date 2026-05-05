@@ -477,10 +477,10 @@ export async function executeCatalogRequest(
         return unaryHttp(response);
       }
       const data = result.data;
-      const status =
-        typeof data === 'object' && data !== null && 'status' in data
-          ? (data as { status?: unknown }).status
-          : undefined;
+      let status: unknown;
+      if (typeof data === 'object' && data !== null && 'status' in data) {
+        status = (data as { status?: unknown }).status;
+      }
       return unary(response.body, status === 'running' || status === 'queued' ? 202 : 201);
     }
 

@@ -25,7 +25,9 @@ import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
+import type { JobRuntimeStartedBody } from './event-bodies.js';
 import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
+import { buildJobEventRefs } from './refs.js';
 
 export type JobStoreOptions = {
   eventBus?: JobEventBus;
@@ -70,6 +72,34 @@ function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): 
     content: exit.content,
     outcome: exit.outcome,
     durationMs: exit.durationMs,
+  };
+}
+
+function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
+  if (runtime.transport === 'internal') {
+    return {
+      transport: 'internal',
+      operation: runtime.operation,
+      startedAt: runtime.startTime,
+    };
+  }
+
+  if (runtime.transport === 'app-server') {
+    return {
+      transport: 'app-server',
+      startedAt: runtime.startTime,
+      providerMeta: runtime.providerMeta,
+    };
+  }
+
+  return {
+    transport: runtime.transport,
+    pid: runtime.pid,
+    stdoutPath: runtime.stdoutPath,
+    stderrPath: runtime.stderrPath,
+    startedAt: runtime.startTime,
+    providerMeta: runtime.providerMeta,
+    tailWatermark: runtime.tailWatermark,
   };
 }
 
@@ -336,7 +366,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
           bodyVersion: 1,
           body: {
             queuePosition: 0,
@@ -355,7 +385,7 @@ export class JobStore implements JobProgressStore {
           stream: { kind: 'job', id: opts.jobId },
           namespace: opts.backendNamespace,
           project: opts.projectRoot,
-          refs: { jobId: opts.jobId, sessionId: opts.sessionId },
+          refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
           bodyVersion: 1,
           body: {
             startedAt: createdAt,
@@ -401,14 +431,14 @@ export class JobStore implements JobProgressStore {
     // `refs.workflowId = jobId`. Workflow children carry
     // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
     // `refs.workflowSlotId`. Non-workflow jobs omit the field.
-    const workflowId = launch.jobKind === 'workflow' ? jobId : (launch.parentWorkflowJobId ?? null);
-    const refs = {
+    const workflowId = launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId;
+    const refs = buildJobEventRefs({
       jobId,
-      ...(launch.sessionId !== null && launch.sessionId.length > 0 ? { sessionId: launch.sessionId } : {}),
-      ...(launch.parentWorkflowJobId ? { parentJobId: launch.parentWorkflowJobId } : {}),
-      ...(workflowId !== null ? { workflowId } : {}),
-      ...(launch.workflowSlotId ? { workflowSlotId: launch.workflowSlotId } : {}),
-    };
+      sessionId: launch.sessionId,
+      parentJobId: launch.parentWorkflowJobId,
+      workflowId,
+      workflowSlotId: launch.workflowSlotId,
+    });
     const body =
       launch.jobKind === 'kb'
         ? {
@@ -474,33 +504,9 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: {
-          jobId,
-          ...(status?.sessionId ? { sessionId: status.sessionId } : {}),
-        },
+        refs: buildJobEventRefs({ jobId, sessionId: status?.sessionId ?? null }),
         bodyVersion: 1,
-        body:
-          runtime.transport === 'internal'
-            ? {
-                transport: 'internal',
-                operation: runtime.operation,
-                startedAt: runtime.startTime,
-              }
-            : runtime.transport === 'app-server'
-              ? {
-                  transport: 'app-server',
-                  startedAt: runtime.startTime,
-                  providerMeta: runtime.providerMeta,
-                }
-              : {
-                  transport: runtime.transport,
-                  pid: runtime.pid,
-                  stdoutPath: runtime.stdoutPath,
-                  stderrPath: runtime.stderrPath,
-                  startedAt: runtime.startTime,
-                  providerMeta: runtime.providerMeta,
-                  tailWatermark: runtime.tailWatermark,
-                },
+        body: jobRuntimeStartedBody(runtime),
       });
       return undefined;
     });
@@ -516,8 +522,12 @@ export class JobStore implements JobProgressStore {
       return null;
     }
     const processExit = exit.diagnostics.processExit;
+    let exitCode = processExit?.exitCode ?? null;
+    if (exitCode === null && exit.outcome.kind === 'provider_exit') {
+      exitCode = exit.outcome.code;
+    }
     return {
-      exitCode: processExit?.exitCode ?? (exit.outcome.kind === 'provider_exit' ? exit.outcome.code : null),
+      exitCode,
       signal: processExit?.signal ?? null,
       endTime: exit.endTime,
     };
@@ -577,10 +587,7 @@ export class JobStore implements JobProgressStore {
         stream: { kind: 'job', id: jobId },
         namespace: status?.backendNamespace ?? this.namespace,
         project: status?.projectRoot,
-        refs: {
-          jobId,
-          ...(sessionId === null ? {} : { sessionId }),
-        },
+        refs: buildJobEventRefs({ jobId, sessionId }),
         bodyVersion: 1,
         body: {
           kind: 'message',

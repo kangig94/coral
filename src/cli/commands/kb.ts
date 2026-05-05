@@ -63,17 +63,22 @@ function assertRefFormat(value: string, field: string): string {
 }
 
 function assertRefsFormat(values: readonly string[]): string[] {
-  return values.map((value) => assertRefFormat(value, 'ref'));
+  const refs: string[] = [];
+  for (const value of values) {
+    refs.push(assertRefFormat(value, 'ref'));
+  }
+  return refs;
 }
 
 function appendDelimitedOption(value: string, previous: string[] | undefined): string[] {
-  return [
-    ...(previous ?? []),
-    ...value
-      .split(',')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0),
-  ];
+  const items = previous === undefined ? [] : [...previous];
+  for (const item of value.split(',')) {
+    const trimmed = item.trim();
+    if (trimmed.length > 0) {
+      items.push(trimmed);
+    }
+  }
+  return items;
 }
 
 function registerKbSourceCommands(kb: Command): void {
@@ -110,16 +115,16 @@ function registerKbSourceCommands(kb: Command): void {
     .description('List KB sources')
     .addOption(createOutputFormatOption())
     .action(async () => {
-    const outputFormat = getOutputFormat(kbSourceListCommand);
+      const outputFormat = getOutputFormat(kbSourceListCommand);
 
-    try {
-      const client = makeClient(process.cwd(), kbSourceListCommand);
-      const result = await client.kbSourceList();
-      emit(result, outputFormat, formatKbSourceList);
-    } catch (error) {
-      emitError(error);
-    }
-  });
+      try {
+        const client = makeClient(process.cwd(), kbSourceListCommand);
+        const result = await client.kbSourceList();
+        emit(result, outputFormat, formatKbSourceList);
+      } catch (error) {
+        emitError(error);
+      }
+    });
 
   const kbSourceDeleteCommand = kbSourceCommand.command('delete');
   kbSourceDeleteCommand
@@ -199,7 +204,9 @@ function registerKbWikiCommands(kb: Command): void {
 
   const kbWikiUnlinkCommand = kbWikiCommand.command('unlink');
   kbWikiUnlinkCommand
-    .description('Remove references from Knowledge. Their evidence sub-bullets are removed with them. Missing refs are ignored.')
+    .description(
+      'Remove references from Knowledge. Their evidence sub-bullets are removed with them. Missing refs are ignored.',
+    )
     .argument('<slug>', 'Wiki slug')
     .argument('<refs...>', 'One or more refs (space-separated)')
     .action(async (slug: string, refs: string[]) => {
@@ -237,7 +244,9 @@ function registerKbWikiCommands(kb: Command): void {
 
   const kbWikiAdoptCommand = kbWikiCommand.command('adopt');
   kbWikiAdoptCommand
-    .description('Promote a memo to a note and link it at the front of <slug>\'s Knowledge in one atomic operation. All --memo/--title/--content-file/--domain/--topic are required.')
+    .description(
+      "Promote a memo to a note and link it at the front of <slug>'s Knowledge in one atomic operation. All --memo/--title/--content-file/--domain/--topic are required.",
+    )
     .argument('<slug>', 'Wiki slug to adopt the new note into')
     .requiredOption('--memo <filename>', '(required) Memo filename (e.g. 20260325-topic.md)')
     .requiredOption('--title <text>', '(required) Note title')
@@ -400,7 +409,7 @@ export function registerKbCommands(program: Command): void {
       const outputFormat = getOutputFormat(kbSearchCommand);
 
       try {
-        const selectedModes = [opts.vector, opts.hybrid].filter((selected) => selected === true).length;
+        const selectedModes = Number(opts.vector === true) + Number(opts.hybrid === true);
         if (selectedModes > 1) {
           throw new UsageError('Choose at most one of --vector or --hybrid');
         }
@@ -425,16 +434,16 @@ export function registerKbCommands(program: Command): void {
     .description('Show KB entries with pending manual repair actions')
     .addOption(createOutputFormatOption())
     .action(async () => {
-    const outputFormat = getOutputFormat(kbDiagnoseCommand);
+      const outputFormat = getOutputFormat(kbDiagnoseCommand);
 
-    try {
-      const client = makeClient(process.cwd(), kbDiagnoseCommand);
-      const result = await client.kbDiagnose({});
-      emit(result, outputFormat, formatKbDiagnose);
-    } catch (error) {
-      emitError(error);
-    }
-  });
+      try {
+        const client = makeClient(process.cwd(), kbDiagnoseCommand);
+        const result = await client.kbDiagnose({});
+        emit(result, outputFormat, formatKbDiagnose);
+      } catch (error) {
+        emitError(error);
+      }
+    });
 
   const kbPrinciplesCommand = kb.command('principles');
   kbPrinciplesCommand
@@ -549,17 +558,15 @@ export function registerKbCommands(program: Command): void {
     });
 
   const kbWakeUpCommand = kb.command('wake-up');
-  kbWakeUpCommand
-    .description('Generate the KB wake-up packet')
-    .action(async () => {
-      try {
-        const client = makeClient(process.cwd(), kbWakeUpCommand);
-        const result = await client.kbWakeUp({ project: resolveProjectSource(process.cwd()).replace(/\//g, '-') });
-        emitText(result, formatKbWakeUp);
-      } catch (error) {
-        emitError(error);
-      }
-    });
+  kbWakeUpCommand.description('Generate the KB wake-up packet').action(async () => {
+    try {
+      const client = makeClient(process.cwd(), kbWakeUpCommand);
+      const result = await client.kbWakeUp({ project: resolveProjectSource(process.cwd()).replace(/\//g, '-') });
+      emitText(result, formatKbWakeUp);
+    } catch (error) {
+      emitError(error);
+    }
+  });
 
   const kbReindexCommand = kb.command('reindex');
   kbReindexCommand

@@ -14,7 +14,6 @@
 // `WorkflowView.slotOutcomes`, which together are the inputs that CLI
 // presentation composes from.
 
-
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';

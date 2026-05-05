@@ -555,5 +555,4 @@ describe('external edit absorption', () => {
     expect(installSpy).toHaveBeenCalledTimes(1);
     expect(initial.kb.readIndexState().textStaleReason).toBeUndefined();
   });
-
 });

@@ -120,8 +120,7 @@ type StoreSchemaClassification =
   | { kind: 'current'; userVersion: number; storedVersion: number }
   | { kind: 'mismatch'; userVersion: number; storedVersion: number };
 
-const USER_TABLE_EXISTS_SQL =
-  "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
+const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
 
 const CORAL_LEGACY_TABLES = [
   'events',
@@ -157,7 +156,9 @@ function readLegacyMetaSchemaVersion(db: Database): number | null {
     const row = db
       .prepare<[], { value?: unknown }>("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1")
       .get();
-    if (typeof row?.value !== 'string') return null;
+    if (typeof row?.value !== 'string') {
+      return null;
+    }
     const parsed = Number(row.value);
     return Number.isFinite(parsed) ? parsed : 0;
   } catch (error: unknown) {
@@ -171,9 +172,8 @@ function readLegacyMetaSchemaVersion(db: Database): number | null {
 function hasCoralLegacyTable(db: Database): boolean {
   const quotedNames = CORAL_LEGACY_TABLES.map((name) => `'${name}'`).join(', ');
   return (
-    db
-      .prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`)
-      .get() !== undefined
+    db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`).get() !==
+    undefined
   );
 }
 
@@ -369,11 +369,21 @@ function assertResetAuthority(
   };
 
   const mismatches: string[] = [];
-  if (authority.socketPath !== expected.socketPath) mismatches.push('socketPath');
-  if (authority.storeDbPath !== expected.storeDbPath) mismatches.push('storeDbPath');
-  if (authority.bundleHash !== expected.bundleHash) mismatches.push('bundleHash');
-  if (authority.flavor !== expected.flavor) mismatches.push('flavor');
-  if (authority.namespace !== expected.namespace) mismatches.push('namespace');
+  if (authority.socketPath !== expected.socketPath) {
+    mismatches.push('socketPath');
+  }
+  if (authority.storeDbPath !== expected.storeDbPath) {
+    mismatches.push('storeDbPath');
+  }
+  if (authority.bundleHash !== expected.bundleHash) {
+    mismatches.push('bundleHash');
+  }
+  if (authority.flavor !== expected.flavor) {
+    mismatches.push('flavor');
+  }
+  if (authority.namespace !== expected.namespace) {
+    mismatches.push('namespace');
+  }
 
   if (mismatches.length > 0) {
     throw documentedCoralSetupError({

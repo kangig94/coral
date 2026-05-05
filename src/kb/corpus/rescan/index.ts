@@ -16,6 +16,7 @@ import {
   projectIncidents,
 } from './projections.js';
 import { buildCorpusScanView } from './scan.js';
+import { buildCorpusSurface } from '../surface.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
 import type { ReindexResult } from '../../entry-types.js';
 import type { DetectedIncident } from './incidents/catalog.js';
@@ -71,12 +72,13 @@ export async function performRescan(
   const topologyIndex = buildKbIndex(initialScan, notes, sources, [], initialWikis, principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
   const finalScan = buildCorpusScanView(kb);
+  const finalSurface = buildCorpusSurface(finalScan);
   const communities = loadCommunities(finalScan);
   const wikis = loadWikis(finalScan);
   const index = buildKbIndex(finalScan, notes, sources, communities, wikis, principles);
 
   kb.writeIndex(index);
-  kb.recordReindexSuccess(startState, rebuildInfo.externalMutation ?? undefined);
+  kb.recordReindexSuccess(startState, rebuildInfo.externalMutation ?? undefined, finalSurface);
 
   if (topologyRefresh.shouldPersistState) {
     const currentState = readCurateState(curateDb(kb));
@@ -117,7 +119,10 @@ export async function performRescan(
  * the current incident set means the underlying file has been repaired since enqueue.
  */
 function syncRetryQueueAgainstIncidents(kb: KbRuntime, incidents: readonly DetectedIncident[]): void {
-  const stillDetected = new Set(incidents.map((incident) => incident.entryId));
+  const stillDetected = new Set<string>();
+  for (const incident of incidents) {
+    stillDetected.add(incident.entryId);
+  }
   for (const queued of readCurateRetryQueue(curateDb(kb))) {
     if (queued.canonicalIncident !== undefined && !stillDetected.has(queued.entryId)) {
       deleteCurateRetryEntry(curateDb(kb), queued.entryId);

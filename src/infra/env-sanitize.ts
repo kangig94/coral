@@ -66,12 +66,14 @@ export function resolveEnvBudgetBytes(): number {
 /** Parse comma-separated CORAL_ENV_PASSTHROUGH value into a set of protected var names. */
 export function parsePassthrough(raw: string | undefined): Set<string> {
   if (!raw) return new Set<string>();
-  return new Set(
-    raw
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
+  const passthrough = new Set<string>();
+  for (const entry of raw.split(',')) {
+    const name = entry.trim();
+    if (name.length > 0) {
+      passthrough.add(name);
+    }
+  }
+  return passthrough;
 }
 
 /** Measure total execve env size: sum of "KEY=VALUE\0" per entry. */
@@ -96,8 +98,8 @@ export function shedIfOverBudget(
   const originalSize = measureEnv(base);
   if (originalSize <= budget) return base;
 
-  const originalCount = Object.keys(base).length;
   const entries = Object.entries(base).sort((left, right) => right[1].length - left[1].length);
+  const originalCount = entries.length;
   const kept: Record<string, string> = {};
   let currentSize = originalSize;
   let shedCount = 0;
@@ -168,9 +170,12 @@ export function composeChildEnv(
  * explicit env captured by the runtime layer.
  */
 export function buildChildEnv(extraEnv?: Record<string, string>): Record<string, string> {
-  const base = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-  );
+  const base: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string') {
+      base[key] = value;
+    }
+  }
   return composeChildEnv(
     base,
     extraEnv ?? {},

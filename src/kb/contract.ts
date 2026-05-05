@@ -6,8 +6,13 @@ import type { CorpusStorage } from './corpus/rescan/storage.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockDiagnostics, KbMutationLockOptions } from './corpus/mutation-lock.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
+import type { FullManifestSurfaceHashes } from './corpus/manifest-authority.js';
 import type { EngineArtifactRegistry } from './corpus/artifact-registry.js';
-import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
+import type {
+  CorpusAuthorityBaselineRecord,
+  CorpusAuthorityBaselineStore,
+} from './corpus/authority-baseline-contract.js';
+import type { CorpusStructuralKey } from './corpus/structural-key.js';
 import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
 import type { FtsSearchResult, RoleCatalogView, RoleRegistry } from './search/contract.js';
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
@@ -162,6 +167,10 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   recordReindexSuccess(
     startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
     externalMutation?: KbIndexMutationLane,
+    surface?: {
+      readonly manifest: FullManifestSurfaceHashes;
+      readonly baselineRecords: readonly CorpusAuthorityBaselineRecord[];
+    },
   ): KbIndexState;
   getCorpusStateSnapshot(): KbCorpusSnapshot;
   captureCorpusSnapshot(): KbCorpusSnapshot;
@@ -197,5 +206,6 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   principlePath(principle: string): string;
   sourceImportStageDir(): string;
   readEntityGraph(): EntityGraph | null;
+  readCorpusStructuralKey(index: KbIndex, currentGraph?: EntityGraph | null): CorpusStructuralKey | null;
   writeEntityGraph(graph: EntityGraph): Promise<void>;
 }

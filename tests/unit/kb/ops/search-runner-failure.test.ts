@@ -137,6 +137,7 @@ function runtimeWith(roles: readonly { readonly role: RetrievalRole; readonly cr
     readIndex: () => indexFor(),
     readIndexOrEmpty: () => indexFor(),
     readEntityGraph: () => null,
+    readCorpusStructuralKey: () => null,
   } as unknown as KbRuntime;
 }
 

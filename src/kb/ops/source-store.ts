@@ -14,6 +14,7 @@ import {
   sourceEntryId,
   type KbSourceDeleteInput,
   type KbSourceListResult,
+  type SourceEntry,
 } from '../entry-types.js';
 import { compareLocale, assertSourceSlug } from '../validation.js';
 import { currentEntrySeq } from '../index-state.js';
@@ -133,17 +134,25 @@ export async function deleteSource(rt: KbRuntime, input: KbSourceDeleteInput): P
 
 export async function listSources(kb: KbRuntime): Promise<KbSourceListResult> {
   const index = readKnowledgeBaseListIndex(kb);
-  const sources = Object.values(index.entries)
-    .filter(isSourceEntry)
-    .sort((left, right) => compareLocale(left.slug, right.slug))
-    .map((entry) => ({
+  const entries: SourceEntry[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (isSourceEntry(entry)) {
+      entries.push(entry);
+    }
+  }
+  entries.sort((left, right) => compareLocale(left.slug, right.slug));
+
+  const sources: KbSourceListResult['sources'] = [];
+  for (const entry of entries) {
+    sources.push({
       slug: entry.slug,
       title: entry.title,
       type: entry.type,
       tags: [...entry.tags],
       ...(entry.url === undefined ? {} : { url: entry.url }),
       importedAt: entry.importedAt,
-    }));
+    });
+  }
 
   return { sources };
 }

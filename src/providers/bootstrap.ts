@@ -1,4 +1,5 @@
 import type { StoragePort } from '../infra/port-types.js';
+import { readString } from '../infra/json.js';
 import {
   type ProviderArtifactHandleInput,
   type ProviderRecoveryContract,
@@ -8,25 +9,16 @@ import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
 import { adapterOutputUnparseable } from './fault.js';
 import { parseClaudeStreamJson } from './claude/output-parser.js';
 import { claudeProvider } from './claude/exec-provider.js';
-import {
-  claudeAppServerLifecycle,
-  claudeArtifactCapability,
-  claudePreflight,
-  claudeRecoveryLifecycle,
-  locateClaudeJsonlArtifact,
-  resolveClaudeProjectsRoot,
-} from './claude/provider-facets.js';
+import { claudeAppServerLifecycle, claudePreflight, claudeRecoveryLifecycle } from './claude/provider-facets.js';
+import { claudeArtifactCapability, locateClaudeJsonlArtifact, resolveClaudeProjectsRoot } from './claude/artifacts.js';
 import { codexThreadProvider } from './codex/thread-provider.js';
-import {
-  codexAppServerLifecycle,
-  codexArtifactCapability,
-  codexPreflight,
-  codexRecoveryLifecycle,
-  locateCodexRolloutArtifact,
-  resolveCodexSessionsRoot,
-} from './codex/provider-facets.js';
+import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './codex/provider-facets.js';
+import { codexArtifactCapability, locateCodexRolloutArtifact, resolveCodexSessionsRoot } from './codex/artifacts.js';
 import { defineProvider } from './define.js';
 import { ProviderRegistry } from './registry.js';
+
+type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0];
+type ParsedClaudeArtifactOutput = ReturnType<typeof parseClaudeStreamJson>;
 
 function buildProviderRecovery(
   lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'> &
@@ -48,7 +40,7 @@ function buildProviderRecovery(
 }
 
 async function finalizeClaudeFromArtifacts(
-  options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+  options: ArtifactRecoveryOptions,
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
   const stdout = readArtifact(options.storage, options.stdoutPath);
   const stderr = readArtifact(options.storage, options.stderrPath);
@@ -70,18 +62,7 @@ async function finalizeClaudeFromArtifacts(
         })
       : undefined;
 
-  const outcome: ProviderTerminalOutcome =
-    options.signal !== null
-      ? { kind: 'aborted', reason: 'signal_abort' as const }
-      : adapterUnparseable !== undefined
-        ? { kind: 'failed' as const }
-        : parsed.isError
-          ? {
-              kind: 'provider_exit' as const,
-              code: options.exitCode ?? 1,
-              ...(parsed.response ? { note: parsed.response } : { note: 'Claude request failed.' }),
-            }
-          : { kind: 'completed' as const };
+  const outcome = claudeArtifactOutcome(options, parsed, adapterUnparseable);
 
   return {
     terminal: {
@@ -97,37 +78,63 @@ async function finalizeClaudeFromArtifacts(
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
       ...(adapterUnparseable === undefined ? {} : { failureCause: adapterUnparseable }),
     },
-    continuity:
-      parsed.sessionId !== null
-        ? {
-            conversationRef: parsed.sessionId,
-            resumable: true,
-          }
-        : options.fallbackConversationRef
-          ? undefined
-        : {
-            conversationRef: null,
-            resumable: false,
-          },
+    continuity: claudeArtifactContinuity(options, parsed),
     artifactHandles: locateClaudeArtifactsForRecovery(options, parsed.sessionId),
   };
 }
 
+function claudeArtifactOutcome(
+  options: ArtifactRecoveryOptions,
+  parsed: ParsedClaudeArtifactOutput,
+  adapterUnparseable: ReturnType<typeof adapterOutputUnparseable> | undefined,
+): ProviderTerminalOutcome {
+  if (options.signal !== null) {
+    return { kind: 'aborted', reason: 'signal_abort' };
+  }
+
+  if (adapterUnparseable !== undefined) {
+    return { kind: 'failed' };
+  }
+
+  if (parsed.isError) {
+    return {
+      kind: 'provider_exit',
+      code: options.exitCode ?? 1,
+      ...(parsed.response ? { note: parsed.response } : { note: 'Claude request failed.' }),
+    };
+  }
+
+  return { kind: 'completed' };
+}
+
+function claudeArtifactContinuity(
+  options: ArtifactRecoveryOptions,
+  parsed: ParsedClaudeArtifactOutput,
+): Awaited<ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']>>['continuity'] {
+  const sessionId = readString(parsed.sessionId);
+  if (sessionId !== undefined) {
+    return {
+      conversationRef: sessionId,
+      resumable: true,
+    };
+  }
+
+  if (readString(options.fallbackConversationRef) !== undefined) {
+    return undefined;
+  }
+
+  return {
+    conversationRef: null,
+    resumable: false,
+  };
+}
+
 async function finalizeCodexFromArtifacts(
-  options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
+  options: ArtifactRecoveryOptions,
 ): ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']> {
   const stdout = readArtifact(options.storage, options.stdoutPath);
   const stderr = readArtifact(options.storage, options.stderrPath);
-  const outcome: ProviderTerminalOutcome =
-    options.signal !== null
-      ? { kind: 'aborted', reason: 'signal_abort' as const }
-      : options.exitCode === null || options.exitCode === 0
-        ? { kind: 'completed' as const }
-        : {
-            kind: 'provider_exit' as const,
-            code: options.exitCode,
-            note: `Codex exited with code ${options.exitCode} before recovery completed.`,
-          };
+  const outcome = codexArtifactOutcome(options);
   return {
     terminal: {
       kind: 'terminal',
@@ -138,13 +145,30 @@ async function finalizeCodexFromArtifacts(
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
     },
-    continuity: options.fallbackConversationRef
-      ? undefined
-      : {
-          conversationRef: null,
-          resumable: false,
-        },
+    continuity:
+      readString(options.fallbackConversationRef) !== undefined
+        ? undefined
+        : {
+            conversationRef: null,
+            resumable: false,
+          },
     artifactHandles: locateCodexArtifactsForRecovery(options),
+  };
+}
+
+function codexArtifactOutcome(options: ArtifactRecoveryOptions): ProviderTerminalOutcome {
+  if (options.signal !== null) {
+    return { kind: 'aborted', reason: 'signal_abort' };
+  }
+
+  if (options.exitCode === null || options.exitCode === 0) {
+    return { kind: 'completed' };
+  }
+
+  return {
+    kind: 'provider_exit',
+    code: options.exitCode,
+    note: `Codex exited with code ${options.exitCode} before recovery completed.`,
   };
 }
 
@@ -160,9 +184,12 @@ function locateClaudeArtifactsForRecovery(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
   parsedSessionId: string | null,
 ): readonly ProviderArtifactHandleInput[] | undefined {
+  if (options.knownArtifactHandles !== undefined && options.knownArtifactHandles.length > 0) {
+    return options.knownArtifactHandles;
+  }
   const conversationRef =
-    parsedSessionId ?? readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId') ?? undefined;
-  if (!conversationRef) {
+    readString(parsedSessionId) ?? readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId');
+  if (conversationRef === undefined) {
     return undefined;
   }
   const result = locateClaudeJsonlArtifact({
@@ -176,11 +203,14 @@ function locateClaudeArtifactsForRecovery(
 function locateCodexArtifactsForRecovery(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
 ): readonly ProviderArtifactHandleInput[] | undefined {
+  if (options.knownArtifactHandles !== undefined && options.knownArtifactHandles.length > 0) {
+    return options.knownArtifactHandles;
+  }
   const threadId =
     readProviderMetaString(options.providerMeta, 'threadId', 'conversationRef') ??
     readProviderContinuityString(options.providerMeta, 'threadId') ??
-    options.fallbackConversationRef;
-  if (!threadId) {
+    readString(options.fallbackConversationRef);
+  if (threadId === undefined) {
     return undefined;
   }
   const result = locateCodexRolloutArtifact({
@@ -191,9 +221,10 @@ function locateCodexArtifactsForRecovery(
   return artifactHandlesFromLocator(result);
 }
 
-function artifactHandlesFromLocator(
-  result: { readonly kind: string; readonly artifact?: ProviderArtifactHandleInput },
-): readonly ProviderArtifactHandleInput[] | undefined {
+function artifactHandlesFromLocator(result: {
+  readonly kind: string;
+  readonly artifact?: ProviderArtifactHandleInput;
+}): readonly ProviderArtifactHandleInput[] | undefined {
   return result.kind === 'match' && result.artifact ? [result.artifact] : undefined;
 }
 
@@ -201,12 +232,12 @@ function readProviderMetaString(
   providerMeta: Record<string, unknown> | undefined,
   ...keys: readonly string[]
 ): string | undefined {
-  if (!providerMeta) {
+  if (providerMeta === undefined) {
     return undefined;
   }
   for (const key of keys) {
-    const value = providerMeta[key];
-    if (typeof value === 'string' && value.length > 0) {
+    const value = readString(providerMeta[key]);
+    if (value !== undefined) {
       return value;
     }
   }
@@ -222,7 +253,7 @@ function readProviderContinuityString(
     return undefined;
   }
   const value = (continuity as Record<string, unknown>)[key];
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return readString(value);
 }
 
 const codexProviderSpec = defineProvider({
@@ -248,26 +279,29 @@ const claudeProviderSpec = defineProvider({
 const BUILT_IN_PROVIDERS = [codexProviderSpec, claudeProviderSpec] as const;
 
 export function registerBuiltInProviders(registry: ProviderRegistry): void {
-  const providers = [...BUILT_IN_PROVIDERS];
-  const existingProviders = providers.map((provider) => ({
-    provider,
-    existing: registry.get(provider.name),
-  }));
+  let allRegistered = true;
+  const conflicts: string[] = [];
+  for (const provider of BUILT_IN_PROVIDERS) {
+    const existing = registry.get(provider.name);
+    if (existing !== provider) {
+      allRegistered = false;
+    }
+    if (existing !== undefined) {
+      conflicts.push(provider.name);
+    }
+  }
 
-  if (existingProviders.every(({ provider, existing }) => existing === provider)) {
+  if (allRegistered) {
     return;
   }
 
-  const conflicts = existingProviders
-    .filter(({ existing }) => existing !== undefined)
-    .map(({ provider }) => provider.name);
   if (conflicts.length > 0) {
     throw new Error(
       `Built-in provider${conflicts.length === 1 ? '' : 's'} already registered: ${conflicts.join(', ')}`,
     );
   }
 
-  for (const { provider } of existingProviders) {
+  for (const provider of BUILT_IN_PROVIDERS) {
     registry.register(provider);
   }
 }

@@ -128,7 +128,11 @@ export function readCurateRetryQueue(db: Database | ReadonlyDatabase): PendingRe
      FROM kb_curate_retry_queue
      ORDER BY entry_id ASC`,
   ).all();
-  return rows.map((row) => rowToPendingRepair(row));
+  const entries: PendingRepair[] = [];
+  for (const row of rows) {
+    entries.push(rowToPendingRepair(row));
+  }
+  return entries;
 }
 
 export function readPendingRepairRows(db: Database | ReadonlyDatabase): PendingRepairRetryCandidate[] {
@@ -142,7 +146,11 @@ export function readPendingRepairRows(db: Database | ReadonlyDatabase): PendingR
      FROM kb_curate_retry_queue
      ORDER BY entry_id ASC`,
   ).all();
-  return rows.map((row) => rowToPendingRepairRetryCandidate(row));
+  const entries: PendingRepairRetryCandidate[] = [];
+  for (const row of rows) {
+    entries.push(rowToPendingRepairRetryCandidate(row));
+  }
+  return entries;
 }
 
 export function upsertCurateRetryEntry(db: Database, entry: PendingRepair): void {
@@ -207,7 +215,10 @@ export function deleteCurateRetryEntry(db: Database, entryId: string): void {
 }
 
 export function syncCurateRetryQueue(db: Database, entries: ReadonlyArray<PendingRepair>): void {
-  const existingById = new Map(readCurateRetryQueue(db).map((entry) => [entry.entryId, entry] as const));
+  const existingById = new Map<KbEntryId, PendingRepair>();
+  for (const entry of readCurateRetryQueue(db)) {
+    existingById.set(entry.entryId, entry);
+  }
   const nextById = new Map<KbEntryId, PendingRepair>();
   for (const entry of entries) {
     nextById.set(entry.entryId, entry);

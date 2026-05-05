@@ -127,4 +127,40 @@ describe('refs.workflowId producer invariant', () => {
       }
     }
   });
+
+  it('rejects empty launch refs before they reach the Journal', () => {
+    const db = createDb();
+    const runtime = new SimulationRuntime();
+    const store = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
+
+    expect(() =>
+      store.appendLaunchRequested('empty-session', makeProviderLaunch({ jobId: 'empty-session', sessionId: '' })),
+    ).toThrow("Job ref 'sessionId' must be non-empty.");
+
+    expect(() =>
+      store.appendLaunchRequested(
+        'empty-parent',
+        makeProviderLaunch({
+          jobId: 'empty-parent',
+          sessionId: 'session-empty-parent',
+          parentWorkflowJobId: '',
+        }),
+      ),
+    ).toThrow("Job ref 'parentJobId' must be non-empty.");
+
+    expect(() =>
+      store.appendLaunchRequested(
+        'empty-slot',
+        makeProviderLaunch({
+          jobId: 'empty-slot',
+          sessionId: 'session-empty-slot',
+          parentWorkflowJobId: 'wf-1',
+          workflowSlotId: '',
+        }),
+      ),
+    ).toThrow("Job ref 'workflowSlotId' must be non-empty.");
+  });
 });

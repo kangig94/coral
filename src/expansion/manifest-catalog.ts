@@ -84,7 +84,11 @@ export class ExpansionManifestCatalog {
 
   constructor(options: ExpansionManifestCatalogOptions = {}) {
     this.staticEntries = options.staticManifests ?? BUNDLED_ENGINES;
-    this.staticIds = new Set(this.staticEntries.map((entry) => entry.id));
+    const staticIds = new Set<string>();
+    for (const entry of this.staticEntries) {
+      staticIds.add(entry.id);
+    }
+    this.staticIds = staticIds;
     this.now = options.now ?? (() => new Date().toISOString());
     const db = options.db;
     if (db !== undefined) {
@@ -112,18 +116,36 @@ export class ExpansionManifestCatalog {
   }
 
   listEntries(): readonly ExpansionManifestCatalogEntry[] {
-    return Object.freeze([
-      ...this.staticEntries.map((manifest) => ({ manifest, source: 'static' as const })),
-      ...[...this.installed.values()].map((manifest) => ({ manifest, source: 'installed' as const })),
-    ]);
+    const entries: ExpansionManifestCatalogEntry[] = [];
+    for (const manifest of this.staticEntries) {
+      entries.push({ manifest, source: 'static' });
+    }
+    for (const manifest of this.installed.values()) {
+      entries.push({ manifest, source: 'installed' });
+    }
+    return Object.freeze(entries);
   }
 
   listManifests(): readonly EngineManifest[] {
-    return Object.freeze(this.listEntries().map((entry) => entry.manifest));
+    const manifests: EngineManifest[] = [];
+    for (const manifest of this.staticEntries) {
+      manifests.push(manifest);
+    }
+    for (const manifest of this.installed.values()) {
+      manifests.push(manifest);
+    }
+    return Object.freeze(manifests);
   }
 
   listDeclarativeEntries(): readonly EngineManifest[] {
-    return Object.freeze(this.listEntries().map((entry) => toDeclarativeManifest(entry.manifest)));
+    const manifests: EngineManifest[] = [];
+    for (const manifest of this.staticEntries) {
+      manifests.push(toDeclarativeManifest(manifest));
+    }
+    for (const manifest of this.installed.values()) {
+      manifests.push(toDeclarativeManifest(manifest));
+    }
+    return Object.freeze(manifests);
   }
 
   getManifest(id: string): EngineManifest | undefined {

@@ -118,12 +118,16 @@ export function buildClaudeContinuity(update: {
   conversationRef?: string;
   brokerTurnId?: string;
 }): ClaudePersistedContinuity {
+  const brokerSessionKey = readString(update.brokerSessionKey);
+  const envHash = readString(update.envHash);
+  const conversationRef = readString(update.conversationRef);
+  const brokerTurnId = readString(update.brokerTurnId);
   return {
-    ...(update.brokerSessionKey ? { brokerSessionKey: update.brokerSessionKey } : {}),
+    ...(brokerSessionKey !== undefined ? { brokerSessionKey } : {}),
     bootstrapSignature: update.bootstrapSignature,
-    ...(update.envHash ? { envHash: update.envHash } : {}),
-    ...(update.conversationRef ? { conversationRef: update.conversationRef } : {}),
-    ...(update.brokerTurnId ? { brokerTurnId: update.brokerTurnId } : {}),
+    ...(envHash !== undefined ? { envHash } : {}),
+    ...(conversationRef !== undefined ? { conversationRef } : {}),
+    ...(brokerTurnId !== undefined ? { brokerTurnId } : {}),
   };
 }
 
@@ -138,22 +142,17 @@ export function withClaudeContinuity(
   },
 ): ClaudePersistedContinuity {
   const continuity = readClaudePersistedContinuity(persistedContinuity);
+  const brokerSessionKey = readString(update.brokerSessionKey) ?? continuity.brokerSessionKey;
+  const bootstrapSignature = update.bootstrapSignature ?? continuity.bootstrapSignature;
+  const envHash = readString(update.envHash) ?? continuity.envHash;
+  const conversationRef = readString(update.conversationRef) ?? continuity.conversationRef;
+  const brokerTurnId = readString(update.brokerTurnId) ?? continuity.brokerTurnId;
   return {
-    ...(continuity.brokerSessionKey || update.brokerSessionKey
-      ? { brokerSessionKey: update.brokerSessionKey ?? continuity.brokerSessionKey }
-      : {}),
-    ...(continuity.bootstrapSignature || update.bootstrapSignature
-      ? {
-          bootstrapSignature: update.bootstrapSignature ?? continuity.bootstrapSignature,
-        }
-      : {}),
-    ...(continuity.envHash || update.envHash ? { envHash: update.envHash ?? continuity.envHash } : {}),
-    ...(continuity.conversationRef || update.conversationRef
-      ? { conversationRef: update.conversationRef ?? continuity.conversationRef }
-      : {}),
-    ...(continuity.brokerTurnId || update.brokerTurnId
-      ? { brokerTurnId: update.brokerTurnId ?? continuity.brokerTurnId }
-      : {}),
+    ...(brokerSessionKey !== undefined ? { brokerSessionKey } : {}),
+    ...(bootstrapSignature !== undefined ? { bootstrapSignature } : {}),
+    ...(envHash !== undefined ? { envHash } : {}),
+    ...(conversationRef !== undefined ? { conversationRef } : {}),
+    ...(brokerTurnId !== undefined ? { brokerTurnId } : {}),
   };
 }
 
@@ -190,13 +189,16 @@ export function buildClaudeEnvHash(
     return envHashCache.hash;
   }
 
-  const childEnv = {
-    ...Object.fromEntries(
-      Object.entries(baseEnv).filter(([key, value]) => typeof value === 'string' && !key.startsWith('CORAL_')),
-    ),
-    ...normalizeControllerEnv(controllerEnv),
-    CORAL_CHILD: '1',
-  };
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (typeof value === 'string' && !key.startsWith('CORAL_')) {
+      childEnv[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(normalizeControllerEnv(controllerEnv))) {
+    childEnv[key] = value;
+  }
+  childEnv.CORAL_CHILD = '1';
   const hash = hashSortedEnv(childEnv);
   envHashCache = { controllerEnv, baseEnv, hash };
   return hash;

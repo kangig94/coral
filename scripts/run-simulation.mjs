@@ -11,7 +11,7 @@ await esbuild.build({
   outfile: 'build/coral-simulation.cjs',
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node22',
   format: 'cjs',
   external: ['node:*', 'better-sqlite3'],
   loader: { '.sql': 'text' },

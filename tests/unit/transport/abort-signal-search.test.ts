@@ -60,6 +60,7 @@ function runtimeWithBlockingRoles(
     readIndex: () => index,
     readIndexOrEmpty: () => index,
     readEntityGraph: () => null,
+    readCorpusStructuralKey: () => null,
   } as unknown as KbRuntime;
 }
 

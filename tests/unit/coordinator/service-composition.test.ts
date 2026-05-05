@@ -2289,11 +2289,12 @@ describe('ExecutionService', () => {
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
-        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
-          activeJobId: undefined,
+        const updatedSession = sessionManager.get('codex', session.sessionId);
+        expect(updatedSession).toMatchObject({
           state: 'ready',
           conversationRef: 'thread-existing',
         });
+        expect(Object.hasOwn(updatedSession ?? {}, 'activeJobId')).toBe(false);
       });
 
       it('stores the recovered threadId when continuity is verified', async () => {
@@ -2368,11 +2369,12 @@ describe('ExecutionService', () => {
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
-        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
-          activeJobId: undefined,
+        const updatedSession = sessionManager.get('codex', session.sessionId);
+        expect(updatedSession).toMatchObject({
           state: 'ready',
           conversationRef: 'thread-recovered',
         });
+        expect(Object.hasOwn(updatedSession ?? {}, 'activeJobId')).toBe(false);
       });
 
       it('clears conversationRef and marks the session non_resumable when the thread is definitively missing', async () => {
@@ -2458,11 +2460,12 @@ describe('ExecutionService', () => {
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
-        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
-          activeJobId: undefined,
+        const updatedSession = sessionManager.get('codex', session.sessionId);
+        expect(updatedSession).toMatchObject({
           state: 'non_resumable',
         });
-        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+        expect(Object.hasOwn(updatedSession ?? {}, 'activeJobId')).toBe(false);
+        expect(updatedSession?.conversationRef).toBeUndefined();
       });
 
       it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
@@ -2549,11 +2552,12 @@ describe('ExecutionService', () => {
           },
         });
         expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe(expectedReport);
-        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
-          activeJobId: undefined,
+        const updatedSession = sessionManager.get('codex', session.sessionId);
+        expect(updatedSession).toMatchObject({
           state: 'non_resumable',
         });
-        expect(sessionManager.get('codex', session.sessionId)?.conversationRef).toBeUndefined();
+        expect(Object.hasOwn(updatedSession ?? {}, 'activeJobId')).toBe(false);
+        expect(updatedSession?.conversationRef).toBeUndefined();
         stderrSpy.mockRestore();
       });
 

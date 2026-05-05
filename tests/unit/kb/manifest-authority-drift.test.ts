@@ -18,7 +18,7 @@ import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
 import { generateCommunityFiles, renderCommunityDocument } from '#src/kb/curate/community/documents.js';
 import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { recordMetadataMutation } from '#src/kb/corpus/index-mutations.js';
-import { computeFullCollectorManifestHash } from '#src/kb/corpus/manifest-authority.js';
+import { computeCorpusSurfaceManifestHash } from '#src/kb/corpus/surface.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
 import {
@@ -158,8 +158,8 @@ function setProcessedThrough(kb: KbRuntime, slug: string, entrySeq: number): voi
 
 function assertAuthorityMatchesDisk(kb: KbRuntime): void {
   const snapshot = kb.captureCorpusSnapshot();
-  expect(snapshot.contentManifestHash).toBe(computeFullCollectorManifestHash(kb, 'content'));
-  expect(snapshot.metadataManifestHash).toBe(computeFullCollectorManifestHash(kb, 'metadata'));
+  expect(snapshot.contentManifestHash).toBe(computeCorpusSurfaceManifestHash(kb, 'content'));
+  expect(snapshot.metadataManifestHash).toBe(computeCorpusSurfaceManifestHash(kb, 'metadata'));
 }
 
 function discoverySpawn(stdout: string): SpawnCliFn {

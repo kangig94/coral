@@ -464,6 +464,29 @@ Memo body.
     });
   });
 
+  it('keeps per-kind memo reads scoped to memo files even for non-timestamp slugs', () => {
+    setMockFile(
+      `${memoDir(testContext.projectRoot)}/scratch.md`,
+      `---
+source: kangig94/coral
+---
+Scratch body.
+`,
+    );
+
+    expect(handleKbMemoRead('scratch', testContext, testRuntime)).toEqual({
+      ok: true,
+      data: {
+        kind: 'memo',
+        note: 'scratch',
+        title: 'scratch',
+        content: 'Scratch body.',
+        tags: [],
+        principles: [],
+      },
+    });
+  });
+
   it('returns not_found for a missing memo read', () => {
     expectNotFound(handleKbMemoRead('20260323-010203-missing', testContext, testRuntime));
   });
@@ -597,10 +620,7 @@ level: 1
   });
 
   it.each([
-    [
-      'wiki-create',
-      () => handleKbWikiCreate({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
-    ],
+    ['wiki-create', () => handleKbWikiCreate({ slug: 'living-knowledge', extra: true }, createKbSubsystem())],
     [
       'wiki-rewrite',
       () =>
@@ -611,16 +631,11 @@ level: 1
     ],
     [
       'wiki-link',
-      () =>
-        handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbSubsystem()),
+      () => handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbSubsystem()),
     ],
     [
       'wiki-unlink',
-      () =>
-        handleKbWikiUnlink(
-          { slug: 'living-knowledge', refs: ['note:a'], extra: true },
-          createKbSubsystem(),
-        ),
+      () => handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbSubsystem()),
     ],
     [
       'wiki-cite',
@@ -635,10 +650,7 @@ level: 1
           createKbSubsystem(),
         ),
     ],
-    [
-      'wiki-delete',
-      () => handleKbWikiDelete({ slug: 'living-knowledge', extra: true }, createKbSubsystem()),
-    ],
+    ['wiki-delete', () => handleKbWikiDelete({ slug: 'living-knowledge', extra: true }, createKbSubsystem())],
     ['wiki-list', () => handleKbWikiList({ extra: true }, createKbSubsystem())],
     ['wake-up', () => handleKbWakeUp({ extra: true }, createKbSubsystem())],
   ])('rejects undeclared fields for %s', async (_name, run) => {
@@ -649,10 +661,7 @@ level: 1
     const kbSubsystem = createKbSubsystem();
     mockState.createWiki.mockResolvedValue({ slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiCreate(
-      { slug: 'living-knowledge' },
-      kbSubsystem,
-    );
+    const result = await handleKbWikiCreate({ slug: 'living-knowledge' }, kbSubsystem);
 
     expect(mockState.createWiki).toHaveBeenCalledWith(kbSubsystem.kb, {
       slug: 'living-knowledge',
@@ -668,10 +677,7 @@ level: 1
     const kbSubsystem = createKbSubsystem();
     mockState.rewriteWikiUnderstanding.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiRewrite(
-      { slug: 'living-knowledge', understandingFile: '/tmp/u.md' },
-      kbSubsystem,
-    );
+    const result = await handleKbWikiRewrite({ slug: 'living-knowledge', understandingFile: '/tmp/u.md' }, kbSubsystem);
 
     expect(mockState.rewriteWikiUnderstanding).toHaveBeenCalledWith(kbSubsystem.kb, {
       slug: 'living-knowledge',
@@ -685,10 +691,7 @@ level: 1
     const kbSubsystem = createKbSubsystem();
     mockState.linkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiLink(
-      { slug: 'living-knowledge', refs: ['note:alpha'] },
-      kbSubsystem,
-    );
+    const result = await handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbSubsystem);
 
     expect(mockState.linkWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
       slug: 'living-knowledge',
@@ -702,10 +705,7 @@ level: 1
     const kbSubsystem = createKbSubsystem();
     mockState.unlinkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiUnlink(
-      { slug: 'living-knowledge', refs: ['note:alpha'] },
-      kbSubsystem,
-    );
+    const result = await handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbSubsystem);
 
     expect(mockState.unlinkWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
       slug: 'living-knowledge',

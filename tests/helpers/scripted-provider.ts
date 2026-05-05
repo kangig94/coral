@@ -78,7 +78,9 @@ function normalizeRecoveryResult(
   return result;
 }
 
-export function defineFakeProvider(provider: Provider | ProviderDefinition | undefined): ProviderDefinition | undefined {
+export function defineFakeProvider(
+  provider: Provider | ProviderDefinition | undefined,
+): ProviderDefinition | undefined {
   if (!provider) {
     return undefined;
   }

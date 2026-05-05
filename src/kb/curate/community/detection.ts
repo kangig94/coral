@@ -22,6 +22,7 @@ type DetectCommunitiesOptions = {
 
 type DetectedCommunitySeed = Omit<DetectedCommunity, 'slug' | 'parent' | 'children'> & {
   freshSlug: string;
+  membershipFingerprint: string;
   key?: string;
   parentKey?: string;
   childKeys?: string[];
@@ -32,6 +33,7 @@ type PartitionGroup = {
   id: number;
   nodeIndices: number[];
   members: string[];
+  membershipFingerprint: string;
 };
 
 type HierarchySeed = DetectedCommunitySeed & {
@@ -39,10 +41,14 @@ type HierarchySeed = DetectedCommunitySeed & {
   childKeys: string[];
 };
 
-type ResolutionEvaluation = {
+type CommunityPartition = {
   resolution: number;
-  details: LouvainDetails;
+  levels: number[][];
+  modularity: number;
   maxLeafSize: number;
+};
+
+type ResolutionEvaluation = CommunityPartition & {
   targetPenalty: number;
   midpointPenalty: number;
 };
@@ -76,10 +82,11 @@ function internalWeightedDegree(
 }
 
 function titleCaseTag(tag: string): string {
-  return tag
-    .split('-')
-    .map((segment) => segment.slice(0, 1).toUpperCase() + segment.slice(1))
-    .join(' ');
+  const segments: string[] = [];
+  for (const segment of tag.split('-')) {
+    segments.push(segment.slice(0, 1).toUpperCase() + segment.slice(1));
+  }
+  return segments.join(' ');
 }
 
 function rankCommunityMembers(
@@ -123,7 +130,12 @@ function ensureUniqueCommunitySlug(
 }
 
 function deriveCommunityTitle(rankedMembers: string[]): string {
-  return rankedMembers.slice(0, COMMUNITY_SLUG_TAG_LIMIT).map(titleCaseTag).join(' / ');
+  const titleSegments: string[] = [];
+  const segmentCount = Math.min(COMMUNITY_SLUG_TAG_LIMIT, rankedMembers.length);
+  for (let index = 0; index < segmentCount; index += 1) {
+    titleSegments.push(titleCaseTag(rankedMembers[index]));
+  }
+  return titleSegments.join(' / ');
 }
 
 export function seededRng(seed: number): () => number {
@@ -140,21 +152,29 @@ export function seededRng(seed: number): () => number {
 
 function normalizeDendrogramLevels(graph: TagGraph, details: LouvainDetails): number[][] {
   const rawDendrogram = (details as LouvainDetails & { dendrogram: LouvainDetails['dendrogram'] | null }).dendrogram;
-  const levels = (rawDendrogram ?? []).map((level) => Array.from(level, (community) => Number(community)));
+  const levels: number[][] = [];
+  for (const level of rawDendrogram ?? []) {
+    const normalizedLevel: number[] = [];
+    for (const community of level) {
+      normalizedLevel.push(Number(community));
+    }
+    levels.push(normalizedLevel);
+  }
   const meaningfulLevels = levels.length > 1 ? levels.slice(1) : levels;
-  const normalizedLevels =
-    meaningfulLevels.length > 0
-      ? meaningfulLevels
-      : [graph.tags.map((tag, index) => details.communities[tag] ?? index)];
+  let normalizedLevels = meaningfulLevels;
+  if (normalizedLevels.length === 0) {
+    const fallbackLevel: number[] = [];
+    for (let index = 0; index < graph.tags.length; index += 1) {
+      const tag = graph.tags[index];
+      fallbackLevel.push(details.communities[tag] ?? index);
+    }
+    normalizedLevels = [fallbackLevel];
+  }
 
   const deduped: number[][] = [];
   for (const level of normalizedLevels) {
     const previous = deduped.at(-1);
-    if (
-      previous !== undefined &&
-      previous.length === level.length &&
-      previous.every((value, index) => value === level[index])
-    ) {
+    if (previous !== undefined && sameNumberSequence(previous, level)) {
       continue;
     }
     deduped.push(level);
@@ -163,13 +183,26 @@ function normalizeDendrogramLevels(graph: TagGraph, details: LouvainDetails): nu
   return deduped;
 }
 
+function sameNumberSequence(left: readonly number[], right: readonly number[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function partitionGroupsForLevel(nodes: string[], partition: number[]): PartitionGroup[] {
   const membersByCommunity = new Map<number, { members: string[]; nodeIndices: number[] }>();
 
-  partition.forEach((communityId, nodeIndex) => {
+  for (let nodeIndex = 0; nodeIndex < partition.length; nodeIndex += 1) {
+    const communityId = partition[nodeIndex];
     const member = nodes[nodeIndex];
     if (member === undefined) {
-      return;
+      continue;
     }
 
     const existing = membersByCommunity.get(communityId);
@@ -178,38 +211,42 @@ function partitionGroupsForLevel(nodes: string[], partition: number[]): Partitio
         members: [member],
         nodeIndices: [nodeIndex],
       });
-      return;
+      continue;
     }
 
     existing.members.push(member);
     existing.nodeIndices.push(nodeIndex);
-  });
+  }
 
-  return [...membersByCommunity.entries()]
-    .map(([id, group]) => ({
+  const groups: PartitionGroup[] = [];
+  for (const [id, group] of membersByCommunity.entries()) {
+    const members = uniqueSorted(group.members);
+    groups.push({
       id,
       nodeIndices: [...group.nodeIndices],
-      members: uniqueSorted(group.members),
-    }))
-    .sort((left, right) => {
-      const leftFingerprint = computeCommunityMembershipFingerprint(left.members);
-      const rightFingerprint = computeCommunityMembershipFingerprint(right.members);
-      const fingerprintCompare = compareLocale(leftFingerprint, rightFingerprint);
-      if (fingerprintCompare !== 0) {
-        return fingerprintCompare;
-      }
-      return left.id - right.id;
+      members,
+      membershipFingerprint: computeCommunityMembershipFingerprint(members),
     });
+  }
+  return groups.sort((left, right) => {
+    const fingerprintCompare = compareLocale(left.membershipFingerprint, right.membershipFingerprint);
+    if (fingerprintCompare !== 0) {
+      return fingerprintCompare;
+    }
+    return left.id - right.id;
+  });
 }
 
-function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): HierarchySeed[] {
+function buildHierarchySeeds(graph: TagGraph, partitions: number[][]): HierarchySeed[] {
   const nodes = graph.graph.nodes();
-  const partitions = normalizeDendrogramLevels(graph, details);
   if (partitions.length === 0) {
     return [];
   }
 
-  const groupsByLevel = partitions.map((partition) => partitionGroupsForLevel(nodes, partition));
+  const groupsByLevel: PartitionGroup[][] = [];
+  for (const partition of partitions) {
+    groupsByLevel.push(partitionGroupsForLevel(nodes, partition));
+  }
   const seeds = new Map<string, HierarchySeed>();
 
   for (let level = 0; level < groupsByLevel.length; level += 1) {
@@ -230,10 +267,9 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
         title: deriveCommunityTitle(rankedMembers),
         level,
         members: group.members,
+        membershipFingerprint: group.membershipFingerprint,
         ...(parentGroup === undefined ? {} : { parentKey: `${level + 1}:${parentGroup.id}` }),
-        ...(parentGroup === undefined
-          ? {}
-          : { parentMembershipFingerprint: computeCommunityMembershipFingerprint(parentGroup.members) }),
+        ...(parentGroup === undefined ? {} : { parentMembershipFingerprint: parentGroup.membershipFingerprint }),
         childKeys: [],
       });
     }
@@ -255,10 +291,7 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
       return left.level - right.level;
     }
 
-    const fingerprintCompare = compareLocale(
-      computeCommunityMembershipFingerprint(left.members),
-      computeCommunityMembershipFingerprint(right.members),
-    );
+    const fingerprintCompare = compareLocale(left.membershipFingerprint, right.membershipFingerprint);
     if (fingerprintCompare !== 0) {
       return fingerprintCompare;
     }
@@ -267,8 +300,8 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
   });
 }
 
-function maxLeafCommunitySize(graph: TagGraph, details: LouvainDetails): number {
-  const firstLevel = normalizeDendrogramLevels(graph, details)[0];
+function maxLeafCommunitySizeFromPartitions(partitions: readonly number[][]): number {
+  const firstLevel = partitions[0];
   if (firstLevel === undefined) {
     return 0;
   }
@@ -288,21 +321,30 @@ function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEval
     rng: seededRng(COMMUNITY_LOUVAIN_SEED),
     resolution,
   });
-  const maxLeafSize = maxLeafCommunitySize(graph, details);
-  const targetPenalty =
-    maxLeafSize > COMMUNITY_RESOLUTION_TARGET_MAX
-      ? maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MAX
-      : maxLeafSize < COMMUNITY_RESOLUTION_TARGET_MIN
-        ? COMMUNITY_RESOLUTION_TARGET_MIN - maxLeafSize
-        : 0;
+  const levels = normalizeDendrogramLevels(graph, details);
+  const maxLeafSize = maxLeafCommunitySizeFromPartitions(levels);
+  const targetPenalty = communitySizePenalty(maxLeafSize);
 
   return {
     resolution,
-    details,
+    levels,
+    modularity: details.modularity,
     maxLeafSize,
     targetPenalty,
     midpointPenalty: Math.abs(maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MIDPOINT),
   };
+}
+
+function communitySizePenalty(maxLeafSize: number): number {
+  if (maxLeafSize > COMMUNITY_RESOLUTION_TARGET_MAX) {
+    return maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MAX;
+  }
+
+  if (maxLeafSize < COMMUNITY_RESOLUTION_TARGET_MIN) {
+    return COMMUNITY_RESOLUTION_TARGET_MIN - maxLeafSize;
+  }
+
+  return 0;
 }
 
 function isBetterResolutionCandidate(
@@ -318,13 +360,13 @@ function isBetterResolutionCandidate(
   if (candidate.midpointPenalty !== currentBest.midpointPenalty) {
     return candidate.midpointPenalty < currentBest.midpointPenalty;
   }
-  if (candidate.details.modularity !== currentBest.details.modularity) {
-    return candidate.details.modularity > currentBest.details.modularity;
+  if (candidate.modularity !== currentBest.modularity) {
+    return candidate.modularity > currentBest.modularity;
   }
   return candidate.resolution < currentBest.resolution;
 }
 
-function chooseBestResolution(graph: TagGraph): LouvainDetails {
+function chooseBestPartition(graph: TagGraph): CommunityPartition {
   let low = COMMUNITY_RESOLUTION_MIN;
   let high = COMMUNITY_RESOLUTION_MAX;
   let best: ResolutionEvaluation | null = null;
@@ -359,15 +401,22 @@ function chooseBestResolution(graph: TagGraph): LouvainDetails {
     throw new Error('Failed to evaluate Louvain resolution sweep.');
   }
 
-  return best.details;
+  return {
+    resolution: best.resolution,
+    levels: best.levels,
+    modularity: best.modularity,
+    maxLeafSize: best.maxLeafSize,
+  };
 }
 
 function buildCarryOverSignature(
-  community: Pick<DetectedCommunitySeed, 'level' | 'members' | 'parentMembershipFingerprint'>,
+  community: Pick<DetectedCommunitySeed, 'level' | 'members' | 'parentMembershipFingerprint'> & {
+    membershipFingerprint?: string;
+  },
 ): string {
   return [
     String(community.level),
-    computeCommunityMembershipFingerprint(community.members),
+    community.membershipFingerprint ?? computeCommunityMembershipFingerprint(community.members),
     community.parentMembershipFingerprint ?? '',
   ].join('\u0000');
 }
@@ -386,12 +435,15 @@ function priorParentMembershipFingerprint(
 }
 
 function assignCommunitySlugs(
-  communities: DetectedCommunitySeed[],
+  communities: readonly DetectedCommunitySeed[],
   priorCommunities: ExistingGeneratedCommunity[],
   options: { reservedSlugs?: ReadonlySet<string> } = {},
 ): Array<DetectedCommunity & { key?: string; parentKey?: string; childKeys?: string[] }> {
   const reservedSlugs = options.reservedSlugs ?? new Set<string>();
-  const priorBySlug = new Map(priorCommunities.map((community) => [community.slug, community] as const));
+  const priorBySlug = new Map<string, ExistingGeneratedCommunity>();
+  for (const community of priorCommunities) {
+    priorBySlug.set(community.slug, community);
+  }
   const reusablePriorSlugs = new Map<string, string[]>();
 
   for (const priorCommunity of priorCommunities) {
@@ -428,27 +480,28 @@ function assignCommunitySlugs(
   });
 
   for (const community of sortedCommunities) {
-    const key = community.key ?? `${community.level}:${computeCommunityMembershipFingerprint(community.members)}`;
+    const key = community.key ?? `${community.level}:${community.membershipFingerprint}`;
     const reusable = reusablePriorSlugs.get(buildCarryOverSignature(community));
     const carriedSlug = reusable?.shift();
 
     assignedSlugs.set(key, ensureUniqueCommunitySlug(carriedSlug ?? community.freshSlug, usedSlugs, reservedSlugs));
   }
 
-  return communities
-    .map((community, index) => {
-      const key = community.key ?? index;
-      return {
-        slug: assignedSlugs.get(key) ?? ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs),
-        title: community.title,
-        level: community.level,
-        members: community.members,
-        ...(community.parentKey === undefined ? {} : { parentKey: community.parentKey }),
-        ...(community.childKeys === undefined ? {} : { childKeys: community.childKeys }),
-        ...(community.key === undefined ? {} : { key: community.key }),
-      };
-    })
-    .sort((left, right) => compareLocale(left.slug, right.slug));
+  const assigned: Array<DetectedCommunity & { key?: string; parentKey?: string; childKeys?: string[] }> = [];
+  for (let index = 0; index < communities.length; index += 1) {
+    const community = communities[index];
+    const key = community.key ?? index;
+    assigned.push({
+      slug: assignedSlugs.get(key) ?? ensureUniqueCommunitySlug(community.freshSlug, usedSlugs, reservedSlugs),
+      title: community.title,
+      level: community.level,
+      members: community.members,
+      ...(community.parentKey === undefined ? {} : { parentKey: community.parentKey }),
+      ...(community.childKeys === undefined ? {} : { childKeys: community.childKeys }),
+      ...(community.key === undefined ? {} : { key: community.key }),
+    });
+  }
+  return assigned.sort((left, right) => compareLocale(left.slug, right.slug));
 }
 
 export function carryOverSlugs(
@@ -456,33 +509,39 @@ export function carryOverSlugs(
   priorCommunities: ExistingGeneratedCommunity[],
   options: { reservedSlugs?: ReadonlySet<string> } = {},
 ): DetectedCommunity[] {
-  return assignCommunitySlugs(communities, priorCommunities, options).map((community) => ({
-    slug: community.slug,
-    title: community.title,
-    level: community.level,
-    members: community.members,
-  }));
+  const assigned = assignCommunitySlugs(communities, priorCommunities, options);
+  const carried: DetectedCommunity[] = [];
+  for (const community of assigned) {
+    carried.push({
+      slug: community.slug,
+      title: community.title,
+      level: community.level,
+      members: community.members,
+    });
+  }
+  return carried;
 }
 
 function detectCommunitiesForHash(
-  graph: TagGraph,
+  hierarchySeeds: readonly HierarchySeed[],
 ): Array<Pick<DetectedCommunity, 'slug' | 'level' | 'members' | 'parent' | 'children'>> {
-  return detectCommunities(graph).map((community) => ({
-    slug: community.slug,
-    level: community.level,
-    members: community.members,
-    ...(community.parent === undefined ? {} : { parent: community.parent }),
-    ...(community.children === undefined ? {} : { children: community.children }),
-  }));
+  const communities: Array<Pick<DetectedCommunity, 'slug' | 'level' | 'members' | 'parent' | 'children'>> = [];
+  for (const community of detectCommunitiesFromHierarchy(hierarchySeeds)) {
+    communities.push({
+      slug: community.slug,
+      level: community.level,
+      members: community.members,
+      ...(community.parent === undefined ? {} : { parent: community.parent }),
+      ...(community.children === undefined ? {} : { children: community.children }),
+    });
+  }
+  return communities;
 }
 
-export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
-  if (graph.graph.order === 0) {
-    return [];
-  }
-
-  const details = chooseBestResolution(graph);
-  const hierarchySeeds = buildHierarchySeeds(graph, details);
+function detectCommunitiesFromHierarchy(
+  hierarchySeeds: readonly HierarchySeed[],
+  options: DetectCommunitiesOptions = {},
+): DetectedCommunity[] {
   if (hierarchySeeds.length === 0) {
     return [];
   }
@@ -490,14 +549,32 @@ export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOpt
   const assignedCommunities = assignCommunitySlugs(hierarchySeeds, options.priorCommunities ?? [], {
     reservedSlugs: options.reservedSlugs,
   });
-  const slugByKey = new Map(
-    assignedCommunities
-      .filter((community): community is typeof community & { key: string } => typeof community.key === 'string')
-      .map((community) => [community.key, community.slug] as const),
-  );
+  const slugByKey = new Map<string, string>();
+  for (const community of assignedCommunities) {
+    if (typeof community.key === 'string') {
+      slugByKey.set(community.key, community.slug);
+    }
+  }
 
-  return assignedCommunities
-    .map((community) => ({
+  const detected: DetectedCommunity[] = [];
+  for (const community of assignedCommunities) {
+    let childEntryIds: string[] | undefined;
+    if (community.childKeys !== undefined && community.childKeys.length > 0) {
+      const children: string[] = [];
+      for (const childKey of community.childKeys) {
+        const slug = slugByKey.get(childKey);
+        if (slug !== undefined) {
+          children.push(slug);
+        }
+      }
+      children.sort(compareLocale);
+      childEntryIds = [];
+      for (const slug of children) {
+        childEntryIds.push(communityEntryId(slug));
+      }
+    }
+
+    detected.push({
       slug: community.slug,
       title: community.title,
       level: community.level,
@@ -505,43 +582,70 @@ export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOpt
       ...(community.parentKey === undefined
         ? {}
         : { parent: communityEntryId(slugByKey.get(community.parentKey) ?? community.parentKey) }),
-      ...(community.childKeys === undefined || community.childKeys.length === 0
-        ? {}
-        : {
-            children: community.childKeys
-              .map((childKey) => slugByKey.get(childKey))
-              .filter((slug): slug is string => slug !== undefined)
-              .sort(compareLocale)
-              .map((slug) => communityEntryId(slug)),
-          }),
-    }))
-    .sort((left, right) => {
-      if (left.level !== right.level) {
-        return left.level - right.level;
-      }
-      return compareLocale(left.slug, right.slug);
+      ...(childEntryIds === undefined || childEntryIds.length === 0 ? {} : { children: childEntryIds }),
     });
+  }
+
+  return detected.sort((left, right) => {
+    if (left.level !== right.level) {
+      return left.level - right.level;
+    }
+    return compareLocale(left.slug, right.slug);
+  });
+}
+
+export class CommunityPartitionTree {
+  private topologyFingerprint: string | null = null;
+
+  private constructor(
+    private readonly graphFingerprint: string,
+    private readonly hierarchySeeds: readonly HierarchySeed[],
+  ) {}
+
+  static fromGraph(graph: TagGraph): CommunityPartitionTree {
+    const graphFingerprint = computeGraphFingerprint(graph);
+    if (graph.graph.order === 0) {
+      return new CommunityPartitionTree(graphFingerprint, []);
+    }
+
+    const partition = chooseBestPartition(graph);
+    return new CommunityPartitionTree(graphFingerprint, buildHierarchySeeds(graph, partition.levels));
+  }
+
+  detect(options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
+    return detectCommunitiesFromHierarchy(this.hierarchySeeds, options);
+  }
+
+  computeTopologyFingerprint(): string {
+    if (this.topologyFingerprint !== null) {
+      return this.topologyFingerprint;
+    }
+
+    this.topologyFingerprint = createHash('sha256')
+      .update(
+        JSON.stringify({
+          graph: this.graphFingerprint,
+          communities: detectCommunitiesForHash(this.hierarchySeeds),
+        }),
+      )
+      .digest('hex');
+    return this.topologyFingerprint;
+  }
+}
+
+export function buildCommunityPartitionTree(graph: TagGraph): CommunityPartitionTree {
+  return CommunityPartitionTree.fromGraph(graph);
+}
+
+export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
+  return buildCommunityPartitionTree(graph).detect(options);
 }
 
 export function computeCommunityTopologyFingerprint(
   index: KbIndex,
   graph = buildEntityRelationshipGraphFromIndex(index),
 ): string {
-  const communities = detectCommunitiesForHash(graph);
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        graph: computeGraphFingerprint(graph),
-        communities: communities.map((community) => ({
-          slug: community.slug,
-          level: community.level,
-          members: community.members,
-          ...(community.parent === undefined ? {} : { parent: community.parent }),
-          ...(community.children === undefined ? {} : { children: community.children }),
-        })),
-      }),
-    )
-    .digest('hex');
+  return buildCommunityPartitionTree(graph).computeTopologyFingerprint();
 }
 
 export function computeCommunityMembershipFingerprint(members: string[]): string {

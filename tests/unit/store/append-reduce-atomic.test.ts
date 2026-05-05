@@ -1,4 +1,3 @@
-
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -13,7 +12,6 @@ import {
   testCounterRegistry,
 } from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-
 
 function setupDb(): Database {
   const db = newRawDatabase(':memory:');

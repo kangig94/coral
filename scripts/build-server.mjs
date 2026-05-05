@@ -75,7 +75,7 @@ for (const path of ['.claude-plugin/plugin.json', '.claude-plugin/marketplace.js
 const sharedOpts = {
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node22',
   format: 'cjs',
   external: ['node:*', 'better-sqlite3'],
   loader: { '.sql': 'text' },

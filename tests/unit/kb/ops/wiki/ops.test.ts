@@ -52,7 +52,10 @@ function createRuntime(paths: Awaited<ReturnType<typeof loadModules>>['paths']) 
   });
 }
 
-function readBody(path: string, frontmatter: Awaited<ReturnType<typeof loadModules>>['frontmatter']): {
+function readBody(
+  path: string,
+  frontmatter: Awaited<ReturnType<typeof loadModules>>['frontmatter'],
+): {
   understanding: string;
   knowledge: string;
 } {
@@ -104,9 +107,9 @@ describe('rewriteWikiUnderstanding', () => {
     const sourceFile = join(mockState.tmpHome, 'u.md');
     writeFileSync(sourceFile, 'x', 'utf-8');
 
-    await expect(
-      rewriteWikiUnderstanding(kb, { slug: 'missing-wiki', understandingFile: sourceFile }),
-    ).rejects.toThrow('KB wiki not found');
+    await expect(rewriteWikiUnderstanding(kb, { slug: 'missing-wiki', understandingFile: sourceFile })).rejects.toThrow(
+      'KB wiki not found',
+    );
   });
 });
 
@@ -120,9 +123,7 @@ describe('linkWikiKnowledge', () => {
     await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['[[notes/alpha]]', 'source:s-one'] });
     await linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['note:alpha', '[[notes/beta]]'] });
 
-    expect(readBody(wikiPath, frontmatter).knowledge).toBe(
-      '- [[notes/alpha]]\n- [[sources/s-one]]\n- [[notes/beta]]',
-    );
+    expect(readBody(wikiPath, frontmatter).knowledge).toBe('- [[notes/alpha]]\n- [[sources/s-one]]\n- [[notes/beta]]');
     expect(kb.readIndex()?.entries[wikiEntryId('living-knowledge')]).toMatchObject({
       knowledge: ['note:alpha', 'source:s-one', 'note:beta'],
     });
@@ -133,9 +134,7 @@ describe('linkWikiKnowledge', () => {
     const kb = createRuntime(paths);
     await createWiki(kb, { slug: 'living-knowledge' });
 
-    await expect(
-      linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['not-a-link'] }),
-    ).rejects.toThrow();
+    await expect(linkWikiKnowledge(kb, { slug: 'living-knowledge', refs: ['not-a-link'] })).rejects.toThrow();
   });
 });
 
@@ -195,9 +194,9 @@ describe('citeWikiKnowledge', () => {
     const evidenceFile = join(mockState.tmpHome, 'e.md');
     writeFileSync(evidenceFile, 'stray', 'utf-8');
 
-    await expect(
-      citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:absent', evidenceFile }),
-    ).rejects.toThrow('not in the Knowledge section');
+    await expect(citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:absent', evidenceFile })).rejects.toThrow(
+      'not in the Knowledge section',
+    );
   });
 
   it('rejects when the evidence file is empty', async () => {
@@ -208,8 +207,8 @@ describe('citeWikiKnowledge', () => {
     const evidenceFile = join(mockState.tmpHome, 'e.md');
     writeFileSync(evidenceFile, '   \n', 'utf-8');
 
-    await expect(
-      citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:alpha', evidenceFile }),
-    ).rejects.toThrow('evidence file is empty');
+    await expect(citeWikiKnowledge(kb, { slug: 'living-knowledge', ref: 'note:alpha', evidenceFile })).rejects.toThrow(
+      'evidence file is empty',
+    );
   });
 });

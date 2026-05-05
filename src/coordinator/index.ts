@@ -27,7 +27,7 @@ import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
-import type { Database } from '../store/db.js';
+import { prepareCached, type Database } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { readJobEvents, loadJobProjectionDetail } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
@@ -153,9 +153,11 @@ function isTrustedCorpusCapability(record: RegisteredKbCapability): boolean {
 // and skip so 'all-equipped' is best-effort over what's currently equipped.
 export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'capabilityRegistry'>): string[] {
   const runtimeView = kb.capabilityRegistry.runtimeView();
-  const corpusBindings = runtimeView.list().filter(isTrustedCorpusCapability);
   const ids: string[] = [];
-  for (const record of corpusBindings) {
+  for (const record of runtimeView.list()) {
+    if (!isTrustedCorpusCapability(record)) {
+      continue;
+    }
     try {
       ids.push(runtimeView.read<Backed<FtsRetrieval | VectorRetrieval>>(record.descriptor.name).consumer.id);
     } catch {
@@ -236,7 +238,17 @@ async function repairProjectionArtifactLagOnBoot(
   timeoutMs: number,
 ): Promise<void> {
   const lag = detectProjectionArtifactLag(kb, await kb.engineArtifactRegistry.describeArtifacts());
-  const targetConsumerIds = [...new Set(lag.flatMap((entry) => entry.targetConsumerIds))];
+  const targetConsumerIds: string[] = [];
+  const seenTargetConsumers = new Set<string>();
+  for (const entry of lag) {
+    for (const consumerId of entry.targetConsumerIds) {
+      if (seenTargetConsumers.has(consumerId)) {
+        continue;
+      }
+      seenTargetConsumers.add(consumerId);
+      targetConsumerIds.push(consumerId);
+    }
+  }
   if (targetConsumerIds.length === 0) {
     return;
   }
@@ -422,7 +434,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
 
   const getCurrentJournalSeq = () =>
-    (getQueryDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+    prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
   const getSessionLookup = () => createProjectionSessionLookup(getQueryDb());
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const db = getStoreDb();

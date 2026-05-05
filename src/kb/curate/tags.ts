@@ -76,7 +76,8 @@ export function cleanupTags(index: KbIndex, cohortSlugs: string[]): TagCleanupRe
     }
   }
 
-  for (const tag of [...cohortTags].sort(compareLocale)) {
+  const sortedCohortTags = [...cohortTags].sort(compareLocale);
+  for (const tag of sortedCohortTags) {
     if (globalReplacements.has(tag)) {
       continue;
     }

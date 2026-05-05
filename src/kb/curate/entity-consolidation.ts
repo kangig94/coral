@@ -82,7 +82,13 @@ function isWellFormedEntityId(value: string): boolean {
 }
 
 function entitySegments(value: string): string[] {
-  return value.split('-').filter((segment) => segment.length > 0);
+  const segments: string[] = [];
+  for (const segment of value.split('-')) {
+    if (segment.length > 0) {
+      segments.push(segment);
+    }
+  }
+  return segments;
 }
 
 function isKnownEntityType(value: string): value is EntityType {
@@ -136,20 +142,23 @@ function normalizeEntityGroupKey(value: string, observedKeys: ReadonlySet<string
 }
 
 function collectEntityCandidates(existingGraph: EntityGraph, delta?: EntityConsolidationDelta): EntityCandidate[] {
-  const rawCandidates: EntityCandidate[] = [
-    ...Object.entries(existingGraph.entityMeta).map(([name, meta]) => ({
+  const rawCandidates: EntityCandidate[] = [];
+  for (const [name, meta] of Object.entries(existingGraph.entityMeta)) {
+    rawCandidates.push({
       name,
       type: meta.type,
       description: meta.description,
       aliases: meta.aliases ?? [],
-    })),
-    ...((delta?.entities ?? []).map((candidate) => ({
+    });
+  }
+  for (const candidate of delta?.entities ?? []) {
+    rawCandidates.push({
       name: candidate.name,
       type: candidate.type,
       description: candidate.description,
       aliases: candidate.aliases ?? [],
-    })) as EntityCandidate[]),
-  ];
+    });
+  }
 
   const candidates: EntityCandidate[] = [];
   for (const candidate of rawCandidates) {
@@ -159,9 +168,14 @@ function collectEntityCandidates(existingGraph: EntityGraph, delta?: EntityConso
       continue;
     }
 
-    const aliases = uniqueTrimmedList(
-      candidate.aliases.map((alias) => normalizeEntityId(alias)).filter((alias) => isWellFormedEntityId(alias)),
-    );
+    const normalizedAliases: string[] = [];
+    for (const rawAlias of candidate.aliases) {
+      const alias = normalizeEntityId(rawAlias);
+      if (isWellFormedEntityId(alias)) {
+        normalizedAliases.push(alias);
+      }
+    }
+    const aliases = uniqueTrimmedList(normalizedAliases);
 
     candidates.push({
       name,
@@ -257,16 +271,24 @@ function mergeDescriptions(descriptions: readonly string[]): string {
 
   for (const description of uniqueDescriptions) {
     const normalized = description.toLowerCase();
-    if (
-      merged.some((existing) => {
-        const existingNormalized = existing.toLowerCase();
-        return existingNormalized === normalized || existingNormalized.includes(normalized);
-      })
-    ) {
+    let alreadyCovered = false;
+    for (const existing of merged) {
+      const existingNormalized = existing.toLowerCase();
+      if (existingNormalized === normalized || existingNormalized.includes(normalized)) {
+        alreadyCovered = true;
+        break;
+      }
+    }
+    if (alreadyCovered) {
       continue;
     }
 
-    const withoutRedundantExisting = merged.filter((existing) => !normalized.includes(existing.toLowerCase()));
+    const withoutRedundantExisting: string[] = [];
+    for (const existing of merged) {
+      if (!normalized.includes(existing.toLowerCase())) {
+        withoutRedundantExisting.push(existing);
+      }
+    }
     withoutRedundantExisting.push(description);
     withoutRedundantExisting.sort((left, right) => right.length - left.length || compareLocale(left, right));
     merged.splice(0, merged.length, ...withoutRedundantExisting);
@@ -276,9 +298,10 @@ function mergeDescriptions(descriptions: readonly string[]): string {
 }
 
 function selectCanonicalType(candidates: readonly EntityCandidate[], canonicalName: string): EntityType {
-  const directMatch = candidates.find((candidate) => candidate.name === canonicalName);
-  if (directMatch !== undefined) {
-    return directMatch.type;
+  for (const candidate of candidates) {
+    if (candidate.name === canonicalName) {
+      return candidate.type;
+    }
   }
 
   const counts = new Map<EntityType, number>();
@@ -286,11 +309,15 @@ function selectCanonicalType(candidates: readonly EntityCandidate[], canonicalNa
     counts.set(candidate.type, (counts.get(candidate.type) ?? 0) + 1);
   }
 
-  const preferredType = [...ENTITY_TYPES].sort(
-    (left, right) => (counts.get(right) ?? 0) - (counts.get(left) ?? 0) || compareLocale(left, right),
-  )[0];
-
-  return preferredType ?? 'concept';
+  let preferredType: EntityType = 'concept';
+  for (const entityType of ENTITY_TYPES) {
+    const bestCount = counts.get(preferredType) ?? 0;
+    const candidateCount = counts.get(entityType) ?? 0;
+    if (candidateCount > bestCount || (candidateCount === bestCount && compareLocale(entityType, preferredType) < 0)) {
+      preferredType = entityType;
+    }
+  }
+  return preferredType;
 }
 
 function buildCanonicalEntities(
@@ -319,42 +346,47 @@ function buildCanonicalEntities(
     }
   }
 
-  const entityMetaEntries = [...grouped.entries()]
-    .sort(([left], [right]) => compareLocale(left, right))
-    .map(([canonicalName, canonicalCandidates]) => {
-      const aliases = uniqueTrimmedList(
-        canonicalCandidates
-          .flatMap((candidate) => [candidate.name, ...candidate.aliases])
-          .filter((alias) => alias !== canonicalName),
-      ).sort(compareLocale);
-      const descriptions = [
-        ...canonicalCandidates
-          .filter((candidate) => candidate.name === canonicalName)
-          .map((candidate) => candidate.description),
-        ...canonicalCandidates
-          .filter((candidate) => candidate.name !== canonicalName)
-          .map((candidate) => candidate.description)
-          .sort((left, right) => right.length - left.length || compareLocale(left, right)),
-      ];
+  const entityMeta: Record<string, EntityMeta> = {};
+  const groupedEntries = [...grouped.entries()].sort(([left], [right]) => compareLocale(left, right));
+  for (const [canonicalName, canonicalCandidates] of groupedEntries) {
+    const aliasCandidates: string[] = [];
+    const directDescriptions: string[] = [];
+    const otherDescriptions: string[] = [];
+    for (const candidate of canonicalCandidates) {
+      if (candidate.name === canonicalName) {
+        directDescriptions.push(candidate.description);
+      } else {
+        aliasCandidates.push(candidate.name);
+        otherDescriptions.push(candidate.description);
+      }
+      for (const alias of candidate.aliases) {
+        if (alias !== canonicalName) {
+          aliasCandidates.push(alias);
+        }
+      }
+    }
+    const aliases = uniqueTrimmedList(aliasCandidates).sort(compareLocale);
+    otherDescriptions.sort((left, right) => right.length - left.length || compareLocale(left, right));
+    const descriptions = [...directDescriptions, ...otherDescriptions];
 
-      replacementEntries.set(canonicalName, canonicalName);
+    replacementEntries.set(canonicalName, canonicalName);
 
-      return [
-        canonicalName,
-        {
-          type: selectCanonicalType(canonicalCandidates, canonicalName),
-          description: mergeDescriptions(descriptions),
-          ...(aliases.length === 0 ? {} : { aliases }),
-        },
-      ] as const;
-    });
+    entityMeta[canonicalName] = {
+      type: selectCanonicalType(canonicalCandidates, canonicalName),
+      description: mergeDescriptions(descriptions),
+      ...(aliases.length === 0 ? {} : { aliases }),
+    };
+  }
 
-  const replacementMap = Object.fromEntries(
-    [...replacementEntries.entries()].sort(([left], [right]) => compareLocale(left, right)),
-  );
+  const replacementMap: EntityReplacementMap = {};
+  for (const [source, target] of [...replacementEntries.entries()].sort(([left], [right]) =>
+    compareLocale(left, right),
+  )) {
+    replacementMap[source] = target;
+  }
 
   return {
-    entityMeta: Object.fromEntries(entityMetaEntries),
+    entityMeta,
     replacementMap,
   };
 }
@@ -379,9 +411,7 @@ function buildCanonicalRelationships(
       evidence: string[];
     }
   >();
-  const allRelationships = [...existingGraph.relationships, ...(delta?.relationships ?? [])];
-
-  for (const relationship of allRelationships) {
+  const addRelationship = (relationship: EntityRelationship): void => {
     const source = resolveCanonicalEntityId(relationship.source, replacementMap);
     const target = resolveCanonicalEntityId(relationship.target, replacementMap);
     const description = relationship.description.trim();
@@ -397,7 +427,7 @@ function buildCanonicalRelationships(
       !description ||
       evidence.length === 0
     ) {
-      continue;
+      return;
     }
 
     const key = relationshipKey({ source, target, type: relationship.type });
@@ -411,23 +441,32 @@ function buildCanonicalRelationships(
     bucket.descriptions.push(description);
     bucket.evidence.push(...evidence);
     grouped.set(key, bucket);
+  };
+
+  for (const relationship of existingGraph.relationships) {
+    addRelationship(relationship);
+  }
+  for (const relationship of delta?.relationships ?? []) {
+    addRelationship(relationship);
   }
 
-  return [...grouped.values()]
-    .map((bucket) => ({
+  const relationships: EntityRelationship[] = [];
+  for (const bucket of grouped.values()) {
+    relationships.push({
       source: bucket.source,
       target: bucket.target,
       type: bucket.type,
       description: mergeDescriptions(bucket.descriptions),
       evidence: uniqueTrimmedList(bucket.evidence).sort(compareLocale),
-    }))
-    .sort(
-      (left, right) =>
-        compareLocale(left.source, right.source) ||
-        compareLocale(left.target, right.target) ||
-        compareLocale(left.type, right.type) ||
-        compareLocale(left.description, right.description),
-    );
+    });
+  }
+  return relationships.sort(
+    (left, right) =>
+      compareLocale(left.source, right.source) ||
+      compareLocale(left.target, right.target) ||
+      compareLocale(left.type, right.type) ||
+      compareLocale(left.description, right.description),
+  );
 }
 
 export function resolveCanonicalEntityId(entityId: string, replacementMap: EntityReplacementMap): string {

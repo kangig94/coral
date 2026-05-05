@@ -457,16 +457,16 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       return request<JobsListResponse>('jobs.list', filters);
     },
     abortJobs: async (jobIds) =>
-      await request<AbortResult>('jobs.abort', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
-    discussSeed: async (args) => await request<PersonaSeedOutput>('discuss.persona.generate', args),
+      request<AbortResult>('jobs.abort', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
+    discussSeed: async (args) => request<PersonaSeedOutput>('discuss.persona.generate', args),
     discussStart: async (args) =>
-      await request<DiscussStartResponse>('discuss.session.create', buildTransportContextBody(args, defaultContext)),
+      request<DiscussStartResponse>('discuss.session.create', buildTransportContextBody(args, defaultContext)),
     discussWatch: async (session, cursor) => {
       if (commandClass === 'read') {
         return readStore().discuss.watch(session, cursor);
       }
 
-      return await request<WatchState>(
+      return request<WatchState>(
         'discuss.session.events',
         buildProjectScopedQuery(
           {
@@ -478,23 +478,23 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       );
     },
     discussBid: async (args) =>
-      await request<BidResult>(
+      request<BidResult>(
         'discuss.session.bid',
         buildTransportContextBody({ ...args, sessionId: args.session }, defaultContext),
       ),
     discussSpeech: async (args) =>
-      await request<SpeechResult>(
+      request<SpeechResult>(
         'discuss.session.speech',
         buildTransportContextBody({ ...args, sessionId: args.session }, defaultContext),
       ),
     discussAbort: async (session) =>
-      await request<DiscussAbortResponse>(
+      request<DiscussAbortResponse>(
         'discuss.session.delete',
         buildProjectScopedQuery({ sessionId: session }, defaultContext),
       ),
     kbSearch: async (args) => {
       if (commandClass === 'read') {
-        return await Promise.resolve(readStore().kb.search(args));
+        return readStore().kb.search(args);
       }
 
       return request<KbSearchResponse>('kb.entries.search', {
@@ -506,14 +506,14 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbDiagnose: async (_args = {}) => {
       if (commandClass === 'read') {
-        return await Promise.resolve(readStore().kb.diagnose());
+        return readStore().kb.diagnose();
       }
 
-      return await request<KbDiagnoseResult>('kb.diagnose', {});
+      return request<KbDiagnoseResult>('kb.diagnose', {});
     },
     kbPrinciples: async (args) => {
       if (commandClass === 'read') {
-        return await Promise.resolve(readStore().kb.listPrinciples(args));
+        return readStore().kb.listPrinciples(args);
       }
 
       return request<KbPrinciplesResult>('kb.principles.list', {
@@ -524,94 +524,76 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbRead: async (args) => {
       if (commandClass === 'read') {
-        return await Promise.resolve(readStore().kb.read(args));
+        return readStore().kb.read(args);
       }
 
       throw new Error(`Command "${path}" is classified as ${commandClass} and cannot issue direct KB reads.`);
     },
     kbPromote: async (args) =>
-      await request<KbPromoteResponse>('kb.note.create', buildKbMutationTransportContextBody(args, defaultContext)),
+      request<KbPromoteResponse>('kb.note.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbUpdate: async (args) =>
-      await request<KbUpdateResponse>(
+      request<KbUpdateResponse>(
         'kb.note.update',
         buildKbMutationTransportContextBody({ ...args, slug: args.note }, defaultContext),
       ),
     kbDelete: async (args) =>
-      await request<KbDeleteResponse>(
+      request<KbDeleteResponse>(
         'kb.note.delete',
         buildKbMutationTransportContextBody({ slug: args.note }, defaultContext),
       ),
     kbWikiCreate: async (args) =>
-      await request<KbWikiCreateResponse>('kb.wiki.create', buildKbMutationTransportContextBody(args, defaultContext)),
+      request<KbWikiCreateResponse>('kb.wiki.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiRewrite: async (args) =>
-      await request<KbWikiMutationResponse>(
-        'kb.wiki.rewrite',
-        buildKbMutationTransportContextBody(args, defaultContext),
-      ),
+      request<KbWikiMutationResponse>('kb.wiki.rewrite', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiLink: async (args) =>
-      await request<KbWikiMutationResponse>(
-        'kb.wiki.link',
-        buildKbMutationTransportContextBody(args, defaultContext),
-      ),
+      request<KbWikiMutationResponse>('kb.wiki.link', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiUnlink: async (args) =>
-      await request<KbWikiMutationResponse>(
-        'kb.wiki.unlink',
-        buildKbMutationTransportContextBody(args, defaultContext),
-      ),
+      request<KbWikiMutationResponse>('kb.wiki.unlink', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiCite: async (args) =>
-      await request<KbWikiMutationResponse>(
-        'kb.wiki.cite',
-        buildKbMutationTransportContextBody(args, defaultContext),
-      ),
+      request<KbWikiMutationResponse>('kb.wiki.cite', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiAdopt: async (args) =>
-      await request<KbWikiAdoptResponse>(
-        'kb.wiki.adopt',
-        buildKbMutationTransportContextBody(args, defaultContext),
-      ),
+      request<KbWikiAdoptResponse>('kb.wiki.adopt', buildKbMutationTransportContextBody(args, defaultContext)),
     kbWikiDelete: async (args) =>
-      await request<KbWikiDeleteResponse>(
+      request<KbWikiDeleteResponse>(
         'kb.wiki.delete',
         buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
       ),
     kbWikiList: async () => {
       if (commandClass === 'read') {
-        return await readStore().kb.listWikis();
+        return readStore().kb.listWikis();
       }
 
-      return await request<KbWikiListResult>('kb.wiki.list', {});
+      return request<KbWikiListResult>('kb.wiki.list', {});
     },
-    kbWikiRead: async (args) => await request<KbReadResult>('kb.wiki.read', { slug: args.slug }),
+    kbWikiRead: async (args) => request<KbReadResult>('kb.wiki.read', { slug: args.slug }),
     kbWakeUp: async (args = {}) => {
       if (commandClass === 'read') {
-        return await readStore().kb.wakeUp(args);
+        return readStore().kb.wakeUp(args);
       }
 
-      return await request<KbWakeUpResponse>('kb.wake_up', args);
+      return request<KbWakeUpResponse>('kb.wake_up', args);
     },
     kbSourceImport: async (args) =>
-      await request<KbSourceImportResponse>(
-        'kb.source.create',
-        buildKbMutationTransportContextBody(args, defaultContext),
-      ),
+      request<KbSourceImportResponse>('kb.source.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbSourceList: async () => {
       if (commandClass === 'read') {
-        return await Promise.resolve(readStore().kb.listSources());
+        return readStore().kb.listSources();
       }
 
       return request<KbSourceListResult>('kb.source.list', {});
     },
     kbSourceDelete: async (args) =>
-      await request<KbSourceDeleteResponse>(
+      request<KbSourceDeleteResponse>(
         'kb.source.delete',
         buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
       ),
     kbMemo: async (args) =>
-      await request<KbMemoResponse>('kb.memo.create', buildKbMutationTransportContextBody(args, defaultContext)),
+      request<KbMemoResponse>('kb.memo.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbMemoList: async (args) => {
       const owner = resolveMemoOwner(args.owner, defaultContext);
 
       if (commandClass === 'read') {
-        return await Promise.resolve(readStore().kb.listMemos(owner === undefined ? {} : { owner }));
+        return readStore().kb.listMemos(owner === undefined ? {} : { owner });
       }
 
       return request<KbMemoListResult>(
@@ -621,7 +603,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbMemoDelete: async (args) => {
       const owner = resolveMemoOwner(args.owner, defaultContext);
-      return await request<KbMemoDeleteResult>(
+      return request<KbMemoDeleteResult>(
         'kb.memo.delete',
         buildKbMutationTransportContextBody(
           {
@@ -634,7 +616,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbMemoPurge: async (args) => {
       const owner = resolveMemoOwner(args.owner, defaultContext);
-      return await request<KbMemoPurgeResult>(
+      return request<KbMemoPurgeResult>(
         'kb.memo.delete',
         buildKbMutationTransportContextBody(
           {
@@ -646,7 +628,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       );
     },
     kbReindex: async (args = {}) =>
-      await request<KbReindexResponse>('kb.reindex', buildKbMutationTransportContextBody(args, defaultContext)),
+      request<KbReindexResponse>('kb.reindex', buildKbMutationTransportContextBody(args, defaultContext)),
     subscribe,
   };
 }

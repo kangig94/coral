@@ -109,12 +109,17 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
   const engineKb = engineFacingKbRuntime(deps.kb, deps.consumerDriver);
   const runtimeCapabilities = deps.kb.capabilityRegistry.runtimeView();
   const declaredFills = deps.manifest.fills ?? [];
-  const declaredRequires = (deps.manifest.onboarding ?? []).flatMap((step) =>
-    step.kind === 'require-binding' ? [step.binding] : [],
-  );
-  declaredRequires.push(
-    ...(deps.manifest.provides?.retrievalRoles ?? []).flatMap((descriptor) => descriptor.requires ?? []),
-  );
+  const declaredRequires: string[] = [];
+  for (const step of deps.manifest.onboarding ?? []) {
+    if (step.kind === 'require-binding') {
+      declaredRequires.push(step.binding);
+    }
+  }
+  for (const descriptor of deps.manifest.provides?.retrievalRoles ?? []) {
+    for (const requirement of descriptor.requires ?? []) {
+      declaredRequires.push(requirement);
+    }
+  }
   const fillSet = new Set(declaredFills);
   const requireSet = new Set(declaredRequires);
   const host: ExpansionHost = {
@@ -230,8 +235,10 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
  * stop/unregister so that stale descriptors cannot target consumers whose
  * handles have already been disposed (§16 #19 lifecycle ordering).
  *
- * Then `scope[Symbol.dispose]()` runs the remaining decorated callbacks
- * (LIFO via `decorateDispose`).
+ * `registerConsumer` and `registerArtifactPort` also decorate the raw scope
+ * so direct scope disposal remains self-contained. This ordered lifecycle path
+ * intentionally repeats those idempotent unregister calls before running the
+ * decorated callbacks (LIFO via `decorateDispose`).
  */
 export async function disposeExpansionScope(scope: Disposable): Promise<void> {
   for (const registration of registeredArtifactPorts(scope)) {

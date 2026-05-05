@@ -15,10 +15,6 @@ export function cloneSpec(spec: ProviderServerSpec): ProviderServerSpec {
   };
 }
 
-export function readClosingError(entry: ProviderHostEntry): Error | null {
-  return entry.closingError;
-}
-
 export async function ensureProviderServerHandle(
   entry: ProviderHostEntry,
   options: {
@@ -43,7 +39,8 @@ export async function ensureProviderServerHandle(
 
   try {
     const handle = await entry.spawnPromise;
-    const closingError = readClosingError(entry);
+    // The host can be marked closing while the spawn promise is pending.
+    const closingError = entry.closingError as Error | null;
     if (closingError !== null) {
       await options.shutdownHandle(handle, entry.spec).catch(() => {});
       throw new Error(closingError.message, { cause: closingError });

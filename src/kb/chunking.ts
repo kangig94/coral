@@ -113,14 +113,21 @@ export function chunkEntry(entry: EntryRecord, body: string): ChunkSeed[] {
   const entryId = entry.kind === 'note' ? noteEntryId(entry.slug) : sourceEntryId(entry.slug);
   const prefix = `# ${entry.title}\n\n`;
   const sections = entry.kind === 'note' ? [body.trim()] : splitSections(body);
-  const texts = sections.flatMap((section) => splitAtParagraphBoundaries(prefix, section));
+  const chunks: ChunkSeed[] = [];
 
-  return texts.map((text, chunkIndex) => ({
-    id: `${entryId}::${chunkIndex}`,
-    entryId,
-    entryKind: entry.kind,
-    chunkIndex,
-    text,
-    contentHash: chunkHash(text),
-  }));
+  for (const section of sections) {
+    for (const text of splitAtParagraphBoundaries(prefix, section)) {
+      const chunkIndex = chunks.length;
+      chunks.push({
+        id: `${entryId}::${chunkIndex}`,
+        entryId,
+        entryKind: entry.kind,
+        chunkIndex,
+        text,
+        contentHash: chunkHash(text),
+      });
+    }
+  }
+
+  return chunks;
 }

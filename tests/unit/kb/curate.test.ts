@@ -14,7 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as curateState from '#src/kb/curate/state/index.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import { buildClassificationPrompt, chunkEntriesByPromptBudget } from '#src/kb/curate/classification/prompt.js';
+import {
+  buildClassificationPrompt,
+  chunkEntriesByPromptBudget,
+  takeClassificationBatchWithIndex,
+} from '#src/kb/curate/classification/prompt.js';
 import { buildMetadataTargets, validateAssignments } from '#src/kb/curate/classification/assignments.js';
 import { parseClassificationResponse } from '#src/kb/curate/classification/parse.js';
 import { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposals } from '#src/kb/curate/discovery.js';
@@ -335,6 +339,91 @@ describe('curate', () => {
 
       expect(prompt).toContain('- entity-000-descriptor: concept');
       expect(prompt).not.toContain('- entity-499-descriptor: concept');
+    });
+
+    it('keeps indexed classification vocabulary ordered by relevance, support, then entity name', () => {
+      const claimedEntries = [
+        buildClaimedNote({
+          slug: 'coral-alpha',
+          title: 'Vector Store Guide',
+          body: 'Vector storage explains retrieval.',
+          entrySeq: 1,
+        }),
+        buildClaimedNote({
+          slug: 'coral-beta',
+          title: 'Archive',
+          body: 'Archive only.',
+          entrySeq: 2,
+        }),
+      ];
+      const index: KbIndex = {
+        entries: createIndexEntries({
+          'coral-alpha': createIndexNote({
+            title: 'Vector Store Guide',
+            tags: ['retrieval'],
+            entrySeq: 1,
+          }),
+          'support-alpha': createIndexNote({
+            title: 'Support Alpha',
+            tags: ['maintenance-history'],
+            entrySeq: 3,
+          }),
+          'support-beta': createIndexNote({
+            title: 'Support Beta',
+            tags: ['maintenance-history'],
+            entrySeq: 4,
+          }),
+          'support-gamma': createIndexNote({
+            title: 'Support Gamma',
+            tags: ['maintenance-history'],
+            entrySeq: 5,
+          }),
+        }),
+        principles: {},
+        entityMeta: {
+          'maintenance-history': {
+            type: 'concept',
+            description: 'Background material.',
+          },
+          'graph-rag': {
+            type: 'concept',
+            description: 'Graph-backed retrieval.',
+          },
+          retrieval: {
+            type: 'operation',
+            description: 'Retrieval workflows.',
+          },
+          'vector-store': {
+            type: 'component',
+            description: 'Vector storage.',
+          },
+        },
+        relationships: [
+          {
+            source: 'graph-rag',
+            target: 'retrieval',
+            type: 'enables',
+            description: 'Graph RAG enables retrieval.',
+            evidence: ['note:coral-alpha', 'note:coral-beta'],
+          },
+        ],
+      };
+
+      const { batch, vocabulary } = takeClassificationBatchWithIndex(claimedEntries, index, [], 10);
+
+      expect(batch.map((entry) => entry.entryId)).toEqual(['note:coral-alpha', 'note:coral-beta']);
+      expect(
+        vocabulary.map((entry) => ({
+          name: entry.name,
+          relevant: entry.relevant,
+          support: entry.support,
+        })),
+      ).toEqual([
+        { name: 'retrieval', relevant: true, support: 3 },
+        { name: 'graph-rag', relevant: true, support: 2 },
+        { name: 'vector-store', relevant: true, support: 0 },
+        { name: 'maintenance-history', relevant: false, support: 3 },
+      ]);
     });
 
     it('parses classification responses from raw and code-fenced JSON arrays with newEntities and relationships', () => {

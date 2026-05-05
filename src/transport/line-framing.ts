@@ -26,15 +26,13 @@ export type LineFramer = {
 
 export function createLineFramer(): LineFramer {
   let buffer = '';
-  let pendingBytes = 0;
 
   return {
     push(chunk): string[] {
       buffer += chunk.toString('utf-8');
-      pendingBytes = Buffer.byteLength(buffer, 'utf-8');
       const frames = buffer.split('\n');
       buffer = frames.pop() ?? '';
-      pendingBytes = Buffer.byteLength(buffer, 'utf-8');
+      const pendingBytes = Buffer.byteLength(buffer, 'utf-8');
       if (pendingBytes > MAX_FRAME_BYTES) {
         throw new FrameTooLargeError(pendingBytes, MAX_FRAME_BYTES);
       }

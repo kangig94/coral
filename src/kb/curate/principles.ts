@@ -189,10 +189,10 @@ function ensurePrincipleDocumentLocked(
 function pendingDiscoverySatisfied(kb: KbRuntime, entry: PendingDiscovery, processedThrough: CurateCursor): boolean {
   const index = kb.readIndexOrEmpty();
 
-  return entry.notes.every((note) => {
+  for (const note of entry.notes) {
     const noteMeta = getIndexNote(index, note);
     if (noteMeta === undefined) {
-      return true;
+      continue;
     }
     if (noteMeta.entrySeq === undefined) {
       return false;
@@ -201,8 +201,11 @@ function pendingDiscoverySatisfied(kb: KbRuntime, entry: PendingDiscovery, proce
       return false;
     }
 
-    return noteMeta.principles.includes(entry.principle);
-  });
+    if (!noteMeta.principles.includes(entry.principle)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCursor): Promise<void> {
@@ -343,15 +346,22 @@ export async function runPrincipleDiscovery(
         index = nextIndex;
       }
 
-      const targets = filterCandidatesBeforeRepairFrontier(
-        buildPrincipleAssignmentTargets(entry.principle, entry.notes, index, effectiveProcessedThrough).map(
-          (target) => ({
-            cursor: cursorFromTarget(target),
-            target,
-          }),
-        ),
-        repairFrontier,
-      ).map(({ target }) => target);
+      const targetCandidates: Array<{ cursor: CurateCursor; target: MetadataTarget }> = [];
+      for (const target of buildPrincipleAssignmentTargets(
+        entry.principle,
+        entry.notes,
+        index,
+        effectiveProcessedThrough,
+      )) {
+        targetCandidates.push({
+          cursor: cursorFromTarget(target),
+          target,
+        });
+      }
+      const targets: MetadataTarget[] = [];
+      for (const { target } of filterCandidatesBeforeRepairFrontier(targetCandidates, repairFrontier)) {
+        targets.push(target);
+      }
       if (targets.length > 0) {
         state = await commitMetadataTargetsLocked(kb, mutation, targets, state);
         index = kb.readIndexOrEmpty();
@@ -370,9 +380,10 @@ export async function runPrincipleDiscovery(
 
       const nextIndex = cloneKbIndex(index);
       for (const absorbSlug of absorbs) {
-        const absorbedPending = state.pendingDiscoveries.filter((pending) => pending.principle === absorbSlug);
-        for (const pending of absorbedPending) {
-          state = removePendingDiscoveryLocked(kb, state, pending);
+        for (const pending of state.pendingDiscoveries) {
+          if (pending.principle === absorbSlug) {
+            state = removePendingDiscoveryLocked(kb, state, pending);
+          }
         }
 
         unlinkIfExists(kb.principlePath(absorbSlug));
@@ -384,8 +395,15 @@ export async function runPrincipleDiscovery(
       index = nextIndex;
 
       const targets: MetadataTarget[] = [];
+      const noteEntries: NoteEntry[] = [];
+      for (const entry of Object.values(index.entries)) {
+        if (isNoteEntry(entry)) {
+          noteEntries.push(entry);
+        }
+      }
+
       for (const absorbSlug of absorbs) {
-        for (const noteMeta of Object.values(index.entries).filter(isNoteEntry)) {
+        for (const noteMeta of noteEntries) {
           const note = noteMeta.slug;
           if (!noteMeta.principles.includes(absorbSlug) || noteMeta.entrySeq === undefined) {
             continue;

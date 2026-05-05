@@ -27,6 +27,7 @@ const ONNX_MODELS = {
 } as const satisfies Record<string, { dims: number; downloadUrl: string }>;
 
 type SupportedOnnxModel = keyof typeof ONNX_MODELS;
+const ONNX_PREFERRED_OUTPUT_NAMES = ['sentence_embedding', 'embeddings', 'text_embeds', 'output'] as const;
 
 type OnnxTensor = {
   data: unknown;
@@ -97,9 +98,7 @@ function flattenOnnxTensor(tensor: OnnxTensor, dims: number): Float32Array {
 }
 
 function extractOnnxVector(outputs: Record<string, OnnxTensor>, dims: number): Float32Array {
-  const preferredNames = ['sentence_embedding', 'embeddings', 'text_embeds', 'output'];
-
-  for (const name of preferredNames) {
+  for (const name of ONNX_PREFERRED_OUTPUT_NAMES) {
     const tensor = outputs[name];
     if (tensor !== undefined) {
       return flattenOnnxTensor(tensor, dims);

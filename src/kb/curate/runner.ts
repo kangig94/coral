@@ -29,7 +29,7 @@ import {
   writeCurateState,
   type CurateCursor,
 } from './state/index.js';
-import type { ClaimCandidate, ClassificationAssignment, CurateClaim } from './pipeline-types.js';
+import type { ClaimCandidate, ClassificationAssignment, CurateClaim, CurateClaimedEntry } from './pipeline-types.js';
 import type { SpawnCliFn } from './spawn-cli.js';
 import { curateDb } from './db-access.js';
 
@@ -39,9 +39,13 @@ const CURATE_MAX_CLAIM_SIZE = 100;
 const CLASSIFICATION_BATCH_SIZE = 100;
 
 function getCuratableEntries(index: KbIndex): CuratableEntry[] {
-  return Object.values(index.entries).filter(
-    (entry): entry is CuratableEntry => isNoteEntry(entry) || isSourceEntry(entry),
-  );
+  const entries: CuratableEntry[] = [];
+  for (const entry of Object.values(index.entries)) {
+    if (isNoteEntry(entry) || isSourceEntry(entry)) {
+      entries.push(entry);
+    }
+  }
+  return entries;
 }
 
 function sourceCursor(slug: string, entrySeq: number): CurateCursor {
@@ -121,12 +125,13 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
     }
 
     const repairFrontier = getCurateRepairFrontier(curateDb(kb));
-    const pendingEntries = filterCandidatesBeforeRepairFrontier(
-      collectClaimCandidates(index).filter(
-        (candidate) => compareOptionalCursor(state.processedThrough, candidate.cursor) < 0,
-      ),
-      repairFrontier,
-    );
+    const unprocessedCandidates: ClaimCandidate[] = [];
+    for (const candidate of collectClaimCandidates(index)) {
+      if (compareOptionalCursor(state.processedThrough, candidate.cursor) < 0) {
+        unprocessedCandidates.push(candidate);
+      }
+    }
+    const pendingEntries = filterCandidatesBeforeRepairFrontier(unprocessedCandidates, repairFrontier);
     if (pendingEntries.length === 0) {
       return null;
     }
@@ -172,13 +177,14 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
     return null;
   }
 
-  const entries = lockResult.claimedCandidates.flatMap((candidate) => {
+  const entries: CurateClaimedEntry[] = [];
+  for (const candidate of lockResult.claimedCandidates) {
     try {
-      return [readClaimedEntry(kb, candidate)];
+      entries.push(readClaimedEntry(kb, candidate));
     } catch {
-      return [];
+      // Skip candidates that disappeared or became unreadable after claiming.
     }
-  });
+  }
   if (entries.length === 0) {
     return null;
   }
@@ -211,7 +217,10 @@ export async function runClassificationBatches(
 
     const prompt = buildClassificationPrompt(batch, vocabulary, principleNames);
     const raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
-    const entryMap = new Map<string, true>(batch.map((entry) => [entry.entryId, true] as const));
+    const entryMap = new Map<string, true>();
+    for (const entry of batch) {
+      entryMap.set(entry.entryId, true);
+    }
     const parsed = parseClassificationResponseResult(raw, entryMap);
     if (parsed.parseFailed) {
       throw new CurateJsonParseError('classification');
@@ -234,8 +243,11 @@ export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: Curat
     }
 
     const repairFrontier = getCurateRepairFrontier(curateDb(kb));
-    return filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier).some(
-      (candidate) => compareCursor(candidate.cursor, cursor) > 0,
-    );
+    for (const candidate of filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier)) {
+      if (compareCursor(candidate.cursor, cursor) > 0) {
+        return true;
+      }
+    }
+    return false;
   });
 }

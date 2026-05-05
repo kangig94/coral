@@ -113,7 +113,7 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | `DELETE /kb/wikis/:slug` | 200 | Delete a wiki entry by slug |
 | `GET /kb/wake-up` | 200 | Generate the SessionStart wake-up packet |
 | `POST /kb/index` | 200 | Rebuild KB text artifacts through an internal job |
-| `GET /health` | 200 | Backend health, namespace, bundle hash, subsystem status |
+| `GET /health` | 200 | Backend health, namespace, bundle hash, kernel phase, and per-subsystem status (`subsystems[]`, `kernel`, `diagnostics`) |
 | `POST /admin/shutdown` | 200 | Graceful backend drain and exit |
 | `GET /events/stream` | 200 | Backend-local event stream for live observers |
 
@@ -174,6 +174,20 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
 4. Workflow state is persisted as Journal events with a projection row per workflow; child job identity is derived from `parentWorkflowJobId` + `workflowSlotId`, not stored in the plan; `coral-cli wait` reads the same job store
 
+### Boot Eras
+
+Backend boot is split into three sequential eras so the CLI gets a usable socket as quickly as possible and individual subsystem failures stay isolated.
+
+| Era | Owner | What runs | Lifecycle phase on completion |
+| --- | --- | --- | --- |
+| I — Kernel | `coordinator/lifecycle.ts` | Bind IPC socket, open Journal, install transport listeners | `kernel-ready` |
+| II — Recovery | jobs / discuss / workflow shells | One-shot startup reconciliation for in-flight work | `running` |
+| III — Subsystems | `coordinator/subsystems/registry.ts` | Fire-and-forget `initAll()`; each `Subsystem<R>` retries independently and may degrade or self-heal without affecting peers | (per-subsystem `online | degraded | offline`) |
+
+The CLI's fail-fast path watches Era I and II only: `KERNEL_BIND_DEADLINE_MS` (5s) for first health response after spawn, `KERNEL_READY_DEADLINE_MS` (15s) for the daemon to reach the `running` phase. Era III takes whatever time it needs without holding the CLI. `HANDOFF_DRAIN_TIMEOUT_MS` (30s) bounds the incumbent's drain on socket handoff. All three values are constants in `src/transport/ipc/ensure.ts` and `src/coordinator/shutdown.ts`.
+
+KB is the only subsystem in 0.7.1; new long-init subsystems register through `subsystems.register(createXxxSubsystem(...))` in `coordinator/composition/index.ts` and inherit the same retry/error-envelope/`/health` surface.
+
 ### Discuss and KB
 
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes explicit coordinator-facing owner modules for commands, reads, and recovery rather than a compatibility `api.ts` facade
@@ -188,7 +202,7 @@ Continuations use `POST /sessions/:id/messages`, which resolves provider from st
 | --- | --- |
 | CLI | Command parsing, follow mode, text/JSON formatting. |
 | Client | Backend startup, IPC requests/subscriptions, remote HTTP gateway/admin helpers, and direct `read-model/CoralStore` read helpers for no-coordinator CLI paths. |
-| Coordinator | Process bootstrap, lifecycle, startup recovery, ConsumerDriver freshness, corpus notify, expansion lifecycle (`ExpansionLifecycleService` + `expansion_state`), provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
+| Coordinator | Process bootstrap, three-era lifecycle (Kernel → Recovery → Subsystems), `Subsystem<R>` registry (`coordinator/subsystems/`), ConsumerDriver freshness, corpus notify, expansion lifecycle (`ExpansionLifecycleService` + `expansion_state`), provider-host coordination, coordinator-owned KB jobs, and cross-domain assembly. `src/coordinator/composition/**` and `src/coordinator/services/**` are explicit coordinator glue and may assemble domain shells/contracts. |
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning owner for job lifecycle: launch, admission, wait, abort, terminal outcomes, and startup reconciliation. |
@@ -238,16 +252,23 @@ Coordinator glue (`bootstrap.ts` + `composition/**` + `services/**`)
   -> Provider adapters + live host management
 
 Coordinator startup
-  -> Open Journal
-  -> Register Journal projection consumers
-  -> Drain freshness to the current Journal head
-  -> jobs recovery coordinator startup
-  -> discuss shell recovery startup
-  -> workflowRecover.resumeAll
-  -> Absorb KB Corpus edits into text artifacts
-  -> Register KB CorpusConsumers
-  -> Replay Corpus snapshot and wait for Orama base freshness
-  -> expose steady-state transport
+  Era I — Kernel (blocks until lifecycle = 'kernel-ready')
+    -> Open Journal
+    -> Register Journal projection consumers
+    -> Drain freshness to the current Journal head
+    -> Bind IPC socket + install transport listeners
+  Era II — Recovery (blocks until lifecycle = 'running')
+    -> jobs recovery coordinator startup
+    -> discuss shell recovery startup
+    -> workflowRecover.resumeAll
+  Era III — Subsystems (fire-and-forget; CLI no longer blocked)
+    -> subsystems.register(createKbSubsystem(...))
+    -> subsystems.initAll()
+        KB subsystem retry loop (3×1/4/16s):
+          -> Absorb KB Corpus edits into text artifacts
+          -> Register KB CorpusConsumers
+          -> Replay Corpus snapshot, wait for Orama base freshness
+          -> phase: online (or degraded/offline)
 
 Discuss shell
   -> Pure discuss core (state machine + reducer)

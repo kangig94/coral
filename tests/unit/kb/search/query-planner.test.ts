@@ -67,6 +67,7 @@ function plan(intent: KbSearchIntent, scope: KbSearchScope, roles: readonly Regi
     tokens: () => ['query'],
     embedding: async () => new Float32Array([1]),
     index: () => ({ entries: {}, principles: {}, entityMeta: {}, relationships: [] }),
+    corpusStructuralKey: () => null,
     graphContext: () => null,
   } satisfies RoleQueryContext;
   return createQueryPlanner().plan(intent, registry, ctx);

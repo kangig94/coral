@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { IdPort, Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
@@ -10,6 +11,7 @@ import {
 } from './fault.js';
 import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
 import type { AbortReason } from '../jobs/outcome.js';
+import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from './artifact-identity.js';
 import type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
@@ -141,6 +143,7 @@ export type ProviderTerminalEventBody = {
 export type ProviderArtifactHandleEventBody = {
   kind: 'artifact_handle';
   handle: string;
+  identity?: ProviderArtifactIdentity;
 };
 
 export type ProviderEventBody =
@@ -233,7 +236,7 @@ export const providerTerminalDiagnosticsSchema = z
 export const providerContinuityEventBodySchema = z
   .object({
     kind: z.literal('continuity'),
-    conversationRef: z.string().nullable(),
+    conversationRef: nonEmptyStringSchema.nullable(),
     resumable: z.boolean(),
     providerContinuity: z.record(z.string(), z.unknown()).nullable(),
   })
@@ -243,6 +246,7 @@ export const providerArtifactHandleEventBodySchema = z
   .object({
     kind: z.literal('artifact_handle'),
     handle: z.string().min(1),
+    identity: providerArtifactIdentitySchema.optional(),
   })
   .strict();
 
@@ -335,6 +339,7 @@ export interface ProviderRecoveryContract {
     providerMeta?: Record<string, unknown>;
     env: Pick<Runtime['env'], 'homedir' | 'get' | 'fullSnapshot'>;
     fallbackConversationRef?: string;
+    knownArtifactHandles?: readonly ProviderArtifactHandleInput[];
     storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
   }): Promise<{
     terminal: ProviderTerminalEventBody;
@@ -359,6 +364,7 @@ export type ProviderArtifactHandle = string;
 
 export type ProviderArtifactHandleInput = {
   readonly handle: ProviderArtifactHandle;
+  readonly identity?: ProviderArtifactIdentity;
   readonly sourceJobId?: string;
 };
 

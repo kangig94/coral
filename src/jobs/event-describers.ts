@@ -5,7 +5,6 @@
 import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 import {
-  describeJobDomainProgress,
   describeJobProgressFault,
   describeLaunchRejected,
   describeTerminalOutcome,
@@ -35,7 +34,7 @@ const progressEmitted = typedDescriber(jobProgressBodySchema, (body) => {
     case 'message':
       return body.message;
     case 'domain':
-      return describeJobDomainProgress(body);
+      return body.message;
     case 'missing_launch_record':
     case 'recovery_parse_failed':
       return describeJobProgressFault(body);

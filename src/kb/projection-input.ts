@@ -107,13 +107,19 @@ export function createKbProjectionInput(
   options: KbProjectionInputOptions = {},
 ): KbProjectionInput {
   const index = options.index ?? kb.readIndexOrEmpty();
-  const generatedCommunityDocs = new Map(
-    (options.generatedCommunityDocs ?? []).map((document) => [document.slug, document] as const),
-  );
-  const records = Object.entries(index.entries)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([, entry]) => materializeProjectionRecord(kb, entry, generatedCommunityDocs))
-    .filter((record): record is KbProjectionRecord => record !== null);
+  const generatedCommunityDocs = new Map<string, KbGeneratedCommunityDocument>();
+  for (const document of options.generatedCommunityDocs ?? []) {
+    generatedCommunityDocs.set(document.slug, document);
+  }
+
+  const entryIds = Object.keys(index.entries).sort((left, right) => left.localeCompare(right));
+  const records: KbProjectionRecord[] = [];
+  for (const entryId of entryIds) {
+    const record = materializeProjectionRecord(kb, index.entries[entryId], generatedCommunityDocs);
+    if (record !== null) {
+      records.push(record);
+    }
+  }
 
   return {
     index,

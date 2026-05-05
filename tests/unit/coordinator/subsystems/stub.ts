@@ -12,9 +12,7 @@ export const subsystemPhase = {
     return { id, phase: 'degraded', reason };
   },
   offline(id: SubsystemId, reason: string, lastLogLine?: string): SubsystemStatus {
-    return lastLogLine === undefined
-      ? { id, phase: 'offline', reason }
-      : { id, phase: 'offline', reason, lastLogLine };
+    return lastLogLine === undefined ? { id, phase: 'offline', reason } : { id, phase: 'offline', reason, lastLogLine };
   },
 };
 

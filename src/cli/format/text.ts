@@ -3,7 +3,13 @@
 // shape multi-line CLI output and are not used outside cli/format.
 
 export function joinLines(lines: Array<string | undefined>): string {
-  return lines.filter((line): line is string => typeof line === 'string' && line.length > 0).join('\n');
+  const present: string[] = [];
+  for (const line of lines) {
+    if (typeof line === 'string' && line.length > 0) {
+      present.push(line);
+    }
+  }
+  return present.join('\n');
 }
 
 export function formatUnknown(value: unknown): string {
@@ -24,9 +30,18 @@ export function appendCursor(text: string, cursor: string | null): string {
 }
 
 export function formatTable(headers: string[], rows: string[][]): string {
-  const widths = headers.map((header, index) => Math.max(header.length, ...rows.map((row) => row[index]?.length ?? 0)));
+  const widths = headers.map((header) => header.length);
+  for (const row of rows) {
+    for (let index = 0; index < headers.length; index += 1) {
+      widths[index] = Math.max(widths[index], row[index]?.length ?? 0);
+    }
+  }
 
   const formatRow = (row: string[]) => row.map((cell, index) => cell.padEnd(widths[index])).join('  ');
 
-  return [formatRow(headers), formatRow(widths.map((width) => '-'.repeat(width))), ...rows.map(formatRow)].join('\n');
+  const lines = [formatRow(headers), formatRow(widths.map((width) => '-'.repeat(width)))];
+  for (const row of rows) {
+    lines.push(formatRow(row));
+  }
+  return lines.join('\n');
 }

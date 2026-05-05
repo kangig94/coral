@@ -154,7 +154,11 @@ export function applyEventsLocally(
   snapshot: PersistedDiscussSnapshot,
   events: DiscussDomainEvent[],
 ): PersistedDiscussSnapshot {
-  return events.reduce((current, event) => reduceDiscussEvent(current, event), snapshot);
+  let current = snapshot;
+  for (const event of events) {
+    current = reduceDiscussEvent(current, event);
+  }
+  return current;
 }
 
 export function encodeCarryForward(item: MustAnswerItem): string {
@@ -233,11 +237,17 @@ export function parseEpochEvaluation(content: string, state: DiscussState): Epoc
 }
 
 export function mustAnswerText(snapshot: PersistedDiscussSnapshot, agentName: string): string | null {
-  const questions = snapshot.runtime.carryForwardMustAnswer
-    .map((item) => parseMustAnswerItem(item))
-    .filter((item): item is MustAnswerItem => item !== null && item.to === agentName)
-    .map((item) => item.question.trim())
-    .filter((question) => question.length > 0);
+  const questions: string[] = [];
+  for (const item of snapshot.runtime.carryForwardMustAnswer) {
+    const parsed = parseMustAnswerItem(item);
+    if (parsed === null || parsed.to !== agentName) {
+      continue;
+    }
+    const question = parsed.question.trim();
+    if (question.length > 0) {
+      questions.push(question);
+    }
+  }
 
   if (questions.length === 0) {
     return null;
