@@ -1,4 +1,4 @@
-import { computeCommunityTopologyFingerprint, detectCommunities } from './detection.js';
+import { buildCommunityPartitionTree } from './detection.js';
 import { buildCommunityDocuments, generateCommunityFiles, loadExistingCommunityState } from './documents.js';
 import { buildEntityRelationshipGraph } from './graph.js';
 import { readCurateState } from '../state/index.js';
@@ -56,7 +56,8 @@ export function prepareCommunityTopologyRefresh(
     entityMeta: index.entityMeta,
     relationships: index.relationships,
   });
-  const topologyHash = computeCommunityTopologyFingerprint(index, graph);
+  const partitionTree = buildCommunityPartitionTree(graph);
+  const topologyHash = partitionTree.computeTopologyFingerprint();
   if (state.communityTopologyHash === topologyHash) {
     const communityEntries: CommunityEntry[] = [];
     for (const entry of Object.values(index.entries)) {
@@ -76,7 +77,7 @@ export function prepareCommunityTopologyRefresh(
   }
 
   const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
-  const communities = detectCommunities(graph, {
+  const communities = partitionTree.detect({
     priorCommunities: priorGeneratedCommunities,
     reservedSlugs,
   });

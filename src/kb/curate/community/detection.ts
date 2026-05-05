@@ -41,10 +41,14 @@ type HierarchySeed = DetectedCommunitySeed & {
   childKeys: string[];
 };
 
-type ResolutionEvaluation = {
+type CommunityPartition = {
   resolution: number;
-  details: LouvainDetails;
+  levels: number[][];
+  modularity: number;
   maxLeafSize: number;
+};
+
+type ResolutionEvaluation = CommunityPartition & {
   targetPenalty: number;
   midpointPenalty: number;
 };
@@ -233,9 +237,8 @@ function partitionGroupsForLevel(nodes: string[], partition: number[]): Partitio
   });
 }
 
-function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): HierarchySeed[] {
+function buildHierarchySeeds(graph: TagGraph, partitions: number[][]): HierarchySeed[] {
   const nodes = graph.graph.nodes();
-  const partitions = normalizeDendrogramLevels(graph, details);
   if (partitions.length === 0) {
     return [];
   }
@@ -297,8 +300,8 @@ function buildHierarchySeeds(graph: TagGraph, details: LouvainDetails): Hierarch
   });
 }
 
-function maxLeafCommunitySize(graph: TagGraph, details: LouvainDetails): number {
-  const firstLevel = normalizeDendrogramLevels(graph, details)[0];
+function maxLeafCommunitySizeFromPartitions(partitions: readonly number[][]): number {
+  const firstLevel = partitions[0];
   if (firstLevel === undefined) {
     return 0;
   }
@@ -318,12 +321,14 @@ function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEval
     rng: seededRng(COMMUNITY_LOUVAIN_SEED),
     resolution,
   });
-  const maxLeafSize = maxLeafCommunitySize(graph, details);
+  const levels = normalizeDendrogramLevels(graph, details);
+  const maxLeafSize = maxLeafCommunitySizeFromPartitions(levels);
   const targetPenalty = communitySizePenalty(maxLeafSize);
 
   return {
     resolution,
-    details,
+    levels,
+    modularity: details.modularity,
     maxLeafSize,
     targetPenalty,
     midpointPenalty: Math.abs(maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MIDPOINT),
@@ -355,13 +360,13 @@ function isBetterResolutionCandidate(
   if (candidate.midpointPenalty !== currentBest.midpointPenalty) {
     return candidate.midpointPenalty < currentBest.midpointPenalty;
   }
-  if (candidate.details.modularity !== currentBest.details.modularity) {
-    return candidate.details.modularity > currentBest.details.modularity;
+  if (candidate.modularity !== currentBest.modularity) {
+    return candidate.modularity > currentBest.modularity;
   }
   return candidate.resolution < currentBest.resolution;
 }
 
-function chooseBestResolution(graph: TagGraph): LouvainDetails {
+function chooseBestPartition(graph: TagGraph): CommunityPartition {
   let low = COMMUNITY_RESOLUTION_MIN;
   let high = COMMUNITY_RESOLUTION_MAX;
   let best: ResolutionEvaluation | null = null;
@@ -396,7 +401,12 @@ function chooseBestResolution(graph: TagGraph): LouvainDetails {
     throw new Error('Failed to evaluate Louvain resolution sweep.');
   }
 
-  return best.details;
+  return {
+    resolution: best.resolution,
+    levels: best.levels,
+    modularity: best.modularity,
+    maxLeafSize: best.maxLeafSize,
+  };
 }
 
 function buildCarryOverSignature(
@@ -425,7 +435,7 @@ function priorParentMembershipFingerprint(
 }
 
 function assignCommunitySlugs(
-  communities: DetectedCommunitySeed[],
+  communities: readonly DetectedCommunitySeed[],
   priorCommunities: ExistingGeneratedCommunity[],
   options: { reservedSlugs?: ReadonlySet<string> } = {},
 ): Array<DetectedCommunity & { key?: string; parentKey?: string; childKeys?: string[] }> {
@@ -513,10 +523,10 @@ export function carryOverSlugs(
 }
 
 function detectCommunitiesForHash(
-  graph: TagGraph,
+  hierarchySeeds: readonly HierarchySeed[],
 ): Array<Pick<DetectedCommunity, 'slug' | 'level' | 'members' | 'parent' | 'children'>> {
   const communities: Array<Pick<DetectedCommunity, 'slug' | 'level' | 'members' | 'parent' | 'children'>> = [];
-  for (const community of detectCommunities(graph)) {
+  for (const community of detectCommunitiesFromHierarchy(hierarchySeeds)) {
     communities.push({
       slug: community.slug,
       level: community.level,
@@ -528,13 +538,10 @@ function detectCommunitiesForHash(
   return communities;
 }
 
-export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
-  if (graph.graph.order === 0) {
-    return [];
-  }
-
-  const details = chooseBestResolution(graph);
-  const hierarchySeeds = buildHierarchySeeds(graph, details);
+function detectCommunitiesFromHierarchy(
+  hierarchySeeds: readonly HierarchySeed[],
+  options: DetectCommunitiesOptions = {},
+): DetectedCommunity[] {
   if (hierarchySeeds.length === 0) {
     return [];
   }
@@ -587,29 +594,58 @@ export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOpt
   });
 }
 
+export class CommunityPartitionTree {
+  private topologyFingerprint: string | null = null;
+
+  private constructor(
+    private readonly graphFingerprint: string,
+    private readonly hierarchySeeds: readonly HierarchySeed[],
+  ) {}
+
+  static fromGraph(graph: TagGraph): CommunityPartitionTree {
+    const graphFingerprint = computeGraphFingerprint(graph);
+    if (graph.graph.order === 0) {
+      return new CommunityPartitionTree(graphFingerprint, []);
+    }
+
+    const partition = chooseBestPartition(graph);
+    return new CommunityPartitionTree(graphFingerprint, buildHierarchySeeds(graph, partition.levels));
+  }
+
+  detect(options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
+    return detectCommunitiesFromHierarchy(this.hierarchySeeds, options);
+  }
+
+  computeTopologyFingerprint(): string {
+    if (this.topologyFingerprint !== null) {
+      return this.topologyFingerprint;
+    }
+
+    this.topologyFingerprint = createHash('sha256')
+      .update(
+        JSON.stringify({
+          graph: this.graphFingerprint,
+          communities: detectCommunitiesForHash(this.hierarchySeeds),
+        }),
+      )
+      .digest('hex');
+    return this.topologyFingerprint;
+  }
+}
+
+export function buildCommunityPartitionTree(graph: TagGraph): CommunityPartitionTree {
+  return CommunityPartitionTree.fromGraph(graph);
+}
+
+export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOptions = {}): DetectedCommunity[] {
+  return buildCommunityPartitionTree(graph).detect(options);
+}
+
 export function computeCommunityTopologyFingerprint(
   index: KbIndex,
   graph = buildEntityRelationshipGraphFromIndex(index),
 ): string {
-  const communities = detectCommunitiesForHash(graph);
-  const communityPayload = [];
-  for (const community of communities) {
-    communityPayload.push({
-      slug: community.slug,
-      level: community.level,
-      members: community.members,
-      ...(community.parent === undefined ? {} : { parent: community.parent }),
-      ...(community.children === undefined ? {} : { children: community.children }),
-    });
-  }
-  return createHash('sha256')
-    .update(
-      JSON.stringify({
-        graph: computeGraphFingerprint(graph),
-        communities: communityPayload,
-      }),
-    )
-    .digest('hex');
+  return buildCommunityPartitionTree(graph).computeTopologyFingerprint();
 }
 
 export function computeCommunityMembershipFingerprint(members: string[]): string {

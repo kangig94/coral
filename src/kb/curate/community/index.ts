@@ -3,7 +3,7 @@ import type { KbCorpusSnapshot, KbRuntime } from '../../contract.js';
 import { recordMetadataMutation } from '../../corpus/index-mutations.js';
 import { compareLocale } from '../../validation.js';
 import { communitySlugFromReference } from './identity.js';
-import { computeCommunityTopologyFingerprint, detectCommunities } from './detection.js';
+import { buildCommunityPartitionTree } from './detection.js';
 import { normalizedCommunitySummaryFingerprints } from './topology-refresh.js';
 import {
   buildCommunityDocuments,
@@ -144,10 +144,11 @@ async function prepareCommunityPayload(
     entityMeta: capturedFinalIndex.entityMeta,
     relationships: capturedFinalIndex.relationships,
   });
-  const topologyHash = computeCommunityTopologyFingerprint(capturedFinalIndex, graph);
+  const partitionTree = buildCommunityPartitionTree(graph);
+  const topologyHash = partitionTree.computeTopologyFingerprint();
   const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
 
-  const detectedCommunities = detectCommunities(graph, {
+  const detectedCommunities = partitionTree.detect({
     priorCommunities: priorGeneratedCommunities,
     reservedSlugs,
   });
