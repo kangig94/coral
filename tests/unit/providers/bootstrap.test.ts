@@ -245,7 +245,7 @@ describe('registerBuiltInProviders', () => {
     },
   );
 
-  it('normalizes empty Claude result session ids before continuity and artifact lookup', async () => {
+  it('uses Claude recovery metadata for continuity and artifact lookup without parsing legacy stdout', async () => {
     const claude = createBuiltInProviderRegistry().get('claude');
 
     const result = await claude?.recovery?.finalizeFromArtifacts({
@@ -268,7 +268,10 @@ describe('registerBuiltInProviders', () => {
       }),
     });
 
-    expect(result?.continuity).toBeUndefined();
+    expect(result?.continuity).toEqual({
+      conversationRef: 'conversation-from-meta',
+      resumable: true,
+    });
     expect(result?.artifactHandles).toEqual([
       {
         handle: '/home/user/.claude/projects/-workspace/conversation-from-meta.jsonl',

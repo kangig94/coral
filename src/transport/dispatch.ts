@@ -183,25 +183,6 @@ export async function executeCatalogRequest(
       return unaryHttp(launchToHttp(decision, 202));
     }
 
-    case 'sessions.fork': {
-      const parsed = request as Record<string, unknown> & { sessionId: string };
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const decision = await rpcPorts.sessions.forkBySessionId(
-        {
-          sessionId: parsed.sessionId,
-          ...(typeof parsed.prompt === 'string' ? { prompt: parsed.prompt } : {}),
-          ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
-          ...commonSessionInputFields(parsed),
-        },
-        ctx,
-      );
-      return unaryHttp(launchToHttp(decision, 201));
-    }
-
     case 'workflow.run': {
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);

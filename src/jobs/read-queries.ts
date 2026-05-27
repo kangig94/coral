@@ -39,7 +39,7 @@ type JobLaunchProjection = {
   jobKind: 'provider' | 'workflow' | 'kb';
   pool: string;
   enqueueSequence: number;
-  providerAction?: 'exec' | 'resume' | 'fork';
+  providerAction?: 'exec' | 'resume';
   operation?: 'kb.source_import' | 'kb.reindex';
   request:
     | {

@@ -4,7 +4,7 @@
 // scans imports of `node:fs`, `node:os`, `node:child_process`, and the
 // randomness surface of `node:crypto` (`randomUUID`, `randomBytes`) under
 // `src/kb/`, `src/providers/`, and `src/jobs/`. The composition root for the
-// claude appserver subprocess (`src/providers/claude-appserver/server.ts`) is
+// claude appserver subprocess (`src/providers/claude/appserver/server.ts`) is
 // exempt: it is its own subprocess bootstrap and may import ambient I/O
 // directly.
 //
@@ -39,7 +39,8 @@ const TIMER_SCOPED_ROOTS = [
 const DATE_NOW_SCOPED_ROOTS = ['src/transport'] as const;
 const EXEMPT_FILES = new Set([
   // Subprocess composition root — its own bootstrap entrypoint.
-  'src/providers/claude-appserver/server.ts',
+  'src/providers/claude/appserver/server.ts',
+  'src/providers/claude/appserver/controller.ts',
   // store/db.ts bridges the StoragePort to ambient better-sqlite3. The
   // `existsSync` here is a real-fs sanity check that decides whether to use
   // the disk path or fall back to `:memory:` — better-sqlite3 itself uses
@@ -56,9 +57,10 @@ const TIMER_EXEMPT_FILES = new Set<string>([
   // `setInterval`/`clearInterval` for a startup keepalive that holds the
   // event loop ref'd until `coordinator.start()` resolves; using
   // `runtime.time.setInterval` would require constructing a runtime locally
-  // just for this single ref, which is the boundary case `claude-appserver/server.ts`
+  // just for this single ref, which is the boundary case `claude/appserver/server.ts`
   // is also exempt for.
   'src/coordinator/bootstrap.ts',
+  'src/providers/claude/appserver/controller.ts',
 ]);
 const DATE_NOW_EXEMPT_FILES = new Set<string>([
   // CLI-side daemon spawn records an ambient attempt timestamp before a Runtime

@@ -1,4 +1,4 @@
-import { truncate } from '../../infra/text.js';
+import { truncate } from '../../../infra/text.js';
 import {
   buildJsonRpcError,
   type JsonRpcFailure,
@@ -6,9 +6,12 @@ import {
   type JsonRpcNotification,
   type JsonRpcRequest,
   type JsonRpcSuccess,
-} from '../../infra/json-rpc.js';
-import { isRecord } from '../../infra/json.js';
-import type { PermissionMode, SDKSystemMessage } from '../claude/control-protocol.js';
+} from '../../../infra/json-rpc.js';
+import { isRecord } from '../../../infra/json.js';
+import type { EffortLevel } from '../../contract.js';
+import { permissionModeSchema, type ClaudeBootstrapSignature } from '../request-prep.js';
+
+export type { ClaudeBootstrapSignature } from '../request-prep.js';
 
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
@@ -21,17 +24,13 @@ export type JsonRpcInboundMessage<TParams = Record<string, unknown>> =
   | JsonRpcRequest<TParams>
   | JsonRpcNotification<TParams>;
 
-export interface ClaudeBootstrapSignature {
-  cwd: string;
-  systemPromptHash: string;
-  permissionMode: PermissionMode;
-}
-
 export interface SessionEnsureParams extends ClaudeBootstrapSignature {
   brokerSessionKey?: string;
   conversationRef?: string;
   controllerEnv?: Record<string, string>;
   systemPrompt?: string;
+  model?: string;
+  effort?: EffortLevel;
 }
 
 export interface SessionEnsureResult {
@@ -62,9 +61,6 @@ export interface TurnStartParams {
   brokerSessionKey: string;
   brokerTurnId: string;
   prompt: string;
-  model?: string;
-  /** @wire anthropic:claude — `null` requests the API default. */
-  maxThinkingTokens?: number | null;
 }
 
 export interface TurnStartResult {
@@ -209,11 +205,12 @@ export function parseJsonRpcInboundLine(line: string): JsonRpcInboundMessage<unk
 }
 
 export function requireSessionEnsureParams(params: unknown): SessionEnsureParams {
+  const permissionMode = isRecord(params) ? permissionModeSchema.safeParse(params.permissionMode) : null;
   if (
     !isRecord(params) ||
     !isNonEmptyString(params.cwd) ||
     !isNonEmptyString(params.systemPromptHash) ||
-    !isNonEmptyString(params.permissionMode)
+    !permissionMode?.success
   ) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
   }
@@ -221,14 +218,18 @@ export function requireSessionEnsureParams(params: unknown): SessionEnsureParams
   const brokerSessionKey = readOptionalNonEmptyString(params.brokerSessionKey);
   const conversationRef = readOptionalNonEmptyString(params.conversationRef);
   const systemPrompt = typeof params.systemPrompt === 'string' ? params.systemPrompt : undefined;
+  const model = typeof params.model === 'string' ? params.model : undefined;
+  const effort = readEffortLevel(params.effort);
   return {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
-    permissionMode: params.permissionMode as PermissionMode,
+    permissionMode: permissionMode.data,
     ...(brokerSessionKey !== undefined ? { brokerSessionKey } : {}),
     ...(conversationRef !== undefined ? { conversationRef } : {}),
     controllerEnv: readControllerEnv(params.controllerEnv),
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
   };
 }
 
@@ -254,17 +255,10 @@ export function requireTurnStartParams(params: unknown): TurnStartParams {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/start.');
   }
 
-  const model = typeof params.model === 'string' ? params.model : undefined;
-  const maxThinkingTokens =
-    typeof params.maxThinkingTokens === 'number' || params.maxThinkingTokens === null
-      ? params.maxThinkingTokens
-      : undefined;
   return {
     brokerSessionKey: params.brokerSessionKey,
     brokerTurnId: params.brokerTurnId,
     prompt: params.prompt,
-    ...(model !== undefined ? { model } : {}),
-    ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
   };
 }
 
@@ -286,6 +280,12 @@ function isNonEmptyString(value: unknown): value is string {
 
 function readOptionalNonEmptyString(value: unknown): string | undefined {
   return isNonEmptyString(value) ? value : undefined;
+}
+
+function readEffortLevel(value: unknown): EffortLevel | undefined {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max'
+    ? value
+    : undefined;
 }
 
 export function readControllerEnv(value: unknown): Record<string, string> | undefined {
@@ -346,10 +346,16 @@ export function isAutoAllowPermissionMode(permissionMode: string): boolean {
 }
 
 export function readSessionId(message: unknown): string | null {
-  return isRecord(message) && typeof message.session_id === 'string' ? message.session_id : null;
+  if (!isRecord(message)) {
+    return null;
+  }
+  if (typeof message.session_id === 'string') {
+    return message.session_id;
+  }
+  return typeof message.sessionId === 'string' ? message.sessionId : null;
 }
 
-export function systemProgressMessage(message: SDKSystemMessage): string | null {
+export function systemProgressMessage(message: Record<string, unknown>): string | null {
   switch (message.subtype) {
     case 'status':
       return typeof message.status === 'string' ? `Claude status: ${message.status}` : null;
@@ -367,11 +373,16 @@ export function systemProgressMessage(message: SDKSystemMessage): string | null 
       return `Claude session ${message.state}`;
     case 'init':
       return null;
+    default:
+      return null;
   }
 }
 
-function firstNonEmpty(...values: string[]): string | null {
+function firstNonEmpty(...values: unknown[]): string | null {
   for (const value of values) {
+    if (typeof value !== 'string') {
+      continue;
+    }
     const trimmed = value.trim();
     if (trimmed) {
       return trimmed;

@@ -3,7 +3,6 @@ import { jobAbortSchema, jobWaitSchema } from '#src/transport/rpc/jobs.js';
 import {
   agentIdentSchema,
   sessionCreateSchema,
-  sessionForkSchema,
   sessionMessageSchema,
 } from '#src/sessions/command-schemas.js';
 import { workflowCommandSchema } from '#src/workflow/input.js';
@@ -193,47 +192,6 @@ describe('sessionMessageSchema', () => {
   it('rejects unknown keys via strict mode', () => {
     const result = sessionMessageSchema.safeParse({
       prompt: 'Continue',
-      projectRoot: '/tmp/project',
-      extra: true,
-    });
-
-    expect(result.success).toBe(false);
-  });
-});
-
-describe('sessionForkSchema', () => {
-  it('requires projectRoot but allows prompt to be omitted', () => {
-    const parsed = sessionForkSchema.parse({
-      projectRoot: '/tmp/project',
-    });
-
-    expect(parsed).toEqual({
-      projectRoot: '/tmp/project',
-    });
-    expect(parsed).not.toHaveProperty('bypassPermissions');
-    expect(parsed).not.toHaveProperty('provider');
-  });
-
-  it('accepts an optional provider assertion', () => {
-    const parsed = sessionForkSchema.parse({
-      projectRoot: '/tmp/project',
-      provider: 'codex',
-    });
-
-    expect(parsed.provider).toBe('codex');
-  });
-
-  it('accepts an empty prompt when provided', () => {
-    const parsed = sessionForkSchema.parse({
-      prompt: '',
-      projectRoot: '/tmp/project',
-    });
-
-    expect(parsed.prompt).toBe('');
-  });
-
-  it('rejects unknown keys via strict mode', () => {
-    const result = sessionForkSchema.safeParse({
       projectRoot: '/tmp/project',
       extra: true,
     });

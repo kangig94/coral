@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
+import { spawn as spawnPty } from 'node-pty';
 
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -17,7 +17,7 @@ import {
   requireTurnInterruptParams,
   requireTurnStartParams,
 } from './protocol.js';
-import type { JsonRpcRequest } from '../../infra/json-rpc.js';
+import type { JsonRpcRequest } from '../../../infra/json-rpc.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import { createBrokerSession } from './broker-pool.js';
 import type { ClaudeBrokerChild, ClaudeBrokerSession, SpawnClaudeChildOptions } from './session-contract.js';
@@ -139,92 +139,78 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
 }
 
 export function createNodeClaudeChildFactory(
-  errorOutput: NodeJS.WritableStream = process.stderr,
+  _errorOutput: NodeJS.WritableStream = process.stderr,
 ): (options: SpawnClaudeChildOptions) => ClaudeBrokerChild {
   return (options: SpawnClaudeChildOptions): ClaudeBrokerChild => {
-    const child = spawn('claude', buildClaudeChildArgs(options), {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const child = spawnPty('claude', buildClaudeChildArgs(options), {
+      name: 'xterm-256color',
+      cols: 120,
+      rows: 30,
       cwd: options.cwd || undefined,
-      shell: process.platform === 'win32',
       env: buildClaudeChildEnv(options.env),
     });
 
-    if (!child.stdin || !child.stdout || !child.stderr) {
-      throw new Error('Claude child stdio is unavailable.');
-    }
-
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-
-    const stdoutHandlers = new Set<(line: string) => void>();
     const exitHandlers = new Set<
-      (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void
+      (event: { code: number | null; signal: NodeJS.Signals | string | number | null; error?: Error }) => void
     >();
-    const stderrHandlers = new Set<(chunk: string) => void>();
-    const stdoutReader = createInterface({ input: child.stdout });
+    const dataHandlers = new Set<(chunk: string) => void>();
 
     let exitEmitted = false;
-    function emitExit(event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }): void {
+    const subscriptions: Array<{ dispose(): void }> = [];
+    function emitExit(event: {
+      code: number | null;
+      signal: NodeJS.Signals | string | number | null;
+      error?: Error;
+    }): void {
       if (exitEmitted) {
         return;
       }
       exitEmitted = true;
-      stdoutReader.close();
+      for (const subscription of subscriptions.splice(0)) {
+        subscription.dispose();
+      }
       for (const handler of exitHandlers) {
         handler(event);
       }
     }
 
-    stdoutReader.on('line', (line: string) => {
-      for (const handler of stdoutHandlers) {
-        handler(line);
-      }
-    });
+    subscriptions.push(
+      child.onData((text) => {
+        for (const handler of dataHandlers) {
+          handler(text);
+        }
+      }),
+    );
 
-    child.stderr.on('data', (chunk: string | Buffer) => {
-      const text = chunk.toString();
-      errorOutput.write(text);
-      for (const handler of stderrHandlers) {
-        handler(text);
-      }
-    });
-
-    child.on('error', (error: Error) => {
-      emitExit({ code: null, signal: null, error });
-    });
-
-    child.on('close', (code, signal) => {
-      emitExit({ code, signal });
-    });
+    subscriptions.push(
+      child.onExit((event) => {
+        emitExit({ code: event.exitCode, signal: event.signal ?? null });
+      }),
+    );
 
     return {
-      writeLine(line: string): void {
-        if (child.stdin.destroyed) {
-          throw new Error('Claude child stdin is unavailable.');
-        }
-        child.stdin.write(line);
+      write(data: string): void {
+        child.write(data);
       },
       kill(signal?: NodeJS.Signals): void {
         child.kill(signal);
       },
-      onStdoutLine(handler: (line: string) => void): () => void {
-        stdoutHandlers.add(handler);
+      onData(handler: (chunk: string) => void): () => void {
+        dataHandlers.add(handler);
         return () => {
-          stdoutHandlers.delete(handler);
+          dataHandlers.delete(handler);
         };
       },
       onExit(
-        handler: (event: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void,
+        handler: (event: {
+          code: number | null;
+          signal: NodeJS.Signals | string | number | null;
+          error?: Error;
+        }) => void,
       ): () => void {
         exitHandlers.add(handler);
         return () => {
           exitHandlers.delete(handler);
-        };
-      },
-      onStderrChunk(handler: (chunk: string) => void): () => void {
-        stderrHandlers.add(handler);
-        return () => {
-          stderrHandlers.delete(handler);
         };
       },
     };
@@ -232,15 +218,25 @@ export function createNodeClaudeChildFactory(
 }
 
 export function buildClaudeChildArgs(options: SpawnClaudeChildOptions): string[] {
-  const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json'];
-  if (options.conversationRef !== undefined) {
+  const args: string[] = [];
+  if (options.resume) {
     args.push('--resume', options.conversationRef);
+  } else {
+    args.push('--session-id', options.conversationRef);
   }
   if (options.systemPrompt) {
     args.push('--append-system-prompt', options.systemPrompt);
   }
+  if (options.model) {
+    args.push('--model', options.model);
+  }
+  if (options.effort) {
+    args.push('--effort', options.effort);
+  }
   if (isAutoAllowPermissionMode(options.permissionMode)) {
     args.push('--dangerously-skip-permissions');
+  } else if (options.permissionMode !== 'default') {
+    args.push('--permission-mode', options.permissionMode);
   }
   return args;
 }

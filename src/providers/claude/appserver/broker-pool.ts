@@ -130,8 +130,6 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     const result = await entry.controller.turnStart({
       brokerTurnId: params.brokerTurnId,
       prompt: params.prompt,
-      model: params.model,
-      maxThinkingTokens: params.maxThinkingTokens,
     });
     this.emitHostStats();
     return {

@@ -20,7 +20,7 @@ import type {
 } from './protocol.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-export type ProviderAction = 'exec' | 'resume' | 'fork';
+export type ProviderAction = 'exec' | 'resume';
 
 export const providerInstructionSchema = z
   .object({

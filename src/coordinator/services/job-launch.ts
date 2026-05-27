@@ -10,7 +10,6 @@ import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import {
   rejectLaunch,
   type LaunchDecision,
-  type JobForkRequest,
   type JobLaunchRequest,
   type JobResumeRequest,
 } from '../../jobs/launch.js';
@@ -166,20 +165,6 @@ export class JobLaunchService {
     return this.resumeResolved(providerName, spec, session, effectiveInput, ctx);
   }
 
-  async fork(providerName: string, input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
-    const spec = this.deps.providerRegistry.get(providerName);
-    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
-
-    const sourceSession = this.deps.sessionManager.get(providerName, input.sessionId);
-    if (!sourceSession) {
-      return rejectLaunch(
-        'session_not_found',
-        `Session not found: ${input.sessionId}. Use exec to start a new session.`,
-      );
-    }
-    return this.forkResolved(providerName, spec, sourceSession, input, ctx);
-  }
-
   async resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
     if ('status' in resolved) return resolved;
@@ -188,16 +173,6 @@ export class JobLaunchService {
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
 
     return this.resumeResolved(resolved.providerName, spec, resolved.session, input, ctx);
-  }
-
-  async forkBySessionId(input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
-    if ('status' in resolved) return resolved;
-
-    const spec = this.deps.providerRegistry.get(resolved.providerName);
-    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
-
-    return this.forkResolved(resolved.providerName, spec, resolved.session, input, ctx);
   }
 
   async coralDispatch(
@@ -283,7 +258,7 @@ export class JobLaunchService {
 
   private buildContinuationProfile(
     input: Pick<
-      JobResumeRequest | JobForkRequest,
+      JobResumeRequest,
       'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'
     >,
     session: SessionEntry,
@@ -318,7 +293,7 @@ export class JobLaunchService {
     if (session.state === 'non_resumable') {
       return rejectLaunch(
         'non_resumable',
-        `Session ${input.sessionId} is non-resumable. Use exec to start a new session or fork to branch from it.`,
+        `Session ${input.sessionId} is non-resumable. Use exec to start a new session.`,
       );
     }
     if (session.activeJobId !== undefined) {
@@ -362,83 +337,6 @@ export class JobLaunchService {
       parentWorkflowJobId: input.parentWorkflowJobId,
       workflowSlotId: input.workflowSlotId,
     });
-  }
-
-  private async forkResolved(
-    providerName: string,
-    provider: ProviderSpec,
-    sourceSession: SessionEntry,
-    input: JobForkRequest,
-    ctx: InvocationContext,
-  ): Promise<LaunchDecision> {
-    const sourceBusyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
-    if (sourceSession.activeJobId !== undefined) {
-      return rejectLaunch('session_busy', sourceBusyMessage);
-    }
-    const sourceExpectedVersion = sourceSession.version;
-
-    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.deps.runtime));
-    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
-
-    const sourceClaimId = this.deps.runtime.ids.uuid();
-    const sourceClaimed = await this.deps.sessionManager.claimForJobAtomic(
-      sourceSession.sessionId,
-      sourceClaimId,
-      sourceExpectedVersion,
-    );
-    if (!sourceClaimed) {
-      return rejectLaunch('session_busy', sourceBusyMessage);
-    }
-
-    try {
-      const name = input.name ?? `fork-${this.deps.runtime.time.now()}`;
-      const continuation = this.buildContinuationProfile(input, sourceSession, ctx);
-      const newSession = this.deps.sessionManager.allocate({
-        provider: providerName,
-        name,
-        model: continuation.model,
-        cwd: continuation.cwd,
-        projectRoot: ctx.projectRoot,
-        backendNamespace: this.deps.backendNamespace,
-        retention: sourceSession.retention,
-        ...(continuation.agentName !== undefined ? { agentName: continuation.agentName } : {}),
-        ...(continuation.instruction !== undefined ? { instruction: continuation.instruction } : {}),
-        bypassPermissions: continuation.bypassPermissions,
-        ...(continuation.systemPrompt !== undefined ? { systemPrompt: continuation.systemPrompt } : {}),
-        ...(continuation.controllerProfile !== undefined ? { controllerProfile: continuation.controllerProfile } : {}),
-      });
-      const admitted = await this.claimAndAdmitJob(
-        newSession,
-        providerName,
-        ctx.projectRoot,
-        'New fork session already has an active job',
-        newSession.version,
-      );
-      if ('status' in admitted) return admitted;
-
-      const request: ProviderRequest = {
-        action: 'fork',
-        sessionId: newSession.sessionId,
-        name: input.name,
-        prompt: input.prompt ?? '',
-        conversationRef: sourceSession.conversationRef,
-        model: continuation.model,
-        cwd: continuation.cwd,
-        effort: continuation.effort,
-        bypassPermissions: continuation.bypassPermissions,
-        systemPrompt: continuation.systemPrompt,
-        instruction: continuation.instruction,
-        coralEnv: continuation.coralEnv,
-      };
-
-      return this.launchProviderJob(provider, newSession.sessionId, admitted.jobId, request, admitted.admission, {
-        projectRoot: ctx.projectRoot,
-        workflowSlotId: input.workflowSlotId,
-        retention: sourceSession.retention,
-      });
-    } finally {
-      this.deps.sessionManager.releaseJob(sourceSession.sessionId, sourceClaimId);
-    }
   }
 
   private async claimAndAdmitJob(

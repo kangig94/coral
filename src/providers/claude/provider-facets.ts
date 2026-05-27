@@ -7,7 +7,7 @@ import type {
   ProviderServerLease,
 } from '../contract.js';
 import { readString } from '../../infra/json.js';
-import type { SessionProbeResult } from '../claude-appserver/protocol.js';
+import type { SessionProbeResult } from './appserver/protocol.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,

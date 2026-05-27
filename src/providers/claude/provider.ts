@@ -1,20 +1,8 @@
 import { type SessionContinuityContract, sessionContinuity } from '../middleware/session-continuity.js';
-import { adapterParseGuard } from '../middleware/adapter-parse-guard.js';
 import { appServerSession } from '../middleware/app-server-session.js';
 import type { AppServerContract } from '../app-server.js';
-import {
-  compose,
-  type Provider,
-  type ProviderContinuityUpdate,
-  type ProviderRuntime,
-  type ProviderTerminalEventBody,
-} from '../contract.js';
+import { compose, type Provider, type ProviderContinuityUpdate } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { providerRequestFailed } from '../fault.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { streamProviderTerminal } from '../stream.js';
-import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
-import { claudeExecKernel, isClaudeExecParseError } from './exec-kernel.js';
 import {
   buildClaudeBootstrapSignature,
   buildClaudeProviderServerSpec,
@@ -24,6 +12,11 @@ import {
 } from './request-mapping.js';
 import { claudeSessionKernel, mapClaudeInterrupt } from './session-kernel.js';
 import { buildPreparedClaudeRequest, sameBootstrapSignature } from './request-prep.js';
+import { streamProviderTerminal } from '../stream.js';
+import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
+import { providerRequestFailed } from '../fault.js';
+import { errorMessage } from '../../infra/error-format.js';
+import type { ProviderTerminalEventBody } from '../contract.js';
 
 type ClaudeContinuityState = ClaudePersistedContinuity & {
   resumable: boolean;
@@ -37,8 +30,6 @@ const claudeAppServerContract = {
   },
   interrupt: mapClaudeInterrupt,
 } satisfies AppServerContract;
-
-export const claudeExecContinuity = createClaudeContinuityContract(inferExecResumable, () => false);
 
 export const claudeBrokerContinuity = createClaudeContinuityContract(
   inferBrokerResumable,
@@ -56,41 +47,15 @@ export const claudeBrokerContinuity = createClaudeContinuityContract(
   },
 );
 
-export const claudeExecProvider = compose(
-  sessionContinuity('claude', claudeExecContinuity),
-  adapterParseGuard('claude', isClaudeExecParseError),
-  claudeExecKernel,
-);
-
 export const claudeSessionProvider = compose(
   sessionContinuity('claude', claudeBrokerContinuity),
   appServerSession(claudeAppServerContract),
   claudeSessionKernel,
 );
 
-export const claudeDispatchTargets = {
-  exec: claudeExecProvider,
-  session: claudeSessionProvider,
-};
-
 export const claude: Provider = (request, runtime) => {
   const prepared = buildPreparedClaudeRequest(request, runtime.storage, runtime.kbRoot);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
-
-  if (request.action === 'fork') {
-    assertValidForkContinuity(persistedContinuity, runtime);
-
-    if (persistedContinuity.brokerSessionKey !== undefined || persistedContinuity.bootstrapSignature !== undefined) {
-      return streamProviderTerminal(
-        buildDispatchRejectedTerminal(
-          prepared.model,
-          'This Claude session already established persistent continuity. Start a new Coral session before forking.',
-        ),
-      );
-    }
-
-    return claudeDispatchTargets.exec(request, runtime);
-  }
 
   if (persistedContinuity.bootstrapSignature) {
     const actual = buildClaudeBootstrapSignature(request, runtime.ids, prepared.systemPrompt);
@@ -104,7 +69,7 @@ export const claude: Provider = (request, runtime) => {
     }
   }
 
-  return claudeDispatchTargets.session(request, runtime);
+  return claudeSessionProvider(request, runtime);
 };
 
 export const claudeProvider = claude;
@@ -181,10 +146,6 @@ function applyConversationRefOverride(
   };
 }
 
-function inferExecResumable(continuity: ClaudePersistedContinuity): boolean {
-  return continuity.bootstrapSignature !== undefined || continuity.conversationRef !== undefined;
-}
-
 function inferBrokerResumable(continuity: ClaudePersistedContinuity): boolean {
   return (
     continuity.bootstrapSignature !== undefined ||
@@ -211,26 +172,4 @@ function buildDispatchRejectedTerminal(model: string | undefined, reason: string
       message: reason,
     }),
   };
-}
-
-function assertValidForkContinuity(continuity: ClaudePersistedContinuity, runtime: ProviderRuntime): void {
-  if (continuity.brokerSessionKey !== undefined || continuity.bootstrapSignature !== undefined) {
-    return;
-  }
-  if (
-    continuity.envHash === undefined &&
-    continuity.conversationRef === undefined &&
-    continuity.brokerTurnId === undefined
-  ) {
-    return;
-  }
-  if (runtime.env?.get('CORAL_DEV_ASSERTIONS') !== '1') {
-    return;
-  }
-
-  const assertion = new Error(
-    'Claude fork received envHash, conversationRef, or brokerTurnId without brokerSessionKey or bootstrapSignature.',
-  );
-  assertion.name = 'AssertionError';
-  throw assertion;
 }

@@ -67,7 +67,6 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | --- | --- | --- |
 | `POST /sessions` | 201 | Create session (with optional `agent` for coral dispatch) |
 | `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
-| `POST /sessions/:id/forks` | 201 | Fork session (child stores its own continuation profile) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
 | `POST /coordinator/expansion` | 200 | Equip a named expansion via `ExpansionLifecycleService` (binds the expansion's runtime cells under a fresh scope) |
 | `DELETE /coordinator/expansion/:name` | 200 | Unequip a named expansion (disposes its scope, releasing every binding it held) |
@@ -152,7 +151,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 5. Provider adapters spawn the real CLI/runtime and emit progress
 6. Journal appends publish projection freshness through the live `ConsumerDriver`; session continuity remains authoritative in the sessions shell
 
-Continuations use `POST /sessions/:id/messages`, which resolves provider from stored continuity, merges omitted fields from the session profile, and validates namespace/project scope. Forks use `POST /sessions/:id/forks` and persist the merged profile onto the child session.
+Continuations use `POST /sessions/:id/messages`, which resolves provider from stored continuity, merges omitted fields from the session profile, and validates namespace/project scope.
 
 ### Wait / follow
 
@@ -206,7 +205,7 @@ KB is the only subsystem in 0.7.1; new long-init subsystems register through `su
 | Transport | IPC + HTTP/SSE request parsing, validation, and wire formatting. Transport depends on domain and coordinator-facing contracts, not on domain shells. |
 | Provider execution | Provider adapters, launch orchestration, durable transport, and host/runtime management. Queue and lease mechanics stay below the domain truth surfaces. |
 | Jobs | Truth-owning owner for job lifecycle: launch, admission, wait, abort, terminal outcomes, and startup reconciliation. |
-| Sessions | Session persistence and continuity, including resume/fork identity and atomic storage. |
+| Sessions | Session persistence and continuity, including resume identity and atomic storage. |
 | Workflow | DSL compilation and pipeline execution, with launch and retry remaining part of the same ownership seam. |
 | Discuss | Functional-core / imperative-shell discussion loop with persistence, bids, speeches, follow-ups, and synthesis. |
 | Journal | Event-sourced substrate for append, rebuild, envelope decoding, and projection dispatch. |

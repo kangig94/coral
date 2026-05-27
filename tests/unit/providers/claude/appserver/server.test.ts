@@ -1,0 +1,54 @@
+import { describe, expect, it } from 'vitest';
+
+import { buildClaudeChildArgs } from '#src/providers/claude/appserver/server.js';
+import type { SpawnClaudeChildOptions } from '#src/providers/claude/appserver/session-contract.js';
+
+const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
+
+function spawnOptions(overrides: Partial<SpawnClaudeChildOptions> = {}): SpawnClaudeChildOptions {
+  return {
+    cwd: '/workspace',
+    conversationRef: TEST_SESSION_ID,
+    resume: false,
+    permissionMode: 'default',
+    ...overrides,
+  };
+}
+
+describe('claude appserver PTY child args', () => {
+  it('starts new interactive sessions without stream-json print mode', () => {
+    expect(buildClaudeChildArgs(spawnOptions())).toEqual(['--session-id', TEST_SESSION_ID]);
+  });
+
+  it('resumes existing sessions and carries bootstrap options at process start', () => {
+    expect(
+      buildClaudeChildArgs(
+        spawnOptions({
+          conversationRef: 'session-existing',
+          resume: true,
+          systemPrompt: 'Stay concise.',
+          model: 'claude-sonnet-4-6',
+          effort: 'high',
+          permissionMode: 'acceptEdits',
+        }),
+      ),
+    ).toEqual([
+      '--resume',
+      'session-existing',
+      '--append-system-prompt',
+      'Stay concise.',
+      '--model',
+      'claude-sonnet-4-6',
+      '--effort',
+      'high',
+      '--permission-mode',
+      'acceptEdits',
+    ]);
+  });
+
+  it('maps auto-allow permission modes to dangerous skip permissions', () => {
+    expect(buildClaudeChildArgs(spawnOptions({ permissionMode: 'bypassPermissions' }))).toContain(
+      '--dangerously-skip-permissions',
+    );
+  });
+});

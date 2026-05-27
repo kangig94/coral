@@ -11,7 +11,7 @@ import { providerRequestFailed } from '../fault.js';
 import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
-import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
+import { brokerNotificationMethods } from './appserver/protocol.js';
 import {
   buildClaudeContinuity,
   buildClaudeEnvHash,
@@ -22,6 +22,7 @@ import {
 } from './request-mapping.js';
 import {
   buildPreparedClaudeRequest,
+  type ClaudeBootstrapSignature,
   readBootstrapSignature,
   readTurnConversationRef,
   type PreparedClaudeRequest,
@@ -89,7 +90,16 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       const ensureResult = await brokerRpc<Record<string, unknown>>(
         lease,
         'session/ensure',
-        mapSessionEnsureParams(request, runtime.ids, state.prepared.systemPrompt, runtime.persistedContinuity),
+        mapSessionEnsureParams(
+          {
+            ...request,
+            model: state.prepared.model,
+            effort: state.prepared.effort,
+          },
+          runtime.ids,
+          state.prepared.systemPrompt,
+          runtime.persistedContinuity,
+        ),
       );
       state.brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? state.brokerSessionKey;
       state.bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
@@ -106,31 +116,18 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       }
 
       state.turnRequested = true;
-      const startParams = mapTurnStartParams(
-        {
-          ...request,
-          model: state.prepared.model,
-        },
-        state.prepared.prompt,
-        state.brokerSessionKey,
-        runtime.ids,
-      );
+      const startParams = mapTurnStartParams(state.prepared.prompt, state.brokerSessionKey, runtime.ids);
       const startResult = await brokerRpc<Record<string, unknown>>(lease, 'turn/start', startParams);
       state.brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
       checkpointBrokerContinuity(runtime, state);
       emitClaudeArtifactHandleOnce(state, runtime, emit);
 
-      const outcome = await Promise.race([
-        state.terminal,
-        lease.closed.then(
-          (closed): ClaudeTurnOutcome => ({
-            kind: 'failed',
-            message:
-              closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
-          }),
-        ),
-      ]);
+      const outcome = await waitForClaudeOutcome(state, lease, runtime.signal);
+      if (outcome.kind === 'aborted') {
+        state.brokerTurnId = undefined;
+        checkpointBrokerContinuity(runtime, state);
+      }
 
       emit(finalizeOutcome(state, outcome, runtime.time.now()));
     } catch (error) {
@@ -386,6 +383,42 @@ function brokerRpc<R = unknown>(
   params: Record<string, unknown> | object,
 ): Promise<R> {
   return lease.rpc<R>(method, params as Record<string, unknown>);
+}
+
+async function waitForClaudeOutcome(
+  state: ClaudeTurnState,
+  lease: ProviderServerLease,
+  signal: AbortSignal,
+): Promise<ClaudeTurnOutcome> {
+  if (signal.aborted) {
+    return { kind: 'aborted', reason: 'signal_abort' };
+  }
+
+  let removeAbortListener = () => {};
+  const aborted = new Promise<ClaudeTurnOutcome>((resolve) => {
+    const onAbort = (): void => {
+      resolve({ kind: 'aborted', reason: 'signal_abort' });
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => {
+      signal.removeEventListener('abort', onAbort);
+    };
+  });
+
+  try {
+    return await Promise.race([
+      state.terminal,
+      lease.closed.then(
+        (closed): ClaudeTurnOutcome => ({
+          kind: 'failed',
+          message: closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
+        }),
+      ),
+      aborted,
+    ]);
+  } finally {
+    removeAbortListener();
+  }
 }
 
 function readErrors(value: unknown): string[] {

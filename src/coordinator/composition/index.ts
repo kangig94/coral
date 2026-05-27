@@ -286,7 +286,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     sessions: {
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
       resumeBySessionId: (input, ctx) => services.getExecutionService(ctx).resumeBySessionId(input, ctx),
-      forkBySessionId: (input, ctx) => services.getExecutionService(ctx).forkBySessionId(input, ctx),
     },
     jobs: {
       scopeCheck: (jobIds, projectRoot) => control.scopeCheckJobs(jobIds, projectRoot, world.namespace),

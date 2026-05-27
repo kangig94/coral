@@ -61,17 +61,6 @@ export const sessionMessageSchema = z
   })
   .strict();
 
-export const sessionForkSchema = z
-  .object({
-    prompt: z.string().optional(),
-    ...continuationFieldsShape,
-  })
-  .strict();
-
 export const sessionMessageRequestSchema = sessionMessageSchema.extend({
-  sessionId: sessionIdSchema,
-});
-
-export const sessionForkRequestSchema = sessionForkSchema.extend({
   sessionId: sessionIdSchema,
 });

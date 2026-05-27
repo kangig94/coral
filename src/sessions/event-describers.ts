@@ -37,7 +37,7 @@ function describeSessionUnavailable(provider: string, reason: string): string {
     case 'codex':
       return `Codex session unavailable: ${detail} Start a new Coral session or resume without --session.`;
     case 'claude':
-      return `Claude session unavailable: ${detail} Start a new Coral session before forking.`;
+      return `Claude session unavailable: ${detail} Start a new Coral session.`;
     default:
       return `${provider} session unavailable: ${detail}`;
   }

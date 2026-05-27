@@ -1,6 +1,6 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
-import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../../jobs/launch.js';
+import type { JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../../jobs/launch.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
@@ -16,11 +16,6 @@ export type SessionStartInput = Pick<
 
 export type SessionResumeInput = Pick<
   JobResumeRequest,
-  'sessionId' | 'prompt' | 'provider' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
->;
-
-export type SessionForkInput = Pick<
-  JobForkRequest,
   'sessionId' | 'prompt' | 'provider' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
 >;
 
@@ -53,7 +48,6 @@ export type JobListFilters = {
 export interface SessionRequestPort {
   start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<LaunchDecision>;
   resumeBySessionId(input: SessionResumeInput, ctx: InvocationContext): Promise<LaunchDecision>;
-  forkBySessionId(input: SessionForkInput, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 export interface JobsRequestPort {
