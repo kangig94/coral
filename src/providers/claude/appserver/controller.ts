@@ -1,20 +1,12 @@
-import { raceTimeout } from '../../infra/async.js';
-import {
-  claudeControlRequestSubtypes,
-  ndjsonSafeStringify,
-  parseClaudeStdoutLine,
-  type SDKAssistantMessage,
-  type SDKControlInitializeRequest,
-  type SDKControlInterruptRequest,
-  type SDKControlResponse,
-  type SDKControlSetMaxThinkingTokensRequest,
-  type SDKControlSetModelRequest,
-  type SDKPermissionRequestMessage,
-  type SDKResultMessage,
-  type SDKSystemMessage,
-} from '../claude/control-protocol.js';
-import { extractClaudeProgressMessage, formatToolProgress } from '../claude/progress.js';
-import { hashSortedEnv, sameBootstrapSignature } from '../claude/request-prep.js';
+import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+
+import { raceTimeout } from '../../../infra/async.js';
+import { isRecord, readString } from '../../../infra/json.js';
+import { formatToolProgress } from '../progress.js';
+import { hashSortedEnv, sameBootstrapSignature } from '../request-prep.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
@@ -22,7 +14,6 @@ import {
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
-  isAutoAllowPermissionMode,
   readSessionId,
   systemProgressMessage,
   toBootstrapSignature,
@@ -45,29 +36,32 @@ import type {
   SingleSessionControllerOptions,
 } from './session-contract.js';
 
-const DEFAULT_STDERR_RING_LIMIT = 16_384;
+const DEFAULT_OUTPUT_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
-
-type ControlRequestPayload =
-  | SDKControlInitializeRequest
-  | SDKControlInterruptRequest
-  | SDKControlSetModelRequest
-  | SDKControlSetMaxThinkingTokensRequest;
-
-type PendingControlRequest = {
-  subtype: ControlRequestPayload['subtype'];
-  resolve: (value: unknown) => void;
-  reject: (error: Error) => void;
-};
+const CHILD_READY_TIMEOUT_MS = 2_000;
+const CHILD_READY_SETTLE_MS = 100;
+const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
+const TRANSCRIPT_POLL_MS = 100;
+const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
+const POST_END_TURN_GRACE_MS = 1_500;
+const TURN_TIMEOUT_MS = 30 * 60 * 1_000;
 
 type ActiveTurnState = {
   brokerTurnId: string;
-  prompt: string;
-  userMessageSent: boolean;
+  startedAt: number;
+  transcriptOffset: number;
+  transcriptRemainder: string;
   interruptRequested: boolean;
   interruptSent: boolean;
+  userMessageSent: boolean;
+  sawEndTurnAt: number | null;
+  lastAssistantText: string;
   model: string | null;
+  durationMs: number | null;
+  usage: unknown;
+  costUsd: number | null;
+  errors: string[];
 };
 
 type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
@@ -80,17 +74,17 @@ type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey
 type ChildBinding = {
   child: ClaudeBrokerChild;
   closed: Promise<ChildExit>;
+  ready: Promise<void>;
   dispose: () => void;
 };
 
 export class SingleSessionController {
   private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
-  private readonly stderrLimit: number;
+  private readonly outputLimit: number;
   private readonly ids: CreateBrokerSessionOptions['ids'];
   private readonly onUnexpectedExit: (() => void) | undefined;
   private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
-  private readonly pendingControlRequests = new Map<string, PendingControlRequest>();
 
   private childBinding: ChildBinding | null = null;
   private bootstrapSignature: ClaudeBootstrapSignature | null = null;
@@ -98,18 +92,18 @@ export class SingleSessionController {
   private controllerEnvHash: string | null = null;
   private ensurePromise: Promise<ControllerSessionEnsureResult> | null = null;
   private initialized = false;
-  private bootstrapEstablished = false;
   private latestSessionId: string | null = null;
+  private transcriptPath: string | null = null;
+  private resumeExistingConversation = false;
   private activeTurn: ActiveTurnState | null = null;
   private lastTerminalTurnId: string | null = null;
-  private stderrRing = '';
+  private outputRing = '';
   private shuttingDown = false;
-  private defaultModel: string | null = null;
 
   constructor(options: SingleSessionControllerOptions) {
     this.spawnChild = options.spawnChild;
     this.onTurnStarted = options.onTurnStarted;
-    this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
+    this.outputLimit = options.stderrLimit ?? DEFAULT_OUTPUT_RING_LIMIT;
     this.ids = options.ids;
     this.onUnexpectedExit = options.onUnexpectedExit;
   }
@@ -129,14 +123,12 @@ export class SingleSessionController {
     if (this.ensurePromise) {
       return this.ensurePromise;
     }
-
     if (this.childBinding && this.initialized) {
       return this.snapshot();
     }
 
     const ensurePromise = this.ensureInitializedSession(params, signature, controllerEnvHash);
     this.ensurePromise = ensurePromise;
-
     try {
       return await ensurePromise;
     } finally {
@@ -185,52 +177,47 @@ export class SingleSessionController {
         this.errorData(),
       );
     }
-
     if (this.activeTurn !== null) {
       throw new ClaudeBrokerRpcError(CLAUDE_BROKER_BUSY_RPC_CODE, 'Claude broker is busy.', this.errorData());
     }
 
     const turn: ActiveTurnState = {
       brokerTurnId: params.brokerTurnId,
-      prompt: params.prompt,
-      userMessageSent: false,
+      startedAt: Date.now(),
+      transcriptOffset: await this.readTranscriptOffsetBeforeTurn(),
+      transcriptRemainder: '',
       interruptRequested: false,
       interruptSent: false,
-      model: params.model ?? this.defaultModel,
+      userMessageSent: false,
+      sawEndTurnAt: null,
+      lastAssistantText: '',
+      model: this.bootstrapConfig?.model ?? null,
+      durationMs: null,
+      usage: undefined,
+      costUsd: null,
+      errors: [],
     };
     this.activeTurn = turn;
 
     try {
-      const preTurnRequests: ControlRequestPayload[] = [];
-      if (params.model !== undefined) {
-        preTurnRequests.push({ subtype: claudeControlRequestSubtypes.setModel, model: params.model });
-      }
-      if (params.maxThinkingTokens !== undefined) {
-        preTurnRequests.push({
-          subtype: claudeControlRequestSubtypes.setMaxThinkingTokens,
-          max_thinking_tokens: params.maxThinkingTokens,
-        });
-      }
-      if (preTurnRequests.length > 0) {
-        await Promise.all(preTurnRequests.map((req) => this.sendControlRequest(req)));
-      }
-
-      this.writeChild({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: params.prompt,
-        },
-        parent_tool_use_id: null,
-        session_id: this.latestSessionId ?? undefined,
-      });
+      this.writeToChild(bracketedPaste(params.prompt));
       turn.userMessageSent = true;
 
       if (turn.interruptRequested) {
-        await this.issueInterrupt(turn);
+        this.issueInterrupt(turn);
+        this.finishInterruptedTurn(turn);
       }
 
-      await this.onTurnStarted?.({ brokerTurnId: turn.brokerTurnId });
+      if (this.activeTurn === turn) {
+        await this.onTurnStarted?.({ brokerTurnId: turn.brokerTurnId });
+        void this.monitorTranscript(turn).catch((error) => {
+          if (this.activeTurn === turn) {
+            this.activeTurn = null;
+            this.lastTerminalTurnId = turn.brokerTurnId;
+            this.emitTurnFailure(turn.brokerTurnId, this.errorMessage(error));
+          }
+        });
+      }
 
       return {
         brokerTurnId: params.brokerTurnId,
@@ -254,7 +241,6 @@ export class SingleSessionController {
         interrupted: false,
       };
     }
-
     if (params.brokerTurnId !== undefined && params.brokerTurnId !== turn.brokerTurnId) {
       return {
         brokerTurnId: turn.brokerTurnId,
@@ -264,9 +250,9 @@ export class SingleSessionController {
 
     turn.interruptRequested = true;
     if (turn.userMessageSent) {
-      await this.issueInterrupt(turn);
+      this.issueInterrupt(turn);
+      this.finishInterruptedTurn(turn);
     }
-
     return {
       brokerTurnId: turn.brokerTurnId,
       interrupted: true,
@@ -287,26 +273,27 @@ export class SingleSessionController {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
-
     if (!this.childBinding) {
       return;
     }
 
     const childBinding = this.childBinding;
     this.initialized = false;
-    this.rejectPendingControlRequests(
-      new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude broker is shutting down.', this.errorData()),
-    );
-    childBinding.child.kill('SIGTERM');
+    try {
+      this.writeToChild('/exit\r');
+    } catch {
+      // The child may already be gone; shutdown still proceeds through signals.
+    }
     if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_GRACE_MS)) {
       return;
     }
 
-    childBinding.child.kill('SIGKILL');
+    childBinding.child.kill('SIGTERM');
     if (await this.waitForChildExit(childBinding.closed, CHILD_SHUTDOWN_TIMEOUT_MS - CHILD_SHUTDOWN_GRACE_MS)) {
       return;
     }
 
+    childBinding.child.kill('SIGKILL');
     childBinding.dispose();
     if (this.childBinding === childBinding) {
       this.childBinding = null;
@@ -319,28 +306,26 @@ export class SingleSessionController {
     controllerEnvHash: string,
   ): Promise<ControllerSessionEnsureResult> {
     if (!this.childBinding) {
-      const conversationRef = params.conversationRef ?? this.latestSessionId ?? undefined;
+      const conversationRef = params.conversationRef ?? this.latestSessionId ?? this.ids.uuid();
+      this.latestSessionId = conversationRef;
       this.bootstrapSignature = signature;
       this.controllerEnvHash = controllerEnvHash;
+      this.resumeExistingConversation = params.conversationRef !== undefined;
       this.bootstrapConfig = {
         ...params,
         conversationRef,
       };
-      await this.attachNewChild(params, signature);
-    }
-
-    if (!this.initialized) {
-      try {
-        await this.sendControlRequest({
-          subtype: claudeControlRequestSubtypes.initialize,
-          systemPrompt: params.systemPrompt,
-        });
-        this.initialized = true;
-        this.bootstrapEstablished = true;
-      } catch (error) {
-        this.resetFailedBootstrap();
-        throw this.asRpcError(error, 'Claude session bootstrap failed.');
+      await this.attachNewChild(params, signature, conversationRef, this.resumeExistingConversation);
+      await this.waitForChildReady();
+      if (!this.childBinding) {
+        throw new ClaudeBrokerRpcError(
+          CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
+          'Claude child exited before the interactive prompt was ready.',
+          this.errorData(),
+        );
       }
+      this.initialized = true;
+      this.emitSessionUpdated(conversationRef);
     }
 
     return this.snapshot();
@@ -349,171 +334,225 @@ export class SingleSessionController {
   private async attachNewChild(
     params: Omit<SessionEnsureParams, 'brokerSessionKey'>,
     signature: ClaudeBootstrapSignature,
+    conversationRef: string,
+    resume: boolean,
   ): Promise<void> {
-    const conversationRef =
-      this.bootstrapConfig?.conversationRef ?? params.conversationRef ?? this.latestSessionId ?? undefined;
+    let resolveReady!: () => void;
+    let readyResolved = false;
+    let readyOutput = '';
+    let readyTimer: ReturnType<typeof setTimeout> | null = null;
+    let readySettleTimer: ReturnType<typeof setTimeout> | null = null;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    const finishReady = (): void => {
+      if (readyResolved) {
+        return;
+      }
+      readyResolved = true;
+      if (readyTimer !== null) {
+        clearTimeout(readyTimer);
+        readyTimer = null;
+      }
+      if (readySettleTimer !== null) {
+        clearTimeout(readySettleTimer);
+        readySettleTimer = null;
+      }
+      resolveReady();
+    };
+    const scheduleReady = (): void => {
+      if (readyResolved || readySettleTimer !== null) {
+        return;
+      }
+      readySettleTimer = setTimeout(finishReady, CHILD_READY_SETTLE_MS);
+      readySettleTimer.unref?.();
+    };
+    readyTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
+    readyTimer.unref?.();
+
     const child = await this.spawnChild({
       cwd: signature.cwd,
       conversationRef,
+      resume,
       systemPrompt: params.systemPrompt,
       permissionMode: params.permissionMode,
+      model: params.model,
+      effort: params.effort,
       env: buildClaudeChildEnv(this.bootstrapConfig?.controllerEnv ?? params.controllerEnv),
     });
 
-    const offStdout = child.onStdoutLine((line) => {
-      this.handleChildLine(line);
+    const offData = child.onData((chunk) => {
+      if (!readyResolved) {
+        readyOutput = appendRingBuffer(readyOutput, chunk, 4_096);
+        if (readyOutput.includes(BRACKETED_PASTE_ENABLED)) {
+          scheduleReady();
+        }
+      }
+      this.captureOutput(chunk);
     });
     let resolveClosed!: (event: ChildExit) => void;
     const closed = new Promise<ChildExit>((resolve) => {
       resolveClosed = resolve;
     });
     const offExit = child.onExit((event) => {
+      finishReady();
       resolveClosed(event);
       this.handleChildExit(event);
-    });
-    const offStderr = child.onStderrChunk?.((chunk) => {
-      this.captureStderr(chunk);
     });
 
     this.childBinding = {
       child,
       closed,
+      ready,
       dispose: () => {
-        offStdout();
+        finishReady();
+        offData();
         offExit();
-        offStderr?.();
       },
     };
-    this.initialized = false;
+  }
+
+  private async waitForChildReady(): Promise<void> {
+    await this.childBinding?.ready;
   }
 
   private waitForChildExit(closed: Promise<ChildExit>, timeoutMs: number): Promise<boolean> {
     return raceTimeout(closed, timeoutMs);
   }
 
-  private handleChildLine(line: string): void {
-    const message = parseClaudeStdoutLine(line);
+  private async readTranscriptOffsetBeforeTurn(): Promise<number> {
+    const startedAt = Date.now();
+    const waitForExistingTranscript = this.resumeExistingConversation;
+    while (true) {
+      const path = this.resolveTranscriptPath();
+      if (path !== null) {
+        return safeFileSize(path);
+      }
+      if (!waitForExistingTranscript || Date.now() - startedAt >= RESUME_TRANSCRIPT_WAIT_MS) {
+        return 0;
+      }
+      await delay(TRANSCRIPT_POLL_MS);
+    }
+  }
+
+  private async monitorTranscript(turn: ActiveTurnState): Promise<void> {
+    while (this.activeTurn === turn) {
+      this.readTranscriptAppend(turn);
+      const now = Date.now();
+      if (turn.sawEndTurnAt !== null && (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)) {
+        this.completeTurn(turn);
+        return;
+      }
+      if (now - turn.startedAt > TURN_TIMEOUT_MS) {
+        this.activeTurn = null;
+        this.lastTerminalTurnId = turn.brokerTurnId;
+        this.emitTurnFailure(turn.brokerTurnId, 'Claude turn timed out waiting for a JSONL completion record.');
+        return;
+      }
+      await delay(TRANSCRIPT_POLL_MS);
+    }
+  }
+
+  private readTranscriptAppend(turn: ActiveTurnState): void {
+    const path = this.resolveTranscriptPath();
+    if (path === null) {
+      return;
+    }
+
+    const read = readFileSlice(path, turn.transcriptOffset);
+    if (read === null || read.text.length === 0) {
+      return;
+    }
+    turn.transcriptOffset = read.offset;
+
+    const lines = `${turn.transcriptRemainder}${read.text}`.split(/\r?\n/);
+    turn.transcriptRemainder = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.trim().length === 0) {
+        continue;
+      }
+      this.processTranscriptLine(turn, line);
+    }
+  }
+
+  private processTranscriptLine(turn: ActiveTurnState, line: string): void {
+    let row: unknown;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!isRecord(row)) {
+      return;
+    }
+
+    this.maybeUpdateSessionId(readSessionId(row));
+    if (row.type === 'assistant') {
+      this.handleAssistantTranscriptRow(turn, row);
+      return;
+    }
+    if (row.type === 'system') {
+      this.handleSystemTranscriptRow(turn, row);
+    }
+  }
+
+  private handleAssistantTranscriptRow(turn: ActiveTurnState, row: Record<string, unknown>): void {
+    const message = isRecord(row.message) ? row.message : null;
     if (message === null) {
       return;
     }
 
-    this.maybeUpdateSessionId(readSessionId(message));
+    const model = readString(message.model);
+    if (model !== undefined) {
+      turn.model = model;
+    }
+    if (message.usage !== undefined) {
+      turn.usage = message.usage;
+      turn.costUsd = readCostUsd(message.usage);
+    }
+    const error = readString(row.error);
+    if (error !== undefined) {
+      turn.errors.push(error);
+    }
 
-    switch (message.type) {
-      case 'keep_alive':
-        return;
-      case 'control_response':
-        this.handleControlResponse(message);
-        return;
-      case 'control_request':
-        this.handlePermissionRequest(message);
-        return;
-      case 'assistant':
-        this.handleAssistantMessage(message);
-        return;
-      case 'system':
-        this.handleSystemMessage(message);
-        return;
-      case 'result':
-        this.handleResultMessage(message);
-        return;
+    const textParts: string[] = [];
+    const content = Array.isArray(message.content) ? message.content : [];
+    for (const block of content) {
+      if (!isRecord(block)) {
+        continue;
+      }
+      if (block.type === 'tool_use' && typeof block.name === 'string' && isRecord(block.input)) {
+        this.emitTurnProgress(turn.brokerTurnId, formatToolProgress(block.name, block.input, this.currentCwd()));
+      }
+      if (block.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text);
+      }
+    }
+    if (textParts.length > 0) {
+      turn.lastAssistantText = textParts.join('');
+    }
+
+    if (readString(message.stop_reason) === 'end_turn') {
+      turn.sawEndTurnAt = Date.now();
     }
   }
 
-  private handleControlResponse(message: SDKControlResponse): void {
-    const pending = this.pendingControlRequests.get(message.response.request_id);
-    if (!pending) {
-      return;
+  private handleSystemTranscriptRow(turn: ActiveTurnState, row: Record<string, unknown>): void {
+    const progressMessage = systemProgressMessage(row);
+    if (progressMessage !== null) {
+      this.emitTurnProgress(turn.brokerTurnId, progressMessage);
     }
 
-    this.pendingControlRequests.delete(message.response.request_id);
-    if (message.response.subtype === 'error') {
-      pending.reject(
-        new ClaudeBrokerRpcError(
-          CLAUDE_BROKER_STATE_RPC_CODE,
-          message.response.error,
-          this.errorData({
-            pendingSubtype: pending.subtype,
-          }),
-        ),
-      );
-      return;
-    }
-
-    pending.resolve(message.response.response ?? {});
-  }
-
-  private handlePermissionRequest(message: SDKPermissionRequestMessage): void {
-    if (!this.bootstrapSignature || !isAutoAllowPermissionMode(this.bootstrapSignature.permissionMode)) {
-      return;
-    }
-
-    if (this.activeTurn) {
-      this.emitTurnProgress(
-        this.activeTurn.brokerTurnId,
-        formatToolProgress(message.request.tool_name, message.request.input, this.bootstrapSignature.cwd),
-      );
-    }
-
-    try {
-      this.writeChild({
-        type: 'control_response',
-        response: {
-          subtype: 'success',
-          request_id: message.request_id,
-          response: {
-            behavior: 'allow',
-          },
-        },
-      });
-    } catch (error) {
-      const rpcError = this.asRpcError(error, 'Failed to auto-allow Claude tool request.');
-      if (this.activeTurn) {
-        this.emitTurnFailure(this.activeTurn.brokerTurnId, rpcError.message);
+    if (row.subtype === 'turn_duration') {
+      const durationMs = readNumber(row.durationMs) ?? readNumber(row.duration_ms);
+      if (durationMs !== undefined) {
+        turn.durationMs = durationMs;
       }
     }
   }
 
-  private handleAssistantMessage(message: SDKAssistantMessage): void {
-    if (message.message.model) {
-      this.defaultModel = message.message.model;
-      if (this.activeTurn) {
-        this.activeTurn.model = message.message.model;
-      }
-    }
-
-    if (this.activeTurn === null || !this.bootstrapSignature) {
-      return;
-    }
-
-    const progressMessage = extractClaudeProgressMessage(message, this.bootstrapSignature.cwd);
-    if (!progressMessage) {
-      return;
-    }
-
-    this.emitTurnProgress(this.activeTurn.brokerTurnId, progressMessage);
-  }
-
-  private handleSystemMessage(message: SDKSystemMessage): void {
-    if (message.subtype === 'init') {
-      this.defaultModel = message.model;
-    }
-
-    if (this.activeTurn === null) {
-      return;
-    }
-
-    const progressMessage = systemProgressMessage(message);
-    if (!progressMessage) {
-      return;
-    }
-
-    this.emitTurnProgress(this.activeTurn.brokerTurnId, progressMessage);
-  }
-
-  private handleResultMessage(message: SDKResultMessage): void {
-    const turn = this.activeTurn;
-    if (turn === null) {
+  private completeTurn(turn: ActiveTurnState): void {
+    if (this.activeTurn !== turn) {
       return;
     }
 
@@ -521,18 +560,15 @@ export class SingleSessionController {
       brokerTurnId: turn.brokerTurnId,
       sessionId: this.latestSessionId,
       conversationRef: this.currentConversationRef(),
-      result: 'result' in message && typeof message.result === 'string' ? message.result : '',
+      result: turn.lastAssistantText,
       model: turn.model,
-      durationMs: message.duration_ms ?? null,
-      numTurns: message.num_turns ?? null,
-      costUsd: typeof message.total_cost_usd === 'number' ? message.total_cost_usd : null,
-      usage: message.usage,
-      isError: message.is_error,
-      subtype: message.subtype,
-      errors:
-        'errors' in message && Array.isArray(message.errors)
-          ? message.errors.filter((value): value is string => typeof value === 'string')
-          : undefined,
+      durationMs: turn.durationMs ?? Date.now() - turn.startedAt,
+      numTurns: null,
+      costUsd: turn.costUsd,
+      usage: turn.usage,
+      isError: turn.errors.length > 0,
+      subtype: turn.errors.length > 0 ? 'error' : 'success',
+      ...(turn.errors.length > 0 ? { errors: turn.errors } : {}),
     };
 
     this.activeTurn = null;
@@ -552,18 +588,14 @@ export class SingleSessionController {
     this.initialized = false;
 
     if (this.shuttingDown) {
-      this.clearPendingControlRequests();
       return;
     }
-
-    const exitError = this.childExitError(event);
-    this.rejectPendingControlRequests(exitError);
 
     const turn = this.activeTurn;
     if (turn) {
       this.activeTurn = null;
       this.lastTerminalTurnId = turn.brokerTurnId;
-      this.emitTurnFailure(turn.brokerTurnId, exitError.message);
+      this.emitTurnFailure(turn.brokerTurnId, this.childExitError(event).message);
     }
 
     this.onUnexpectedExit?.();
@@ -581,69 +613,48 @@ export class SingleSessionController {
         conversationRef: sessionId,
       };
     }
-    if (this.bootstrapSignature) {
-      this.emitNotification({
-        method: 'session/updated',
-        params: {
-          bootstrapSignature: this.bootstrapSignature,
-          sessionId,
-          conversationRef: sessionId,
-        },
-      });
-    }
+    this.emitSessionUpdated(sessionId);
   }
 
-  private async sendControlRequest(request: ControlRequestPayload): Promise<unknown> {
-    if (!this.childBinding) {
-      throw new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude child is unavailable.', this.errorData());
+  private emitSessionUpdated(sessionId: string): void {
+    if (this.bootstrapSignature === null) {
+      return;
     }
-
-    const requestId = this.ids.uuid();
-    const responsePromise = new Promise<unknown>((resolve, reject) => {
-      this.pendingControlRequests.set(requestId, {
-        subtype: request.subtype,
-        resolve,
-        reject,
-      });
+    this.emitNotification({
+      method: 'session/updated',
+      params: {
+        bootstrapSignature: this.bootstrapSignature,
+        sessionId,
+        conversationRef: sessionId,
+      },
     });
-
-    try {
-      this.writeChild({
-        type: 'control_request',
-        request_id: requestId,
-        request,
-      });
-    } catch (error) {
-      this.pendingControlRequests.delete(requestId);
-      throw error;
-    }
-
-    return responsePromise;
   }
 
-  private async issueInterrupt(turn: ActiveTurnState): Promise<void> {
+  private issueInterrupt(turn: ActiveTurnState): void {
     if (turn.interruptSent || !turn.userMessageSent) {
       return;
     }
-
     turn.interruptSent = true;
-    try {
-      await this.sendControlRequest({
-        subtype: claudeControlRequestSubtypes.interrupt,
-      });
-    } catch (error) {
-      turn.interruptSent = false;
-      throw error;
-    }
+    this.writeToChild('\x03');
   }
 
-  private writeChild(message: unknown): void {
+  private finishInterruptedTurn(turn: ActiveTurnState): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    this.activeTurn = null;
+    this.lastTerminalTurnId = turn.brokerTurnId;
+    this.emitTurnFailure(turn.brokerTurnId, 'Claude turn interrupted.');
+  }
+
+  private writeToChild(data: string): void {
     if (!this.childBinding) {
       throw new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude child is unavailable.', this.errorData());
     }
 
     try {
-      this.childBinding.child.writeLine(ndjsonSafeStringify(message));
+      this.childBinding.child.write(data);
     } catch (error) {
       throw this.asRpcError(error, 'Failed to write to Claude child.');
     }
@@ -653,7 +664,6 @@ export class SingleSessionController {
     if (this.bootstrapSignature === null || this.controllerEnvHash === null) {
       return;
     }
-
     if (sameBootstrapSignature(this.bootstrapSignature, signature) && this.controllerEnvHash === controllerEnvHash) {
       return;
     }
@@ -696,6 +706,38 @@ export class SingleSessionController {
     return this.latestSessionId ?? this.bootstrapConfig?.conversationRef ?? null;
   }
 
+  private currentCwd(): string {
+    return this.bootstrapSignature?.cwd ?? process.cwd();
+  }
+
+  private resolveTranscriptPath(): string | null {
+    const conversationRef = this.currentConversationRef();
+    if (conversationRef === null) {
+      return null;
+    }
+    if (this.transcriptPath !== null && existsSync(this.transcriptPath)) {
+      return this.transcriptPath;
+    }
+
+    const projectsRoot = join(homedir(), '.claude', 'projects');
+    try {
+      const projectEntries = readdirSync(projectsRoot, { withFileTypes: true });
+      for (const entry of projectEntries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const candidate = join(projectsRoot, entry.name, `${conversationRef}.jsonl`);
+        if (existsSync(candidate)) {
+          this.transcriptPath = candidate;
+          return candidate;
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
   private buildTurnProgress(brokerTurnId: string, message: string): ControllerNotificationMap['turn/progress'] {
     return {
       brokerTurnId,
@@ -720,24 +762,13 @@ export class SingleSessionController {
         message,
         sessionId: this.latestSessionId,
         conversationRef: this.currentConversationRef(),
-        stderr: this.stderrRing || undefined,
+        stderr: this.outputRing || undefined,
       },
     });
   }
 
-  private captureStderr(chunk: string): void {
-    this.stderrRing = appendRingBuffer(this.stderrRing, chunk, this.stderrLimit);
-  }
-
-  private rejectPendingControlRequests(error: Error): void {
-    for (const pending of this.pendingControlRequests.values()) {
-      pending.reject(error);
-    }
-    this.pendingControlRequests.clear();
-  }
-
-  private clearPendingControlRequests(): void {
-    this.pendingControlRequests.clear();
+  private captureOutput(chunk: string): void {
+    this.outputRing = appendRingBuffer(this.outputRing, chunk, this.outputLimit);
   }
 
   private childExitError(event: ChildExit): Error {
@@ -752,47 +783,28 @@ export class SingleSessionController {
     return new ClaudeBrokerRpcError(CLAUDE_BROKER_CHILD_EXIT_RPC_CODE, detail, this.errorData());
   }
 
-  private resetFailedBootstrap(): void {
-    if (this.bootstrapEstablished) {
-      return;
-    }
-
-    if (this.childBinding) {
-      const childBinding = this.childBinding;
-      childBinding.child.kill('SIGTERM');
-      childBinding.dispose();
-      if (this.childBinding === childBinding) {
-        this.childBinding = null;
-      }
-    }
-    this.initialized = false;
-    this.bootstrapSignature = null;
-    this.bootstrapConfig = null;
-    this.controllerEnvHash = null;
-    this.latestSessionId = null;
-    this.rejectPendingControlRequests(
-      new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, 'Claude bootstrap failed.', this.errorData()),
-    );
-  }
-
   private asRpcError(error: unknown, fallbackMessage: string): ClaudeBrokerRpcError {
     if (error instanceof ClaudeBrokerRpcError) {
       return error;
     }
-
-    return new ClaudeBrokerRpcError(
-      CLAUDE_BROKER_STATE_RPC_CODE,
-      error instanceof Error ? error.message : fallbackMessage,
-      this.errorData(),
-    );
+    if (error instanceof Error) {
+      return new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, error.message || fallbackMessage, this.errorData());
+    }
+    return new ClaudeBrokerRpcError(CLAUDE_BROKER_STATE_RPC_CODE, fallbackMessage, this.errorData());
   }
 
-  private errorData(extra: Record<string, unknown> = {}): Record<string, unknown> | undefined {
-    const data: Record<string, unknown> = { ...extra };
-    if (this.stderrRing) {
-      data.stderr = this.stderrRing;
-    }
-    return Object.keys(data).length > 0 ? data : undefined;
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private errorData(extra?: Record<string, unknown>): Record<string, unknown> {
+    return {
+      sessionId: this.latestSessionId,
+      conversationRef: this.currentConversationRef(),
+      initialized: this.initialized,
+      activeTurnId: this.activeTurn?.brokerTurnId ?? null,
+      ...(extra ?? {}),
+    };
   }
 
   private emitNotification(notification: ControllerNotification): void {
@@ -802,10 +814,57 @@ export class SingleSessionController {
   }
 }
 
-function appendRingBuffer(current: string, next: string, limit: number): string {
-  const combined = `${current}${next}`;
-  if (combined.length <= limit) {
-    return combined;
+function bracketedPaste(prompt: string): string {
+  return `\x1b[200~${prompt}\x1b[201~\r`;
+}
+
+function readFileSlice(path: string, offset: number): { text: string; offset: number } | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    if (size <= offset) {
+      return { text: '', offset: size };
+    }
+    const length = size - offset;
+    const buffer = Buffer.allocUnsafe(length);
+    readSync(fd, buffer, 0, length, offset);
+    return {
+      text: buffer.toString('utf8'),
+      offset: size,
+    };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      closeSync(fd);
+    }
   }
-  return combined.slice(combined.length - limit);
+}
+
+function safeFileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readCostUsd(value: unknown): number | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return readNumber(value.costUSD) ?? readNumber(value.costUsd) ?? null;
+}
+
+function appendRingBuffer(current: string, chunk: string, limit: number): string {
+  if (chunk.length >= limit) {
+    return chunk.slice(-limit);
+  }
+  const combined = current + chunk;
+  return combined.length <= limit ? combined : combined.slice(-limit);
 }

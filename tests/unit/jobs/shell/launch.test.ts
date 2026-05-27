@@ -634,7 +634,6 @@ function createSessionTransportPorts(service: ExecutionService, pluginRoot: stri
     sessions: {
       start: service.start.bind(service),
       resumeBySessionId: service.resumeBySessionId.bind(service),
-      forkBySessionId: service.forkBySessionId.bind(service),
     },
   } as unknown as HttpHandlerPorts;
 }
@@ -792,37 +791,6 @@ describe('ExecutionService launch', () => {
       getInternals(service);
     expect(sessionManager.get('codex', body.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
   });
-
-  it.each(['discard_provider_artifacts_on_terminal', 'retain'] as const)(
-    'fork inherits source session retention=%s',
-    async (retention) => {
-      const never = new Promise<ProviderTurnResult>(() => {});
-      const { provider } = makeProvider({ execute: () => never });
-      mockState.getNewProvider.mockReturnValue(provider);
-      const service = createService(ctx);
-      const { sessionManager } =
-        /* @intentional-private-access — seed and inspect fork session entries */
-        getInternals(service);
-      const source = sessionManager.allocate({
-        provider: 'codex',
-        name: 'source',
-        model: 'gpt-5',
-        cwd: ctx.projectRoot,
-        projectRoot: ctx.projectRoot,
-        backendNamespace: TEST_BACKEND_NAMESPACE,
-        retention,
-      });
-
-      const decision = await service.fork('codex', { sessionId: source.sessionId, prompt: 'branch' }, ctx);
-
-      expect(decision.status).toBe('running');
-      if (decision.status !== 'running') {
-        throw new Error('expected running launch');
-      }
-      trackJob(decision.job);
-      expect(sessionManager.get('codex', decision.session)?.retention).toBe(retention);
-    },
-  );
 
   it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
     const provider: Provider = {

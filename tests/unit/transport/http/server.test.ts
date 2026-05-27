@@ -173,7 +173,6 @@ type LifecycleModule = typeof LifecycleMod;
 type FakeExecutionService = {
   start: ReturnType<typeof vi.fn>;
   resumeBySessionId: ReturnType<typeof vi.fn>;
-  forkBySessionId: ReturnType<typeof vi.fn>;
   executeWorkflow: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
@@ -184,7 +183,6 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
   return {
     start: vi.fn(),
     resumeBySessionId: vi.fn(),
-    forkBySessionId: vi.fn(),
     executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
@@ -1603,7 +1601,6 @@ describe('execution backend server', () => {
         sessions: {
           start: (providerName: string, input: unknown, ctx: unknown) => service.start(providerName, input, ctx),
           resumeBySessionId: (input: unknown, ctx: unknown) => service.resumeBySessionId(input, ctx),
-          forkBySessionId: (input: unknown, ctx: unknown) => service.forkBySessionId(input, ctx),
         },
         jobs: {
           scopeCheck: scopeCheckJobs,
@@ -3312,113 +3309,6 @@ describe('execution backend server', () => {
       }
     });
 
-    it('routes POST /sessions/:id/forks through service.forkBySessionId', async () => {
-      const fakeService = createFakeExecutionService({
-        forkBySessionId: vi.fn(async () => ({ status: 'running', job: 'job-fork', session: 'session-child' })),
-      });
-      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
-      const started = await startHttpHandlerServer(deps);
-
-      try {
-        const response = await fetch(`${started.baseUrl}/sessions/session-parent/forks`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
-          },
-          body: JSON.stringify({
-            prompt: 'branch',
-            projectRoot: '/tmp/project',
-            model: 'gpt-5',
-            workDir: '/tmp/work',
-            effort: 'medium',
-            bypassPermissions: false,
-            systemPrompt: 'fork-system',
-          }),
-        });
-
-        expect(response.status).toBe(201);
-        expect(await response.json()).toEqual({
-          session: 'session-child',
-          job: 'job-fork',
-          launchState: 'running',
-        });
-        expect(fakeService.forkBySessionId).toHaveBeenCalledWith(
-          {
-            sessionId: 'session-parent',
-            prompt: 'branch',
-            model: 'gpt-5',
-            cwd: '/tmp/work',
-            effort: 'medium',
-            bypassPermissions: false,
-            systemPrompt: 'fork-system',
-          },
-          expect.objectContaining({
-            projectRoot: '/tmp/project',
-            pluginRoot: '/tmp/plugin',
-          }),
-        );
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
-
-    it('maps provider_mismatch from POST /sessions/:id/forks and forwards the provider assertion', async () => {
-      const sessionId = 'session-codex';
-      const fakeService = createFakeExecutionService({
-        forkBySessionId: vi.fn(async () => ({
-          status: 'rejected',
-          phase: 'preflight',
-          code: 'provider_mismatch',
-          message: `Session ${sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${sessionId} ...\` instead.`,
-        })),
-      });
-      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
-      const started = await startHttpHandlerServer(deps);
-
-      try {
-        const response = await fetch(`${started.baseUrl}/sessions/${sessionId}/forks`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
-          },
-          body: JSON.stringify({
-            prompt: 'branch',
-            provider: 'claude',
-            projectRoot: '/tmp/project',
-            model: 'gpt-5',
-            workDir: '/tmp/work',
-          }),
-        });
-
-        const body = (await response.json()) as {
-          code: string;
-          message: string;
-        };
-
-        expect(response.status).toBe(409);
-        expect(body).toMatchObject({ code: 'provider_mismatch' });
-        expect(body.message).toContain('codex');
-        expect(body.message).toContain(`coral-cli codex -s ${sessionId} ...`);
-        expect(fakeService.forkBySessionId).toHaveBeenCalledWith(
-          {
-            sessionId,
-            prompt: 'branch',
-            provider: 'claude',
-            model: 'gpt-5',
-            cwd: '/tmp/work',
-          },
-          expect.objectContaining({
-            projectRoot: '/tmp/project',
-            pluginRoot: '/tmp/plugin',
-          }),
-        );
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
-
     it('passes canonical workflow camelCase fields to executeWorkflow', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
@@ -5014,7 +4904,6 @@ describe('execution backend server', () => {
         sessions: {
           start: vi.fn(),
           resumeBySessionId: vi.fn(),
-          forkBySessionId: vi.fn(),
         },
         jobs: {
           scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }),
@@ -5091,11 +4980,6 @@ describe('execution backend server', () => {
       {
         name: 'session message',
         path: '/sessions/session-1/messages',
-        body: { prompt: 'hello', projectRoot: '/tmp/project' },
-      },
-      {
-        name: 'session fork',
-        path: '/sessions/session-1/forks',
         body: { prompt: 'hello', projectRoot: '/tmp/project' },
       },
       {

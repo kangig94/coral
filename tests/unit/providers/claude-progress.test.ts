@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { extractClaudeProgressMessage, formatToolProgress } from '#src/providers/claude/progress.js';
-import type { ClaudeStreamEvent } from '#src/providers/claude/exec-types.js';
+
+type ClaudeStreamEvent = {
+  type: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+  };
+  [key: string]: unknown;
+};
 
 function assistantEvent(contentBlocks: Array<{ type: string; [key: string]: unknown }>): ClaudeStreamEvent {
   return {

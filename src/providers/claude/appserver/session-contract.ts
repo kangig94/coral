@@ -1,5 +1,6 @@
-import type { IdPort } from '../../runtime/ports.js';
-import type { PermissionMode } from '../claude/control-protocol.js';
+import type { IdPort } from '../../../runtime/ports.js';
+import type { EffortLevel } from '../../contract.js';
+import type { PermissionMode } from '../request-prep.js';
 import type {
   ClaudeBrokerNotification,
   SessionEnsureParams,
@@ -18,7 +19,7 @@ import type {
 
 export type ChildExit = {
   code: number | null;
-  signal: NodeJS.Signals | null;
+  signal: NodeJS.Signals | string | number | null;
   error?: Error;
 };
 
@@ -37,18 +38,20 @@ export type ControllerNotification = {
 }[keyof ControllerNotificationMap];
 
 export interface ClaudeBrokerChild {
-  writeLine(line: string): void;
+  write(data: string): void;
   kill(signal?: NodeJS.Signals): void;
-  onStdoutLine(handler: (line: string) => void): () => void;
+  onData(handler: (chunk: string) => void): () => void;
   onExit(handler: (event: ChildExit) => void): () => void;
-  onStderrChunk?(handler: (chunk: string) => void): () => void;
 }
 
 export interface SpawnClaudeChildOptions {
   cwd: string;
-  conversationRef?: string;
+  conversationRef: string;
+  resume: boolean;
   systemPrompt?: string;
   permissionMode: PermissionMode;
+  model?: string;
+  effort?: EffortLevel;
   env?: Record<string, string>;
 }
 

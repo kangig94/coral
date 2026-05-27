@@ -5,16 +5,20 @@ import { join } from 'node:path';
 import { isRecord, readString } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
-import type { PermissionMode } from './control-protocol.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type {
-  ClaudeBootstrapSignature,
   SessionEnsureParams,
   TurnInterruptParams,
   TurnStartParams,
-} from '../claude-appserver/protocol.js';
-import { hashSortedEnv, normalizeControllerEnv, readBootstrapSignature } from './request-prep.js';
+} from './appserver/protocol.js';
+import {
+  hashSortedEnv,
+  normalizeControllerEnv,
+  readBootstrapSignature,
+  type ClaudeBootstrapSignature,
+  type PermissionMode,
+} from './request-prep.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;
@@ -77,7 +81,7 @@ export function buildClaudeProviderServerSpec(
 }
 
 export function mapSessionEnsureParams(
-  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv'>,
+  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv' | 'model' | 'effort'>,
   ids: Pick<IdPort, 'sha256'>,
   derivedSystemPrompt?: string,
   persistedContinuity?: ProviderContinuityBlob,
@@ -90,11 +94,12 @@ export function mapSessionEnsureParams(
     conversationRef: continuity.conversationRef ?? request.conversationRef,
     controllerEnv: normalizeControllerEnv(request.coralEnv),
     systemPrompt: derivedSystemPrompt,
+    ...(request.model !== undefined ? { model: request.model } : {}),
+    ...(request.effort !== undefined ? { effort: request.effort } : {}),
   };
 }
 
 export function mapTurnStartParams(
-  request: Pick<ProviderRequest, 'model'>,
   prompt: string,
   brokerSessionKey: string,
   ids: Pick<IdPort, 'uuid'>,
@@ -103,7 +108,6 @@ export function mapTurnStartParams(
     brokerSessionKey,
     brokerTurnId: ids.uuid(),
     prompt,
-    model: request.model,
   };
 }
 
@@ -166,7 +170,7 @@ function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>)
     return bundledPath;
   }
 
-  const compiledPath = join(__PLUGIN_ROOT__, 'dist', 'providers', 'claude-appserver', 'server.js');
+  const compiledPath = join(__PLUGIN_ROOT__, 'dist', 'providers', 'claude', 'appserver', 'server.js');
   if (storage.existsSync(compiledPath)) {
     return compiledPath;
   }

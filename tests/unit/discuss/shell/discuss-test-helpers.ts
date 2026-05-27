@@ -79,7 +79,6 @@ export function createExecutionServiceStub(overrides: Partial<ExecutionService> 
   return {
     start: vi.fn(),
     resume: vi.fn(),
-    fork: vi.fn(),
     coralDispatch: vi.fn(),
     executeWorkflow: vi.fn(),
     list: vi.fn(() => ({ sessions: [] })),

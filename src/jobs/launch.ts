@@ -17,8 +17,8 @@ export type LaunchDecision =
 
 /**
  * Coordinator response shape when a launch request is accepted (running or queued).
- * Returned over IPC and HTTP for sessions.create / sessions.message / sessions.fork
- * / workflow.run.
+ * Returned over IPC and HTTP for sessions.create / sessions.message /
+ * workflow.run.
  */
 export type AcceptedLaunchResponse = {
   session: string;
@@ -63,17 +63,11 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
   provider?: string;
 }
 
-export interface JobForkRequest extends Omit<JobLaunchRequest, 'prompt' | 'agent' | 'pool' | 'retention'> {
-  sessionId: string;
-  provider?: string;
-  prompt?: string;
-}
-
 export const providerJobLaunchRequestBodySchema = z
   .object({
     sessionId: z.string().min(1),
     provider: z.string().min(1),
-    providerAction: z.enum(['exec', 'resume', 'fork']),
+    providerAction: z.enum(['exec', 'resume']),
     projectRoot: z.string(),
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),

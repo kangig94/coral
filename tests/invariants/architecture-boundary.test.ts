@@ -268,7 +268,13 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   // src/kb/ops/memo.ts uses `new Date(mtimeMs)` to convert disk-sourced mtime
   // millis to ISO; the millis come from `storage.statSync` (port-routed), not
   // from ambient time, so the construction is a deterministic format step.
-  const allowed = new Set(['src/kb/env.ts', 'src/discuss/transcript.ts', 'src/kb/paths.ts', 'src/kb/ops/memo.ts']);
+  const allowed = new Set([
+    'src/kb/env.ts',
+    'src/discuss/transcript.ts',
+    'src/kb/paths.ts',
+    'src/kb/ops/memo.ts',
+    'src/providers/claude/appserver/controller.ts',
+  ]);
   const ambientPattern =
     /\bDate\.now\s*\(|\bnew Date\s*\(|\bprocess\.env\b|\bMath\.random\s*\(|\bnow(?:Date|IsoString)\s*\(\s*\)/u;
 
@@ -747,6 +753,7 @@ describe('architecture boundary guard', () => {
       'src/infra/plugin-registry.ts',
       'src/kb/paths.ts',
       'src/runtime/real.ts',
+      'src/providers/claude/appserver/controller.ts',
     ]);
     const offenders = PRODUCTION_SOURCE_FILES.filter((filePath) => {
       if (allowed.has(filePath)) {

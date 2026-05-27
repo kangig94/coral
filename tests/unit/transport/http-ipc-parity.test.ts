@@ -71,7 +71,6 @@ function createPorts(): HttpHandlerPorts {
     sessions: {
       start: vi.fn(),
       resumeBySessionId: vi.fn(),
-      forkBySessionId: vi.fn(),
     },
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),

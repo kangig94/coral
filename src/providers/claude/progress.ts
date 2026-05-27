@@ -2,7 +2,13 @@ import { isAbsolute, relative, resolve } from 'node:path';
 
 import { isRecord } from '../../infra/json.js';
 import { truncate } from '../../infra/text.js';
-import type { ClaudeStreamEvent } from './exec-types.js';
+
+type ClaudeAssistantProgressEvent = {
+  type?: unknown;
+  message?: {
+    content?: unknown;
+  };
+};
 
 function shortPath(filePath: string, projectRoot: string): string {
   const abs = isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath);
@@ -61,7 +67,7 @@ export function formatToolProgress(name: string, input: Record<string, unknown>,
   }
 }
 
-export function extractClaudeProgressMessage(event: ClaudeStreamEvent, projectRoot: string): string | null {
+export function extractClaudeProgressMessage(event: ClaudeAssistantProgressEvent, projectRoot: string): string | null {
   if (event.type !== 'assistant') return null;
 
   const content = Array.isArray(event.message?.content) ? event.message.content : [];

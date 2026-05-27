@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '#src/providers/claude-appserver/protocol.js';
+import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '#src/providers/claude/appserver/protocol.js';
 import type { ProviderCliRunner } from '#src/providers/protocol.js';
 import type {
   ProviderContinuityEventBody,
@@ -74,6 +74,8 @@ function makeRuntime(
     persistedContinuity?: ProviderRuntime['persistedContinuity'];
     runCliImpl?: ProviderCliRunner;
     acquireServerImpl?: () => Promise<ProviderServerLease>;
+    env?: ProviderRuntime['env'];
+    storage?: ProviderRuntime['storage'];
   } = {},
 ): SmokeRuntime {
   const controller = options.controller ?? new AbortController();
@@ -102,7 +104,8 @@ function makeRuntime(
     },
     runCli,
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+    storage: options.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    env: options.env,
     acquireServer,
     persistedContinuity: options.persistedContinuity,
     continuityBridge: {
@@ -166,6 +169,14 @@ function expectValidContinuitySnapshots(events: ProviderEventBody[]): ProviderCo
   }
 
   return continuityEvents;
+}
+
+function fakeDirent(name: string, kind: 'directory' | 'file') {
+  return {
+    name,
+    isDirectory: () => kind === 'directory',
+    isFile: () => kind === 'file',
+  };
 }
 
 describe('provider runtime smoke', () => {
@@ -291,112 +302,150 @@ describe('provider runtime smoke', () => {
     },
   );
 
-  it('covers the Claude fork path via claudeExecProvider with empty persisted continuity', async () => {
-    const provider = getProductionProvider('claude');
-    const runtime = makeRuntime({
-      runCliImpl: async (request) => {
-        request.onEvent?.(
-          JSON.stringify({
-            type: 'assistant',
-            message: {
-              model: 'claude-sonnet-4',
-              content: [{ type: 'text', text: 'Working...' }],
-            },
-          }),
-        );
-
-        return {
-          stdout: JSON.stringify({
-            type: 'result',
-            result: 'Claude fork result',
-            session_id: 'claude-fork-smoke',
-            model: 'claude-sonnet-4',
-            duration_ms: 8,
-            total_cost_usd: 0.02,
-          }),
-          stderr: '',
-          code: 0,
-          aborted: false,
-        };
-      },
-    });
-
-    const events = await collectProviderEvents(
-      provider.run(
-        makeRequest('claude', {
-          action: 'fork',
-          conversationRef: 'claude-parent-session',
-        }),
-        runtime,
-      ),
-    );
-
-    const terminal = expectSingleTerminalLast(events);
-    const continuityEvents = expectValidContinuitySnapshots(events);
-
-    expect(continuityEvents.length).toBeGreaterThan(0);
-    expect(terminal.terminal.outcome).toEqual({ kind: 'completed' });
-    expect(runtime.runCli).toHaveBeenCalledTimes(1);
-    expect(runtime.acquireServer).not.toHaveBeenCalled();
-  });
-
-  it('emits aborted from the Claude leaf kernel when aborted mid-stream', async () => {
+  it('emits aborted from the Claude appserver path when aborted after turn start', async () => {
     const provider = getProductionProvider('claude');
     const controller = new AbortController();
-    const runStarted = createDeferred<void>();
+    const lease = makeLease(async (method, params) => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-claude-aborted',
+          bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
+          sessionId: 'claude-session-aborted',
+          conversationRef: 'claude-session-aborted',
+        };
+      }
+      if (method === 'turn/start') {
+        return {
+          brokerTurnId: 'claude-turn-aborted',
+          sessionId: 'claude-session-aborted',
+          conversationRef: 'claude-session-aborted',
+        };
+      }
+      if (method === 'turn/interrupt') {
+        return {
+          brokerTurnId: params.brokerTurnId ?? 'claude-turn-aborted',
+          interrupted: true,
+        };
+      }
+      throw new Error(`Unexpected Claude abort RPC: ${method}`);
+    });
     const runtime = makeRuntime({
       controller,
-      runCliImpl: async (request) => {
-        request.onEvent?.(
-          JSON.stringify({
-            type: 'assistant',
-            message: {
-              model: 'claude-sonnet-4',
-              content: [{ type: 'text', text: 'Working...' }],
-            },
-          }),
-        );
-        runStarted.resolve();
-        await new Promise<void>((resolve) => {
-          controller.signal.addEventListener('abort', () => resolve(), { once: true });
-        });
-
-        return {
-          stdout: JSON.stringify({
-            type: 'result',
-            result: '',
-            session_id: 'claude-fork-aborted',
-            model: 'claude-sonnet-4',
-            duration_ms: 5,
-            total_cost_usd: 0,
-          }),
-          stderr: '',
-          code: null,
-          aborted: true,
-        };
-      },
+      acquireServerImpl: async () => lease,
     });
 
-    const eventsPromise = collectProviderEvents(
-      provider.run(
-        makeRequest('claude', {
-          action: 'fork',
-          conversationRef: 'claude-parent-session',
-        }),
-        runtime,
-      ),
-    );
+    const eventsPromise = collectProviderEvents(provider.run(makeRequest('claude'), runtime));
 
-    await runStarted.promise;
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+    });
+
     runtime.controller.abort();
+
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith(
+        'turn/interrupt',
+        expect.objectContaining({
+          brokerSessionKey: 'broker-claude-aborted',
+          brokerTurnId: 'claude-turn-aborted',
+        }),
+      );
+    });
 
     const events = await eventsPromise;
     const terminal = expectSingleTerminalLast(events);
+    const continuityEvents = expectValidContinuitySnapshots(events);
+    const finalProviderContinuity = continuityEvents.at(-1)?.providerContinuity;
 
-    expectValidContinuitySnapshots(events);
+    expect(
+      finalProviderContinuity && typeof finalProviderContinuity === 'object'
+        ? Object.hasOwn(finalProviderContinuity, 'brokerTurnId')
+        : false,
+    ).toBe(false);
     expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
-    expect(runtime.runCli).toHaveBeenCalledTimes(1);
-    expect(runtime.acquireServer).not.toHaveBeenCalled();
+    expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
+    expect(runtime.runCli).not.toHaveBeenCalled();
+  });
+
+  it('retries Claude JSONL artifact discovery after the transcript appears', async () => {
+    const provider = getProductionProvider('claude');
+    let artifactVisible = false;
+    const lease = makeLease(async (method) => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-claude-artifact',
+          bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
+          sessionId: 'claude-session-artifact',
+          conversationRef: 'claude-session-artifact',
+        };
+      }
+      if (method === 'turn/start') {
+        return {
+          brokerTurnId: 'claude-turn-artifact',
+          sessionId: 'claude-session-artifact',
+          conversationRef: 'claude-session-artifact',
+        };
+      }
+      throw new Error(`Unexpected Claude artifact RPC: ${method}`);
+    });
+    const runtime = makeRuntime({
+      acquireServerImpl: async () => lease,
+      env: {
+        homedir: () => '/home/tester',
+        fullSnapshot: () => ({}),
+        get: () => undefined,
+      },
+      storage: {
+        readFileSync: () => '',
+        statSync: () => ({}) as ReturnType<ProviderRuntime['storage']['statSync']>,
+        existsSync: (path: string) => path === '/home/tester/.claude/projects',
+        readdirSync: (path: string) => {
+          if (path === '/home/tester/.claude/projects') {
+            return [fakeDirent('-workspace', 'directory')];
+          }
+          if (path === '/home/tester/.claude/projects/-workspace' && artifactVisible) {
+            return [fakeDirent('claude-session-artifact.jsonl', 'file')];
+          }
+          return [];
+        },
+      } as unknown as ProviderRuntime['storage'],
+    });
+
+    const eventsPromise = collectProviderEvents(provider.run(makeRequest('claude'), runtime));
+
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+    });
+
+    artifactVisible = true;
+    lease.emit({
+      method: brokerNotificationMethods.turnCompleted,
+      params: {
+        brokerSessionKey: 'broker-claude-artifact',
+        brokerTurnId: 'claude-turn-artifact',
+        sessionId: 'claude-session-artifact',
+        conversationRef: 'claude-session-artifact',
+        result: 'Claude broker result',
+        model: 'claude-sonnet-4',
+        durationMs: 12,
+        numTurns: 1,
+        costUsd: 0.01,
+        usage: null,
+        isError: false,
+        subtype: null,
+      },
+    });
+
+    const events = await eventsPromise;
+
+    expect(events).toContainEqual({
+      kind: 'artifact_handle',
+      handle: '/home/tester/.claude/projects/-workspace/claude-session-artifact.jsonl',
+      identity: {
+        kind: 'claude-jsonl',
+        conversationRef: 'claude-session-artifact',
+      },
+    });
   });
 
   it('emits aborted from the Codex leaf kernel when aborted mid-stream', async () => {
@@ -457,74 +506,4 @@ describe('provider runtime smoke', () => {
     expect(runtime.runCli).not.toHaveBeenCalled();
   });
 
-  it('routes Claude parse errors through adapterParseGuard middleware', async () => {
-    const provider = getProductionProvider('claude');
-    const runtime = makeRuntime({
-      runCliImpl: async () => ({
-        stdout: 'not-json',
-        stderr: 'parse failed',
-        code: 7,
-        aborted: false,
-      }),
-    });
-
-    const events = await collectProviderEvents(
-      provider.run(
-        makeRequest('claude', {
-          action: 'fork',
-          conversationRef: 'claude-parent-session',
-        }),
-        runtime,
-      ),
-    );
-
-    const terminal = expectSingleTerminalLast(events);
-
-    expect(events.filter(isContinuityEvent)).toHaveLength(0);
-    expect(terminal.terminal.outcome).toEqual({ kind: 'failed' });
-    expect(terminal.failureCause).toMatchObject({
-      type: 'session.adapter_unparseable',
-      body: {
-        provider: 'claude',
-        exitCode: 7,
-      },
-    });
-    expect(runtime.runCli).toHaveBeenCalledTimes(1);
-    expect(runtime.acquireServer).not.toHaveBeenCalled();
-  });
-
-  it('rejects Claude fork over established continuity before dispatch with the start-a-new-session terminal', async () => {
-    const provider = getProductionProvider('claude');
-    const runtime = makeRuntime({
-      persistedContinuity: {
-        bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
-      },
-    });
-
-    const events = await collectProviderEvents(
-      provider.run(
-        makeRequest('claude', {
-          action: 'fork',
-          conversationRef: 'claude-parent-session',
-        }),
-        runtime,
-      ),
-    );
-
-    const terminal = expectSingleTerminalLast(events);
-
-    expect(events.filter(isContinuityEvent)).toHaveLength(0);
-    expect(terminal.terminal.outcome).toEqual({ kind: 'failed' });
-    expect(terminal.failureCause).toEqual({
-      type: 'session.provider_failed',
-      body: {
-        provider: 'claude',
-        reason: 'request_failed',
-        message:
-          'This Claude session already established persistent continuity. Start a new Coral session before forking.',
-      },
-    });
-    expect(runtime.runCli).not.toHaveBeenCalled();
-    expect(runtime.acquireServer).not.toHaveBeenCalled();
-  });
 });

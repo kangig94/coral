@@ -1,4 +1,4 @@
-import type { JobForkRequest, JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../jobs/launch.js';
+import type { JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../jobs/launch.js';
 import type { LaunchCoordinatorPort } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
@@ -20,7 +20,6 @@ import type { TypedEventBus } from './event-bus.js';
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;
   resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision>;
-  forkBySessionId(input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 interface CoordinatorJobOps {

@@ -3,7 +3,7 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
-import type { LaunchDecision, JobForkRequest, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
+import type { LaunchDecision, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type {
@@ -216,16 +216,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
   }
 
-  async fork(providerName: string, input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
-    return this.runWithInvocationScope(ctx, async () => this.launchService.fork(providerName, input, ctx));
-  }
-
   async resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resumeBySessionId(input, ctx));
-  }
-
-  async forkBySessionId(input: JobForkRequest, ctx: InvocationContext): Promise<LaunchDecision> {
-    return this.runWithInvocationScope(ctx, async () => this.launchService.forkBySessionId(input, ctx));
   }
 
   async coralDispatch(

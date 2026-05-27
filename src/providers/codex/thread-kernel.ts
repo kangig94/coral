@@ -808,10 +808,6 @@ function finalizeTerminal(
 
 export const codexTurnKernel: Provider = (request, runtime) =>
   streamProviderEvents<ProviderEventBody>(async (emit) => {
-    if (request.action === 'fork') {
-      throw new Error('Codex app-server fork is unsupported until clone/fork RPC is available.');
-    }
-
     const lease = requireAppServerLease(runtime, 'codex');
     const state = createState(request, runtime);
     const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {

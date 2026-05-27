@@ -12,7 +12,7 @@ type FaultAuthorityRule = {
 const RULES: FaultAuthorityRule[] = [
   {
     builder: 'adapterOutputUnparseable',
-    allowed: new Set(['src/providers/bootstrap.ts', 'src/providers/middleware/adapter-parse-guard.ts']),
+    allowed: new Set(['src/providers/middleware/adapter-parse-guard.ts']),
   },
   {
     builder: 'providerSessionUnavailable',
@@ -20,7 +20,7 @@ const RULES: FaultAuthorityRule[] = [
   },
   {
     builder: 'providerRequestFailed',
-    allowed: new Set(['src/providers/claude/exec-provider.ts', 'src/providers/claude/session-kernel.ts']),
+    allowed: new Set(['src/providers/claude/provider.ts', 'src/providers/claude/session-kernel.ts']),
   },
 ];
 

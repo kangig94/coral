@@ -77,7 +77,7 @@ const sharedOpts = {
   platform: 'node',
   target: 'node22',
   format: 'cjs',
-  external: ['node:*', 'better-sqlite3'],
+  external: ['node:*', 'better-sqlite3', 'node-pty'],
   loader: { '.sql': 'text' },
   minify: true,
   banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
@@ -104,7 +104,7 @@ console.log('Built build/coral-cli.cjs');
 
 await esbuild.build({
   ...sharedOpts,
-  entryPoints: ['src/providers/claude-appserver/server.ts'],
+  entryPoints: ['src/providers/claude/appserver/server.ts'],
   outfile: 'build/coral-claude-appserver.cjs',
 });
 console.log('Built build/coral-claude-appserver.cjs');

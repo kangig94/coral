@@ -5,8 +5,7 @@ import type { ProviderRequest, EffortLevel } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { isRecord, readString } from '../../infra/json.js';
-import type { PermissionMode } from './control-protocol.js';
-import type { ClaudeBootstrapSignature } from '../claude-appserver/protocol.js';
+import { z } from 'zod';
 
 export const OUTPUT_STYLE_OVERRIDE =
   'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
@@ -17,6 +16,15 @@ export type PreparedClaudeRequest = {
   model?: string;
   effort: EffortLevel;
 };
+
+export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk']);
+export type PermissionMode = z.infer<typeof permissionModeSchema>;
+
+export interface ClaudeBootstrapSignature {
+  cwd: string;
+  systemPromptHash: string;
+  permissionMode: PermissionMode;
+}
 
 const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 const OPUS_RANK = ABSTRACT_MODEL_TIERS.opus;
@@ -42,11 +50,12 @@ export function readTurnConversationRef(value: unknown): string | undefined {
 }
 
 export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
+  const permissionMode = isRecord(value) ? permissionModeSchema.safeParse(value.permissionMode) : null;
   if (
     !isRecord(value) ||
     typeof value.cwd !== 'string' ||
     typeof value.systemPromptHash !== 'string' ||
-    typeof value.permissionMode !== 'string'
+    !permissionMode?.success
   ) {
     return undefined;
   }
@@ -54,7 +63,7 @@ export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature
   return {
     cwd: value.cwd,
     systemPromptHash: value.systemPromptHash,
-    permissionMode: value.permissionMode as PermissionMode,
+    permissionMode: permissionMode.data,
   };
 }
 

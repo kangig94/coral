@@ -12,9 +12,9 @@ import {
   stripBrokerSessionKey,
   toBootstrapSignature,
   withBrokerSessionKey,
-} from '#src/providers/claude-appserver/protocol.js';
+} from '#src/providers/claude/appserver/protocol.js';
 
-describe('claude-appserver protocol helpers', () => {
+describe('claude appserver protocol helpers', () => {
   it('parses inbound JSON-RPC requests and notifications', () => {
     expect(
       parseJsonRpcInboundLine(
@@ -82,6 +82,8 @@ describe('claude-appserver protocol helpers', () => {
         FOO: 'bar',
       },
       systemPrompt: 'Stay concise.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
     });
 
     expect(ensure).toEqual({
@@ -94,6 +96,8 @@ describe('claude-appserver protocol helpers', () => {
         FOO: 'bar',
       },
       systemPrompt: 'Stay concise.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
     });
     expect(stripBrokerSessionKey(ensure)).toEqual({
       cwd: '/workspace',
@@ -104,6 +108,8 @@ describe('claude-appserver protocol helpers', () => {
         FOO: 'bar',
       },
       systemPrompt: 'Stay concise.',
+      model: 'claude-sonnet-4-6',
+      effort: 'high',
     });
     expect(toBootstrapSignature(stripBrokerSessionKey(ensure))).toEqual({
       cwd: '/workspace',
@@ -125,6 +131,13 @@ describe('claude-appserver protocol helpers', () => {
         permissionMode: 'bypassPermissions',
       }),
     ).toThrow(ClaudeBrokerRpcError);
+    expect(() =>
+      requireSessionEnsureParams({
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:abc123',
+        permissionMode: 'invalid',
+      }),
+    ).toThrow(ClaudeBrokerRpcError);
 
     expect(
       requireSessionProbeParams({
@@ -142,15 +155,11 @@ describe('claude-appserver protocol helpers', () => {
         brokerSessionKey: 'broker-1',
         brokerTurnId: 'turn-1',
         prompt: 'Hello Claude',
-        model: 'claude-sonnet-4-6',
-        maxThinkingTokens: null,
       }),
     ).toEqual({
       brokerSessionKey: 'broker-1',
       brokerTurnId: 'turn-1',
       prompt: 'Hello Claude',
-      model: 'claude-sonnet-4-6',
-      maxThinkingTokens: null,
     });
     expect(() =>
       requireTurnStartParams({

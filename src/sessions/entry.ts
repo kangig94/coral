@@ -73,7 +73,7 @@ export type RetentionDiscardState = z.infer<typeof retentionDiscardStateSchema>;
 
 /** Identifier string for the session controller selecting per-session
  * provider continuity defaults. Distinct from the in-process
- * `SingleSessionController` class in `providers/claude-appserver/` — that
+ * `SingleSessionController` class in `providers/claude/appserver/` — that
  * one orchestrates the live turn lifecycle, this one just names the
  * profile. */
 export type SessionControllerId = string;

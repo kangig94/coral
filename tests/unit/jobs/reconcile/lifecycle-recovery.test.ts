@@ -210,7 +210,6 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
   return {
     start: vi.fn(async () => ({ status: 'running', job: 'started-job', session: 'started-session' })),
     resumeBySessionId: vi.fn(),
-    forkBySessionId: vi.fn(),
     executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* () {}),

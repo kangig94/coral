@@ -49,7 +49,6 @@ import {
 } from '../../kb/tool-contracts.js';
 import {
   sessionCreateSchema,
-  sessionForkRequestSchema,
   sessionMessageRequestSchema,
 } from '../../sessions/command-schemas.js';
 import type { RpcPorts } from './ports.js';
@@ -89,15 +88,6 @@ export const rpcCatalog = [
     authClass: 'authenticated',
     portKey: 'sessions',
     http: { method: 'POST', path: '/sessions/:sessionId/messages' },
-  },
-  {
-    name: 'sessions.fork',
-    kind: 'unary',
-    requestSchema: sessionForkRequestSchema,
-    responseKind: 'json',
-    authClass: 'authenticated',
-    portKey: 'sessions',
-    http: { method: 'POST', path: '/sessions/:sessionId/forks' },
   },
   {
     name: 'workflow.run',

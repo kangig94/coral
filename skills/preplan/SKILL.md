@@ -49,6 +49,51 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     to fill items that have no applicable content.
   </Structure>
   <Protocol>
+    ### 0. Q&A Gate
+
+    Before drafting, identify **gate axes** — decisions that satisfy all three criteria:
+
+    1. **Orthogonal**: branches are distinct trees, not points on a spectrum (cannot be expressed as Step 3 default/minimal/elegant alternatives)
+    2. **Implementation-divergent**: choosing differently means different code structure, not different parameter values
+    3. **Late-cost**: changing the choice after drafting requires rewriting, not refining
+
+    The orchestrator derives concrete axes from the problem itself — they are not predefined. **If every derived axis is decided, skip Step 0 silently and proceed to Step 1.**
+
+    "Decided" — resolvable from the user's input, prior conversation context, or codebase analysis. The gate evaluates whether the answer is known, not who knew it.
+
+    Q&A gate prepares questions **only for undecided axes** — decided axes are never re-asked. One question per derived axis. Do not split a single axis across multiple questions, do not inflate by including borderline axes that fail any of criteria 1–3. Do not use this gate to fill the 7 agreement items — those belong in Step 1 drafting.
+
+    **MANDATORY two-step output. Never call `AskUserQuestion` directly.**
+
+    #### 0a. Preview Table (always before AskUserQuestion)
+
+    Print a markdown table that enumerates every question, every option, and the option's description. The user audits framing scope here — they may add an option, narrow choices, or correct a misframing before the picker UI commits them.
+
+    Schema:
+
+    ```
+    ## Q&A Gate
+
+    Undecided axes: <axis-1>, <axis-2>
+
+    | # | Question | Option | Description |
+    |---|----------|--------|-------------|
+    | 1 | <Q1> | 1.1 | <desc> |
+    | 1 | <Q1> | 1.2 | <desc> |
+    | 2 | <Q2> | 2.1 | <desc> |
+    | 2 | <Q2> | 2.2 | <desc> |
+    ```
+
+    #### 0b. AskUserQuestion call
+
+    After printing the table, call `AskUserQuestion` with the same questions and options. Discrete branches use structured options; genuinely open dimensions allow a free-form option ("Other / specify").
+
+    #### 0c. Proceed
+
+    Treat Q&A answers as **confirmed framing** anchoring Step 1 drafting — gated axes are not auto-marked `[unconfirmed]`. Step 3 alternatives operate within the chosen tree by default.
+
+    **Elegant override**: if a structurally superior alternative for a gated axis is identified (typically by Step 2 pioneer; rarely by the orchestrator's own analysis), it MAY be surfaced in Step 3 as `[unconfirmed]` under the same elegant-tier bar — genuine architectural deficiency, not taste. Acknowledge the user's original choice and let them keep or switch.
+
     ### 1. Analyze and Draft
 
     - Derive `{topic}` from the user's input as English kebab-case
@@ -131,7 +176,9 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
   <Constraints>
     | DO | DON'T |
     |----|-------|
-    | Fill items autonomously before asking | Ask item-by-item like a form |
+    | Run Q&A gate when any axis fails the gate-criteria check | Skip gate and draft on shaky framing |
+    | Print Q&A preview table before AskUserQuestion | Call AskUserQuestion directly without preview table |
+    | Fill the 7 agreement items autonomously before asking | Ask item-by-item like a form |
     | Commit to the best choice per unconfirmed sub-item, offer minimal + elegant alternatives | Leave unconfirmed items blank or offer alternatives per section |
     | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
     | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
