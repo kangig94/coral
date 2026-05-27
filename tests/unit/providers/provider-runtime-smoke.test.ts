@@ -74,6 +74,8 @@ function makeRuntime(
     persistedContinuity?: ProviderRuntime['persistedContinuity'];
     runCliImpl?: ProviderCliRunner;
     acquireServerImpl?: () => Promise<ProviderServerLease>;
+    env?: ProviderRuntime['env'];
+    storage?: ProviderRuntime['storage'];
   } = {},
 ): SmokeRuntime {
   const controller = options.controller ?? new AbortController();
@@ -102,7 +104,8 @@ function makeRuntime(
     },
     runCli,
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+    storage: options.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    env: options.env,
     acquireServer,
     persistedContinuity: options.persistedContinuity,
     continuityBridge: {
@@ -166,6 +169,14 @@ function expectValidContinuitySnapshots(events: ProviderEventBody[]): ProviderCo
   }
 
   return continuityEvents;
+}
+
+function fakeDirent(name: string, kind: 'directory' | 'file') {
+  return {
+    name,
+    isDirectory: () => kind === 'directory',
+    isFile: () => kind === 'file',
+  };
 }
 
 describe('provider runtime smoke', () => {
@@ -354,6 +365,87 @@ describe('provider runtime smoke', () => {
     expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
     expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
     expect(runtime.runCli).not.toHaveBeenCalled();
+  });
+
+  it('retries Claude JSONL artifact discovery after the transcript appears', async () => {
+    const provider = getProductionProvider('claude');
+    let artifactVisible = false;
+    const lease = makeLease(async (method) => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-claude-artifact',
+          bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
+          sessionId: 'claude-session-artifact',
+          conversationRef: 'claude-session-artifact',
+        };
+      }
+      if (method === 'turn/start') {
+        return {
+          brokerTurnId: 'claude-turn-artifact',
+          sessionId: 'claude-session-artifact',
+          conversationRef: 'claude-session-artifact',
+        };
+      }
+      throw new Error(`Unexpected Claude artifact RPC: ${method}`);
+    });
+    const runtime = makeRuntime({
+      acquireServerImpl: async () => lease,
+      env: {
+        homedir: () => '/home/tester',
+        fullSnapshot: () => ({}),
+        get: () => undefined,
+      },
+      storage: {
+        readFileSync: () => '',
+        statSync: () => ({}) as ReturnType<ProviderRuntime['storage']['statSync']>,
+        existsSync: (path: string) => path === '/home/tester/.claude/projects',
+        readdirSync: (path: string) => {
+          if (path === '/home/tester/.claude/projects') {
+            return [fakeDirent('-workspace', 'directory')];
+          }
+          if (path === '/home/tester/.claude/projects/-workspace' && artifactVisible) {
+            return [fakeDirent('claude-session-artifact.jsonl', 'file')];
+          }
+          return [];
+        },
+      } as unknown as ProviderRuntime['storage'],
+    });
+
+    const eventsPromise = collectProviderEvents(provider.run(makeRequest('claude'), runtime));
+
+    await vi.waitFor(() => {
+      expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+    });
+
+    artifactVisible = true;
+    lease.emit({
+      method: brokerNotificationMethods.turnCompleted,
+      params: {
+        brokerSessionKey: 'broker-claude-artifact',
+        brokerTurnId: 'claude-turn-artifact',
+        sessionId: 'claude-session-artifact',
+        conversationRef: 'claude-session-artifact',
+        result: 'Claude broker result',
+        model: 'claude-sonnet-4',
+        durationMs: 12,
+        numTurns: 1,
+        costUsd: 0.01,
+        usage: null,
+        isError: false,
+        subtype: null,
+      },
+    });
+
+    const events = await eventsPromise;
+
+    expect(events).toContainEqual({
+      kind: 'artifact_handle',
+      handle: '/home/tester/.claude/projects/-workspace/claude-session-artifact.jsonl',
+      identity: {
+        kind: 'claude-jsonl',
+        conversationRef: 'claude-session-artifact',
+      },
+    });
   });
 
   it('emits aborted from the Codex leaf kernel when aborted mid-stream', async () => {

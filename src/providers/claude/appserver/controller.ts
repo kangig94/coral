@@ -39,6 +39,9 @@ import type {
 const DEFAULT_OUTPUT_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
+const CHILD_READY_TIMEOUT_MS = 2_000;
+const CHILD_READY_SETTLE_MS = 100;
+const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
 const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
 const POST_END_TURN_GRACE_MS = 1_500;
@@ -71,6 +74,7 @@ type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey
 type ChildBinding = {
   child: ClaudeBrokerChild;
   closed: Promise<ChildExit>;
+  ready: Promise<void>;
   dispose: () => void;
 };
 
@@ -312,6 +316,14 @@ export class SingleSessionController {
         conversationRef,
       };
       await this.attachNewChild(params, signature, conversationRef, this.resumeExistingConversation);
+      await this.waitForChildReady();
+      if (!this.childBinding) {
+        throw new ClaudeBrokerRpcError(
+          CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
+          'Claude child exited before the interactive prompt was ready.',
+          this.errorData(),
+        );
+      }
       this.initialized = true;
       this.emitSessionUpdated(conversationRef);
     }
@@ -325,6 +337,39 @@ export class SingleSessionController {
     conversationRef: string,
     resume: boolean,
   ): Promise<void> {
+    let resolveReady!: () => void;
+    let readyResolved = false;
+    let readyOutput = '';
+    let readyTimer: ReturnType<typeof setTimeout> | null = null;
+    let readySettleTimer: ReturnType<typeof setTimeout> | null = null;
+    const ready = new Promise<void>((resolve) => {
+      resolveReady = resolve;
+    });
+    const finishReady = (): void => {
+      if (readyResolved) {
+        return;
+      }
+      readyResolved = true;
+      if (readyTimer !== null) {
+        clearTimeout(readyTimer);
+        readyTimer = null;
+      }
+      if (readySettleTimer !== null) {
+        clearTimeout(readySettleTimer);
+        readySettleTimer = null;
+      }
+      resolveReady();
+    };
+    const scheduleReady = (): void => {
+      if (readyResolved || readySettleTimer !== null) {
+        return;
+      }
+      readySettleTimer = setTimeout(finishReady, CHILD_READY_SETTLE_MS);
+      readySettleTimer.unref?.();
+    };
+    readyTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
+    readyTimer.unref?.();
+
     const child = await this.spawnChild({
       cwd: signature.cwd,
       conversationRef,
@@ -337,6 +382,12 @@ export class SingleSessionController {
     });
 
     const offData = child.onData((chunk) => {
+      if (!readyResolved) {
+        readyOutput = appendRingBuffer(readyOutput, chunk, 4_096);
+        if (readyOutput.includes(BRACKETED_PASTE_ENABLED)) {
+          scheduleReady();
+        }
+      }
       this.captureOutput(chunk);
     });
     let resolveClosed!: (event: ChildExit) => void;
@@ -344,6 +395,7 @@ export class SingleSessionController {
       resolveClosed = resolve;
     });
     const offExit = child.onExit((event) => {
+      finishReady();
       resolveClosed(event);
       this.handleChildExit(event);
     });
@@ -351,11 +403,17 @@ export class SingleSessionController {
     this.childBinding = {
       child,
       closed,
+      ready,
       dispose: () => {
+        finishReady();
         offData();
         offExit();
       },
     };
+  }
+
+  private async waitForChildReady(): Promise<void> {
+    await this.childBinding?.ready;
   }
 
   private waitForChildExit(closed: Promise<ChildExit>, timeoutMs: number): Promise<boolean> {

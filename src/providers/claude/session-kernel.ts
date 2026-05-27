@@ -204,13 +204,13 @@ function emitClaudeArtifactHandleOnce(
   if (state.artifactHandleEmissionAttempted || state.conversationRef === undefined) {
     return;
   }
-  state.artifactHandleEmissionAttempted = true;
 
   const result = locateClaudeJsonlArtifactFromRuntime(state.conversationRef, runtime);
   if (!result) {
     return;
   }
   if (result.kind === 'match') {
+    state.artifactHandleEmissionAttempted = true;
     emit({
       kind: 'artifact_handle',
       handle: result.artifact.handle,
@@ -218,7 +218,11 @@ function emitClaudeArtifactHandleOnce(
     });
     return;
   }
+  if (result.kind === 'no_match') {
+    return;
+  }
 
+  state.artifactHandleEmissionAttempted = true;
   emit({ kind: 'progress', message: result.diagnostic });
 }
 
