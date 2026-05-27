@@ -62,7 +62,7 @@ The runtime is anchored by two primary entry points:
 | `src/coordinator/bootstrap.ts` | `build/coral-backend.cjs` | Backend daemon |
 | `src/cli/bootstrap.ts` | `build/coral-cli.cjs` | CLI entrypoint |
 
-The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude appserver helper runtime.
+The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude PTY broker helper runtime. The filename is retained for bridge compatibility; the helper starts the interactive Claude CLI through `node-pty` and observes Claude's JSONL transcript instead of using `claude -p`.
 
 ## Build Script Responsibilities
 
@@ -76,7 +76,7 @@ the current `src/` tree.
 1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
-4. Bundles the backend, CLI, and Claude appserver helper to `build/`.
+4. Bundles the backend, CLI, and Claude PTY broker helper to `build/`.
 5. Rewrites `build/manifest.json` atomically with `{ bundleHash, flavor }` for change detection and flavor identity.
 
 When `--release` is passed, it additionally copies all artifacts from `build/` to `bridge/`.
@@ -91,7 +91,7 @@ When `--release` is passed, it additionally copies all artifacts from `build/` t
 | `platform` | `node` | Node.js runtime target |
 | `target` | `node22` | Matches the supported runtime floor |
 | `format` | `cjs` | Bundles are committed as `.cjs` |
-| `external` | `['node:*']` | Keep Node built-ins external |
+| `external` | `['node:*', 'better-sqlite3', 'node-pty']` | Keep Node built-ins and native modules external |
 | `minify` | `true` | Smaller committed bundles |
 | `banner` | `var __PLUGIN_ROOT__=...` | Runtime plugin-root discovery |
 | `define.__VERSION__` | `package.json` version | Shared build-time version injection |
@@ -110,7 +110,7 @@ Build flavor is intentionally not injected through an esbuild define. Hooks are 
 
 ## Dependencies
 
-The build and runtime no longer depend on `@modelcontextprotocol/sdk`. Current package-managed runtime concerns are ordinary Node/TypeScript concerns: `zod` for schema validation, `esbuild` for bundling, and the Coral runtime packages declared in `package.json`.
+The build and runtime no longer depend on `@modelcontextprotocol/sdk`. Current package-managed runtime concerns are ordinary Node/TypeScript concerns: `zod` for schema validation, `esbuild` for bundling, native runtime packages such as `node-pty`, and the Coral runtime packages declared in `package.json`.
 
 ## Testing
 

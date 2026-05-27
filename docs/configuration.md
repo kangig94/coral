@@ -162,6 +162,7 @@ Live scratch artifacts:
 | `graphology` | Graph data structures for KB community analysis |
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
+| `node-pty` | Interactive Claude CLI broker transport |
 | `yaml` | YAML parsing |
 | `zod-to-json-schema` | Schema export helpers |
 
@@ -170,7 +171,7 @@ Live scratch artifacts:
 | Tool | Purpose |
 | --- | --- |
 | Codex CLI | Codex execution |
-| Claude CLI | Claude execution |
+| Claude CLI | Claude execution through the PTY broker helper |
 | Node.js 22+ | Runtime |
 | `cmake` | Native KB addon fallback builds |
 
@@ -181,7 +182,7 @@ Live scratch artifacts:
 hooks/hooks.json                               -> hook registration
 bridge/coral-backend.cjs                       -> backend daemon bundle
 bridge/coral-cli.cjs                           -> CLI bundle
-bridge/coral-claude-appserver.cjs              -> Claude appserver helper bundle
+bridge/coral-claude-appserver.cjs              -> Claude PTY broker helper bundle
 bridge/manifest.json                           -> backend bundle hash + build flavor
 
 ~/.coral/run*/coordinator.json                 -> active coordinator discovery record

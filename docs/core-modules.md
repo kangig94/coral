@@ -10,7 +10,7 @@ Coral's product identity is a coding-assistant plugin for Claude Code and Codex.
 | --- | --- | --- |
 | Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes. |
 | CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
-| Claude appserver helper | `bridge/coral-claude-appserver.cjs` | Runtime for the Claude appserver-hosted provider lane. |
+| Claude PTY broker helper | `bridge/coral-claude-appserver.cjs` | Provider helper that runs interactive Claude CLI through `node-pty`, accepts broker RPC, and streams completion from Claude JSONL transcripts. |
 
 ## CLI and Client
 
@@ -45,7 +45,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ## Provider Adapters
 
-Provider adapters translate between the domain contract and external CLIs (Codex, Claude, the Claude appserver helper). Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
+Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses the PTY broker helper around the interactive Claude CLI. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
 
 ## Expansion
 

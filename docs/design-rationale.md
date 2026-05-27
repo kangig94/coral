@@ -58,25 +58,27 @@ The only price: CLI renderers dereference `causeRef` at read time. This is modes
 
 `JobLifecycleFault` is the one remaining typed ADT — reserved for wrapper-local failures with no originating domain event (`wrapper_lost`, `wrapper_crashed`, `ghost_launch`).
 
-## 3. Provider Streams over Three Paths
+## 3. Provider Streams over Provider Servers
 
-The pre-rewrite shape had three competing implementations of "provider call": exec adapter, session driver, and app-server runner. Each provider call has three orthogonal concerns:
+The pre-rewrite shape had competing implementations of "provider call": direct exec adapters, session drivers, and app-server runners. Current provider calls are composed from three orthogonal concerns:
 
 - pure execution
 - session continuity tracking
-- app-server lifecycle
+- provider-server lifecycle
 
 A stream + middleware lets each concern be named once and composed:
 
 ```ts
-const claudeAppServerProvider = compose(
-  sessionContinuity(claudeBrokerContinuity),
+const claudeSessionProvider = compose(
+  sessionContinuity('claude', claudeBrokerContinuity),
   appServerSession(claudeAppServerContract),
-  claudeBrokerTurnKernel,
+  claudeSessionKernel,
 );
 ```
 
-For app-server providers, `sessionContinuity` is the **outermost** middleware so that a single continuity authority observes the full downstream stream — including transport-close events from `appServerSession` via `runtime.continuityBridge`. `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome.
+For provider-server-backed providers, `sessionContinuity` is the **outermost** middleware so that a single continuity authority observes the full downstream stream — including transport-close events from `appServerSession` via `runtime.continuityBridge`. `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome.
+
+Claude is one of these provider-server-backed providers. The broker helper is intentionally PTY-based: it starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. This keeps Coral aligned with terminal Claude behavior as it diverges from `claude -p`.
 
 Adding a new provider is declaring its middleware stack. Provider implementations stay pure: they emit bodies only. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the Journal. Providers never touch envelopes, seqs, or the Journal directly.
 

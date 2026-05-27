@@ -56,8 +56,10 @@ bridge/coral-backend.cjs
       │
       ├── Codex CLI
       ├── Claude CLI
-      └── Claude appserver helper (`bridge/coral-claude-appserver.cjs`, when needed)
+      └── Claude PTY broker helper (`bridge/coral-claude-appserver.cjs`, when needed)
 ```
+
+The Claude helper keeps its historical bridge filename, but the runtime path is PTY-based: Coral launches interactive `claude` through `node-pty`, writes turns to stdin after the terminal is ready, and derives completion/progress from Claude's JSONL transcript. It does not use `claude -p` for provider turns.
 
 ## Backend HTTP Surface
 
