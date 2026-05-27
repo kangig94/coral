@@ -19,7 +19,7 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
     ## Phase 1 — Discover Agents
 
     1. Read the project's `.claude/rules/agents.md` for the Quick Reference table (agent, tier, purpose)
-       and the Consultation Matrix (task category → agent mapping)
+       and the Consultation Matrix (task category → agent mapping), and add coral:architect to the list of agents with tier 1 by default.
     2. If agents.md not found, read `.claude/agents/*.md` — look for tier in description
        or Situation table. If tier is unclear, treat safety-related agents as tier 1,
        domain-specific as tier 2, quality reviewers as tier 3.
