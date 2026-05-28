@@ -12,7 +12,7 @@ import {
   writeCurateState,
 } from '#src/kb/curate/state/index.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -23,13 +23,9 @@ import { curateDb } from '../../../src/kb/curate/db-access.js';
 // an operator-visible warning. Reset path: applyClearCurateRetryState resets
 // both lanes so an explicit reset can re-enable scheduling.
 
-const noopSpawnCli: SpawnCliFn = () =>
-  Promise.resolve({
-    stdout: '[]',
-    stderr: '',
-    code: 0,
-    aborted: false,
-  });
+const noopCurateAssistant: CurateAssistantPort = {
+  complete: async () => '[]',
+};
 
 describe('curate scheduler failure cap (S2)', () => {
   let tempDir: string;
@@ -45,11 +41,11 @@ describe('curate scheduler failure cap (S2)', () => {
       runtimeDir: tempDir,
       db: createKbTestDb(tempDir),
       runtime: gitSyncRuntime,
-      spawnCli: noopSpawnCli,
+      curateAssistant: noopCurateAssistant,
     });
     scheduler = createCurateScheduler({
       kb: runtime,
-      spawnCli: noopSpawnCli,
+      curateAssistant: noopCurateAssistant,
       processPort: gitSyncRuntime.process,
       storagePort: gitSyncRuntime.storage,
       envPort: gitSyncRuntime.env,

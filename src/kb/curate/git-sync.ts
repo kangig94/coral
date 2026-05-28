@@ -1,9 +1,9 @@
 import { join } from 'node:path';
 import type { TimerHandle } from '../../infra/port-types.js';
 import type { KbRuntime } from '../contract.js';
-import { runCurateClaude } from './operations.js';
+import { runCurateAssistant } from './operations.js';
 import type { GitSyncRuntimePicks } from './pipeline-types.js';
-import type { SpawnCliFn } from './spawn-cli.js';
+import type { CurateAssistantPort } from './assistant.js';
 
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
@@ -38,13 +38,13 @@ export type GitSyncController = {
 
 export function createGitSyncController({
   kb,
-  spawnCli,
+  curateAssistant,
   processPort,
   storagePort,
   envPort,
 }: {
   kb: KbRuntime;
-  spawnCli: SpawnCliFn;
+  curateAssistant: CurateAssistantPort;
 } & GitSyncRuntimePicks): GitSyncController {
   let cachedIsGitRepo: boolean | null = null;
   let deferredCommitTimer: TimerHandle | null = null;
@@ -287,13 +287,10 @@ export function createGitSyncController({
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        await runCurateClaude(
-          kb,
-          spawnCli,
-          prompt,
-          ['--permission-mode', 'bypassPermissions', '--model', 'sonnet'],
-          signal,
-        );
+        await runCurateAssistant(curateAssistant, prompt, 'git-conflict-resolution', signal, {
+          permissionMode: 'bypassPermissions',
+          model: 'sonnet',
+        });
       } catch {
         return false;
       }

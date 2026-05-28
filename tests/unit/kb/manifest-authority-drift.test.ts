@@ -26,7 +26,7 @@ import {
   repairIncidentLocus,
   type DetectedIncident,
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 
@@ -162,13 +162,10 @@ function assertAuthorityMatchesDisk(kb: KbRuntime): void {
   expect(snapshot.metadataManifestHash).toBe(computeCorpusSurfaceManifestHash(kb, 'metadata'));
 }
 
-function discoverySpawn(stdout: string): SpawnCliFn {
-  return async () => ({
-    stdout,
-    stderr: '',
-    code: 0,
-    aborted: false,
-  });
+function discoverySpawn(stdout: string): CurateAssistantPort {
+  return {
+    complete: async () => stdout,
+  };
 }
 
 afterEach(() => {
@@ -513,7 +510,7 @@ describe('manifest authority drift checks', () => {
         const runtime = createRealRuntime('prod');
         const gitSync = createGitSyncController({
           kb: fixture.kb,
-          spawnCli: discoverySpawn(''),
+          curateAssistant: discoverySpawn(''),
           processPort: runtime.process,
           storagePort: runtime.storage,
           envPort: runtime.env,

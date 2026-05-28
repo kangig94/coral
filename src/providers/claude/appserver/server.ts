@@ -12,6 +12,7 @@ import {
   buildJsonRpcSuccess,
   isAutoAllowPermissionMode,
   parseJsonRpcInboundLine,
+  requireSessionCloseParams,
   requireSessionEnsureParams,
   requireSessionProbeParams,
   requireTurnInterruptParams,
@@ -84,6 +85,9 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
           return;
         case 'session/probe':
           send(buildJsonRpcSuccess(message.id, await session.sessionProbe(requireSessionProbeParams(message.params))));
+          return;
+        case 'session/close':
+          send(buildJsonRpcSuccess(message.id, await session.sessionClose(requireSessionCloseParams(message.params))));
           return;
         case 'turn/start':
           send(buildJsonRpcSuccess(message.id, await session.turnStart(requireTurnStartParams(message.params))));

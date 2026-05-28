@@ -2,7 +2,7 @@ import type { Database } from '../store/db.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
 import type { IdPort, ProcessPort } from '../runtime/ports.js';
-import type { SpawnCliFn } from './curate/spawn-cli.js';
+import type { CurateAssistantPort } from './curate/assistant.js';
 import type {
   Backed,
   EmbeddingService,
@@ -84,7 +84,7 @@ export interface CreateKbRuntimeOptions {
   ids: Pick<IdPort, 'uuid'>;
   envPort: EnvPort;
   storage: StoragePort;
-  spawnCli: SpawnCliFn;
+  curateAssistant: CurateAssistantPort;
   processPort: ProcessPort;
   /** Defaults to {@link DEFAULT_MUTATION_LOCK_TIMEOUT_MS}; override for slow paths. */
   mutationLockTimeoutMs?: number;
@@ -99,7 +99,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly storagePort: StoragePort;
   readonly corpusStorage: CorpusStorage;
-  readonly spawnCli: SpawnCliFn;
+  readonly curateAssistant: CurateAssistantPort;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
   readonly capabilityRegistry: KbRuntime['capabilityRegistry'];
@@ -138,7 +138,7 @@ class KbRuntimeImpl implements KbRuntime {
     ids,
     envPort,
     storage,
-    spawnCli,
+    curateAssistant,
     processPort,
     mutationLockTimeoutMs,
     engineArtifactRegistry,
@@ -150,7 +150,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.ids = ids;
     this.storagePort = storage;
     this.corpusStorage = createCorpusStorage(storage);
-    this.spawnCli = spawnCli;
+    this.curateAssistant = curateAssistant;
     this.processPort = processPort;
     this.envPort = envPort;
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);

@@ -3,6 +3,8 @@ import type { EffortLevel } from '../../contract.js';
 import type { PermissionMode } from '../request-prep.js';
 import type {
   ClaudeBrokerNotification,
+  SessionCloseParams,
+  SessionCloseResult,
   SessionEnsureParams,
   SessionEnsureResult,
   SessionProbeParams,
@@ -66,6 +68,7 @@ export interface ClaudeBrokerSession {
   readonly closed: Promise<Error | void>;
   sessionEnsure(params: SessionEnsureParams): Promise<SessionEnsureResult>;
   sessionProbe(params: SessionProbeParams): Promise<SessionProbeResult>;
+  sessionClose(params: SessionCloseParams): Promise<SessionCloseResult>;
   turnStart(params: TurnStartParams): Promise<TurnStartResult>;
   turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResult>;
   shutdown(): Promise<void>;

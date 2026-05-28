@@ -23,7 +23,7 @@ import { buildMetadataTargets, validateAssignments } from '#src/kb/curate/classi
 import { parseClassificationResponse } from '#src/kb/curate/classification/parse.js';
 import { buildDiscoveryPrompt, parseDiscoveryResponse, validateDiscoveryProposals } from '#src/kb/curate/discovery.js';
 import type { ClassificationAssignment, CurateClaimedEntry, DiscoveryProposal } from '#src/kb/curate/pipeline-types.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
@@ -181,12 +181,19 @@ function buildClaimedNote({
   };
 }
 
-const noopSpawnCli: SpawnCliFn = async () => ({
-  stdout: '[]',
-  stderr: '',
-  code: 0,
-  aborted: false,
-});
+const noopCurateAssistant: CurateAssistantPort = {
+  complete: async () => '[]',
+};
+
+function assistantFromText(stdout: string): CurateAssistantPort {
+  return {
+    complete: async () => stdout,
+  };
+}
+
+function assistantFromComplete(complete: CurateAssistantPort['complete']): CurateAssistantPort {
+  return { complete };
+}
 
 let tempDir: string;
 let runtime: KbRuntime;
@@ -194,10 +201,10 @@ let scheduler: CurateHandle;
 let internals: CurateTestHandle;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
-function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli, scheduleDebounceMs = 0): void {
+function useScheduler(curateAssistant: CurateAssistantPort = noopCurateAssistant, scheduleDebounceMs = 0): void {
   scheduler = createCurateScheduler({
     kb: runtime,
-    spawnCli,
+    curateAssistant,
     processPort: gitSyncRuntime.process,
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
@@ -205,7 +212,7 @@ function useScheduler(spawnCli: SpawnCliFn = noopSpawnCli, scheduleDebounceMs = 
   });
   internals = createCurateTestHandle({
     kb: runtime,
-    spawnCli,
+    curateAssistant,
     schedule: () => scheduler.schedule(),
   });
 }
@@ -249,7 +256,7 @@ beforeEach(() => {
     runtimeDir: tempDir,
     db,
     runtime: gitSyncRuntime,
-    spawnCli: noopSpawnCli,
+    curateAssistant: noopCurateAssistant,
   }));
   writableDbByRuntime.set(runtime, db);
   bindOramaFtsForTest(runtime);
@@ -1655,23 +1662,22 @@ describe('curate', () => {
           pendingDiscoveries,
         }),
       );
-      useScheduler(async () => ({
-        stdout: JSON.stringify([
-          {
-            slug: 'single-source-of-truth',
-            statement: 'Keep one canonical representation for each fact.',
-            notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-09'],
-          },
-          {
-            slug: 'verify-at-boundaries',
-            statement: 'Validate inputs at system boundaries before using them.',
-            notes: ['coral-discovery-07', 'coral-discovery-08', 'coral-discovery-10'],
-          },
-        ]),
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(
+        assistantFromText(
+          JSON.stringify([
+            {
+              slug: 'single-source-of-truth',
+              statement: 'Keep one canonical representation for each fact.',
+              notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-09'],
+            },
+            {
+              slug: 'verify-at-boundaries',
+              statement: 'Validate inputs at system boundaries before using them.',
+              notes: ['coral-discovery-07', 'coral-discovery-08', 'coral-discovery-10'],
+            },
+          ]),
+        ),
+      );
 
       const lockSpy = vi.spyOn(runtime, 'withMutationLock');
       const readSpy = vi.spyOn(curateState, 'readCurateState');
@@ -1718,19 +1724,16 @@ describe('curate', () => {
           discoveryHighSeq: 4,
         }),
       );
-      const spawn = vi.fn<SpawnCliFn>(async () => ({
-        stdout: JSON.stringify([
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async () =>
+        JSON.stringify([
           {
             slug: 'replayed-principle',
             statement: 'Replay rewound note ranges when discovery falls behind.',
             notes: ['coral-replay-05', 'coral-replay-06', 'coral-replay-07'],
           },
         ]),
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
-      useScheduler(spawn);
+      );
+      useScheduler(assistantFromComplete(spawn));
 
       await internals.runPrincipleDiscovery(cursor('coral-replay-10', 10));
 
@@ -1787,18 +1790,17 @@ describe('curate', () => {
           processedThrough: cursor('coral-discovery-50', 50),
         }),
       );
-      useScheduler(async () => ({
-        stdout: JSON.stringify([
-          {
-            slug: 'single-source-of-truth',
-            statement: 'Keep one canonical representation for each fact.',
-            notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-07'],
-          },
-        ]),
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(
+        assistantFromText(
+          JSON.stringify([
+            {
+              slug: 'single-source-of-truth',
+              statement: 'Keep one canonical representation for each fact.',
+              notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-07'],
+            },
+          ]),
+        ),
+      );
 
       await internals.runPrincipleDiscovery(cursor('coral-discovery-50', 50));
 
@@ -1870,19 +1872,18 @@ describe('curate', () => {
           ],
         }),
       );
-      useScheduler(async () => ({
-        stdout: JSON.stringify([
-          {
-            slug: 'payload-attachment-to-owner',
-            statement: 'Attach payloads to exactly one owner.',
-            notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-07'],
-            absorbs: ['single-owner'],
-          },
-        ]),
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(
+        assistantFromText(
+          JSON.stringify([
+            {
+              slug: 'payload-attachment-to-owner',
+              statement: 'Attach payloads to exactly one owner.',
+              notes: ['coral-discovery-05', 'coral-discovery-06', 'coral-discovery-07'],
+              absorbs: ['single-owner'],
+            },
+          ]),
+        ),
+      );
 
       await internals.runPrincipleDiscovery(cursor('coral-discovery-50', 50));
 
@@ -1926,22 +1927,19 @@ describe('curate', () => {
 
       const spawnStarted = createDeferred<void>();
       const releaseSpawn = createDeferred<void>();
-      useScheduler(async () => {
-        spawnStarted.resolve();
-        await releaseSpawn.promise;
-        return {
-          stdout: JSON.stringify([
+      useScheduler(
+        assistantFromComplete(async () => {
+          spawnStarted.resolve();
+          await releaseSpawn.promise;
+          return JSON.stringify([
             {
               slug: 'stale-batch-principle',
               statement: 'Do not persist pre-await curate snapshots.',
               notes: ['coral-stale-05', 'coral-stale-06', 'coral-stale-07'],
             },
-          ]),
-          stderr: '',
-          code: 0,
-          aborted: false,
-        };
-      });
+          ]);
+        }),
+      );
 
       const discoveryPromise = internals.runPrincipleDiscovery(cursor('coral-stale-50', 50));
       await spawnStarted.promise;
@@ -2007,12 +2005,12 @@ describe('curate', () => {
         runtimeDir: tempDir,
         db: secondDb,
         runtime: gitSyncRuntime,
-        spawnCli: noopSpawnCli,
+        curateAssistant: noopCurateAssistant,
       });
       writableDbByRuntime.set(secondRuntime, secondDb);
       const secondScheduler = createCurateScheduler({
         kb: secondRuntime,
-        spawnCli: noopSpawnCli,
+        curateAssistant: noopCurateAssistant,
         processPort: gitSyncRuntime.process,
         storagePort: gitSyncRuntime.storage,
         envPort: gitSyncRuntime.env,
@@ -2026,12 +2024,7 @@ describe('curate', () => {
 
     it('runs successfully in a non-git KB root without rewriting tags when classification returns no assignments', async () => {
       const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
-      const spawn = vi.fn<SpawnCliFn>(async () => ({
-        stdout: '[]',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async () => '[]');
 
       const specs: Array<{ slug: string; seq: number; tags: string[] }> = [
         { slug: 'coral-pattern-note', seq: 1, tags: ['coral', 'isolated-pattern'] },
@@ -2069,7 +2062,7 @@ describe('curate', () => {
         ...readCurateState(curateDb(runtime)),
         initialized: true,
       });
-      useScheduler(spawn);
+      useScheduler(assistantFromComplete(spawn));
 
       await scheduler.start();
       await settleCurateRuntime(scheduler);
@@ -2100,21 +2093,16 @@ describe('curate', () => {
       const notes: Record<string, ReturnType<typeof createIndexNote>> = {};
       const spawnStarted = createDeferred<void>();
       const spawnAborted = createDeferred<void>();
-      const spawn = vi.fn<SpawnCliFn>(async ({ signal }) => {
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async ({ signal }) => {
         if (signal === undefined) {
           throw new Error('Expected curate stop signal.');
         }
 
         spawnStarted.resolve();
-        return new Promise((resolve) => {
+        return new Promise<string>((_resolve, reject) => {
           const finish = () => {
             spawnAborted.resolve();
-            resolve({
-              stdout: '',
-              stderr: '',
-              code: null,
-              aborted: true,
-            });
+            reject(new Error('Claude invocation aborted during curate.'));
           };
 
           if (signal.aborted) {
@@ -2149,7 +2137,7 @@ describe('curate', () => {
           initialized: true,
         }),
       );
-      useScheduler(spawn);
+      useScheduler(assistantFromComplete(spawn));
 
       await scheduler.start();
       vi.advanceTimersByTime(0);
@@ -2180,12 +2168,7 @@ describe('curate', () => {
     });
 
     it('throws a CurateJsonParseError when classification returns malformed JSON', async () => {
-      useScheduler(async () => ({
-        stdout: '[',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(assistantFromText('['));
       const claim = {
         entries: [
           buildClaimedNote({
@@ -2238,12 +2221,7 @@ describe('curate', () => {
           processedThrough: cursor('coral-discovery-50', 50),
         }),
       );
-      useScheduler(async () => ({
-        stdout: '[',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(assistantFromText('['));
 
       await expect(internals.runPrincipleDiscovery(cursor('coral-discovery-50', 50))).rejects.toMatchObject({
         name: 'CurateJsonParseError',
@@ -2278,12 +2256,7 @@ describe('curate', () => {
           initialized: true,
         }),
       );
-      useScheduler(async () => ({
-        stdout: '[',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(assistantFromText('['));
 
       await scheduler.start();
       for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -2426,13 +2399,8 @@ describe('curate', () => {
         }),
       );
 
-      const spawn = vi.fn<SpawnCliFn>(async () => ({
-        stdout: 'Shared themes across the community.',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
-      useScheduler(spawn);
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Shared themes across the community.');
+      useScheduler(assistantFromComplete(spawn));
 
       const lockSpy = vi.spyOn(runtime, 'withMutationLock');
       const indexSyncSuccessSpy = vi.spyOn(runtime, 'recordIndexSyncSuccess');
@@ -2507,9 +2475,11 @@ describe('curate', () => {
         }),
       );
 
-      useScheduler(async () => {
-        throw new Error('summary failed');
-      });
+      useScheduler(
+        assistantFromComplete(async () => {
+          throw new Error('summary failed');
+        }),
+      );
 
       await expect(internals.runCommunitySubphase()).rejects.toThrow('summary failed');
 
@@ -2523,12 +2493,7 @@ describe('curate', () => {
       expect(stateAfterFailure.communitySummaryInputFingerprints).toBeUndefined();
       expect(filesAfterFailure).toEqual([]);
 
-      useScheduler(async () => ({
-        stdout: 'Recovered community summary.',
-        stderr: '',
-        code: 0,
-        aborted: false,
-      }));
+      useScheduler(assistantFromText('Recovered community summary.'));
 
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
@@ -2585,20 +2550,15 @@ describe('curate', () => {
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
       let attempts = 0;
-      const spawn = vi.fn<SpawnCliFn>(async () => {
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async () => {
         attempts += 1;
         if (attempts === 1) {
           throw new Error('summary failed');
         }
 
-        return {
-          stdout: 'Recovered community summary.',
-          stderr: '',
-          code: 0,
-          aborted: false,
-        };
+        return 'Recovered community summary.';
       });
-      useScheduler(spawn, 100);
+      useScheduler(assistantFromComplete(spawn), 100);
 
       await scheduler.start();
       expect(internals.calculateCommunityBatchBackoffTicks(7)).toBe(64);

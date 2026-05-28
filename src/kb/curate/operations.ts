@@ -9,7 +9,7 @@ import {
   type CurateCursor,
   type CurateState,
 } from './state/index.js';
-import type { SpawnCliFn } from './spawn-cli.js';
+import type { CurateAssistantPort, CurateAssistantPurpose } from './assistant.js';
 import { curateDb } from './db-access.js';
 
 export const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
@@ -62,32 +62,18 @@ export async function clearCurateRetryState(kb: KbRuntime): Promise<void> {
   });
 }
 
-export async function runCurateClaude(
-  kb: KbRuntime,
-  spawnCli: SpawnCliFn,
+export async function runCurateAssistant(
+  curateAssistant: CurateAssistantPort,
   prompt: string,
-  extraArgs?: string[],
+  purpose: CurateAssistantPurpose,
   signal?: AbortSignal,
+  options: { model?: string; permissionMode?: 'default' | 'bypassPermissions' } = {},
 ): Promise<string> {
-  const result = await spawnCli({
-    provider: 'claude',
-    command: 'claude',
-    args: ['-p', '--no-session-persistence', ...(extraArgs ?? [])],
+  return curateAssistant.complete({
     prompt,
-    cwd: kb.markdownRoot,
-    pool: 'curate',
+    purpose,
     signal,
+    ...(options.model === undefined ? {} : { model: options.model }),
+    ...(options.permissionMode === undefined ? {} : { permissionMode: options.permissionMode }),
   });
-
-  if (result.aborted) {
-    throw new Error('Claude invocation aborted during curate.');
-  }
-  if (result.code !== 0) {
-    const stderr = result.stderr.trim();
-    throw new Error(
-      stderr ? `Claude exited with code ${result.code}: ${stderr}` : `Claude exited with code ${result.code}`,
-    );
-  }
-
-  return result.stdout;
 }

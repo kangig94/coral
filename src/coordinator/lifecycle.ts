@@ -39,6 +39,7 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
+import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -367,6 +368,7 @@ async function runLifecycleStartup({
     storeServicesRef,
     createStoreServicesFromDbFn,
     launchCoordinator,
+    providerHostManager,
     providerRegistry,
     server,
     getRecoveryService,
@@ -557,7 +559,11 @@ async function runLifecycleStartup({
           markdownRoot: runtime.paths.coral.corpus.kbRoot,
           runtimeDir: kbRuntimeDir(flavor),
         },
-        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
+        curateAssistant: createClaudeCurateAssistant({
+          runtime,
+          launchCoordinator,
+          providerHostManager,
+        }),
         processPort: runtime.process,
         storagePort: runtime.storage,
         envPort: runtime.env,

@@ -22,7 +22,7 @@ import {
 } from './state/index.js';
 import { initializeCurateStateIfNeeded } from './state/bootstrap.js';
 import type { GitSyncRuntimePicks } from './pipeline-types.js';
-import type { SpawnCliFn } from './spawn-cli.js';
+import type { CurateAssistantPort } from './assistant.js';
 
 import { isUsageBudgetExhausted } from './usage-budget.js';
 import { curateDb } from './db-access.js';
@@ -97,14 +97,14 @@ function warnPermanentlyDisabledLanes(lanes: PermanentlyDisabledLanes): void {
 
 export function createCurateScheduler({
   kb,
-  spawnCli,
+  curateAssistant,
   processPort,
   storagePort,
   envPort,
   scheduleDebounceMs = CURATE_SCHEDULE_DEBOUNCE_MS,
 }: {
   kb: KbRuntime;
-  spawnCli: SpawnCliFn;
+  curateAssistant: CurateAssistantPort;
   processPort: GitSyncRuntimePicks['processPort'];
   storagePort: GitSyncRuntimePicks['storagePort'];
   envPort: GitSyncRuntimePicks['envPort'];
@@ -121,7 +121,7 @@ export function createCurateScheduler({
 
   const gitSync = createGitSyncController({
     kb,
-    spawnCli,
+    curateAssistant,
     processPort,
     storagePort,
     envPort,
@@ -175,7 +175,7 @@ export function createCurateScheduler({
     }
 
     try {
-      const wroteCommunityFiles = await runCommunitySubphase(kb, spawnCli, {
+      const wroteCommunityFiles = await runCommunitySubphase(kb, curateAssistant, {
         signal,
         shouldStop: () => stopped,
         onFreshnessMismatch: schedule,
@@ -233,7 +233,7 @@ export function createCurateScheduler({
 
       try {
         const claimIndex = kb.readIndexOrEmpty();
-        const validatedAssignments = await runClassificationBatches(kb, spawnCli, claim, claimIndex, signal);
+        const validatedAssignments = await runClassificationBatches(kb, curateAssistant, claim, claimIndex, signal);
         const metadataTargets = buildMetadataTargets(validatedAssignments, claimIndex, claim.entries);
         await commitMetadataTargets(kb, metadataTargets, {
           graphDelta: buildEntityConsolidationDelta(validatedAssignments),
@@ -263,7 +263,7 @@ export function createCurateScheduler({
     const processedThrough = readCurateState(curateDb(kb)).processedThrough;
     if (!stopped && !signal.aborted && processedThrough !== null) {
       try {
-        await runPrincipleDiscovery(kb, spawnCli, processedThrough, { signal, schedule });
+        await runPrincipleDiscovery(kb, curateAssistant, processedThrough, { signal, schedule });
         gitSync.gitAutoCommit('curate: discover principles');
       } catch (error: unknown) {
         throw new CurateRunError(lastCompletedThrough, error);

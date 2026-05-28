@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { KbRuntime } from '#src/kb/contract.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import {
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
@@ -187,14 +188,9 @@ function createIndexEntries(notes: Record<string, ReturnType<typeof createIndexN
   );
 }
 
-function noopSpawnCli() {
-  return Promise.resolve({
-    stdout: '[]',
-    stderr: '',
-    code: 0,
-    aborted: false,
-  });
-}
+const noopCurateAssistant: CurateAssistantPort = {
+  complete: async () => '[]',
+};
 
 let tempDir: string;
 let runtime: KbRuntime;
@@ -211,18 +207,18 @@ beforeEach(() => {
     runtimeDir: tempDir,
     db: createKbTestDb(tempDir),
     runtime: gitSyncRuntime,
-    spawnCli: noopSpawnCli,
+    curateAssistant: noopCurateAssistant,
   }));
   scheduler = createCurateScheduler({
     kb: runtime,
-    spawnCli: noopSpawnCli,
+    curateAssistant: noopCurateAssistant,
     processPort: gitSyncRuntime.process,
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
   });
   internals = createCurateTestHandle({
     kb: runtime,
-    spawnCli: noopSpawnCli,
+    curateAssistant: noopCurateAssistant,
     schedule: () => scheduler.schedule(),
   });
   vi.useFakeTimers();

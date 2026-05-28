@@ -212,12 +212,7 @@ async function createWritableKbRuntime() {
     envPort: runtime.env,
     ids: runtime.ids,
     storage: runtime.storage,
-    spawnCli: async () => ({
-      stdout: '',
-      stderr: '',
-      code: 0,
-      aborted: false,
-    }),
+    curateAssistant: { complete: async () => '' },
     processPort: runtime.process,
   });
 

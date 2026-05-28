@@ -28,9 +28,11 @@ function fakeDeps(overrides: Partial<CreateKbSubsystemDeps> = {}): CreateKbSubsy
   return {
     db: {} as CreateKbSubsystemDeps['db'],
     paths: { markdownRoot: '/tmp/kb', runtimeDir: '/tmp/kb-runtime' },
-    spawnCli: (() => {
-      throw new Error('spawnCli not mocked');
-    }) as CreateKbSubsystemDeps['spawnCli'],
+    curateAssistant: {
+      complete: async () => {
+        throw new Error('curateAssistant not mocked');
+      },
+    } as CreateKbSubsystemDeps['curateAssistant'],
     processPort: {} as CreateKbSubsystemDeps['processPort'],
     storagePort: {} as CreateKbSubsystemDeps['storagePort'],
     envPort: {} as CreateKbSubsystemDeps['envPort'],

@@ -5,6 +5,7 @@ import {
   buildJsonRpcFailureFromError,
   buildJsonRpcSuccess,
   parseJsonRpcInboundLine,
+  requireSessionCloseParams,
   requireSessionEnsureParams,
   requireSessionProbeParams,
   requireTurnInterruptParams,
@@ -149,6 +150,11 @@ describe('claude appserver protocol helpers', () => {
       conversationRef: 'conversation-1',
     });
     expect(() => requireSessionProbeParams({ brokerSessionKey: '' })).toThrow(ClaudeBrokerRpcError);
+
+    expect(requireSessionCloseParams({ brokerSessionKey: 'broker-1' })).toEqual({
+      brokerSessionKey: 'broker-1',
+    });
+    expect(() => requireSessionCloseParams({ brokerSessionKey: '' })).toThrow(ClaudeBrokerRpcError);
 
     expect(
       requireTurnStartParams({

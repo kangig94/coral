@@ -29,6 +29,13 @@ type QueuedLaunchEntry = {
   reject: (error: Error) => void;
 };
 
+export type InternalLaunchPermitOptions = {
+  provider: string;
+  pool?: LaunchPool;
+  prefix: string;
+  signal?: AbortSignal;
+};
+
 type PoolState = { active: Map<string, string>; queued: QueuedLaunchEntry[] };
 
 const IMMEDIATE_ADMISSION: AdmittedHandle = { type: 'immediate' };
@@ -165,6 +172,24 @@ export class LaunchCoordinator {
       cleanupHandles: this.cleanupHandles,
       releaseLaunch: (jobId, nextPool) => this.releaseLaunch(jobId, nextPool),
     });
+  }
+
+  async withInternalPermit<T>(options: InternalLaunchPermitOptions, run: () => Promise<T>): Promise<T> {
+    const pool = options.pool ?? 'default';
+    let internalPermitJobId: string | null;
+    try {
+      internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, options.prefix);
+    } catch (error: unknown) {
+      return this.rejectedPermitPromise(error);
+    }
+
+    try {
+      return await run();
+    } finally {
+      if (internalPermitJobId !== null) {
+        this.releaseLaunch(internalPermitJobId, pool);
+      }
+    }
   }
 
   restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {

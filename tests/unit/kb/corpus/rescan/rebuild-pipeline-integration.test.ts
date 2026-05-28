@@ -216,7 +216,7 @@ describe('applyDetectedIncidentFixesLocked lock-reentry safety', () => {
       kb.withMutationLock(async (mutation) => {
         const gitSync = createGitSyncController({
           kb,
-          spawnCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
+          curateAssistant: { complete: async () => '' },
           processPort: realRuntime.process,
           storagePort: realRuntime.storage,
           envPort: realRuntime.env,

@@ -24,7 +24,7 @@ import {
   filterCandidatesBeforeRepairFrontier,
   isCursorBeforeRepairFrontier,
 } from './metadata-commit.js';
-import { CURATE_STALE_REASON, persistCurateState, runCurateClaude, CurateJsonParseError } from './operations.js';
+import { CURATE_STALE_REASON, persistCurateState, runCurateAssistant, CurateJsonParseError } from './operations.js';
 import {
   applyAddPendingDiscovery,
   applyRecordDiscoveryAttempt,
@@ -38,7 +38,7 @@ import {
   type PendingDiscovery,
 } from './state/index.js';
 import type { DiscoveryCurateClaimedEntry, MetadataTarget, NoteClaimCandidate } from './pipeline-types.js';
-import type { SpawnCliFn } from './spawn-cli.js';
+import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';
 
 type EnsurePrincipleDocumentResult = {
@@ -241,7 +241,7 @@ async function drainPendingDiscoveries(kb: KbRuntime, processedThrough: CurateCu
 
 export async function runPrincipleDiscovery(
   kb: KbRuntime,
-  spawnCli: SpawnCliFn,
+  curateAssistant: CurateAssistantPort,
   processedThrough: CurateCursor,
   options: RunPrincipleDiscoveryOptions = {},
 ): Promise<void> {
@@ -265,7 +265,7 @@ export async function runPrincipleDiscovery(
   const { prompt, corpusPath } = buildDiscoveryPrompt(kb, eligibleNotes, currentIndex.principles);
   let raw: string;
   try {
-    raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
+    raw = await runCurateAssistant(curateAssistant, prompt, 'principle-discovery', signal);
   } finally {
     unlinkIfExists(corpusPath);
   }

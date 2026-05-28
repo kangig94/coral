@@ -4,7 +4,7 @@ import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js'
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
 import { createKbRuntime } from './runtime.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '../store/read-port.js';
-import type { SpawnCliFn } from './curate/spawn-cli.js';
+import type { CurateAssistantPort } from './curate/assistant.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
 import type { IdPort, ProcessPort, Runtime } from '../runtime/ports.js';
 
@@ -29,7 +29,7 @@ export type KbSubsystemPaths = {
 export type CreateKbSubsystemOptions = {
   db: Database;
   paths: KbSubsystemPaths;
-  spawnCli: SpawnCliFn;
+  curateAssistant: CurateAssistantPort;
   processPort: ProcessPort;
   storagePort: StoragePort;
   envPort: EnvPort;
@@ -44,7 +44,7 @@ export type CreateKbSubsystemOptions = {
 export async function createKbSubsystem({
   db,
   paths,
-  spawnCli: spawnKbCli,
+  curateAssistant,
   processPort,
   storagePort,
   envPort,
@@ -63,7 +63,7 @@ export async function createKbSubsystem({
     ids: idsPort,
     envPort,
     storage: storagePort,
-    spawnCli: spawnKbCli,
+    curateAssistant,
     processPort,
   });
   if (persistCorpusState !== undefined && notifyCorpusMutation !== undefined) {
@@ -77,7 +77,7 @@ export async function createKbSubsystem({
 
   const curateScheduler = createCurateScheduler({
     kb,
-    spawnCli: spawnKbCli,
+    curateAssistant,
     processPort,
     storagePort,
     envPort,

@@ -75,7 +75,7 @@ export function createKbSubsystem(deps: CreateKbSubsystemDeps): Subsystem<Knowle
       const built = await buildFn({
         db: deps.db,
         paths: deps.paths,
-        spawnCli: deps.spawnCli,
+        curateAssistant: deps.curateAssistant,
         processPort: deps.processPort,
         storagePort: deps.storagePort,
         envPort: deps.envPort,

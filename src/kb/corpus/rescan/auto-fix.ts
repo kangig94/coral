@@ -119,7 +119,7 @@ const AUTO_FIX_HANDLERS: Readonly<
  *
  * @precondition Caller already holds `kb.withMutationLock()` and supplies the `mutation` context
  * captured by that lock. The caller also constructs the `gitSync` controller from production ports
- * (KbRuntime carries `storagePort`/`processPort`/`envPort`/`spawnCli`); auto-fix never reaches the
+ * (KbRuntime carries `storagePort`/`processPort`/`envPort`/`curateAssistant`); auto-fix never reaches the
  * lock-acquiring surface, so reentrant deadlock is structurally impossible.
  */
 export async function applyDetectedIncidentFixesLocked(
