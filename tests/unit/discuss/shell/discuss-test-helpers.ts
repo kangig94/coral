@@ -166,7 +166,7 @@ function createProgressStoreDiscussJournal(
 }
 
 export function createDiscussContextOptions(
-  runtime: Pick<Runtime, 'ids' | 'env' | 'time'>,
+  runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
   progressStore?: Pick<JobStore, 'readStatus'>,
 ): DiscussContextConstructionOptions {
   return {
@@ -174,6 +174,8 @@ export function createDiscussContextOptions(
       ids: runtime.ids,
       env: runtime.env,
       time: runtime.time,
+      storage: runtime.storage,
+      projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
     },
     jobStatusReader: {
       read: (jobId) => progressStore?.readStatus(jobId) ?? null,

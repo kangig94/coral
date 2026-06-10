@@ -1,7 +1,7 @@
 import type { PersistedDiscussSnapshot } from '../events.js';
 import type { WatchEvent } from '../watch.js';
 import type { DiscussSessionStore } from './session-store.js';
-import type { EnvPort, TimePort } from '../../infra/port-types.js';
+import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { JobExit, JobStatus } from '../../jobs/records.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
@@ -43,6 +43,9 @@ export type DiscussRuntimePorts = {
   ids: Pick<IdPort, 'uuid'>;
   env: Pick<EnvPort, 'get'>;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>;
+  /** Resolves a project's data dir (`runtime.paths.projectData`); where the completed-discussion record is written. */
+  projectData: (projectRoot: string) => string;
 };
 
 export type DiscussLaunchDecision =

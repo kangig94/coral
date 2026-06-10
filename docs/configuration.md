@@ -128,7 +128,7 @@ Sessions are Journal events projected into `projection_sessions`. `SessionManage
 
 ### Discuss state
 
-Discuss sessions are Journal events projected into `projection_discuss`. The source-scoped discovery and summary views are read models over those projections; discuss no longer owns JSON session files.
+Discuss sessions are Journal events projected into `projection_discuss`. The source-scoped discovery and summary views are read models over those projections; discuss no longer owns JSON session files. On final synthesis, a completed discussion is also exported as a human-readable markdown record at `~/.coral/projects/<source-slug>/discuss/<YYYYMMDD-HHMMSS>-<topic-slug>.md` — a rebuildable projection of the Journal, not authority (see [discuss.md](./discuss.md)).
 
 ### KB state
 

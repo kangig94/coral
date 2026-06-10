@@ -146,6 +146,8 @@ export function createDiscussRuntime({
         ids: runtime.ids,
         env: runtime.env,
         time: runtime.time,
+        storage: runtime.storage,
+        projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
       },
       jobStatusReader,
     });
