@@ -39,7 +39,7 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
+import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -125,6 +125,20 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
  * registers it and triggers `initAll` after Era II completes.
  */
 export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Subsystem<KnowledgeBaseRuntime>;
+
+/**
+ * Builds the curate assistant the KB subsystem uses to drive provider-backed
+ * curation. Injected (not imported) so this lower composition layer never
+ * statically reaches a provider runtime module — the production assembly wires
+ * the real Claude-backed factory; the simulation/idle paths use a stub. Keeps
+ * `tools/simulation` sealed off from `src/providers/claude` (see
+ * `tools/simulation/sealed-inventory.json`).
+ */
+export type CurateAssistantFactory = (deps: {
+  readonly runtime: Runtime;
+  readonly launchCoordinator: Pick<LaunchCoordinator, 'withInternalPermit'>;
+  readonly providerHostManager: Pick<ProviderHostManager, 'acquireServer'>;
+}) => CurateAssistantPort;
 
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode): Promise<void>;
@@ -317,6 +331,7 @@ export type LifecycleDeps = {
   readonly providerHostManager: ProviderHostManager;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
+  readonly createCurateAssistant: CurateAssistantFactory;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   readonly runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -379,6 +394,7 @@ async function runLifecycleStartup({
     removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn,
     createKbSubsystemFn,
+    createCurateAssistant,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
     runStartupRecoveryFn,
@@ -559,7 +575,7 @@ async function runLifecycleStartup({
           markdownRoot: runtime.paths.coral.corpus.kbRoot,
           runtimeDir: kbRuntimeDir(flavor),
         },
-        curateAssistant: createClaudeCurateAssistant({
+        curateAssistant: createCurateAssistant({
           runtime,
           launchCoordinator,
           providerHostManager,

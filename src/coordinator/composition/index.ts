@@ -651,6 +651,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
     createKbSubsystemFn: defaults.createKbSubsystemFn,
+    createCurateAssistant: defaults.createCurateAssistant,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
     runStartupRecoveryFn: options.runStartupRecoveryFn,

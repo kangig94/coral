@@ -270,6 +270,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         })),
         onStatusChange: vi.fn(() => () => {}),
       })) as never,
+      createCurateAssistant: () => ({ complete: async () => '' }),
       registerBuiltInProvidersFn: vi.fn(),
       recoverPersistedDiscussFn: vi.fn(async () => []),
       runStartupRecoveryFn: vi.fn(async () => []),

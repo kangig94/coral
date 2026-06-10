@@ -4618,6 +4618,7 @@ describe('execution backend server', () => {
         providerHostManager: providerHostManager as never,
         handoffQuiescePorts: () => [fakeService as never],
         createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
+        createCurateAssistant: () => ({ complete: async () => '' }),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
         runStartupRecoveryFn: async () => [],
