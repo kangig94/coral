@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
-import { spawn as spawnPty } from '@lydell/node-pty';
+import type * as ClaudePty from '@lydell/node-pty';
 
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
@@ -142,11 +142,35 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
   };
 }
 
+type ClaudePtyModule = typeof ClaudePty;
+
+// Load the native PTY backend lazily (not at module import) so the appserver
+// process starts even where no prebuilt binary exists; the failure then becomes
+// a clear per-turn provider error instead of a cryptic startup crash.
+let ptyModulePromise: Promise<ClaudePtyModule> | null = null;
+function loadClaudePtyModule(): Promise<ClaudePtyModule> {
+  return (ptyModulePromise ??= import('@lydell/node-pty'));
+}
+
 export function createNodeClaudeChildFactory(
   _errorOutput: NodeJS.WritableStream = process.stderr,
-): (options: SpawnClaudeChildOptions) => ClaudeBrokerChild {
-  return (options: SpawnClaudeChildOptions): ClaudeBrokerChild => {
-    const child = spawnPty('claude', buildClaudeChildArgs(options), {
+  loadPty: () => Promise<ClaudePtyModule> = loadClaudePtyModule,
+): (options: SpawnClaudeChildOptions) => Promise<ClaudeBrokerChild> {
+  return async (options: SpawnClaudeChildOptions): Promise<ClaudeBrokerChild> => {
+    let pty: ClaudePtyModule;
+    try {
+      pty = await loadPty();
+    } catch (error) {
+      // No prebuilt PTY binary on this platform (e.g. musl/Alpine or 32-bit
+      // ARM). Surface an actionable provider error rather than crash.
+      throw new Error(
+        `Claude provider unavailable: could not load its PTY backend (@lydell/node-pty) on ${process.platform}/${process.arch}. ` +
+          'No prebuilt native binary is available for this platform — use the Codex provider here. ' +
+          `(${error instanceof Error ? error.message : String(error)})`,
+        { cause: error },
+      );
+    }
+    const child = pty.spawn('claude', buildClaudeChildArgs(options), {
       name: 'xterm-256color',
       cols: 120,
       rows: 30,
