@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildClaudeChildArgs } from '#src/providers/claude/appserver/server.js';
+import { buildClaudeChildArgs, createNodeClaudeChildFactory } from '#src/providers/claude/appserver/server.js';
 import type { SpawnClaudeChildOptions } from '#src/providers/claude/appserver/session-contract.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
@@ -50,5 +50,21 @@ describe('claude appserver PTY child args', () => {
     expect(buildClaudeChildArgs(spawnOptions({ permissionMode: 'bypassPermissions' }))).toContain(
       '--dangerously-skip-permissions',
     );
+  });
+
+  it('surfaces an actionable provider error when the PTY backend cannot load', async () => {
+    const factory = createNodeClaudeChildFactory(process.stderr, async () => {
+      throw new Error('Failed to load native module: pty.node');
+    });
+
+    const error = await factory(spawnOptions()).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('Claude provider unavailable');
+    expect((error as Error).message).toContain('Codex');
+    expect((error as Error).message).toContain('pty.node');
   });
 });

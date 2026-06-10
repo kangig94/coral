@@ -6,6 +6,7 @@ import type {
   CoordinatorIdentity,
   MutableRuntimeState as MutableCoordinatorRuntimeState,
   CreateKbSubsystemFn,
+  CurateAssistantFactory,
   LifecycleController,
   LifecycleHooks,
   RecoverPersistedDiscussFn,
@@ -72,6 +73,14 @@ export type CoordinatorCoreOptions = {
    * `LifecycleDeps.createKbSubsystemFn`.
    */
   createKbSubsystemFn?: CreateKbSubsystemFn;
+  /**
+   * Builds the KB curate assistant. Injected so this composition layer never
+   * statically imports a provider runtime module — production wires the real
+   * Claude-backed factory through `createCoordinatorServer`; tests/simulation
+   * fall back to the idle stub. Keeps `tools/simulation` sealed from
+   * `src/providers/claude` (`tools/simulation/sealed-inventory.json`).
+   */
+  createCurateAssistant?: CurateAssistantFactory;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   runStartupRecoveryFn: RunStartupRecoveryFn;

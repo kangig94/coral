@@ -39,13 +39,26 @@ import type {
 const DEFAULT_OUTPUT_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
-const CHILD_READY_TIMEOUT_MS = 2_000;
-const CHILD_READY_SETTLE_MS = 100;
+// Ceiling on the readiness wait — used when the marker never arrives or the
+// output never quiesces. Proceed optimistically after this; the resend net
+// then recovers a prompt the child was not ready for.
+const CHILD_READY_TIMEOUT_MS = 5_000;
+// Adaptive readiness window: once Claude emits the bracketed-paste-enable
+// marker, the child is ready when its output stays quiet this long (the TUI
+// has finished mounting the input box). A prompt pasted too soon is silently
+// dropped by Claude Code 2.1.x; quiescing avoids both a dropped prompt and a
+// fixed worst-case wait, and the resend net recovers any too-early send.
+const CHILD_READY_QUIET_MS = 400;
 const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
 const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
 const POST_END_TURN_GRACE_MS = 1_500;
 const TURN_TIMEOUT_MS = 30 * 60 * 1_000;
+// Safety net for a dropped prompt: if the transcript shows no activity within
+// this window after a send, re-send the prompt; after MAX_PROMPT_RESENDS with
+// no acknowledgement, fail fast instead of blocking until TURN_TIMEOUT_MS.
+const PROMPT_ACK_TIMEOUT_MS = 2_500;
+const MAX_PROMPT_RESENDS = 3;
 
 type ActiveTurnState = {
   brokerTurnId: string;
@@ -62,6 +75,10 @@ type ActiveTurnState = {
   usage: unknown;
   costUsd: number | null;
   errors: string[];
+  promptPayload: string;
+  lastPromptSentAt: number;
+  promptResends: number;
+  promptAcknowledged: boolean;
 };
 
 type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
@@ -84,6 +101,8 @@ export class SingleSessionController {
   private readonly outputLimit: number;
   private readonly ids: CreateBrokerSessionOptions['ids'];
   private readonly onUnexpectedExit: (() => void) | undefined;
+  private readonly readySettleMs: number;
+  private readonly promptAckTimeoutMs: number;
   private readonly notificationHandlers = new Set<(notification: ControllerNotification) => void>();
 
   private childBinding: ChildBinding | null = null;
@@ -106,6 +125,8 @@ export class SingleSessionController {
     this.outputLimit = options.stderrLimit ?? DEFAULT_OUTPUT_RING_LIMIT;
     this.ids = options.ids;
     this.onUnexpectedExit = options.onUnexpectedExit;
+    this.readySettleMs = options.readySettleMs ?? CHILD_READY_QUIET_MS;
+    this.promptAckTimeoutMs = options.promptAckTimeoutMs ?? PROMPT_ACK_TIMEOUT_MS;
   }
 
   subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void {
@@ -196,12 +217,17 @@ export class SingleSessionController {
       usage: undefined,
       costUsd: null,
       errors: [],
+      promptPayload: bracketedPaste(params.prompt),
+      lastPromptSentAt: 0,
+      promptResends: 0,
+      promptAcknowledged: false,
     };
     this.activeTurn = turn;
 
     try {
-      this.writeToChild(bracketedPaste(params.prompt));
+      this.writeToChild(turn.promptPayload);
       turn.userMessageSent = true;
+      turn.lastPromptSentAt = Date.now();
 
       if (turn.interruptRequested) {
         this.issueInterrupt(turn);
@@ -340,8 +366,9 @@ export class SingleSessionController {
     let resolveReady!: () => void;
     let readyResolved = false;
     let readyOutput = '';
-    let readyTimer: ReturnType<typeof setTimeout> | null = null;
-    let readySettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let markerSeen = false;
+    let capTimer: ReturnType<typeof setTimeout> | null = null;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
     const ready = new Promise<void>((resolve) => {
       resolveReady = resolve;
     });
@@ -350,25 +377,31 @@ export class SingleSessionController {
         return;
       }
       readyResolved = true;
-      if (readyTimer !== null) {
-        clearTimeout(readyTimer);
-        readyTimer = null;
+      if (capTimer !== null) {
+        clearTimeout(capTimer);
+        capTimer = null;
       }
-      if (readySettleTimer !== null) {
-        clearTimeout(readySettleTimer);
-        readySettleTimer = null;
+      if (quietTimer !== null) {
+        clearTimeout(quietTimer);
+        quietTimer = null;
       }
       resolveReady();
     };
-    const scheduleReady = (): void => {
-      if (readyResolved || readySettleTimer !== null) {
+    // After the marker, (re)arm a quiet timer on every chunk; readiness fires
+    // once output has been idle for the quiet window — adaptive, so a fast or
+    // warm child proceeds early instead of waiting a fixed worst case.
+    const armQuietTimer = (): void => {
+      if (readyResolved) {
         return;
       }
-      readySettleTimer = setTimeout(finishReady, CHILD_READY_SETTLE_MS);
-      readySettleTimer.unref?.();
+      if (quietTimer !== null) {
+        clearTimeout(quietTimer);
+      }
+      quietTimer = setTimeout(finishReady, this.readySettleMs);
+      quietTimer.unref?.();
     };
-    readyTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
-    readyTimer.unref?.();
+    capTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
+    capTimer.unref?.();
 
     const child = await this.spawnChild({
       cwd: signature.cwd,
@@ -384,8 +417,11 @@ export class SingleSessionController {
     const offData = child.onData((chunk) => {
       if (!readyResolved) {
         readyOutput = appendRingBuffer(readyOutput, chunk, 4_096);
-        if (readyOutput.includes(BRACKETED_PASTE_ENABLED)) {
-          scheduleReady();
+        if (!markerSeen && readyOutput.includes(BRACKETED_PASTE_ENABLED)) {
+          markerSeen = true;
+        }
+        if (markerSeen) {
+          armQuietTimer();
         }
       }
       this.captureOutput(chunk);
@@ -439,6 +475,9 @@ export class SingleSessionController {
     while (this.activeTurn === turn) {
       this.readTranscriptAppend(turn);
       const now = Date.now();
+      if (!turn.promptAcknowledged && this.resendUnacknowledgedPrompt(turn, now)) {
+        return;
+      }
       if (turn.sawEndTurnAt !== null && (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)) {
         this.completeTurn(turn);
         return;
@@ -453,6 +492,34 @@ export class SingleSessionController {
     }
   }
 
+  // Claude can silently drop the first bracketed-paste prompt when its TUI is
+  // not yet ready for input. Until the transcript shows activity for this turn,
+  // re-send the prompt on a fixed cadence; once attempts are exhausted, fail
+  // fast rather than block until TURN_TIMEOUT_MS. Returns true when the turn was
+  // terminated so the caller stops monitoring.
+  private resendUnacknowledgedPrompt(turn: ActiveTurnState, now: number): boolean {
+    if (now - turn.lastPromptSentAt < this.promptAckTimeoutMs) {
+      return false;
+    }
+    if (turn.promptResends >= MAX_PROMPT_RESENDS) {
+      this.activeTurn = null;
+      this.lastTerminalTurnId = turn.brokerTurnId;
+      this.emitTurnFailure(
+        turn.brokerTurnId,
+        `Claude did not register the prompt after ${MAX_PROMPT_RESENDS} resend attempts; the interactive turn never started.`,
+      );
+      return true;
+    }
+    this.writeToChild(turn.promptPayload);
+    turn.promptResends += 1;
+    turn.lastPromptSentAt = now;
+    this.emitTurnProgress(
+      turn.brokerTurnId,
+      `Claude did not acknowledge the prompt; re-sending (attempt ${turn.promptResends + 1}).`,
+    );
+    return false;
+  }
+
   private readTranscriptAppend(turn: ActiveTurnState): void {
     const path = this.resolveTranscriptPath();
     if (path === null) {
@@ -464,6 +531,7 @@ export class SingleSessionController {
       return;
     }
     turn.transcriptOffset = read.offset;
+    turn.promptAcknowledged = true;
 
     const lines = `${turn.transcriptRemainder}${read.text}`.split(/\r?\n/);
     turn.transcriptRemainder = lines.pop() ?? '';

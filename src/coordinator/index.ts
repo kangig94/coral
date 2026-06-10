@@ -13,6 +13,7 @@ import {
   resolveSpawnRecordingDir,
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
+import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
 import type {
   CoordinatorCoreOptions,
   CoordinatorCoreResult,
@@ -578,6 +579,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       });
       return subsystem;
     },
+    // Production-only wiring of the real Claude-backed curate assistant. The
+    // composition layer (shared with `tools/simulation`) only knows the
+    // `CurateAssistantFactory` shape, never the provider runtime — see
+    // `tools/simulation/sealed-inventory.json`.
+    createCurateAssistant: createClaudeCurateAssistant,
     createExecutionService: (ctx, deps) => {
       const wiredDeps = {
         ...deps,

@@ -7,6 +7,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
 
 type ClaudeArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
+type ClaudeArtifactCleanupStorage = ClaudeArtifactLocatorStorage & Pick<StoragePort, 'unlinkSync'>;
 type ClaudeArtifactLocatorEnv = Pick<Runtime['env'], 'homedir'>;
 
 type ClaudeArtifactIndex = {
@@ -17,6 +18,12 @@ export type ClaudeArtifactLocatorResult =
   | { readonly kind: 'match'; readonly artifact: ProviderArtifactHandleInput }
   | { readonly kind: 'no_match'; readonly diagnostic: string }
   | { readonly kind: 'ambiguous'; readonly diagnostic: string; readonly matches: readonly string[] };
+
+export type ClaudeJsonlCleanupResult = {
+  readonly deleted: readonly string[];
+  readonly missing: boolean;
+  readonly errors: readonly { readonly handle: string; readonly message: string }[];
+};
 
 const claudeArtifactIndexes = new WeakMap<object, Map<string, ClaudeArtifactIndex>>();
 
@@ -77,6 +84,44 @@ export function locateClaudeJsonlArtifactFromRuntime(
   });
 }
 
+export function deleteClaudeJsonlArtifactsForConversation(options: {
+  readonly conversationRef: string;
+  readonly projectsRoot: string;
+  readonly storage: ClaudeArtifactCleanupStorage;
+}): ClaudeJsonlCleanupResult {
+  const located = locateClaudeJsonlArtifact(options);
+  const handles =
+    located.kind === 'match'
+      ? [located.artifact.handle]
+      : located.kind === 'ambiguous'
+        ? [...new Set(located.matches)]
+        : [];
+
+  const deleted: string[] = [];
+  const errors: Array<{ handle: string; message: string }> = [];
+  for (const handle of handles) {
+    try {
+      options.storage.unlinkSync(handle);
+      deleted.push(handle);
+    } catch (error) {
+      errors.push({
+        handle,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (handles.length > 0) {
+    invalidateClaudeArtifactIndex(options.storage, options.projectsRoot);
+  }
+
+  return {
+    deleted,
+    missing: located.kind === 'no_match',
+    errors,
+  };
+}
+
 function readClaudeArtifactIndex(storage: ClaudeArtifactLocatorStorage, projectsRoot: string): ClaudeArtifactIndex {
   return artifactIndexCacheForStorage(storage).get(projectsRoot) ?? refreshClaudeArtifactIndex(storage, projectsRoot);
 }
@@ -119,6 +164,10 @@ function artifactIndexCacheForStorage(storage: ClaudeArtifactLocatorStorage): Ma
   const next = new Map<string, ClaudeArtifactIndex>();
   claudeArtifactIndexes.set(key, next);
   return next;
+}
+
+function invalidateClaudeArtifactIndex(storage: ClaudeArtifactLocatorStorage, projectsRoot: string): void {
+  artifactIndexCacheForStorage(storage).delete(projectsRoot);
 }
 
 function safeExists(storage: ClaudeArtifactLocatorStorage, path: string): boolean {

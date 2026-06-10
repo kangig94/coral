@@ -135,7 +135,7 @@ export async function runRepairFixtureCase(testCase: RepairFixtureCase): Promise
     const runtime = createRealRuntime('prod');
     const gitSync = createGitSyncController({
       kb: harness.kb,
-      spawnCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
+      curateAssistant: { complete: async () => '' },
       processPort: runtime.process,
       storagePort: runtime.storage,
       envPort: runtime.env,

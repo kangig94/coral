@@ -22,5 +22,6 @@ export default defineConfig({
     hookTimeout: 30_000,
     pool: 'forks',
     forks: { singleFork: true },
+    globalSetup: ['vitest/no-real-coral-leak.ts'],
   },
 });

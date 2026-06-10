@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
-import { claudeArtifactCapability, locateClaudeJsonlArtifact } from '#src/providers/claude/artifacts.js';
+import {
+  claudeArtifactCapability,
+  deleteClaudeJsonlArtifactsForConversation,
+  locateClaudeJsonlArtifact,
+} from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -103,6 +107,38 @@ describe('locateClaudeJsonlArtifact', () => {
       diagnostic: expect.stringContaining('2 JSONL'),
       matches: [`${root}/-workspace-a/session-1.jsonl`, `${root}/-workspace-b/session-1.jsonl`],
     });
+  });
+});
+
+describe('deleteClaudeJsonlArtifactsForConversation', () => {
+  const root = '/home/user/.claude/projects';
+
+  it('deletes every ambiguous JSONL match for one-shot curate sessions', () => {
+    const unlinkSync = vi.fn();
+    const storage = {
+      ...storageForTree({
+        [root]: [dirent('-workspace-a', 'dir'), dirent('-workspace-b', 'dir')],
+        [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
+        [`${root}/-workspace-b`]: [dirent('session-1.jsonl', 'file')],
+      }),
+      unlinkSync,
+    };
+
+    expect(
+      deleteClaudeJsonlArtifactsForConversation({
+        conversationRef: 'session-1',
+        projectsRoot: root,
+        storage,
+      }),
+    ).toEqual({
+      deleted: [`${root}/-workspace-a/session-1.jsonl`, `${root}/-workspace-b/session-1.jsonl`],
+      missing: false,
+      errors: [],
+    });
+    expect(unlinkSync.mock.calls).toEqual([
+      [`${root}/-workspace-a/session-1.jsonl`],
+      [`${root}/-workspace-b/session-1.jsonl`],
+    ]);
   });
 });
 

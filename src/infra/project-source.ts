@@ -1,7 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { basename, join } from 'node:path';
-
-import { coralRoot } from './path/root.js';
+import { basename } from 'node:path';
 
 const projectSourceCache = new Map<string, string>();
 
@@ -57,16 +55,4 @@ export function resolveProjectSource(projectRoot: string): string {
 
   projectSourceCache.set(projectRoot, source);
   return source;
-}
-
-function sourceToSlug(source: string): string {
-  return source.replace(/\//g, '-');
-}
-
-function projectDataDirForSource(source: string): string {
-  return join(coralRoot(), 'projects', sourceToSlug(source));
-}
-
-export function projectDataDir(projectRoot: string): string {
-  return projectDataDirForSource(resolveProjectSource(projectRoot));
 }

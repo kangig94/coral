@@ -17,7 +17,7 @@ import { mergeAssignmentsIntoIndexGraph, validateAssignments } from './classific
 import { parseClassificationResponseResult } from './classification/parse.js';
 import { readClaimedEntry } from './claim-io.js';
 import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
-import { CurateJsonParseError, runCurateClaude } from './operations.js';
+import { CurateJsonParseError, runCurateAssistant } from './operations.js';
 import {
   compareCursor,
   compareOptionalCursor,
@@ -30,7 +30,7 @@ import {
   type CurateCursor,
 } from './state/index.js';
 import type { ClaimCandidate, ClassificationAssignment, CurateClaim, CurateClaimedEntry } from './pipeline-types.js';
-import type { SpawnCliFn } from './spawn-cli.js';
+import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
@@ -194,7 +194,7 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
 
 export async function runClassificationBatches(
   kb: KbRuntime,
-  spawnCli: SpawnCliFn,
+  curateAssistant: CurateAssistantPort,
   claim: CurateClaim,
   index: KbIndex,
   signal?: AbortSignal,
@@ -216,7 +216,7 @@ export async function runClassificationBatches(
     }
 
     const prompt = buildClassificationPrompt(batch, vocabulary, principleNames);
-    const raw = await runCurateClaude(kb, spawnCli, prompt, undefined, signal);
+    const raw = await runCurateAssistant(curateAssistant, prompt, 'classification', signal);
     const entryMap = new Map<string, true>();
     for (const entry of batch) {
       entryMap.set(entry.entryId, true);

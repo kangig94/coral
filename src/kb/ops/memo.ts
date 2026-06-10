@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { resolveProjectSource } from '../../infra/project-source.js';
 import { nowDate } from '../../infra/time.js';
 import type { StoragePort, TimePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
@@ -41,12 +40,12 @@ function generateTimestamp(time: Pick<TimePort, 'now'>): string {
 
 export function writeMemo(
   host: MemoHost,
-  projectRoot: string,
+  projectDataDir: string,
+  source: string,
   input: KbMemoInput,
   time: Pick<TimePort, 'now'>,
 ): { filename: string; path: string } {
-  const source = resolveProjectSource(projectRoot);
-  const dir = memoDir(projectRoot);
+  const dir = memoDir(projectDataDir);
   const timestamp = generateTimestamp(time);
   const filename = `${timestamp}-${input.topic}.md`;
   const path = join(dir, filename);
@@ -58,9 +57,9 @@ export function writeMemo(
   return { filename, path };
 }
 
-function readMemoDir(storage: Pick<StoragePort, 'readdirSync'>, projectRoot: string): string[] {
+function readMemoDir(storage: Pick<StoragePort, 'readdirSync'>, projectDataDir: string): string[] {
   try {
-    return storage.readdirSync(memoDir(projectRoot));
+    return storage.readdirSync(memoDir(projectDataDir));
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return [];
@@ -117,11 +116,11 @@ function parseTimestampPrefix(filename: string): { display: string; sortKey: num
   return { display: match[1], sortKey };
 }
 
-export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter?: string): KbMemoListResult {
-  const dir = memoDir(projectRoot);
+export function listMemos(storage: MemoStorage, projectDataDir: string, ownerFilter?: string): KbMemoListResult {
+  const dir = memoDir(projectDataDir);
   const memos: Array<{ filename: string; summary: string; createdAt: string; sortKey: number; owner?: string }> = [];
 
-  for (const filename of readMemoDir(storage, projectRoot)) {
+  for (const filename of readMemoDir(storage, projectDataDir)) {
     if (!filename.endsWith('.md')) {
       continue;
     }
@@ -166,12 +165,16 @@ export function listMemos(storage: MemoStorage, projectRoot: string, ownerFilter
   };
 }
 
-export function deleteMemos(storage: MemoStorage, projectRoot: string, input: KbMemoDeleteInput): KbMemoDeleteResult {
-  const dir = memoDir(projectRoot);
+export function deleteMemos(
+  storage: MemoStorage,
+  projectDataDir: string,
+  input: KbMemoDeleteInput,
+): KbMemoDeleteResult {
+  const dir = memoDir(projectDataDir);
   const matcher = globToRegex(input.pattern);
   const deleted: string[] = [];
 
-  for (const filename of readMemoDir(storage, projectRoot)) {
+  for (const filename of readMemoDir(storage, projectDataDir)) {
     if (!filename.endsWith('.md') || !matcher.test(filename)) {
       continue;
     }
@@ -200,6 +203,6 @@ export function deleteMemos(storage: MemoStorage, projectRoot: string, input: Kb
   return { deleted, count: deleted.length };
 }
 
-export function purgeMemos(storage: MemoStorage, projectRoot: string, owner?: string): KbMemoPurgeResult {
-  return { deleted: deleteMemos(storage, projectRoot, { pattern: '*', owner }).count };
+export function purgeMemos(storage: MemoStorage, projectDataDir: string, owner?: string): KbMemoPurgeResult {
+  return { deleted: deleteMemos(storage, projectDataDir, { pattern: '*', owner }).count };
 }

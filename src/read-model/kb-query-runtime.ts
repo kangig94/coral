@@ -28,7 +28,7 @@ import {
   BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
 } from '../kb/capability/constants.js';
 import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '../store/consumer-contract.js';
-import type { SpawnCliFn } from '../kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
@@ -153,7 +153,7 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
     envPort: runtime.env,
     ids: runtime.ids,
     storage: runtime.storage,
-    spawnCli: createReadOnlyKbSpawnCli(),
+    curateAssistant: createReadOnlyCurateAssistant(),
     processPort: runtime.process,
   });
 }
@@ -249,13 +249,15 @@ export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQuery
 
 /**
  * KB query runtime is read-only: it answers `kb` CLI subcommands without touching
- * `gitSync.scheduleDeferredCommit()` or the auto-fix dispatcher. The spawnCli surface
- * is therefore unreachable from the read path; rejecting any invocation here makes
+ * `gitSync.scheduleDeferredCommit()` or the auto-fix dispatcher. The curate assistant
+ * surface is therefore unreachable from the read path; rejecting any invocation here makes
  * accidental future writes fail loudly instead of silently spawning a real provider.
  */
-function createReadOnlyKbSpawnCli(): SpawnCliFn {
-  return async () => {
-    throw new Error('KB query runtime is read-only and cannot spawn provider CLIs.');
+function createReadOnlyCurateAssistant(): CurateAssistantPort {
+  return {
+    async complete() {
+      throw new Error('KB query runtime is read-only and cannot run curate assistant requests.');
+    },
   };
 }
 
@@ -312,11 +314,11 @@ export function createKbQueryHost(context: KbQueryContext): KbQueryHost {
     get readPaths(): KbReadPathResolver {
       return createDefaultKbReadPaths(context);
     },
-    requireProjectRoot(operation: string): string {
+    requireProjectDataDir(operation: string): string {
       if (!context.projectRoot) {
         throw new Error(`KB ${operation} requires an explicit projectRoot in context`);
       }
-      return context.projectRoot;
+      return resolveQueryRuntime(context).paths.projectData(context.projectRoot);
     },
   };
 }

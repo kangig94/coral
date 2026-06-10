@@ -14,9 +14,9 @@ import {
 import { buildEntityRelationshipGraph } from './graph.js';
 import { computeCommunitySummaryInputFingerprintForCommunity, generateCommunitySummary } from './summary.js';
 import type { CommunityDocument, ExistingGeneratedCommunity } from './contracts.js';
-import { CURATE_STALE_REASON, runCurateClaude } from '../operations.js';
+import { CURATE_STALE_REASON, runCurateAssistant } from '../operations.js';
 import { readCurateState, writeCurateState } from '../state/index.js';
-import type { SpawnCliFn } from '../spawn-cli.js';
+import type { CurateAssistantPort } from '../assistant.js';
 import { curateDb } from '../db-access.js';
 
 export type RunCommunitySubphaseOptions = {
@@ -128,7 +128,7 @@ function sameSnapshot(left: KbCorpusSnapshot, right: KbCorpusSnapshot): boolean 
 
 async function prepareCommunityPayload(
   kb: KbRuntime,
-  spawnCli: SpawnCliFn,
+  curateAssistant: CurateAssistantPort,
   options: RunCommunitySubphaseOptions,
 ): Promise<CommunityPreparedPayload | null> {
   const { signal, shouldStop = () => false } = options;
@@ -213,8 +213,8 @@ async function prepareCommunityPayload(
         childCommunities: communitySummaryChildren(community, communitiesBySlug),
         priorCommunity: community,
         priorSummaryInputFingerprint: currentSummaryFingerprint,
-        runClaude(prompt, extraArgs, summarySignal) {
-          return runCurateClaude(kb, spawnCli, prompt, extraArgs, summarySignal);
+        runClaude(prompt, summarySignal) {
+          return runCurateAssistant(curateAssistant, prompt, 'community-summary', summarySignal);
         },
         signal,
       });
@@ -251,10 +251,10 @@ async function prepareCommunityPayload(
 
 export async function runCommunitySubphase(
   kb: KbRuntime,
-  spawnCli: SpawnCliFn,
+  curateAssistant: CurateAssistantPort,
   options: RunCommunitySubphaseOptions = {},
 ): Promise<boolean> {
-  const prepared = await prepareCommunityPayload(kb, spawnCli, options);
+  const prepared = await prepareCommunityPayload(kb, curateAssistant, options);
   if (prepared === null) {
     return false;
   }

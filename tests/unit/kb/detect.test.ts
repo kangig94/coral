@@ -160,8 +160,6 @@ describe('kb detection and paths', () => {
       runtimeDir: paths.kbRuntimeDir('dev'),
       db: createKbTestDb(paths.kbRuntimeDir('dev')),
     });
-    const projectRoot = join(mockState.tmpHome, 'project');
-    mkdirSync(projectRoot, { recursive: true });
     const markdownRoot = join(mockState.tmpHome, 'vault');
     const machineLocalRuntimeDir = join(mockState.tmpHome, '.coral', 'data-dev', 'kb');
     const notePath = join(markdownRoot, 'notes', 'coral-kb-runtime-root.md');
@@ -177,13 +175,12 @@ describe('kb detection and paths', () => {
     expect(kb.principlePath('contract-first-design')).toBe(principlePath);
     expect(paths.kbRuntimeDir('dev')).toBe(machineLocalRuntimeDir);
     expect(kb.runtimeDir).toBe(machineLocalRuntimeDir);
-    expect(paths.memoPathFromContext(projectRoot, 'memo.md')).toBe(
-      join(mockState.tmpHome, '.coral', 'projects', 'local-project', 'memo', 'memo.md'),
-    );
+    const projectDataDir = join(mockState.tmpHome, '.coral', 'projects', 'local-project');
+    expect(paths.memoPathFromContext(projectDataDir, 'memo.md')).toBe(join(projectDataDir, 'memo', 'memo.md'));
     expect(() => kb.notePath('../escape')).toThrow();
     expect(() => kb.principlePath('../escape')).toThrow();
     expect(() => paths.notePathFromName('../escape', markdownRoot)).toThrow();
     expect(() => paths.principlePathFromName('../escape', markdownRoot)).toThrow();
-    expect(() => paths.memoPathFromContext(projectRoot, '../escape.md')).toThrow();
+    expect(() => paths.memoPathFromContext(projectDataDir, '../escape.md')).toThrow();
   });
 });

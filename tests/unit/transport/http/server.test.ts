@@ -35,7 +35,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { projectDataDir, resolveProjectSource } from '#src/infra/project-source.js';
+import { resolveProjectSource } from '#src/infra/project-source.js';
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
 import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import type { JobLaunch } from '#src/jobs/records.js';
@@ -1401,7 +1401,7 @@ describe('execution backend server', () => {
   it('routes kb memo list and consolidated delete through the backend tool handlers', async () => {
     const backend = await startBackendServer();
     const projectRoot = join(mockState.tmpHome, 'project');
-    const memoRoot = join(projectDataDir(projectRoot), 'memo');
+    const memoRoot = join(runtime.paths.projectData(projectRoot), 'memo');
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(memoRoot, { recursive: true });
     const aMemo = join(memoRoot, 'a.md');
@@ -1658,7 +1658,7 @@ describe('execution backend server', () => {
           listPrinciples: (args: Record<string, unknown>) =>
             withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
           createNote: (args: Record<string, unknown>, ctx: unknown) =>
-            withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx as never)),
+            withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx as never, deps.runtime)),
           updateNote: (args: Record<string, unknown>) =>
             withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem)),
           deleteNote: (slug: string) => withKbAsync((kbSubsystem) => handleKbDelete({ note: slug }, kbSubsystem)),
@@ -4618,6 +4618,7 @@ describe('execution backend server', () => {
         providerHostManager: providerHostManager as never,
         handoffQuiescePorts: () => [fakeService as never],
         createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
+        createCurateAssistant: () => ({ complete: async () => '' }),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
         runStartupRecoveryFn: async () => [],

@@ -105,6 +105,10 @@ export class InMemoryPaths implements RuntimePaths {
     this.projectSourceCache.set(normalized, source);
     return source;
   }
+
+  projectData(projectRoot: string): string {
+    return this.coral.projects.dataDir(this.projectSource(projectRoot));
+  }
 }
 
 export class SequentialIds implements IdPort {

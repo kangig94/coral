@@ -347,6 +347,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     providerHostManager: createFakeProviderHostManager() as never,
     handoffQuiescePorts: () => [],
     createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
+    createCurateAssistant: () => ({ complete: async () => '' }),
     registerBuiltInProvidersFn: () => {},
     // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
     // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion

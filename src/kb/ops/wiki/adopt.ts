@@ -36,7 +36,7 @@ import { prependWikiKnowledgeLinkInMutation } from './mutation.js';
  */
 export async function adoptIntoWiki(
   rt: KbRuntime,
-  projectRoot: string,
+  projectDataDir: string,
   input: KbWikiAdoptInput,
   onSchedule?: () => void,
 ): Promise<KbWikiAdoptResponse> {
@@ -56,9 +56,9 @@ export async function adoptIntoWiki(
   }
   loadKbWiki(rt.storagePort, wikiPath);
 
-  let memoPath = memoPathFromContext(projectRoot, memo);
+  let memoPath = memoPathFromContext(projectDataDir, memo);
   if (!rt.storagePort.existsSync(memoPath) && !memo.endsWith('.md')) {
-    memoPath = memoPathFromContext(projectRoot, `${memo}.md`);
+    memoPath = memoPathFromContext(projectDataDir, `${memo}.md`);
   }
   if (!rt.storagePort.existsSync(memoPath)) {
     throw new Error(`Memo file not found: ${memoPath}`);

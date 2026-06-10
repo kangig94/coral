@@ -1,7 +1,7 @@
 import type { ConsumerRegistration, CorpusStateReadPort, JournalConsumerReadPort } from '../store/consumer-contract.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
 import type { IdPort, ProcessPort } from '../runtime/ports.js';
-import type { SpawnCliFn } from './curate/spawn-cli.js';
+import type { CurateAssistantPort } from './curate/assistant.js';
 import type { CorpusStorage } from './corpus/rescan/storage.js';
 import type { CorpusSnapshot } from './corpus/snapshot.js';
 import type { KbMutationLockDiagnostics, KbMutationLockOptions } from './corpus/mutation-lock.js';
@@ -150,7 +150,7 @@ export interface KbRuntime extends KbEngineRuntimeBase {
    * writes — use storagePort instead. Forbidden in auto-fix.ts.
    */
   readonly corpusStorage: CorpusStorage;
-  readonly spawnCli: SpawnCliFn;
+  readonly curateAssistant: CurateAssistantPort;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
   readIndex(): KbIndex | null;

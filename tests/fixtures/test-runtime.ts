@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { EngineManifest, ExpansionHost } from '#src/expansion/contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime, Disposable } from '#src/runtime/ports.js';
@@ -15,39 +15,36 @@ import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from 
 import { SimulationRuntime } from '../../tools/simulation/runtime.js';
 
 /**
- * Benign default `spawnCli` for KB tests: returns a clean exit. Tests that exercise
- * provider-launching code paths must override this explicitly so accidental real
- * spawns surface as test-time mismatches, not silent successes.
+ * Benign default curate assistant for KB tests: returns empty output. Tests that
+ * exercise provider-launching code paths must override this explicitly so
+ * accidental real launches surface as test-time mismatches, not silent successes.
  */
-const TEST_SPAWN_CLI_NOOP: SpawnCliFn = async () => ({
-  stdout: '',
-  stderr: '',
-  code: 0,
-  aborted: false,
-});
+const TEST_CURATE_ASSISTANT_NOOP: CurateAssistantPort = {
+  complete: async () => '',
+};
 
 export interface CreateTestKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
   db: Database;
   /**
-   * Source for the four port slots (`storage`/`spawnCli`/`processPort`/`envPort`).
+   * Source for the port slots (`storage`/`processPort`/`envPort`).
    * Defaults to a fresh `SimulationRuntime`. Pass an explicit runtime when the
    * test exercises gitSync or shares state across kb instances.
    */
   runtime?: Runtime;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   readOnlyOrama?: boolean;
-  spawnCli?: SpawnCliFn;
+  curateAssistant?: CurateAssistantPort;
 }
 
 /**
- * Constructs a `KbRuntime` for tests, sourcing the four port slots
- * (`storage`, `spawnCli`, `processPort`, `envPort`) from a real-FS-backed
- * runtime by default — the kb runtime now reads corpus markdown through
- * `corpusStorage`, so tests that write fixture files via `node:fs` need the
- * port to read from the same disk. Tests pass their own `runtime` to share
- * state with surrounding fixture code or to opt into `SimulationRuntime`.
+ * Constructs a `KbRuntime` for tests, sourcing storage/process/env ports from
+ * a real-FS-backed runtime by default — the kb runtime now reads corpus
+ * markdown through `corpusStorage`, so tests that write fixture files via
+ * `node:fs` need the port to read from the same disk. Tests pass their own
+ * `runtime` to share state with surrounding fixture code or to opt into
+ * `SimulationRuntime`.
  * `time`/`ids` defer to `createKbRuntime`'s `SYSTEM_TIME_PORT` / `randomUUID`
  * defaults so existing tests that rely on `vi.setSystemTime` keep working
  * without re-injecting clock ports through the helper.
@@ -64,7 +61,7 @@ export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRunt
     envPort: runtime.env,
     ids: runtime.ids,
     storage: runtime.storage,
-    spawnCli: options.spawnCli ?? TEST_SPAWN_CLI_NOOP,
+    curateAssistant: options.curateAssistant ?? TEST_CURATE_ASSISTANT_NOOP,
     processPort: runtime.process,
   });
 }

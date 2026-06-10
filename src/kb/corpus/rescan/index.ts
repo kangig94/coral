@@ -98,7 +98,7 @@ export async function performRescan(
     }
     const gitSync = createGitSyncController({
       kb,
-      spawnCli: kb.spawnCli,
+      curateAssistant: kb.curateAssistant,
       processPort: kb.processPort,
       storagePort: kb.storagePort,
       envPort: kb.envPort,

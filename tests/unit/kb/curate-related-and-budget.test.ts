@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
@@ -24,6 +24,12 @@ vi.mock('#src/kb/curate/usage-budget.js', () => ({
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_IMPORTED_AT = '2026-03-20T00:00:00.000Z';
+
+function assistantFromText(stdout: string): CurateAssistantPort {
+  return {
+    complete: async () => stdout,
+  };
+}
 
 function fingerprint(content: string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -144,10 +150,10 @@ describe('curate related-resolution and budget guards', () => {
   let internals: CurateTestHandle;
   let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
-  function useScheduler(spawnCli: SpawnCliFn): void {
+  function useScheduler(curateAssistant: CurateAssistantPort): void {
     scheduler = createCurateScheduler({
       kb: runtime,
-      spawnCli,
+      curateAssistant,
       processPort: gitSyncRuntime.process,
       storagePort: gitSyncRuntime.storage,
       envPort: gitSyncRuntime.env,
@@ -155,7 +161,7 @@ describe('curate related-resolution and budget guards', () => {
     });
     internals = createCurateTestHandle({
       kb: runtime,
-      spawnCli,
+      curateAssistant,
       schedule: () => scheduler.schedule(),
     });
   }
@@ -169,12 +175,7 @@ describe('curate related-resolution and budget guards', () => {
       db: createKbTestDb(tempDir),
       runtime: gitSyncRuntime,
     });
-    useScheduler(async () => ({
-      stdout: '[]',
-      stderr: '',
-      code: 0,
-      aborted: false,
-    }));
+    useScheduler(assistantFromText('[]'));
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-03-25T12:00:00.000Z'));
   });
@@ -410,12 +411,7 @@ describe('curate related-resolution and budget guards', () => {
       initialized: true,
     });
 
-    useScheduler(async () => ({
-      stdout: JSON.stringify(assignments),
-      stderr: '',
-      code: 0,
-      aborted: false,
-    }));
+    useScheduler(assistantFromText(JSON.stringify(assignments)));
 
     await scheduler.start();
     await settleCurateRuntime(scheduler);

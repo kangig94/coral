@@ -396,7 +396,7 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
     const incidents = projectIncidents(buildCorpusScanView(kb));
     const gitSync = createGitSyncController({
       kb,
-      spawnCli: kb.spawnCli,
+      curateAssistant: kb.curateAssistant,
       processPort: kb.processPort,
       storagePort: kb.storagePort,
       envPort: kb.envPort,

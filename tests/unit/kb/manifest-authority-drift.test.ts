@@ -26,7 +26,7 @@ import {
   repairIncidentLocus,
   type DetectedIncident,
 } from '#src/kb/corpus/rescan/incidents/catalog.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 
@@ -162,13 +162,10 @@ function assertAuthorityMatchesDisk(kb: KbRuntime): void {
   expect(snapshot.metadataManifestHash).toBe(computeCorpusSurfaceManifestHash(kb, 'metadata'));
 }
 
-function discoverySpawn(stdout: string): SpawnCliFn {
-  return async () => ({
-    stdout,
-    stderr: '',
-    code: 0,
-    aborted: false,
-  });
+function discoverySpawn(stdout: string): CurateAssistantPort {
+  return {
+    complete: async () => stdout,
+  };
 }
 
 afterEach(() => {
@@ -462,12 +459,15 @@ describe('manifest authority drift checks', () => {
       name: 'promote',
       run: async () => {
         const fixture = await createRuntimeFixture(() => {}, { reindexOnBoot: false });
-        const projectRoot = mkdtempSync(join(fixture.root, 'local-project-'));
-        const projectMemoDir = memoDir(projectRoot);
+        // `memoDir` and `promote` take the resolved per-project DATA dir. In production
+        // the shell passes `runtime.paths.projectData(projectRoot)`; here a tmp dir under
+        // fixture.root stands in directly, which keeps the memo read/write isolated.
+        const projectDataDir = mkdtempSync(join(fixture.root, 'local-project-'));
+        const projectMemoDir = memoDir(projectDataDir);
         mkdirSync(projectMemoDir, { recursive: true });
         writeFileSync(join(projectMemoDir, 'promotion.md'), renderMemo(), 'utf-8');
 
-        await promote(fixture.kb, projectRoot, {
+        await promote(fixture.kb, projectDataDir, {
           memo: 'promotion.md',
           title: 'Promotion',
           content: 'Promoted content.',
@@ -513,7 +513,7 @@ describe('manifest authority drift checks', () => {
         const runtime = createRealRuntime('prod');
         const gitSync = createGitSyncController({
           kb: fixture.kb,
-          spawnCli: discoverySpawn(''),
+          curateAssistant: discoverySpawn(''),
           processPort: runtime.process,
           storagePort: runtime.storage,
           envPort: runtime.env,

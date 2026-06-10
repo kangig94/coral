@@ -14,7 +14,7 @@ import { calculateCommunityBatchBackoffTicks } from '#src/kb/curate/scheduler.js
 import { type CurateCursor, type PendingDiscovery } from '#src/kb/curate/state/index.js';
 import { initializeCurateStateIfNeeded } from '#src/kb/curate/state/bootstrap.js';
 import type { ClassificationAssignment, CurateClaim, MetadataTarget } from '#src/kb/curate/pipeline-types.js';
-import type { SpawnCliFn } from '#src/kb/curate/spawn-cli.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 
 export type CurateTestHandle = {
   claimCurateRun(today: string): Promise<CurateClaim | null>;
@@ -33,12 +33,12 @@ export type CurateTestHandle = {
 
 export function createCurateTestHandle({
   kb,
-  spawnCli,
+  curateAssistant,
   schedule = () => {},
   shouldStop = () => false,
 }: {
   kb: KbRuntime;
-  spawnCli: SpawnCliFn;
+  curateAssistant: CurateAssistantPort;
   schedule?: () => void;
   shouldStop?: () => boolean;
 }): CurateTestHandle {
@@ -47,13 +47,13 @@ export function createCurateTestHandle({
       return claimCurateRun(kb, today);
     },
     runClassificationBatches(claim, index) {
-      return runClassificationBatches(kb, spawnCli, claim, index);
+      return runClassificationBatches(kb, curateAssistant, claim, index);
     },
     commitMetadataTargets(targets) {
       return commitMetadataTargets(kb, targets);
     },
     runPrincipleDiscovery(processedThrough) {
-      return runPrincipleDiscovery(kb, spawnCli, processedThrough, { schedule });
+      return runPrincipleDiscovery(kb, curateAssistant, processedThrough, { schedule });
     },
     recordCurateFailure(through, error) {
       return recordCurateFailure(kb, through, error);
@@ -71,7 +71,7 @@ export function createCurateTestHandle({
       return removePendingDiscovery(kb, entry);
     },
     runCommunitySubphase() {
-      return runCommunitySubphase(kb, spawnCli, { shouldStop });
+      return runCommunitySubphase(kb, curateAssistant, { shouldStop });
     },
     calculateCommunityBatchBackoffTicks,
     async initializeCurateStateIfNeeded() {

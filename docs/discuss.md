@@ -89,6 +89,10 @@ Discuss storage is Journal-scoped. Events live in `events` on the `discuss/<sess
 
 Hydration reads the projected snapshot plus the persisted event tail. On coordinator startup, Coral recovers known discuss sources and reattaches non-terminal sessions.
 
+### Completed-discussion record
+
+When a session reaches its final synthesis, the shell materializes a human-readable markdown record at `<projectDataDir>/discuss/<YYYYMMDD-HHMMSS>-<topic-slug>.md` (`projectDataDir` = `runtime.paths.projectData(projectRoot)`, alongside the project's memos). The record contains the header, participants, the full transcript (speeches, follow-ups, epoch summaries), and the final synthesis. It is a best-effort, rebuildable export of the `discuss` journal stream — the authoritative record stays in the Journal, the write is fail-isolated (a failure never breaks the discussion), and it is written only on successful synthesis (aborted/idle-ended sessions produce no file). The export lives in the project data dir, so it is not subject to the `exports/jobs` retention prune. See `src/discuss/transcript-export.ts`.
+
 ## Projections and Authority
 
 Discuss exposes three read models:

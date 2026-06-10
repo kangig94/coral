@@ -10,6 +10,7 @@ import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
+import { parsePositiveInt } from './live/worker-limits.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
@@ -39,6 +40,7 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
+import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -125,6 +127,20 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
  */
 export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Subsystem<KnowledgeBaseRuntime>;
 
+/**
+ * Builds the curate assistant the KB subsystem uses to drive provider-backed
+ * curation. Injected (not imported) so this lower composition layer never
+ * statically reaches a provider runtime module — the production assembly wires
+ * the real Claude-backed factory; the simulation/idle paths use a stub. Keeps
+ * `tools/simulation` sealed off from `src/providers/claude` (see
+ * `tools/simulation/sealed-inventory.json`).
+ */
+export type CurateAssistantFactory = (deps: {
+  readonly runtime: Runtime;
+  readonly launchCoordinator: Pick<LaunchCoordinator, 'withInternalPermit'>;
+  readonly providerHostManager: Pick<ProviderHostManager, 'acquireServer'>;
+}) => CurateAssistantPort;
+
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode): Promise<void>;
   onIdleCheck(): boolean;
@@ -167,22 +183,52 @@ export function waitForInflightDrain(
   });
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_JOB_RETENTION_DAYS = 14;
+
+/**
+ * Resolve the terminal-job export retention window from `CORAL_JOBS_RETENTION_DAYS`
+ * (default 14 days) to milliseconds. Invalid/non-positive values fall back to the
+ * default.
+ */
+export function resolveJobRetentionMs(raw: string | undefined): number {
+  return parsePositiveInt(raw, DEFAULT_JOB_RETENTION_DAYS) * DAY_MS;
+}
+
+function isAgedOut(updatedAt: string, nowMs: number, retentionMs: number): boolean {
+  const terminalMs = Date.parse(updatedAt);
+  return Number.isFinite(terminalMs) && nowMs - terminalMs > retentionMs;
+}
+
+/**
+ * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
+ * rebuildable cache of the journal — `JobStore.ensureResultArtifact` regenerates
+ * `result.md` from the journal terminal event on the next read — so pruning only
+ * reclaims disk; `jobs list`/`detail` keep working from the journal projection.
+ * A terminal job is pruned when it is left over from a previous bundle version OR
+ * older than the retention window. Live jobs are never touched.
+ */
 export function cleanupStaleJobs(
   progressStore: JobStore,
   currentBundleHash: string,
   log: (message: string) => void,
   storage: Pick<Runtime['storage'], 'rmSync'>,
+  nowMs: number,
+  retentionMs: number,
 ): void {
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
     if (!status) continue;
     if (!isTerminalPhase(status.phase)) continue;
-    if (!status.bundleHash || status.bundleHash === currentBundleHash) continue;
+
+    const fromOldBundle = status.bundleHash !== undefined && status.bundleHash !== currentBundleHash;
+    const agedOut = isAgedOut(status.updatedAt, nowMs, retentionMs);
+    if (!fromOldBundle && !agedOut) continue;
 
     try {
       storage.rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
       progressStore.purgeFromCache(jobId);
-      log(`Cleaned up stale job: ${jobId}\n`);
+      log(`Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${jobId}\n`);
     } catch {
       // best-effort
     }
@@ -316,6 +362,7 @@ export type LifecycleDeps = {
   readonly providerHostManager: ProviderHostManager;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
+  readonly createCurateAssistant: CurateAssistantFactory;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   readonly runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -367,6 +414,7 @@ async function runLifecycleStartup({
     storeServicesRef,
     createStoreServicesFromDbFn,
     launchCoordinator,
+    providerHostManager,
     providerRegistry,
     server,
     getRecoveryService,
@@ -377,6 +425,7 @@ async function runLifecycleStartup({
     removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn,
     createKbSubsystemFn,
+    createCurateAssistant,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
     runStartupRecoveryFn,
@@ -557,7 +606,11 @@ async function runLifecycleStartup({
           markdownRoot: runtime.paths.coral.corpus.kbRoot,
           runtimeDir: kbRuntimeDir(flavor),
         },
-        spawnCli: launchCoordinator.spawnCli.bind(launchCoordinator),
+        curateAssistant: createCurateAssistant({
+          runtime,
+          launchCoordinator,
+          providerHostManager,
+        }),
         processPort: runtime.process,
         storagePort: runtime.storage,
         envPort: runtime.env,

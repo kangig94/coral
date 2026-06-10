@@ -141,6 +141,8 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       ids: runtime.ids,
       env: runtime.env,
       time: runtime.time,
+      storage: runtime.storage,
+      projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
     },
     jobStatusReader: {
       read: (jobId) => progressStore.readStatus(jobId),

@@ -161,7 +161,7 @@ function buildKbReadOptions(
   kbSubsystem: KnowledgeBaseRuntime | undefined,
 ): KbReadOptions {
   const options: KbReadOptions = {
-    ...(ctx?.projectRoot === undefined ? {} : { projectRoot: ctx.projectRoot }),
+    ...(ctx?.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
     storage: runtime.storage,
   };
   return kind === 'memo' ? options : { ...options, paths: kbReadPaths(kbSubsystem) };
@@ -269,7 +269,7 @@ export function handleKbRead(
   try {
     return kbSuccess(
       readEntry(parsed.data, {
-        ...(ctx.projectRoot === undefined ? {} : { projectRoot: ctx.projectRoot }),
+        ...(ctx.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
         storage: runtime.storage,
         paths: kbReadPaths(kbSubsystem),
       }),
@@ -287,6 +287,7 @@ export async function handleKbPromote(
   args: KbArgs,
   kbSubsystem: KnowledgeBaseRuntime,
   ctx: InvocationContext,
+  runtime: KbToolRuntime,
 ): Promise<KbToolResult> {
   const parsed = kbPromoteSchema.safeParse(args);
   if (!parsed.success) {
@@ -294,7 +295,7 @@ export async function handleKbPromote(
   }
 
   return runKbMutationAction(kbSubsystem, () =>
-    kbPromote(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+    kbPromote(kbSubsystem.kb, runtime.paths.projectData(ctx.projectRoot), parsed.data, () => {
       kbSubsystem.curateScheduler.schedule();
     }),
   );
@@ -373,6 +374,7 @@ export async function handleKbWikiAdopt(
   args: KbArgs,
   kbSubsystem: KnowledgeBaseRuntime,
   ctx: InvocationContext,
+  runtime: KbToolRuntime,
 ): Promise<KbToolResult> {
   const parsed = kbWikiAdoptSchema.safeParse(args);
   if (!parsed.success) {
@@ -380,7 +382,7 @@ export async function handleKbWikiAdopt(
   }
 
   return runKbMutationAction(kbSubsystem, () =>
-    adoptIntoWiki(kbSubsystem.kb, ctx.projectRoot, parsed.data, () => {
+    adoptIntoWiki(kbSubsystem.kb, runtime.paths.projectData(ctx.projectRoot), parsed.data, () => {
       kbSubsystem.curateScheduler.schedule();
     }),
   );
@@ -469,7 +471,8 @@ export function handleKbMemo(args: KbArgs, ctx: InvocationContext, runtime: KbTo
   return runKbSyncAction(() =>
     writeMemo(
       { storagePort: runtime.storage, ids: runtime.ids },
-      ctx.projectRoot,
+      runtime.paths.projectData(ctx.projectRoot),
+      runtime.paths.projectSource(ctx.projectRoot),
       {
         topic: parsed.data.topic,
         content: parsed.data.content,
@@ -491,7 +494,7 @@ export function handleKbMemoList(args: KbArgs, ctx: InvocationContext, runtime: 
     return owner.result;
   }
 
-  return runKbSyncAction(() => listMemos(runtime.storage, ctx.projectRoot, owner.owner));
+  return runKbSyncAction(() => listMemos(runtime.storage, runtime.paths.projectData(ctx.projectRoot), owner.owner));
 }
 
 export function handleKbMemoDelete(args: KbArgs, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
@@ -534,9 +537,10 @@ export function handleKbMemoDeleteConsolidated(
   }
 
   const { pattern } = parsed.data;
+  const projectDataDir = runtime.paths.projectData(ctx.projectRoot);
   if (pattern !== undefined) {
-    return runKbSyncAction(() => deleteMemos(runtime.storage, ctx.projectRoot, { pattern, owner: owner.owner }));
+    return runKbSyncAction(() => deleteMemos(runtime.storage, projectDataDir, { pattern, owner: owner.owner }));
   }
 
-  return runKbSyncAction(() => purgeMemos(runtime.storage, ctx.projectRoot, owner.owner));
+  return runKbSyncAction(() => purgeMemos(runtime.storage, projectDataDir, owner.owner));
 }

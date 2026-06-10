@@ -59,7 +59,7 @@ bridge/coral-backend.cjs
       └── Claude PTY broker helper (`bridge/coral-claude-appserver.cjs`, when needed)
 ```
 
-The Claude helper keeps its historical bridge filename, but the runtime path is PTY-based: Coral launches interactive `claude` through `node-pty`, writes turns to stdin after the terminal is ready, and derives completion/progress from Claude's JSONL transcript. It does not use `claude -p` for provider turns.
+The Claude helper keeps its historical bridge filename, but the runtime path is PTY-based: Coral launches interactive `claude` through `@lydell/node-pty`, writes turns to stdin after the terminal is ready (re-sending if the transcript shows the prompt was dropped, then failing fast rather than blocking until the turn timeout), and derives completion/progress from Claude's JSONL transcript. It does not use `claude -p` for provider turns.
 
 ## Backend HTTP Surface
 
@@ -133,7 +133,7 @@ Not every command becomes a job. Jobs are for work that is long-running, observa
 | Class | Examples | Surface | Rule |
 | --- | --- | --- | --- |
 | Direct read | `kb search`, `kb read`, `jobs`, `discuss watch` | Return result immediately | No job id; may use `read-model/CoralStore` or KB query helpers. KB list/read paths do not persist derived rebuild artifacts. |
-| Direct mutation | KB note write/delete; memo write/delete | Return result after the small write | Corpus writes use the KB mutation lock. Memos are project-scoped scratch artifacts, not Corpus authority. |
+| Direct mutation | KB note write/delete; memo write/delete | Return result after the small write | Corpus writes use the KB mutation lock. Memos are project-scoped scratch artifacts (under `runtime.paths.projectData(projectRoot)` — see design-rationale §5.3), not Corpus authority. |
 | Provider/session job | `codex`, `claude`, workflow atoms | Return job id; `wait` observes terminal state | User-facing agent work is Journal-observable and recoverable. |
 | Internal coordinator job | `kb source import`, `kb reindex` | Default may wait; `async` returns job id | Used when source conversion, indexing, or readiness can take time. |
 | Projection freshness wait | Orama/Needle catch-up after Corpus commit | `ConsumerDriver.waitFreshUntil(...)` | Freshness wait is not itself truth; failure reports against the hosting command/job. |

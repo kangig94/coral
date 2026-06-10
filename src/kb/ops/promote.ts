@@ -12,7 +12,7 @@ import { currentEntrySeq } from '../index-state.js';
 
 export async function promote(
   rt: KbRuntime,
-  projectRoot: string,
+  projectDataDir: string,
   input: KbPromoteInput,
   onSchedule?: () => void,
 ): Promise<{ path: string }> {
@@ -25,9 +25,9 @@ export async function promote(
   const domain = assertSlug(input.domain, 'domain');
   const topic = assertNoteSlug(input.topic, 'topic');
 
-  let memoPath = memoPathFromContext(projectRoot, memo);
+  let memoPath = memoPathFromContext(projectDataDir, memo);
   if (!rt.storagePort.existsSync(memoPath) && !memo.endsWith('.md')) {
-    memoPath = memoPathFromContext(projectRoot, `${memo}.md`);
+    memoPath = memoPathFromContext(projectDataDir, `${memo}.md`);
   }
   if (!rt.storagePort.existsSync(memoPath)) {
     throw new Error(`Memo file not found: ${memoPath}`);

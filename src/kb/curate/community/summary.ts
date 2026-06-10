@@ -342,7 +342,7 @@ export async function generateCommunitySummary(options: {
   childCommunities?: ChildCommunitySummary[];
   priorCommunity?: { summary?: string };
   priorSummaryInputFingerprint?: string;
-  runClaude: (prompt: string, extraArgs?: string[], signal?: AbortSignal) => Promise<string>;
+  runClaude: (prompt: string, signal?: AbortSignal) => Promise<string>;
   signal?: AbortSignal;
 }): Promise<string | undefined> {
   const childCommunities = options.childCommunities?.length ? [...options.childCommunities] : undefined;
@@ -373,7 +373,7 @@ export async function generateCommunitySummary(options: {
         )
       : buildParentCommunitySummaryPrompt(options.community, childCommunities);
 
-  const rawSummary = await options.runClaude(prompt, undefined, options.signal);
+  const rawSummary = await options.runClaude(prompt, options.signal);
   const summary = normalizeGeneratedSummary(rawSummary);
   if (summary === undefined) {
     throw new Error(`Community summary returned empty text for ${options.community.slug}.`);

@@ -22,11 +22,6 @@ vi.mock('#src/kb/paths.js', async () => {
   };
 });
 
-vi.mock('#src/infra/project-source.js', () => ({
-  projectDataDir: (dir: string) => `/mock/projects/${dir.replace(/\//g, '-')}`,
-  resolveProjectSource: () => 'mock/source',
-}));
-
 beforeEach(() => {
   mockInjectMd = '';
   mockInjectMdError = null;
@@ -46,7 +41,6 @@ describe('resolveInjectMd', () => {
 
     const result = resolveInjectMd({
       storage: mockStorage,
-      workingDirectory: '/wd',
       ownerSessionId: 'valid-session-123',
       kbRoot: '/mock/kb',
     });
@@ -61,7 +55,6 @@ describe('resolveInjectMd', () => {
 
     const result = resolveInjectMd({
       storage: mockStorage,
-      workingDirectory: '/wd',
       ownerSessionId: 'valid-session-123',
       kbRoot: '/mock/kb',
     });
@@ -72,7 +65,7 @@ describe('resolveInjectMd', () => {
     mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', kbRoot: '/mock/kb' });
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toContain('base');
     expect(result).not.toContain('session content');
     expect(result).toContain('rest');
@@ -92,7 +85,7 @@ describe('resolveInjectMd', () => {
     ].join('\n');
     const resolveInjectMd = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, workingDirectory: '/wd', kbRoot: '/mock/kb' });
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toContain('top');
     expect(result).not.toContain('owner stuff');
     expect(result).toContain('middle');
@@ -106,7 +99,6 @@ describe('resolveInjectMd', () => {
 
     const result = resolveInjectMd({
       storage: mockStorage,
-      workingDirectory: '/wd',
       ownerSessionId: 'my-session',
       kbRoot: '/mock/kb',
     });
@@ -119,10 +111,32 @@ describe('resolveInjectMd', () => {
 
     const result = resolveInjectMd({
       storage: mockStorage,
-      workingDirectory: '/wd',
       ownerSessionId: 'sess',
       kbRoot: '/mock/kb',
     });
     expect(result).toBe('');
+  });
+
+  it('substitutes {{CORAL_PROJECTS}} and {{PROJECT_SOURCE}} from caller-resolved values', async () => {
+    mockInjectMd = 'projects: {{CORAL_PROJECTS}}\nsource: {{PROJECT_SOURCE}}';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      kbRoot: '/mock/kb',
+      coralProjects: '/mock/projects/acme-repo',
+      projectSource: 'acme/repo',
+    });
+    expect(result).toContain('projects: /mock/projects/acme-repo');
+    expect(result).toContain('source: acme/repo');
+  });
+
+  it('leaves {{CORAL_PROJECTS}} and {{PROJECT_SOURCE}} placeholders when caller omits them', async () => {
+    mockInjectMd = 'projects: {{CORAL_PROJECTS}}\nsource: {{PROJECT_SOURCE}}';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    expect(result).toContain('projects: {{CORAL_PROJECTS}}');
+    expect(result).toContain('source: {{PROJECT_SOURCE}}');
   });
 });

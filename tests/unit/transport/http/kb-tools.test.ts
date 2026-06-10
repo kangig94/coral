@@ -157,6 +157,12 @@ const testRuntime = {
   ids: {
     uuid: () => 'test-uuid',
   },
+  paths: {
+    // Identity resolver: the per-project data dir under test is the project root
+    // itself, so `memoDir(projectData)` keeps matching the fixture memo paths.
+    projectData: (projectRoot: string) => projectRoot,
+    projectSource: (projectRoot: string) => projectRoot,
+  },
 } as unknown as KbToolRuntime;
 
 function expectInvalidRequest(result: unknown): void {
@@ -200,6 +206,7 @@ describe('kb-tools', () => {
           },
           createKbSubsystem(),
           testContext,
+          testRuntime,
         ),
     ],
     [
@@ -755,6 +762,7 @@ level: 1
       },
       kbSubsystem,
       testContext,
+      testRuntime,
     );
 
     expect(mockState.adoptIntoWiki).toHaveBeenCalledWith(

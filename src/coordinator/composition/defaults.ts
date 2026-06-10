@@ -11,6 +11,8 @@ import {
   closeServer as defaultCloseServer,
   listen as defaultListen,
   markJobsAsError,
+  resolveJobRetentionMs,
+  type CurateAssistantFactory,
 } from '../lifecycle.js';
 import type { JobStore } from '../../jobs/store.js';
 import * as discussRecovery from '../../discuss/shell/recovery.js';
@@ -19,6 +21,16 @@ import type { CoordinatorCoreOptions, CreateServerFn, FetchFn } from './types.js
 import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import type { Subsystem, SubsystemStatus } from '../subsystems/contract.js';
 import { KB_ID, SubsystemUnavailableError } from '../subsystems/contract.js';
+
+// Mirrors the idle KB default: production wires the real Claude-backed factory
+// through `createCoordinatorServer`. The fallback is never invoked on the
+// default (idle KB) path; if it ever is, it fails loudly rather than silently
+// no-op'ing a curation request.
+const defaultIdleCurateAssistant: CurateAssistantFactory = () => ({
+  async complete() {
+    throw new Error('Curate assistant is not configured; the real factory is wired by createCoordinatorServer.');
+  },
+});
 
 const defaultIdleKbSubsystem = (): Subsystem<KnowledgeBaseRuntime> => {
   const status: SubsystemStatus = { id: KB_ID, phase: 'initializing', attempt: 0 };
@@ -44,6 +56,7 @@ type BackendEagerDefaults = {
   readonly removeBackendInfoIfOwnerFn: NonNullable<CoordinatorCoreOptions['removeBackendInfoIfOwnerFn']>;
   readonly closeServerFn: NonNullable<CoordinatorCoreOptions['closeServerFn']>;
   readonly createKbSubsystemFn: NonNullable<CoordinatorCoreOptions['createKbSubsystemFn']>;
+  readonly createCurateAssistant: NonNullable<CoordinatorCoreOptions['createCurateAssistant']>;
   readonly registerBuiltInProvidersFn: NonNullable<CoordinatorCoreOptions['registerBuiltInProvidersFn']>;
   readonly recoverPersistedDiscussFn: NonNullable<CoordinatorCoreOptions['recoverPersistedDiscussFn']>;
   readonly fetchFn: FetchFn;
@@ -107,6 +120,8 @@ export function resolveCoordinatorDefaults(
   // KB-routed handlers cleanly produce `kb_initializing` envelopes.
   const createKbSubsystemFn: NonNullable<CoordinatorCoreOptions['createKbSubsystemFn']> =
     options.createKbSubsystemFn ?? defaultIdleKbSubsystem;
+  const createCurateAssistant: NonNullable<CoordinatorCoreOptions['createCurateAssistant']> =
+    options.createCurateAssistant ?? defaultIdleCurateAssistant;
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});
   const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? discussRecovery.runStartup;
   const createServerFn: CreateServerFn = options.createServerFn ?? createServer;
@@ -126,6 +141,7 @@ export function resolveCoordinatorDefaults(
     removeBackendInfoIfOwnerFn,
     closeServerFn,
     createKbSubsystemFn,
+    createCurateAssistant,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
     fetchFn,
@@ -144,12 +160,13 @@ export function resolveCoordinatorDefaults(
 
       const listenFn =
         options.listenFn ?? ((server) => defaultListen(server, bindings.bindHost, bindings.advertiseHost));
+      const jobRetentionMs = resolveJobRetentionMs(runtime.env.get('CORAL_JOBS_RETENTION_DAYS'));
       const cleanupStaleJobsFn =
         options.cleanupStaleJobsFn ??
         ((currentBundleHash: string) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
-          cleanupStaleJobs(progressStore, currentBundleHash, bindings.log, runtime.storage);
+          cleanupStaleJobs(progressStore, currentBundleHash, bindings.log, runtime.storage, runtime.time.now(), jobRetentionMs);
         });
       const markJobsAsErrorFn =
         options.markJobsAsErrorFn ??

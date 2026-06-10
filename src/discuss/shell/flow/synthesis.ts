@@ -7,6 +7,7 @@ import { type DiscussContext } from '../types.js';
 import { DiscussManagerError } from '../errors.js';
 import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
 import { detachSession } from '../registry.js';
+import { writeDiscussRecord } from '../../transcript-export.js';
 import {
   type SubflowResult,
   SPEECH_TIMEOUT_MS,
@@ -66,6 +67,17 @@ export async function handleSynthesis(
     );
     if (!committed.ok && committed.error !== 'session_not_found') {
       throw new DiscussManagerError(committed.error, committed.detail);
+    }
+    if (committed.ok) {
+      // Materialize the completed discussion as a markdown record in the project
+      // data dir. Best-effort export of the journal's discuss stream — a write
+      // failure must never break the discussion (the authoritative record lives
+      // in the journal).
+      try {
+        writeDiscussRecord(ctx.runtime, committed.snapshot);
+      } catch (error) {
+        backendLog.warn(`Discuss record export failed for ${sessionId}: ${errorMessage(error)}`);
+      }
     }
     detachSession(ctx, sessionId);
     return { shouldResume: false };

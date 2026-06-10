@@ -10,7 +10,7 @@ Coral's product identity is a coding-assistant plugin for Claude Code and Codex.
 | --- | --- | --- |
 | Backend composition root | `bridge/coral-backend.cjs` | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes. |
 | CLI entrypoint | `bridge/coral-cli.cjs` | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
-| Claude PTY broker helper | `bridge/coral-claude-appserver.cjs` | Provider helper that runs interactive Claude CLI through `node-pty`, accepts broker RPC, and streams completion from Claude JSONL transcripts. |
+| Claude PTY broker helper | `bridge/coral-claude-appserver.cjs` | Provider helper that runs interactive Claude CLI through `@lydell/node-pty`, accepts broker RPC, and streams completion from Claude JSONL transcripts. |
 
 ## CLI and Client
 

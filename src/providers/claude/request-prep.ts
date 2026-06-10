@@ -106,15 +106,18 @@ export function buildPreparedClaudeRequest(
   >,
   storage: Pick<StoragePort, 'readFileSync'>,
   kbRoot: string,
+  coralProjects?: string,
+  projectSource?: string,
 ): PreparedClaudeRequest {
   const systemParts: string[] = [];
   let prompt = request.prompt;
 
   const injectMd = resolveInjectMd({
     storage,
-    workingDirectory: request.cwd,
     ownerSessionId: request.coralEnv?.CORAL_OWNER,
     kbRoot,
+    ...(coralProjects === undefined ? {} : { coralProjects }),
+    ...(projectSource === undefined ? {} : { projectSource }),
   });
   if (injectMd) {
     systemParts.push(injectMd);

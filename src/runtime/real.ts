@@ -114,7 +114,14 @@ type DurableControlMessage =
       exitRecord: DurableProcessExit;
     };
 
-export function createRealRuntime(flavor: BuildFlavor): Runtime {
+export interface CreateRealRuntimeOptions {
+  /** Override the coral root's parent home. Tests pass a tmp dir to isolate
+   *  all composed paths (including the per-project `projects/` tree) without
+   *  mocking `node:os.homedir()`. Omitted in production. */
+  readonly baseDir?: string;
+}
+
+export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeOptions): Runtime {
   const capturedEnv = captureEnvState();
   const envBudgetBytes = resolveEnvBudgetBytes();
   const envPassthrough = parsePassthrough(capturedEnv.coralEnv.CORAL_ENV_PASSTHROUGH);
@@ -176,9 +183,14 @@ export function createRealRuntime(flavor: BuildFlavor): Runtime {
   };
 
   const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
+  const coral = composeCoralPaths(flavor, {
+    ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
+    ...(customKbRoot ? { customKbRoot } : {}),
+  });
   const paths: RuntimePaths = {
     projectSource: resolveProjectSource,
-    coral: composeCoralPaths(flavor, customKbRoot ? { customKbRoot } : undefined),
+    projectData: (projectRoot) => coral.projects.dataDir(resolveProjectSource(projectRoot)),
+    coral,
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {

@@ -19,8 +19,8 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
 | `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch |
-| `CORAL_DISCUSS_TTL_DAYS` | `0` | Auto-prune window for completed discuss sessions |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
+| `CORAL_JOBS_RETENTION_DAYS` | `14` | Days to keep a terminal job's export artifacts (`~/.coral/exports/jobs/<id>/result.md`) before backend startup prunes them. The export dir is a rebuildable cache of the journal — `result.md` is regenerated from the journal terminal event on the next read — so pruning only reclaims disk; `jobs list`/`detail` still resolve from the journal. Invalid/non-positive values fall back to the default |
 | `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Override to expose the backend on another interface (e.g. `0.0.0.0` for container deploys) |
 | `CORAL_BACKEND_ADVERTISE_HOST` | _(bind value)_ | Hostname clients use to reach the backend. Distinct from `CORAL_BACKEND_BIND` when the bind interface differs from the externally reachable name (NAT, container host) |
 | `CORAL_BROKER_IDLE_MS` | `300000` | Provider host (broker) idle eviction window in ms |
@@ -128,7 +128,7 @@ Sessions are Journal events projected into `projection_sessions`. `SessionManage
 
 ### Discuss state
 
-Discuss sessions are Journal events projected into `projection_discuss`. The source-scoped discovery and summary views are read models over those projections; discuss no longer owns JSON session files.
+Discuss sessions are Journal events projected into `projection_discuss`. The source-scoped discovery and summary views are read models over those projections; discuss no longer owns JSON session files. On final synthesis, a completed discussion is also exported as a human-readable markdown record at `~/.coral/projects/<source-slug>/discuss/<YYYYMMDD-HHMMSS>-<topic-slug>.md` — a rebuildable projection of the Journal, not authority (see [discuss.md](./discuss.md)).
 
 ### KB state
 
@@ -162,7 +162,7 @@ Live scratch artifacts:
 | `graphology` | Graph data structures for KB community analysis |
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
-| `node-pty` | Interactive Claude CLI broker transport |
+| `@lydell/node-pty` | Interactive Claude CLI broker transport |
 | `yaml` | YAML parsing |
 | `zod-to-json-schema` | Schema export helpers |
 

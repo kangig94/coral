@@ -465,6 +465,7 @@ function createLifecycleHarness(
     providerHostManager: createFakeProviderHostManager() as never,
     handoffQuiescePorts: () => [],
     createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
+    createCurateAssistant: () => ({ complete: async () => '' }),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
     runStartupRecoveryFn: async ({

@@ -151,7 +151,7 @@ export class CoralStore implements StoreReadContext {
       listMemos: (args) =>
         listKnowledgeBaseMemos(
           this.requireRuntime('kb.listMemos').storage,
-          this.requireProjectRoot('kb.listMemos'),
+          this.requireProjectDataDir('kb.listMemos'),
           args,
         ),
       wakeUp: (args) => generateKnowledgeBaseWakeUpPacket(args, this.kbQueryHost('kb.wakeUp')),
@@ -203,6 +203,10 @@ export class CoralStore implements StoreReadContext {
       throw new Error(`CoralStore ${operation} requires an explicit projectRoot.`);
     }
     return this.projectRoot;
+  }
+
+  private requireProjectDataDir(operation: string): string {
+    return this.requireRuntime(operation).paths.projectData(this.requireProjectRoot(operation));
   }
 
   private requirePluginRoot(operation: string): string {

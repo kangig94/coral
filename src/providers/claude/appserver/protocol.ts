@@ -56,6 +56,15 @@ export interface SessionProbeResult {
   activeTurnId: string | null;
 }
 
+export interface SessionCloseParams {
+  brokerSessionKey: string;
+}
+
+export interface SessionCloseResult {
+  brokerSessionKey: string;
+  closed: boolean;
+}
+
 /** @wire anthropic:claude — turn/start request body. */
 export interface TurnStartParams {
   brokerSessionKey: string;
@@ -242,6 +251,16 @@ export function requireSessionProbeParams(params: unknown): SessionProbeParams {
   return {
     brokerSessionKey: params.brokerSessionKey,
     ...(conversationRef !== undefined ? { conversationRef } : {}),
+  };
+}
+
+export function requireSessionCloseParams(params: unknown): SessionCloseParams {
+  if (!isRecord(params) || !isNonEmptyString(params.brokerSessionKey)) {
+    throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/close.');
+  }
+
+  return {
+    brokerSessionKey: params.brokerSessionKey,
   };
 }
 

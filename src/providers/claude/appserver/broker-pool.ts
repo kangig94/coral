@@ -6,6 +6,8 @@ import {
   withBrokerSessionKey,
   type ClaudeBrokerNotification,
   type HostStatsParams,
+  type SessionCloseParams,
+  type SessionCloseResult,
   type SessionEnsureParams,
   type SessionEnsureResult,
   type SessionProbeParams,
@@ -35,6 +37,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   private readonly ids: CreateBrokerSessionOptions['ids'];
   private readonly notificationHandlers = new Set<(notification: ClaudeBrokerNotification) => void>();
   private readonly controllers = new Map<string, ControllerEntry>();
+  private readonly closingControllers = new Map<string, Promise<boolean>>();
 
   private resolveClosed!: (value: Error | void) => void;
   private shuttingDown = false;
@@ -118,6 +121,13 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     };
   }
 
+  async sessionClose(params: SessionCloseParams): Promise<SessionCloseResult> {
+    return {
+      brokerSessionKey: params.brokerSessionKey,
+      closed: await this.removeController(params.brokerSessionKey),
+    };
+  }
+
   async turnStart(params: TurnStartParams): Promise<TurnStartResult> {
     const entry = this.controllers.get(params.brokerSessionKey);
     if (!entry) {
@@ -168,6 +178,8 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
         await entry.controller.shutdown();
       }),
     );
+    await Promise.all(this.closingControllers.values());
+    this.closingControllers.clear();
     this.resolvePoolClosed();
   }
 
@@ -237,16 +249,33 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     });
   }
 
-  private async removeController(brokerSessionKey: string): Promise<void> {
-    const entry = this.controllers.get(brokerSessionKey);
-    if (!entry) {
-      return;
+  private async removeController(brokerSessionKey: string): Promise<boolean> {
+    const existingClose = this.closingControllers.get(brokerSessionKey);
+    if (existingClose) {
+      return existingClose;
     }
 
-    entry.dispose();
-    this.controllers.delete(brokerSessionKey);
-    this.emitHostStats();
-    await entry.controller.shutdown();
+    const entry = this.controllers.get(brokerSessionKey);
+    if (!entry) {
+      return false;
+    }
+
+    const closing = (async (): Promise<boolean> => {
+      entry.dispose();
+      entry.pendingNotifications = [];
+      this.controllers.delete(brokerSessionKey);
+      this.emitHostStats();
+      await entry.controller.shutdown();
+      return true;
+    })();
+    this.closingControllers.set(brokerSessionKey, closing);
+    try {
+      return await closing;
+    } finally {
+      if (this.closingControllers.get(brokerSessionKey) === closing) {
+        this.closingControllers.delete(brokerSessionKey);
+      }
+    }
   }
 
   private emitNotification(notification: ClaudeBrokerNotification): void {
