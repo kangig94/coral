@@ -41,10 +41,11 @@ const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
 const CHILD_READY_TIMEOUT_MS = 2_000;
 // Claude emits the bracketed-paste-enable marker before its TUI can actually
-// accept input. Settling longer after the marker lets the input box mount so
-// the first prompt is not silently dropped (100ms was too short for Claude
-// Code 2.1.x). Applied once per child spawn, so the extra wait is negligible.
-const CHILD_READY_SETTLE_MS = 1_000;
+// accept input, so a prompt pasted too soon is silently dropped (100ms — and
+// even 1s under parallel cold-start — was too short for Claude Code 2.1.x).
+// Wait generously after the marker; this is paid once per child spawn, and the
+// resend safety net (PROMPT_ACK_TIMEOUT_MS) still recovers any residual drop.
+const CHILD_READY_SETTLE_MS = 5_000;
 const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
 const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
@@ -385,6 +386,13 @@ export class SingleSessionController {
     const scheduleReady = (): void => {
       if (readyResolved || readySettleTimer !== null) {
         return;
+      }
+      // The marker arrived: cancel the no-marker ceiling so the full settle
+      // applies (otherwise CHILD_READY_TIMEOUT_MS would cap settles longer than
+      // it). The ceiling still governs the case where the marker never comes.
+      if (readyTimer !== null) {
+        clearTimeout(readyTimer);
+        readyTimer = null;
       }
       readySettleTimer = setTimeout(finishReady, this.readySettleMs);
       readySettleTimer.unref?.();
