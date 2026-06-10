@@ -77,4 +77,8 @@ export interface ClaudeBrokerSession {
 
 export type SingleSessionControllerOptions = CreateBrokerSessionOptions & {
   onUnexpectedExit?: () => void;
+  /** Wait after the bracketed-paste-ready marker before the first prompt. Defaults to the production constant. */
+  readySettleMs?: number;
+  /** No-transcript-activity window before a prompt is re-sent. Defaults to the production constant. */
+  promptAckTimeoutMs?: number;
 };

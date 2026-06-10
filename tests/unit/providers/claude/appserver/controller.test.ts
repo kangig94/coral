@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type {
@@ -66,44 +66,48 @@ class FakeClaudeChild implements ClaudeBrokerChild {
   }
 }
 
+const FAST_TIMING = { readySettleMs: 5, promptAckTimeoutMs: 10 } as const;
+
+async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 describe('SingleSessionController PTY lifecycle', () => {
   it('waits for Claude terminal readiness before accepting the first turn', async () => {
-    vi.useFakeTimers();
-    try {
-      const child = new FakeClaudeChild(false);
-      const controller = new SingleSessionController({
-        spawnChild: () => child,
-        ids: { uuid: () => TEST_SESSION_ID },
-      });
+    const child = new FakeClaudeChild(false);
+    const controller = new SingleSessionController({
+      spawnChild: () => child,
+      ids: { uuid: () => TEST_SESSION_ID },
+      ...FAST_TIMING,
+    });
 
-      const ensurePromise = controller.sessionEnsure({
-        cwd: '/workspace',
-        systemPromptHash: 'sha256:test',
-        permissionMode: 'default',
-      });
-      let ensured = false;
-      void ensurePromise.then(() => {
-        ensured = true;
-      });
-      await Promise.resolve();
+    const ensurePromise = controller.sessionEnsure({
+      cwd: '/workspace',
+      systemPromptHash: 'sha256:test',
+      permissionMode: 'default',
+    });
+    let ensured = false;
+    void ensurePromise.then(() => {
+      ensured = true;
+    });
+    await Promise.resolve();
 
-      expect(ensured).toBe(false);
+    expect(ensured).toBe(false);
 
-      child.emitData('\x1b[?2004h');
-      await vi.advanceTimersByTimeAsync(100);
-      await ensurePromise;
+    child.emitData('\x1b[?2004h');
+    await ensurePromise;
 
-      await controller.turnStart({
-        brokerTurnId: 'turn-1',
-        prompt: 'hello',
-      });
+    await controller.turnStart({
+      brokerTurnId: 'turn-1',
+      prompt: 'hello',
+    });
 
-      expect(child.writes[0]).toBe('\x1b[200~hello\x1b[201~\r');
+    expect(child.writes[0]).toBe('\x1b[200~hello\x1b[201~\r');
 
-      await controller.shutdown();
-    } finally {
-      vi.useRealTimers();
-    }
+    await controller.shutdown();
   });
 
   it('clears the active turn and emits failure when an interactive turn is interrupted', async () => {
@@ -112,6 +116,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     const controller = new SingleSessionController({
       spawnChild: () => child,
       ids: { uuid: () => TEST_SESSION_ID },
+      ...FAST_TIMING,
     });
     controller.subscribeNotifications((notification) => {
       notifications.push(notification);
@@ -142,6 +147,49 @@ describe('SingleSessionController PTY lifecycle', () => {
           message: 'Claude turn interrupted.',
           sessionId: TEST_SESSION_ID,
           conversationRef: TEST_SESSION_ID,
+        }),
+      }),
+    );
+
+    await controller.shutdown();
+  });
+
+  it('re-sends a dropped prompt and fails fast when Claude never registers the turn', async () => {
+    const child = new FakeClaudeChild();
+    const notifications: ControllerNotification[] = [];
+    const controller = new SingleSessionController({
+      spawnChild: () => child,
+      ids: { uuid: () => TEST_SESSION_ID },
+      ...FAST_TIMING,
+    });
+    controller.subscribeNotifications((notification) => {
+      notifications.push(notification);
+    });
+
+    await controller.sessionEnsure({
+      cwd: '/workspace',
+      systemPromptHash: 'sha256:test',
+      permissionMode: 'default',
+    });
+    await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+
+    // No transcript exists for this synthetic session, so the prompt is never
+    // acknowledged: the controller re-sends on its cadence, then fails fast
+    // rather than blocking until the turn timeout.
+    const paste = '\x1b[200~hello\x1b[201~\r';
+    expect(child.writes.filter((w) => w === paste)).toHaveLength(1);
+
+    await waitFor(() => !controller.hasActiveTurn());
+
+    expect(controller.hasActiveTurn()).toBe(false);
+    // initial send + MAX_PROMPT_RESENDS (3) = 4 deliveries
+    expect(child.writes.filter((w) => w === paste)).toHaveLength(4);
+    expect(notifications).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/failed',
+        params: expect.objectContaining({
+          brokerTurnId: 'turn-1',
+          message: expect.stringContaining('did not register the prompt'),
         }),
       }),
     );
