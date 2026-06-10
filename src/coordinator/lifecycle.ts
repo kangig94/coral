@@ -10,6 +10,7 @@ import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import { type ProviderRegistry } from '../providers/registry.js';
 import { isTerminalPhase } from '../jobs/phase.js';
+import { parsePositiveInt } from './live/worker-limits.js';
 import { createRecoveryCoordinator, type RecoveryCoordinator } from './services/recovery/index.js';
 import { createReplacementBackendOwnershipChecker } from './ownership-checker.js';
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
@@ -182,22 +183,52 @@ export function waitForInflightDrain(
   });
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_JOB_RETENTION_DAYS = 14;
+
+/**
+ * Resolve the terminal-job export retention window from `CORAL_JOBS_RETENTION_DAYS`
+ * (default 14 days) to milliseconds. Invalid/non-positive values fall back to the
+ * default.
+ */
+export function resolveJobRetentionMs(raw: string | undefined): number {
+  return parsePositiveInt(raw, DEFAULT_JOB_RETENTION_DAYS) * DAY_MS;
+}
+
+function isAgedOut(updatedAt: string, nowMs: number, retentionMs: number): boolean {
+  const terminalMs = Date.parse(updatedAt);
+  return Number.isFinite(terminalMs) && nowMs - terminalMs > retentionMs;
+}
+
+/**
+ * Prune terminal jobs' export artifacts (`<exports>/jobs/<id>/`). These dirs are a
+ * rebuildable cache of the journal — `JobStore.ensureResultArtifact` regenerates
+ * `result.md` from the journal terminal event on the next read — so pruning only
+ * reclaims disk; `jobs list`/`detail` keep working from the journal projection.
+ * A terminal job is pruned when it is left over from a previous bundle version OR
+ * older than the retention window. Live jobs are never touched.
+ */
 export function cleanupStaleJobs(
   progressStore: JobStore,
   currentBundleHash: string,
   log: (message: string) => void,
   storage: Pick<Runtime['storage'], 'rmSync'>,
+  nowMs: number,
+  retentionMs: number,
 ): void {
   for (const jobId of progressStore.listJobIds()) {
     const status = progressStore.readStatus(jobId);
     if (!status) continue;
     if (!isTerminalPhase(status.phase)) continue;
-    if (!status.bundleHash || status.bundleHash === currentBundleHash) continue;
+
+    const fromOldBundle = status.bundleHash !== undefined && status.bundleHash !== currentBundleHash;
+    const agedOut = isAgedOut(status.updatedAt, nowMs, retentionMs);
+    if (!fromOldBundle && !agedOut) continue;
 
     try {
       storage.rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
       progressStore.purgeFromCache(jobId);
-      log(`Cleaned up stale job: ${jobId}\n`);
+      log(`Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${jobId}\n`);
     } catch {
       // best-effort
     }
