@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type {
@@ -108,6 +108,46 @@ describe('SingleSessionController PTY lifecycle', () => {
     expect(child.writes[0]).toBe('\x1b[200~hello\x1b[201~\r');
 
     await controller.shutdown();
+  });
+
+  it('becomes ready only after output goes quiet, re-arming on each chunk', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new FakeClaudeChild(false);
+      const controller = new SingleSessionController({
+        spawnChild: () => child,
+        ids: { uuid: () => TEST_SESSION_ID },
+        readySettleMs: 100,
+      });
+
+      const ensure = controller.sessionEnsure({
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:test',
+        permissionMode: 'default',
+      });
+      let ready = false;
+      void ensure.then(() => {
+        ready = true;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      child.emitData('\x1b[?2004h'); // marker arms the quiet timer
+      await vi.advanceTimersByTimeAsync(60);
+      expect(ready).toBe(false); // still inside the quiet window
+
+      child.emitData('…more TUI render…'); // re-arms the quiet timer
+      await vi.advanceTimersByTimeAsync(60);
+      expect(ready).toBe(false); // only 60ms since the last chunk
+
+      await vi.advanceTimersByTimeAsync(60); // now quiet for >= 100ms
+      await ensure;
+      expect(ready).toBe(true);
+
+      await controller.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('clears the active turn and emits failure when an interactive turn is interrupted', async () => {

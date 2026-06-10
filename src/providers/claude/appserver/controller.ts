@@ -39,13 +39,16 @@ import type {
 const DEFAULT_OUTPUT_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
-const CHILD_READY_TIMEOUT_MS = 2_000;
-// Claude emits the bracketed-paste-enable marker before its TUI can actually
-// accept input, so a prompt pasted too soon is silently dropped (100ms — and
-// even 1s under parallel cold-start — was too short for Claude Code 2.1.x).
-// Wait generously after the marker; this is paid once per child spawn, and the
-// resend safety net (PROMPT_ACK_TIMEOUT_MS) still recovers any residual drop.
-const CHILD_READY_SETTLE_MS = 5_000;
+// Ceiling on the readiness wait — used when the marker never arrives or the
+// output never quiesces. Proceed optimistically after this; the resend net
+// then recovers a prompt the child was not ready for.
+const CHILD_READY_TIMEOUT_MS = 5_000;
+// Adaptive readiness window: once Claude emits the bracketed-paste-enable
+// marker, the child is ready when its output stays quiet this long (the TUI
+// has finished mounting the input box). A prompt pasted too soon is silently
+// dropped by Claude Code 2.1.x; quiescing avoids both a dropped prompt and a
+// fixed worst-case wait, and the resend net recovers any too-early send.
+const CHILD_READY_QUIET_MS = 400;
 const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
 const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
@@ -122,7 +125,7 @@ export class SingleSessionController {
     this.outputLimit = options.stderrLimit ?? DEFAULT_OUTPUT_RING_LIMIT;
     this.ids = options.ids;
     this.onUnexpectedExit = options.onUnexpectedExit;
-    this.readySettleMs = options.readySettleMs ?? CHILD_READY_SETTLE_MS;
+    this.readySettleMs = options.readySettleMs ?? CHILD_READY_QUIET_MS;
     this.promptAckTimeoutMs = options.promptAckTimeoutMs ?? PROMPT_ACK_TIMEOUT_MS;
   }
 
@@ -363,8 +366,9 @@ export class SingleSessionController {
     let resolveReady!: () => void;
     let readyResolved = false;
     let readyOutput = '';
-    let readyTimer: ReturnType<typeof setTimeout> | null = null;
-    let readySettleTimer: ReturnType<typeof setTimeout> | null = null;
+    let markerSeen = false;
+    let capTimer: ReturnType<typeof setTimeout> | null = null;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
     const ready = new Promise<void>((resolve) => {
       resolveReady = resolve;
     });
@@ -373,32 +377,31 @@ export class SingleSessionController {
         return;
       }
       readyResolved = true;
-      if (readyTimer !== null) {
-        clearTimeout(readyTimer);
-        readyTimer = null;
+      if (capTimer !== null) {
+        clearTimeout(capTimer);
+        capTimer = null;
       }
-      if (readySettleTimer !== null) {
-        clearTimeout(readySettleTimer);
-        readySettleTimer = null;
+      if (quietTimer !== null) {
+        clearTimeout(quietTimer);
+        quietTimer = null;
       }
       resolveReady();
     };
-    const scheduleReady = (): void => {
-      if (readyResolved || readySettleTimer !== null) {
+    // After the marker, (re)arm a quiet timer on every chunk; readiness fires
+    // once output has been idle for the quiet window — adaptive, so a fast or
+    // warm child proceeds early instead of waiting a fixed worst case.
+    const armQuietTimer = (): void => {
+      if (readyResolved) {
         return;
       }
-      // The marker arrived: cancel the no-marker ceiling so the full settle
-      // applies (otherwise CHILD_READY_TIMEOUT_MS would cap settles longer than
-      // it). The ceiling still governs the case where the marker never comes.
-      if (readyTimer !== null) {
-        clearTimeout(readyTimer);
-        readyTimer = null;
+      if (quietTimer !== null) {
+        clearTimeout(quietTimer);
       }
-      readySettleTimer = setTimeout(finishReady, this.readySettleMs);
-      readySettleTimer.unref?.();
+      quietTimer = setTimeout(finishReady, this.readySettleMs);
+      quietTimer.unref?.();
     };
-    readyTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
-    readyTimer.unref?.();
+    capTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
+    capTimer.unref?.();
 
     const child = await this.spawnChild({
       cwd: signature.cwd,
@@ -414,8 +417,11 @@ export class SingleSessionController {
     const offData = child.onData((chunk) => {
       if (!readyResolved) {
         readyOutput = appendRingBuffer(readyOutput, chunk, 4_096);
-        if (readyOutput.includes(BRACKETED_PASTE_ENABLED)) {
-          scheduleReady();
+        if (!markerSeen && readyOutput.includes(BRACKETED_PASTE_ENABLED)) {
+          markerSeen = true;
+        }
+        if (markerSeen) {
+          armQuietTimer();
         }
       }
       this.captureOutput(chunk);
