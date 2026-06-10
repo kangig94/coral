@@ -459,12 +459,15 @@ describe('manifest authority drift checks', () => {
       name: 'promote',
       run: async () => {
         const fixture = await createRuntimeFixture(() => {}, { reindexOnBoot: false });
-        const projectRoot = mkdtempSync(join(fixture.root, 'local-project-'));
-        const projectMemoDir = memoDir(projectRoot);
+        // `memoDir` and `promote` take the resolved per-project DATA dir. In production
+        // the shell passes `runtime.paths.projectData(projectRoot)`; here a tmp dir under
+        // fixture.root stands in directly, which keeps the memo read/write isolated.
+        const projectDataDir = mkdtempSync(join(fixture.root, 'local-project-'));
+        const projectMemoDir = memoDir(projectDataDir);
         mkdirSync(projectMemoDir, { recursive: true });
         writeFileSync(join(projectMemoDir, 'promotion.md'), renderMemo(), 'utf-8');
 
-        await promote(fixture.kb, projectRoot, {
+        await promote(fixture.kb, projectDataDir, {
           memo: 'promotion.md',
           title: 'Promotion',
           content: 'Promoted content.',

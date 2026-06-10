@@ -680,6 +680,14 @@ export class LaunchOrchestrator {
       persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
+      // Empty cwd is not a project root: treat it as absent so the INJECT.md
+      // placeholders stay unsubstituted rather than resolving `local/` from ''.
+      ...(request.cwd
+        ? {
+            coralProjects: this.deps.runtime.paths.projectData(request.cwd),
+            projectSource: this.deps.runtime.paths.projectSource(request.cwd),
+          }
+        : {}),
     };
   }
 

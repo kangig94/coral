@@ -582,7 +582,7 @@ Note body.
     expect(
       readEntry(
         { note: '20260323-010203-shared-slug' },
-        { storage: readStorage, projectRoot, paths: createReadPaths(paths) },
+        { storage: readStorage, projectDataDir: projectRoot, paths: createReadPaths(paths) },
       ),
     ).toEqual({
       kind: 'memo',

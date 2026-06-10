@@ -40,7 +40,8 @@ export type KbReadPathResolver = {
 
 export type KbReadOptions = {
   storage: KbReadStorage;
-  projectRoot?: string;
+  /** Resolved per-project data dir (`runtime.paths.projectData(projectRoot)`); memo reads only. */
+  projectDataDir?: string;
   paths?: KbReadPathResolver;
 };
 
@@ -156,12 +157,12 @@ function readCommunityEntry(community: string, storage: KbReadStorage, paths: Kb
   };
 }
 
-function readMemoEntry(slug: string, storage: KbReadStorage, projectRoot: string | undefined): KbReadResult | null {
-  if (projectRoot === undefined) {
+function readMemoEntry(slug: string, storage: KbReadStorage, projectDataDir: string | undefined): KbReadResult | null {
+  if (projectDataDir === undefined) {
     return null;
   }
 
-  const memoPath = join(memoDir(projectRoot), `${slug}.md`);
+  const memoPath = join(memoDir(projectDataDir), `${slug}.md`);
   if (!storage.existsSync(memoPath)) {
     return null;
   }
@@ -236,7 +237,7 @@ function readPrincipleEntry(principle: string, storage: KbReadStorage, paths: Kb
 export function readEntryByKind(kind: KbReadKind, slug: string, options: KbReadOptions): KbReadResult | null {
   const storage = options.storage;
   if (kind === 'memo') {
-    return readMemoEntry(slug, storage, options.projectRoot);
+    return readMemoEntry(slug, storage, options.projectDataDir);
   }
 
   const paths = resolveReadPaths(options.paths);
@@ -259,13 +260,13 @@ function readCandidateEntry(
   candidate: KbResolvedReadSelector,
   storage: KbReadStorage,
   paths: KbReadPathResolver,
-  projectRoot?: string,
+  projectDataDir?: string,
 ): KbReadResult | null {
   if (candidate.kind === 'memo') {
     if (!MEMO_FILENAME_PATTERN.test(candidate.slug)) {
       return null;
     }
-    return readMemoEntry(candidate.slug, storage, projectRoot);
+    return readMemoEntry(candidate.slug, storage, projectDataDir);
   }
 
   if (candidate.kind === 'note') {
@@ -309,7 +310,7 @@ export function readEntryWithResolvedId(input: KbReadInput, options: KbReadOptio
   const selector = parseKbSelector(input.note);
 
   for (const candidate of expandKbReadSelector(selector)) {
-    const entry = readCandidateEntry(candidate, storage, paths, options.projectRoot);
+    const entry = readCandidateEntry(candidate, storage, paths, options.projectDataDir);
     if (entry !== null) {
       return {
         result: entry,

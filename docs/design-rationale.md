@@ -109,7 +109,13 @@ Module-level helpers like `composeCoralPaths(flavor, opts?)` exist for the boots
 
 ### 5.2 Why eager port construction
 
-Port objects are eager constants: `runtime.paths.coral` is composed once at `createRealRuntime(flavor)` and is referentially stable across accesses. Tests that mock `node:os.homedir()` per-test must construct the runtime *after* the mock is set; do not rely on lazy re-evaluation. Lazy ports invite "did the value change since I read it last?" bugs that don't exist if the port is materialized once.
+Port objects are eager constants: `runtime.paths.coral` is composed once at `createRealRuntime(flavor, opts?)` and is referentially stable across accesses. Tests that mock `node:os.homedir()` per-test must construct the runtime *after* the mock is set; do not rely on lazy re-evaluation. Lazy ports invite "did the value change since I read it last?" bugs that don't exist if the port is materialized once.
+
+### 5.3 Per-project data dir is a composed path family, not an ambient read
+
+The per-project data directory is a first-class `CoralPaths` family (`runtime.paths.coral.projects`), flavor-separated like every other family (`projects` for prod, `projects-dev` for dev — enforced by `tests/invariants/flavor-path-separation.test.ts`). `runtime.paths.projectData(projectRoot)` resolves to `<coralRoot>/projects/<source-slug>` by composing the git-derived source (`projectSource`) with the composed root; the KB memo scratch tree then lives at `<projectDataDir>/memo` (the `/memo` subdir is appended by `kb/paths.ts`, not part of the `projects` family shape). KB memo ops and `promote`/`adopt` receive the already-resolved data dir; they never recompute it from a bare `coralRoot()`.
+
+This closed a real gap: the dir was previously computed ad-hoc by a `projectDataDir(projectRoot)` helper co-located with source resolution (since removed from `infra/project-source.ts`, which now owns *only* `resolveProjectSource`), built from a bare `coralRoot()` (ambient `homedir()`) that bypassed the runtime port. That made it impossible to isolate in tests without mocking `node:os` — any test exercising memo paths leaked empty `~/.coral/projects/*` dirs into the developer's real home. Tests now isolate the whole tree via `createRealRuntime(flavor, { baseDir })` or `SimulationRuntime { roots.coralRoot }`; `vitest/no-real-coral-leak.ts` (a vitest `globalSetup` wired into the default, e2e, e2e-lifecycle, and integration configs) fails the run if anything writes into the real `~/.coral/projects` or `~/.coral/projects-dev`.
 
 ## 6. Curiosity-Driven Expansion (Zelda Metaphor)
 

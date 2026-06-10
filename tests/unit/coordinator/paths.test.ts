@@ -1,19 +1,20 @@
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { composeCoralPaths, corpusPaths, exportsPaths } from '#src/infra/path/index.js';
+import { composeCoralPaths, corpusPaths, exportsPaths, projectsPaths } from '#src/infra/path/index.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 describe('composeCoralPaths', () => {
-  it('returns a record covering all five path families', () => {
+  it('returns a record covering all six path families', () => {
     const p = composeCoralPaths('prod');
-    expect(Object.keys(p).sort()).toEqual(['coordinator', 'corpus', 'engine', 'exports', 'store']);
+    expect(Object.keys(p).sort()).toEqual(['coordinator', 'corpus', 'engine', 'exports', 'projects', 'store']);
     expect(p.store.dbFile).toContain('.coral/data/store/store.db');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
     expect(p.coordinator.socketPath).toMatch(/\.coral\/run\/coordinator\.sock$|^\/.*\/coral-prod-[0-9a-f]{8}\.sock$/);
     expect(p.exports.jobsRoot).toContain('.coral/exports/jobs');
     expect(p.engine.engineRoot).toContain('.coral/data/engines');
+    expect(p.projects.root).toContain('.coral/projects');
   });
 
   it('dev flavor has distinct segments from prod', () => {
@@ -25,6 +26,8 @@ describe('composeCoralPaths', () => {
     expect(dev.coordinator.runDir).toContain('run-dev');
     expect(dev.exports.jobsRoot).toContain('exports-dev');
     expect(dev.engine.engineRoot).toContain('data-dev/engines');
+    expect(dev.projects.root).not.toBe(prod.projects.root);
+    expect(dev.projects.root).toContain('projects-dev');
   });
 
   it('rejects mutation at compile time via readonly modifier', () => {
@@ -73,5 +76,17 @@ describe('composeCoralPaths', () => {
     expect(eq.engineRoot).toBe(join('/tmp/coral-root', 'data', 'engines'));
     expect(eq.dataDir('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle'));
     expect(eq.installLockPath('needle')).toBe(join('/tmp/coral-root', 'data', 'engines', 'needle', 'install.lock'));
+  });
+
+  it('projectsPaths accepts an explicit baseDir and slugifies the source into dataDir', () => {
+    const prod = projectsPaths('prod', { baseDir: '/tmp/coral-root' });
+    expect(prod.root).toBe(join('/tmp/coral-root', 'projects'));
+    // `owner/repo` and `local/basename` sources collapse their slash into the dir slug.
+    expect(prod.dataDir('owner/repo')).toBe(join('/tmp/coral-root', 'projects', 'owner-repo'));
+    expect(prod.dataDir('local/my-project')).toBe(join('/tmp/coral-root', 'projects', 'local-my-project'));
+
+    const dev = projectsPaths('dev', { baseDir: '/tmp/coral-root' });
+    expect(dev.root).toBe(join('/tmp/coral-root', 'projects-dev'));
+    expect(dev.dataDir('owner/repo')).toBe(join('/tmp/coral-root', 'projects-dev', 'owner-repo'));
   });
 });

@@ -25,12 +25,20 @@ export interface ExportsPaths {
   jobsRoot: string;
 }
 
+export interface ProjectsPaths {
+  /** Root of the per-project data tree (`<coralRoot>/projects`). */
+  readonly root: string;
+  /** Per-project data directory for an already-resolved project source. */
+  dataDir(source: string): string;
+}
+
 export type CoralPaths = {
   readonly store: StorePaths;
   readonly corpus: CorpusPaths;
   readonly coordinator: CoordinatorPaths;
   readonly exports: ExportsPaths;
   readonly engine: EnginePaths;
+  readonly projects: ProjectsPaths;
 };
 
 // Re-export per-family types so external callers (transport, expansion,
@@ -76,6 +84,22 @@ export function exportsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): Exp
   };
 }
 
+/** Map a project source (`owner/repo` or `local/basename`) to its directory slug. */
+function sourceToSlug(source: string): string {
+  return source.replace(/\//g, '-');
+}
+
+// Flavor-separated like every other family: prod writes under `projects`, dev
+// under `projects-dev`, so a dev build never shares a project's memo tree with
+// prod. Enforced uniformly by tests/invariants/flavor-path-separation.test.ts.
+export function projectsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): ProjectsPaths {
+  const root = join(coralRoot(opts?.baseDir), flavor === 'dev' ? 'projects-dev' : 'projects');
+  return {
+    root,
+    dataDir: (source) => join(root, sourceToSlug(source)),
+  };
+}
+
 export interface ComposeCoralPathOptions {
   readonly baseDir?: string;
   /** Resolved CORAL_KB_PATH value from caller's env port. */
@@ -94,5 +118,6 @@ export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOp
     coordinator: coordinatorPaths(flavor, undefined, familyOpts),
     exports: exportsPaths(flavor, familyOpts),
     engine: enginePaths(flavor, familyOpts),
+    projects: projectsPaths(flavor, familyOpts),
   };
 }

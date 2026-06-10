@@ -378,7 +378,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx, runtime)),
       listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
       createNote: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx));
+        const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx, runtime));
         recordHostedKbFailure('promote', ctx, result);
         return result;
       },
@@ -419,7 +419,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         return result;
       },
       adoptWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiAdopt(args, kbSubsystem, ctx));
+        const result = await withKbAsync((kbSubsystem) => handleKbWikiAdopt(args, kbSubsystem, ctx, runtime));
         recordHostedKbFailure('wiki_adopt', ctx, result);
         return result;
       },

@@ -48,8 +48,8 @@ export interface KbQueryHost {
   readonly readDb: ReadonlyDatabase;
   readonly storage: KbReadStorage;
   readonly readPaths: KbReadPathResolver;
-  /** Some operations require a project root; the host provides it when the caller specified one. */
-  requireProjectRoot(operation: string): string;
+  /** Resolved per-project data dir for the caller's project root (memo reads/writes). */
+  requireProjectDataDir(operation: string): string;
 }
 
 export async function searchKnowledgeBase(args: KbSearchInput, host: KbQueryHost): Promise<KbSearchResponse> {
@@ -59,7 +59,7 @@ export async function searchKnowledgeBase(args: KbSearchInput, host: KbQueryHost
 
 export function readKnowledgeBaseEntry(selector: KbReadInput, host: KbQueryHost): KbReadResult {
   return readEntry(selector, {
-    projectRoot: host.requireProjectRoot('kb.read'),
+    projectDataDir: host.requireProjectDataDir('kb.read'),
     storage: host.storage,
     paths: host.readPaths,
   });
@@ -67,7 +67,7 @@ export function readKnowledgeBaseEntry(selector: KbReadInput, host: KbQueryHost)
 
 export function readKnowledgeBaseEntryWithResolvedId(selector: KbReadInput, host: KbQueryHost): KbResolvedReadResult {
   return readEntryWithResolvedId(selector, {
-    projectRoot: host.requireProjectRoot('kb.read'),
+    projectDataDir: host.requireProjectDataDir('kb.read'),
     storage: host.storage,
     paths: host.readPaths,
   });
@@ -105,8 +105,8 @@ export function diagnoseKnowledgeBase(host: KbQueryHost): KbDiagnoseResult {
 
 export function listKnowledgeBaseMemos(
   storage: MemoStorage,
-  projectRoot: string,
+  projectDataDir: string,
   args: KbMemoListInput = {},
 ): KbMemoListResult {
-  return listMemos(storage, projectRoot, args.owner);
+  return listMemos(storage, projectDataDir, args.owner);
 }

@@ -304,6 +304,10 @@ export interface ProviderRuntime {
    * domain leak and bypass the runtime-path ownership model).
    */
   kbRoot: string;
+  /** Resolved per-project data dir for the request cwd (`runtime.paths.projectData`); absent when no cwd. */
+  coralProjects?: string;
+  /** Resolved project source for the request cwd (`runtime.paths.projectSource`); absent when no cwd. */
+  projectSource?: string;
 }
 
 export type Provider = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;

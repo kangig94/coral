@@ -87,7 +87,10 @@ function fakeRuntime(): Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'path
       coral: {
         exports: { jobsRoot: '/tmp/coral/exports/jobs' },
         corpus: { kbRoot: '/tmp/coral/kb' },
+        projects: { root: '/tmp/coral/projects', dataDir: (source: string) => `/tmp/coral/projects/${source}` },
       },
+      projectSource: (projectRoot: string) => projectRoot,
+      projectData: (projectRoot: string) => `/tmp/coral/projects/${projectRoot}`,
     } as never,
   };
 }

@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { projectDataDir, resolveProjectSource } from '../infra/project-source.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 
@@ -7,10 +6,13 @@ declare const __PLUGIN_ROOT__: string;
 
 export interface ResolveInjectMdOptions {
   storage: Pick<StoragePort, 'readFileSync'>;
-  workingDirectory?: string;
   ownerSessionId?: string;
   /** Resolved KB markdown root — caller passes from `runtime.paths.coral.corpus.kbRoot`. */
   kbRoot: string;
+  /** Resolved per-project data dir — caller passes from `runtime.paths.projectData(cwd)`; absent when no cwd. */
+  coralProjects?: string;
+  /** Resolved project source — caller passes from `runtime.paths.projectSource(cwd)`; absent when no cwd. */
+  projectSource?: string;
 }
 
 let injectMdCache: string | undefined;
@@ -46,15 +48,15 @@ export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const md = getInjectMd(opts.storage);
   if (!md) return '';
 
-  const { workingDirectory, ownerSessionId, kbRoot } = opts;
+  const { ownerSessionId, kbRoot, coralProjects, projectSource } = opts;
   const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
   const cliPath = `node "${join(pluginRoot(), 'bridge', 'coral-cli.cjs')}"`;
   const rendered = md
     .replaceAll('{{CORAL_KB}}', kbRoot)
     .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
-    .replaceAll('{{CORAL_PROJECTS}}', workingDirectory ? projectDataDir(workingDirectory) : '{{CORAL_PROJECTS}}')
-    .replaceAll('{{PROJECT_SOURCE}}', workingDirectory ? resolveProjectSource(workingDirectory) : '{{PROJECT_SOURCE}}');
+    .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
+    .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}');
   const withoutOwner = stripOwnerOnly(rendered);
   return normalizedOwner ? withoutOwner : stripSessionIdOnly(withoutOwner);
 }

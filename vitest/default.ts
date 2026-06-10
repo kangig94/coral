@@ -16,5 +16,6 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts', 'tests/invariants/**/*.test.ts'],
     exclude: ['ref/**', 'node_modules/**'],
     setupFiles: ['vitest/setup.ts'],
+    globalSetup: ['vitest/no-real-coral-leak.ts'],
   },
 });

@@ -314,11 +314,11 @@ export function createKbQueryHost(context: KbQueryContext): KbQueryHost {
     get readPaths(): KbReadPathResolver {
       return createDefaultKbReadPaths(context);
     },
-    requireProjectRoot(operation: string): string {
+    requireProjectDataDir(operation: string): string {
       if (!context.projectRoot) {
         throw new Error(`KB ${operation} requires an explicit projectRoot in context`);
       }
-      return context.projectRoot;
+      return resolveQueryRuntime(context).paths.projectData(context.projectRoot);
     },
   };
 }

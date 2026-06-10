@@ -5,6 +5,8 @@ import type { DurableCliRuntimeRecord, DurableProcessExit } from './durable-runt
 
 export interface RuntimePaths {
   projectSource(projectRoot: string): string;
+  /** Per-project data directory under the composed coral root (`<coralRoot>/projects/<slug>`). */
+  projectData(projectRoot: string): string;
   readonly coral: CoralPaths;
 }
 

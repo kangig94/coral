@@ -1,7 +1,6 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { coralRoot, kbVaultRoot } from '../infra/path/root.js';
-import { projectDataDir } from '../infra/project-source.js';
 
 /**
  * KB-domain wrapper for the vault root. `customRoot` is the resolved
@@ -59,12 +58,12 @@ export function sourcesDir(root: string): string {
   return join(root, 'sources');
 }
 
-export function memoDir(projectRoot: string): string {
-  return join(projectDataDir(projectRoot), 'memo');
+export function memoDir(projectDataDir: string): string {
+  return join(projectDataDir, 'memo');
 }
 
-export function memoPathFromContext(projectRoot: string, memo: string): string {
-  const root = memoDir(projectRoot);
+export function memoPathFromContext(projectDataDir: string, memo: string): string {
+  const root = memoDir(projectDataDir);
   return assertWithin(root, resolve(root, memo), 'Memo path');
 }
 

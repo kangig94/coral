@@ -173,8 +173,13 @@ SQLite notes backing KB reads.
   );
 }
 
-function writeMemoFixture(projectRoot: string): void {
-  const dir = memoDir(projectRoot);
+function writeMemoFixture(fixture: Fixture): void {
+  // Resolve the per-project data dir under the fixture home — the same path the
+  // CLI subprocess (HOME=fixture.home) computes via `runtime.paths.projectData`.
+  const projectData = createRealRuntime(fixture.flavor, { baseDir: fixture.home }).paths.projectData(
+    fixture.projectRoot,
+  );
+  const dir = memoDir(projectData);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, '20260321-010203-kb.md'),
@@ -386,7 +391,7 @@ describe('cli library-direct reads', () => {
 
     const fixture = createFixture();
     writeKbFixtures(fixture.kbRoot);
-    writeMemoFixture(fixture.projectRoot);
+    writeMemoFixture(fixture);
     seedStore(fixture);
 
     const expected = await withFixtureEnvironment(fixture, () => expectedOutput(fixture, testCase));

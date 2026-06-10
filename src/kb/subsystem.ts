@@ -105,4 +105,5 @@ export type KbToolRuntime = {
   >;
   ids: Pick<Runtime['ids'], 'uuid'>;
   time: Pick<TimePort, 'now'>;
+  paths: Pick<Runtime['paths'], 'projectData' | 'projectSource'>;
 };
