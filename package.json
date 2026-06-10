@@ -42,11 +42,11 @@
     "simulate": "node scripts/run-simulation.mjs"
   },
   "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@orama/orama": "^3.1.18",
     "graphology": "^0.26.0",
     "graphology-communities-louvain": "^2.0.2",
     "mammoth": "^1.12.0",
-    "node-pty": "^1.1.0",
     "turndown": "^7.2.2",
     "yaml": "^2.4.2",
     "zod": "^3.23.8",

@@ -162,7 +162,7 @@ Live scratch artifacts:
 | `graphology` | Graph data structures for KB community analysis |
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
-| `node-pty` | Interactive Claude CLI broker transport |
+| `@lydell/node-pty` | Interactive Claude CLI broker transport |
 | `yaml` | YAML parsing |
 | `zod-to-json-schema` | Schema export helpers |
 

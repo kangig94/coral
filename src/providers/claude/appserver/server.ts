@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
 import process from 'node:process';
-import { spawn as spawnPty } from 'node-pty';
+import { spawn as spawnPty } from '@lydell/node-pty';
 
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
