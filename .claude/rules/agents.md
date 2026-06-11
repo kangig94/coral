@@ -61,3 +61,11 @@ When verifying work output, spawn a dedicated subagent instead of self-verifying
 - One goal, clean context, higher accuracy
 
 **Anti-pattern**: Agent generates artifacts → same agent "spot-checks" its own work → confirmation bias → defects pass through.
+
+### Shared-Worktree Safety
+
+Parallel review/guardian agents share one working tree but not commit isolation. A default Bash-capable agent that sees unfamiliar changes will try to "tidy up" with `git checkout` / `git stash` / `git reset` — silently reverting every sibling's in-progress work.
+
+**Rule**: every prompt that spawns an agent into a shared worktree MUST forbid state-changing git. Reviewers are read-only — no `git checkout` / `switch` / `stash` / `reset` / `restore` / `clean`, no staging, no committing. To inspect another revision, use read-only git (`git diff <ref>`, `git show <ref>:<path>`, `git log <ref>`) instead of checking it out.
+
+**Enforcement**: the `tier-review` skill embeds this guard in every Phase 3 spawn prompt. Any new parallel-spawn site (skills, orchestrators) MUST carry the same guard. A single `git checkout` in a shared tree reverts all concurrent agents' work — treat the omission as a defect, not a style choice.

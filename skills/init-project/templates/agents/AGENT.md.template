@@ -47,7 +47,7 @@ model: <opus|sonnet>
 |---------|-------------|
 | `Role` | WHO — core responsibility + explicit NOT-responsible boundaries + When to Invoke table |
 | `Success_Criteria` | WHAT — measurable completion criteria |
-| `Constraints` | GUARD — iron law + DO/DON'T table. Compress failure modes here as one-liners. |
+| `Constraints` | GUARD — iron law + DO/DON'T table. Compress failure modes here as one-liners. Read-only/review agents MUST include a DON'T forbidding state-changing git (`checkout`/`switch`/`stash`/`reset`/`restore`/`clean`) and staging/committing — parallel reviewers share one worktree, so any such command reverts every sibling's work. |
 | `Output_Format` | FORMAT — structured output template with tables |
 
 ### Optional Sections
