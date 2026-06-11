@@ -43,6 +43,9 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
     Spawn only agents marked INVOKE in the table.
     For each agent, pass: "Review [scope files] focusing on [focus from plan]."
 
+    **Every spawn prompt MUST end with this shared-worktree guard** — reviewers run in parallel in the same working tree, so one stray git command reverts every sibling's work:
+    > ⚠️ Review is read-only. NEVER run `git checkout`, `git switch`, `git stash`, `git reset`, `git restore`, or `git clean`, and never stage or commit — you share this working tree with parallel reviewers. To inspect another revision, use `git diff <ref>`, `git show <ref>:<path>`, or `git log <ref>` — never check it out.
+
     **Default**: spawn ALL INVOKE agents in parallel, wait for all.
 
     **With `--gated`** (cost-saving short-circuit — use when API budget is tight):
