@@ -1,7 +1,7 @@
 ---
 name: plan
-description: 'Use when a task needs structured planning before implementation. Supports --deep and --delegate flags.'
-argument-hint: '[--deep] [--delegate] [task description]'
+description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N.'
+argument-hint: '[--delegate] [round=N] [task description]'
 ---
 
 # Planning
@@ -14,14 +14,15 @@ Execute a multi-round planning session with architect/critic review.
 | -------------- | -------------------------------------------------------------------------------------------------- |
 | `<prompt>`     | Self-execute on current host (default)                                                             |
 | `--delegate`   | Add review pass on the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`) |
-| `--deep`       | Methodology-driven: spawn resolver (HOW-SYNTHESIZE), pass `--deep` to reviewers |
+| `round=N`      | Review rounds per phase (default `1`). e.g. `round=3` for deeper iteration. |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                         |
 
-Strip `--delegate`, `--deep`, and `--no-handoff` flags before passing the prompt to the execution path.
+Reviewers and the resolver always run — `round=N` only sets how many times each phase iterates.
+Parse `round=N` (default `1`), then strip `--delegate`, `round=N`, and `--no-handoff` tokens before passing the prompt to the execution path.
 
 <Planning_Protocol>
 <Role>
-You are the **Orchestrator**: write plans, dispatch reviewer workflows, synthesize feedback (or delegate to resolver in `--deep`), iterate until approval.
+You are the **Orchestrator**: write plans, dispatch reviewer workflows, delegate synthesis to the resolver, iterate until approval or the round budget is reached.
 Treat reviewer feedback as collaborative input — engage with substance, not verdict.
 Planning only — no source code, no EnterPlanMode, no implementation.
 </Role>
@@ -72,6 +73,8 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     Phase 0 always runs first. Phase 0b (Complexity Gate) may skip review phases.
     Phase 1 runs only when `--delegate` flag is set (review on the other host). Phase 2 always runs (unless skipped by Complexity Gate; review on the current host).
 
+    **Round budget**: `{maxRounds}` = the `round=N` argument value (default `1`). Each phase iterates up to `{maxRounds}` rounds. With the default `round=1`, each phase runs exactly one round and then exits (no iteration). Phase structure is unaffected — Phase 1 (if `--delegate`) and Phase 2 still run regardless of round budget.
+
     **Task registration**: Before starting Phase 0, register one Task per applicable phase:
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
     - `TaskCreate({ subject: "Phase 1 — <other-host> review" })` (only if `--delegate`)
@@ -79,7 +82,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     - `TaskCreate({ subject: "Execution Ordering" })`
 
     On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
-    On each round: `TaskUpdate({ taskId, subject: "Phase N — {label} (round M/5)" })`.
+    On each round: `TaskUpdate({ taskId, subject: "Phase N — {label} (round M/{maxRounds})" })`.
     On phase complete: `TaskUpdate({ taskId, status: "completed" })`.
 
     #### Phase 0 — Frame Gate (always)
@@ -119,30 +122,27 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     | 1 | `--delegate` only | `<other-host>` | `(<other-host capitalized>)` |
     | 2 | always | `<current-host>` | `(<current-host capitalized>)` |
 
-    For each applicable phase, repeat (max 5 rounds):
+    For each applicable phase, repeat (max `{maxRounds}` rounds; default 1):
 
     **4a. Workflow Dispatch**
 
     ```
-    expression = "(coral:architect, coral:critic)" or "(coral:architect, coral:critic) -> coral:resolver" when --deep
+    expression = "(coral:architect, coral:critic) -> coral:resolver"
     startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}"
-    sharedContext = (if --deep: "--deep\n\n") + "Review plan: {plan file path}\n\nDo not promote KB notes."
+    sharedContext = "--deep\n\nReview plan: {plan file path}\n\nDo not promote KB notes."
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
-    - **If `--deep`**: `coral-cli wait --jobs "<job>"` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver section there.
-    - **Otherwise**: `coral-cli wait --jobs "<job>" --embed` → the terminal output still prints `Result path: <path>`; use inline preview text if it is helpful, but read the printed path for the full result.
+    Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
+    `coral-cli wait --jobs "<job>"` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there.
 
     **4b. Post-Round Processing**
 
-    **If `--deep`**: Resolver has already applied Adopt/Adapt changes to the plan file.
+    The resolver has already applied Adopt/Adapt changes to the plan file.
     Read the updated plan file, then the resolver's synthesis report from the workflow result.
     Record Deferred/Diverged items.
     ⛔ The resolver applying changes does NOT mean the phase can exit — you MUST still write the Round Summary (4c) and evaluate the Exit Condition (4d). Do not skip to the next phase.
     ⛔ **Prior-agreement guard**: After reading the resolver's changes, verify that no prior agreement with the user was overridden. Reviewers and resolvers lack conversation context — they may reject or restructure decisions the user already confirmed. If the resolver changed an explicitly agreed-upon design decision, revert that change in the plan and note it as a rejected finding. The user's explicit decisions take precedence over reviewer recommendations.
-
-    **Otherwise**: `coral-cli wait --embed` may preview `<architect>…</architect>` + `<critic>…</critic>` inline, but the durable artifact is always the printed `Result path: <path>`.
-    Read `CORAL_METHODS/HOW-SYNTHESIZE.md` and resolve the findings yourself. Edit the plan file.
-    If findings invalidate the current approach, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round.
+    If the resolver's findings invalidate the current approach without redirecting it, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round (or exit if at the round cap).
 
     **4c. Round Summary** (AFTER 4b)
 
@@ -155,21 +155,21 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
       | 1 | Critic #1/#4 | Description | HIGH | FRAME | Adopt |
       | 2 | Both | Description | MEDIUM | — | Adapt |
 
-      - **If `--deep`**: extract from the resolver's Classification Table. Source = Reviewer name. Do NOT summarize, paraphrase, or omit columns — the user needs the full table to audit the review.
-      - **Otherwise**: produce yourself after synthesis.
+      - Extract from the resolver's Classification Table. Source = Reviewer name. Do NOT summarize, paraphrase, or omit columns — the user needs the full table to audit the review.
       - Deduplicate overlapping findings (use "Both" as source)
       - Order by Severity (CRITICAL > HIGH > MEDIUM > LOW)
 
       **Changes Applied**: [what was edited, with rationale for each change]
 
-      **Continue Decision** (`--deep`): **{Verdict}** — {Rationale} (from resolver)
-      **Continue Decision** (non-deep): **{Continue|Exit}** — Round {N}, highest severity = {X}. Rule: {cite exit condition rule that applies}.
+      **Continue Decision**: **{Verdict}** — {Rationale} (from resolver). At round `{maxRounds}` the phase exits regardless of the verdict — note the round cap when it forces the exit.
 
     **4d. Exit Condition**
 
-    **If `--deep`**: You MUST follow the resolver's **Continue Decision** verdict — do not override or reinterpret it. Continue → 4a (or next phase at round 5). Exit → fix remaining MEDIUM/LOW inline, then exit phase. Hard override: CRITICAL findings always Continue. If Continue Decision is missing, fall back to the non-deep severity gate below.
+    Follow the resolver's **Continue Decision** verdict — do not override or reinterpret it — but `{maxRounds}` is the outer bound:
+    - **Round < `{maxRounds}`**: Continue → 4a. Exit → fix remaining MEDIUM/LOW inline, then exit phase. Hard override: CRITICAL findings always Continue.
+    - **Round == `{maxRounds}`**: always proceed to the next phase (or Execution Order if this is the last phase), regardless of the verdict. Fix surviving MEDIUM inline; defer CRITICAL/HIGH to the next phase.
 
-    **Otherwise**: Follow the **Continue Decision** written in 4c. The decision MUST match the severity gate: CRITICAL/HIGH at round < 5 → Continue (4a). CRITICAL/HIGH at round 5 → next phase. MEDIUM → fix inline, then exit phase. LOW/none → exit phase. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision in 4c is missing or inconsistent with the severity gate, treat it as a protocol violation and re-evaluate.
+    With the default `round=1`, every phase exits after its first round. Severity is never reclassified at exit — only during synthesis (4b). If the Continue Decision is missing, treat it as a protocol violation and re-evaluate from the resolver report's highest severity.
 
     ### 4e. Execution Order
 
@@ -232,16 +232,16 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     | Scenario | Action |
     |----------|--------|
     | Workflow job fails | Retry once. If still fails and more phases remain, skip to next phase. Otherwise AskUserQuestion. |
-    | Resolver fails (`--deep`) | Retry once. If still fails, AskUserQuestion. |
+    | Resolver fails | Retry once. If still fails, AskUserQuestion. |
   </Error_Handling>
   <Constraints>
     | DO | DON'T |
     |----|-------|
     | Create stub plan file first | Use EnterPlanMode (`~/.claude/plans/`) |
     | Use workflow for all review phases | Run reviewers sequentially |
-    | Synthesize with HOW-SYNTHESIZE (no `--deep`) or resolver (`--deep`) | Spawn resolver without `--deep` |
+    | Delegate synthesis to the resolver every round | Self-synthesize in the orchestrator or skip the resolver |
     | Cite file:line in plans | Write vague plans without references |
-    | Exit when resolver says Exit or no CRITICAL/HIGH (non-deep) | Continue reviewing past convergence |
+    | Exit when the resolver says Exit, or at round `{maxRounds}` | Continue past the round budget |
     | Return plan file path | Implement within this protocol |
   </Constraints>
   <Output_Format>

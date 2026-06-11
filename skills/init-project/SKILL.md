@@ -128,7 +128,7 @@ argument-hint: "[existing|new]"
      in full. This is the primary input for planning — the tech stack, dependency graph,
      build/test config, existing docs state, and documentation gaps all come from this document.
      Do NOT write the plan from memory of Phase 1 — read the file.
-  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "--deep --no-handoff init-{project-name}" })`.
+  2. **Follow planning protocol**: Invoke `Skill({ skill: "coral:plan", args: "round=1 --no-handoff init-{project-name}" })`.
      - Plan name: `init-{project-name}`
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
