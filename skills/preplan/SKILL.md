@@ -86,7 +86,7 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
 
     #### 0b. AskUserQuestion call
 
-    After printing the table, call `AskUserQuestion` with the same questions and options. Discrete branches use structured options; genuinely open dimensions allow a free-form option ("Other / specify").
+    After printing the table, call `AskUserQuestion` with the same questions and options. Discrete branches use structured options; for genuinely open dimensions, leave free-form input to the auto-provided "Other" choice rather than adding an explicit option for it.
 
     #### 0c. Proceed
 
@@ -250,9 +250,9 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     AskUserQuestion({ questions: [
       { question: "Preplan document finalized. Proceed to coral:plan?", header: "Next",
         options: [
-          { label: "Proceed", description: "Start planning" },
-          { label: "Proceed --deep", description: "Plan with deep review" },
-          { label: "Proceed --deep --delegate", description: "Plan with deep review on the other host" },
+          { label: "Proceed", description: "Start planning (single review round)" },
+          { label: "Proceed round=3", description: "Plan with 3 review rounds" },
+          { label: "Proceed round=3 --delegate", description: "3 review rounds, adding a pass on the other host" },
           { label: "Continue discussion", description: "Keep refining preplan" }
         ], multiSelect: false }
     ]})

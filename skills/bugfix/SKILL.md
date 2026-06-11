@@ -35,7 +35,7 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
    - **Multiple hypotheses survived** → present to user, ask which to pursue before proceeding.
    - **All refuted or inconclusive** → stop and report findings to user.
 
-3. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: (if --delegate: "--delegate ") + "--deep --no-handoff fix-{short-bug-description}" })`.
+3. **Plan fix**: Invoke `Skill({ skill: "coral:plan", args: (if --delegate: "--delegate ") + "round=3 --no-handoff fix-{short-bug-description}" })`.
    The plan references `CORAL_PROJECT/plans/debug-{short-bug-description}.md` for diagnosis context.
    Plan should include: what to change, why, and how to verify the fix.
 
