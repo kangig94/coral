@@ -133,6 +133,9 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
     1. For each batch, group ACs by coupling (shared files, sequential dependency).
        Always spawn `Agent` calls for implementation (foreground, never `run_in_background`) — never implement directly in the main context.
        Launch independent ACs as parallel `Agent` calls; tightly coupled ACs go into one `Agent` call.
+       Include in every spawn prompt: "NEVER run `git checkout`, `git switch`, `git stash`, `git reset`,
+       `git restore`, or `git clean`, and never stage or commit — parallel agents share this working tree;
+       a single revert destroys their in-progress work."
     2. Verify each AC's output before proceeding to the next batch.
 
     Then continue to Step 4.

@@ -422,16 +422,20 @@ describe('cli format', () => {
       expect(formatBackendStatus(status)).not.toContain('Queue depth');
     });
 
-    it('formats a not-running backend status', () => {
-      expect(formatBackendStatus({ status: 'not_running' })).toBe('Backend not running');
+    it('formats a not-running backend status with a recovery hint', () => {
+      expect(formatBackendStatus({ status: 'not_running' })).toBe(
+        'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+      );
     });
 
     it('formats a shutting-down backend status', () => {
       expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
     });
 
-    it('formats an unauthorized backend status', () => {
-      expect(formatBackendStatus({ status: 'unauthorized' })).toBe('Backend unauthorized');
+    it('formats an unauthorized backend status with a recovery hint', () => {
+      expect(formatBackendStatus({ status: 'unauthorized' })).toBe(
+        'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.',
+      );
     });
 
     it('formats a successful shutdown result', () => {

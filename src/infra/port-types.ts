@@ -24,6 +24,7 @@ export interface DirentLike {
 export type StorageData = string | Uint8Array;
 
 export interface StoragePort {
+  readFile(path: string, encoding: 'utf-8'): Promise<string>;
   readFileSync(path: string, encoding: 'utf-8'): string;
   writeFileSync(path: string, data: StorageData, options?: { encoding?: BufferEncoding; mode?: number }): void;
   renameSync(oldPath: string, newPath: string): void;

@@ -41,4 +41,6 @@ try {
 
   cleanRuntimeFiles(hudDir);
   copyFileSync(source, installed);
-} catch {}
+} catch {
+  process.exit(0);
+}

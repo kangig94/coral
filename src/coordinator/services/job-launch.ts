@@ -7,12 +7,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import { getSessionById } from '../../sessions/resolve.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
-import {
-  rejectLaunch,
-  type LaunchDecision,
-  type JobLaunchRequest,
-  type JobResumeRequest,
-} from '../../jobs/launch.js';
+import { rejectLaunch, type LaunchDecision, type JobLaunchRequest, type JobResumeRequest } from '../../jobs/launch.js';
 import type { AcceptedAdmission, LaunchPool } from '../../jobs/contracts/admission.js';
 import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -257,10 +252,7 @@ export class JobLaunchService {
   }
 
   private buildContinuationProfile(
-    input: Pick<
-      JobResumeRequest,
-      'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'
-    >,
+    input: Pick<JobResumeRequest, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
     session: SessionEntry,
     ctx: InvocationContext,
   ): EffectiveContinuationProfile {

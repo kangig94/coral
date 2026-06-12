@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
 
+export const PROJECT_SOURCE_CACHE_MAX_ENTRIES = 256;
+
 const projectSourceCache = new Map<string, string>();
 
 function localProjectSource(projectRoot: string): string {
@@ -32,6 +34,19 @@ function parseRemoteSource(remote: string): string | null {
   return `${segments[segments.length - 2]}/${segments[segments.length - 1]}`;
 }
 
+function rememberProjectSource(projectRoot: string, source: string): void {
+  projectSourceCache.delete(projectRoot);
+  projectSourceCache.set(projectRoot, source);
+
+  while (projectSourceCache.size > PROJECT_SOURCE_CACHE_MAX_ENTRIES) {
+    const oldestProjectRoot = projectSourceCache.keys().next().value;
+    if (oldestProjectRoot === undefined) {
+      return;
+    }
+    projectSourceCache.delete(oldestProjectRoot);
+  }
+}
+
 /**
  * Derive a stable "source" identifier for a project — `<owner>/<repo>` from
  * the git origin remote, or `local/<basename>` for non-git projects. Cached
@@ -39,7 +54,10 @@ function parseRemoteSource(remote: string): string | null {
  */
 export function resolveProjectSource(projectRoot: string): string {
   const cached = projectSourceCache.get(projectRoot);
-  if (cached) return cached;
+  if (cached !== undefined) {
+    rememberProjectSource(projectRoot, cached);
+    return cached;
+  }
 
   let source = localProjectSource(projectRoot);
   try {
@@ -53,6 +71,6 @@ export function resolveProjectSource(projectRoot: string): string {
     // Non-git projects use a deterministic local source name.
   }
 
-  projectSourceCache.set(projectRoot, source);
+  rememberProjectSource(projectRoot, source);
   return source;
 }

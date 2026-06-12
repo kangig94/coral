@@ -1,10 +1,11 @@
-import { basename, delimiter, extname, join } from 'node:path';
+import { basename, delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
 import { throwIfAborted } from '../../runtime/abort.js';
 import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
+import type { Authority } from '../../runtime/invocation-context.js';
 import type { IdPort, ProcessPort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
-import { sourceImportStageDir } from '../paths.js';
+import { assertWithin, sourceImportStageDir } from '../paths.js';
 import type { KbSourceFrontmatter } from '../entry-types.js';
 import { assertNonEmptyText, assertSourceSlug } from '../validation.js';
 
@@ -13,6 +14,10 @@ const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/;
 const HTML_TITLE_PATTERN = /<title\b[^>]*>([\s\S]*?)<\/title>/i;
 const HTML_H1_PATTERN = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i;
 const HTML_BODY_PATTERN = /<body\b[^>]*>([\s\S]*?)<\/body>/i;
+
+export const USER_SOURCE_IMPORT_MAX_BYTES = 128 * 1024 * 1024;
+export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = 1024 * 1024 * 1024;
+const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
 
 const HTML_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -39,13 +44,27 @@ export type SourceImportRuntime = {
   process: Pick<ProcessPort, 'exec'>;
   ids: Pick<IdPort, 'uuid'>;
   time: Pick<TimePort, 'now'>;
-  storage: Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'rmSync' | 'writeFileSync'>;
+  storage: Pick<
+    StoragePort,
+    'mkdirSync' | 'readFile' | 'readdirSync' | 'realpathSync' | 'rmSync' | 'statSync' | 'writeFileSync'
+  >;
 };
 
 export type SourceImportContext = {
   runtime: SourceImportRuntime;
   runtimeRoot: string;
+  fileSizeLimitBytes: number | null;
 };
+
+export type SourceImportOptions = {
+  signal?: AbortSignal;
+};
+
+export type SourceImportReadPolicy =
+  | { kind: 'sandboxed'; root: string; maxBytes: number }
+  | { kind: 'unrestricted'; resolveBase: string; maxBytes: number | null };
+
+export type ResolvedSourceImportFile = { path: string };
 
 type TurndownServiceLike = {
   turndown(input: string): string;
@@ -156,6 +175,89 @@ function stagePreparedSourceMarkdown(stageRoot: string, markdown: string, runtim
   const stagedPath = join(stageRoot, `${runtime.ids.uuid()}.md`);
   runtime.storage.writeFileSync(stagedPath, markdown, { encoding: 'utf-8' });
   return stagedPath;
+}
+
+export function hasParentPathSegment(filePath: string): boolean {
+  return filePath.split(/[\\/]+/u).some((segment) => segment === '..');
+}
+
+export function resolveAdminSourceImportCap(env: Pick<EnvPort, 'get'>): number | null {
+  const raw = env.get(ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV);
+  if (raw === undefined) {
+    return ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === '0' || normalized === 'unlimited') {
+    return null;
+  }
+  if (!/^\d+$/u.test(normalized)) {
+    return ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT;
+  }
+
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT;
+}
+
+export function deriveSourceImportReadPolicy(
+  authority: Authority,
+  projectRoot: string,
+  env: Pick<EnvPort, 'get'>,
+): SourceImportReadPolicy {
+  if (authority === 'user') {
+    return { kind: 'sandboxed', root: projectRoot, maxBytes: USER_SOURCE_IMPORT_MAX_BYTES };
+  }
+  return { kind: 'unrestricted', resolveBase: projectRoot, maxBytes: resolveAdminSourceImportCap(env) };
+}
+
+function assertSourceImportFileSize(
+  filePath: string,
+  storage: SourceImportRuntime['storage'],
+  limitBytes: number | null,
+  label: string,
+): void {
+  const stat = storage.statSync(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`${label} must be a file`);
+  }
+  if (limitBytes !== null && stat.size > limitBytes) {
+    throw new Error(`${label} exceeds maximum source import size (${stat.size} bytes > ${limitBytes} bytes)`);
+  }
+}
+
+async function readUtf8FileWithinSourceImportLimit(
+  filePath: string,
+  ctx: SourceImportContext,
+  label: string,
+): Promise<string> {
+  assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, label);
+  return await ctx.runtime.storage.readFile(filePath, 'utf-8');
+}
+
+export function resolveSourceImportFile(
+  filePath: string,
+  policy: SourceImportReadPolicy,
+  storage: SourceImportRuntime['storage'],
+): ResolvedSourceImportFile {
+  if (policy.kind === 'sandboxed') {
+    if (hasParentPathSegment(filePath)) {
+      throw new Error('KB source import file path must not contain ".." path segments');
+    }
+
+    const canonicalRoot = storage.realpathSync(resolve(policy.root));
+    const candidate = isAbsolute(filePath) ? filePath : resolve(canonicalRoot, filePath);
+    const canonicalCandidate = storage.realpathSync(candidate);
+    const resolvedCandidate = assertWithin(canonicalRoot, canonicalCandidate, 'KB source import file path');
+
+    assertSourceImportFileSize(resolvedCandidate, storage, policy.maxBytes, 'KB source import file path');
+    return { path: resolvedCandidate };
+  }
+
+  const candidate = isAbsolute(filePath) ? filePath : resolve(policy.resolveBase, filePath);
+  const canonicalCandidate = storage.realpathSync(candidate);
+
+  assertSourceImportFileSize(canonicalCandidate, storage, policy.maxBytes, 'KB source import file path');
+  return { path: canonicalCandidate };
 }
 
 function findFirstMarkdownFile(root: string, storage: SourceImportRuntime['storage']): string | undefined {
@@ -363,12 +465,13 @@ function renderSourceMarkdown(meta: KbSourceFrontmatter, body: string): string {
 }
 
 export async function prepareSourceImport(
-  filePath: string,
+  sourceFile: ResolvedSourceImportFile,
   slug: string | undefined,
+  fileSizeLimitBytes: number | null,
   log: (msg: string) => void,
   runtimeRoot: string,
   runtime: SourceImportRuntime,
-  options?: { signal?: AbortSignal },
+  options: SourceImportOptions,
 ): Promise<PreparedSourceImport> {
   // Honor the caller's AbortSignal at the two checkpoints that bound the
   // long-running phases of source import: `'convert'` (before invoking the
@@ -378,19 +481,20 @@ export async function prepareSourceImport(
   // the registry calls `controller.abort('user_abort')`, which this throw
   // propagates up to the surrounding KB-job recorder where it maps to a
   // `terminal { outcome: 'aborted', reason: 'user_abort' }`.
-  const signal = options?.signal;
-  const ext = extname(filePath).toLowerCase();
-  const ctx: SourceImportContext = { runtime, runtimeRoot };
+  const signal = options.signal;
+  const sourceFilePath = sourceFile.path;
+  const ext = extname(sourceFilePath).toLowerCase();
+  const ctx: SourceImportContext = { runtime, runtimeRoot, fileSizeLimitBytes };
   const converter = resolveConverter(ext);
 
   if (signal !== undefined) throwIfAborted(signal, 'convert');
-  log(`Converting ${filePath}`);
+  log(`Converting ${sourceFilePath}`);
   if (!(await converter.isAvailable(ctx))) {
     log(`Installing converter dependencies for ${ext || 'source'} import`);
     await converter.install(log, ctx);
   }
 
-  const converted = await converter.convert(filePath, ctx);
+  const converted = await converter.convert(sourceFilePath, ctx);
   const meta: KbSourceFrontmatter = {
     title: converted.title,
     type: inferSourceType(ext),
@@ -424,7 +528,9 @@ export class MarkdownCopyConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
-    const rawMarkdown = normalizeTextInput(ctx.runtime.storage.readFileSync(filePath, 'utf-8'));
+    const rawMarkdown = normalizeTextInput(
+      await readUtf8FileWithinSourceImportLimit(filePath, ctx, 'KB source import markdown file'),
+    );
     const withoutFrontmatter = stripLeadingFrontmatter(rawMarkdown);
     const { title, body } = splitLeadingMarkdownTitle(withoutFrontmatter);
 
@@ -445,7 +551,9 @@ export class HtmlTurndownConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
-    const html = normalizeTextInput(ctx.runtime.storage.readFileSync(filePath, 'utf-8'));
+    const html = normalizeTextInput(
+      await readUtf8FileWithinSourceImportLimit(filePath, ctx, 'KB source import HTML file'),
+    );
     const title = extractHtmlTitle(html);
     if (!title) {
       throw new Error('HTML import requires a <title> or first <h1>');
@@ -468,6 +576,7 @@ export class DocxMammothConverter implements Converter {
   }
 
   async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
+    assertSourceImportFileSize(filePath, _ctx.runtime.storage, _ctx.fileSizeLimitBytes, 'KB source import DOCX file');
     const mammoth = await loadMammoth();
     const result = await mammoth.convertToHtml({ path: filePath });
     const html = normalizeTextInput(result.value);
@@ -519,6 +628,7 @@ export class PdfMarkerConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
+    assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, 'KB source import PDF file');
     const markerCommand = await resolveCommandPath('marker_single', ctx);
     if (!markerCommand) {
       throw new Error('marker_single is not available');
@@ -533,7 +643,9 @@ export class PdfMarkerConverter implements Converter {
         throw new Error('marker_single did not produce a markdown file');
       }
 
-      const rawMarkdown = normalizeTextInput(ctx.runtime.storage.readFileSync(markdownPath, 'utf-8'));
+      const rawMarkdown = normalizeTextInput(
+        await readUtf8FileWithinSourceImportLimit(markdownPath, ctx, 'Marker output markdown file'),
+      );
       const { title, body } = splitLeadingMarkdownTitle(rawMarkdown);
       if (!title) {
         throw new Error('PDF import requires Marker output to begin with a top-level heading');

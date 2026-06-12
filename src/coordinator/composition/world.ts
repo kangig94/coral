@@ -14,8 +14,34 @@ import { LaunchCoordinator } from '../live/admission.js';
 import { createProviderHostManager, type ProviderHostManager } from '../live/provider-hosts/index.js';
 import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
+
+const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
+
+function isLoopbackBindHost(bindHost: string): boolean {
+  const host = bindHost.trim().toLowerCase();
+  if (host === 'localhost' || host === '::1') return true;
+
+  const octets = host.split('.');
+  if (octets.length !== 4) return false;
+  if (!octets.every((part) => /^\d+$/.test(part))) return false;
+
+  const [first, ...rest] = octets.map((part) => Number(part));
+  return first === 127 && rest.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255);
+}
+
+function assertRemoteBindHostAllowed(bindHost: string, allowRemote: string | undefined): void {
+  if (isLoopbackBindHost(bindHost) || allowRemote === '1') return;
+
+  throw new CoralSetupError({
+    code: 'backend_remote_bind_requires_opt_in',
+    userMessage: `Refusing to bind Coral backend to non-loopback host '${bindHost}' without ${REMOTE_BIND_OPT_IN_ENV}=1.`,
+    remediation: `Use loopback-only CORAL_BACKEND_BIND (127.0.0.1, ::1, or localhost), or set ${REMOTE_BIND_OPT_IN_ENV}=1 only when remote backend exposure is intentional and protected by a trusted network boundary.`,
+    context: { bindHost, optInEnv: REMOTE_BIND_OPT_IN_ENV },
+  });
+}
 
 export interface CoordinatorWorld {
   readonly identity: CoordinatorIdentity;
@@ -56,6 +82,7 @@ export function createCoordinatorWorld(
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
   const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
+  assertRemoteBindHostAllowed(bindHost, runtime.env.get(REMOTE_BIND_OPT_IN_ENV));
   const advertiseHost = bootSnapshot.advertiseHost ?? runtime.env.get('CORAL_BACKEND_ADVERTISE_HOST');
   const backendPid = bootSnapshot.pid ?? runtime.env.pid();
   const coralEnvSnapshot = runtime.env.coralSnapshot();

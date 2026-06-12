@@ -60,7 +60,7 @@ const discussCreateInputSchema = z
 
 export const sessionCreatedConfigSchema = z
   .object({
-    bidThreshold: z.number(),
+    bidThreshold: z.number().finite(),
     maxEpochs: z.number().int().positive(),
     quotaPerEpoch: z.number().int().positive(),
   })
@@ -94,7 +94,7 @@ export const sessionCreatedPayloadSchema = z
 export const bidSubmittedPayloadSchema = z
   .object({
     agent: z.string(),
-    score: z.number(),
+    score: z.number().int().min(0).max(100),
     thought: z.string(),
   })
   .strict();

@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   applyCodexContinuityUpdate,
   buildCodexContinuity,
+  buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapTurnStartParams,
@@ -143,6 +144,25 @@ describe('mapTurnStartParams effort mapping', () => {
 });
 
 describe('Codex continuity refs', () => {
+  it('drops unexpected persisted keys and does not trust unscoped cwd', () => {
+    const continuity = readCodexPersistedContinuity(
+      {
+        cwd: '/workspace/project',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        attacker: 'keep-out',
+      },
+      { allowUnscopedCwd: false },
+    );
+
+    expect(continuity).toEqual({
+      cwd: undefined,
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    });
+    expect(continuity).not.toHaveProperty('attacker');
+  });
+
   it('drops empty persisted ids and never treats them as resumable', () => {
     const continuity = readCodexPersistedContinuity({
       cwd: '',
@@ -176,6 +196,39 @@ describe('Codex continuity refs', () => {
       turnId: 'turn-1',
     });
     expect(applyCodexContinuityUpdate(persisted, { conversationRef: null })).toEqual({});
+  });
+
+  it('uses an in-scope persisted cwd for the Codex app-server cwd', () => {
+    const continuity = {
+      cwd: '/workspace/project/subdir',
+      threadId: 'thread-1',
+      attacker: 'keep-out',
+    };
+
+    const spec = buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+
+    expect(spec.cwd).toBe('/workspace/project/subdir');
+    expect(readCodexPersistedContinuity(continuity)).toEqual({
+      cwd: '/workspace/project/subdir',
+      threadId: 'thread-1',
+      turnId: undefined,
+    });
+  });
+
+  it('ignores a persisted cwd outside the current project scope', () => {
+    const continuity = {
+      cwd: '/tmp/attacker',
+      threadId: 'thread-1',
+    };
+
+    const spec = buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+
+    expect(spec.cwd).toBe('/workspace/project');
+    expect(readCodexPersistedContinuity(continuity)).toEqual({
+      cwd: undefined,
+      threadId: 'thread-1',
+      turnId: undefined,
+    });
   });
 });
 

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as louvainModule from 'graphology-communities-louvain';
 import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
+import { backendLog } from '../../../infra/backend-log.js';
 import { compareLocale } from '../../validation.js';
 import { communityEntryId, type KbIndex } from '../../entry-types.js';
 import { communitySlugFromReference, uniqueSorted } from './identity.js';
@@ -61,6 +62,8 @@ const COMMUNITY_RESOLUTION_TARGET_MIN = 20;
 const COMMUNITY_RESOLUTION_TARGET_MAX = 30;
 const COMMUNITY_RESOLUTION_TARGET_MIDPOINT = (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
 const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
+export const COMMUNITY_LOUVAIN_NODE_CAP = 2_000;
+export const COMMUNITY_LOUVAIN_EDGE_CAP = 10_000;
 
 function internalWeightedDegree(
   node: string,
@@ -409,6 +412,25 @@ function chooseBestPartition(graph: TagGraph): CommunityPartition {
   };
 }
 
+function louvainGraphCapWarning(graph: TagGraph): string | null {
+  const nodeCount = graph.tags.length;
+  const edgeCount = graph.edges.length;
+  const exceeded: string[] = [];
+
+  if (nodeCount > COMMUNITY_LOUVAIN_NODE_CAP) {
+    exceeded.push(`nodes=${nodeCount} capped at ${COMMUNITY_LOUVAIN_NODE_CAP}`);
+  }
+  if (edgeCount > COMMUNITY_LOUVAIN_EDGE_CAP) {
+    exceeded.push(`edges=${edgeCount} capped at ${COMMUNITY_LOUVAIN_EDGE_CAP}`);
+  }
+
+  if (exceeded.length === 0) {
+    return null;
+  }
+
+  return `[KB] community detection skipped: Louvain graph cap exceeded (${exceeded.join(', ')})`;
+}
+
 function buildCarryOverSignature(
   community: Pick<DetectedCommunitySeed, 'level' | 'members' | 'parentMembershipFingerprint'> & {
     membershipFingerprint?: string;
@@ -605,6 +627,12 @@ export class CommunityPartitionTree {
   static fromGraph(graph: TagGraph): CommunityPartitionTree {
     const graphFingerprint = computeGraphFingerprint(graph);
     if (graph.graph.order === 0) {
+      return new CommunityPartitionTree(graphFingerprint, []);
+    }
+
+    const capWarning = louvainGraphCapWarning(graph);
+    if (capWarning !== null) {
+      backendLog.warn(capWarning);
       return new CommunityPartitionTree(graphFingerprint, []);
     }
 

@@ -174,6 +174,7 @@ describe('AbortSignal propagation for KB search', () => {
       { name: 'kb.entries.search' } as never,
       { q: 'abort query', scope: 'all', top_k: 3 },
       rpcPorts,
+      'admin',
       controller.signal,
     );
 

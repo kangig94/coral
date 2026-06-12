@@ -39,6 +39,7 @@ export interface AuthorityApplyDeps {
   readonly corpusProjectionReader: KbCorpusProjectionReader;
   readonly onTextProjectionSync?: () => void;
   readonly resolveWaiters: (state: ConsumerState, newCursor: number | KbCorpusSnapshot) => void;
+  readonly rejectWaiters: (state: ConsumerState, applyError: ConsumerApplyError) => void;
 }
 
 export function scheduleJournalApply(state: ConsumerState, target: number, deps: AuthorityApplyDeps): void {
@@ -212,6 +213,7 @@ export async function runJournalApply(
       state.lastApplyError = applyError;
     }
     invokeApplyFailureCallback(state, applyError);
+    deps.rejectWaiters(state, applyError);
     backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
     return false;
   }
@@ -266,6 +268,7 @@ export async function runCorpusApply(
       state.lastApplyError = applyError;
     }
     invokeApplyFailureCallback(state, applyError);
+    deps.rejectWaiters(state, applyError);
     backendLog.error(`ConsumerDriver apply failed (${reg.id})`, err);
     return false;
   }

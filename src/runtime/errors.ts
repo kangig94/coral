@@ -131,7 +131,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Engine '${stringContextValue(context, 'engine', 'this engine')}' needs environment variable '${stringContextValue(context, 'envVar', '<UNSET>')}'.`,
     remediation: (context) =>
-      `Set ${stringContextValue(context, 'envVar', '<ENV>')} (e.g. add it to ~/.coral/.env) and rerun \`coral-cli expansion equip ${stringContextValue(context, 'engine', '<engine>')}\`.`,
+      `Set ${stringContextValue(context, 'envVar', '<ENV>')} in the backend's environment (e.g. the \`env\` block of ~/.claude/settings.json), run 'coral-cli backend shutdown' so the next command relaunches with it, then rerun \`coral-cli expansion equip ${stringContextValue(context, 'engine', '<engine>')}\`.`,
   },
   expansion_embedding_provider_missing: {
     userMessage: (context) =>

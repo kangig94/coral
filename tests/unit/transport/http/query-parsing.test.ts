@@ -176,10 +176,11 @@ describe('transport HTTP query parsing', () => {
     const context = buildInvocationContextFromQuery('/repo/project', '/plugin/root', {
       CORAL_OWNER: 'transport-owner',
       CORAL_EFFORT: 'high',
-    });
+    }, 'admin');
 
     expect(context.projectRoot).toBe('/repo/project');
     expect(context.pluginRoot).toBe('/plugin/root');
+    expect(context.authority).toBe('admin');
     expect(context.coralEnv).toEqual(
       expect.objectContaining({
         CORAL_OWNER: 'transport-owner',

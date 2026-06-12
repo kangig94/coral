@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { JobRuntime } from '#src/jobs/records.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { PROVIDER_SERVER_MAX_JSONL_LINE_BYTES } from '#src/coordinator/live/provider-server-transport.js';
 
 function createProviderServerScript(): string {
   return [
@@ -25,6 +26,13 @@ function createProviderServerScript(): string {
     '  }',
     '});',
     "process.on('SIGTERM', () => process.exit(0));",
+  ].join('');
+}
+
+function createOversizedProviderServerScript(): string {
+  return [
+    `process.stdout.write('x'.repeat(${PROVIDER_SERVER_MAX_JSONL_LINE_BYTES + 1}));`,
+    'setInterval(() => {}, 1000);',
   ].join('');
 }
 
@@ -123,6 +131,28 @@ describe('durable transport', () => {
 
     unsubscribe();
     await handle.close();
+  });
+
+  it('closes provider servers that emit an oversized JSONL line', async () => {
+    const handle = await coordinator.spawnProviderServer({
+      provider: 'codex',
+      command: process.execPath,
+      args: ['-e', createOversizedProviderServerScript()],
+    });
+
+    const outcome = await handle.closePromise;
+    expect(outcome).toBeInstanceOf(Error);
+    const error = outcome as Error & { data?: unknown };
+    const data = error.data as { code?: string; maxLineBytes?: number; observedBytes?: number } | undefined;
+
+    expect(error.message).toContain('emitted an oversized JSONL line');
+    expect(data).toEqual(
+      expect.objectContaining({
+        code: 'provider_server_line_too_large',
+        maxLineBytes: PROVIDER_SERVER_MAX_JSONL_LINE_BYTES,
+      }),
+    );
+    expect(data?.observedBytes).toBeGreaterThan(PROVIDER_SERVER_MAX_JSONL_LINE_BYTES);
   });
 
   it('terminateAll drains queued launches but does not kill provider servers', async () => {

@@ -1,12 +1,14 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { raceTimeout } from '../../../infra/async.js';
 import { isRecord, readString } from '../../../infra/json.js';
+import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import { formatToolProgress } from '../progress.js';
-import { hashSortedEnv, sameBootstrapSignature } from '../request-prep.js';
+import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
@@ -17,7 +19,6 @@ import {
   readSessionId,
   systemProgressMessage,
   toBootstrapSignature,
-  type ClaudeBootstrapSignature,
   type SessionEnsureParams,
   type SessionEnsureResult,
   type SessionProbeParams,
@@ -54,6 +55,8 @@ const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
 const POST_END_TURN_GRACE_MS = 1_500;
 const TURN_TIMEOUT_MS = 30 * 60 * 1_000;
+const MAX_TRANSCRIPT_READ_BYTES = MAX_BUFFER;
+const MAX_TRANSCRIPT_LINE_BYTES = MAX_BUFFER;
 // Safety net for a dropped prompt: if the transcript shows no activity within
 // this window after a send, re-send the prompt; after MAX_PROMPT_RESENDS with
 // no acknowledgement, fail fast instead of blocking until TURN_TIMEOUT_MS.
@@ -65,6 +68,8 @@ type ActiveTurnState = {
   startedAt: number;
   transcriptOffset: number;
   transcriptRemainder: string;
+  transcriptRemainderBytes: number;
+  transcriptDecoder: StringDecoder;
   interruptRequested: boolean;
   interruptSent: boolean;
   userMessageSent: boolean;
@@ -207,6 +212,8 @@ export class SingleSessionController {
       startedAt: Date.now(),
       transcriptOffset: await this.readTranscriptOffsetBeforeTurn(),
       transcriptRemainder: '',
+      transcriptRemainderBytes: 0,
+      transcriptDecoder: new StringDecoder('utf8'),
       interruptRequested: false,
       interruptSent: false,
       userMessageSent: false,
@@ -474,11 +481,17 @@ export class SingleSessionController {
   private async monitorTranscript(turn: ActiveTurnState): Promise<void> {
     while (this.activeTurn === turn) {
       this.readTranscriptAppend(turn);
+      if (this.activeTurn !== turn) {
+        return;
+      }
       const now = Date.now();
       if (!turn.promptAcknowledged && this.resendUnacknowledgedPrompt(turn, now)) {
         return;
       }
-      if (turn.sawEndTurnAt !== null && (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)) {
+      if (
+        turn.sawEndTurnAt !== null &&
+        (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)
+      ) {
         this.completeTurn(turn);
         return;
       }
@@ -527,20 +540,77 @@ export class SingleSessionController {
     }
 
     const read = readFileSlice(path, turn.transcriptOffset);
-    if (read === null || read.text.length === 0) {
+    if (read === null) {
       return;
     }
     turn.transcriptOffset = read.offset;
+    if (read.bytes.length === 0) {
+      return;
+    }
     turn.promptAcknowledged = true;
 
-    const lines = `${turn.transcriptRemainder}${read.text}`.split(/\r?\n/);
-    turn.transcriptRemainder = lines.pop() ?? '';
-    for (const line of lines) {
-      if (line.trim().length === 0) {
-        continue;
-      }
-      this.processTranscriptLine(turn, line);
+    const text = turn.transcriptDecoder.write(read.bytes);
+    if (text.length > 0) {
+      this.consumeTranscriptText(turn, text);
     }
+  }
+
+  private consumeTranscriptText(turn: ActiveTurnState, text: string): void {
+    let start = 0;
+    while (start < text.length) {
+      const newlineIndex = text.indexOf('\n', start);
+      if (newlineIndex === -1) {
+        this.appendTranscriptFragment(turn, text.slice(start));
+        return;
+      }
+
+      const fragmentEnd =
+        newlineIndex > start && text.charCodeAt(newlineIndex - 1) === 13 ? newlineIndex - 1 : newlineIndex;
+      if (!this.appendTranscriptFragment(turn, text.slice(start, fragmentEnd))) {
+        return;
+      }
+
+      const line = turn.transcriptRemainder;
+      turn.transcriptRemainder = '';
+      turn.transcriptRemainderBytes = 0;
+      if (line.trim().length > 0) {
+        this.processTranscriptLine(turn, line);
+        if (this.activeTurn !== turn) {
+          return;
+        }
+      }
+      start = newlineIndex + 1;
+    }
+  }
+
+  private appendTranscriptFragment(turn: ActiveTurnState, fragment: string): boolean {
+    if (fragment.length === 0) {
+      return true;
+    }
+    const fragmentBytes = Buffer.byteLength(fragment, 'utf8');
+    const observedBytes = turn.transcriptRemainderBytes + fragmentBytes;
+    if (observedBytes > MAX_TRANSCRIPT_LINE_BYTES) {
+      this.failOversizedTranscriptLine(turn, observedBytes);
+      return false;
+    }
+    turn.transcriptRemainder += fragment;
+    turn.transcriptRemainderBytes = observedBytes;
+    return true;
+  }
+
+  private failOversizedTranscriptLine(turn: ActiveTurnState, observedBytes: number): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    turn.transcriptRemainder = '';
+    turn.transcriptRemainderBytes = 0;
+    this.activeTurn = null;
+    this.lastTerminalTurnId = turn.brokerTurnId;
+    this.emitTurnFailure(
+      turn.brokerTurnId,
+      `Claude transcript JSONL line exceeded ${MAX_TRANSCRIPT_LINE_BYTES} bytes (observed ${observedBytes}).`,
+    );
   }
 
   private processTranscriptLine(turn: ActiveTurnState, line: string): void {
@@ -886,20 +956,20 @@ function bracketedPaste(prompt: string): string {
   return `\x1b[200~${prompt}\x1b[201~\r`;
 }
 
-function readFileSlice(path: string, offset: number): { text: string; offset: number } | null {
+function readFileSlice(path: string, offset: number): { bytes: Buffer; offset: number } | null {
   let fd: number | null = null;
   try {
     fd = openSync(path, 'r');
     const size = fstatSync(fd).size;
     if (size <= offset) {
-      return { text: '', offset: size };
+      return { bytes: Buffer.alloc(0), offset: size };
     }
-    const length = size - offset;
+    const length = Math.min(size - offset, MAX_TRANSCRIPT_READ_BYTES);
     const buffer = Buffer.allocUnsafe(length);
-    readSync(fd, buffer, 0, length, offset);
+    const bytesRead = readSync(fd, buffer, 0, length, offset);
     return {
-      text: buffer.toString('utf8'),
-      offset: size,
+      bytes: buffer.subarray(0, bytesRead),
+      offset: offset + bytesRead,
     };
   } catch {
     return null;

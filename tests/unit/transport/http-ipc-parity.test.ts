@@ -4,9 +4,11 @@ import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHttpHandler } from '#src/transport/http/handler.js';
-import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
+import { closeIpcServer, createIpcServer, ipcAdapter, listenIpcServer } from '#src/transport/ipc/server.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
+import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
 
 const tempDirs: string[] = [];
 const httpServers: Server[] = [];
@@ -168,6 +170,110 @@ afterEach(async () => {
 });
 
 describe('http/ipc parity', () => {
+  it('derives invocation authority from the transport boundary', async () => {
+    const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
+    if (!spec) {
+      throw new Error('sessions.create spec not found');
+    }
+
+    const observedAuthorities: string[] = [];
+    const ports = createPorts();
+    ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
+      observedAuthorities.push(ctx.authority);
+      return {
+        status: 'running' as const,
+        job: `job-${observedAuthorities.length}`,
+        session: `session-${observedAuthorities.length}`,
+      };
+    });
+
+    const request = {
+      provider: 'codex',
+      prompt: 'hello',
+      projectRoot: '/project-root',
+    };
+    const ipcResult = await ipcAdapter(spec, ports).dispatch(request);
+
+    expect(ipcResult.kind).toBe('unary');
+    expect(observedAuthorities).toEqual(['admin']);
+
+    const { baseUrl } = await startHttpServer(ports);
+    const httpResponse = await fetch(`${baseUrl}/sessions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': ports.identity.token,
+      },
+      body: JSON.stringify(request),
+    });
+
+    expect(httpResponse.status).toBe(201);
+    expect(await httpResponse.json()).toMatchObject({
+      launchState: 'running',
+      job: 'job-2',
+      session: 'session-2',
+    });
+    expect(observedAuthorities).toEqual(['admin', 'user']);
+  });
+
+  it('rejects client-supplied source-import authority while deriving HTTP context as user', async () => {
+    const bypassRequest = {
+      filePath: '../outside.md',
+      projectRoot: '/project-root',
+      authority: 'admin',
+    };
+    expect(kbSourceCreateRequestSchema.safeParse(bypassRequest).success).toBe(false);
+
+    const ports = createPorts();
+    const observedAuthorities: string[] = [];
+    ports.kb.createSource = vi.fn(async (_args, ctx) => {
+      observedAuthorities.push(ctx.authority);
+      return {
+        ok: true as const,
+        data: {
+          status: 'completed',
+          observedAuthority: ctx.authority,
+        },
+      };
+    });
+    const { baseUrl } = await startHttpServer(ports);
+
+    const rejectedResponse = await fetch(`${baseUrl}/kb/sources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': ports.identity.token,
+      },
+      body: JSON.stringify(bypassRequest),
+    });
+
+    expect(rejectedResponse.status).toBe(400);
+    expect(ports.kb.createSource).not.toHaveBeenCalled();
+
+    const acceptedResponse = await fetch(`${baseUrl}/kb/sources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': ports.identity.token,
+      },
+      body: JSON.stringify({ filePath: '../outside.md', projectRoot: '/project-root' }),
+    });
+
+    expect(acceptedResponse.status).toBe(201);
+    expect(await acceptedResponse.json()).toEqual({
+      status: 'completed',
+      observedAuthority: 'user',
+    });
+    expect(observedAuthorities).toEqual(['user']);
+    expect(ports.kb.createSource).toHaveBeenCalledWith(
+      { filePath: '../outside.md', readiness: 'base-search', async: false },
+      expect.objectContaining({
+        authority: 'user',
+        projectRoot: '/project-root',
+      }),
+    );
+  });
+
   it('returns the same coordinator RPC payload through HTTP and IPC after wire normalization', async () => {
     const ports = createPorts();
     const socketPath = makeSocketPath();

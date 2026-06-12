@@ -4,7 +4,7 @@ import { nonEmptyStringSchema, readNonEmptyString } from '../infra/identifiers.j
 
 export const continuityRefSchema = nonEmptyStringSchema;
 
-export const providerContinuityBlobSchema = z.record(z.unknown());
+export const providerContinuityBlobSchema = z.record(z.string(), z.unknown());
 
 export type ProviderContinuityBlob = z.infer<typeof providerContinuityBlobSchema>;
 

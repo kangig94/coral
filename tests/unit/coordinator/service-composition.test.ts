@@ -572,7 +572,7 @@ function createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {} };
+  return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
 }
 
 describe('ExecutionService', () => {
@@ -584,7 +584,7 @@ describe('ExecutionService', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
@@ -925,7 +925,6 @@ describe('ExecutionService', () => {
       expect(updatedSession?.state).toBe('non_resumable');
       expect(updatedSession?.conversationRef).toBeUndefined();
     });
-
   }); // end queue admission
 
   it('persists successful workflow results before exposing the terminal event', async () => {
@@ -2453,7 +2452,7 @@ describe('ExecutionService adversarial', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'red-exec-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');

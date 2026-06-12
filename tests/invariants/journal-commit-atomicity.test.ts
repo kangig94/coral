@@ -22,6 +22,7 @@ import { workflowRegistry, workflowPlanDeclaredEvent } from '#src/workflow/event
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { buildWorkflowPlan, type PlanSlot, type WorkflowPlan } from '#src/workflow/plan.js';
+import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -485,6 +486,7 @@ function createRecoveryInvocationContext(projectRoot: string): InvocationContext
     projectRoot,
     pluginRoot: '/workspace/coral-plugin',
     coralEnv: {},
+    authority: 'admin',
   };
 }
 
@@ -510,6 +512,7 @@ async function resumeRecoveryHarness(
   return resumeAll({
     db: harness.db,
     progressStore: harness.progressStore,
+    loadJobDetails: loadJobProjectionDetails,
     getExecutionService: () => executionSvc,
     createInvocationContext: createRecoveryInvocationContext,
     finalizeWorkflow,

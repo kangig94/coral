@@ -5,11 +5,11 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
-import type { TerminalOutcome } from '../jobs/outcome.js';
+import { phaseForOutcome, type TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStore } from '../jobs/store.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';
-import { loadJobProjectionDetails, type JobProjectionDetail } from '../jobs/read-queries.js';
+import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import { readProjectionJob, readWorkflowProjection } from './read-queries.js';
 import {
   WorkflowExecutionError,
@@ -46,9 +46,17 @@ type RecoveredWorkflowFinalization = {
   error?: WorkflowExecutionError;
 };
 
+/**
+ * Jobs-owned projection reader injected by the coordinator (architecture
+ * ownership matrix: workflow reads jobs only via coordinator composition).
+ * Production wiring binds `loadJobProjectionDetails` from jobs/read-queries.
+ */
+type LoadJobDetailsFn = (db: Database, jobIds: string[], ctx: StoreReadContext) => Map<string, JobProjectionDetail>;
+
 type ResumeWorkflowDeps = {
   db: Database;
   progressStore: Pick<JobStore, 'readStatus'> & StoreReadContext;
+  loadJobDetails: LoadJobDetailsFn;
   executionSvc: WorkflowExecutionPort;
   ctx: InvocationContext;
   workflowId: string;
@@ -159,7 +167,11 @@ function buildLaunchedAtomsForStep(
 }
 
 function completedOutputForSlot(slot: CompiledPlanSlot, detailsByJob: Map<string, JobProjectionDetail>): string | null {
-  return detailForJob(detailsByJob, slot.jobId).exit?.content ?? null;
+  const exit = detailForJob(detailsByJob, slot.jobId).exit;
+  if (!exit || phaseForOutcome(exit.outcome) !== 'completed') {
+    return null;
+  }
+  return exit.content;
 }
 
 function summarizeCompletedSteps(
@@ -214,7 +226,7 @@ function firstTerminalFailure(
     slots.find((slot) => {
       const detail = detailForJob(detailsByJob, slot.jobId);
       const outcome = detail.exit?.outcome;
-      return outcome && outcome.kind !== 'completed';
+      return outcome !== undefined && phaseForOutcome(outcome) !== 'completed';
     });
 
   if (!targetSlot) {
@@ -332,7 +344,7 @@ function detectExistingCompletion(deps: ResumeWorkflowDeps): boolean {
 function loadRecoverySnapshot(deps: ResumeWorkflowDeps): RecoverySnapshot {
   const readCtx: StoreReadContext = deps.progressStore;
   const compiledSlots = compileSlotsForRecovery(deps.db, deps.workflowId, deps.plan);
-  const slotDetailsByJob = loadJobProjectionDetails(
+  const slotDetailsByJob = deps.loadJobDetails(
     deps.db,
     compiledSlots.map((slot) => slot.jobId),
     readCtx,
@@ -396,7 +408,7 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
 
   for (const slot of snapshot.stepSlots) {
     const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
-    if (detail.exit?.outcome.kind === 'completed') {
+    if (detail.exit && phaseForOutcome(detail.exit.outcome) === 'completed') {
       completedOutputs.set(slot.atomKey, detail.exit.content);
       continue;
     }
@@ -520,6 +532,7 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
 export async function resumeAll(options: {
   db: Database;
   progressStore: Pick<JobStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
+  loadJobDetails: LoadJobDetailsFn;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   finalizeWorkflow: (intent: WorkflowFinalizationIntent) => void;
@@ -564,6 +577,7 @@ export async function resumeAll(options: {
       recovered = await resumeWorkflow({
         db: options.db,
         progressStore: options.progressStore,
+        loadJobDetails: options.loadJobDetails,
         executionSvc: options.getExecutionService(ctx),
         ctx,
         workflowId: jobId,

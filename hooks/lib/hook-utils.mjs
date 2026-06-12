@@ -80,7 +80,20 @@ export function readUserMessage(input) {
   return input?.user_message || input?.message || input?.prompt || '';
 }
 
+// Memoized per hook invocation: callers resolve the same projectDir several
+// times (inject rendering, wake-up slug, project dir), and each miss costs a
+// git subprocess with a 2s timeout — repeated timeouts would eat the hook budget.
+const _projectSourceCache = new Map();
+
 export function resolveProjectSource(projectDir) {
+  const cached = _projectSourceCache.get(projectDir);
+  if (cached !== undefined) return cached;
+  const resolved = computeProjectSource(projectDir);
+  _projectSourceCache.set(projectDir, resolved);
+  return resolved;
+}
+
+function computeProjectSource(projectDir) {
   try {
     const remote = execSync('git remote get-url origin', {
       cwd: projectDir,

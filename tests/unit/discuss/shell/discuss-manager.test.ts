@@ -41,6 +41,7 @@ async function recoverSessions(harness: DiscussHarness) {
       projectRoot: snapshot.projectRoot,
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
+      authority: 'admin',
     }),
   );
 }
@@ -236,6 +237,40 @@ describe('Discuss executor and operations', () => {
     expect(session.snapshot.state.status).toBe('bidding');
     await advanceDiscussRuntime(harness, 1);
     expect(getSession(harness.context, 'discuss-1')?.snapshot.state.status).not.toBe('bidding');
+
+    harness.cleanup();
+  });
+
+  it('passes configured quota_per_epoch into session creation', async () => {
+    const harness = createDiscussHarness();
+    const config = { quota_per_epoch: 5 } as Parameters<typeof startDiscussSession>[4] & {
+      quota_per_epoch: number;
+    };
+    vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => undefined);
+
+    const session = await startDiscussSession(
+      harness.context,
+      'discuss-quota',
+      DEFAULT_TOPIC,
+      [
+        { name: 'alpha', persona: '# Alpha', participation: 'observer' },
+        { name: 'user', persona: '# User', participation: 'observer' },
+      ],
+      config,
+      harness.ctx,
+    );
+    const created = harness.store.readSessionEvents('discuss-quota').find((event) => event.kind === 'session.created');
+
+    expect(created).toMatchObject({
+      payload: {
+        config: {
+          quotaPerEpoch: 5,
+        },
+      },
+    });
+    expect(session.snapshot.state.quota_per_epoch).toBe(5);
+    expect(session.snapshot.state.agents.alpha.quota_remaining).toBe(5);
+    expect(session.snapshot.state.agents.user.quota_remaining).toBe(5);
 
     harness.cleanup();
   });

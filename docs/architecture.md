@@ -50,7 +50,7 @@ bridge/coral-backend.cjs
   ├── Jobs / sessions / workflow / discuss / KB owner modules and contracts
   ├── Live ConsumerDriver freshness + drain path
   ├── Corpus notify seam for KB publication
-  ├── Journal substrate (`better-sqlite3`)
+  ├── Journal substrate (`node:sqlite`)
   ├── KB runtime + curation scheduler
   └── Optional provider host management
       │
@@ -297,7 +297,6 @@ Foundation layer
 | `~/.coral/exports/jobs/<jobId>/result.md` or `~/.coral/exports-dev/jobs/<jobId>/result.md` | Durable wait/follow result artifact |
 | `<os-tmpdir>/coral-jobs/<jobId>/` | Live job scratch artifacts such as stdout/stderr/intermediates |
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
-| `~/.coral/.env` | User-local embedding configuration |
 | `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
 
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
@@ -332,7 +331,7 @@ Job <id> completed
 Job <id> aborted: <reason>
 Job <id> provider exited <N>[: <note>]
 Job <id> failed: <cause description>
-Job <id> coral errored: <sentence> [<kind>]
+Job <id> errored: <sentence> [<kind>]
 ```
 
-The trailing `[<kind>]` tag on `coral errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`).
+The trailing `[<kind>]` tag on `errored` lines is the machine-readable classifier (regex `/\[(\w+)\]$/`).

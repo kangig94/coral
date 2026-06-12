@@ -1,6 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
+import { formatError } from '../infra/error-format.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -225,12 +226,13 @@ export function cleanupStaleJobs(
     const agedOut = isAgedOut(status.updatedAt, nowMs, retentionMs);
     if (!fromOldBundle && !agedOut) continue;
 
+    const artifactPath = progressStore.jobDir(jobId);
     try {
-      storage.rmSync(progressStore.jobDir(jobId), { recursive: true, force: true });
+      storage.rmSync(artifactPath, { recursive: true, force: true });
       progressStore.purgeFromCache(jobId);
       log(`Cleaned up ${fromOldBundle ? 'stale' : 'aged'} job artifact: ${jobId}\n`);
-    } catch {
-      // best-effort
+    } catch (error: unknown) {
+      backendLog.warn(`Failed to prune job artifact at ${artifactPath}: ${formatError(error)}`);
     }
   }
 }
@@ -571,6 +573,7 @@ async function runLifecycleStartup({
       startedAt,
     });
     runtimeState.setLifecycle('kernel-ready');
+    runtimeState.setLaunchFenceActive(true);
 
     // ===== Era II (recovery) =====
     // Per-job isolation: corrupt sessions should not abort recovery.
@@ -597,6 +600,9 @@ async function runLifecycleStartup({
       interruptedAppServerReason,
     });
     signal.throwIfAborted();
+    if (runtimeState.getLaunchFenceActive()) {
+      runtimeState.setLaunchFenceActive(false);
+    }
 
     let registeredSubsystems = false;
     try {
@@ -764,7 +770,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     instanceId,
   });
   function createInvocationContext(projectRoot: string): InvocationContext {
-    return { projectRoot, pluginRoot, coralEnv: {} };
+    return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
   }
 
   async function shutdown(reason: string): Promise<void> {

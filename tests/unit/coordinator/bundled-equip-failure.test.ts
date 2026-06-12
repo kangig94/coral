@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
+import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';

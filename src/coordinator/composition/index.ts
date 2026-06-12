@@ -99,6 +99,13 @@ import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 
+export const MAX_EVENT_STREAM_CONNECTIONS = 100;
+
+const EVENT_STREAM_CAPACITY_RESPONSE = {
+  code: 'too_many_event_streams',
+  message: 'Too many event stream connections',
+};
+
 function createRefBackedExpansionRpc(storeServicesRef: StoreServicesRef): ExpansionRequestPort {
   const getExpansionRpc = (): ExpansionRequestPort => {
     const lifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
@@ -234,10 +241,11 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     return created;
   };
 
-  const readOnlyInvocationContext = {
+  const readOnlyInvocationContext: InvocationContext = {
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
     coralEnv: { ...world.coralEnvSnapshot },
+    authority: 'admin',
   };
   // KB-tool handlers route through the subsystem registry. The registry
   // returns a structured `kb_initializing` / `kb_offline` envelope whenever
@@ -570,6 +578,19 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     events: {
       addResponse: (res) => {
+        if (streamResponses.has(res)) {
+          return;
+        }
+        if (streamResponses.size >= MAX_EVENT_STREAM_CONNECTIONS) {
+          if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+            sendJson(res, 503, EVENT_STREAM_CAPACITY_RESPONSE);
+            return;
+          }
+          if (!res.writableEnded && !res.destroyed) {
+            res.end();
+          }
+          return;
+        }
         streamResponses.add(res);
       },
       removeResponse: (res) => {

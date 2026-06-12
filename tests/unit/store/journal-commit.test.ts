@@ -231,6 +231,43 @@ describe('journal commit primitive', () => {
     }
   });
 
+  it('rejects non-finite body numbers before encoding any row', () => {
+    const db = createDb();
+    try {
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append({
+              type: 'test.non_finite',
+              stream: { kind: 'job', id: 'job-non-finite' },
+              bodyVersion: 1,
+              body: {
+                nested: {
+                  value: Infinity,
+                },
+              },
+            });
+            return undefined;
+          },
+          ctx(),
+        ),
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'event_body_non_finite_number',
+          detail: expect.objectContaining({
+            path: 'body.nested.value',
+            value: 'Infinity',
+          }),
+        }),
+      );
+
+      expect(countEvents(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it('rolls back collected events when the closure throws', () => {
     const db = createDb();
     try {

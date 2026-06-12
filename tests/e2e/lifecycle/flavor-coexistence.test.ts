@@ -316,11 +316,25 @@ describe('flavor coexistence integration', () => {
     expect(prodJobs.jobs[0]?.status.backendNamespace).toBe(prodNamespace);
     expect(devJobs.jobs[0]?.status.backendNamespace).toBe(devNamespace);
 
-    await fetchJson<{ status: JobStatus; events: unknown[] }>(prodInfo, `/jobs/${prodJobId}`);
-    await fetchJson<{ status: JobStatus; events: unknown[] }>(devInfo, `/jobs/${devJobId}`);
+    await fetchJson<{ status: JobStatus; events: unknown[] }>(
+      prodInfo,
+      `/jobs/${prodJobId}?projectRoot=${encodeURIComponent(prodProjectRoot)}`,
+    );
+    await fetchJson<{ status: JobStatus; events: unknown[] }>(
+      devInfo,
+      `/jobs/${devJobId}?projectRoot=${encodeURIComponent(devProjectRoot)}`,
+    );
 
-    const prodForeignLookup = await fetchJson<{ code: string; message: string }>(prodInfo, `/jobs/${devJobId}`, 404);
-    const devForeignLookup = await fetchJson<{ code: string; message: string }>(devInfo, `/jobs/${prodJobId}`, 404);
+    const prodForeignLookup = await fetchJson<{ code: string; message: string }>(
+      prodInfo,
+      `/jobs/${devJobId}?projectRoot=${encodeURIComponent(prodProjectRoot)}`,
+      404,
+    );
+    const devForeignLookup = await fetchJson<{ code: string; message: string }>(
+      devInfo,
+      `/jobs/${prodJobId}?projectRoot=${encodeURIComponent(devProjectRoot)}`,
+      404,
+    );
 
     expect(prodForeignLookup.code).toBe('job_not_found');
     expect(devForeignLookup.code).toBe('job_not_found');

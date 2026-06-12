@@ -11,6 +11,29 @@ import type { ProviderTransportClose } from '../protocol.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
+import { isRecord } from '../../infra/json.js';
+
+/**
+ * Copy only the provider-allowlisted keys out of a persisted continuity blob.
+ * Lives in the providers layer (not sessions) so the runtime dependency stays
+ * providers→sessions type-only; sessions never imports providers.
+ */
+export function pickProviderContinuityKeys<const TKeys extends readonly string[]>(
+  value: ProviderContinuityBlob | undefined,
+  allowedKeys: TKeys,
+): Partial<Record<TKeys[number], unknown>> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const picked: Record<string, unknown> = {};
+  for (const key of allowedKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      picked[key] = value[key];
+    }
+  }
+  return picked as Partial<Record<TKeys[number], unknown>>;
+}
 
 type ContinuitySnapshot = Pick<ProviderContinuityEventBody, 'conversationRef' | 'resumable' | 'providerContinuity'>;
 

@@ -598,7 +598,7 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {} };
+  return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
 }
 
 function isoAt(ms: number): string {
@@ -662,7 +662,7 @@ describe('ExecutionService wait', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');

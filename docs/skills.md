@@ -22,7 +22,7 @@ Cross-cutting methodology files live in `methods/`. Agents and skills reference 
 | --- | --- |
 | `/coral:analyze` | Deep analysis and investigation; `--delegate` runs on the other host |
 | `/coral:preplan` | Structured problem-definition conversation before planning |
-| `/coral:plan` | Planning with architect/critic review; `--deep` enables methodology-driven synthesis; `--delegate` adds a review round on the other host |
+| `/coral:plan` | Planning with architect/critic review; `round=N` sets the review-round budget per phase (default 1); `--delegate` adds a review round on the other host |
 | `/coral:ralph` | Persistent execution loop with verification; supports `--delegate`, `--team`, and `--red` |
 | `/coral:code-simplify` | Code simplification and cleanup |
 | `/coral:bugfix` | Diagnosis, planning, and fix execution |

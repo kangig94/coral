@@ -1,4 +1,5 @@
 import { CommanderError } from 'commander';
+import { ZodError } from 'zod';
 
 import { BackendToolHttpError } from '../transport/http/errors.js';
 import { BackendUnreachableError, TransientHttpError } from '../infra/http-errors.js';
@@ -11,6 +12,29 @@ export class UsageError extends Error {
     super(message);
     this.name = 'UsageError';
   }
+}
+
+/**
+ * Collapses a ZodError from CLI argument validation into a UsageError whose
+ * message reads as flag guidance (issue messages already phrased as `--flag ...`
+ * pass through; others get their field path prefixed). Non-Zod errors pass
+ * through untouched.
+ */
+export function normalizeUsageError(error: unknown): unknown {
+  if (!(error instanceof ZodError)) {
+    return error;
+  }
+
+  const message = error.issues
+    .map((issue) => {
+      if (issue.message.startsWith('--')) {
+        return issue.message;
+      }
+      const path = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+      return `${path}${issue.message}`;
+    })
+    .join('; ');
+  return new UsageError(message);
 }
 
 export interface CliErrorEnvelope {

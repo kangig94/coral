@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { ZodError } from 'zod';
+import { z, type ZodError } from 'zod';
 import {
   parseSerializedWaitCursor,
   serializeWaitCursor,
@@ -36,6 +36,15 @@ const INVALID_JSON_RESPONSE = {
   message: 'Invalid JSON body',
 };
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
+const eventStreamQuerySchema = z
+  .object({
+    projectRoot: z.string().min(1, 'Project root is required').optional(),
+    filter: z
+      .string()
+      .regex(/^job:.+$/, 'filter must be job:<jobId>')
+      .optional(),
+  })
+  .passthrough();
 
 /**
  * Constant-time token comparison. Required for the network gateway because a
@@ -135,6 +144,20 @@ export function parseEventStreamFilter(url: string): string | null {
   return jobMatch?.[1] ?? null;
 }
 
+function parseEventStreamRequest(url: string): { projectRoot?: string; filterJobId: string | null } | ZodError {
+  const qIndex = url.indexOf('?');
+  const params = new URLSearchParams(qIndex === -1 ? '' : url.slice(qIndex));
+  const parsed = eventStreamQuerySchema.safeParse(Object.fromEntries(params));
+  if (!parsed.success) {
+    return parsed.error;
+  }
+
+  return {
+    ...(parsed.data.projectRoot === undefined ? {} : { projectRoot: parsed.data.projectRoot }),
+    filterJobId: parsed.data.filter?.slice('job:'.length) ?? null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Shared response helpers
 // ---------------------------------------------------------------------------
@@ -149,13 +172,10 @@ function sendValidationFailure(res: ServerResponse, error: ZodError): void {
   sendJson(res, response.statusCode, response.body);
 }
 
-function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+function setCorsHeaders(_req: IncomingMessage, res: ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  if (req.headers['access-control-request-private-network'] === 'true') {
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +309,8 @@ async function handleCatalogUnaryRoute(
   res: ServerResponse,
   deps: HttpHandlerPorts,
 ): Promise<void> {
-  const result = await executeCatalogRequest(spec, request, deps);
+  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
+  const result = await executeCatalogRequest(spec, request, deps, 'user');
   if (result.kind !== 'unary') {
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
@@ -325,10 +346,17 @@ async function handleJobsWaitSubscription(
     ...request,
     cursor: inputCursor,
   };
-  const execution = await executeCatalogRequest(spec, waitRequest, deps, controller.signal);
+  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
+  const execution = await executeCatalogRequest(spec, waitRequest, deps, 'user', controller.signal);
   if (execution.kind !== 'subscription') {
     controller.abort();
     sendCatalogResponse(res, execution);
+    return;
+  }
+
+  deps.events.addResponse(res);
+  if (res.writableEnded || res.destroyed) {
+    controller.abort();
     return;
   }
 
@@ -337,8 +365,6 @@ async function handleJobsWaitSubscription(
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
-
-  deps.events.addResponse(res);
 
   let closed = false;
   const iterator = execution.notifications[Symbol.asyncIterator]();
@@ -478,38 +504,56 @@ export function buildCoordinatorHttpDispatchTable(
 
 async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
   const streamId = deps.events.createStreamId();
-  const filterJobId = parseEventStreamFilter(req.url ?? '');
+  const streamRequest = parseEventStreamRequest(req.url ?? '');
+  if (streamRequest instanceof Error) {
+    sendValidationFailure(res, streamRequest);
+    return;
+  }
+  const filterJobId = streamRequest.filterJobId;
+  const projectRoot = streamRequest.projectRoot ?? null;
+
+  deps.events.addResponse(res);
+  if (res.writableEnded || res.destroyed) {
+    return;
+  }
 
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
-
-  deps.events.addResponse(res);
   writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() });
 
   let closed = false;
-  const matchesFilter = (jobId: string): boolean => !filterJobId || jobId === filterJobId;
+  const matchesJobScope = (jobId: string, eventProjectRoot?: string): boolean => {
+    // Streams without projectRoot are intentionally suppressed; job events must be project-scoped.
+    if (projectRoot === null) return false;
+    if (filterJobId !== null && jobId !== filterJobId) return false;
+    if (eventProjectRoot !== undefined && eventProjectRoot !== projectRoot) return false;
+    const scopeCheck = deps.jobs.scopeCheck([jobId], projectRoot);
+    return scopeCheck.missing.length === 0 && scopeCheck.mismatch.length === 0;
+  };
+  const matchesDiscussScope = (payloadProjectRoot: string): boolean =>
+    projectRoot !== null && payloadProjectRoot === projectRoot;
 
   const onCreated: EventStreamHandlers['onJobCreated'] = (payload) => {
-    if (closed || !matchesFilter(payload.jobId)) return;
+    if (closed || !matchesJobScope(payload.jobId, payload.projectRoot)) return;
     writeSseEvent(res, 'job:created', payload);
   };
   const onPhaseChanged: EventStreamHandlers['onPhaseChanged'] = (payload) => {
-    if (closed || !matchesFilter(payload.jobId)) return;
+    if (closed || !matchesJobScope(payload.jobId)) return;
     writeSseEvent(res, 'job:phase_changed', payload);
   };
   const onProgress: EventStreamHandlers['onProgress'] = (payload) => {
-    if (closed || !matchesFilter(payload.jobId)) return;
+    if (closed || !matchesJobScope(payload.jobId)) return;
     writeSseEvent(res, 'job:progress', payload);
   };
   const onCompleted: EventStreamHandlers['onCompleted'] = (payload) => {
-    if (closed || !matchesFilter(payload.jobId)) return;
+    if (closed || !matchesJobScope(payload.jobId)) return;
     writeSseEvent(res, 'job:completed', payload);
   };
   const onDiscussUpdated: EventStreamHandlers['onDiscussUpdated'] = (payload) => {
-    if (closed) return;
+    if (closed || !matchesDiscussScope(payload.projectRoot)) return;
     writeSseEvent(res, 'discuss:updated', payload);
   };
   const cleanup = subscribeAll(deps.events.bus, {

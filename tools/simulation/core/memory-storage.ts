@@ -175,6 +175,10 @@ export class InMemoryStorage implements StoragePort {
     this.rebuildChildIndex();
   }
 
+  async readFile(path: string, encoding: 'utf-8'): Promise<string> {
+    return this.readFileSync(path, encoding);
+  }
+
   readFileSync(path: string, encoding: 'utf-8'): string {
     const normalized = normalizePathForStorage(path);
     const file = this.files.get(normalized);

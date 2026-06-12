@@ -5,8 +5,12 @@ vi.mock('#src/infra/backend-log.js', () => ({
   backendLog: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), raw: vi.fn() },
 }));
 
-import { buildChildEnv } from '#src/infra/env-sanitize.js';
-import { measureEnv, resolveEnvBudgetBytes as envBudgetBytes } from '#src/infra/env-sanitize.js';
+import {
+  buildChildEnv,
+  measureEnv,
+  resolveEnvBudgetBytes as envBudgetBytes,
+  shedInheritedClaudeCodeEnv,
+} from '#src/infra/env-sanitize.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
 /** Fill env with vars of given size until total exceeds budget. Track size incrementally. */
@@ -160,5 +164,44 @@ describe('buildChildEnv', () => {
     buildChildEnv();
 
     expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('CORAL_ENV_PASSTHROUGH'));
+  });
+});
+
+describe('shedInheritedClaudeCodeEnv', () => {
+  it('deletes CLAUDECODE and the CLAUDE_* family in place', () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin',
+      CLAUDECODE: '1',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_SESSION_ID: 'abc',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_ENV_FILE: '/tmp/x.sh',
+      CLAUDE_PLUGIN_ROOT: '/plugins',
+    };
+
+    shedInheritedClaudeCodeEnv(env);
+
+    expect(env).not.toHaveProperty('CLAUDECODE');
+    expect(env).not.toHaveProperty('CLAUDE_CODE_CHILD_SESSION');
+    expect(env).not.toHaveProperty('CLAUDE_CODE_SESSION_ID');
+    expect(env).not.toHaveProperty('CLAUDE_CODE_ENTRYPOINT');
+    expect(env).not.toHaveProperty('CLAUDE_ENV_FILE');
+    expect(env).not.toHaveProperty('CLAUDE_PLUGIN_ROOT');
+  });
+
+  it('leaves non-Claude-Code vars untouched (PATH, CORAL_CHILD, auth, near-misses)', () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin',
+      CORAL_CHILD: '1',
+      ANTHROPIC_API_KEY: 'sk-test',
+      CLAUDED: 'not-a-claude-code-var',
+    };
+
+    shedInheritedClaudeCodeEnv(env);
+
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.CORAL_CHILD).toBe('1');
+    expect(env.ANTHROPIC_API_KEY).toBe('sk-test');
+    expect(env.CLAUDED).toBe('not-a-claude-code-var');
   });
 });

@@ -113,7 +113,7 @@ describe('pipe executor coral cascade invariant', () => {
         providers: permissiveProviderLookupPort,
       });
       const executionSvc = new ExecutionService(
-        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
+        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' },
         {
           runtime,
           progressStore,
@@ -137,7 +137,7 @@ describe('pipe executor coral cascade invariant', () => {
         },
       );
 
-      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
+      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',
@@ -244,7 +244,7 @@ describe('pipe executor coral cascade invariant', () => {
       });
       reactorRef.current = reactor;
       const executionSvc = new ExecutionService(
-        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} },
+        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' },
         {
           runtime,
           progressStore,
@@ -269,7 +269,7 @@ describe('pipe executor coral cascade invariant', () => {
         },
       );
 
-      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {} };
+      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',

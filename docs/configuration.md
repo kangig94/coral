@@ -16,12 +16,11 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_MAX_QUEUE_SIZE` | `20` | Max queued launches before Coral returns `busy` (1–1000) |
 | `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
-| `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
 | `CORAL_JOBS_RETENTION_DAYS` | `14` | Days to keep a terminal job's export artifacts (`~/.coral/exports/jobs/<id>/result.md`) before backend startup prunes them. The export dir is a rebuildable cache of the journal — `result.md` is regenerated from the journal terminal event on the next read — so pruning only reclaims disk; `jobs list`/`detail` still resolve from the journal. Invalid/non-positive values fall back to the default |
-| `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Override to expose the backend on another interface (e.g. `0.0.0.0` for container deploys) |
+| `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Loopback hosts (`127.0.0.0/8`, `::1`, `localhost`) work without extra configuration; non-loopback binds such as `0.0.0.0` require `CORAL_BACKEND_ALLOW_REMOTE=1` |
+| `CORAL_BACKEND_ALLOW_REMOTE` | _(none)_ | Explicit opt-in for non-loopback `CORAL_BACKEND_BIND` values. Set to `1` only when remote backend exposure is intentional and protected by a trusted network boundary |
 | `CORAL_BACKEND_ADVERTISE_HOST` | _(bind value)_ | Hostname clients use to reach the backend. Distinct from `CORAL_BACKEND_BIND` when the bind interface differs from the externally reachable name (NAT, container host) |
 | `CORAL_BROKER_IDLE_MS` | `300000` | Provider host (broker) idle eviction window in ms |
 | `CORAL_BOOT_FRESHNESS_TIMEOUT_MS` | `90000` | Coordinator boot freshness wait (ms, the same `CONTENDER_BUDGET` used by lock acquisition). Lower for tighter integration test loops; rarely tuned in production |
@@ -29,23 +28,28 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
 | `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
 | `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
+| `CORAL_KB_IMPORT_MAX_BYTES` | `1073741824` (1 GiB) | Admin KB source-import cap in bytes, read from the backend daemon's environment at startup. `0` or `unlimited` disables the admin byte cap. Changing it requires exporting the var and restarting the backend daemon; setting it in an ad-hoc CLI shell does not affect an already-running daemon |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
-| `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
-| `CORAL_EMBEDDING_API_KEY` | _(none)_ | Embedding API key |
-| `CORAL_EMBEDDING_MODEL` | _(provider default)_ | Embedding model override |
-| `CORAL_EMBEDDING_DIMS` | _(provider default)_ | Embedding dimensions override |
-| `CORAL_EMBEDDING_BASE_URL` | _(none)_ | Custom embedding endpoint |
+| `GEMINI_API_KEY` | _(none)_ | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`) |
 
 ### HTTP Exposure
 
-The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, put Coral behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
+The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, Coral refuses to start unless `CORAL_BACKEND_ALLOW_REMOTE=1` is also set. Use that opt-in only behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
+
+### KB Source Imports
+
+Source-import authority is interim and transport-derived: local IPC calls run as `admin`; HTTP calls run as `user`. The request body is not a trust signal. Admin imports, representing the local IPC owner, may read any file path the daemon account can read and use the admin size cap from `CORAL_KB_IMPORT_MAX_BYTES`, defaulting to 1 GiB. User imports are sandboxed to the project root and always have a fixed 128 MiB cap.
+
+`CORAL_KB_IMPORT_MAX_BYTES` is a daemon-startup setting. The daemon reads it from its frozen runtime environment snapshot when it starts, so cap changes require exporting the variable in the daemon-startup environment and restarting the backend daemon. Setting `CORAL_KB_IMPORT_MAX_BYTES` ad hoc in a CLI shell does not affect an already-running daemon.
+
+Real role-based auth (login / admin-vs-user tokens) is future work.
 
 ### Shell Usage
 
 ```bash
 export CORAL_CODEX_MODEL=gpt-5.5
 export CORAL_CODEX_EFFORT=high
-export CORAL_DISCUSS_BID_THRESHOLD=50
+export CORAL_DISCUSS_MAX_EPOCHS=3
 export CORAL_KB_PATH=/path/to/my-kb
 ```
 
@@ -60,7 +64,6 @@ Project-level or global Claude Code settings can persist the same environment va
   "env": {
     "CORAL_CODEX_MODEL": "gpt-5.5",
     "CORAL_CODEX_FAST": "1",
-    "CORAL_DISCUSS_BID_THRESHOLD": "50",
     "CORAL_DISCUSS_MAX_EPOCHS": "3",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
@@ -69,16 +72,9 @@ Project-level or global Claude Code settings can persist the same environment va
 
 Changes to `settings.json` env take effect on the next Claude Code session start. `CORAL_CODEX_FAST` is re-read per Codex request via the `coralEnv` pipeline, so Coral backend restart is not required.
 
-### `~/.coral/.env`
+### Embedding credentials
 
-Embedding credentials should live in `~/.coral/.env`, not in repo settings:
-
-```bash
-CORAL_EMBEDDING_PROVIDER=gemini
-CORAL_EMBEDDING_API_KEY=...
-```
-
-Priority is `process.env` / `.claude/settings.json` first, then `~/.coral/.env`, then unconfigured defaults.
+Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's process environment. Set them in the user-level `~/.claude/settings.json` `env` block or your shell profile — not in repo-checked settings — then restart the backend (`coral-cli backend shutdown`; the next command relaunches it with the new environment).
 
 ## Config Files
 
@@ -163,6 +159,7 @@ Live scratch artifacts:
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
 | `@lydell/node-pty` | Interactive Claude CLI broker transport |
+| `commander` | CLI command parsing (bundled into `bridge/coral-cli.cjs`) |
 | `yaml` | YAML parsing |
 | `zod-to-json-schema` | Schema export helpers |
 
@@ -192,7 +189,6 @@ projection_discuss in store.db                 -> projected discuss snapshots an
 ~/.coral/exports/jobs/<jobId>/result.md        -> durable job result export (prod)
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
-~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
 ~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
 ```

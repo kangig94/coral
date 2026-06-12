@@ -2,6 +2,9 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { coralRoot, kbVaultRoot } from '../infra/path/root.js';
 
+// eslint-disable-next-line no-control-regex -- rejects C0/C1 control chars (incl NUL) in KB slugs before they reach writeFileSync
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
+
 /**
  * KB-domain wrapper for the vault root. `customRoot` is the resolved
  * CORAL_KB_PATH value from caller's env port (path resolvers do not read
@@ -31,7 +34,11 @@ export function assertWithin(root: string, candidate: string, label: string): st
 }
 
 function markdownPath(root: string, name: string, label: string): string {
-  return assertWithin(root, resolve(root, `${stripMdExt(name)}.md`), label);
+  const normalizedName = stripMdExt(name);
+  if (CONTROL_CHARACTER_PATTERN.test(normalizedName)) {
+    throw new Error(`${label} cannot contain control characters`);
+  }
+  return assertWithin(root, resolve(root, `${normalizedName}.md`), label);
 }
 
 export function notesDir(root: string): string {

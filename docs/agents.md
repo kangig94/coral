@@ -29,7 +29,9 @@ Codex delegation is a normal CLI-to-backend provider launch.
 | `gap-finder` | `agents/gap-finder.md` | Requirement and scope gap analysis |
 | `resolver` | `agents/resolver.md` | Review synthesis and contradiction resolution |
 | `red-attacker` | `agents/red-attacker.md` | Adversarial test generation |
+| `pioneer` | `agents/pioneer.md` | Most-elegant-design exploration, cost-blind |
 | `persona-generator` | `agents/persona-generator.md` | Discuss persona generation |
+| `workflow-literal` | `agents/workflow-literal.md` | Pipeline step processor for workflow DSL inline prompts |
 
 These agents use Claude Code's native tools. Read-only agents declare `disallowedTools`; execution-oriented agents do not.
 

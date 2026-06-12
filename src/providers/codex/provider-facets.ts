@@ -6,13 +6,18 @@ import type {
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderServerLease,
+  ProviderServerSpec,
 } from '../contract.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
 import { readString } from '../../infra/json.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 import {
   buildCodexProviderServerSpec,
   clearCodexTurnContinuity,
+  hasCodexContinuity,
   isCodexSessionUnavailable,
+  type CodexPersistedContinuity,
   readCodexPersistedContinuity,
 } from './request-mapping.js';
 
@@ -21,6 +26,7 @@ const CODEX_APP_SERVER_UPGRADE_MESSAGE =
 const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 const CODEX_AUTH_TOKEN_KEYS = ['access_token', 'refresh_token', 'id_token'] as const;
+const SCOPED_CODEX_CONTINUITY_READ = { allowUnscopedCwd: false } as const;
 
 type PreflightCacheEntry = {
   available: boolean;
@@ -40,6 +46,26 @@ async function rpc<M extends AppServerMethod>(
 
 async function interruptTurn(lease: ProviderServerLease, threadId: string, turnId: string): Promise<void> {
   await rpc(lease, 'turn/interrupt', { threadId, turnId });
+}
+
+type CodexRecoveryMeta = {
+  threadId?: string;
+};
+
+type CodexProbeResult = {
+  resumable: boolean;
+  updatedContinuity?: ProviderContinuityBlob;
+};
+
+function codexProbeResult(resumable: boolean, updatedContinuity: ProviderContinuityBlob | undefined): CodexProbeResult {
+  return updatedContinuity === undefined ? { resumable } : { resumable, updatedContinuity };
+}
+
+function sanitizeCodexProviderContinuity(
+  continuity: ProviderContinuityBlob | undefined,
+): CodexPersistedContinuity | undefined {
+  const parsed = readCodexPersistedContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
+  return hasCodexContinuity(parsed) ? parsed : undefined;
 }
 
 export async function codexPreflight(runtime: PreflightRuntime): Promise<void> {
@@ -116,10 +142,13 @@ function hasCodexAuthTokens(value: unknown): boolean {
 export const codexAppServerLifecycle: ProviderAppServerContract = {
   name: 'codex',
   subscriptionPhase: 'afterInitialize',
-  buildServerSpec(request, persistedContinuity) {
+  buildServerSpec(
+    request: ProviderRequest,
+    persistedContinuity: ProviderContinuityBlob | undefined,
+  ): ProviderServerSpec {
     return buildCodexProviderServerSpec(request, persistedContinuity);
   },
-  async interrupt(lease, continuity) {
+  async interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void> {
     const parsed = readCodexPersistedContinuity(continuity);
     if (parsed.threadId === undefined || parsed.turnId === undefined) {
       return;
@@ -129,15 +158,15 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
 };
 
 export const codexRecoveryLifecycle = {
-  buildRecoveryMeta(request: ProviderRequest) {
+  buildRecoveryMeta(request: ProviderRequest): CodexRecoveryMeta {
     const conversationRef = readString(request.conversationRef);
     return conversationRef !== undefined ? { threadId: conversationRef } : {};
   },
-  async probe(lease, continuity) {
-    const parsed = readCodexPersistedContinuity(continuity);
-    const updatedContinuity = clearCodexTurnContinuity(continuity);
+  async probe(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<CodexProbeResult> {
+    const parsed = readCodexPersistedContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
+    const updatedContinuity = clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
     if (parsed.threadId === undefined || parsed.cwd === undefined) {
-      return { resumable: false, updatedContinuity };
+      return codexProbeResult(false, updatedContinuity);
     }
 
     try {
@@ -147,22 +176,22 @@ export const codexRecoveryLifecycle = {
         model: null,
         approvalPolicy: 'never',
       });
-      return {
-        resumable: true,
-        updatedContinuity,
-      };
+      return codexProbeResult(true, updatedContinuity);
     } catch (error) {
       if (!isCodexSessionUnavailable(error)) {
         throw error;
       }
-      return {
-        resumable: false,
-        updatedContinuity,
-      };
+      return codexProbeResult(false, updatedContinuity);
     }
   },
-  finalizeInterrupted(probeResult, continuity, context) {
-    const nextContinuity = probeResult.updatedContinuity ?? clearCodexTurnContinuity(continuity);
+  finalizeInterrupted(
+    probeResult: CodexProbeResult,
+    continuity: ProviderContinuityBlob,
+    context: { preservedConversationRef?: string },
+  ): SessionContinuityMutation {
+    const nextContinuity = sanitizeCodexProviderContinuity(
+      probeResult.updatedContinuity ?? clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ),
+    );
     const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
     if (probeResult.resumable && effectiveConversationRef !== undefined) {

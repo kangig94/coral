@@ -103,7 +103,8 @@ export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: Http
   return {
     method: spec.name,
     spec,
-    dispatch: async (request, abortSignal) => await executeCatalogRequest(spec, request, rpcPorts, abortSignal),
+    // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
+    dispatch: async (request, abortSignal) => await executeCatalogRequest(spec, request, rpcPorts, 'admin', abortSignal),
   };
 }
 
@@ -193,9 +194,16 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   // EADDRINUSE — distinguish stale-orphan from live-listener.
   const cleared = await clearStaleSocket(socketPath);
   if (cleared) {
-    await listenSocket(server, socketPath);
-    finalize();
-    return { kind: 'bound' };
+    try {
+      await listenSocket(server, socketPath);
+      finalize();
+      return { kind: 'bound' };
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
+        throw error;
+      }
+      return { kind: 'incumbent', reason: 'live-listener' };
+    }
   }
 
   return { kind: 'incumbent', reason: 'live-listener' };

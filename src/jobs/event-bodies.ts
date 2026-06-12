@@ -27,12 +27,12 @@ export const jobRuntimeStartedBodySchema = z
   .object({
     transport: z.enum(['durable-cli', 'app-server', 'internal']).optional(),
     operation: z.enum(['kb.source_import', 'kb.reindex']).optional(),
-    pid: z.number().optional(),
+    pid: z.number().finite().optional(),
     stdoutPath: z.string().optional(),
     stderrPath: z.string().optional(),
     startedAt: z.string(),
     providerMeta: z.record(z.unknown()).optional(),
-    tailWatermark: z.number().optional(),
+    tailWatermark: z.number().finite().optional(),
   })
   .strict();
 

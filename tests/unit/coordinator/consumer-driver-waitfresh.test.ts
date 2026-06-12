@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { TimerHandle, TimePort } from '#src/infra/port-types.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { ConsumerDriver, FreshnessTimeout } from '#src/coordinator/consumer-driver/index.js';
+import { backendLog } from '#src/infra/backend-log.js';
+import { ConsumerDriver, FreshnessApplyFailure, FreshnessTimeout } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { CorpusConsumerRegistration, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
@@ -131,6 +132,71 @@ describe('ConsumerDriver waitFreshUntil', () => {
       await waitPromise;
       await driver.drainAll();
     } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('rejects pending journal waiters promptly when apply fails without waiting for timeout', async () => {
+    const db = createDb();
+    const timerHandle: TimerHandle = {};
+    const timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = {
+      setTimeout: vi.fn((_fn: () => void, _ms: number): TimerHandle => timerHandle),
+      clearTimeout: vi.fn((_handle: TimerHandle | null): void => {}),
+    };
+    const driver = new ConsumerDriver({ db, time: timers, now: realConsumerDriverNow });
+    const consumerId = 'failing-journal-consumer';
+    const applyStarted = createDeferred<void>();
+    const releaseApply = createDeferred<void>();
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation((): void => {});
+
+    driver.register({
+      id: consumerId,
+      authority: 'journal',
+      kind: 'apply',
+      registrationKind: 'expansion',
+      async apply(): Promise<void> {
+        applyStarted.resolve();
+        await releaseApply.promise;
+        throw new Error('journal apply exploded');
+      },
+    });
+
+    try {
+      const waitResult = driver
+        .waitFreshUntil('journal', 5, consumerId, 90000)
+        .catch((error: unknown): unknown => error);
+
+      driver.notify('journal', 5);
+      await applyStarted.promise;
+      await flushMicrotasks();
+
+      await expect(Promise.race([waitResult, Promise.resolve('pending' as const)])).resolves.toBe('pending');
+
+      releaseApply.resolve();
+      await driver.drainAll();
+      await flushMicrotasks();
+
+      const result = await Promise.race([waitResult, Promise.resolve('pending' as const)]);
+      expect(result).toBeInstanceOf(FreshnessApplyFailure);
+
+      const failure = result as FreshnessApplyFailure;
+      expect(failure.consumerId).toBe(consumerId);
+      expect(failure.applyError).toMatchObject({
+        message: 'journal apply exploded',
+        at: expect.any(String),
+        cause: expect.any(Error),
+      });
+      expect(failure.message).toContain(`consumer=${consumerId}`);
+      expect(failure.message).toContain('journal apply exploded');
+      expect(timers.clearTimeout).toHaveBeenCalledWith(timerHandle);
+      expect(errorSpy).toHaveBeenCalledWith(
+        'ConsumerDriver apply failed (failing-journal-consumer)',
+        expect.any(Error),
+      );
+    } finally {
+      releaseApply.resolve();
+      errorSpy.mockRestore();
       await driver.shutdown();
       db.close();
     }

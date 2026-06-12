@@ -53,7 +53,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
     name: 'codex',
     conversationRef: 'thread-1',
     prompt: 'Resume and continue',
-    cwd: '/workspace/request',
+    cwd: '/workspace',
     bypassPermissions: false,
     coralEnv: {},
     ...overrides,

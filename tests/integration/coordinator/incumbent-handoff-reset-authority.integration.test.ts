@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
+import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import type { Runtime } from '#src/runtime/ports.js';

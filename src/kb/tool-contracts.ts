@@ -11,6 +11,7 @@ const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vec
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const slugSchema = z.string().min(1);
+const sourceImportFilePathSchema = z.string().min(1);
 const transportContextFieldsShape = {
   projectRoot: projectRootSchema,
   owner: z.string().optional(),
@@ -132,7 +133,7 @@ export const kbWakeUpSchema = z
 
 export const kbSourceImportSchema = z
   .object({
-    filePath: z.string().min(1),
+    filePath: sourceImportFilePathSchema,
     slug: z.string().min(1).optional(),
     readiness: sourceImportReadinessSchema.default('base-search'),
     async: z.boolean().default(false),

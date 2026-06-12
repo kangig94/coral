@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Option, type Command } from 'commander';
 
 import { parseKbEntryId, vaultLinkToEntryId, type KbPromoteInput } from '../../kb/entry-types.js';
@@ -99,7 +100,7 @@ function registerKbSourceCommands(kb: Command): void {
       try {
         const client = makeClient(process.cwd(), kbSourceImportCommand);
         const result = await client.kbSourceImport({
-          filePath: resolveFilePath(file),
+          filePath: resolve(process.cwd(), resolveFilePath(file)),
           ...(opts.slug === undefined ? {} : { slug: opts.slug }),
           readiness: opts.ready ?? 'base-search',
           async: opts.async === true,

@@ -13,7 +13,7 @@ import { attachSession } from '#src/discuss/shell/registry.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
 import { type CoordinatorServerController, createCoordinatorServer } from '#src/coordinator/index.js';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
+import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
@@ -217,6 +217,7 @@ describe('server discuss API', () => {
           projectRoot: session.projectRoot,
           pluginRoot: core.identity.pluginRoot,
           coralEnv: {},
+          authority: 'admin',
         });
         attachSession(ctx, session.snapshot, session.watchBuffer, session.abortEnded);
       }
@@ -611,9 +612,12 @@ describe('server discuss API', () => {
 
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 
-    const stream = await openHttpStream(`${backend.baseUrl}/events/stream`, {
-      'X-Coral-Backend-Token': backend.token,
-    });
+    const stream = await openHttpStream(
+      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
+      {
+        'X-Coral-Backend-Token': backend.token,
+      },
+    );
 
     try {
       await stream.waitForText((text) => text.includes('event: ready'));

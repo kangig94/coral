@@ -24,6 +24,7 @@ import { TypedEventBus } from '../../../src/coordinator/event-bus.js';
 import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
 import { JobStore } from '../../../src/jobs/store.js';
+import { loadJobProjectionDetails } from '../../../src/jobs/read-queries.js';
 import { noProviderLookupPort } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
@@ -35,10 +36,10 @@ import { createCoordinatorCore } from '../../../src/coordinator/composition/inde
 import { adaptLegacyKbFactory } from '../../testing/kb-subsystem-adapter.js';
 import type {
   CoordinatorCoreResult,
-  CoordinatorStoreServices,
   CreateServerFn,
   FetchFn,
 } from '../../../src/coordinator/composition/types.js';
+import type { CoordinatorStoreServices } from '../../../src/coordinator/composition/store-services-ref.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
@@ -444,6 +445,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     projectRoot: root,
     pluginRoot,
     coralEnv: { ...coralEnv },
+    authority: 'admin',
   });
 
   const createServerFn: CreateServerFn = (handler) => {
@@ -574,6 +576,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       await workflowRecover.resumeAll({
         db: storeDb,
         progressStore,
+        loadJobDetails: loadJobProjectionDetails,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
         finalizeWorkflow: createWorkflowRecoveryFinalizer({

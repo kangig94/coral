@@ -111,8 +111,8 @@ Pioneer를 생성해 불확실한 항목의 우아한 대안을 탐색하며 기
 `pre-{topic}.md`를 생성 — plan이 충족해야 하는 계약서입니다.
 
 **plan** — *"구현 전에 설계가 필요하다."*
-다중 라운드 리뷰 루프: architect + critic(그리고 `--deep` 모드에서는 resolver)를
-워크플로우로 디스패치하고, 피드백을 종합하여 plan 파일을 편집하며, exit gate를 평가합니다.
+다중 라운드 리뷰 루프: architect + critic + resolver를
+워크플로우로 디스패치하고, 피드백을 종합하여 plan 파일을 편집하며, exit gate를 평가합니다(`round=N`으로 라운드 예산 지정).
 Resolver는 findings를 분류(Adopt/Adapt/Defer/Diverge)하고 변경을 적용한 후,
 finding의 심각도와 성격에 따라 추가 라운드가 필요한지 판정합니다.
 수용 기준, 구현 단계, 실행 순서(의존성 그래프 + 병렬 배치)가 포함된 `{topic}.md`를 생성합니다.
@@ -130,8 +130,8 @@ plan 모드에서는 실행 순서를 읽고 배치 단위로 디스패치하며
 <summary>고급 플래그</summary>
 
 ```bash
-# 방법론 기반 심층 리뷰 (resolver + HOW 추론):
-/coral:plan --deep add retry logic to the API client
+# 심층 반복 — 단계당 최대 3회 리뷰 라운드:
+/coral:plan round=3 add retry logic to the API client
 
 # 적대적 테스트 — 놓친 부분을 찾는 red-attacker 생성:
 /coral:ralph --red implement the caching layer
@@ -198,7 +198,7 @@ gpt-5.5  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:analyze` | 심층 분석 및 조사 | ✓ |
 | `/coral:pathfind` | 문제 증상에서 발산적 방향 탐색 | - |
 | `/coral:preplan` | 계획 전 문제 정의 | ✓ |
-| `/coral:plan` | 구조화된 다중 라운드 리뷰 포함 계획. `--deep`으로 방법론 기반 종합 | ✓ |
+| `/coral:plan` | 구조화된 다중 라운드 리뷰 포함 계획. `round=N`으로 심층 반복 | ✓ |
 | `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | ✓ |
 | `/coral:bugfix` | 버그 진단, 계획, 수정을 한 번에 | ✓ |
 | `/coral:code-simplify` | 코드 명확성 향상 및 정리 | ✓ |

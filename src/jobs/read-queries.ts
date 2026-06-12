@@ -24,7 +24,7 @@ export type JobProjectionDetail = {
   runtime: JobRuntime | null;
   exit: JobExit | null;
 };
-import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeBody, decodeEventJson, type StoreReadContext } from '../store/body-codec.js';
 import { prepareCached } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
 import type { EventsRow } from '../store/schema.js';
@@ -325,7 +325,7 @@ function decodeLaunchRefs(row: EventRow): Pick<JobLaunchProjection, 'parentWorkf
     return {};
   }
 
-  const refs = JSON.parse(row.refs) as Record<string, unknown>;
+  const refs = decodeEventJson(row.refs, { seq: row.seq, column: 'refs' }) as Record<string, unknown>;
   return {
     ...(typeof refs.parentJobId === 'string' ? { parentWorkflowJobId: refs.parentJobId } : {}),
     ...(typeof refs.workflowSlotId === 'string' ? { workflowSlotId: refs.workflowSlotId } : {}),

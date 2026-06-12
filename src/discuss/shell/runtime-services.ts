@@ -178,6 +178,7 @@ export function createDiscussRuntime({
             projectRoot: snapshot.projectRoot,
             pluginRoot: world.identity.pluginRoot,
             coralEnv: {},
+            authority: 'admin',
           }),
       );
       world.discussRegistry.contexts.clear();
