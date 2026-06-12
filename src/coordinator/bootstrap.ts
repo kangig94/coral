@@ -9,6 +9,7 @@ import { BackendAlreadyRunningError } from './handoff.js';
 import { createCoordinatorServer } from './index.js';
 import { backendLog } from '../infra/backend-log.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
+import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { nowDate } from '../infra/time.js';
@@ -110,6 +111,9 @@ function writeStartupErrorSentinel(pluginRoot: string, error: unknown): void {
 }
 
 export async function main(): Promise<number> {
+  // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
+  shedInheritedClaudeCodeEnv(process.env);
+
   if (process.argv.includes('--smoke-open-store')) {
     return handleSmokeOpenStore(process.argv);
   }

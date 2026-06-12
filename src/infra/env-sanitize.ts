@@ -1,5 +1,5 @@
 /**
- * Pure-function environment sanitization primitives.
+ * Environment sanitization primitives.
  *
  * Prevents E2BIG (execve argument-list-too-long) in environments with large
  * env blocks — common in Kubernetes where service discovery, ConfigMaps, and
@@ -138,6 +138,36 @@ export function stripInternalCoralKeys(env: Readonly<Record<string, string>>): R
     stripped[key] = value;
   }
   return stripped;
+}
+
+/**
+ * Delete the inherited Claude Code session identity — `CLAUDECODE` and the `CLAUDE_*`
+ * family (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_ENV_FILE`, …) —
+ * from `env`, in place.
+ *
+ * The Coral backend is a long-lived shared daemon, almost always spawned from inside a
+ * Claude Code session (the SessionStart hook or the CLI auto-ensure path). It therefore
+ * inherits that one session's Claude Code env and would freeze it onto every provider
+ * child it spawns for the daemon's whole lifetime. Most damaging: an inherited
+ * `CLAUDE_CODE_CHILD_SESSION` makes every spawned `claude` treat itself as a parent-owned
+ * sub-session and skip writing its own `~/.claude/projects/<id>.jsonl` session log — the
+ * very log the broker tails to detect turn completion (its absence hangs every turn until
+ * the staleness watchdog aborts it). The backend reads none of these vars at runtime (its
+ * plugin root is the build-time `__PLUGIN_ROOT__`), so the daemon sheds them at startup:
+ * every provider child then launches with a clean, top-level environment, exactly as if
+ * run from a fresh shell. Coral still tags its children with `CORAL_CHILD` so its own
+ * hooks self-suppress.
+ *
+ * Pass the live `process.env` — it is mutated in place. The shed intentionally covers any
+ * child-config `CLAUDE_*` (e.g. `CLAUDE_CONFIG_DIR`); the daemon and its children resolve
+ * from `homedir()`, never an inherited config dir.
+ */
+export function shedInheritedClaudeCodeEnv(env: NodeJS.ProcessEnv): void {
+  for (const key of Object.keys(env)) {
+    if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_')) {
+      delete env[key];
+    }
+  }
 }
 
 /**
