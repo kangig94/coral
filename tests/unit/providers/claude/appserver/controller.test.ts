@@ -1,5 +1,9 @@
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
+import { MAX_BUFFER } from '#src/infra/process-constants.js';
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type {
   ChildExit,
@@ -8,6 +12,7 @@ import type {
 } from '#src/providers/claude/appserver/session-contract.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
+const TEST_MODEL = 'claude-sonnet-test';
 
 class FakeClaudeChild implements ClaudeBrokerChild {
   readonly writes: string[] = [];
@@ -73,6 +78,62 @@ async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<voi
   while (!predicate() && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+  if (!predicate()) {
+    throw new Error(`Timed out after ${timeoutMs}ms`);
+  }
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type TranscriptFixture = {
+  transcriptPath: string;
+  cleanup: () => void;
+};
+
+function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptFixture {
+  const previousHome = process.env.HOME;
+  const home = mkdtempSync(join(tmpdir(), 'coral-claude-home-'));
+  const projectDir = join(home, '.claude', 'projects', 'workspace');
+  mkdirSync(projectDir, { recursive: true });
+  const transcriptPath = join(projectDir, `${conversationRef}.jsonl`);
+  writeFileSync(transcriptPath, '');
+  process.env.HOME = home;
+
+  return {
+    transcriptPath,
+    cleanup: (): void => {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+function assistantTranscriptLine(text: string): string {
+  return JSON.stringify({
+    type: 'assistant',
+    session_id: TEST_SESSION_ID,
+    message: {
+      model: TEST_MODEL,
+      usage: { costUSD: 0.01 },
+      content: [{ type: 'text', text }],
+      stop_reason: 'end_turn',
+    },
+  });
+}
+
+function durationTranscriptLine(durationMs: number): string {
+  return JSON.stringify({
+    type: 'system',
+    subtype: 'turn_duration',
+    session_id: TEST_SESSION_ID,
+    durationMs,
+  });
 }
 
 describe('SingleSessionController PTY lifecycle', () => {
@@ -235,5 +296,101 @@ describe('SingleSessionController PTY lifecycle', () => {
     );
 
     await controller.shutdown();
+  });
+
+  it('assembles transcript JSONL split across poll reads', async () => {
+    const fixture = createTranscriptFixture();
+    const child = new FakeClaudeChild();
+    const notifications: ControllerNotification[] = [];
+    const controller = new SingleSessionController({
+      spawnChild: () => child,
+      ids: { uuid: () => TEST_SESSION_ID },
+      readySettleMs: 5,
+      promptAckTimeoutMs: 2_000,
+    });
+    controller.subscribeNotifications((notification) => {
+      notifications.push(notification);
+    });
+
+    try {
+      await controller.sessionEnsure({
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:test',
+        permissionMode: 'default',
+      });
+      await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+
+      const assistantLine = assistantTranscriptLine('split transcript ok');
+      const splitAt = Math.floor(assistantLine.length / 2);
+      appendFileSync(fixture.transcriptPath, assistantLine.slice(0, splitAt));
+      await sleep(150);
+      appendFileSync(fixture.transcriptPath, `${assistantLine.slice(splitAt)}\n${durationTranscriptLine(25)}\n`);
+
+      await waitFor(() => notifications.some((notification) => notification.method === 'turn/completed'));
+
+      expect(notifications).toContainEqual(
+        expect.objectContaining({
+          method: 'turn/completed',
+          params: expect.objectContaining({
+            brokerTurnId: 'turn-1',
+            result: 'split transcript ok',
+            model: TEST_MODEL,
+            durationMs: 25,
+            isError: false,
+          }),
+        }),
+      );
+    } finally {
+      await controller.shutdown();
+      fixture.cleanup();
+    }
+  });
+
+  it('fails a turn when an unterminated transcript line exceeds the cap', async () => {
+    const fixture = createTranscriptFixture();
+    const child = new FakeClaudeChild();
+    const notifications: ControllerNotification[] = [];
+    const controller = new SingleSessionController({
+      spawnChild: () => child,
+      ids: { uuid: () => TEST_SESSION_ID },
+      readySettleMs: 5,
+      promptAckTimeoutMs: 5_000,
+    });
+    controller.subscribeNotifications((notification) => {
+      notifications.push(notification);
+    });
+
+    try {
+      await controller.sessionEnsure({
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:test',
+        permissionMode: 'default',
+      });
+      await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
+
+      appendFileSync(fixture.transcriptPath, 'x'.repeat(MAX_BUFFER + 1));
+
+      await waitFor(() =>
+        notifications.some(
+          (notification) =>
+            notification.method === 'turn/failed' &&
+            notification.params.message.includes('transcript JSONL line exceeded'),
+        ),
+      );
+
+      expect(notifications).toContainEqual(
+        expect.objectContaining({
+          method: 'turn/failed',
+          params: expect.objectContaining({
+            brokerTurnId: 'turn-1',
+            message: expect.stringContaining('transcript JSONL line exceeded'),
+          }),
+        }),
+      );
+      expect(controller.hasActiveTurn()).toBe(false);
+    } finally {
+      await controller.shutdown();
+      fixture.cleanup();
+    }
   });
 });

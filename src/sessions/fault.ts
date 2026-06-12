@@ -36,7 +36,7 @@ export type SessionProviderFailedFault = z.infer<typeof sessionProviderFailedFau
 export const sessionAdapterUnparseableFaultSchema = z
   .object({
     provider: z.string(),
-    exitCode: z.number().nullable(),
+    exitCode: z.number().finite().nullable(),
     stdout: z.string(),
     stderr: z.string(),
     parseError: z.string(),

@@ -4,6 +4,7 @@ import { isRecord } from '../infra/json.js';
 import type { CauseRef, CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import { encodeEventBody } from './body-codec.js';
+import { CoralAppendError } from './append-error.js';
 import {
   journalEventInputSchema,
   type CoralEvent,
@@ -216,6 +217,40 @@ function rejectResidualTokens(value: unknown, path: readonly string[] = ['body']
   }
 }
 
+function assertFiniteEventBodyNumbers(
+  value: unknown,
+  path: readonly string[] = ['body'],
+  seen = new WeakSet<object>(),
+): void {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new CoralAppendError('event_body_non_finite_number', {
+        path: tokenPath(path),
+        value: String(value),
+      });
+    }
+    return;
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    return;
+  }
+
+  if (seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertFiniteEventBodyNumbers(entry, [...path, String(index)], seen));
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    assertFiniteEventBodyNumbers(entry, [...path, key], seen);
+  }
+}
+
 function resolveTokensInInput(
   input: ResolvableCoralEventInput<unknown, unknown>,
   ownerSlot: number,
@@ -246,6 +281,7 @@ function prepareInput(
   bodyBytes: Buffer;
 } {
   const parsedInput = journalEventInputSchema.parse(input) as CoralEventInput;
+  assertFiniteEventBodyNumbers(parsedInput.body);
   const schema = ctx.reducers.schemas.get(parsedInput.type);
   const parsedBody = schema
     ? ctx.upcasters.parseBody(parsedInput.type, parsedInput.bodyVersion, parsedInput.body, schema)

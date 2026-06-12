@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import { buildCodexContinuity, buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
-import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
+import type { ArtifactCleanupRuntime, ProviderServerLease } from '#src/providers/contract.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   return {
@@ -20,18 +21,26 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
   };
 }
 
+function leaseWithRpc(rpc: ReturnType<typeof vi.fn>): ProviderServerLease {
+  return {
+    rpc: rpc as unknown as ProviderServerLease['rpc'],
+    subscribe: () => () => {},
+    release: () => {},
+    closed: Promise.resolve(),
+  };
+}
+
 describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
   it('uses the preserved conversation ref when the session is resumable without a parsed thread id', () => {
+    const continuity = buildCodexContinuity({
+      cwd: '/workspace',
+    });
     const mutation = codexRecoveryLifecycle.finalizeInterrupted(
       {
         resumable: true,
-        updatedContinuity: {
-          cwd: '/workspace',
-        },
+        updatedContinuity: continuity,
       },
-      {
-        cwd: '/workspace',
-      },
+      continuity,
       { preservedConversationRef: 'ref-x' },
     );
 
@@ -45,16 +54,15 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
   });
 
   it('preserves continuity when the session is resumable but there is no effective conversation ref to write', () => {
+    const continuity = buildCodexContinuity({
+      cwd: '/workspace',
+    });
     const mutation = codexRecoveryLifecycle.finalizeInterrupted(
       {
         resumable: true,
-        updatedContinuity: {
-          cwd: '/workspace',
-        },
+        updatedContinuity: continuity,
       },
-      {
-        cwd: '/workspace',
-      },
+      continuity,
       {},
     );
 
@@ -64,6 +72,51 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
         cwd: '/workspace',
       },
     });
+  });
+});
+
+describe('codexRecoveryLifecycle.probe', () => {
+  it('resumes with an in-scope continuity cwd and drops transient turn ids from the update', async () => {
+    const continuity = {
+      cwd: '/workspace/project/subdir',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      attacker: 'drop-me',
+    };
+    buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
+
+    await expect(codexRecoveryLifecycle.probe(leaseWithRpc(rpc), continuity)).resolves.toEqual({
+      resumable: true,
+      updatedContinuity: {
+        cwd: '/workspace/project/subdir',
+        threadId: 'thread-1',
+      },
+    });
+    expect(rpc).toHaveBeenCalledWith('thread/resume', {
+      threadId: 'thread-1',
+      cwd: '/workspace/project/subdir',
+      model: null,
+      approvalPolicy: 'never',
+    });
+  });
+
+  it('does not resume when continuity cwd is outside the scoped project cwd', async () => {
+    const continuity = {
+      cwd: '/tmp/attacker',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    };
+    buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
+
+    await expect(codexRecoveryLifecycle.probe(leaseWithRpc(rpc), continuity)).resolves.toEqual({
+      resumable: false,
+      updatedContinuity: {
+        threadId: 'thread-1',
+      },
+    });
+    expect(rpc).not.toHaveBeenCalled();
   });
 });
 

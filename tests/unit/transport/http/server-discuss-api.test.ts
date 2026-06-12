@@ -611,9 +611,12 @@ describe('server discuss API', () => {
 
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 
-    const stream = await openHttpStream(`${backend.baseUrl}/events/stream`, {
-      'X-Coral-Backend-Token': backend.token,
-    });
+    const stream = await openHttpStream(
+      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent(harness.projectRoot)}`,
+      {
+        'X-Coral-Backend-Token': backend.token,
+      },
+    );
 
     try {
       await stream.waitForText((text) => text.includes('event: ready'));

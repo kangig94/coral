@@ -126,12 +126,12 @@ export function decideSessionCreate(
   const {
     bidThreshold = DEFAULT_BID_THRESHOLD,
     maxEpochs = DEFAULT_MAX_EPOCHS,
-    quotaPerEpoch = DEFAULT_QUOTA_PER_EPOCH,
     agentExecution = Object.fromEntries(input.agents.map((agent) => [agent.name, { manual: true }])) as Record<
       string,
       SessionCreatedAgentExecutionConfig
     >,
   } = opts;
+  const quotaPerEpoch = opts.quotaPerEpoch ?? DEFAULT_QUOTA_PER_EPOCH;
   return {
     ok: true,
     value: [

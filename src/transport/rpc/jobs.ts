@@ -42,5 +42,6 @@ export const jobsListRequestSchema = z
 export const jobDetailRequestSchema = z
   .object({
     jobId: jobIdSchema,
+    projectRoot: projectRootSchema,
   })
   .strict();

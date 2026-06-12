@@ -1,4 +1,5 @@
 import { truncate } from '../../../infra/text.js';
+import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import {
   buildJsonRpcError,
   type JsonRpcFailure,
@@ -17,6 +18,7 @@ export const CLAUDE_BROKER_BUSY_RPC_CODE = -32001;
 export const CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE = -32002;
 export const CLAUDE_BROKER_STATE_RPC_CODE = -32003;
 export const CLAUDE_BROKER_CHILD_EXIT_RPC_CODE = -32004;
+export const CLAUDE_BROKER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
 
 export type JsonRpcInboundMessage<TParams = Record<string, unknown>> =
   | JsonRpcRequest<TParams>
@@ -173,6 +175,23 @@ export class ClaudeBrokerRpcError extends Error {
   }
 }
 
+export class JsonRpcLineTooLargeError extends ClaudeBrokerRpcError {
+  readonly maxLineBytes: number;
+  readonly observedBytes: number;
+
+  constructor(observedBytes: number, maxLineBytes = CLAUDE_BROKER_MAX_JSONL_LINE_BYTES) {
+    super(-32700, `JSON-RPC line exceeded ${maxLineBytes} bytes (observed ${observedBytes}).`, {
+      code: 'json_rpc_line_too_large',
+      maxLineBytes,
+      observedBytes,
+    });
+    this.name = 'JsonRpcLineTooLargeError';
+    this.maxLineBytes = maxLineBytes;
+    this.observedBytes = observedBytes;
+    Object.setPrototypeOf(this, JsonRpcLineTooLargeError.prototype);
+  }
+}
+
 export function buildJsonRpcSuccess<TResult>(id: JsonRpcId, result: TResult): JsonRpcSuccess<TResult> {
   return { id, result };
 }
@@ -197,6 +216,11 @@ export function buildJsonRpcFailureFromError(
 }
 
 export function parseJsonRpcInboundLine(line: string): JsonRpcInboundMessage<unknown> {
+  const lineBytes = Buffer.byteLength(line, 'utf8');
+  if (lineBytes > CLAUDE_BROKER_MAX_JSONL_LINE_BYTES) {
+    throw new JsonRpcLineTooLargeError(lineBytes);
+  }
+
   let message: unknown;
   try {
     message = JSON.parse(line);

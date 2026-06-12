@@ -1,6 +1,7 @@
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { isSnapshotFresherForInterest } from '../../kb/state/corpus-state.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
+import type { ConsumerApplyError } from '../../store/consumer-contract.js';
 import type { ConsumerCursorRepository } from './persistence.js';
 import type {
   Authority,
@@ -38,6 +39,24 @@ export class FreshnessTimeout extends Error {
     super(`waitFreshUntil timed out (consumer=${consumerId}, target=${renderedTarget}, timeoutMs=${timeoutMs})`);
     this.name = 'FreshnessTimeout';
     Object.setPrototypeOf(this, FreshnessTimeout.prototype);
+  }
+}
+
+export class FreshnessApplyFailure extends Error {
+  readonly consumerId: string;
+  readonly applyError: ConsumerApplyError;
+
+  constructor(consumerId: string, applyError: ConsumerApplyError) {
+    super(
+      [
+        'waitFreshUntil rejected because consumer apply failed',
+        `(consumer=${consumerId}, message=${applyError.message}, at=${applyError.at})`,
+      ].join(' '),
+    );
+    this.name = 'FreshnessApplyFailure';
+    this.consumerId = consumerId;
+    this.applyError = applyError;
+    Object.setPrototypeOf(this, FreshnessApplyFailure.prototype);
   }
 }
 
@@ -103,6 +122,18 @@ export function waitFreshUntilImpl(
 
     state.waiters.add(waiter);
   });
+}
+
+export function rejectWaitersForApplyFailure(
+  state: ConsumerState,
+  applyError: ConsumerApplyError,
+  timers: ConsumerDriverTimers,
+): void {
+  if (state.kind === 'stateless') {
+    return;
+  }
+
+  rejectWaiters(state, new FreshnessApplyFailure(state.reg.id, applyError), timers);
 }
 
 export function rejectWaiters(state: ConsumerState, err: Error, timers: ConsumerDriverTimers): void {

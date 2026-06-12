@@ -1,8 +1,8 @@
 import { isRecord } from '../../../infra/json.js';
-import { prepareSourceImport } from '../../../kb/ops/source-import.js';
+import { hasParentPathSegment, prepareSourceImport, resolveSourceImportFilePath } from '../../../kb/ops/source-import.js';
 import { persistPreparedSource } from '../../../kb/ops/source-store.js';
 import type { KnowledgeBaseRuntime } from '../../../kb/subsystem.js';
-import { kbSuccess, type KbToolResult } from '../../../kb/result.js';
+import { kbSuccess, kbValidationError, type KbToolResult } from '../../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../../kb/contract.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
 import type { Runtime } from '../../../runtime/ports.js';
@@ -68,6 +68,9 @@ export function parseKbSourceImportRequest(args: Record<string, unknown>): Parse
   if (typeof filePath !== 'string' || filePath.length === 0) {
     return { ok: false, message: 'filePath is required.' };
   }
+  if (hasParentPathSegment(filePath)) {
+    return { ok: false, message: 'filePath must not contain ".." path segments.' };
+  }
 
   const slug = args.slug;
   if (slug !== undefined && (typeof slug !== 'string' || slug.length === 0)) {
@@ -110,19 +113,32 @@ export class KbSourceImportService {
     ctx: { projectRoot: string },
     kbSubsystem: KnowledgeBaseRuntime,
   ): KbToolResult | Promise<KbToolResult> {
-    const jobCtx = this.jobContext(request, ctx);
+    let resolvedFilePath: string;
+    try {
+      resolvedFilePath = resolveSourceImportFilePath(request.filePath, ctx.projectRoot, this.deps.runtime.storage);
+    } catch (error: unknown) {
+      return kbValidationError(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const resolvedRequest: KbSourceImportRequest = {
+      ...request,
+      filePath: resolvedFilePath,
+    };
+    const jobCtx = this.jobContext(resolvedRequest, ctx);
     if (request.async) {
       const { jobId } = this.shell.launchAsync('kb.source_import', jobCtx, (job) =>
-        this.runImport(job, request, kbSubsystem),
+        this.runImport(job, resolvedRequest, ctx.projectRoot, kbSubsystem),
       );
       return kbSuccess({
         status: 'running',
         job: jobId,
-        readiness: request.readiness,
+        readiness: resolvedRequest.readiness,
       } satisfies KbSourceImportStarted);
     }
 
-    return this.shell.runSync('kb.source_import', jobCtx, (job) => this.runImport(job, request, kbSubsystem));
+    return this.shell.runSync('kb.source_import', jobCtx, (job) =>
+      this.runImport(job, resolvedRequest, ctx.projectRoot, kbSubsystem),
+    );
   }
 
   private jobContext(request: KbSourceImportRequest, ctx: { projectRoot: string }): KbOperationJobContext {
@@ -151,6 +167,7 @@ export class KbSourceImportService {
   private async runImport(
     job: KbOperationJobBodyContext,
     request: KbSourceImportRequest,
+    allowedReadRoot: string,
     kbSubsystem: KnowledgeBaseRuntime,
   ): Promise<{ data: KbSourceImportCompleted; terminalContent: string }> {
     throwIfAborted(job.signal, 'convert');
@@ -160,7 +177,7 @@ export class KbSourceImportService {
       (line) => job.recorder.appendMessage(line),
       kbSubsystem.kb.runtimeDir,
       this.deps.runtime,
-      { signal: job.signal },
+      { signal: job.signal, allowedReadRoot },
     );
     throwIfAborted(job.signal, 'persist');
     const persisted = await persistPreparedSource(kbSubsystem.kb, prepared.stagedPath, prepared.slug, {

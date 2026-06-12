@@ -143,6 +143,46 @@ describe('discuss reducer', () => {
     expect(fullReplay.runtime.controlPhase).toBe('idle');
   });
 
+  it('skips unknown-agent speech events without stopping replay', () => {
+    const input = makeInput([
+      { name: 'alpha', persona: 'Alpha', participation: 'required' },
+      { name: 'beta', persona: 'Beta', participation: 'required' },
+    ]);
+    const created = unwrap(
+      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW),
+    );
+    const history: DiscussDomainEvent[] = [
+      ...created,
+      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 3, 'speech.recorded', NOW, {
+        agent: 'ghost',
+        content: 'This event references no configured agent.',
+        decrementQuota: true,
+        recordLastSpeechStep: 1,
+      }),
+      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 4, 'speech.timed_out', NOW, {
+        agent: 'ghost',
+        content: 'Ghost timed out.',
+        decrementQuota: false,
+      }),
+      makeEvent(SESSION_ID, PROJECT_ROOT, input.topic, 5, 'bid.submitted', NOW, {
+        agent: 'alpha',
+        score: 55,
+        thought: 'Replay should continue.',
+      }),
+    ];
+    let snapshot: PersistedDiscussSnapshot | undefined;
+
+    expect(() => {
+      snapshot = replayDiscussEvents(history);
+    }).not.toThrow();
+
+    expect(snapshot?.lastAppliedSeq).toBe(5);
+    expect(snapshot?.state.step).toBe(1);
+    expect(snapshot?.state.transcript).toEqual([]);
+    expect(snapshot?.state.current_bids.alpha).toBe(55);
+    expect(snapshot?.state.current_thoughts.alpha).toBe('Replay should continue.');
+  });
+
   it('ends the session and enters synthesize control for a terminal no-winner batch', () => {
     const input = makeInput([
       { name: 'alpha', persona: 'Alpha', participation: 'required' },

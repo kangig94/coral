@@ -201,15 +201,22 @@ export function handleWaitEvent(
       state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
       state.pending.delete(event.jobId);
 
-      const terminalState = phaseForOutcome(event.result.outcome) === 'completed' ? 'done' : 'error';
+      const outcomePhase = phaseForOutcome(event.result.outcome);
+      const terminalState = outcomePhase === 'completed' ? 'done' : 'error';
       options.onProgress(formatAtomProgress(atom, terminalState));
 
       if (state.expectedStaleAborts.has(event.jobId)) {
+        // We requested a stale-recovery abort for this job. If it terminated as
+        // aborted (expected), swallow it. But if it actually completed in the race
+        // before the abort landed, fall through to record the real result rather
+        // than discarding it (B4-a).
         state.expectedStaleAborts.delete(event.jobId);
-        return 'handled';
+        if (outcomePhase !== 'completed') {
+          return 'handled';
+        }
       }
 
-      if (phaseForOutcome(event.result.outcome) !== 'completed') {
+      if (outcomePhase !== 'completed') {
         enterFailureDrain(
           state,
           executionSvc,

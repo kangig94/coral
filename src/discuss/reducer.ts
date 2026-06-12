@@ -199,6 +199,10 @@ function buildBidEntry(state: DiscussState, event: BidRoundClosedEvent): Transcr
 
 function buildSpeechState(state: DiscussState, event: SpeechRecordedEvent | SpeechTimedOutEvent): DiscussState {
   const agentState = state.agents[event.payload.agent];
+  if (!agentState) {
+    return state;
+  }
+
   const speechEntry: TranscriptEntry = {
     type: 'speech',
     step: state.step,

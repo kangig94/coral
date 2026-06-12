@@ -1,7 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { cleanupStaleJobs, resolveJobRetentionMs } from '#src/coordinator/lifecycle.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
+
+vi.mock('#src/infra/backend-log.js', () => ({
+  backendLog: {
+    warn: vi.fn(),
+  },
+}));
 
 const NOW = Date.UTC(2026, 5, 10);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -16,9 +23,11 @@ function status(over: Partial<JobStatus>): JobStatus {
   return { jobId: 'j', phase: 'completed', updatedAt: ago(0), ...over } as unknown as JobStatus;
 }
 
-function runCleanup(statuses: Record<string, JobStatus>): { pruned: string[]; purged: string[] } {
+function runCleanup(
+  statuses: Record<string, JobStatus>,
+  rmSync: ReturnType<typeof vi.fn> = vi.fn(),
+): { pruned: string[]; purged: string[] } {
   const purged: string[] = [];
-  const rmSync = vi.fn();
   const store = {
     listJobIds: () => Object.keys(statuses),
     readStatus: (id: string) => statuses[id] ?? null,
@@ -26,13 +35,24 @@ function runCleanup(statuses: Record<string, JobStatus>): { pruned: string[]; pu
     purgeFromCache: (id: string) => purged.push(id),
   } as unknown as JobStore;
 
-  cleanupStaleJobs(store, CURRENT_BUNDLE, () => {}, { rmSync }, NOW, RETENTION_MS);
+  cleanupStaleJobs(
+    store,
+    CURRENT_BUNDLE,
+    () => {},
+    { rmSync } as unknown as Parameters<typeof cleanupStaleJobs>[3],
+    NOW,
+    RETENTION_MS,
+  );
 
   const pruned = rmSync.mock.calls.map((call) => String(call[0]).replace('/jobs/', ''));
   return { pruned, purged };
 }
 
 describe('cleanupStaleJobs', () => {
+  beforeEach(() => {
+    vi.mocked(backendLog.warn).mockReset();
+  });
+
   it('prunes a terminal job older than the retention window', () => {
     const { pruned } = runCleanup({
       old: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(15) }),
@@ -83,6 +103,24 @@ describe('cleanupStaleJobs', () => {
       running: status({ phase: 'running', bundleHash: CURRENT_BUNDLE, updatedAt: ago(40) }),
     });
     expect(pruned.sort()).toEqual(['aged']);
+  });
+
+  it('warns when pruning a stale job artifact fails', () => {
+    const rmSync = vi.fn(() => {
+      throw new Error('permission denied');
+    });
+
+    const { pruned, purged } = runCleanup(
+      {
+        old: status({ phase: 'completed', bundleHash: CURRENT_BUNDLE, updatedAt: ago(15) }),
+      },
+      rmSync,
+    );
+
+    expect(pruned).toEqual(['old']);
+    expect(purged).toEqual([]);
+    expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('/jobs/old'));
+    expect(backendLog.warn).toHaveBeenCalledWith(expect.stringContaining('permission denied'));
   });
 });
 

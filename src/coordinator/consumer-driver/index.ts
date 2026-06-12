@@ -19,7 +19,7 @@ import {
   scheduleJournalApply,
   type AuthorityApplyDeps,
 } from './authority-apply.js';
-import { waitFreshUntilImpl, rejectWaiters, resolveWaiters } from './freshness-waiter.js';
+import { waitFreshUntilImpl, rejectWaiters, rejectWaitersForApplyFailure, resolveWaiters } from './freshness-waiter.js';
 import { ConsumerCursorRepository } from './persistence.js';
 import {
   assertExistingRegistrationMatches,
@@ -41,7 +41,7 @@ import {
   type ForcedCorpusFreshnessTarget,
 } from './state.js';
 
-export { FreshnessTimeout } from './freshness-waiter.js';
+export { FreshnessApplyFailure, FreshnessTimeout } from './freshness-waiter.js';
 export type { Authority, ForcedCorpusFreshnessTarget } from './state.js';
 
 export interface StuckConsumerStatus {
@@ -101,6 +101,7 @@ export class ConsumerDriver {
       corpusProjectionReader: opts.corpusProjectionReader ?? DEFAULT_CORPUS_PROJECTION_READER,
       onTextProjectionSync: opts.onTextProjectionSync,
       resolveWaiters: (state, newCursor) => resolveWaiters(state, newCursor, this.timers),
+      rejectWaiters: (state, applyError): void => rejectWaitersForApplyFailure(state, applyError, this.timers),
     };
   }
 

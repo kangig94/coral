@@ -1,10 +1,10 @@
-import { basename, delimiter, extname, join } from 'node:path';
+import { basename, delimiter, extname, isAbsolute, join, resolve } from 'node:path';
 import { nowIsoString } from '../../infra/time.js';
 import { throwIfAborted } from '../../runtime/abort.js';
 import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
 import type { IdPort, ProcessPort } from '../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontmatter.js';
-import { sourceImportStageDir } from '../paths.js';
+import { assertWithin, sourceImportStageDir } from '../paths.js';
 import type { KbSourceFrontmatter } from '../entry-types.js';
 import { assertNonEmptyText, assertSourceSlug } from '../validation.js';
 
@@ -13,6 +13,8 @@ const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/;
 const HTML_TITLE_PATTERN = /<title\b[^>]*>([\s\S]*?)<\/title>/i;
 const HTML_H1_PATTERN = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i;
 const HTML_BODY_PATTERN = /<body\b[^>]*>([\s\S]*?)<\/body>/i;
+
+export const MAX_SOURCE_IMPORT_FILE_BYTES = 20 * 1024 * 1024;
 
 const HTML_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -39,12 +41,22 @@ export type SourceImportRuntime = {
   process: Pick<ProcessPort, 'exec'>;
   ids: Pick<IdPort, 'uuid'>;
   time: Pick<TimePort, 'now'>;
-  storage: Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'rmSync' | 'writeFileSync'>;
+  storage: Pick<
+    StoragePort,
+    'mkdirSync' | 'readFileSync' | 'readdirSync' | 'realpathSync' | 'rmSync' | 'statSync' | 'writeFileSync'
+  >;
 };
 
 export type SourceImportContext = {
   runtime: SourceImportRuntime;
   runtimeRoot: string;
+  fileSizeLimitBytes: number;
+};
+
+export type SourceImportOptions = {
+  signal?: AbortSignal;
+  allowedReadRoot: string;
+  fileSizeLimitBytes?: number;
 };
 
 type TurndownServiceLike = {
@@ -156,6 +168,60 @@ function stagePreparedSourceMarkdown(stageRoot: string, markdown: string, runtim
   const stagedPath = join(stageRoot, `${runtime.ids.uuid()}.md`);
   runtime.storage.writeFileSync(stagedPath, markdown, { encoding: 'utf-8' });
   return stagedPath;
+}
+
+export function hasParentPathSegment(filePath: string): boolean {
+  return filePath.split(/[\\/]+/u).some((segment) => segment === '..');
+}
+
+function sourceImportFileSizeLimit(limit?: number): number {
+  if (limit === undefined) {
+    return MAX_SOURCE_IMPORT_FILE_BYTES;
+  }
+  if (!Number.isSafeInteger(limit) || limit <= 0) {
+    throw new Error('Source import file size limit must be a positive safe integer');
+  }
+  return limit;
+}
+
+function assertSourceImportFileSize(
+  filePath: string,
+  storage: SourceImportRuntime['storage'],
+  limitBytes: number,
+  label: string,
+): void {
+  const stat = storage.statSync(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`${label} must be a file`);
+  }
+  if (stat.size > limitBytes) {
+    throw new Error(`${label} exceeds maximum source import size (${stat.size} bytes > ${limitBytes} bytes)`);
+  }
+}
+
+function readUtf8FileWithinSourceImportLimit(filePath: string, ctx: SourceImportContext, label: string): string {
+  assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, label);
+  return ctx.runtime.storage.readFileSync(filePath, 'utf-8');
+}
+
+export function resolveSourceImportFilePath(
+  filePath: string,
+  allowedReadRoot: string,
+  storage: SourceImportRuntime['storage'],
+  options?: { fileSizeLimitBytes?: number },
+): string {
+  if (hasParentPathSegment(filePath)) {
+    throw new Error('KB source import file path must not contain ".." path segments');
+  }
+
+  const limitBytes = sourceImportFileSizeLimit(options?.fileSizeLimitBytes);
+  const canonicalRoot = storage.realpathSync(resolve(allowedReadRoot));
+  const candidate = isAbsolute(filePath) ? filePath : resolve(canonicalRoot, filePath);
+  const canonicalCandidate = storage.realpathSync(candidate);
+  const resolvedCandidate = assertWithin(canonicalRoot, canonicalCandidate, 'KB source import file path');
+
+  assertSourceImportFileSize(resolvedCandidate, storage, limitBytes, 'KB source import file path');
+  return resolvedCandidate;
 }
 
 function findFirstMarkdownFile(root: string, storage: SourceImportRuntime['storage']): string | undefined {
@@ -368,7 +434,7 @@ export async function prepareSourceImport(
   log: (msg: string) => void,
   runtimeRoot: string,
   runtime: SourceImportRuntime,
-  options?: { signal?: AbortSignal },
+  options: SourceImportOptions,
 ): Promise<PreparedSourceImport> {
   // Honor the caller's AbortSignal at the two checkpoints that bound the
   // long-running phases of source import: `'convert'` (before invoking the
@@ -379,18 +445,22 @@ export async function prepareSourceImport(
   // propagates up to the surrounding KB-job recorder where it maps to a
   // `terminal { outcome: 'aborted', reason: 'user_abort' }`.
   const signal = options?.signal;
-  const ext = extname(filePath).toLowerCase();
-  const ctx: SourceImportContext = { runtime, runtimeRoot };
+  const fileSizeLimitBytes = sourceImportFileSizeLimit(options.fileSizeLimitBytes);
+  const sourceFilePath = resolveSourceImportFilePath(filePath, options.allowedReadRoot, runtime.storage, {
+    fileSizeLimitBytes,
+  });
+  const ext = extname(sourceFilePath).toLowerCase();
+  const ctx: SourceImportContext = { runtime, runtimeRoot, fileSizeLimitBytes };
   const converter = resolveConverter(ext);
 
   if (signal !== undefined) throwIfAborted(signal, 'convert');
-  log(`Converting ${filePath}`);
+  log(`Converting ${sourceFilePath}`);
   if (!(await converter.isAvailable(ctx))) {
     log(`Installing converter dependencies for ${ext || 'source'} import`);
     await converter.install(log, ctx);
   }
 
-  const converted = await converter.convert(filePath, ctx);
+  const converted = await converter.convert(sourceFilePath, ctx);
   const meta: KbSourceFrontmatter = {
     title: converted.title,
     type: inferSourceType(ext),
@@ -424,7 +494,9 @@ export class MarkdownCopyConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
-    const rawMarkdown = normalizeTextInput(ctx.runtime.storage.readFileSync(filePath, 'utf-8'));
+    const rawMarkdown = normalizeTextInput(
+      readUtf8FileWithinSourceImportLimit(filePath, ctx, 'KB source import markdown file'),
+    );
     const withoutFrontmatter = stripLeadingFrontmatter(rawMarkdown);
     const { title, body } = splitLeadingMarkdownTitle(withoutFrontmatter);
 
@@ -445,7 +517,7 @@ export class HtmlTurndownConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
-    const html = normalizeTextInput(ctx.runtime.storage.readFileSync(filePath, 'utf-8'));
+    const html = normalizeTextInput(readUtf8FileWithinSourceImportLimit(filePath, ctx, 'KB source import HTML file'));
     const title = extractHtmlTitle(html);
     if (!title) {
       throw new Error('HTML import requires a <title> or first <h1>');
@@ -468,6 +540,7 @@ export class DocxMammothConverter implements Converter {
   }
 
   async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
+    assertSourceImportFileSize(filePath, _ctx.runtime.storage, _ctx.fileSizeLimitBytes, 'KB source import DOCX file');
     const mammoth = await loadMammoth();
     const result = await mammoth.convertToHtml({ path: filePath });
     const html = normalizeTextInput(result.value);
@@ -519,6 +592,7 @@ export class PdfMarkerConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
+    assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, 'KB source import PDF file');
     const markerCommand = await resolveCommandPath('marker_single', ctx);
     if (!markerCommand) {
       throw new Error('marker_single is not available');
@@ -533,7 +607,9 @@ export class PdfMarkerConverter implements Converter {
         throw new Error('marker_single did not produce a markdown file');
       }
 
-      const rawMarkdown = normalizeTextInput(ctx.runtime.storage.readFileSync(markdownPath, 'utf-8'));
+      const rawMarkdown = normalizeTextInput(
+        readUtf8FileWithinSourceImportLimit(markdownPath, ctx, 'Marker output markdown file'),
+      );
       const { title, body } = splitLeadingMarkdownTitle(rawMarkdown);
       if (!title) {
         throw new Error('PDF import requires Marker output to begin with a top-level heading');

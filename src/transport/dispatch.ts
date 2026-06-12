@@ -265,7 +265,19 @@ export async function executeCatalogRequest(
     }
 
     case 'jobs.detail': {
-      const parsed = request as { jobId: string };
+      const parsed = request as { jobId: string; projectRoot: string };
+      const scopeCheck = rpcPorts.jobs.scopeCheck([parsed.jobId], parsed.projectRoot);
+      if (scopeCheck.mismatch.length > 0) {
+        return unaryHttp(
+          domainResultToHttp(
+            domainError('scope_mismatch', 'Jobs do not belong to this project', { jobs: scopeCheck.mismatch }),
+          ),
+        );
+      }
+      if (scopeCheck.missing.length === 1) {
+        return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
+      }
+
       const detail = rpcPorts.jobs.detail(parsed.jobId);
       if (!detail) {
         return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);

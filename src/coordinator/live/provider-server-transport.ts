@@ -1,10 +1,26 @@
-import { createInterface, type Interface } from 'node:readline';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
+import { MAX_BUFFER } from '../../infra/process-constants.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, requirePipedHandles } from './process-supervision.js';
+
+export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
+
+export class ProviderServerLineTooLargeError extends Error {
+  readonly code = 'provider_server_line_too_large';
+  readonly maxLineBytes: number;
+  readonly observedBytes: number;
+
+  constructor(observedBytes: number, maxLineBytes = PROVIDER_SERVER_MAX_JSONL_LINE_BYTES) {
+    super(`Provider server JSONL line exceeded ${maxLineBytes} bytes (observed ${observedBytes}).`);
+    this.name = 'ProviderServerLineTooLargeError';
+    this.maxLineBytes = maxLineBytes;
+    this.observedBytes = observedBytes;
+    Object.setPrototypeOf(this, ProviderServerLineTooLargeError.prototype);
+  }
+}
 
 export type ProviderServerNotification = {
   method: string;
@@ -41,7 +57,8 @@ type ProviderServerEntry = {
   pending: Map<number, ProviderServerPendingRequest>;
   nextRequestId: number;
   notificationHandlers: Set<(message: ProviderServerNotification) => void>;
-  readline: Interface;
+  stdoutBuffer: string;
+  stdoutBufferBytes: number;
   stderr: string;
   closed: boolean;
   closeRequested: boolean;
@@ -100,7 +117,8 @@ export async function spawnProviderServerTransport(params: {
     pending: new Map(),
     nextRequestId: 1,
     notificationHandlers: new Set(),
-    readline: createInterface({ input: childStdout as unknown as NodeJS.ReadableStream }),
+    stdoutBuffer: '',
+    stdoutBufferBytes: 0,
     stderr: '',
     closed: false,
     closeRequested: false,
@@ -117,8 +135,8 @@ export async function spawnProviderServerTransport(params: {
     entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
   };
 
-  entry.readline.on('line', (line: string) => {
-    handleProviderServerLine(entry, line, runtime);
+  childStdout.on('data', (chunk: string | Buffer) => {
+    handleProviderServerStdout(entry, chunk, runtime);
   });
 
   childStderr.on('data', (chunk: string | Buffer) => {
@@ -147,6 +165,11 @@ export async function spawnProviderServerTransport(params: {
   });
 
   child.on('close', (code, signal) => {
+    if (entry.closed) {
+      entry.resolveClose(entry.closeRequested ? undefined : entry.closeOutcome);
+      return;
+    }
+
     let closeError: Error | undefined;
     if (!entry.closeRequested) {
       const detail = signal ? `exited unexpectedly (signal ${signal})` : `exited unexpectedly (exit ${code})`;
@@ -254,7 +277,6 @@ function detachProviderServer(entry: ProviderServerEntry, error?: Error): void {
     entry,
     error ?? createProviderServerError(entry.provider, 'closed', { stderr: entry.stderr }),
   );
-  entry.readline.close();
 }
 
 function encodeProviderServerMessage(message: unknown): string {
@@ -267,6 +289,63 @@ function sendProviderServerMessage(entry: ProviderServerEntry, message: unknown)
     throw createProviderServerError(entry.provider, 'stdin is not available', { stderr: entry.stderr });
   }
   stdin.write(encodeProviderServerMessage(message));
+}
+
+function handleProviderServerStdout(entry: ProviderServerEntry, chunk: string | Buffer, runtime: Runtime): void {
+  if (entry.closed) return;
+
+  const text = chunk.toString();
+  let start = 0;
+  while (start < text.length) {
+    const newlineIndex = text.indexOf('\n', start);
+    if (newlineIndex === -1) {
+      appendProviderServerLineFragment(entry, text.slice(start), runtime);
+      return;
+    }
+
+    const fragmentEnd =
+      newlineIndex > start && text.charCodeAt(newlineIndex - 1) === 13 ? newlineIndex - 1 : newlineIndex;
+    if (!appendProviderServerLineFragment(entry, text.slice(start, fragmentEnd), runtime)) {
+      return;
+    }
+
+    const line = entry.stdoutBuffer;
+    entry.stdoutBuffer = '';
+    entry.stdoutBufferBytes = 0;
+    handleProviderServerLine(entry, line, runtime);
+    if (entry.closed) return;
+    start = newlineIndex + 1;
+  }
+}
+
+function appendProviderServerLineFragment(entry: ProviderServerEntry, fragment: string, runtime: Runtime): boolean {
+  if (fragment.length === 0) {
+    return true;
+  }
+
+  const fragmentBytes = Buffer.byteLength(fragment, 'utf8');
+  const observedBytes = entry.stdoutBufferBytes + fragmentBytes;
+  if (observedBytes > PROVIDER_SERVER_MAX_JSONL_LINE_BYTES) {
+    const lineError = new ProviderServerLineTooLargeError(observedBytes);
+    const protocolError = createProviderServerError(entry.provider, 'emitted an oversized JSONL line', {
+      stderr: entry.stderr,
+      data: {
+        code: lineError.code,
+        maxLineBytes: lineError.maxLineBytes,
+        observedBytes: lineError.observedBytes,
+      },
+    });
+    backendLog.error(protocolError.message, lineError);
+    entry.stdoutBuffer = '';
+    entry.stdoutBufferBytes = 0;
+    detachProviderServer(entry, protocolError);
+    gracefulKill(entry.child, runtime);
+    return false;
+  }
+
+  entry.stdoutBuffer += fragment;
+  entry.stdoutBufferBytes = observedBytes;
+  return true;
 }
 
 function handleProviderServerLine(entry: ProviderServerEntry, line: string, runtime: Runtime): void {

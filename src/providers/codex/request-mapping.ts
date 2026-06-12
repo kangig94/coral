@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type {
   EffortLevel,
   ProviderContinuityUpdate,
@@ -7,6 +7,7 @@ import type {
   ProviderServerSpec,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import { pickProviderContinuityKeys } from '../middleware/session-continuity.js';
 import { resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
@@ -16,11 +17,19 @@ import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput 
 
 type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
 
+const CODEX_CONTINUITY_KEYS = ['cwd', 'threadId', 'turnId'] as const;
+const codexContinuityCwdScopes = new WeakMap<Record<string, unknown>, string>();
+
 export interface CodexPersistedContinuity extends ProviderContinuityBlob {
   cwd?: string;
   threadId?: string;
   turnId?: string;
 }
+
+type CodexContinuityReadOptions = {
+  allowUnscopedCwd?: boolean;
+  cwdScope?: string;
+};
 
 export function buildCodexPrompt(
   request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>,
@@ -62,16 +71,27 @@ function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'd
 
 export function readCodexPersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
+  options: CodexContinuityReadOptions = {},
 ): CodexPersistedContinuity {
   if (!isRecord(persistedContinuity)) {
     return {};
   }
 
-  return {
-    cwd: readString(persistedContinuity.cwd),
-    threadId: readString(persistedContinuity.threadId),
-    turnId: readString(persistedContinuity.turnId),
+  const continuity = pickProviderContinuityKeys(persistedContinuity, CODEX_CONTINUITY_KEYS);
+  const cwdScope = readString(options.cwdScope) ?? codexContinuityCwdScopes.get(persistedContinuity);
+  const cwd = readString(continuity.cwd);
+  const parsed = {
+    cwd:
+      cwdScope === undefined && options.allowUnscopedCwd !== false
+        ? cwd === undefined
+          ? undefined
+          : resolve(cwd)
+        : scopedCodexCwd(cwd, cwdScope),
+    threadId: readString(continuity.threadId),
+    turnId: readString(continuity.turnId),
   };
+  rememberCodexContinuityCwdScope(parsed, parsed.cwd);
+  return parsed;
 }
 
 export function buildCodexContinuity(update: {
@@ -82,11 +102,13 @@ export function buildCodexContinuity(update: {
   const cwd = readString(update.cwd);
   const threadId = readString(update.threadId);
   const turnId = readString(update.turnId);
-  return {
-    ...(cwd !== undefined ? { cwd } : {}),
+  const continuity = {
+    ...(cwd !== undefined ? { cwd: resolve(cwd) } : {}),
     ...(threadId !== undefined ? { threadId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
   };
+  rememberCodexContinuityCwdScope(continuity, continuity.cwd);
+  return continuity;
 }
 
 export function withCodexContinuity(
@@ -96,8 +118,9 @@ export function withCodexContinuity(
     threadId?: string;
     turnId?: string;
   },
+  options: CodexContinuityReadOptions = {},
 ): CodexPersistedContinuity {
-  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  const continuity = readCodexPersistedContinuity(persistedContinuity, options);
   return buildCodexContinuity({
     cwd: update.cwd ?? continuity.cwd,
     threadId: update.threadId ?? continuity.threadId,
@@ -107,8 +130,9 @@ export function withCodexContinuity(
 
 export function clearCodexTurnContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
+  options: CodexContinuityReadOptions = {},
 ): CodexPersistedContinuity | undefined {
-  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  const continuity = readCodexPersistedContinuity(persistedContinuity, options);
   if (!continuity.threadId) {
     return undefined;
   }
@@ -119,7 +143,7 @@ export function clearCodexTurnContinuity(
   });
 }
 
-function hasCodexContinuity(continuity: CodexPersistedContinuity): boolean {
+export function hasCodexContinuity(continuity: CodexPersistedContinuity): boolean {
   return continuity.cwd !== undefined || continuity.threadId !== undefined || continuity.turnId !== undefined;
 }
 
@@ -197,6 +221,34 @@ function createCodexProviderServerSpec(
   };
 }
 
+function rememberCodexContinuityCwdScope(
+  persistedContinuity: ProviderContinuityBlob | undefined,
+  cwdScope: string | undefined,
+): void {
+  const normalizedScope = readString(cwdScope);
+  if (!normalizedScope || !isRecord(persistedContinuity)) {
+    return;
+  }
+  codexContinuityCwdScopes.set(persistedContinuity, resolve(normalizedScope));
+}
+
+function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): string | undefined {
+  if (cwd === undefined || cwdScope === undefined) {
+    return undefined;
+  }
+
+  const resolvedScope = resolve(cwdScope);
+  const resolvedCwd = resolve(cwd);
+  const scopedRelative = relative(resolvedScope, resolvedCwd);
+  if (
+    scopedRelative === '' ||
+    (!scopedRelative.startsWith(`..${sep}`) && scopedRelative !== '..' && !isAbsolute(scopedRelative))
+  ) {
+    return resolvedCwd;
+  }
+  return undefined;
+}
+
 export function buildCodexProviderServerSpec(
   projectRoot: string,
   env?: Record<string, string>,
@@ -213,7 +265,9 @@ export function buildCodexProviderServerSpec(
   clientVersion?: string,
 ): ProviderServerSpec {
   if (typeof projectRootOrRequest !== 'string') {
-    const continuity = readCodexPersistedContinuity(envOrPersisted as ProviderContinuityBlob | undefined);
+    const persistedContinuity = envOrPersisted as ProviderContinuityBlob | undefined;
+    rememberCodexContinuityCwdScope(persistedContinuity, projectRootOrRequest.cwd);
+    const continuity = readCodexPersistedContinuity(persistedContinuity, { cwdScope: projectRootOrRequest.cwd });
     return createCodexProviderServerSpec(
       continuity.cwd ?? projectRootOrRequest.cwd,
       projectRootOrRequest.coralEnv,

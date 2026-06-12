@@ -955,6 +955,50 @@ describe('waitForAtoms', () => {
     expect(progress).toHaveBeenCalledWith('0-arc done');
   });
 
+  it('records a completed terminal even when a stale abort marker exists', async () => {
+    const executionSvc = createExecutionService({
+      waitStream: vi.fn(() => emit([terminal('job-1', 'session-1', { content: 'ARCH' })])),
+    });
+
+    const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
+      staleTimeoutMs: 0,
+      staleCheckIntervalMs: 500,
+      staleAbortTimeoutMs: 30_000,
+      drainDeadlineMs: 15_000,
+      initialState: {
+        expectedStaleAborts: new Set(['job-1']),
+      },
+      onProgress: vi.fn(),
+      time: workflowTime,
+    });
+
+    expect([...results.entries()]).toEqual([['0:0', 'ARCH']]);
+  });
+
+  it('does not resume a duplicate atom when stale abort was a no-op and the original completes', async () => {
+    const executionSvc = createExecutionService({
+      abort: vi.fn(() => ({ aborted: [], notFound: [] })),
+      waitForJobTerminal: vi.fn(async () => {}),
+      waitStream: vi.fn(() => emit([stillWaiting(['job-1']), terminal('job-1', 'session-1', { content: 'ARCH' })])),
+    });
+
+    const results = await waitForAtoms([launchedAtom()], executionSvc, ctx, {
+      staleTimeoutMs: 1,
+      staleCheckIntervalMs: 1,
+      staleAbortTimeoutMs: 30_000,
+      drainDeadlineMs: 15_000,
+      onProgress: vi.fn(),
+      recoverStaleAtom,
+      time: workflowTime,
+    });
+
+    expect(executionSvc.abort).toHaveBeenCalledWith(['job-1']);
+    expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-1', 30_000);
+    expect(executionSvc.resume).not.toHaveBeenCalled();
+    expect(executionSvc.awaitLaunch).not.toHaveBeenCalled();
+    expect([...results.entries()]).toEqual([['0:0', 'ARCH']]);
+  });
+
   it('treats notice on terminal result as a failure and preserves completed details', async () => {
     const executionSvc = createExecutionService({
       waitStream: vi.fn(() =>

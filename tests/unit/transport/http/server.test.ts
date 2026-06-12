@@ -81,6 +81,7 @@ import {
   createStoreServicesRef,
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
+import { MAX_EVENT_STREAM_CONNECTIONS } from '#src/coordinator/composition/index.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -322,6 +323,7 @@ async function openHttpStream(
 ): Promise<{
   response: ClientIncomingMessage;
   waitForText: (check: (text: string) => boolean, timeoutMs?: number) => Promise<string>;
+  currentText: () => string;
   close: () => void;
 }> {
   return new Promise((resolve, reject) => {
@@ -372,6 +374,7 @@ async function openHttpStream(
       resolve({
         response,
         waitForText,
+        currentText: () => text,
         close: () => {
           req.destroy();
           response.destroy();
@@ -3684,14 +3687,34 @@ describe('execution backend server', () => {
   it('streams passive dashboard SSE events and applies the optional job filter', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const eventBus = new TypedEventBus();
+    const progressStore = createProgressStore();
+    createdJobIds.add('job-1');
+    createdJobIds.add('job-2');
+    progressStore.initJob({
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    progressStore.initJob({
+      jobId: 'job-2',
+      sessionId: 'session-2',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
     const backend = await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
       eventBus,
     });
 
-    const stream = await openHttpStream(`${backend.baseUrl}/events/stream?filter=job:job-1`, {
-      'X-Coral-Backend-Token': backend.token,
-    });
+    const stream = await openHttpStream(
+      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}&filter=job:job-1`,
+      {
+        'X-Coral-Backend-Token': backend.token,
+      },
+    );
 
     expect(stream.response.statusCode).toBe(200);
     expect(String(stream.response.headers['content-type'])).toContain('text/event-stream');
@@ -3727,6 +3750,142 @@ describe('execution backend server', () => {
       stream.close();
     }
   });
+
+  it('suppresses dashboard SSE job events when projectRoot is omitted', async () => {
+    const eventBus = new TypedEventBus();
+    const progressStore = createProgressStore();
+    createdJobIds.add('job-no-project-root-stream');
+    progressStore.initJob({
+      jobId: 'job-no-project-root-stream',
+      sessionId: 'session-no-project-root-stream',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    const backend = await startBackendServer({ eventBus });
+
+    const stream = await openHttpStream(`${backend.baseUrl}/events/stream`, {
+      'X-Coral-Backend-Token': backend.token,
+    });
+
+    try {
+      await stream.waitForText((text) => text.includes('event: ready'));
+
+      eventBus.emit('job:created', {
+        jobId: 'job-no-project-root-stream',
+        sessionId: 'session-no-project-root-stream',
+        provider: 'codex',
+        projectRoot: '/tmp/project',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(stream.currentText().match(/^event: [^\n]+/gm)).toEqual(['event: ready']);
+      expect(stream.currentText()).not.toContain('job-no-project-root-stream');
+      expect(stream.currentText()).not.toContain('event: job:created');
+    } finally {
+      stream.close();
+    }
+  });
+
+  it('scopes unfiltered dashboard SSE job and discuss events to the requested project', async () => {
+    const eventBus = new TypedEventBus();
+    const progressStore = createProgressStore();
+    createdJobIds.add('job-owned');
+    createdJobIds.add('job-foreign');
+    progressStore.initJob({
+      jobId: 'job-owned',
+      sessionId: 'session-owned',
+      provider: 'codex',
+      projectRoot: '/tmp/project',
+      backendNamespace: testBackendNamespace,
+    });
+    progressStore.initJob({
+      jobId: 'job-foreign',
+      sessionId: 'session-foreign',
+      provider: 'codex',
+      projectRoot: '/tmp/other-project',
+      backendNamespace: testBackendNamespace,
+    });
+    const backend = await startBackendServer({ eventBus });
+
+    const stream = await openHttpStream(
+      `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      {
+        'X-Coral-Backend-Token': backend.token,
+      },
+    );
+
+    try {
+      await stream.waitForText((text) => text.includes('event: ready'));
+
+      eventBus.emit('job:progress', {
+        jobId: 'job-foreign',
+        seq: 1,
+        message: 'foreign progress',
+      });
+      eventBus.emit('discuss:updated', {
+        projectRoot: '/tmp/other-project',
+        sessionId: 'foreign-discuss',
+        lastSeq: 1,
+        status: 'active',
+      });
+      eventBus.emit('job:progress', {
+        jobId: 'job-owned',
+        seq: 2,
+        message: 'owned progress',
+      });
+      eventBus.emit('discuss:updated', {
+        projectRoot: '/tmp/project',
+        sessionId: 'owned-discuss',
+        lastSeq: 2,
+        status: 'active',
+      });
+
+      const eventChunk = await stream.waitForText(
+        (text) => text.includes('"jobId":"job-owned"') && text.includes('"sessionId":"owned-discuss"'),
+      );
+
+      expect(eventChunk).toContain('event: job:progress');
+      expect(eventChunk).toContain('event: discuss:updated');
+      expect(eventChunk).toContain('"message":"owned progress"');
+      expect(eventChunk).not.toContain('foreign progress');
+      expect(eventChunk).not.toContain('foreign-discuss');
+    } finally {
+      stream.close();
+    }
+  });
+
+  it('rejects dashboard SSE connections over the coordinator cap', async () => {
+    const backend = await startBackendServer();
+    const streams: Array<Awaited<ReturnType<typeof openHttpStream>>> = [];
+
+    try {
+      for (let index = 0; index < MAX_EVENT_STREAM_CONNECTIONS; index += 1) {
+        streams.push(
+          await openHttpStream(`${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`, {
+            'X-Coral-Backend-Token': backend.token,
+          }),
+        );
+      }
+
+      const response = await fetch(
+        `${backend.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        {
+          headers: { 'X-Coral-Backend-Token': backend.token },
+        },
+      );
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({
+        code: 'too_many_event_streams',
+        message: 'Too many event stream connections',
+      });
+    } finally {
+      for (const stream of streams) {
+        stream.close();
+      }
+    }
+  }, 10_000);
 
   it('lists jobs and returns replayed job detail', async () => {
     const progressStore = createProgressStore();
@@ -3803,9 +3962,12 @@ describe('execution backend server', () => {
       ]),
     );
 
-    const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-1`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
+    const detailResponse = await fetch(
+      `${backend.baseUrl}/jobs/job-1?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
     const detailBody = (await detailResponse.json()) as {
       status: Record<string, unknown>;
       events: Array<Record<string, unknown>>;
@@ -3829,14 +3991,83 @@ describe('execution backend server', () => {
       result: { content: 'done', outcome: { kind: 'completed' } },
     });
 
-    const missingResponse = await fetch(`${backend.baseUrl}/jobs/missing-job`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
+    const missingResponse = await fetch(
+      `${backend.baseUrl}/jobs/missing-job?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
 
     expect(missingResponse.status).toBe(404);
     expect(await missingResponse.json()).toEqual({
       code: 'job_not_found',
       message: 'Job not found: missing-job',
+    });
+  });
+
+  it('denies job detail when the job belongs to another project', async () => {
+    const progressStore = createProgressStore();
+    const backend = await startBackendServer();
+
+    createdJobIds.add('job-foreign-project');
+    progressStore.initJob({
+      jobId: 'job-foreign-project',
+      sessionId: 'session-foreign-project',
+      provider: 'codex',
+      projectRoot: '/tmp/other-project',
+      backendNamespace: testBackendNamespace,
+    });
+
+    const response = await fetch(
+      `${backend.baseUrl}/jobs/job-foreign-project?projectRoot=${encodeURIComponent('/tmp/project')}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      code: 'scope_mismatch',
+      message: 'Jobs do not belong to this project',
+      detail: { jobs: ['job-foreign-project'] },
+    });
+  });
+
+  it('denies launched job detail when requested from another project', async () => {
+    const progressStore = createProgressStore();
+    const projectA = createProjectRoot('job-detail-project-a');
+    const projectB = createProjectRoot('job-detail-project-b');
+    const sessionManager = createSessionManager(projectA);
+    const session = sessionManager.allocate('codex', 'detail-session', 'gpt-5', projectA);
+    const jobId = 'job-detail-project-a';
+    const backend = await startBackendServer();
+
+    createdJobIds.add(jobId);
+    progressStore.initJob({
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot: projectA,
+      backendNamespace: testBackendNamespace,
+    });
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: session.sessionId,
+      provider: 'codex',
+      projectRoot: projectA,
+      backendNamespace: testBackendNamespace,
+    });
+    sessionManager.claimForJobSync(session.sessionId, jobId);
+
+    const response = await fetch(`${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectB)}`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      code: 'scope_mismatch',
+      message: 'Jobs do not belong to this project',
+      detail: { jobs: [jobId] },
     });
   });
 
@@ -4007,9 +4238,12 @@ describe('execution backend server', () => {
         },
       ]);
 
-      const detailResponse = await fetch(`${backend.baseUrl}/jobs/job-completed`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
-      });
+      const detailResponse = await fetch(
+        `${backend.baseUrl}/jobs/job-completed?projectRoot=${encodeURIComponent('/tmp/project')}`,
+        {
+          headers: { 'X-Coral-Backend-Token': backend.token },
+        },
+      );
       const detailBody = (await detailResponse.json()) as {
         status: Record<string, unknown>;
         events: Array<Record<string, unknown>>;
@@ -4505,7 +4739,7 @@ describe('execution backend server', () => {
       'post',
       'put',
     ]);
-    expect(response.headers.get('Access-Control-Allow-Private-Network')).toBe('true');
+    expect(response.headers.get('Access-Control-Allow-Private-Network')).toBeNull();
   });
 
   describe('shutdown policy', () => {

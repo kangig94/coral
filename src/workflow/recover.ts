@@ -5,7 +5,7 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
-import type { TerminalOutcome } from '../jobs/outcome.js';
+import { phaseForOutcome, type TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStore } from '../jobs/store.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
 import { readLatestEvent } from '../store/event-queries.js';
@@ -167,7 +167,11 @@ function buildLaunchedAtomsForStep(
 }
 
 function completedOutputForSlot(slot: CompiledPlanSlot, detailsByJob: Map<string, JobProjectionDetail>): string | null {
-  return detailForJob(detailsByJob, slot.jobId).exit?.content ?? null;
+  const exit = detailForJob(detailsByJob, slot.jobId).exit;
+  if (!exit || phaseForOutcome(exit.outcome) !== 'completed') {
+    return null;
+  }
+  return exit.content;
 }
 
 function summarizeCompletedSteps(
@@ -222,7 +226,7 @@ function firstTerminalFailure(
     slots.find((slot) => {
       const detail = detailForJob(detailsByJob, slot.jobId);
       const outcome = detail.exit?.outcome;
-      return outcome && outcome.kind !== 'completed';
+      return outcome !== undefined && phaseForOutcome(outcome) !== 'completed';
     });
 
   if (!targetSlot) {
@@ -404,7 +408,7 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
 
   for (const slot of snapshot.stepSlots) {
     const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
-    if (detail.exit?.outcome.kind === 'completed') {
+    if (detail.exit && phaseForOutcome(detail.exit.outcome) === 'completed') {
       completedOutputs.set(slot.atomKey, detail.exit.content);
       continue;
     }

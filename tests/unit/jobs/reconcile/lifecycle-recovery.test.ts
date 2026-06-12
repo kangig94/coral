@@ -17,6 +17,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -51,6 +52,8 @@ async function loadModules() {
     sessionQueriesModule,
     providerRegistryModule,
     recoveryActionsModule,
+    transportDispatchModule,
+    rpcCatalogModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/sessions/shell.js'),
@@ -63,6 +66,8 @@ async function loadModules() {
     import('#src/sessions/read-queries.js'),
     import('#src/providers/registry.js'),
     import('#src/coordinator/services/recovery/actions.js'),
+    import('#src/transport/dispatch.js'),
+    import('#src/transport/rpc/catalog.js'),
   ]);
 
   return {
@@ -77,6 +82,8 @@ async function loadModules() {
     sessionQueriesModule,
     providerRegistryModule,
     recoveryActionsModule,
+    transportDispatchModule,
+    rpcCatalogModule,
   };
 }
 
@@ -402,6 +409,7 @@ function createLifecycleHarness(
     servicesByProjectRoot?: Map<string, unknown>;
     getExecutionService?: (ctx: { projectRoot: string }) => unknown;
     getRecoveryService?: (ctx: { projectRoot: string }) => unknown;
+    runStartupRecoveryFn?: RunStartupRecoveryFn;
     interruptedAppServerReason?: 'restart' | 'handoff';
   },
 ) {
@@ -468,34 +476,36 @@ function createLifecycleHarness(
     createCurateAssistant: () => ({ complete: async () => '' }),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
-    runStartupRecoveryFn: async ({
-      identity,
-      runtime,
-      progressStore,
-      providerRegistry,
-      getRecoveryService,
-      createInvocationContext,
-      recoveryCoordinator,
-      signal,
-      cleanupStaleJobs,
-    }) => {
-      await recoveryCoordinator.runStartupRecovery({
-        namespace: identity.namespace,
-        bundleHash: identity.bundleHash,
+    runStartupRecoveryFn:
+      options.runStartupRecoveryFn ??
+      (async ({
+        identity,
         runtime,
         progressStore,
         providerRegistry,
         getRecoveryService,
         createInvocationContext,
+        recoveryCoordinator,
         signal,
-        log: identity.log,
         cleanupStaleJobs,
-        sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(options.progressStore.getDb()),
-        coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
-        interruptedAppServerReason: options.interruptedAppServerReason,
-      });
-      return [];
-    },
+      }) => {
+        await recoveryCoordinator.runStartupRecovery({
+          namespace: identity.namespace,
+          bundleHash: identity.bundleHash,
+          runtime,
+          progressStore,
+          providerRegistry,
+          getRecoveryService,
+          createInvocationContext,
+          signal,
+          log: identity.log,
+          cleanupStaleJobs,
+          sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(options.progressStore.getDb()),
+          coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
+          interruptedAppServerReason: options.interruptedAppServerReason,
+        });
+        return [];
+      }),
     hooks: {
       onShutdown: async () => {},
       onIdleCheck: () => false,
@@ -583,6 +593,89 @@ describe('lifecycle recovery', () => {
     }
     mockState.tmpHome = '';
     mockState.tmpRoot = '';
+  });
+
+  it('fences mutating RPCs as soon as kernel-ready is visible', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-kernel-ready-fence');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-kernel-ready-fence');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      {
+        db: openTestStoreDb(runtime, ':memory:'),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
+    );
+    const sessionStart = vi.fn(async () => ({ status: 'running', job: 'live-job', session: 'live-session' }));
+    const sessionsCreateSpec = modules.rpcCatalogModule.rpcCatalog.find((entry) => entry.name === 'sessions.create');
+    if (!sessionsCreateSpec) {
+      throw new Error('sessions.create spec not found');
+    }
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      runStartupRecoveryFn: async () => {
+        expect(runtimeState.getLifecycle()).toBe('kernel-ready');
+        expect(runtimeState.getLaunchFenceActive()).toBe(true);
+
+        const result = await modules.transportDispatchModule.executeCatalogRequest(
+          sessionsCreateSpec,
+          { provider: 'fakeprovider', prompt: 'live mutation', projectRoot },
+          {
+            identity: {
+              pluginRoot,
+              token: 'test-token',
+              version: '9.9.9',
+              bundleHash: 'testhash1234',
+              flavor: 'prod',
+              namespace,
+              instanceId: 'test-instance',
+              now: () => 1,
+              log: vi.fn(),
+            },
+            coralEnvSnapshot: {},
+            admin: {
+              getLifecycleState: () => runtimeState.getLifecycle(),
+              isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
+              isDrainRequested: () => false,
+              isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+              beginRequest: vi.fn(),
+              endRequest: vi.fn(),
+              requestDrain: vi.fn(),
+            },
+            sessions: {
+              start: sessionStart,
+              resumeBySessionId: vi.fn(),
+            },
+          } as never,
+        );
+
+        expect(result).toEqual({
+          kind: 'unary',
+          statusCode: 503,
+          body: {
+            code: 'backend_recovering',
+            message: 'recovering — retry after 500ms',
+          },
+        });
+        expect(sessionStart).not.toHaveBeenCalled();
+        return [];
+      },
+    });
+
+    try {
+      await controller.start();
+      expect(runtimeState.setLaunchFenceActive.mock.calls).toEqual([[true], [false]]);
+    } finally {
+      await stopLifecycleController(controller);
+    }
   });
 
   it('records recovered provider artifact handles before recovered terminal completion', async () => {
@@ -1920,7 +2013,7 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(runtimeState.setLaunchFenceActive.mock.calls).toEqual([[true], [false]]);
+      expect(runtimeState.setLaunchFenceActive.mock.calls).toEqual([[true], [true], [false]]);
     } finally {
       await stopLifecycleController(controller);
     }

@@ -1,4 +1,11 @@
-import { DEFAULT_MAX_EPOCHS, decideBid, decideEnd, decideSessionCreate, decideSpeech } from '../state-machine.js';
+import {
+  DEFAULT_MAX_EPOCHS,
+  decideBid,
+  decideEnd,
+  decideSessionCreate,
+  decideSpeech,
+  resolveAgentName,
+} from '../state-machine.js';
 import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -17,6 +24,14 @@ function readDiscussMaxEpochs(ctx: DiscussContext): number {
   const raw = Number.parseInt(ctx.runtime.env.get('CORAL_DISCUSS_MAX_EPOCHS') ?? '', 10);
   if (!Number.isFinite(raw) || raw < 1 || raw > 10) {
     return DEFAULT_MAX_EPOCHS;
+  }
+  return raw;
+}
+
+function readDiscussQuotaPerEpoch(config: DiscussConfig): number | undefined {
+  const raw = (config as { quota_per_epoch?: unknown }).quota_per_epoch;
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+    return undefined;
   }
   return raw;
 }
@@ -50,6 +65,7 @@ export async function startDiscussSession(
   const created = unwrapResult(
     decideSessionCreate(input, makeDecisionContext(ctx, sessionId, topic), 1, nowIsoString(ctx.runtime.time), {
       maxEpochs: readDiscussMaxEpochs(ctx),
+      quotaPerEpoch: readDiscussQuotaPerEpoch(config),
       agentExecution: buildAgentExecutionConfig(agents),
     }),
   );
@@ -123,7 +139,8 @@ export async function submitManualSpeech(
     };
   }
 
-  if (snapshot.state.current_speaker !== agentName) {
+  const resolvedAgentName = resolveAgentName(snapshot.state.agents, agentName);
+  if (!resolvedAgentName || snapshot.state.current_speaker !== resolvedAgentName) {
     return {
       action: 'not_your_turn',
       current_speaker: snapshot.state.current_speaker,
@@ -133,7 +150,7 @@ export async function submitManualSpeech(
   const committed = await commitDecision(ctx, sessionId, (current) =>
     decideSpeech(
       current.state,
-      agentName,
+      resolvedAgentName,
       content,
       makeDecisionContext(ctx, sessionId, current.state.topic),
       current.lastAppliedSeq + 1,

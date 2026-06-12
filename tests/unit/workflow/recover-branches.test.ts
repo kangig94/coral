@@ -15,7 +15,9 @@ import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
+import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -64,16 +66,18 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
   }
 }
 
-function createWorkflowPlan(): WorkflowPlan {
-  return buildWorkflowPlan('workflow-1', parseExpression('architect'), {
+function createWorkflowPlan(expression = 'architect'): WorkflowPlan {
+  return buildWorkflowPlan('workflow-1', parseExpression(expression), {
     defaultProvider: 'codex',
   });
 }
 
 function createHarness(options: {
+  expression?: string;
   atomPhase: 'running' | 'queued' | null;
-  projectionPhase: 'running' | 'queued' | null;
+  projectionPhase: 'running' | 'queued' | 'completed' | 'error' | 'aborted' | null;
   projectionLastSeq?: number;
+  atomTerminals?: Partial<Record<number, JobTerminal>>;
 }) {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
@@ -83,8 +87,7 @@ function createHarness(options: {
     db,
     providers: permissiveProviderLookupPort,
   });
-  const plan = createWorkflowPlan();
-  const atomJobId = plan.slots[0].slotId;
+  const plan = createWorkflowPlan(options.expression);
   commitWorkflowEvents(
     db,
     (c) => {
@@ -105,46 +108,54 @@ function createHarness(options: {
     initialPhase: 'running',
   });
 
-  if (options.atomPhase !== null) {
-    progressStore.initJob({
-      jobId: atomJobId,
-      sessionId: 'session-atom-1',
-      provider: 'codex',
-      projectRoot: PROJECT_ROOT,
-      backendNamespace: BACKEND_NAMESPACE,
-      initialPhase: options.atomPhase,
-    });
-  }
+  for (const [slotIndex, slot] of plan.slots.entries()) {
+    const terminalForSlot = options.atomTerminals?.[slotIndex];
+    const sessionId = `session-atom-${slotIndex + 1}`;
+    if (options.atomPhase !== null || terminalForSlot !== undefined) {
+      progressStore.initJob({
+        jobId: slot.slotId,
+        sessionId,
+        provider: slot.provider,
+        projectRoot: PROJECT_ROOT,
+        backendNamespace: BACKEND_NAMESPACE,
+        initialPhase: options.atomPhase ?? 'running',
+      });
+    }
 
-  if (options.projectionPhase !== null) {
-    db.prepare(
-      `INSERT INTO projection_jobs (
-         job_id, phase, session_id, provider, project_root, backend_namespace,
-         job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
-	       )
-	       VALUES (?, ?, ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
-	       ON CONFLICT(job_id) DO UPDATE SET
-	         phase = excluded.phase,
-	         session_id = excluded.session_id,
-	         provider = excluded.provider,
-	         project_root = excluded.project_root,
-	         backend_namespace = excluded.backend_namespace,
-	         job_kind = excluded.job_kind,
-	         parent_workflow_job_id = excluded.parent_workflow_job_id,
-	         workflow_slot = excluded.workflow_slot,
-	         created_at = excluded.created_at,
-	         last_seq = excluded.last_seq`,
-    ).run(
-      atomJobId,
-      options.projectionPhase,
-      'session-atom-1',
-      'codex',
-      PROJECT_ROOT,
-      BACKEND_NAMESPACE,
-      'workflow-1',
-      plan.slots[0].slotId,
-      options.projectionLastSeq ?? 7,
-    );
+    if (terminalForSlot !== undefined) {
+      commitJobTerminal(progressStore, slot.slotId, sessionId, terminalForSlot);
+    }
+
+    if (options.projectionPhase !== null) {
+      db.prepare(
+        `INSERT INTO projection_jobs (
+           job_id, phase, session_id, provider, project_root, backend_namespace,
+           job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+	         )
+	         VALUES (?, ?, ?, ?, ?, ?, 'provider', ?, ?, '2026-04-20T00:00:00.000Z', ?)
+	         ON CONFLICT(job_id) DO UPDATE SET
+	           phase = excluded.phase,
+	           session_id = excluded.session_id,
+	           provider = excluded.provider,
+	           project_root = excluded.project_root,
+	           backend_namespace = excluded.backend_namespace,
+	           job_kind = excluded.job_kind,
+	           parent_workflow_job_id = excluded.parent_workflow_job_id,
+	           workflow_slot = excluded.workflow_slot,
+	           created_at = excluded.created_at,
+	           last_seq = excluded.last_seq`,
+      ).run(
+        slot.slotId,
+        options.projectionPhase,
+        sessionId,
+        slot.provider,
+        PROJECT_ROOT,
+        BACKEND_NAMESPACE,
+        'workflow-1',
+        slot.slotId,
+        options.projectionLastSeq ?? 7,
+      );
+    }
   }
 
   const waitRequests: WaitStreamRequest[] = [];
@@ -260,6 +271,103 @@ describe('workflow recovery branch rules', () => {
       );
       expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('finalizes failed recovery for an empty failed terminal output', async () => {
+    const harness = createHarness({
+      atomPhase: 'running',
+      projectionPhase: null,
+      atomTerminals: {
+        0: { content: '', outcome: { kind: 'provider_exit', code: 1 } },
+      },
+    });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          time: fixedTime,
+        }),
+      ).rejects.toMatchObject({
+        message: "Step 0, atom 'architect' failed: exited with code 1",
+        aborted: false,
+        failedAtom: 'architect',
+        failedJobId: harness.plan.slots[0].slotId,
+      });
+
+      expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
+      expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+        failureLocation: {
+          slotId: harness.plan.slots[0].slotId,
+          stepIndex: 0,
+          atomLabel: 'architect',
+          jobId: harness.plan.slots[0].slotId,
+        },
+      });
+      expect(finalizeWorkflow.mock.calls[0]?.[0].outcome).not.toBe('completed');
+      expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('does not report a provider_exit code 0 atom as the recovery failure', async () => {
+    const harness = createHarness({
+      expression: '(architect, critic)',
+      atomPhase: 'running',
+      projectionPhase: null,
+      atomTerminals: {
+        0: { content: 'ARCH OK', outcome: { kind: 'provider_exit', code: 0 } },
+        1: { content: '', outcome: { kind: 'provider_exit', code: 1 } },
+      },
+    });
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          time: fixedTime,
+        }),
+      ).rejects.toMatchObject({
+        message: "Step 0, atom 'critic' failed: exited with code 1",
+        aborted: false,
+        failedAtom: 'critic',
+        failedJobId: harness.plan.slots[1].slotId,
+      });
+
+      expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
+      expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+        failureLocation: {
+          slotId: harness.plan.slots[1].slotId,
+          stepIndex: 0,
+          atomLabel: 'critic',
+          jobId: harness.plan.slots[1].slotId,
+        },
+      });
+      expect(finalizeWorkflow.mock.calls[0]?.[0]).not.toMatchObject({
+        failureLocation: {
+          jobId: harness.plan.slots[0].slotId,
+        },
+      });
+      expect(finalizeWorkflow.mock.calls[0]?.[0].outcome).not.toBe('completed');
+      expect(harness.executionSvc.waitStream).not.toHaveBeenCalled();
     } finally {
       harness.db.close();
     }

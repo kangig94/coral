@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { discussEventBodySchemas, discussEventKinds, makeEvent, type DiscussDomainEvent } from '#src/discuss/events.js';
+import {
+  bidSubmittedPayloadSchema,
+  discussEventBodySchemas,
+  discussEventKinds,
+  makeEvent,
+  sessionCreatedConfigSchema,
+  type DiscussDomainEvent,
+} from '#src/discuss/events.js';
 import { toJournalInput } from '#src/discuss/event-registry.js';
 
 const NOW = '2026-03-11T00:00:00.000Z';
@@ -107,5 +114,43 @@ describe('discuss event body schemas', () => {
         outcome: 'moderator_failed',
       }).success,
     ).toBe(false);
+  });
+
+  it('rejects non-finite persisted config numbers', () => {
+    expect(
+      sessionCreatedConfigSchema.safeParse({
+        bidThreshold: 0.75,
+        maxEpochs: 3,
+        quotaPerEpoch: 2,
+      }).success,
+    ).toBe(true);
+
+    expect(
+      sessionCreatedConfigSchema.safeParse({
+        bidThreshold: Infinity,
+        maxEpochs: 3,
+        quotaPerEpoch: 2,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires bid scores to be integer percentages from 0 through 100', () => {
+    expect(
+      bidSubmittedPayloadSchema.safeParse({
+        agent: 'alpha',
+        score: 100,
+        thought: 'Strong response.',
+      }).success,
+    ).toBe(true);
+
+    for (const score of [-1, 101, 50.5, Infinity, Number.NaN]) {
+      expect(
+        bidSubmittedPayloadSchema.safeParse({
+          agent: 'alpha',
+          score,
+          thought: 'Invalid score.',
+        }).success,
+      ).toBe(false);
+    }
   });
 });

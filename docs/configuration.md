@@ -19,7 +19,8 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
 | `CORAL_JOBS_RETENTION_DAYS` | `14` | Days to keep a terminal job's export artifacts (`~/.coral/exports/jobs/<id>/result.md`) before backend startup prunes them. The export dir is a rebuildable cache of the journal — `result.md` is regenerated from the journal terminal event on the next read — so pruning only reclaims disk; `jobs list`/`detail` still resolve from the journal. Invalid/non-positive values fall back to the default |
-| `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Override to expose the backend on another interface (e.g. `0.0.0.0` for container deploys) |
+| `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Loopback hosts (`127.0.0.0/8`, `::1`, `localhost`) work without extra configuration; non-loopback binds such as `0.0.0.0` require `CORAL_BACKEND_ALLOW_REMOTE=1` |
+| `CORAL_BACKEND_ALLOW_REMOTE` | _(none)_ | Explicit opt-in for non-loopback `CORAL_BACKEND_BIND` values. Set to `1` only when remote backend exposure is intentional and protected by a trusted network boundary |
 | `CORAL_BACKEND_ADVERTISE_HOST` | _(bind value)_ | Hostname clients use to reach the backend. Distinct from `CORAL_BACKEND_BIND` when the bind interface differs from the externally reachable name (NAT, container host) |
 | `CORAL_BROKER_IDLE_MS` | `300000` | Provider host (broker) idle eviction window in ms |
 | `CORAL_BOOT_FRESHNESS_TIMEOUT_MS` | `90000` | Coordinator boot freshness wait (ms, the same `CONTENDER_BUDGET` used by lock acquisition). Lower for tighter integration test loops; rarely tuned in production |
@@ -32,7 +33,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 
 ### HTTP Exposure
 
-The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, put Coral behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
+The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, Coral refuses to start unless `CORAL_BACKEND_ALLOW_REMOTE=1` is also set. Use that opt-in only behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
 
 ### Shell Usage
 

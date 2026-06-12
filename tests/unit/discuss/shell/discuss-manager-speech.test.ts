@@ -7,6 +7,7 @@ import * as discussBidFlow from '#src/discuss/shell/flow/bid.js';
 import { recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
 import { getSession, getWatchState } from '#src/discuss/shell/registry.js';
 import * as discussSpeechFlow from '#src/discuss/shell/flow/speech.js';
+import { submitManualSpeech } from '#src/discuss/shell/operations.js';
 import {
   advanceDiscussRuntime,
   cleanupDiscussHarnesses,
@@ -339,6 +340,69 @@ describe('Discuss speech collection', () => {
     expect(getSession(harness.context, 'discuss-manual-speaker')?.snapshot.state).toMatchObject({
       status: 'speaking',
       current_speaker: 'user',
+    });
+  });
+
+  it('accepts a manual speech alias during the shell turn pre-check', async () => {
+    const harness = createDiscussHarness();
+    vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => undefined);
+    await persistSession(harness, {
+      sessionId: 'discuss-manual-alias',
+      recover: true,
+      agents: [
+        { name: 'alpha', persona: '# Alpha', participation: 'required' },
+        { name: 'user', persona: '# User', participation: 'observer' },
+      ],
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'user', score: 95, thought: 'observer bid' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, user: 95 },
+            effectiveBids: { alpha: 80, user: 95 },
+            thoughts: { alpha: 'alpha', user: 'observer bid' },
+            outcome: { winner: 'user', speaker_type: 'cold_start' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+      ],
+    });
+
+    const result = await submitManualSpeech(
+      harness.context,
+      'discuss-manual-alias',
+      'user-1',
+      'Use timed loading windows before a full pedestrian zone.',
+      harness.ctx,
+    );
+
+    expect(result).toEqual({ action: 'speech_recorded' });
+    expect(harness.store.load('discuss-manual-alias')?.state.transcript.at(-1)).toMatchObject({
+      type: 'speech',
+      agent: 'user',
+      content: 'Use timed loading windows before a full pedestrian zone.',
     });
   });
 });

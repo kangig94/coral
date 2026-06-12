@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CLAUDE_BROKER_MAX_JSONL_LINE_BYTES,
   ClaudeBrokerRpcError,
+  JsonRpcLineTooLargeError,
   buildJsonRpcFailureFromError,
   buildJsonRpcSuccess,
   parseJsonRpcInboundLine,
@@ -243,9 +245,33 @@ describe('claude appserver protocol helpers', () => {
       'Invalid params for session/ensure.',
     );
   });
+
+  it('rejects oversized inbound JSON-RPC lines with a typed error', () => {
+    const line = 'x'.repeat(CLAUDE_BROKER_MAX_JSONL_LINE_BYTES + 1);
+    const thrown = captureRpcError(() => parseJsonRpcInboundLine(line));
+
+    expect(thrown).toBeInstanceOf(JsonRpcLineTooLargeError);
+    expect(thrown.code).toBe(-32700);
+    expect(thrown.data).toEqual({
+      code: 'json_rpc_line_too_large',
+      maxLineBytes: CLAUDE_BROKER_MAX_JSONL_LINE_BYTES,
+      observedBytes: CLAUDE_BROKER_MAX_JSONL_LINE_BYTES + 1,
+    });
+  });
 });
 
 function expectRpcError(run: () => unknown, code: number, message: string | RegExp): void {
+  const thrown = captureRpcError(run);
+
+  expect(thrown.code).toBe(code);
+  if (typeof message === 'string') {
+    expect(thrown.message).toBe(message);
+    return;
+  }
+  expect(thrown.message).toMatch(message);
+}
+
+function captureRpcError(run: () => unknown): ClaudeBrokerRpcError {
   let thrown: unknown;
   try {
     run();
@@ -254,10 +280,5 @@ function expectRpcError(run: () => unknown, code: number, message: string | RegE
   }
 
   expect(thrown).toBeInstanceOf(ClaudeBrokerRpcError);
-  expect((thrown as ClaudeBrokerRpcError).code).toBe(code);
-  if (typeof message === 'string') {
-    expect((thrown as ClaudeBrokerRpcError).message).toBe(message);
-    return;
-  }
-  expect((thrown as ClaudeBrokerRpcError).message).toMatch(message);
+  return thrown as ClaudeBrokerRpcError;
 }

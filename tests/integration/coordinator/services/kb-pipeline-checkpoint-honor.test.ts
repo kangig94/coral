@@ -312,7 +312,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
     // controller via `abortOnNextRegister` so `run()`'s first
     // `throwIfAborted(signal, 'convert')` rejects before `prepareSourceImport`
     // is reached. The catch arm records the user-abort terminal.
-    const stagedFile = join(world.runtimeDir, 'incoming.md');
+    const stagedFile = join(world.markdownRoot, 'incoming.md');
     writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', 'utf-8');
     world.runtime.storage.writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', { encoding: 'utf-8' });
 
@@ -344,7 +344,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
   it('user_abort during readiness wait records terminal aborted/user_abort', async () => {
     // Stage a real markdown file so prepare + persist succeed; pause at the
     // readiness checkpoint to fire abort.
-    const stagedFile = join(world.runtimeDir, 'incoming.md');
+    const stagedFile = join(world.markdownRoot, 'incoming.md');
     writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', 'utf-8');
     world.runtime.storage.writeFileSync(stagedFile, '# Incoming Source\n\nBody.\n', { encoding: 'utf-8' });
 

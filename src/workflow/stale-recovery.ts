@@ -72,9 +72,12 @@ export async function recoverStaleAtom(
       );
     }
 
-    state.expectedStaleAborts.add(atom.jobId);
     options.onProgress(formatAtomProgress(atom, 'stale, aborting'));
-    executionSvc.abort([atom.jobId]);
+    const abortResult = executionSvc.abort([atom.jobId]);
+    const abortTransitionedLiveJob = abortResult.aborted.includes(atom.jobId);
+    if (abortTransitionedLiveJob) {
+      state.expectedStaleAborts.add(atom.jobId);
+    }
 
     try {
       await executionSvc.waitForJobTerminal(atom.jobId, options.staleAbortTimeoutMs);
@@ -84,6 +87,10 @@ export async function recoverStaleAtom(
         options.buildPartialStepDetails(),
         `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery abort failed: ${errorMessage(error)}`,
       );
+    }
+
+    if (!abortTransitionedLiveJob) {
+      return false;
     }
 
     if (options.signal?.aborted) {
