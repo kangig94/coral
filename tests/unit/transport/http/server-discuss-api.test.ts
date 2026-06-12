@@ -217,6 +217,7 @@ describe('server discuss API', () => {
           projectRoot: session.projectRoot,
           pluginRoot: core.identity.pluginRoot,
           coralEnv: {},
+          authority: 'admin',
         });
         attachSession(ctx, session.snapshot, session.watchBuffer, session.abortEnded);
       }

@@ -241,10 +241,11 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     return created;
   };
 
-  const readOnlyInvocationContext = {
+  const readOnlyInvocationContext: InvocationContext = {
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
     coralEnv: { ...world.coralEnvSnapshot },
+    authority: 'admin',
   };
   // KB-tool handlers route through the subsystem registry. The registry
   // returns a structured `kb_initializing` / `kb_offline` envelope whenever

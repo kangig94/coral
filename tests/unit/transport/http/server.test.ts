@@ -1513,6 +1513,7 @@ describe('execution backend server', () => {
         projectRoot: '',
         pluginRoot: '/tmp/plugin',
         coralEnv: coralEnvSnapshot,
+        authority: 'admin' as const,
       };
       const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
         runtimeState.subsystems.run<KnowledgeBaseRuntime, T>('kb' as never, run);
@@ -1784,6 +1785,7 @@ describe('execution backend server', () => {
         projectRoot: '',
         pluginRoot: '/tmp/plugin',
         coralEnv: created.deps.coralEnvSnapshot,
+        authority: 'admin' as const,
       };
       const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
         created.runtimeState.subsystems.run<KnowledgeBaseRuntime, T>('kb' as never, run);

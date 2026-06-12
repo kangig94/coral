@@ -12,6 +12,7 @@ const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
+  authority: 'admin',
 };
 
 function createExecutionService(result = { status: 'running', job: 'job-1', session: 'session-1' } as const) {

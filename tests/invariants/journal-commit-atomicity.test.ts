@@ -486,6 +486,7 @@ function createRecoveryInvocationContext(projectRoot: string): InvocationContext
     projectRoot,
     pluginRoot: '/workspace/coral-plugin',
     coralEnv: {},
+    authority: 'admin',
   };
 }
 

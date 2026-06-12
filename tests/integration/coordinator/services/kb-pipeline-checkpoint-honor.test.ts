@@ -329,7 +329,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
 
     const started = await importService.start(
       { filePath: stagedFile, readiness: 'base-search', async: true },
-      { projectRoot: world.markdownRoot },
+      { projectRoot: world.markdownRoot, authority: 'admin' },
       world.kbSubsystem,
     );
     expect(started.ok).toBe(true);
@@ -367,7 +367,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
     // Async mode so the promise can finish via the abort path.
     const started = await importService.start(
       { filePath: stagedFile, readiness: 'base-search', async: true },
-      { projectRoot: world.markdownRoot },
+      { projectRoot: world.markdownRoot, authority: 'admin' },
       world.kbSubsystem,
     );
     expect(started.ok).toBe(true);

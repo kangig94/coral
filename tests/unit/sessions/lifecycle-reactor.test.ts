@@ -584,7 +584,12 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
-        createInvocationContext: (projectRoot) => ({ projectRoot, pluginRoot: projectRoot, coralEnv: {} }),
+        createInvocationContext: (projectRoot) => ({
+          projectRoot,
+          pluginRoot: projectRoot,
+          coralEnv: {},
+          authority: 'admin',
+        }),
         getRecoveryService: () => {
           throw new Error('unexpected recovery service lookup');
         },
@@ -621,7 +626,12 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
-        createInvocationContext: (projectRoot) => ({ projectRoot, pluginRoot: projectRoot, coralEnv: {} }),
+        createInvocationContext: (projectRoot) => ({
+          projectRoot,
+          pluginRoot: projectRoot,
+          coralEnv: {},
+          authority: 'admin',
+        }),
         getRecoveryService: () => {
           throw new Error('unexpected recovery service lookup');
         },

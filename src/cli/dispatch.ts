@@ -326,6 +326,7 @@ function createDefaultInvocationContext(projectRoot: string): InvocationContext 
     pluginRoot: resolvePluginRoot() ?? '',
     projectRoot,
     coralEnv: collectCoralEnv(),
+    authority: 'admin',
   };
 }
 

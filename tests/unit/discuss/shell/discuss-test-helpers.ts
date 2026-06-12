@@ -228,7 +228,7 @@ export function createDiscussHarness(
     store,
     createDiscussContextOptions(runtime, progressStore),
   );
-  const ctx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
+  const ctx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
   let cleaned = false;
 
   const harness: DiscussHarness = {

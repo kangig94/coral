@@ -185,6 +185,7 @@ function createHarness(options: {
     projectRoot,
     pluginRoot: '/tmp/coral-workflow-plugin',
     coralEnv: {},
+    authority: 'admin',
   });
 
   return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests };

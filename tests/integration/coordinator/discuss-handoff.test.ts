@@ -42,7 +42,7 @@ function defaultAgentExecution(agents: ReturnType<typeof defaultAgents>) {
 }
 
 function makeInvocationContext(pluginRoot: string): InvocationContext {
-  return { projectRoot: PROJECT_ROOT, pluginRoot, coralEnv: {} };
+  return { projectRoot: PROJECT_ROOT, pluginRoot, coralEnv: {}, authority: 'admin' };
 }
 
 const harnesses: HandoffCoresHarness[] = [];

@@ -149,7 +149,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       readExit: () => null,
     },
   });
-  const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {} };
+  const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
 

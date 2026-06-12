@@ -538,8 +538,9 @@ function createActualRecoveryService(
       projectRoot: options.projectRoot,
       pluginRoot: options.pluginRoot,
       coralEnv: {},
-    },
-    {
+      authority: 'admin',
+          },
+          {
       runtime,
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',
@@ -655,6 +656,7 @@ describe('lifecycle recovery', () => {
               resumeBySessionId: vi.fn(),
             },
           } as never,
+          'admin',
         );
 
         expect(result).toEqual({

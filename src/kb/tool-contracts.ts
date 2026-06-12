@@ -11,12 +11,7 @@ const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vec
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const slugSchema = z.string().min(1);
-const sourceImportFilePathSchema = z
-  .string()
-  .min(1)
-  .refine((value) => !value.split(/[\\/]+/u).some((segment) => segment === '..'), {
-    message: 'filePath must not contain ".." path segments',
-  });
+const sourceImportFilePathSchema = z.string().min(1);
 const transportContextFieldsShape = {
   projectRoot: projectRootSchema,
   owner: z.string().optional(),

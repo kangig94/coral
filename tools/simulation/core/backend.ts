@@ -445,6 +445,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     projectRoot: root,
     pluginRoot,
     coralEnv: { ...coralEnv },
+    authority: 'admin',
   });
 
   const createServerFn: CreateServerFn = (handler) => {

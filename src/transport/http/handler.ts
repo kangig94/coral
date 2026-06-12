@@ -309,7 +309,8 @@ async function handleCatalogUnaryRoute(
   res: ServerResponse,
   deps: HttpHandlerPorts,
 ): Promise<void> {
-  const result = await executeCatalogRequest(spec, request, deps);
+  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
+  const result = await executeCatalogRequest(spec, request, deps, 'user');
   if (result.kind !== 'unary') {
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
@@ -345,7 +346,8 @@ async function handleJobsWaitSubscription(
     ...request,
     cursor: inputCursor,
   };
-  const execution = await executeCatalogRequest(spec, waitRequest, deps, controller.signal);
+  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
+  const execution = await executeCatalogRequest(spec, waitRequest, deps, 'user', controller.signal);
   if (execution.kind !== 'subscription') {
     controller.abort();
     sendCatalogResponse(res, execution);

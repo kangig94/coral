@@ -22,6 +22,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { composeCoralPaths } from '../infra/path/index.js';
@@ -128,6 +129,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const time: TimePort = createRealTimePort();
 
   const storage: StoragePort = {
+    readFile: (path, encoding) => readFileAsync(path, encoding),
     readFileSync: (path, encoding) => readFileSync(path, encoding),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
     renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),

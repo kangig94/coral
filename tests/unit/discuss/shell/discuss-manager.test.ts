@@ -41,6 +41,7 @@ async function recoverSessions(harness: DiscussHarness) {
       projectRoot: snapshot.projectRoot,
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
+      authority: 'admin',
     }),
   );
 }

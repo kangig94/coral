@@ -129,7 +129,7 @@ describe('coordinator continuity lifecycle integration', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-continuity-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {} };
+    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
     mkdirSync(ctx.pluginRoot, { recursive: true });
     runtime = createRealRuntime('prod');
     eventBus = new TypedEventBus();

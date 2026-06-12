@@ -28,12 +28,21 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
 | `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
 | `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
+| `CORAL_KB_IMPORT_MAX_BYTES` | `1073741824` (1 GiB) | Admin KB source-import cap in bytes, read from the backend daemon's environment at startup. `0` or `unlimited` disables the admin byte cap. Changing it requires exporting the var and restarting the backend daemon; setting it in an ad-hoc CLI shell does not affect an already-running daemon |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
 | `GEMINI_API_KEY` | _(none)_ | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`) |
 
 ### HTTP Exposure
 
 The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, Coral refuses to start unless `CORAL_BACKEND_ALLOW_REMOTE=1` is also set. Use that opt-in only behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
+
+### KB Source Imports
+
+Source-import authority is interim and transport-derived: local IPC calls run as `admin`; HTTP calls run as `user`. The request body is not a trust signal. Admin imports, representing the local IPC owner, may read any file path the daemon account can read and use the admin size cap from `CORAL_KB_IMPORT_MAX_BYTES`, defaulting to 1 GiB. User imports are sandboxed to the project root and always have a fixed 128 MiB cap.
+
+`CORAL_KB_IMPORT_MAX_BYTES` is a daemon-startup setting. The daemon reads it from its frozen runtime environment snapshot when it starts, so cap changes require exporting the variable in the daemon-startup environment and restarting the backend daemon. Setting `CORAL_KB_IMPORT_MAX_BYTES` ad hoc in a CLI shell does not affect an already-running daemon.
+
+Real role-based auth (login / admin-vs-user tokens) is future work.
 
 ### Shell Usage
 

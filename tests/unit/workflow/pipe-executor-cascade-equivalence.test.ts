@@ -17,6 +17,7 @@ const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
+  authority: 'admin',
 };
 
 // Monotonic deterministic clock — internal workflow logic compares against

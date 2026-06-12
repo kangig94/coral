@@ -770,7 +770,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     instanceId,
   });
   function createInvocationContext(projectRoot: string): InvocationContext {
-    return { projectRoot, pluginRoot, coralEnv: {} };
+    return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
   }
 
   async function shutdown(reason: string): Promise<void> {

@@ -126,6 +126,7 @@ const testContext: InvocationContext = {
   projectRoot: '/tmp/project',
   pluginRoot: '/tmp/plugin',
   coralEnv: {},
+  authority: 'admin',
 };
 
 const testRuntime = {
