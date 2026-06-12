@@ -5,9 +5,20 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { buildFlavor, failOpen, logHookLine, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import {
+  buildFlavor,
+  exitIfChildProcess,
+  exitIfWrongFlavor,
+  failOpen,
+  logHookLine,
+  readStdin,
+  sweepStale,
+} from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
 import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+
+exitIfChildProcess();
+exitIfWrongFlavor();
 
 function storeDbPath() {
   const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
@@ -36,6 +47,10 @@ await failOpen(async () => {
 
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
+    // Default SQLITE_BUSY timeout is 0ms: a backend mid-write would make the
+    // read throw immediately and silently skip the snapshot. Give the lock a
+    // moment to clear while staying well inside the PreCompact hook budget.
+    db.exec('PRAGMA busy_timeout = 1000;');
     let rows;
     try {
       rows = db

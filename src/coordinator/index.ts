@@ -14,12 +14,8 @@ import {
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
 import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
-import type {
-  CoordinatorCoreOptions,
-  CoordinatorCoreResult,
-  CoordinatorStoreServices,
-  StoreServicesRef,
-} from './composition/types.js';
+import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
+import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { CreateKbSubsystemOptions } from '../kb/subsystem.js';
 import { createKbSubsystem } from './subsystems/kb.js';
 import { KB_ID } from './subsystems/contract.js';
@@ -30,7 +26,7 @@ import { commit as commitJournalEvents, type CommitEventsFn } from '../store/app
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
-import { readJobEvents, loadJobProjectionDetail } from '../jobs/read-queries.js';
+import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
@@ -347,6 +343,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     const result = c.runtimeState.subsystems.run<KnowledgeBaseRuntime, KbRuntime>(KB_ID, (kb) => kb.kb);
     return isErrorEnvelope(result) ? null : result;
   };
+  const requireKbRuntime = (name: string): KbRuntime => {
+    const kbRuntime = resolveKbRuntime();
+    if (kbRuntime === null) {
+      throw documentedCoralSetupError('expansion_runtime_unavailable', { name });
+    }
+    return kbRuntime;
+  };
   let resolveLifecyclePhase: (() => 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped') | null = null;
   // Spec §12.3 lazy non-blocking rescan: shutdown aborts any pending background
   // rebuild kicks so a draining instance does not start fresh KB work. Boot's
@@ -373,36 +376,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       now: () => nowDate(runtime.time),
       time: runtime.time,
       corpusProjectionReader: {
-        resolveCurrentIndex: () => {
-          const kbRuntime = resolveKbRuntime();
-          if (kbRuntime === null) {
-            throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.corpusProjectionReader' });
-          }
-          return kbRuntime.corpusProjectionReader.resolveCurrentIndex();
-        },
-        prepareCurrentProjectionInput: (options) => {
-          const kbRuntime = resolveKbRuntime();
-          if (kbRuntime === null) {
-            throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.corpusProjectionReader' });
-          }
-          return kbRuntime.corpusProjectionReader.prepareCurrentProjectionInput(options);
-        },
+        resolveCurrentIndex: () =>
+          requireKbRuntime('kb.corpusProjectionReader').corpusProjectionReader.resolveCurrentIndex(),
+        prepareCurrentProjectionInput: (options) =>
+          requireKbRuntime('kb.corpusProjectionReader').corpusProjectionReader.prepareCurrentProjectionInput(options),
       },
       onTextProjectionSync: () => {
-        const kbRuntime = resolveKbRuntime();
-        if (kbRuntime === null) {
-          throw documentedCoralSetupError('expansion_runtime_unavailable', { name: 'kb.textProjectionSync' });
-        }
-        kbRuntime.recordIndexSyncSuccess();
+        requireKbRuntime('kb.textProjectionSync').recordIndexSyncSuccess();
       },
     });
     const expansionLifecycleService = new ExpansionLifecycleService({
       makeHost: (manifest, scope) => {
-        const kbRuntime = resolveKbRuntime();
-        if (kbRuntime === null) {
-          throw documentedCoralSetupError('expansion_runtime_unavailable', { name: manifest.id });
-        }
-
+        const kbRuntime = requireKbRuntime(manifest.id);
         return createHostFactory({
           runtime,
           kbRuntime,
@@ -699,6 +684,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       await workflowRecover.resumeAll({
         db,
         progressStore,
+        loadJobDetails: loadJobProjectionDetails,
         getExecutionService: (ctx) => getExecutionService(ctx) as never,
         createInvocationContext,
         finalizeWorkflow: createWorkflowRecoveryFinalizer({

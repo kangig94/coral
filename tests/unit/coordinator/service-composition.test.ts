@@ -925,7 +925,6 @@ describe('ExecutionService', () => {
       expect(updatedSession?.state).toBe('non_resumable');
       expect(updatedSession?.conversationRef).toBeUndefined();
     });
-
   }); // end queue admission
 
   it('persists successful workflow results before exposing the terminal event', async () => {

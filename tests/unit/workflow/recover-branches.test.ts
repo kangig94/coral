@@ -12,6 +12,7 @@ import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
+import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -185,6 +186,7 @@ describe('workflow recovery branch rules', () => {
       const resumed = await resumeAll({
         db: harness.db,
         progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
@@ -211,6 +213,7 @@ describe('workflow recovery branch rules', () => {
       const resumed = await resumeAll({
         db: harness.db,
         progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),
@@ -237,6 +240,7 @@ describe('workflow recovery branch rules', () => {
       const resumed = await resumeAll({
         db: harness.db,
         progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
         getExecutionService: () => harness.executionSvc,
         createInvocationContext: harness.createInvocationContext,
         finalizeWorkflow: vi.fn(),

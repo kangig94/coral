@@ -8,11 +8,11 @@ export function formatBackendStatus(result: BackendStatusFull): string {
     case 'ok':
       return formatRunningStatus(result.health);
     case 'not_running':
-      return 'Backend not running';
+      return 'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.';
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
-      return 'Backend unauthorized';
+      return 'Backend unauthorized. The discovery record and daemon token disagree — run coral-cli backend shutdown, then retry to relaunch with a fresh token.';
     default:
       return assertNever(result);
   }

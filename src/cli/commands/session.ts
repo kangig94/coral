@@ -1,5 +1,5 @@
 import type { Command } from 'commander';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 
 import { BackendToolHttpError } from '../../transport/http/errors.js';
 import type { CauseRef } from '../../causality/cause-ref.js';
@@ -22,7 +22,7 @@ import {
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
-import { UsageError } from '../errors.js';
+import { normalizeUsageError } from '../errors.js';
 import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import {
@@ -46,23 +46,6 @@ type AbortQuerySelector = {
   phase?: JobStatus['phase'];
   provider?: string;
 };
-
-function normalizeUsageError(error: unknown): unknown {
-  if (!(error instanceof ZodError)) {
-    return error;
-  }
-
-  const message = error.issues
-    .map((issue) => {
-      if (issue.message.startsWith('--')) {
-        return issue.message;
-      }
-      const path = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
-      return `${path}${issue.message}`;
-    })
-    .join('; ');
-  return new UsageError(message);
-}
 
 export function registerSessionCommands(program: Command, providerRegistry: ProviderRegistry): void {
   const registeredProviders = getProviderNames(providerRegistry);

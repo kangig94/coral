@@ -24,7 +24,7 @@ All hook scripts are Node.js ESM files that read JSON from stdin, write JSON to 
 
 ## Hook Self-Gating
 
-All 12 shipped hook entrypoints run `exitIfChildProcess()` first and `exitIfWrongFlavor()` second. `exitIfChildProcess()` suppresses Coral child-process reentry. `exitIfWrongFlavor()` compares `CORAL_FLAVOR` (unset => `prod`) with the hook bundle's own `bridge/manifest.json` flavor, exits `0` on mismatch, and exits `1` with stderr for unrecognized values. This is what allows marketplace prod hooks and locally registered dev hooks to coexist without cross-firing.
+All shipped hook entrypoints run `exitIfChildProcess()` first and `exitIfWrongFlavor()` second. `exitIfChildProcess()` suppresses Coral child-process reentry. `exitIfWrongFlavor()` compares `CORAL_FLAVOR` (unset => `prod`) with the hook bundle's own `bridge/manifest.json` flavor, exits `0` on mismatch, and exits `1` with stderr for unrecognized values. This is what allows marketplace prod hooks and locally registered dev hooks to coexist without cross-firing.
 
 The HUD auto-update hook adds one more gate: it refreshes the HUD only when `buildFlavor() === 'prod'`, so dev registrations never overwrite the prod HUD.
 
@@ -34,7 +34,7 @@ The HUD auto-update hook adds one more gate: it refreshes the HUD only when `bui
 
 KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
 
-The current Claude Code hook runtime verified for this implementation is Node.js `v22.18.0`, where `node:sqlite` still emits `ExperimentalWarning: SQLite is an experimental feature`. For AC29, the hook therefore uses the `better-sqlite3` read-only fallback instead of importing `node:sqlite`; the module is loaded lazily so missing or unreadable SQLite support does not break hook startup.
+The current Claude Code hook runtime verified for this implementation is Node.js `v22.18.0`, where `node:sqlite` still emits `ExperimentalWarning: SQLite is an experimental feature`. The hook imports `node:sqlite` through `hooks/lib/sqlite.mjs`, which suppresses the warning by detaching `warning` listeners around a lazy dynamic import and restoring them afterwards; missing or unreadable SQLite support therefore fails open instead of breaking hook startup.
 
 It also:
 

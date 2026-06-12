@@ -30,8 +30,6 @@ import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 
-export type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
-
 export type CoordinatorBootSnapshot = {
   version?: string;
   bundleHash?: string;

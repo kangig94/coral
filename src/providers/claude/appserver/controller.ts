@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { raceTimeout } from '../../../infra/async.js';
 import { isRecord, readString } from '../../../infra/json.js';
 import { formatToolProgress } from '../progress.js';
-import { hashSortedEnv, sameBootstrapSignature } from '../request-prep.js';
+import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import {
   CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE,
@@ -17,7 +17,6 @@ import {
   readSessionId,
   systemProgressMessage,
   toBootstrapSignature,
-  type ClaudeBootstrapSignature,
   type SessionEnsureParams,
   type SessionEnsureResult,
   type SessionProbeParams,
@@ -478,7 +477,10 @@ export class SingleSessionController {
       if (!turn.promptAcknowledged && this.resendUnacknowledgedPrompt(turn, now)) {
         return;
       }
-      if (turn.sawEndTurnAt !== null && (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)) {
+      if (
+        turn.sawEndTurnAt !== null &&
+        (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)
+      ) {
         this.completeTurn(turn);
         return;
       }

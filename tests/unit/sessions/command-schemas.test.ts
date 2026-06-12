@@ -54,5 +54,4 @@ describe('session wire schemas', () => {
       'workDir',
     ]);
   });
-
 });

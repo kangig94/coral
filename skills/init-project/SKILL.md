@@ -207,6 +207,10 @@ argument-hint: "[existing|new]"
   unverified files there exposes partial or incorrect state to Claude Code.
 
   `Agent("coral:architect")` and `Agent("coral:critic")` in parallel to verify generated artifacts. Pass `--deep` in the prompt.
+  Include in each spawn prompt: "Review is read-only. NEVER run `git checkout`, `git switch`, `git stash`,
+  `git reset`, `git restore`, or `git clean`, and never stage or commit — you share this working tree
+  with parallel reviewers and staged Phase 3 artifacts. To inspect another revision, use `git diff <ref>`,
+  `git show <ref>:<path>`, or `git log <ref>` — never check it out."
   Provide each with: plan file path, list of generated/enhanced/updated files from Phase 3.
   For `.claude/` files, point reviewers to the **staging paths** (`$STAGING/dot-claude/...`).
   For `docs/` files, point to their actual paths (written directly in Phase 3b).

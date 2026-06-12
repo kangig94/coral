@@ -256,6 +256,9 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
   }
 
   const configPath = join(runtime.env.homedir(), '.codex', 'config.toml');
+  // Set only when statSync succeeds; stays undefined when stat throws a
+  // non-ENOENT/EACCES error but readFileSync still works, so both cache-write
+  // sites below fall back to `?? 0` (treated as always-stale).
   let cachedMtimeMs: number | undefined;
 
   try {

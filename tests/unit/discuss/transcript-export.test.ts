@@ -1,10 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
-import {
-  discussRecordPath,
-  renderDiscussRecordMarkdown,
-  writeDiscussRecord,
-} from '#src/discuss/transcript-export.js';
+import { discussRecordPath, renderDiscussRecordMarkdown, writeDiscussRecord } from '#src/discuss/transcript-export.js';
 import type { PersistedDiscussSnapshot } from '#src/discuss/events.js';
 import type { DiscussState, TranscriptEntry } from '#src/discuss/session-types.js';
 
@@ -17,8 +13,24 @@ function snapshot(over: Partial<DiscussState> = {}): PersistedDiscussSnapshot {
     max_epochs: 2,
     quota_per_epoch: 3,
     agents: {
-      a1: { persona: 'architect', display_name: 'Ada', participation: 'required', quota_remaining: 0, total_speaks: 1, fallback_used: false, banned: false },
-      a2: { persona: 'skeptic', display_name: 'Ben', participation: 'required', quota_remaining: 0, total_speaks: 1, fallback_used: false, banned: false },
+      a1: {
+        persona: 'architect',
+        display_name: 'Ada',
+        participation: 'required',
+        quota_remaining: 0,
+        total_speaks: 1,
+        fallback_used: false,
+        banned: false,
+      },
+      a2: {
+        persona: 'skeptic',
+        display_name: 'Ben',
+        participation: 'required',
+        quota_remaining: 0,
+        total_speaks: 1,
+        fallback_used: false,
+        banned: false,
+      },
     },
     transcript: [] as TranscriptEntry[],
     ...over,
@@ -34,11 +46,34 @@ function snapshot(over: Partial<DiscussState> = {}): PersistedDiscussSnapshot {
   } as unknown as PersistedDiscussSnapshot;
 }
 
-const SPEECH_A: TranscriptEntry = { type: 'speech', agent: 'a1', display_name: 'Ada', content: 'I support it.', epoch: 1, step: 1 } as unknown as TranscriptEntry;
-const SPEECH_B: TranscriptEntry = { type: 'speech', agent: 'a2', display_name: 'Ben', content: 'I have concerns.', epoch: 1, step: 2 } as unknown as TranscriptEntry;
-const SUMMARY: TranscriptEntry = { type: 'epoch_summary', summary: 'Positions diverged.', epoch: 1 } as unknown as TranscriptEntry;
+const SPEECH_A: TranscriptEntry = {
+  type: 'speech',
+  agent: 'a1',
+  display_name: 'Ada',
+  content: 'I support it.',
+  epoch: 1,
+  step: 1,
+} as unknown as TranscriptEntry;
+const SPEECH_B: TranscriptEntry = {
+  type: 'speech',
+  agent: 'a2',
+  display_name: 'Ben',
+  content: 'I have concerns.',
+  epoch: 1,
+  step: 2,
+} as unknown as TranscriptEntry;
+const SUMMARY: TranscriptEntry = {
+  type: 'epoch_summary',
+  summary: 'Positions diverged.',
+  epoch: 1,
+} as unknown as TranscriptEntry;
 const BIDS: TranscriptEntry = { type: 'bids', epoch: 1, resolve_type: 'normal' } as unknown as TranscriptEntry;
-const SYNTHESIS: TranscriptEntry = { type: 'session_event', event: 'synthesis', detail: 'Adopt with a migration plan.', epoch: 2 } as unknown as TranscriptEntry;
+const SYNTHESIS: TranscriptEntry = {
+  type: 'session_event',
+  event: 'synthesis',
+  detail: 'Adopt with a migration plan.',
+  epoch: 2,
+} as unknown as TranscriptEntry;
 
 describe('renderDiscussRecordMarkdown', () => {
   it('renders header, participants, transcript speeches, and final synthesis', () => {
@@ -94,7 +129,10 @@ describe('writeDiscussRecord', () => {
     const writeAtomicSync = vi.fn((_path: string, _data: string, _opts?: unknown) => true);
     const projectData = (projectRoot: string) => join('/data/projects', projectRoot.replace(/\//g, '-'));
 
-    const path = writeDiscussRecord({ storage: { mkdirSync, writeAtomicSync }, projectData }, snapshot({ transcript: [SPEECH_A, SYNTHESIS] }));
+    const path = writeDiscussRecord(
+      { storage: { mkdirSync, writeAtomicSync }, projectData },
+      snapshot({ transcript: [SPEECH_A, SYNTHESIS] }),
+    );
 
     const expectedDir = join('/data/projects', '-work-proj', 'discuss');
     expect(mkdirSync).toHaveBeenCalledWith(expectedDir, { recursive: true });
@@ -107,6 +145,8 @@ describe('writeDiscussRecord', () => {
 
   it('throws when the atomic write fails', () => {
     const storage = { mkdirSync: vi.fn(), writeAtomicSync: vi.fn(() => false) };
-    expect(() => writeDiscussRecord({ storage, projectData: (p) => p }, snapshot())).toThrow(/Failed to write discuss record/);
+    expect(() => writeDiscussRecord({ storage, projectData: (p) => p }, snapshot())).toThrow(
+      /Failed to write discuss record/,
+    );
   });
 });

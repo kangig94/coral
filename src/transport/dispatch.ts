@@ -243,7 +243,7 @@ export async function executeCatalogRequest(
           {
             code: 'jobs_not_found',
             message: 'Requested jobs were not found',
-            detail: { jobs: parsed.jobs },
+            detail: { jobs: scopeCheck.missing },
           },
           404,
         );

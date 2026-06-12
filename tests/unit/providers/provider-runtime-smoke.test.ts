@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import { brokerNotificationMethods, type ClaudeBootstrapSignature } from '#src/providers/claude/appserver/protocol.js';
+import { brokerNotificationMethods } from '#src/providers/claude/appserver/protocol.js';
+import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
 import type { ProviderCliRunner } from '#src/providers/protocol.js';
 import type {
   ProviderContinuityEventBody,
@@ -505,5 +506,4 @@ describe('provider runtime smoke', () => {
     expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
     expect(runtime.runCli).not.toHaveBeenCalled();
   });
-
 });

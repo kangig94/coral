@@ -16,9 +16,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_MAX_QUEUE_SIZE` | `20` | Max queued launches before Coral returns `busy` (1–1000) |
 | `CORAL_DISCUSS_MAX_WORKERS` | `5` | Max concurrent discuss workers (1–10) |
-| `CORAL_DISCUSS_BID_THRESHOLD` | `30` | Minimum discuss bid score |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Maximum discuss epochs |
-| `CORAL_DISCUSS_QUOTA_PER_EPOCH` | `3` | Speaking turns per agent per epoch |
 | `CORAL_BACKEND_IDLE_MS` | `21600000` | Backend idle timeout in ms |
 | `CORAL_JOBS_RETENTION_DAYS` | `14` | Days to keep a terminal job's export artifacts (`~/.coral/exports/jobs/<id>/result.md`) before backend startup prunes them. The export dir is a rebuildable cache of the journal — `result.md` is regenerated from the journal terminal event on the next read — so pruning only reclaims disk; `jobs list`/`detail` still resolve from the journal. Invalid/non-positive values fall back to the default |
 | `CORAL_BACKEND_BIND` | `127.0.0.1` | Backend HTTP bind address. Override to expose the backend on another interface (e.g. `0.0.0.0` for container deploys) |
@@ -30,11 +28,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
 | `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
-| `CORAL_EMBEDDING_PROVIDER` | _(none)_ | Embedding provider identifier |
-| `CORAL_EMBEDDING_API_KEY` | _(none)_ | Embedding API key |
-| `CORAL_EMBEDDING_MODEL` | _(provider default)_ | Embedding model override |
-| `CORAL_EMBEDDING_DIMS` | _(provider default)_ | Embedding dimensions override |
-| `CORAL_EMBEDDING_BASE_URL` | _(none)_ | Custom embedding endpoint |
+| `GEMINI_API_KEY` | _(none)_ | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`) |
 
 ### HTTP Exposure
 
@@ -45,7 +39,7 @@ The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set t
 ```bash
 export CORAL_CODEX_MODEL=gpt-5.5
 export CORAL_CODEX_EFFORT=high
-export CORAL_DISCUSS_BID_THRESHOLD=50
+export CORAL_DISCUSS_MAX_EPOCHS=3
 export CORAL_KB_PATH=/path/to/my-kb
 ```
 
@@ -60,7 +54,6 @@ Project-level or global Claude Code settings can persist the same environment va
   "env": {
     "CORAL_CODEX_MODEL": "gpt-5.5",
     "CORAL_CODEX_FAST": "1",
-    "CORAL_DISCUSS_BID_THRESHOLD": "50",
     "CORAL_DISCUSS_MAX_EPOCHS": "3",
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
@@ -69,16 +62,9 @@ Project-level or global Claude Code settings can persist the same environment va
 
 Changes to `settings.json` env take effect on the next Claude Code session start. `CORAL_CODEX_FAST` is re-read per Codex request via the `coralEnv` pipeline, so Coral backend restart is not required.
 
-### `~/.coral/.env`
+### Embedding credentials
 
-Embedding credentials should live in `~/.coral/.env`, not in repo settings:
-
-```bash
-CORAL_EMBEDDING_PROVIDER=gemini
-CORAL_EMBEDDING_API_KEY=...
-```
-
-Priority is `process.env` / `.claude/settings.json` first, then `~/.coral/.env`, then unconfigured defaults.
+Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's process environment. Set them in the user-level `~/.claude/settings.json` `env` block or your shell profile — not in repo-checked settings — then restart the backend (`coral-cli backend shutdown`; the next command relaunches it with the new environment).
 
 ## Config Files
 
@@ -163,6 +149,7 @@ Live scratch artifacts:
 | `graphology-communities-louvain` | Community detection |
 | `mammoth` / `turndown` | Source import conversion |
 | `@lydell/node-pty` | Interactive Claude CLI broker transport |
+| `commander` | CLI command parsing (bundled into `bridge/coral-cli.cjs`) |
 | `yaml` | YAML parsing |
 | `zod-to-json-schema` | Schema export helpers |
 
@@ -192,7 +179,6 @@ projection_discuss in store.db                 -> projected discuss snapshots an
 ~/.coral/exports/jobs/<jobId>/result.md        -> durable job result export (prod)
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
-~/.coral/.env                                  -> embedding config
 ~/.coral/kb/ or ~/.coral/kb-dev/               -> KB markdown storage by flavor
 ~/.coral/data/kb/ or ~/.coral/data-dev/kb/     -> KB runtime artifacts, Orama/Needle projections, source-import staging
 ```

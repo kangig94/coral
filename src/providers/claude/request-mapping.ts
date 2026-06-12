@@ -7,11 +7,7 @@ import type { StoragePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import type {
-  SessionEnsureParams,
-  TurnInterruptParams,
-  TurnStartParams,
-} from './appserver/protocol.js';
+import type { SessionEnsureParams, TurnInterruptParams, TurnStartParams } from './appserver/protocol.js';
 import {
   hashSortedEnv,
   normalizeControllerEnv,

@@ -12,12 +12,14 @@ export const DemographicsSchema = z.object({
   outlier_ratio: z.number().optional(),
 });
 
-export const discussSeedSchema = z.object({
-  controversy_axes: z.array(ControversyAxisSchema).min(1),
-  n: z.number().int().min(1).max(20),
-  demographics: DemographicsSchema.optional(),
-  seed: z.number().int(),
-});
+export const discussSeedSchema = z
+  .object({
+    controversy_axes: z.array(ControversyAxisSchema).min(1),
+    n: z.number().int().min(1).max(20),
+    demographics: DemographicsSchema.optional(),
+    seed: z.number().int(),
+  })
+  .strict();
 
 export const AgentInputSchema = z.object({
   name: z.string(),

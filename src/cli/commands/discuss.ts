@@ -15,6 +15,7 @@ import {
   type DiscussWatchOptions,
 } from '../dispatch.js';
 import { emitError } from '../emit.js';
+import { normalizeUsageError } from '../errors.js';
 import { parseIntegerFlag } from '../flags.js';
 import {
   formatDiscussAbort,
@@ -53,7 +54,7 @@ export function registerDiscussCommands(program: Command): void {
         const result = await client.discussSeed(args as Parameters<typeof client.discussSeed>[0]);
         process.stdout.write(formatPersonaSeed(result) + '\n');
       } catch (error) {
-        emitError(error);
+        emitError(normalizeUsageError(error));
       }
     });
 
@@ -80,7 +81,7 @@ export function registerDiscussCommands(program: Command): void {
         const result = await client.discussStart(args as Parameters<typeof client.discussStart>[0]);
         process.stdout.write(formatDiscussStart(result) + '\n');
       } catch (error) {
-        emitError(error);
+        emitError(normalizeUsageError(error));
       }
     });
 
@@ -132,7 +133,7 @@ export function registerDiscussCommands(program: Command): void {
           : await client.discussBid(args as Parameters<typeof client.discussBid>[0]);
         process.stdout.write(formatDiscussParticipate(result) + '\n');
       } catch (error) {
-        emitError(error);
+        emitError(normalizeUsageError(error));
       }
     });
 

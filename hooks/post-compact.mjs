@@ -3,9 +3,19 @@
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { failOpen, logHookLine, readStdin, sweepStale } from './lib/hook-utils.mjs';
+import {
+  exitIfChildProcess,
+  exitIfWrongFlavor,
+  failOpen,
+  logHookLine,
+  readStdin,
+  sweepStale,
+} from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_SUFFIX, SNAPSHOT_TTL_MS } from './lib/jobs-state.mjs';
 import { activeBridgeCommand, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+
+exitIfChildProcess();
+exitIfWrongFlavor();
 
 function snapshotDirForProject(projectDir) {
   return join(projectTmpDir(projectDir), 'hooks');

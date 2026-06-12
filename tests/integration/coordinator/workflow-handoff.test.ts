@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
+import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { buildWorkflowPlan } from '#src/workflow/plan.js';
@@ -166,6 +167,7 @@ describe('workflow handoff (cross-domain integration)', () => {
         const resumed = await workflowRecover.resumeAll({
           db: progressStore.getDb(),
           progressStore,
+          loadJobDetails: loadJobProjectionDetails,
           getExecutionService: () => stubExecution,
           createInvocationContext,
           finalizeWorkflow,

@@ -7,7 +7,7 @@ import {
   readClaudePersistedContinuity,
   withClaudeContinuity,
 } from '#src/providers/claude/request-mapping.js';
-import type { ClaudeBootstrapSignature } from '#src/providers/claude/appserver/protocol.js';
+import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
 
 const BOOTSTRAP_SIGNATURE: ClaudeBootstrapSignature = {
   cwd: '/workspace',

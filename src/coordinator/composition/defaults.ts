@@ -166,7 +166,14 @@ export function resolveCoordinatorDefaults(
         ((currentBundleHash: string) => {
           const progressStore = bindings.getProgressStore();
           if (progressStore === null) return;
-          cleanupStaleJobs(progressStore, currentBundleHash, bindings.log, runtime.storage, runtime.time.now(), jobRetentionMs);
+          cleanupStaleJobs(
+            progressStore,
+            currentBundleHash,
+            bindings.log,
+            runtime.storage,
+            runtime.time.now(),
+            jobRetentionMs,
+          );
         });
       const markJobsAsErrorFn =
         options.markJobsAsErrorFn ??

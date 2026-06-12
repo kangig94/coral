@@ -421,7 +421,8 @@ async function waitForClaudeOutcome(
       lease.closed.then(
         (closed): ClaudeTurnOutcome => ({
           kind: 'failed',
-          message: closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
+          message:
+            closed instanceof Error ? closed.message : 'Claude broker transport closed before the turn completed.',
         }),
       ),
       aborted,

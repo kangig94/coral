@@ -11,8 +11,6 @@ import { isRecord } from '../../../infra/json.js';
 import type { EffortLevel } from '../../contract.js';
 import { permissionModeSchema, type ClaudeBootstrapSignature } from '../request-prep.js';
 
-export type { ClaudeBootstrapSignature } from '../request-prep.js';
-
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
 export const CLAUDE_BROKER_BUSY_RPC_CODE = -32001;

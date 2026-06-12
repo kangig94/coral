@@ -83,7 +83,7 @@ describe('CoralSetupError', () => {
       'engine_env_var_missing',
       { engine: 'gemini', envVar: 'GEMINI_API_KEY' },
       "Engine 'gemini' needs environment variable 'GEMINI_API_KEY'.",
-      'Set GEMINI_API_KEY (e.g. add it to ~/.coral/.env) and rerun `coral-cli expansion equip gemini`.',
+      "Set GEMINI_API_KEY in the backend's environment (e.g. the `env` block of ~/.claude/settings.json), run 'coral-cli backend shutdown' so the next command relaunches with it, then rerun `coral-cli expansion equip gemini`.",
     ],
     [
       'expansion_embedding_provider_missing',

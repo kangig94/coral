@@ -233,7 +233,9 @@ describe('cli main — backend status without daemon', () => {
     });
 
     expect(status).toBe(0);
-    expect(stdout.trim()).toBe('Backend not running');
+    expect(stdout.trim()).toBe(
+      'Backend not running. Any coral-cli mutating command (or a Claude Code session start) relaunches it.',
+    );
   });
 });
 

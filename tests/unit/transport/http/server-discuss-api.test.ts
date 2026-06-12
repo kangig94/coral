@@ -13,7 +13,7 @@ import { attachSession } from '#src/discuss/shell/registry.js';
 import { submitManualSpeech } from '#src/discuss/shell/operations.js';
 import { type CoordinatorServerController, createCoordinatorServer } from '#src/coordinator/index.js';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
+import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';

@@ -113,8 +113,8 @@ Spawns pioneer to find elegant alternatives for uncertain items, offering defaul
 Produces `pre-{topic}.md` — the contract that plan must satisfy.
 
 **plan** — *"I need a design before I build."*
-Multi-round review loop: dispatches architect + critic (and resolver in `--deep` mode) as a workflow,
-synthesizes findings, edits the plan file, and evaluates an exit gate.
+Multi-round review loop: dispatches architect + critic + resolver as a workflow,
+synthesizes findings, edits the plan file, and evaluates an exit gate (`round=N` sets the round budget).
 The resolver classifies findings (Adopt/Adapt/Defer/Diverge), applies changes,
 and decides whether another round is needed based on finding severity and nature.
 Produces `{topic}.md` with acceptance criteria, implementation phases, and execution order (dependency graph + parallel batches).
@@ -132,8 +132,8 @@ Every completion claim requires fresh verification evidence (lint → build → 
 <summary>Advanced flags</summary>
 
 ```bash
-# Deep review with methodology-driven synthesis (resolver + HOW reasoning):
-/coral:plan --deep add retry logic to the API client
+# Deeper iteration — up to 3 review rounds per phase:
+/coral:plan round=3 add retry logic to the API client
 
 # Adversarial testing — spawns a red-attacker to target blind spots:
 /coral:ralph --red implement the caching layer
@@ -202,7 +202,7 @@ gpt-5.5  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 | `/coral:analyze` | Deep analysis and investigation | ✓ |
 | `/coral:pathfind` | Divergent direction discovery from problem symptoms | - |
 | `/coral:preplan` | Problem definition before planning | ✓ |
-| `/coral:plan` | Multi-round planning with structured review. `--deep` for methodology-driven synthesis | ✓ |
+| `/coral:plan` | Multi-round planning with structured review. `round=N` for deeper iteration | ✓ |
 | `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | ✓ |
 | `/coral:bugfix` | Bug diagnosis, planning, and fix in one shot | ✓ |
 | `/coral:code-simplify` | Simplify and refine code for clarity | ✓ |

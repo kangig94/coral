@@ -1,8 +1,10 @@
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { finalizeStoreServices } from '#src/coordinator/index.js';
-import { createStoreServicesRef } from '#src/coordinator/composition/store-services-ref.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/types.js';
+import {
+  createStoreServicesRef,
+  type CoordinatorStoreServices,
+} from '#src/coordinator/composition/store-services-ref.js';
 import { createLifecycle, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
 import { KB_ID } from '#src/coordinator/subsystems/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
