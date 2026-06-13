@@ -290,6 +290,14 @@ export class JobStore implements JobProgressStore {
         continue;
       }
 
+      if (event.type === 'job.runtime.started') {
+        const body = event.body as { startedAt?: string };
+        if (typeof body.startedAt === 'string') {
+          this.hydrateJobStartedAt(event.stream.id, body.startedAt);
+        }
+        continue;
+      }
+
       if (event.type === 'job.terminal.recorded') {
         this.jobStartedAt.delete(event.stream.id);
         const result = this.readTerminalProjection(event.stream.id);
