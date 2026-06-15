@@ -35,7 +35,7 @@ function describeSessionUnavailable(provider: string, reason: string): string {
   const detail = ensureSentence(reason);
   switch (provider) {
     case 'codex':
-      return `Codex session unavailable: ${detail} Start a new Coral session or resume without --session.`;
+      return `Codex session unavailable: ${detail} Start a new Coral session.`;
     case 'claude':
       return `Claude session unavailable: ${detail} Start a new Coral session.`;
     default:

@@ -383,6 +383,14 @@ export interface ProviderManagedArtifactCapability {
     handles: readonly ProviderArtifactHandle[],
     runtime: ArtifactCleanupRuntime,
   ): Promise<DiscardOutcome>;
+  /**
+   * Best-effort terminal-time fallback. In-run handle emission can miss the
+   * native artifact when the provider has not yet flushed it to disk. At
+   * discard time — well after the turn, when the file is durably written — the
+   * retention reactor re-locates it from the session's persisted
+   * conversationRef so cleanup does not silently skip.
+   */
+  locateArtifact?(conversationRef: string, runtime: ArtifactCleanupRuntime): ProviderArtifactHandle | null;
 }
 
 export interface ProviderNoArtifactCapability {

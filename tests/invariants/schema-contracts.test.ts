@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { jobAbortSchema, jobWaitSchema } from '#src/transport/rpc/jobs.js';
-import { agentIdentSchema, sessionCreateSchema, sessionMessageSchema } from '#src/sessions/command-schemas.js';
+import { agentIdentSchema, sessionCreateSchema } from '#src/sessions/command-schemas.js';
 import { workflowCommandSchema } from '#src/workflow/input.js';
 import { workflowRequestSchema } from '#src/transport/rpc/workflow.js';
 
@@ -114,80 +114,6 @@ describe('sessionCreateSchema', () => {
     const result = sessionCreateSchema.safeParse({
       provider: 'codex',
       prompt: 'Analyze this change',
-      projectRoot: '/tmp/project',
-      extra: true,
-    });
-
-    expect(result.success).toBe(false);
-  });
-});
-
-describe('sessionMessageSchema', () => {
-  it('requires prompt and projectRoot', () => {
-    expect(() =>
-      sessionMessageSchema.parse({
-        projectRoot: '/tmp/project',
-      }),
-    ).toThrow();
-
-    expect(() =>
-      sessionMessageSchema.parse({
-        prompt: 'Continue',
-      }),
-    ).toThrow();
-  });
-
-  it('does not apply a parse-time default for bypassPermissions', () => {
-    const parsed = sessionMessageSchema.parse({
-      prompt: 'Continue',
-      projectRoot: '/tmp/project',
-    });
-
-    expect(parsed).toEqual({
-      prompt: 'Continue',
-      projectRoot: '/tmp/project',
-    });
-    expect(parsed).not.toHaveProperty('bypassPermissions');
-    expect(parsed).not.toHaveProperty('provider');
-  });
-
-  it('accepts an optional provider assertion', () => {
-    const parsed = sessionMessageSchema.parse({
-      prompt: 'Continue',
-      projectRoot: '/tmp/project',
-      provider: 'codex',
-    });
-
-    expect(parsed.provider).toBe('codex');
-  });
-
-  it('accepts explicit continuation overrides', () => {
-    const parsed = sessionMessageSchema.parse({
-      prompt: 'Continue',
-      projectRoot: '/tmp/project',
-      model: 'gpt-5',
-      workDir: '/tmp/project/work',
-      owner: 'owner-1',
-      effort: 'medium',
-      claudeModelCap: 'sonnet',
-      bypassPermissions: false,
-      systemPrompt: 'Stay focused',
-    });
-
-    expect(parsed).toMatchObject({
-      model: 'gpt-5',
-      workDir: '/tmp/project/work',
-      owner: 'owner-1',
-      effort: 'medium',
-      claudeModelCap: 'sonnet',
-      bypassPermissions: false,
-      systemPrompt: 'Stay focused',
-    });
-  });
-
-  it('rejects unknown keys via strict mode', () => {
-    const result = sessionMessageSchema.safeParse({
-      prompt: 'Continue',
       projectRoot: '/tmp/project',
       extra: true,
     });

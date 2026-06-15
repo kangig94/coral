@@ -173,7 +173,6 @@ type LifecycleModule = typeof LifecycleMod;
 
 type FakeExecutionService = {
   start: ReturnType<typeof vi.fn>;
-  resumeBySessionId: ReturnType<typeof vi.fn>;
   executeWorkflow: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
@@ -183,7 +182,6 @@ type FakeExecutionService = {
 function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {}): FakeExecutionService {
   return {
     start: vi.fn(),
-    resumeBySessionId: vi.fn(),
     executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
@@ -1604,7 +1602,6 @@ describe('execution backend server', () => {
         },
         sessions: {
           start: (providerName: string, input: unknown, ctx: unknown) => service.start(providerName, input, ctx),
-          resumeBySessionId: (input: unknown, ctx: unknown) => service.resumeBySessionId(input, ctx),
         },
         jobs: {
           scopeCheck: scopeCheckJobs,
@@ -3207,113 +3204,6 @@ describe('execution backend server', () => {
       });
     });
 
-    it('routes POST /sessions/:id/messages through service.resumeBySessionId', async () => {
-      const fakeService = createFakeExecutionService({
-        resumeBySessionId: vi.fn(async () => ({ status: 'queued', job: 'job-message', session: 'session-1' })),
-      });
-      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
-      const started = await startHttpHandlerServer(deps);
-
-      try {
-        const response = await fetch(`${started.baseUrl}/sessions/session-1/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
-          },
-          body: JSON.stringify({
-            prompt: 'continue',
-            projectRoot: '/tmp/project',
-            model: 'gpt-5',
-            workDir: '/tmp/work',
-            effort: 'high',
-            bypassPermissions: true,
-            systemPrompt: 'continue-system',
-          }),
-        });
-
-        expect(response.status).toBe(202);
-        expect(await response.json()).toEqual({
-          session: 'session-1',
-          job: 'job-message',
-          launchState: 'queued',
-        });
-        expect(fakeService.resumeBySessionId).toHaveBeenCalledWith(
-          {
-            sessionId: 'session-1',
-            prompt: 'continue',
-            model: 'gpt-5',
-            cwd: '/tmp/work',
-            effort: 'high',
-            bypassPermissions: true,
-            systemPrompt: 'continue-system',
-          },
-          expect.objectContaining({
-            projectRoot: '/tmp/project',
-            pluginRoot: '/tmp/plugin',
-          }),
-        );
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
-
-    it('maps provider_mismatch from POST /sessions/:id/messages and forwards the provider assertion', async () => {
-      const sessionId = 'session-codex';
-      const fakeService = createFakeExecutionService({
-        resumeBySessionId: vi.fn(async () => ({
-          status: 'rejected',
-          phase: 'preflight',
-          code: 'provider_mismatch',
-          message: `Session ${sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${sessionId} ...\` instead.`,
-        })),
-      });
-      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
-      const started = await startHttpHandlerServer(deps);
-
-      try {
-        const response = await fetch(`${started.baseUrl}/sessions/${sessionId}/messages`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Coral-Backend-Token': 'test-token',
-          },
-          body: JSON.stringify({
-            prompt: 'continue',
-            provider: 'claude',
-            projectRoot: '/tmp/project',
-            model: 'gpt-5',
-            workDir: '/tmp/work',
-          }),
-        });
-
-        const body = (await response.json()) as {
-          code: string;
-          message: string;
-        };
-
-        expect(response.status).toBe(409);
-        expect(body).toMatchObject({ code: 'provider_mismatch' });
-        expect(body.message).toContain('codex');
-        expect(body.message).toContain(`coral-cli codex -s ${sessionId} ...`);
-        expect(fakeService.resumeBySessionId).toHaveBeenCalledWith(
-          {
-            sessionId,
-            prompt: 'continue',
-            provider: 'claude',
-            model: 'gpt-5',
-            cwd: '/tmp/work',
-          },
-          expect.objectContaining({
-            projectRoot: '/tmp/project',
-            pluginRoot: '/tmp/plugin',
-          }),
-        );
-      } finally {
-        await _closeHttpServer(started.server);
-      }
-    });
-
     it('passes canonical workflow camelCase fields to executeWorkflow', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
@@ -4267,58 +4157,6 @@ describe('execution backend server', () => {
     });
   });
 
-  it('maps provider-less continuation errors on the new session routes', async () => {
-    const progressStore = createProgressStore();
-    const projectRoot = createProjectRoot('continuation-project');
-    const foreignProjectRoot = createProjectRoot('continuation-foreign-project');
-    const foreign = createSessionManager(foreignProjectRoot).allocate({
-      provider: 'codex',
-      name: 'foreign',
-      model: 'gpt-5',
-      cwd: foreignProjectRoot,
-      projectRoot: foreignProjectRoot,
-      backendNamespace: testBackendNamespace,
-    });
-    stubSessionProjection(progressStore, {
-      sessionId: foreign.sessionId,
-      provider: 'codex',
-      projectRoot: foreignProjectRoot,
-      backendNamespace: testBackendNamespace,
-    });
-
-    const backend = await startBackendServer();
-    const [missingResponse, mismatchResponse] = await Promise.all([
-      fetch(`${backend.baseUrl}/sessions/missing-session/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
-        },
-        body: JSON.stringify({
-          prompt: 'continue',
-          projectRoot,
-        }),
-      }),
-      fetch(`${backend.baseUrl}/sessions/${foreign.sessionId}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
-        },
-        body: JSON.stringify({
-          prompt: 'continue',
-          projectRoot,
-        }),
-      }),
-    ]);
-
-    expect(missingResponse.status).toBe(404);
-    expect(await missingResponse.json()).toMatchObject({ code: 'session_not_found' });
-
-    expect(mismatchResponse.status).toBe(403);
-    expect(await mismatchResponse.json()).toMatchObject({ code: 'scope_mismatch' });
-  });
-
   it('returns 400 when /jobs/wait omits or empties projectRoot', async () => {
     const backend = await startBackendServer();
 
@@ -5140,7 +4978,6 @@ describe('execution backend server', () => {
         },
         sessions: {
           start: vi.fn(),
-          resumeBySessionId: vi.fn(),
         },
         jobs: {
           scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }),
@@ -5213,11 +5050,6 @@ describe('execution backend server', () => {
         name: 'session create',
         path: '/sessions',
         body: { provider: 'codex', prompt: 'hello', projectRoot: '/tmp/project' },
-      },
-      {
-        name: 'session message',
-        path: '/sessions/session-1/messages',
-        body: { prompt: 'hello', projectRoot: '/tmp/project' },
       },
       {
         name: 'workflow launch',

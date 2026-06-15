@@ -23,20 +23,6 @@ export const agentIdentSchema = z.preprocess(
     .regex(AGENT_IDENT_RE, 'Agent must be "<name>" or "<namespace>:<name>" (lowercase letters, digits, hyphens)'),
 );
 
-export const sessionIdSchema = z.string().min(1, 'Session ID is required');
-
-const continuationFieldsShape = {
-  projectRoot: projectRootSchema,
-  provider: providerNameSchema.optional(),
-  model: modelNameSchema.optional(),
-  workDir: z.string().optional(),
-  owner: ownerSchema.optional(),
-  effort: effortLevelSchema.optional(),
-  claudeModelCap: claudeModelCapSchema,
-  bypassPermissions: z.boolean().optional(),
-  systemPrompt: z.string().optional(),
-} satisfies z.ZodRawShape;
-
 export const sessionCreateSchema = z
   .object({
     provider: providerNameSchema,
@@ -53,14 +39,3 @@ export const sessionCreateSchema = z
     retention: retentionPolicySchema.optional(),
   })
   .strict();
-
-export const sessionMessageSchema = z
-  .object({
-    prompt: promptSchema,
-    ...continuationFieldsShape,
-  })
-  .strict();
-
-export const sessionMessageRequestSchema = sessionMessageSchema.extend({
-  sessionId: sessionIdSchema,
-});

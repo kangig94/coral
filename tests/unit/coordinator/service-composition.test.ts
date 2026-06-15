@@ -632,7 +632,7 @@ describe('ExecutionService', () => {
       }
     });
 
-    it('resumeBySessionId rejects a mismatched provider assertion with a recovery hint', async () => {
+    it('resumeBySessionId rejects a mismatched provider assertion', async () => {
       realizePluginRoot(ctx);
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
@@ -659,7 +659,7 @@ describe('ExecutionService', () => {
       });
       if (decision.status === 'rejected') {
         expect(decision.message).toBe(
-          `Session ${entry.sessionId} belongs to provider 'codex'. Use \`coral-cli codex -s ${entry.sessionId} ...\` instead.`,
+          `Session ${entry.sessionId} belongs to provider 'codex', not 'claude'.`,
         );
       }
     });

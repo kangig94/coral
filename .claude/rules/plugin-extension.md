@@ -58,7 +58,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 
 ```
 Caller invokes Coral CLI:
-  -> coral-cli codex <agent> -i "<prompt>" [--session "<session>"] [--work-dir "<path>"] -d
+  -> coral-cli codex <agent> -i "<prompt>" [--work-dir "<path>"] -d
   -> CLI validates args and dispatches the provider launch
   -> backend resolves agents/<agent>.md
   -> detached launch prints `Job <job> <launchState> (session <session>)`

@@ -158,4 +158,8 @@ function safeReadDir(storage: CodexArtifactLocatorStorage, path: string) {
 
 export const codexArtifactCapability = managed({
   discardArtifacts: discardRecordedArtifacts,
+  locateArtifact: (conversationRef, runtime) => {
+    const result = locateCodexRolloutArtifactFromRuntime(conversationRef, runtime);
+    return result?.kind === 'match' ? result.artifact.handle : null;
+  },
 });

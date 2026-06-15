@@ -21,17 +21,13 @@ exports[`cli main routing > preserves help output for 'codex' via snapshot 1`] =
 Run a prompt via codex
 
 Arguments:
-  agent                          Agent name (provider session artifacts are
-                                 discarded on completion when an agent is set;
-                                 omit for raw execution)
+  agent                          Agent name (optional; omit for a raw prompt
+                                 run)
 
 Options:
   -i, --input <text-or-file...>  Prompt text or file path (multiple tokens are
                                  joined with spaces; a single existing path is
                                  read as a file)
-  -s, --session <id>             Session ID to resume; retention policy of the
-                                 existing session applies (--agent does not
-                                 change retention on resume)
   -w, --work-dir <path>          Working directory
   -m, --model <model>            Model override
   -o, --owner <id>               Owner ID for memo isolation

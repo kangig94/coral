@@ -20,7 +20,6 @@ import { storePaths } from '#src/infra/path/store.js';
 
 const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
-  sendMessage: vi.fn(),
   workflow: vi.fn(),
   listJobs: vi.fn(),
   abortJobs: vi.fn(),
@@ -106,7 +105,6 @@ vi.mock('#src/cli/dispatch.js', async () => {
     ...actual,
     makeClient: () => ({
       createSession: mockState.createSession,
-      sendMessage: mockState.sendMessage,
       workflow: mockState.workflow,
       listJobs: mockState.listJobs,
       abortJobs: mockState.abortJobs,
@@ -311,7 +309,6 @@ describe('cli main routing', () => {
     process.exitCode = undefined;
 
     mockState.createSession.mockReset();
-    mockState.sendMessage.mockReset();
     mockState.workflow.mockReset();
     mockState.listJobs.mockReset();
     mockState.abortJobs.mockReset();
@@ -978,7 +975,7 @@ describe('cli main routing', () => {
 
     writeFileSync(inputFile, 'prompt from file');
     try {
-      mockState.sendMessage.mockResolvedValueOnce({
+      mockState.createSession.mockResolvedValueOnce({
         launchState: 'running',
         job: 'job-1',
         session: 'session-1',
@@ -991,8 +988,6 @@ describe('cli main routing', () => {
         'codex',
         '-i',
         inputFile,
-        '-s',
-        'session-1',
         '-w',
         '/tmp/work',
         '-m',
@@ -1002,12 +997,12 @@ describe('cli main routing', () => {
         '-b',
       ]);
 
-      expect(mockState.sendMessage).toHaveBeenCalledWith('session-1', 'prompt from file', {
+      expect(mockState.createSession).toHaveBeenCalledWith('codex', 'prompt from file', {
+        retention: 'discard_provider_artifacts_on_terminal',
         workDir: '/tmp/work',
         model: 'gpt-5',
         owner: 'owner-1',
         bypassPermissions: true,
-        provider: 'codex',
       });
       expect(mockState.launchAndFollow).toHaveBeenCalledWith({
         launchResult: {
@@ -1035,35 +1030,17 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const missingInput = join(tmpdir(), `coral-missing-input-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
 
-    mockState.sendMessage.mockResolvedValueOnce({
+    mockState.createSession.mockResolvedValueOnce({
       launchState: 'running',
       job: 'job-raw-text',
       session: 'session-raw-text',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
-    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', missingInput, '-s', 'session-raw-text']);
+    await program.parseAsync(['node', 'coral-cli', 'codex', '-i', missingInput]);
 
-    expect(mockState.sendMessage).toHaveBeenCalledWith('session-raw-text', missingInput, {
-      provider: 'codex',
-    });
-  });
-
-  it('injects the claude provider into resume requests', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    mockState.sendMessage.mockResolvedValueOnce({
-      launchState: 'running',
-      job: 'job-claude-resume',
-      session: 'session-claude-resume',
-    });
-    mockState.launchAndFollow.mockResolvedValueOnce(0);
-
-    await program.parseAsync(['node', 'coral-cli', 'claude', '-i', 'hi', '-s', 'session-claude-resume']);
-
-    expect(mockState.sendMessage).toHaveBeenCalledWith('session-claude-resume', 'hi', {
-      provider: 'claude',
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', missingInput, {
+      retention: 'discard_provider_artifacts_on_terminal',
     });
   });
 
@@ -1080,7 +1057,9 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi']);
 
-    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', { retention: 'retain' });
+    expect(mockState.createSession).toHaveBeenCalledWith('codex', 'hi', {
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
   });
 
   it.each([

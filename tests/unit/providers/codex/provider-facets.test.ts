@@ -185,4 +185,23 @@ describe('codexArtifactCapability', () => {
 
     expect(unlinkSync.mock.calls).toEqual([['/tmp/one.jsonl'], ['/tmp/two.jsonl']]);
   });
+
+  it('locateArtifact resolves the rollout handle for a known thread id from the runtime', () => {
+    const root = '/home/user/.codex/sessions';
+    const day = `${root}/2026/05/04`;
+    const runtime = {
+      storage: storageForTree({
+        [root]: [dirent('2026', 'dir')],
+        [`${root}/2026`]: [dirent('05', 'dir')],
+        [`${root}/2026/05`]: [dirent('04', 'dir')],
+        [day]: [dirent('rollout-2026-05-04T00-00-00-thread-1.jsonl', 'file')],
+      }),
+      env: { homedir: () => '/home/user', get: () => undefined },
+    } as unknown as ArtifactCleanupRuntime;
+
+    expect(codexArtifactCapability.locateArtifact?.('thread-1', runtime)).toBe(
+      `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
+    );
+    expect(codexArtifactCapability.locateArtifact?.('missing-thread', runtime)).toBeNull();
+  });
 });

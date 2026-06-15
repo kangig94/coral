@@ -48,7 +48,6 @@ describe('cli main — help and structure', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('[agent]');
     expect(stdout).toContain('--input');
-    expect(stdout).toContain('--session');
     expect(stdout).toContain('--owner');
     expect(stdout).not.toContain('exec [options]');
     expect(stdout).not.toContain('coral [options]');

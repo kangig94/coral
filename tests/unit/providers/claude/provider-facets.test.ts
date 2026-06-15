@@ -110,6 +110,38 @@ describe('locateClaudeJsonlArtifact', () => {
   });
 });
 
+describe('claudeArtifactCapability', () => {
+  it('locateArtifact resolves the project JSONL handle for a known conversationRef from the runtime', () => {
+    const root = '/home/user/.claude/projects';
+    const runtime = {
+      storage: storageForTree({
+        [root]: [dirent('-workspace-a', 'dir')],
+        [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
+      }),
+      env: { homedir: () => '/home/user' },
+    } as unknown as ArtifactCleanupRuntime;
+
+    expect(claudeArtifactCapability.locateArtifact?.('session-1', runtime)).toBe(
+      `${root}/-workspace-a/session-1.jsonl`,
+    );
+    expect(claudeArtifactCapability.locateArtifact?.('missing-session', runtime)).toBeNull();
+  });
+
+  it('locateArtifact returns null when the conversationRef is ambiguous across projects', () => {
+    const root = '/home/user/.claude/projects';
+    const runtime = {
+      storage: storageForTree({
+        [root]: [dirent('-workspace-a', 'dir'), dirent('-workspace-b', 'dir')],
+        [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
+        [`${root}/-workspace-b`]: [dirent('session-1.jsonl', 'file')],
+      }),
+      env: { homedir: () => '/home/user' },
+    } as unknown as ArtifactCleanupRuntime;
+
+    expect(claudeArtifactCapability.locateArtifact?.('session-1', runtime)).toBeNull();
+  });
+});
+
 describe('deleteClaudeJsonlArtifactsForConversation', () => {
   const root = '/home/user/.claude/projects';
 

@@ -112,6 +112,20 @@ export class LifecycleReactor {
         recordedHandles.push(artifact.handle);
       }
     }
+    // No in-run handle was captured (the provider had not yet flushed its native artifact
+    // when emission was attempted). Re-locate it from the session's conversationRef now — at
+    // discard time the file is durably on disk.
+    if (
+      recordedHandles.length === 0 &&
+      entry.conversationRef !== undefined &&
+      provider.artifacts.kind === 'managed' &&
+      provider.artifacts.locateArtifact !== undefined
+    ) {
+      const located = provider.artifacts.locateArtifact(entry.conversationRef, this.options.runtime);
+      if (located !== null) {
+        recordedHandles.push(located);
+      }
+    }
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
     const attempt = readNextRetentionDiscardAttempt(this.options.db(), sessionId, attemptFloor);
 

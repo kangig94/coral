@@ -7,11 +7,12 @@ import type {
 } from './contract.js';
 
 export function managed(
-  impl: Pick<ProviderManagedArtifactCapability, 'discardArtifacts'>,
+  impl: Pick<ProviderManagedArtifactCapability, 'discardArtifacts' | 'locateArtifact'>,
 ): ProviderManagedArtifactCapability {
   return {
     kind: 'managed',
     discardArtifacts: impl.discardArtifacts,
+    ...(impl.locateArtifact !== undefined ? { locateArtifact: impl.locateArtifact } : {}),
   };
 }
 

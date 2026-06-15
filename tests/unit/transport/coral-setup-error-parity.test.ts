@@ -112,7 +112,6 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
     },
     sessions: {
       start: vi.fn(),
-      resumeBySessionId: vi.fn(),
     },
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),

@@ -68,7 +68,6 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | Route | Status | Purpose |
 | --- | --- | --- |
 | `POST /sessions` | 201 | Create session (with optional `agent` for coral dispatch) |
-| `POST /sessions/:id/messages` | 202 | Send message to existing session (resume, never re-dispatches agent) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
 | `POST /coordinator/expansion` | 200 | Equip a named expansion via `ExpansionLifecycleService` (binds the expansion's runtime cells under a fresh scope) |
 | `DELETE /coordinator/expansion/:name` | 200 | Unequip a named expansion (disposes its scope, releasing every binding it held) |
@@ -152,8 +151,6 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 4. The coordinator API resolves agent intent, persists session continuity, and launches or resumes work through jobs-owned launch/admission contracts plus sessions-owned continuity storage
 5. Provider adapters spawn the real CLI/runtime and emit progress
 6. Journal appends publish projection freshness through the live `ConsumerDriver`; session continuity remains authoritative in the sessions shell
-
-Continuations use `POST /sessions/:id/messages`, which resolves provider from stored continuity, merges omitted fields from the session profile, and validates namespace/project scope.
 
 ### Wait / follow
 

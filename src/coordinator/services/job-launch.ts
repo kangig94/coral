@@ -235,7 +235,7 @@ export class JobLaunchService {
     if (expectedProvider !== undefined && session.provider !== expectedProvider) {
       return rejectLaunch(
         'provider_mismatch',
-        `Session ${sessionId} belongs to provider '${session.provider}'. Use \`coral-cli ${session.provider} -s ${sessionId} ...\` instead.`,
+        `Session ${sessionId} belongs to provider '${session.provider}', not '${expectedProvider}'.`,
       );
     }
     if (session.backendNamespace !== this.deps.backendNamespace || session.projectRoot !== ctx.projectRoot) {
