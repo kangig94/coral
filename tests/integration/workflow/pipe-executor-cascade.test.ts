@@ -129,10 +129,6 @@ describe('pipe executor coral cascade invariant', () => {
           eventBus,
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
-          sessionLookup: {
-            listSessionRefs: () => [],
-            readSessionEntry: () => null,
-          },
           ...createTestJobJournalDeps(progressStore, runtime),
         },
       );
@@ -260,10 +256,6 @@ describe('pipe executor coral cascade invariant', () => {
           eventBus,
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
-          sessionLookup: {
-            listSessionRefs: () => [],
-            readSessionEntry: () => null,
-          },
           ...createTestJobJournalDeps(progressStore, runtime),
           coordinatorCommit,
         },

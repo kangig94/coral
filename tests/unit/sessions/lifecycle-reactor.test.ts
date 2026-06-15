@@ -565,6 +565,58 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(locateSpy).not.toHaveBeenCalled();
   });
 
+  it('discardSessionArtifacts discards recorded handles on demand, bypassing the retain gate', async () => {
+    const harness = createHarness();
+    const jobId = 'job-ondemand';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-ondemand.jsonl');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-ondemand.jsonl']]);
+  });
+
+  it('discardSessionArtifacts falls back to locateArtifact when no handle was recorded', async () => {
+    const harness = createHarness({
+      locateArtifact: (conversationRef) =>
+        conversationRef === 'thread-ondemand' ? '/tmp/rollout-thread-ondemand.jsonl' : null,
+    });
+    const jobId = 'job-ondemand-locate';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    harness.sessionManager.setConversationRef(sessionId, 'thread-ondemand');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-thread-ondemand.jsonl']]);
+  });
+
+  it('discardSessionArtifacts is a no-op for an unknown session', async () => {
+    const harness = createHarness();
+    await harness.reactor.discardSessionArtifacts('missing-session');
+    expect(harness.discardCalls).toEqual([]);
+  });
+
+  it('discardSessionArtifacts is a no-op when the provider declares no artifacts', async () => {
+    const harness = createHarness({ artifactMode: 'none' });
+    const jobId = 'job-ondemand-none';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-none.jsonl');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([]);
+  });
+
+  it('discardSessionArtifacts is a no-op when no handle was recorded and no conversationRef exists', async () => {
+    const harness = createHarness();
+    const jobId = 'job-ondemand-empty';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([]);
+  });
+
   it('observes job.terminal.recorded appended through JobStore.commit', async () => {
     const harness = createHarness();
     const jobId = 'job-store-terminal';

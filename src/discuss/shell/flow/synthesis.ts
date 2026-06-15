@@ -78,6 +78,25 @@ export async function handleSynthesis(
       } catch (error) {
         backendLog.warn(`Discuss record export failed for ${sessionId}: ${errorMessage(error)}`);
       }
+      // The discussion is fully synthesized. Participant (and facilitator) provider
+      // sessions were retained across turns for multi-turn resume and handoff
+      // recovery, which no longer applies — discard each one's native session log so
+      // it does not accumulate as noise. Best-effort: a failure must never break the
+      // already-recorded discussion.
+      for (const run of Object.values(committed.snapshot.runtime.agentRuns)) {
+        if (run.executionSessionId === undefined) {
+          continue;
+        }
+        try {
+          // The wired reactor implementation already logs and swallows its own
+          // discard failures; this catch is a defensive guard for the callback itself.
+          await ctx.discardSessionArtifacts?.(run.executionSessionId);
+        } catch (error) {
+          backendLog.warn(
+            `Discuss artifact cleanup failed for session ${run.executionSessionId}: ${errorMessage(error)}`,
+          );
+        }
+      }
     }
     detachSession(ctx, sessionId);
     return { shouldResume: false };

@@ -476,11 +476,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       bindHost: listenHost,
       advertiseHost: listenHost,
     },
-    createExecutionService: (ctx, deps) =>
-      new ExecutionService(ctx, {
-        ...deps,
-        sessionLookup: createProjectionSessionLookup(storeDb),
-      }),
+    createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
     createStoreServicesFromDbFn: (openedStoreDb) => {
       if (openedStoreDb !== storeDb) {
         openedStoreDb.close();

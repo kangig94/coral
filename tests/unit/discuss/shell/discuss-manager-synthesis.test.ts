@@ -74,6 +74,55 @@ describe('Discuss synthesis', () => {
     });
   });
 
+  it('discards every bound agent session log once the discussion is fully synthesized', async () => {
+    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
+    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-r', session: 'synth-session' });
+    const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'Final synthesis.', continuity: null });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
+    // Unit shim for the lifecycle-reactor.discardSessionArtifacts that
+    // createCoordinatorCore wires into the context in production.
+    const discardSessionArtifacts = vi.fn().mockResolvedValue(undefined);
+    harness.context.discardSessionArtifacts = discardSessionArtifacts;
+    await persistSession(harness, {
+      sessionId: 'discuss-1',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'agent.run.bound',
+          '2026-03-10T00:00:58.000Z',
+          { agent: 'alpha', executionSessionId: 'alpha-session' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'agent.run.bound',
+          '2026-03-10T00:00:59.000Z',
+          { agent: 'beta', executionSessionId: 'beta-session' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
+      ],
+    });
+
+    await handleSynthesis(harness.context, 'discuss-1', harness.ctx);
+
+    const discarded = discardSessionArtifacts.mock.calls.map((call) => call[0]);
+    expect(discarded).toEqual(expect.arrayContaining(['alpha-session', 'beta-session']));
+  });
+
   it('after recovery attach, resumeLoop resumes synthesis for ended sessions that have not been synthesized yet', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({

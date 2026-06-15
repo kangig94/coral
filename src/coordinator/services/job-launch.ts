@@ -5,11 +5,9 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
-import { getSessionById } from '../../sessions/resolve.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
 import { rejectLaunch, type LaunchDecision, type JobLaunchRequest, type JobResumeRequest } from '../../jobs/launch.js';
 import type { AcceptedAdmission, LaunchPool } from '../../jobs/contracts/admission.js';
-import type { SessionLookup } from '../../sessions/lookup.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { ListResult } from '../contracts.js';
 import {
@@ -34,7 +32,6 @@ export interface JobLaunchServiceDeps {
     discoverPluginRoot: (namespace: string) => string | null;
   };
   progressStore: JobProgressStore;
-  sessionLookup?: SessionLookup;
   launchOrchestrator: ProviderJobLaunchPort;
 }
 
@@ -160,16 +157,6 @@ export class JobLaunchService {
     return this.resumeResolved(providerName, spec, session, effectiveInput, ctx);
   }
 
-  async resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
-    const resolved = this.resolveSessionByIdForContinuation(input.sessionId, ctx, input.provider);
-    if ('status' in resolved) return resolved;
-
-    const spec = this.deps.providerRegistry.get(resolved.providerName);
-    if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${resolved.providerName}`);
-
-    return this.resumeResolved(resolved.providerName, spec, resolved.session, input, ctx);
-  }
-
   async coralDispatch(
     providerName: string,
     coralName: string,
@@ -218,37 +205,6 @@ export class JobLaunchService {
 
   list(providerName: string): ListResult {
     return { sessions: this.deps.sessionManager.list(providerName) };
-  }
-
-  private resolveSessionByIdForContinuation(
-    sessionId: string,
-    ctx: InvocationContext,
-    expectedProvider?: string,
-  ): { providerName: string; session: SessionEntry } | LaunchDecision {
-    if (!this.deps.sessionLookup) {
-      throw new Error('ExecutionService requires sessionLookup for session-id continuation.');
-    }
-    const session = getSessionById(sessionId, this.deps.sessionLookup);
-    if (!session) {
-      return rejectLaunch('session_not_found', `Session not found: ${sessionId}. Use exec to start a new session.`);
-    }
-    if (expectedProvider !== undefined && session.provider !== expectedProvider) {
-      return rejectLaunch(
-        'provider_mismatch',
-        `Session ${sessionId} belongs to provider '${session.provider}', not '${expectedProvider}'.`,
-      );
-    }
-    if (session.backendNamespace !== this.deps.backendNamespace || session.projectRoot !== ctx.projectRoot) {
-      return rejectLaunch(
-        'scope_mismatch',
-        `Session ${sessionId} does not belong to this backend namespace and project scope.`,
-      );
-    }
-
-    return {
-      providerName: session.provider,
-      session,
-    };
   }
 
   private buildContinuationProfile(

@@ -140,7 +140,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       providerRegistry: deps.providerRegistry,
       pluginRegistry: deps.pluginRegistry,
       progressStore: this.progressStore,
-      sessionLookup: deps.sessionLookup,
       launchOrchestrator: this.launchOrchestrator,
     });
     this.waitService = new JobWaitService({
@@ -214,10 +213,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
-  }
-
-  async resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
-    return this.runWithInvocationScope(ctx, async () => this.launchService.resumeBySessionId(input, ctx));
   }
 
   async coralDispatch(

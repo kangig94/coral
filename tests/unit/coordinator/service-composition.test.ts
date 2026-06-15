@@ -32,7 +32,6 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -207,7 +206,6 @@ function createService(
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     coordinatorCommit: (cb) => progressStore.commit(cb),
-    sessionLookup: createProjectionSessionLookup(progressStore.getDb()),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
     subscribeJobEvents,
@@ -567,14 +565,6 @@ function realizePluginRoot(ctx: InvocationContext): string {
   return pluginRootNamespace(ctx.pluginRoot);
 }
 
-function createScopedContext(name: string): InvocationContext {
-  const projectRoot = join(mockState.tmpHome, name);
-  mkdirSync(projectRoot, { recursive: true });
-  const pluginRoot = join(projectRoot, 'plugin');
-  mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
-}
-
 describe('ExecutionService', () => {
   let ctx: InvocationContext;
 
@@ -630,139 +620,6 @@ describe('ExecutionService', () => {
       if (decision.status === 'rejected') {
         expect(decision.message).toContain('Session not found: missing');
       }
-    });
-
-    it('resumeBySessionId rejects a mismatched provider assertion', async () => {
-      realizePluginRoot(ctx);
-      const { provider } = makeProvider();
-      mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate({
-        provider: 'codex',
-        name: 'alpha',
-        model: 'gpt-5',
-        cwd: ctx.projectRoot,
-        projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
-      });
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
-
-      const decision = await service.resumeBySessionId(
-        { provider: 'claude', sessionId: entry.sessionId, prompt: 'hello' },
-        ctx,
-      );
-
-      expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'provider_mismatch',
-      });
-      if (decision.status === 'rejected') {
-        expect(decision.message).toBe(
-          `Session ${entry.sessionId} belongs to provider 'codex', not 'claude'.`,
-        );
-      }
-    });
-
-    it('resumeBySessionId continues when the asserted provider matches the stored provider', async () => {
-      realizePluginRoot(ctx);
-      const never = new Promise<ProviderTurnResult>(() => {});
-      const { provider, execute } = makeProvider({ execute: () => never });
-      mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate({
-        provider: 'codex',
-        name: 'alpha',
-        model: 'gpt-5',
-        cwd: ctx.projectRoot,
-        projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
-      });
-      mgr.setConversationRef(entry.sessionId, 'thread-1');
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
-
-      const decision = await service.resumeBySessionId(
-        { provider: 'codex', sessionId: entry.sessionId, prompt: 'hello' },
-        ctx,
-      );
-
-      expect(decision.status).toBe('running');
-      if (decision.status !== 'running') {
-        throw new Error('expected running launch');
-      }
-      trackJob(decision.job);
-      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-      expect(request).toMatchObject({
-        action: 'resume',
-        conversationRef: 'thread-1',
-      });
-    });
-
-    it('resumeBySessionId continues the stored provider when no provider assertion is supplied', async () => {
-      realizePluginRoot(ctx);
-      const never = new Promise<ProviderTurnResult>(() => {});
-      const { provider, execute } = makeProvider({ execute: () => never });
-      mockState.getNewProvider.mockReturnValue(provider);
-      const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate({
-        provider: 'codex',
-        name: 'alpha',
-        model: 'gpt-5',
-        cwd: ctx.projectRoot,
-        projectRoot: ctx.projectRoot,
-        backendNamespace: pluginRootNamespace(ctx.pluginRoot),
-      });
-      mgr.setConversationRef(entry.sessionId, 'thread-1');
-      const service = createService(ctx, { backendNamespace: pluginRootNamespace(ctx.pluginRoot) });
-
-      const decision = await service.resumeBySessionId({ sessionId: entry.sessionId, prompt: 'hello' }, ctx);
-
-      expect(decision.status).toBe('running');
-      if (decision.status !== 'running') {
-        throw new Error('expected running launch');
-      }
-      trackJob(decision.job);
-      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-      expect(request).toMatchObject({
-        action: 'resume',
-        conversationRef: 'thread-1',
-      });
-    });
-
-    it('resumeBySessionId rejects missing sessions', async () => {
-      const { provider } = makeProvider();
-      mockState.getNewProvider.mockReturnValue(provider);
-      const service = createService(ctx);
-
-      const decision = await service.resumeBySessionId({ sessionId: 'missing', prompt: 'hello' }, ctx);
-
-      expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'session_not_found',
-      });
-    });
-
-    it('resumeBySessionId rejects sessions outside the current scope', async () => {
-      const otherCtx = createScopedContext('other-project');
-      const foreignMgr = createSessionManager(otherCtx.projectRoot);
-      const foreignEntry = foreignMgr.allocate({
-        provider: 'codex',
-        name: 'foreign',
-        model: 'gpt-5',
-        cwd: otherCtx.projectRoot,
-        projectRoot: otherCtx.projectRoot,
-        backendNamespace: pluginRootNamespace(otherCtx.pluginRoot),
-      });
-      const service = createService(ctx);
-
-      const decision = await service.resumeBySessionId({ sessionId: foreignEntry.sessionId, prompt: 'hello' }, ctx);
-
-      expect(decision).toMatchObject({
-        status: 'rejected',
-        phase: 'preflight',
-        code: 'scope_mismatch',
-      });
     });
 
     it('resume inherits stored continuation profile fields when the input omits them', async () => {

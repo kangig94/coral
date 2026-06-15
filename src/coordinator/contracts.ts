@@ -10,7 +10,6 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
-import type { SessionLookup } from '../sessions/lookup.js';
 import type { CommitEventsFn } from '../store/append.js';
 import type { ProviderCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -19,12 +18,7 @@ import type { TypedEventBus } from './event-bus.js';
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;
-  /**
-   * In-process session continuation. No user-facing CLI/transport surface drives this — the
-   * `-s` flag and `sessions.message` route were removed — but it is retained for in-process
-   * callers: discuss participant turns, workflow steps, and recovery.
-   */
-  resumeBySessionId(input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision>;
+  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 interface CoordinatorJobOps {
@@ -88,5 +82,4 @@ export type ExecutionServiceDeps = {
     abortSignal?: AbortSignal;
   }) => AsyncIterable<JobEvent>;
   getCurrentJournalSeq: () => number;
-  sessionLookup?: SessionLookup;
 };

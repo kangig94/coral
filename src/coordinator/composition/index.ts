@@ -181,6 +181,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     runtime,
     getProgressStore,
     getExecutionService: services.getExecutionService,
+    ...(options.discardSessionArtifacts !== undefined
+      ? { discardSessionArtifacts: options.discardSessionArtifacts }
+      : {}),
   });
   // Coordinator-owned abort registry for internal KB jobs (source-import,
   // reindex). Shared with `createCoordinatorControl.abortJobs` so
