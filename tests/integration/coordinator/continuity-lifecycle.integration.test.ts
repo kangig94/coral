@@ -12,7 +12,6 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
@@ -159,7 +158,6 @@ describe('coordinator continuity lifecycle integration', () => {
       eventBus,
       providerRegistry: providerRegistry as never,
       pluginRegistry: { discoverPluginRoot: () => null },
-      sessionLookup: createProjectionSessionLookup(progressStore.getDb()),
       ...createTestJobJournalDeps(progressStore, runtime),
     });
     return { service, progressStore };

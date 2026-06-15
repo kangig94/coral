@@ -176,25 +176,6 @@ export async function executeCatalogRequest(
       return unaryHttp(launchToHttp(decision, 201));
     }
 
-    case 'sessions.message': {
-      const parsed = request as Record<string, unknown> & { sessionId: string; prompt: string };
-      const recovering = ensureLaunchFenceInactive(rpcPorts);
-      if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
-      if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
-
-      const decision = await rpcPorts.sessions.resumeBySessionId(
-        {
-          sessionId: parsed.sessionId,
-          prompt: parsed.prompt,
-          ...(typeof parsed.provider === 'string' ? { provider: parsed.provider } : {}),
-          ...commonSessionInputFields(parsed),
-        },
-        ctx,
-      );
-      return unaryHttp(launchToHttp(decision, 202));
-    }
-
     case 'workflow.run': {
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);

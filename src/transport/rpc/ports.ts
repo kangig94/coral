@@ -1,6 +1,6 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
-import type { JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../../jobs/launch.js';
+import type { JobLaunchRequest, LaunchDecision } from '../../jobs/launch.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
@@ -12,11 +12,6 @@ import type { ToolDomainResult } from '../tool-result.js';
 export type SessionStartInput = Pick<
   JobLaunchRequest,
   'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'retention'
->;
-
-export type SessionResumeInput = Pick<
-  JobResumeRequest,
-  'sessionId' | 'prompt' | 'provider' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt'
 >;
 
 export type WorkflowPortInput = {
@@ -47,7 +42,6 @@ export type JobListFilters = {
 
 export interface SessionRequestPort {
   start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<LaunchDecision>;
-  resumeBySessionId(input: SessionResumeInput, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
 export interface JobsRequestPort {

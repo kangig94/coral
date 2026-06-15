@@ -29,7 +29,7 @@ const PROVIDER_FAILURE_CASES = [
   [
     'session_unavailable',
     'session detached',
-    'Codex session unavailable: session detached. Start a new Coral session or resume without --session.',
+    'Codex session unavailable: session detached. Start a new Coral session.',
   ],
   ['request_failed', 'transport reset', 'codex turn failed: transport reset.'],
 ] as const satisfies ReadonlyArray<readonly [SessionProviderFailureReason, string, string]>;

@@ -82,6 +82,7 @@ export type DiscussContextRegistry = {
 export type DiscussContextConstructionOptions = {
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
+  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
 };
 
 export function createDiscussContextRegistry(): DiscussContextRegistry {
@@ -109,6 +110,9 @@ export function getOrCreate(
     store,
     runtime: options.runtime,
     jobStatusReader: options.jobStatusReader,
+    ...(options.discardSessionArtifacts !== undefined
+      ? { discardSessionArtifacts: options.discardSessionArtifacts }
+      : {}),
   };
   registry.contexts.set(projectRoot, context);
   return context;

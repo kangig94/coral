@@ -70,6 +70,7 @@ function createHarness(
     artifactMode?: ProviderArtifactMode;
     autoObserveCoordinator?: boolean;
     discardArtifacts?: (handles: readonly string[]) => Promise<DiscardOutcome>;
+    locateArtifact?: (conversationRef: string) => string | null;
   } = {},
 ): Harness {
   const artifactMode = options.artifactMode ?? 'managed';
@@ -94,6 +95,9 @@ function createHarness(
                 }
                 return { kind: 'discarded' };
               },
+              ...(options.locateArtifact !== undefined
+                ? { locateArtifact: (conversationRef: string) => options.locateArtifact!(conversationRef) }
+                : {}),
             })
           : none('test provider has no artifacts'),
       )
@@ -483,6 +487,134 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
     expect(noneHarness.discardCalls).toEqual([]);
+  });
+
+  it('falls back to provider locateArtifact when no handle was recorded but a conversationRef exists', async () => {
+    const harness = createHarness({
+      locateArtifact: (conversationRef) =>
+        conversationRef === 'thread-fallback' ? '/tmp/rollout-thread-fallback.jsonl' : null,
+    });
+    const jobId = 'job-locate-fallback';
+    const sessionId = await openClaimedSession(harness, jobId);
+    harness.sessionManager.setConversationRef(sessionId, 'thread-fallback');
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await expectRetentionEvents(harness, sessionId, [
+      {
+        type: 'session.retention.discard.requested',
+        attempt: 1,
+        handles: ['/tmp/rollout-thread-fallback.jsonl'],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: ['/tmp/rollout-thread-fallback.jsonl'],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-thread-fallback.jsonl']]);
+  });
+
+  it('records skipped_no_handles when locateArtifact also finds nothing', async () => {
+    const harness = createHarness({ locateArtifact: () => null });
+    const jobId = 'job-locate-miss';
+    const sessionId = await openClaimedSession(harness, jobId);
+    harness.sessionManager.setConversationRef(sessionId, 'thread-missing');
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await expectRetentionEvents(harness, sessionId, [
+      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: [],
+        outcome: 'skipped_no_handles',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([]);
+  });
+
+  it('prefers an in-run recorded handle over the locateArtifact fallback', async () => {
+    const locateSpy = vi.fn((_ref: string) => '/tmp/should-not-be-used.jsonl');
+    const harness = createHarness({ locateArtifact: locateSpy });
+    const jobId = 'job-handle-precedence';
+    const sessionId = await openClaimedSession(harness, jobId);
+    harness.sessionManager.setConversationRef(sessionId, 'thread-precedence');
+    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-recorded.jsonl');
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await expectRetentionEvents(harness, sessionId, [
+      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-recorded.jsonl'] },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: ['/tmp/rollout-recorded.jsonl'],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-recorded.jsonl']]);
+    expect(locateSpy).not.toHaveBeenCalled();
+  });
+
+  it('discardSessionArtifacts discards recorded handles on demand, bypassing the retain gate', async () => {
+    const harness = createHarness();
+    const jobId = 'job-ondemand';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-ondemand.jsonl');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-ondemand.jsonl']]);
+  });
+
+  it('discardSessionArtifacts falls back to locateArtifact when no handle was recorded', async () => {
+    const harness = createHarness({
+      locateArtifact: (conversationRef) =>
+        conversationRef === 'thread-ondemand' ? '/tmp/rollout-thread-ondemand.jsonl' : null,
+    });
+    const jobId = 'job-ondemand-locate';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    harness.sessionManager.setConversationRef(sessionId, 'thread-ondemand');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-thread-ondemand.jsonl']]);
+  });
+
+  it('discardSessionArtifacts is a no-op for an unknown session', async () => {
+    const harness = createHarness();
+    await harness.reactor.discardSessionArtifacts('missing-session');
+    expect(harness.discardCalls).toEqual([]);
+  });
+
+  it('discardSessionArtifacts is a no-op when the provider declares no artifacts', async () => {
+    const harness = createHarness({ artifactMode: 'none' });
+    const jobId = 'job-ondemand-none';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-none.jsonl');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([]);
+  });
+
+  it('discardSessionArtifacts is a no-op when no handle was recorded and no conversationRef exists', async () => {
+    const harness = createHarness();
+    const jobId = 'job-ondemand-empty';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([]);
   });
 
   it('observes job.terminal.recorded appended through JobStore.commit', async () => {

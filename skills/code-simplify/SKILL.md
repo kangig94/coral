@@ -67,7 +67,6 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
        Single pass:
        - Self-execute (default): run `<Execution>` directly on the target files.
        - Delegate (`--delegate`): run `coral-cli <other-host> -b -i "<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>" --work-dir "<project root>" -d`.
-         Do NOT pass `--session`.
          **Every delegated prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
          or any command that discards uncommitted changes. Other processes may be working in the same
          worktree. Only edit target files through tool calls."
@@ -77,7 +76,6 @@ Strip the `--delegate` flag before passing the prompt to the execution path.
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
        - Delegate (`--delegate`): dispatch one detached `coral-cli <other-host> -b -i ... -d` launch per file group.
          **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
-         Do NOT pass `--session`.
          Collect all `job`s from the detached launch lines, then run `coral-cli wait --jobs "<job-id list>" --embed` until all complete; each terminal block always prints `Result path: <path>`, which is the durable artifact location.
     5) Review each change for correctness AND justification.
        Use git diff as a before/after reference when the diff is manageable.

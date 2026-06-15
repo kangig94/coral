@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sessionCreateSchema, sessionMessageSchema } from '#src/sessions/command-schemas.js';
+import { sessionCreateSchema } from '#src/sessions/command-schemas.js';
 
 describe('session wire schemas', () => {
   it('sessionCreateSchema exposes the documented field set', () => {
@@ -38,20 +38,5 @@ describe('session wire schemas', () => {
         retention: 'discard',
       }),
     ).toThrow();
-  });
-
-  it('sessionMessageSchema exposes the documented field set', () => {
-    expect(Object.keys(sessionMessageSchema.shape).sort()).toEqual([
-      'bypassPermissions',
-      'claudeModelCap',
-      'effort',
-      'model',
-      'owner',
-      'projectRoot',
-      'prompt',
-      'provider',
-      'systemPrompt',
-      'workDir',
-    ]);
   });
 });

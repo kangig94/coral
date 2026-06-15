@@ -47,7 +47,7 @@ import {
   kbWikiRewriteRequestSchema,
   kbWikiUnlinkRequestSchema,
 } from '../../kb/tool-contracts.js';
-import { sessionCreateSchema, sessionMessageRequestSchema } from '../../sessions/command-schemas.js';
+import { sessionCreateSchema } from '../../sessions/command-schemas.js';
 import type { RpcPorts } from './ports.js';
 import { workflowRequestSchema } from './workflow.js';
 
@@ -74,14 +74,6 @@ export const rpcCatalog = [
     responseKind: 'json',
     portKey: 'sessions',
     http: { method: 'POST', path: '/sessions' },
-  },
-  {
-    name: 'sessions.message',
-    kind: 'unary',
-    requestSchema: sessionMessageRequestSchema,
-    responseKind: 'json',
-    portKey: 'sessions',
-    http: { method: 'POST', path: '/sessions/:sessionId/messages' },
   },
   {
     name: 'workflow.run',

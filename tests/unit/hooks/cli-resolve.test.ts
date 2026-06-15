@@ -36,7 +36,7 @@ describe('cli-resolve.mjs', () => {
 
   it('leaves invalid top-level -f untouched for Commander to reject at parse time', () => {
     const fixture = createFixture();
-    const command = 'coral-cli -f json codex -s session-1 -i "text with $HOME and `backticks`"';
+    const command = 'coral-cli -f json codex -i "text with $HOME and `backticks`"';
 
     const result = runHook(CLI_RESOLVE_HOOK, {
       hook_event_name: 'PreToolUse',

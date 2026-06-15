@@ -5,7 +5,8 @@ import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderDefinition } from '../providers/define.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
-import { listProjectionSessionEntries } from './projections.js';
+import { collectArtifactHandles } from './artifact-discard.js';
+import { listProjectionSessionEntries, readProjectionSessionEntriesById } from './projections.js';
 import {
   appendRetentionDiscardCompleted,
   appendRetentionDiscardFailed,
@@ -90,6 +91,31 @@ export class LifecycleReactor {
     }
   }
 
+  /**
+   * Discard a completed session's provider native artifacts on demand, bypassing
+   * the retention policy gate — used when an owning lifecycle concludes (e.g. a
+   * discussion is fully synthesized) for sessions that were retained across turns.
+   * Best-effort and event-free; the reactor remains the single site permitted to
+   * invoke `discardArtifacts` (see `tests/invariants/cleanup-discipline.test.ts`).
+   */
+  async discardSessionArtifacts(sessionId: string): Promise<void> {
+    const entry = readProjectionSessionEntriesById(this.options.db(), [sessionId]).get(sessionId);
+    if (!entry) return;
+    const provider = this.options.providers.get(entry.provider);
+    if (!provider) return;
+    if (provider.artifacts.kind !== 'managed') {
+      this.log(`On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`);
+      return;
+    }
+    const handles = collectArtifactHandles(entry, provider, this.options.runtime);
+    if (handles.length === 0) return;
+    try {
+      await provider.artifacts.discardArtifacts(handles, this.options.runtime);
+    } catch (error: unknown) {
+      this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
+    }
+  }
+
   async enforceRetention(work: SessionRetentionWork): Promise<void> {
     const { entry, jobId, sessionId } = work;
     if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
@@ -106,12 +132,7 @@ export class LifecycleReactor {
       return;
     }
 
-    const recordedHandles: string[] = [];
-    for (const artifact of entry.artifactHandles) {
-      if (artifact.sourceJobId === undefined || artifact.sourceJobId === jobId) {
-        recordedHandles.push(artifact.handle);
-      }
-    }
+    const recordedHandles = collectArtifactHandles(entry, provider, this.options.runtime, { jobId });
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
     const attempt = readNextRetentionDiscardAttempt(this.options.db(), sessionId, attemptFloor);
 

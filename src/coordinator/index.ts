@@ -489,6 +489,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     providerRegistry,
     eventBus,
     runtime,
+    discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
@@ -577,7 +578,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
         subscribeJobEvents,
         getCurrentJournalSeq,
-        sessionLookup: getSessionLookup(),
       };
       return providedCreateExecutionService
         ? providedCreateExecutionService(ctx, wiredDeps)

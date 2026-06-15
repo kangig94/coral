@@ -188,4 +188,8 @@ function safeReadDir(storage: ClaudeArtifactLocatorStorage, path: string) {
 
 export const claudeArtifactCapability = managed({
   discardArtifacts: discardRecordedArtifacts,
+  locateArtifact: (conversationRef, runtime) => {
+    const result = locateClaudeJsonlArtifactFromRuntime(conversationRef, runtime);
+    return result?.kind === 'match' ? result.artifact.handle : null;
+  },
 });

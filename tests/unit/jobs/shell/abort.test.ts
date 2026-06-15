@@ -35,7 +35,6 @@ import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -155,7 +154,6 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
-    sessionLookup: createProjectionSessionLookup(progressStore.getDb()),
     ...createTestJobJournalDeps(progressStore, runtime),
   });
 }

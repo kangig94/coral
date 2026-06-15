@@ -41,9 +41,10 @@ type CreateDiscussRuntimeDeps = {
   };
   getExecutionService: (ctx: InvocationContext) => {
     start(...args: unknown[]): Promise<DiscussLaunchDecision>;
-    resumeBySessionId(...args: unknown[]): Promise<DiscussLaunchDecision>;
+    resume(...args: unknown[]): Promise<DiscussLaunchDecision>;
     waitStreamOnce(...args: unknown[]): Promise<DiscussWaitResult>;
   };
+  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
 };
 
 export function createDiscussRuntime({
@@ -51,6 +52,7 @@ export function createDiscussRuntime({
   runtime,
   getProgressStore,
   getExecutionService,
+  discardSessionArtifacts,
 }: CreateDiscussRuntimeDeps): {
   getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -138,7 +140,7 @@ export function createDiscussRuntime({
     };
     const discussService: DiscussService = {
       start: (...args) => executionService.start(...args),
-      resume: (...args) => executionService.resumeBySessionId(...args),
+      resume: (...args) => executionService.resume(...args),
       waitStreamOnce: (...args) => executionService.waitStreamOnce(...args),
     };
     return getOrCreateDiscussContext(world.discussRegistry, ctx.projectRoot, discussService, store, {
@@ -150,6 +152,7 @@ export function createDiscussRuntime({
         projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
       },
       jobStatusReader,
+      ...(discardSessionArtifacts !== undefined ? { discardSessionArtifacts } : {}),
     });
   }
 

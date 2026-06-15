@@ -103,6 +103,12 @@ export type CoordinatorCoreOptions = {
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
+  /**
+   * Discards a participant session's provider native log when a discussion fully
+   * ends. Wired from the coordinator's lifecycle reactor; omitted in lightweight
+   * harnesses (simulation, unit tests), where end-of-discussion cleanup is a no-op.
+   */
+  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
 };
 
 export type CoordinatorCoreResult = {

@@ -78,4 +78,9 @@ export type DiscussContext = {
   store: DiscussSessionStore;
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
+  /**
+   * Discards a participant session's provider native log. Wired from the lifecycle
+   * reactor at composition; absent in lightweight harnesses, so callers guard with `?.`.
+   */
+  discardSessionArtifacts?: (sessionId: string) => Promise<void>;
 };

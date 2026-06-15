@@ -113,7 +113,6 @@ export type CliCommandClient = AbortCapableClient & {
     prompt: string,
     options?: CreateSessionRequestOptions,
   ): Promise<AcceptedLaunchResponse>;
-  sendMessage(sessionId: string, prompt: string, options?: SessionRequestOptions): Promise<AcceptedLaunchResponse>;
   workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
@@ -160,7 +159,6 @@ export type CliCommandClient = AbortCapableClient & {
 
 export type ProviderRunOptions = {
   input?: string[];
-  session?: string;
   workDir?: string;
   model?: string;
   owner?: string;
@@ -431,12 +429,6 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       return request<AcceptedLaunchResponse>(
         'sessions.create',
         buildTransportContextBody({ provider, prompt, ...options }, defaultContext),
-      );
-    },
-    sendMessage: async (sessionId, prompt, options = {}) => {
-      return request<AcceptedLaunchResponse>(
-        'sessions.message',
-        buildTransportContextBody({ sessionId, prompt, ...options }, defaultContext),
       );
     },
     workflow: async (expression, options) => {

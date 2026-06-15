@@ -181,6 +181,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     runtime,
     getProgressStore,
     getExecutionService: services.getExecutionService,
+    ...(options.discardSessionArtifacts !== undefined
+      ? { discardSessionArtifacts: options.discardSessionArtifacts }
+      : {}),
   });
   // Coordinator-owned abort registry for internal KB jobs (source-import,
   // reindex). Shared with `createCoordinatorControl.abortJobs` so
@@ -293,7 +296,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const rpcPorts: RpcPorts = {
     sessions: {
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
-      resumeBySessionId: (input, ctx) => services.getExecutionService(ctx).resumeBySessionId(input, ctx),
     },
     jobs: {
       scopeCheck: (jobIds, projectRoot) => control.scopeCheckJobs(jobIds, projectRoot, world.namespace),

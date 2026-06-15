@@ -17,8 +17,7 @@ export type LaunchDecision =
 
 /**
  * Coordinator response shape when a launch request is accepted (running or queued).
- * Returned over IPC and HTTP for sessions.create / sessions.message /
- * workflow.run.
+ * Returned over IPC and HTTP for sessions.create / workflow.run.
  */
 export type AcceptedLaunchResponse = {
   session: string;

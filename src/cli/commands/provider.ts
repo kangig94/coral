@@ -12,17 +12,10 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
     const provider = program.command(providerName).description(`Run a prompt via ${providerName}`);
     markProviderCommand(provider);
     provider
-      .argument(
-        '[agent]',
-        'Agent name (provider session artifacts are discarded on completion when an agent is set; omit for raw execution)',
-      )
+      .argument('[agent]', 'Agent name (optional; omit for a raw prompt run)')
       .option(
         '-i, --input <text-or-file...>',
         'Prompt text or file path (multiple tokens are joined with spaces; a single existing path is read as a file)',
-      )
-      .option(
-        '-s, --session <id>',
-        'Session ID to resume; retention policy of the existing session applies (--agent does not change retention on resume)',
       )
       .option('-w, --work-dir <path>', 'Working directory')
       .option('-m, --model <model>', 'Model override')
@@ -37,20 +30,17 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
 
           const prompt = resolveInput(opts.input);
           const client = makeClient(process.cwd(), provider);
-          const retention = agent !== undefined ? 'discard_provider_artifacts_on_terminal' : 'retain';
           const requestOptions = {
             ...(opts.workDir !== undefined ? { workDir: opts.workDir } : {}),
             ...(opts.model !== undefined ? { model: opts.model } : {}),
             ...(opts.owner !== undefined ? { owner: opts.owner } : {}),
             ...(opts.bypassPermissions !== undefined ? { bypassPermissions: opts.bypassPermissions } : {}),
           };
-          const result = opts.session
-            ? await client.sendMessage(opts.session, prompt, { ...requestOptions, provider: providerName })
-            : await client.createSession(
-                providerName,
-                prompt,
-                agent ? { agent, retention, ...requestOptions } : { retention, ...requestOptions },
-              );
+          const result = await client.createSession(providerName, prompt, {
+            retention: 'discard_provider_artifacts_on_terminal',
+            ...(agent !== undefined ? { agent } : {}),
+            ...requestOptions,
+          });
           await handleLaunchResult(result, opts.detach, client);
         } catch (error) {
           emitError(error);
