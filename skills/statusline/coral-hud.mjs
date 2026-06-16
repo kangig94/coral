@@ -8,6 +8,11 @@ import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSy
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
+
+// Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
+// inherited by this statusLine subprocess). Falls back to ~/.claude.
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+
 const SEP = " \u2502 ";
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -305,7 +310,7 @@ function parseTranscript(input) {
 
 // --- cache ---
 
-const CACHE_DIR = join(homedir(), ".claude", "hud");
+const CACHE_DIR = join(CLAUDE_DIR, "hud");
 const CACHE_FILE = join(CACHE_DIR, ".coral-cache.json");
 const BACKEND_CACHE_FILE = join(CACHE_DIR, ".coral-backend-cache.json");
 const CODEX_FLAG_FILE = join(CACHE_DIR, ".coral-codex-enabled");
@@ -511,7 +516,7 @@ function getClaudeAccessToken() {
   }
   // File fallback
   try {
-    const credPath = join(homedir(), ".claude", ".credentials.json");
+    const credPath = join(CLAUDE_DIR, ".credentials.json");
     const parsed = JSON.parse(readFileSync(credPath, "utf-8"));
     return (parsed.claudeAiOauth || parsed).accessToken || null;
   } catch {
@@ -824,7 +829,7 @@ function resolveBackendInfoPath() {
 }
 
 // Resolved dynamically on each cache-miss (not cached at module load)
-const REEF_INFO_PATH = join(homedir(), ".claude", "coral", "reef.json");
+const REEF_INFO_PATH = join(CLAUDE_DIR, "coral", "reef.json");
 
 function readReefInfo() {
   try {

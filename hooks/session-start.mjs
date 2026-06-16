@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
   buildFlavor,
+  claudeConfigDir,
   coralProjectDir,
   exitIfChildProcess,
   exitIfWrongFlavor,
@@ -101,9 +102,8 @@ try {
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
   const wakeUpPayload = projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
-  const additionalContext = wakeUpPayload === null
-    ? `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`
-    : `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}\n\n${wakeUpPayload}`;
+  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
+  const additionalContext = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
@@ -163,7 +163,7 @@ function ensureCoralSymlink(projectDir, gitRoot) {
 
 function ensureCliPermission() {
   const rule = 'Bash(node *coral-cli*)';
-  const dir = join(homedir(), '.claude');
+  const dir = claudeConfigDir();
   const file = join(dir, 'settings.json');
   try {
     const settings = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : {};

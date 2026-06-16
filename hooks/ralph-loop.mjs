@@ -21,9 +21,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale } from './lib/hook-utils.mjs';
+import { claudeConfigDir, exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { RALPH_FIELD_RE, RALPH_MESSAGE_RE } from './lib/coral-skills.mjs';
 exitIfChildProcess();
@@ -193,7 +192,7 @@ function buildCtxNote(sessionId) {
 
 function readCtxPct(sessionId) {
   try {
-    const sessionsPath = join(homedir(), '.claude', 'hud', '.coral-sessions.json');
+    const sessionsPath = join(claudeConfigDir(), 'hud', '.coral-sessions.json');
     const all = JSON.parse(readFileSync(sessionsPath, 'utf8'));
     const entry = all[sessionId];
     if (!entry || entry.ctx == null) return null;

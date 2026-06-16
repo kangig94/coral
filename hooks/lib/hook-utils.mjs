@@ -115,6 +115,12 @@ export function coralProjectDir(projectDir) {
   return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
 }
 
+// Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
+// inherited by hooks and subprocesses). Falls back to ~/.claude.
+export function claudeConfigDir() {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+}
+
 export function resolveKbRoot() {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;
