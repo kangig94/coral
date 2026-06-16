@@ -11,7 +11,7 @@ Manage the coral HUD statusline for Claude Code.
 
 ## Commands
 
-> **Config directory**: `CONFIG_DIR` = the **Claude config dir** reported in the SessionStart context (already resolved, absolute — it honors `CLAUDE_CONFIG_DIR`). Use it for every `CONFIG_DIR/...` path below. `~/.codex/auth.json` is Codex's own directory and is NOT affected.
+> **Config directory**: `CONFIG_DIR` = the **Claude config dir** reported in the SessionStart context (already resolved, absolute — it honors `CLAUDE_CONFIG_DIR`). Use it for every `CONFIG_DIR/...` path below, consistently across all steps. `~/.codex/auth.json` is Codex's own directory and is NOT affected.
 
 ### install
 
@@ -32,9 +32,9 @@ Manage the coral HUD statusline for Claude Code.
    }
    ```
    Expand `CONFIG_DIR` to its absolute path (and `~` to the real home directory).
-6. Check if `~/.codex/auth.json` exists:
+6. Check if `~/.codex/auth.json` exists (Codex's own dir — the literal `~/.codex`, NOT under `CONFIG_DIR`):
    - If yes, ask the user: "Codex login detected. Display Codex usage in statusline?"
-     - **yes** → create `CONFIG_DIR/hud/.coral-codex-enabled` (empty file)
+     - **yes** → create `CONFIG_DIR/hud/.coral-codex-enabled` (empty file — the **same** `CONFIG_DIR/hud` as step 2; do not write this to `~/.claude` when `CONFIG_DIR` differs)
      - **no** → delete `CONFIG_DIR/hud/.coral-codex-enabled` if it exists
    - If no `auth.json`, skip silently (do not create or delete any Codex files)
 7. Confirm installation to the user
@@ -58,7 +58,7 @@ The install command reads this file and writes it to `CONFIG_DIR/hud/coral-hud.m
 
 ## Notes
 
-- `CONFIG_DIR` is the Claude config dir from the SessionStart context (see Config directory above); expand `~` to the real home in any remaining paths
+- `CONFIG_DIR` is the Claude config dir from the SessionStart context (see Config directory above); each config dir keeps its own HUD install and its own Codex opt-in flag
 - If re-running install, overwrite the existing script (this updates the HUD to the latest version)
 - Claude rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
 - Codex rate limits and spark limits are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`~/.codex/auth.json`)
