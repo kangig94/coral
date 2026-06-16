@@ -85,9 +85,35 @@ export function normalizeControllerEnv(env?: Record<string, string>): Record<str
   return result;
 }
 
+/**
+ * Resolve the model for a Coral-launched Claude session, capped by
+ * `CORAL_CLAUDE_MODEL_CAP` (default `opus`).
+ *
+ * Precedence: an explicit per-request `model` wins outright; else
+ * `CORAL_CLAUDE_MODEL` is the launch default; else `undefined`, which leaves the
+ * model unspecified so the Claude TUI uses its own default (Coral states no
+ * opinion). Empty string is treated as unset.
+ *
+ * The control flow deliberately differs from the Codex analog
+ * (`resolveModelTier(model) ?? env ?? DEFAULT`, a single fall-through): the
+ * request branch returns *without* consulting the env, so a soft per-request
+ * tier never silently adopts the operator default. The env default, in
+ * contrast, is applied verbatim even for an in-cap abstract tier — there
+ * `resolveModelTier` returns `undefined` to defer to the provider, but an
+ * explicit operator config must take effect, so we fall back to the configured
+ * value.
+ */
 export function resolveClaudeModel(model: string | undefined, env: Record<string, string>): string | undefined {
   const cap = env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
-  return resolveModelTier(model, cap);
+  if (model !== undefined) {
+    return resolveModelTier(model, cap);
+  }
+  const envModel = env.CORAL_CLAUDE_MODEL;
+  if (envModel === undefined || envModel.length === 0) {
+    return undefined;
+  }
+  const cappedDefault = resolveModelTier(envModel, cap);
+  return cappedDefault ?? envModel;
 }
 
 export function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>): EffortLevel {
