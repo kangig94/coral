@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { raceTimeout } from '../../../infra/async.js';
 import { isRecord, readString } from '../../../infra/json.js';
+import { resolveClaudeConfigDir } from '../../../infra/path/index.js';
 import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import { formatToolProgress } from '../progress.js';
 import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
@@ -857,7 +858,9 @@ export class SingleSessionController {
       return this.transcriptPath;
     }
 
-    const projectsRoot = join(homedir(), '.claude', 'projects');
+    // The daemon preserves CLAUDE_CONFIG_DIR and forwards it to spawned `claude`
+    // children, so their session logs land under the same config dir we read here.
+    const projectsRoot = join(resolveClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR, homedir()), 'projects');
     try {
       const projectEntries = readdirSync(projectsRoot, { withFileTypes: true });
       for (const entry of projectEntries) {

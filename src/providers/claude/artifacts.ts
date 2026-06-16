@@ -8,7 +8,7 @@ import type { ProviderArtifactIdentity } from '../artifact-identity.js';
 
 type ClaudeArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
 type ClaudeArtifactCleanupStorage = ClaudeArtifactLocatorStorage & Pick<StoragePort, 'unlinkSync'>;
-type ClaudeArtifactLocatorEnv = Pick<Runtime['env'], 'homedir'>;
+type ClaudeArtifactLocatorEnv = Pick<Runtime['env'], 'claudeConfigDir'>;
 
 type ClaudeArtifactIndex = {
   readonly matchesByConversationRef: ReadonlyMap<string, readonly string[]>;
@@ -32,7 +32,7 @@ export function claudeJsonlArtifactIdentity(conversationRef: string): ProviderAr
 }
 
 export function resolveClaudeProjectsRoot(env: ClaudeArtifactLocatorEnv): string {
-  return join(env.homedir(), '.claude', 'projects');
+  return join(env.claudeConfigDir(), 'projects');
 }
 
 export function locateClaudeJsonlArtifact(options: {

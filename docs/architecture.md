@@ -296,6 +296,8 @@ Foundation layer
 | `~/.coral/kb/` or `~/.coral/kb-dev/` | Corpus-authoritative markdown KB |
 | `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` | KB runtime artifacts: text index state, Orama snapshots, source-import staging, and optional Needle artifacts |
 
+Daemon-owned state (the `store`, `coordinator`, `exports`, `engine`, and `projects` families, plus the KB runtime artifacts under `data/kb`) also partitions by **Claude config dir**. The plugin and its backend daemon install *inside* the config dir, so a non-default `CLAUDE_CONFIG_DIR` is a distinct daemon: each path then nests beneath `~/.coral/by-config/<slot>/` (slot = 8-char hash of the resolved config dir), giving it its own socket, store, and job tree instead of fighting over one. The default config dir (`~/.claude`) maps to no slot, so the paths above are unchanged. Only the KB *markdown vault* (`~/.coral/kb` / `~/.coral/kb-dev`) stays shared — that is the user's knowledge; its rebuildable runtime index/journal under `data/kb` is daemon state and partitions with the rest. See design-rationale §5.4.
+
 The core architectural boundary is simple: the CLI is the only local command surface, the backend is the only daemon surface, and all long-running or resumable work is tracked as backend jobs.
 
 ## Design Rationale

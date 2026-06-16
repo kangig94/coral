@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { type CoordinatorPaths, coordinatorPaths } from './coordinator.js';
-import { coralRoot, kbVaultRoot } from './root.js';
+import { coralStateRoot, kbVaultRoot } from './root.js';
 import { type EnginePaths, enginePaths } from './engine.js';
 import { type StorePaths, storePaths } from './store.js';
 
@@ -48,8 +48,17 @@ export type { CoordinatorPaths } from './coordinator.js';
 export type { EnginePaths } from './engine.js';
 export type { StorePaths } from './store.js';
 
+// Config-dir resolution is part of this subdir's public surface: the runtime
+// composes paths from the resolved dir + slot, and provider/registry callers
+// resolve `.claude` data paths from the same dir. `root.js` stays internal.
+export { claudeConfigSlot, resolveClaudeConfigDir } from './root.js';
+
 export interface FamilyPathOptions {
   readonly baseDir?: string;
+  /** Per-config-dir partition slot for daemon-owned state families. Undefined
+   *  for the default config dir (shared `~/.coral` tree). The KB/corpus family
+   *  ignores this — knowledge is shared across config dirs by design. */
+  readonly configSlot?: string;
 }
 
 export interface CorpusPathOptions extends FamilyPathOptions {
@@ -80,7 +89,7 @@ export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): Corp
 export function exportsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): ExportsPaths {
   const base = flavor === 'dev' ? 'exports-dev' : 'exports';
   return {
-    jobsRoot: join(coralRoot(opts?.baseDir), base, 'jobs'),
+    jobsRoot: join(coralStateRoot(opts?.configSlot, opts?.baseDir), base, 'jobs'),
   };
 }
 
@@ -93,7 +102,7 @@ function sourceToSlug(source: string): string {
 // under `projects-dev`, so a dev build never shares a project's memo tree with
 // prod. Enforced uniformly by tests/invariants/flavor-path-separation.test.ts.
 export function projectsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): ProjectsPaths {
-  const root = join(coralRoot(opts?.baseDir), flavor === 'dev' ? 'projects-dev' : 'projects');
+  const root = join(coralStateRoot(opts?.configSlot, opts?.baseDir), flavor === 'dev' ? 'projects-dev' : 'projects');
   return {
     root,
     dataDir: (source) => join(root, sourceToSlug(source)),
@@ -104,20 +113,29 @@ export interface ComposeCoralPathOptions {
   readonly baseDir?: string;
   /** Resolved CORAL_KB_PATH value from caller's env port. */
   readonly customKbRoot?: string;
+  /** Precomputed per-config-dir slot (see `claudeConfigSlot`). Partitions the
+   *  daemon state tree; the KB stays shared. Undefined = default config dir. */
+  readonly configSlot?: string;
 }
 
 export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOptions): CoralPaths {
-  const familyOpts = opts?.baseDir === undefined ? undefined : { baseDir: opts.baseDir };
+  // State families (store/coordinator/exports/engine/projects) partition by
+  // config-dir slot so two config dirs run fully isolated daemons. Corpus/KB
+  // deliberately omits the slot — knowledge is shared across all config dirs.
+  const stateOpts: FamilyPathOptions = {
+    ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
+    ...(opts?.configSlot === undefined ? {} : { configSlot: opts.configSlot }),
+  };
   const corpusOpts: CorpusPathOptions = {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
     ...(opts?.customKbRoot === undefined ? {} : { customKbRoot: opts.customKbRoot }),
   };
   return {
-    store: storePaths(flavor, familyOpts),
+    store: storePaths(flavor, stateOpts),
     corpus: corpusPaths(flavor, corpusOpts),
-    coordinator: coordinatorPaths(flavor, undefined, familyOpts),
-    exports: exportsPaths(flavor, familyOpts),
-    engine: enginePaths(flavor, familyOpts),
-    projects: projectsPaths(flavor, familyOpts),
+    coordinator: coordinatorPaths(flavor, undefined, stateOpts),
+    exports: exportsPaths(flavor, stateOpts),
+    engine: enginePaths(flavor, stateOpts),
+    projects: projectsPaths(flavor, stateOpts),
   };
 }

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { EnvPort, StoragePort } from './port-types.js';
 import { isNoEntryError } from './fs-errors.js';
+import { resolveClaudeConfigDir } from './path/index.js';
 
 const installedPluginEntrySchema = z
   .object({
@@ -64,7 +65,8 @@ function resolveRegistryPath(deps: ResolvedPluginRegistryDeps): string {
   }
 
   const resolvedHome = deps.homeDir ?? deps.env.get('HOME') ?? deps.env.get('USERPROFILE') ?? homedir();
-  return join(resolvedHome, '.claude', 'plugins', 'installed_plugins.json');
+  const configDir = resolveClaudeConfigDir(deps.env.get('CLAUDE_CONFIG_DIR'), resolvedHome);
+  return join(configDir, 'plugins', 'installed_plugins.json');
 }
 
 export function createPluginRegistry(deps?: PluginRegistryDeps): PluginRegistry {

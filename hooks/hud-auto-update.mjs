@@ -2,8 +2,7 @@
 import { readFileSync, copyFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { buildFlavor, exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
+import { buildFlavor, claudeConfigDir, exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -30,7 +29,7 @@ try {
   if (!pluginRoot) process.exit(0);
   if (buildFlavor() !== 'prod') process.exit(0);
 
-  const hudDir = join(homedir(), '.claude', 'hud');
+  const hudDir = join(claudeConfigDir(), 'hud');
   const installed = join(hudDir, 'coral-hud.mjs');
   const source = join(pluginRoot, 'skills', 'statusline', 'coral-hud.mjs');
 

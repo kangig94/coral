@@ -2,11 +2,11 @@
 
 import { DatabaseSync } from './lib/sqlite.mjs';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   buildFlavor,
+  coralStateRoot,
   exitIfChildProcess,
   exitIfWrongFlavor,
   failOpen,
@@ -22,7 +22,7 @@ exitIfWrongFlavor();
 
 function storeDbPath() {
   const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
-  return join(homedir(), '.coral', dataDir, 'store', 'store.db');
+  return join(coralStateRoot(), dataDir, 'store', 'store.db');
 }
 
 function snapshotDirForProject(projectDir) {

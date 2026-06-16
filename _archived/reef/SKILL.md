@@ -6,6 +6,13 @@ argument-hint: "[--rebuild]"
 
 # Coral Reef Dashboard
 
+> **ARCHIVED — not a live skill.** Moved out of `skills/` so it is not discovered or
+> exposed to users (Claude Code recursively registers every `skills/<name>/SKILL.md`; there
+> is no frontmatter/naming flag to hide one in place). `coral-reef` development is paused.
+> To re-enable: move this directory back to `skills/reef/`. Note the data dir
+> (`~/.claude/coral-reef/`) still hardcodes `~/.claude` and does not yet honor
+> `CLAUDE_CONFIG_DIR` — fix that in the `coral-reef` server repo before re-enabling.
+
 Launch the coral-reef dashboard. Handles installation, updates, builds, and startup automatically.
 
 The runtime injects `Base directory for this skill:` which resolves to this skill's installed path.

@@ -128,8 +128,8 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 ## Notes
 
-- Binary installs go to `~/.claude/tools/`
-- Engine-local artifacts live under `~/.coral/data/engines/<engine>/` (production flavor) or `~/.coral/data-dev/engines/<engine>/` (dev flavor, when `CORAL_FLAVOR=dev` is set)
+- Install-only binaries and engine artifacts both land under the engine data tree (`~/.coral/data/engines/<engine>/`, or `~/.coral/data-dev/engines/<engine>/` when `CORAL_FLAVOR=dev`); the CLI reports the exact installed path as `command`
 - Corpus indexes stay under `~/.coral/data/kb/`
+- Under a non-default `CLAUDE_CONFIG_DIR`, these data paths nest beneath `~/.coral/by-config/<slot>/` — the daemon is isolated per config dir; the default config dir keeps the paths above unchanged
 - Some installed engines may have native artifacts or model downloads; follow the `userMessage` and `remediation` returned by the CLI for missing prerequisites.
 - On Windows, `unequip` after activation may require a Coral restart when a loaded native addon remains mapped for the coordinator process lifetime.

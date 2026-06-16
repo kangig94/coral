@@ -118,7 +118,7 @@ describe('claudeArtifactCapability', () => {
         [root]: [dirent('-workspace-a', 'dir')],
         [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
       }),
-      env: { homedir: () => '/home/user' },
+      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
     } as unknown as ArtifactCleanupRuntime;
 
     expect(claudeArtifactCapability.locateArtifact?.('session-1', runtime)).toBe(
@@ -135,7 +135,7 @@ describe('claudeArtifactCapability', () => {
         [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
         [`${root}/-workspace-b`]: [dirent('session-1.jsonl', 'file')],
       }),
-      env: { homedir: () => '/home/user' },
+      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
     } as unknown as ArtifactCleanupRuntime;
 
     expect(claudeArtifactCapability.locateArtifact?.('session-1', runtime)).toBeNull();
@@ -179,7 +179,7 @@ describe('claudeArtifactCapability', () => {
     const unlinkSync = vi.fn();
     const runtime = {
       storage: { unlinkSync },
-      env: { homedir: () => '/home/user' },
+      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
     } as unknown as ArtifactCleanupRuntime;
 
     await expect(

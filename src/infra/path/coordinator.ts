@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
 import { hashToken } from '../hash.js';
-import { coralRoot } from './root.js';
+import { coralStateRoot } from './root.js';
 
 export interface CoordinatorPaths {
   runDir: string;
@@ -14,6 +14,7 @@ export interface CoordinatorPaths {
 
 export interface CoordinatorPathOptions {
   readonly baseDir?: string;
+  readonly configSlot?: string;
 }
 
 const SOCKET_LIMIT_DARWIN = 104;
@@ -29,7 +30,7 @@ export function coordinatorPaths(
   opts?: CoordinatorPathOptions,
 ): CoordinatorPaths {
   const base = flavor === 'dev' ? 'run-dev' : 'run';
-  const runDir = join(coralRoot(opts?.baseDir), base);
+  const runDir = join(coralStateRoot(opts?.configSlot, opts?.baseDir), base);
   const candidateSocket = join(runDir, 'coordinator.sock');
   const limit = socketPathLimit();
   let socketPath = candidateSocket;

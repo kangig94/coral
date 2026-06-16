@@ -2,11 +2,12 @@
 
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
   buildFlavor,
+  claudeConfigDir,
   coralProjectDir,
+  coralStateRoot,
   exitIfChildProcess,
   exitIfWrongFlavor,
   isValidSessionId,
@@ -51,7 +52,7 @@ function spawnBackend(pluginRoot) {
   // the same runDir. Sharing the path with `src/transport/ipc/ensure.ts`'s
   // CLI-side spawn keeps logs unified across both spawn entry points and
   // benefits from the same rotation discipline.
-  const runDir = join(homedir(), '.coral', buildFlavor() === 'dev' ? 'run-dev' : 'run');
+  const runDir = join(coralStateRoot(), buildFlavor() === 'dev' ? 'run-dev' : 'run');
 
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
   let stderr = 'ignore';
@@ -101,9 +102,8 @@ try {
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
   const wakeUpPayload = projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
-  const additionalContext = wakeUpPayload === null
-    ? `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}`
-    : `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\n\n${injectContent}\n\n${wakeUpPayload}`;
+  const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
+  const additionalContext = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
 
   console.log(JSON.stringify({
     hookSpecificOutput: {
@@ -163,7 +163,7 @@ function ensureCoralSymlink(projectDir, gitRoot) {
 
 function ensureCliPermission() {
   const rule = 'Bash(node *coral-cli*)';
-  const dir = join(homedir(), '.claude');
+  const dir = claudeConfigDir();
   const file = join(dir, 'settings.json');
   try {
     const settings = existsSync(file) ? JSON.parse(readFileSync(file, 'utf-8')) : {};

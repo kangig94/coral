@@ -11,40 +11,42 @@ Manage the coral HUD statusline for Claude Code.
 
 ## Commands
 
+> **Config directory**: `CONFIG_DIR` = the **Claude config dir** reported in the SessionStart context (already resolved, absolute — it honors `CLAUDE_CONFIG_DIR`). Use it for every `CONFIG_DIR/...` path below. `~/.codex/auth.json` is Codex's own directory and is NOT affected.
+
 ### install
 
-1. Check if `~/.claude/hud/coral-hud.mjs` already exists:
+1. Check if `CONFIG_DIR/hud/coral-hud.mjs` already exists:
    - If exists and content matches `coral-hud.mjs` in this skill directory: inform user "HUD is already up to date", skip to step 6
    - If exists with different content: inform user "Updating HUD script to latest version", proceed
    - If not exists: proceed
-2. Read `coral-hud.mjs` from this skill directory and write it to `~/.claude/hud/coral-hud.mjs` (create `~/.claude/hud/` directory if needed)
-3. Read `~/.claude/settings.json` (create if absent)
+2. Read `coral-hud.mjs` from this skill directory and write it to `CONFIG_DIR/hud/coral-hud.mjs` (create `CONFIG_DIR/hud/` directory if needed)
+3. Read `CONFIG_DIR/settings.json` (create if absent)
 4. If `statusLine` already exists and is NOT coral's, **ask the user** before overwriting
 5. Set `statusLine` to:
    ```json
    {
      "statusLine": {
        "type": "command",
-       "command": "node ~/.claude/hud/coral-hud.mjs"
+       "command": "node CONFIG_DIR/hud/coral-hud.mjs"
      }
    }
    ```
-   Replace `~` with the actual home directory path.
+   Expand `CONFIG_DIR` to its absolute path (and `~` to the real home directory).
 6. Check if `~/.codex/auth.json` exists:
    - If yes, ask the user: "Codex login detected. Display Codex usage in statusline?"
-     - **yes** → create `~/.claude/hud/.coral-codex-enabled` (empty file)
-     - **no** → delete `~/.claude/hud/.coral-codex-enabled` if it exists
+     - **yes** → create `CONFIG_DIR/hud/.coral-codex-enabled` (empty file)
+     - **no** → delete `CONFIG_DIR/hud/.coral-codex-enabled` if it exists
    - If no `auth.json`, skip silently (do not create or delete any Codex files)
 7. Confirm installation to the user
 
 ### uninstall
 
-1. Read `~/.claude/settings.json`
+1. Read `CONFIG_DIR/settings.json`
 2. Remove the `statusLine` key
 3. Delete the following files if they exist:
-   - `~/.claude/hud/coral-hud.mjs`
-   - `~/.claude/hud/.coral-cache.json`
-   - `~/.claude/hud/.coral-codex-enabled`
+   - `CONFIG_DIR/hud/coral-hud.mjs`
+   - `CONFIG_DIR/hud/.coral-cache.json`
+   - `CONFIG_DIR/hud/.coral-codex-enabled`
 4. Confirm removal to the user
 
 ---
@@ -52,11 +54,11 @@ Manage the coral HUD statusline for Claude Code.
 ## HUD Script
 
 The HUD script source is `coral-hud.mjs` in this directory.
-The install command reads this file and writes it to `~/.claude/hud/coral-hud.mjs`.
+The install command reads this file and writes it to `CONFIG_DIR/hud/coral-hud.mjs`.
 
 ## Notes
 
-- `~` must be expanded to the real home directory in both the file path and settings.json command
+- `CONFIG_DIR` is the Claude config dir from the SessionStart context (see Config directory above); expand `~` to the real home in any remaining paths
 - If re-running install, overwrite the existing script (this updates the HUD to the latest version)
 - Claude rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
 - Codex rate limits and spark limits are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`~/.codex/auth.json`)
@@ -68,5 +70,5 @@ The install command reads this file and writes it to `~/.claude/hud/coral-hud.mj
 - Error indicators are explicit: `throttled: refreshes in Xm` for HTTP 429, `re-login required` for explicit 401/403 auth failures, and `API unavailable` for other fetch/refresh failures.
 - Missing or unsupported credentials stay silent; `re-login required` appears only for observable auth failures.
 - The session slot combines spend and duration when available, for example `$0.43 47m`.
-- Codex opt-in is controlled by `~/.claude/hud/.coral-codex-enabled` flag file; managed during install
+- Codex opt-in is controlled by `CONFIG_DIR/hud/.coral-codex-enabled` flag file; managed during install
 - If credentials are unavailable (e.g., API key users or Codex not installed), the respective rate limit section is silently omitted

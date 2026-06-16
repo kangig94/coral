@@ -8,6 +8,11 @@ export interface RuntimePaths {
   /** Per-project data directory under the composed coral root (`<coralRoot>/projects/<slug>`). */
   projectData(projectRoot: string): string;
   readonly coral: CoralPaths;
+  /** Per-config-dir partition slot (see `claudeConfigSlot`), computed once at
+   *  composition. Undefined for the default config dir. Free-function path
+   *  helpers that compose their own dir (e.g. `kbRuntimeDir`) read it here
+   *  instead of recomputing it. */
+  readonly configSlot?: string;
 }
 
 export interface Disposable {

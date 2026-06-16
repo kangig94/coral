@@ -189,6 +189,25 @@ describe('shedInheritedClaudeCodeEnv', () => {
     expect(env).not.toHaveProperty('CLAUDE_PLUGIN_ROOT');
   });
 
+  it('preserves CLAUDE_CONFIG_DIR while shedding the rest of the CLAUDE_* family', () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: '/usr/bin',
+      CLAUDECODE: '1',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_SESSION_ID: 'abc',
+      CLAUDE_CONFIG_DIR: '/home/u/.claude-work',
+    };
+
+    shedInheritedClaudeCodeEnv(env);
+
+    expect(env).not.toHaveProperty('CLAUDECODE');
+    expect(env).not.toHaveProperty('CLAUDE_CODE_CHILD_SESSION');
+    expect(env).not.toHaveProperty('CLAUDE_CODE_SESSION_ID');
+    // The daemon is config-dir-isolated: it needs CLAUDE_CONFIG_DIR to resolve
+    // its .claude paths + state slot, and forwards it to spawned claude children.
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/home/u/.claude-work');
+  });
+
   it('leaves non-Claude-Code vars untouched (PATH, CORAL_CHILD, auth, near-misses)', () => {
     const env: NodeJS.ProcessEnv = {
       PATH: '/usr/bin',

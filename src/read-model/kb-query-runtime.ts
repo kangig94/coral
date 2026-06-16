@@ -147,7 +147,7 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
   const runtime = resolveQueryRuntime(context);
   return createKbRuntime({
     markdownRoot: resolveQueryMarkdownRoot(context),
-    runtimeDir: kbRuntimeDir(flavor),
+    runtimeDir: kbRuntimeDir(flavor, runtime.paths.configSlot),
     db: getDefaultKbQueryDb(context) as Database,
     time: runtime.time,
     envPort: runtime.env,

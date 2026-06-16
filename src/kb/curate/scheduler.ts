@@ -299,7 +299,7 @@ export function createCurateScheduler({
     warnPermanentlyDisabledLanes(disabledLanes);
     if (
       isUsageBudgetExhausted({
-        homeDir: envPort.get('HOME') ?? envPort.get('USERPROFILE'),
+        claudeConfigDir: envPort.claudeConfigDir(),
         now: kb.time.now,
         storage: storagePort,
       })

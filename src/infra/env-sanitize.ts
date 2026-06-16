@@ -143,7 +143,7 @@ export function stripInternalCoralKeys(env: Readonly<Record<string, string>>): R
 /**
  * Delete the inherited Claude Code session identity — `CLAUDECODE` and the `CLAUDE_*`
  * family (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_ENV_FILE`, …) —
- * from `env`, in place.
+ * from `env`, in place. `CLAUDE_CONFIG_DIR` is the one exception, preserved (see below).
  *
  * The Coral backend is a long-lived shared daemon, almost always spawned from inside a
  * Claude Code session (the SessionStart hook or the CLI auto-ensure path). It therefore
@@ -158,12 +158,17 @@ export function stripInternalCoralKeys(env: Readonly<Record<string, string>>): R
  * run from a fresh shell. Coral still tags its children with `CORAL_CHILD` so its own
  * hooks self-suppress.
  *
- * Pass the live `process.env` — it is mutated in place. The shed intentionally covers any
- * child-config `CLAUDE_*` (e.g. `CLAUDE_CONFIG_DIR`); the daemon and its children resolve
- * from `homedir()`, never an inherited config dir.
+ * Pass the live `process.env` — it is mutated in place. `CLAUDE_CONFIG_DIR` is preserved:
+ * the daemon is isolated per config dir (its plugin and backend binary install *inside*
+ * that dir), so every session it serves shares the one config dir. The daemon resolves its
+ * `.claude` paths and partitions its state tree from it, and forwards it to spawned `claude`
+ * children so they read the matching settings/credentials/session logs. Only the per-session
+ * identity vars are shed — freezing one launcher session's identity onto every child would
+ * make each `claude` skip its own session log and hang the broker's turn detection.
  */
 export function shedInheritedClaudeCodeEnv(env: NodeJS.ProcessEnv): void {
   for (const key of Object.keys(env)) {
+    if (key === 'CLAUDE_CONFIG_DIR') continue;
     if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_')) {
       delete env[key];
     }
@@ -186,7 +191,11 @@ export function composeChildEnv(
   passthrough: Set<string>,
 ): Record<string, string> {
   const stripped = stripInternalCoralKeys(baseEnv);
-  const inheritedEnv = shedIfOverBudget(stripped, budgetBytes, passthrough);
+  // CLAUDE_CONFIG_DIR is load-bearing for spawned `claude` children: it routes
+  // their session logs to the daemon's config dir, which the broker tails for
+  // turn detection. Protect it from size-based shedding regardless of budget.
+  const protectedPassthrough = new Set(passthrough).add('CLAUDE_CONFIG_DIR');
+  const inheritedEnv = shedIfOverBudget(stripped, budgetBytes, protectedPassthrough);
   return {
     ...inheritedEnv,
     ...envAdditions,

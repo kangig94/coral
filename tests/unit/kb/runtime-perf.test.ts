@@ -312,6 +312,7 @@ describe('runtime hot-path perf regressions', () => {
       },
       envPort: {
         get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+        claudeConfigDir: () => '/tmp/.claude',
       },
     });
 

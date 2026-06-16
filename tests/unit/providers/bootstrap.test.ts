@@ -38,9 +38,10 @@ function recoveryStorage(options: {
   };
 }
 
-function recoveryEnv(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
+function recoveryEnv(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'claudeConfigDir' | 'get' | 'fullSnapshot'> {
   return {
     homedir: () => homedir,
+    claudeConfigDir: () => `${homedir}/.claude`,
     get: () => undefined,
     fullSnapshot: () => ({}),
   };
