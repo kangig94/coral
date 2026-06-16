@@ -244,21 +244,39 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     1. Present the decision summary table
     2. Finalize `CORAL_PROJECT/plans/pre-{topic}.md` — remove all `[unconfirmed]` markers and
        alternative lists, keeping only the chosen values
-    3. Call `AskUserQuestion`:
+    3. **Recommend a path, then ask.** Branch the options on whether *this preplan* was invoked
+       with `--delegate`: when it was, every Proceed/ralph option carries ` --delegate` in both its
+       label and its dispatch args (the delegate branch also runs the pioneer/review pass on the
+       other host); when it wasn't, none do. Read the finalized preplan and pick the path to
+       recommend at your discretion:
+       - **ralph** — well-scoped and low-risk, root cause/fix already clear: skip planning, implement directly.
+       - **Proceed** — normal task: a single plan review round.
+       - **Proceed round=3** — complex, high-risk, or many interacting decisions: deeper plan review.
+
+       Surface the recommendation by **order only** — list your chosen path first (the first option
+       reads as the default); keep "Continue discussion" last. Do NOT put "Recommended" (or any
+       other steer) in a label — a fixed marker in the skill text anchors every run onto the same
+       option. Decide the order per preplan. Example option set, preplan invoked **without** `--delegate`:
 
     ```
     AskUserQuestion({ questions: [
-      { question: "Preplan document finalized. Proceed to coral:plan?", header: "Next",
+      { question: "Preplan finalized. How should we proceed?", header: "Next",
         options: [
-          { label: "Proceed", description: "Start planning (single review round)" },
-          { label: "Proceed round=3", description: "Plan with 3 review rounds" },
-          { label: "Proceed round=3 --delegate", description: "3 review rounds, adding a pass on the other host" },
-          { label: "Continue discussion", description: "Keep refining preplan" }
+          { label: "Proceed", description: "Plan with a single review round" },
+          { label: "Proceed round=3", description: "Plan with 3 review rounds (complex/high-risk)" },
+          { label: "ralph", description: "Skip planning — implement the finalized preplan directly" },
+          { label: "Continue discussion", description: "Keep refining the preplan" }
         ], multiSelect: false }
     ]})
     ```
-    If "Continue discussion", return to step 4.
-    Otherwise: `Skill({ skill: "coral:plan", args: "{topic} [selected flags]" })`
-    Do NOT pass `--no-handoff` — preplan has no post-plan step, so plan owns the implementation handoff.
+       With `--delegate`, the first three labels read `Proceed --delegate`, `Proceed round=3 --delegate`,
+       `ralph --delegate`.
+
+    Dispatch the selection (append `--delegate` to the args only when this preplan had it):
+    - **Proceed** → `Skill({ skill: "coral:plan", args: "{topic} [--delegate]" })`
+    - **Proceed round=3** → `Skill({ skill: "coral:plan", args: "{topic} round=3 [--delegate]" })`
+    - **ralph** → `Skill({ skill: "coral:ralph", args: "[--delegate] implement CORAL_PROJECT/plans/pre-{topic}.md — satisfy its Success Criteria" })` — prompt mode; skips the separate plan step.
+    - **Continue discussion** → return to step 4 (refinement loop).
+    For `coral:plan`, do NOT pass `--no-handoff` — plan owns the implementation handoff.
   </Output_Format>
 </Preplan_Protocol>
