@@ -576,11 +576,36 @@ function formatWindow(label, val, resetsAt, mode, dimLabel = false) {
   return `${prefix}${colorPct(pct)}${resetStr}`;
 }
 
+function fmtUsd(n) {
+  if (n >= 100 || Number.isInteger(n)) return `$${Math.round(n)}`;
+  if (n >= 1) return `$${n.toFixed(1)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+// Enterprise/extra-usage plans replace the 5h/weekly windows with a monthly
+// dollar cap (`extra_usage`). Amounts are integer minor units scaled by
+// `decimal_places`; utilization is derived from used/limit (the API leaves the
+// `utilization` field null at zero usage).
+function parseExtraUsage(eu) {
+  if (!eu || !eu.is_enabled || eu.disabled_reason) return null;
+  if (typeof eu.monthly_limit !== "number" || eu.monthly_limit <= 0) return null;
+  const div = Math.pow(10, typeof eu.decimal_places === "number" ? eu.decimal_places : 2);
+  const limit = eu.monthly_limit / div;
+  const used = (typeof eu.used_credits === "number" ? eu.used_credits : 0) / div;
+  return { used, limit, pct: (used / limit) * 100 };
+}
+
+function formatExtraUsage(eu) {
+  if (!eu) return null;
+  return `${DIM}mo$${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
+}
+
 function formatLimits(data) {
   if (!data) return null;
   const parts = [
     formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h"),
     formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true),
+    formatExtraUsage(data.extraUsage),
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : null;
 }
@@ -636,6 +661,7 @@ async function renderLimits() {
       weekly: resp.seven_day?.utilization,
       fiveHourResetsAt: resp.five_hour?.resets_at || null,
       weeklyResetsAt: resp.seven_day?.resets_at || null,
+      extraUsage: parseExtraUsage(resp.extra_usage),
     };
     writeCacheSlot("claude", data);
     return formatLimits(data);
