@@ -27,10 +27,15 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_DISCOVERY_PROBE_CLK_TCK` | _(unset)_ | Linux-only debug gate. Set `1` to invoke `getconf CLK_TCK` instead of assuming the standard value of 100. Leave unset on every modern Linux |
 | `CORAL_AUTO_SYMLINK` | `0` | Auto-create `.claude/coral` symlink on session start |
 | `CORAL_FLAVOR` | `prod` when unset | Hook selector (`prod` or `dev`) for dev/prod coexistence. It controls which hooks fire, not daemon identity. For hooks, set it in Claude Code settings `env` |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's config dir, set by launching `claude` with it. Coral honors it: the backend daemon, socket, `store.db`, jobs, and KB runtime index isolate per config dir under `~/.coral/by-config/<slot>/`, so multiple Claude configs run independent daemons. The default maps to the unpartitioned `~/.coral` tree. See "Per-Config-Dir Isolation" below |
 | `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
 | `CORAL_KB_IMPORT_MAX_BYTES` | `1073741824` (1 GiB) | Admin KB source-import cap in bytes, read from the backend daemon's environment at startup. `0` or `unlimited` disables the admin byte cap. Changing it requires exporting the var and restarting the backend daemon; setting it in an ad-hoc CLI shell does not affect an already-running daemon |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
 | `GEMINI_API_KEY` | _(none)_ | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`) |
+
+### Per-Config-Dir Isolation
+
+A Claude Code plugin installs *inside* the config dir (`<CLAUDE_CONFIG_DIR>/plugins/...`), so two config dirs are two independent backend daemons. Coral partitions its daemon-owned runtime state — the coordinator socket/run dir, the journal `store.db`, job exports, engine artifacts, project memo trees, and the KB runtime index/journal — under `~/.coral/by-config/<slot>/`, where `<slot>` is an 8-char hash of the resolved config dir. Two Claude configs (e.g. `~/.claude` and `~/.claude-work`) therefore run fully isolated daemons that never share a socket or store. The default config dir (`~/.claude`) maps to no slot, keeping the historical `~/.coral` paths unchanged. The KB *markdown vault* (`~/.coral/kb`) stays shared across config dirs — only its rebuildable runtime index partitions. Design rationale: [design-rationale.md §5.4](design-rationale.md).
 
 ### HTTP Exposure
 

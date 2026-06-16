@@ -232,6 +232,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync — auto push/pull with remote (`1` = enabled) |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's config dir — Coral isolates its backend daemon and state per config dir, so multiple Claude configs run independently ([details](docs/configuration.md)) |
 
 > **Tip:** Set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all subagent calls at Sonnet tier for Pro plans or to conserve usage.
 >
