@@ -225,6 +225,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | `CORAL_CODEX_MODEL` | `gpt-5.5` | Default Codex CLI model |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CODEX_FAST` | _(none)_ | Codex service tier toggle (`1` = fast, `0` = flex); falls back to `~/.codex/config.toml` top-level `service_tier` |
+| `CORAL_CLAUDE_MODEL` | _(none)_ | Default model for Coral-launched Claude sessions — e.g. `opus[1m]` (1M-context Opus), `opus`/`sonnet`/`haiku`, or a full id like `claude-opus-4-8`; unset = Claude's own default. A per-request model wins; tier aliases are capped by `CORAL_CLAUDE_MODEL_CAP` |
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh`; the adapter collapses `xhigh` to the provider ceiling (`max`) |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
 | `CORAL_EFFORT` | _(none)_ | Global effort override used when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset |

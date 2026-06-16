@@ -221,6 +221,7 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_CODEX_MODEL` | `gpt-5.5` | Codex CLI 기본 모델 |
 | `CORAL_CODEX_EFFORT` | `xhigh` | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`) |
 | `CORAL_CODEX_FAST` | _(없음)_ | Codex 서비스 티어 토글 (`1` = fast, `0` = flex). 미설정 시 `~/.codex/config.toml` 최상위 `service_tier`로 폴백 |
+| `CORAL_CLAUDE_MODEL` | _(없음)_ | Coral이 띄우는 Claude 세션의 기본 모델 — 예: `opus[1m]`(1M 컨텍스트 Opus), `opus`/`sonnet`/`haiku`, 또는 `claude-opus-4-8` 같은 전체 id. 미설정 시 Claude 자체 기본값. 요청별 모델이 우선하며, tier alias는 `CORAL_CLAUDE_MODEL_CAP`로 상한 적용 |
 | `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp |
 | `CORAL_CLAUDE_MODEL_CAP` | `opus` | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`) |
 | `CORAL_EFFORT` | _(없음)_ | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용 |
