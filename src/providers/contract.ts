@@ -292,7 +292,7 @@ export interface ProviderRuntime {
   runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
   storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync' | 'readdirSync'>;
-  env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
+  env?: Pick<Runtime['env'], 'homedir' | 'claudeConfigDir' | 'fullSnapshot' | 'get'>;
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
@@ -341,7 +341,7 @@ export interface ProviderRecoveryContract {
     exitCode: number | null;
     signal: string | null;
     providerMeta?: Record<string, unknown>;
-    env: Pick<Runtime['env'], 'homedir' | 'get' | 'fullSnapshot'>;
+    env: Pick<Runtime['env'], 'homedir' | 'claudeConfigDir' | 'get' | 'fullSnapshot'>;
     fallbackConversationRef?: string;
     knownArtifactHandles?: readonly ProviderArtifactHandleInput[];
     storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;

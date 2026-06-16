@@ -2,12 +2,12 @@
 
 import { execSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
   buildFlavor,
   claudeConfigDir,
   coralProjectDir,
+  coralStateRoot,
   exitIfChildProcess,
   exitIfWrongFlavor,
   isValidSessionId,
@@ -52,7 +52,7 @@ function spawnBackend(pluginRoot) {
   // the same runDir. Sharing the path with `src/transport/ipc/ensure.ts`'s
   // CLI-side spawn keeps logs unified across both spawn entry points and
   // benefits from the same rotation discipline.
-  const runDir = join(homedir(), '.coral', buildFlavor() === 'dev' ? 'run-dev' : 'run');
+  const runDir = join(coralStateRoot(), buildFlavor() === 'dev' ? 'run-dev' : 'run');
 
   const backendBin = join(pluginRoot, 'bridge', 'coral-backend.cjs');
   let stderr = 'ignore';

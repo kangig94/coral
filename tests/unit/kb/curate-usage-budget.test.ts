@@ -7,7 +7,7 @@ describe('curate usage budget runtime isolation', () => {
     let observedPath = '';
 
     const exhausted = isUsageBudgetExhausted({
-      homeDir: '/isolated-home',
+      claudeConfigDir: '/isolated-home/.claude',
       now: () => 1_000,
       storage: {
         readFileSync(path) {

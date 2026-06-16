@@ -410,6 +410,7 @@ describe('sessionContinuity', () => {
           env: {
             get: (key) => (key === DEV_ASSERTIONS ? '1' : undefined),
             homedir: () => '/mock/home',
+            claudeConfigDir: () => '/mock/home/.claude',
             fullSnapshot: () => ({}),
           },
         }),

@@ -393,6 +393,7 @@ describe('provider runtime smoke', () => {
       acquireServerImpl: async () => lease,
       env: {
         homedir: () => '/home/tester',
+        claudeConfigDir: () => '/home/tester/.claude',
         fullSnapshot: () => ({}),
         get: () => undefined,
       },

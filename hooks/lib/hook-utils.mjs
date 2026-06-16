@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -112,13 +113,34 @@ function computeProjectSource(projectDir) {
 }
 
 export function coralProjectDir(projectDir) {
-  return join(homedir(), '.coral', 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
+  return join(coralStateRoot(), 'projects', resolveProjectSource(projectDir).replace(/\//g, '-'));
 }
 
 // Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
 // inherited by hooks and subprocesses). Falls back to ~/.claude.
 export function claudeConfigDir() {
   return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+}
+
+// Per-config-dir state slot. MUST stay in lockstep with src `claudeConfigSlot`
+// (src/infra/path/root.ts): the default config dir (~/.claude) maps to no slot
+// (shared ~/.coral tree, backward compatible); any other config dir maps to
+// sha256(configDir).slice(0,8). The daemon partitions its run/store/jobs/
+// projects/exports by this slot, so every hook touching that state must resolve
+// the same root via coralStateRoot().
+function claudeConfigSlot() {
+  const configDir = claudeConfigDir();
+  if (configDir === join(homedir(), '.claude')) return undefined;
+  return createHash('sha256').update(configDir).digest('hex').slice(0, 8);
+}
+
+// Root of Coral's daemon-owned state tree, partitioned by config-dir slot.
+// Mirrors src `coralStateRoot`. The shared KB stays at ~/.coral (see
+// resolveKbRoot) and must NOT route through here.
+export function coralStateRoot() {
+  const slot = claudeConfigSlot();
+  const root = join(homedir(), '.coral');
+  return slot ? join(root, 'by-config', slot) : root;
 }
 
 export function resolveKbRoot() {

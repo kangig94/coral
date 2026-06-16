@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
-import { coralRoot, kbVaultRoot } from '../infra/path/root.js';
+import { coralStateRoot, kbVaultRoot } from '../infra/path/root.js';
 
 // eslint-disable-next-line no-control-regex -- rejects C0/C1 control chars (incl NUL) in KB slugs before they reach writeFileSync
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
@@ -57,8 +57,13 @@ export function communitiesDir(root: string): string {
   return join(root, 'communities');
 }
 
-export function kbRuntimeDir(flavor: BuildFlavor): string {
-  return join(coralRoot(), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
+// KB runtime artifacts (FTS index, touch journal, source-import staging) are
+// daemon-owned mutable state, not shared knowledge — so they partition by
+// config-dir slot like the other state families, while the KB markdown vault
+// (kbVaultRoot) stays shared. Two config-dir daemons against the shared vault
+// would otherwise race on the touch journal and index.json.
+export function kbRuntimeDir(flavor: BuildFlavor, configSlot?: string): string {
+  return join(coralStateRoot(configSlot), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
 }
 
 export function sourcesDir(root: string): string {

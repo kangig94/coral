@@ -99,7 +99,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        env: { homedir: () => home },
+        env: { claudeConfigDir: () => `${home}/.claude` },
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -216,7 +216,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        env: { homedir: () => home },
+        env: { claudeConfigDir: () => `${home}/.claude` },
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,

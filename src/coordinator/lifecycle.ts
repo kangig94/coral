@@ -610,7 +610,7 @@ async function runLifecycleStartup({
         db: progressStore.getDb(),
         paths: {
           markdownRoot: runtime.paths.coral.corpus.kbRoot,
-          runtimeDir: kbRuntimeDir(flavor),
+          runtimeDir: kbRuntimeDir(flavor, runtime.paths.configSlot),
         },
         curateAssistant: createCurateAssistant({
           runtime,

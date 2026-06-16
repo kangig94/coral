@@ -52,7 +52,7 @@ function makeTierRuntime(
   statSyncImpl: TierStatSync = defaultStatSync,
 ): Pick<ProviderRuntime, 'env' | 'storage'> {
   return {
-    env: { homedir: () => home, get: () => undefined, fullSnapshot: () => ({}) },
+    env: { homedir: () => home, claudeConfigDir: () => `${home}/.claude`, get: () => undefined, fullSnapshot: () => ({}) },
     storage: {
       readFileSync: readFileSyncImpl,
       statSync: statSyncImpl,

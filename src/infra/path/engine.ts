@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import type { BuildFlavor } from '../build-flavor.js';
-import { coralRoot } from './root.js';
+import { coralStateRoot } from './root.js';
 
 // Phase 2 reservation: `~/.coral/expansions/<name>/` is reserved for
 // filesystem-discovered third-party engines (Phase 2; out of scope for the
@@ -18,11 +18,12 @@ export interface EnginePaths {
 
 export interface EnginePathOptions {
   readonly baseDir?: string;
+  readonly configSlot?: string;
 }
 
 export function enginePaths(flavor: BuildFlavor, opts?: EnginePathOptions): EnginePaths {
   const base = flavor === 'dev' ? 'data-dev/engines' : 'data/engines';
-  const engineRoot = join(coralRoot(opts?.baseDir), base);
+  const engineRoot = join(coralStateRoot(opts?.configSlot, opts?.baseDir), base);
   const dataDir = (name: string): string => join(engineRoot, name);
   return {
     engineRoot,

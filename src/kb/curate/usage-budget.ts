@@ -9,17 +9,17 @@ export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 
 export type UsageBudgetOptions = {
   storage: UsageBudgetStorage;
-  homeDir?: string;
+  claudeConfigDir?: string;
   now: () => number;
 };
 
-export function isUsageBudgetExhausted({ storage, homeDir, now }: UsageBudgetOptions): boolean {
-  if (homeDir === undefined) {
+export function isUsageBudgetExhausted({ storage, claudeConfigDir, now }: UsageBudgetOptions): boolean {
+  if (claudeConfigDir === undefined) {
     return false;
   }
 
   try {
-    const cachePath = join(homeDir, '.claude', 'hud', '.coral-cache.json');
+    const cachePath = join(claudeConfigDir, 'hud', '.coral-cache.json');
     const raw = JSON.parse(storage.readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
     const entry = raw.claude as
       | { ts?: number; data?: { fiveHour?: number; weekly?: number }; error?: boolean }

@@ -22,7 +22,7 @@ export type ClaudeOneShotRequest = {
 
 export type ClaudeOneShotDeps = {
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
-  readonly env: Pick<Runtime['env'], 'homedir'>;
+  readonly env: Pick<Runtime['env'], 'claudeConfigDir'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
   readonly acquireServer: (
     spec: ProviderServerSpec,
