@@ -111,6 +111,26 @@ describe('command client routing', () => {
     );
   });
 
+  it('renames the kb update note slug to `slug` without leaking the `note` key', async () => {
+    mockState.request.mockResolvedValueOnce({ path: '/kb/notes/coral-kb-read.md' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
+
+    await client.kbUpdate({ note: 'coral-kb-read', content: 'updated body\n' });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'kb.note.update',
+      expect.objectContaining({
+        slug: 'coral-kb-read',
+        content: 'updated body\n',
+        projectRoot: '/tmp/project',
+      }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+    const [, body] = mockState.request.mock.calls[0];
+    expect(body).not.toHaveProperty('note');
+  });
+
   it('forwards kb reindex request arguments through transport dispatch', async () => {
     mockState.request.mockResolvedValueOnce({ status: 'running', job: 'kb-reindex-job' });
     const program = buildProgram();

@@ -524,10 +524,10 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbPromote: async (args) =>
       request<KbPromoteResponse>('kb.note.create', buildKbMutationTransportContextBody(args, defaultContext)),
-    kbUpdate: async (args) =>
+    kbUpdate: async ({ note, ...rest }) =>
       request<KbUpdateResponse>(
         'kb.note.update',
-        buildKbMutationTransportContextBody({ ...args, slug: args.note }, defaultContext),
+        buildKbMutationTransportContextBody({ ...rest, slug: note }, defaultContext),
       ),
     kbDelete: async (args) =>
       request<KbDeleteResponse>(
