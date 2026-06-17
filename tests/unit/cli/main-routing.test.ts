@@ -17,6 +17,7 @@ import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js'
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
+import { claudeConfigSlot, resolveClaudeConfigDir } from '#src/infra/path/root.js';
 
 const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
@@ -243,9 +244,10 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
 
 function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
+  const configSlot = claudeConfigSlot(resolveClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR, home), home);
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
-    path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
+    path: storePaths('prod', { baseDir: join(home, '.coral'), configSlot }).dbFile,
     storage: runtime.storage,
   });
 

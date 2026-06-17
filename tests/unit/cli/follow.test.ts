@@ -10,6 +10,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
+import { claudeConfigSlot, resolveClaudeConfigDir } from '#src/infra/path/root.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import { formatLaunch } from '#src/cli/format/jobs.js';
 import { formatWaitProgress, formatWaitQueued, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
@@ -142,9 +143,10 @@ function createCauseRenderFixture(): { home: string; pluginRoot: string; cleanup
     'utf-8',
   );
 
+  const configSlot = claudeConfigSlot(resolveClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR, home), home);
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
-    path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
+    path: storePaths('prod', { baseDir: join(home, '.coral'), configSlot }).dbFile,
     storage: runtime.storage,
   });
 
