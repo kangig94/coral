@@ -234,11 +234,11 @@ export type KbPrinciplesOptions = {
 };
 
 export type KbPromoteOptions = {
-  memo?: string;
-  title?: string;
-  contentFile?: string;
-  domain?: string;
-  topic?: string;
+  memo: string;
+  title: string;
+  contentFile: string;
+  domain: string;
+  topic: string;
 };
 
 export type KbUpdateOptions = {

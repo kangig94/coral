@@ -497,24 +497,23 @@ export function registerKbCommands(program: Command): void {
   const kbPromoteCommand = kb.command('promote');
   kbPromoteCommand
     .description('Promote a memo into a KB note. To attach the new note to a wiki, use `kb wiki adopt`.')
-    .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
-    .option('--title <text>', 'Note title')
-    .option('--content-file <path>', 'Read content from file')
-    .option('--domain <slug>', 'Note domain')
-    .option('--topic <slug>', 'Note topic')
+    .requiredOption('--memo <filename>', '(required) Memo filename (e.g. 20260325-topic.md)')
+    .requiredOption('--title <text>', '(required) Note title')
+    .requiredOption('--content-file <path>', '(required) Read content from file')
+    .requiredOption('--domain <slug>', '(required) Note domain')
+    .requiredOption('--topic <slug>', '(required) Note topic')
     .action(async (opts: KbPromoteOptions) => {
       try {
-        const content =
-          opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
-        const args = {
-          ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
-          ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(content !== undefined ? { content } : {}),
-          ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
-          ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+        const content = readFileSync(resolveFilePath(opts.contentFile), 'utf8');
+        const args: KbPromoteInput = {
+          memo: opts.memo,
+          title: opts.title,
+          content,
+          domain: opts.domain,
+          topic: opts.topic,
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
-        const result = await client.kbPromote(args as KbPromoteInput);
+        const result = await client.kbPromote(args);
         emitText(result, formatKbPromote);
       } catch (error) {
         emitError(error);
