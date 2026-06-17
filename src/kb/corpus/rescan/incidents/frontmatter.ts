@@ -67,7 +67,7 @@ function detectMissingRequiredFields(entry: CorpusMarkdownFileScan): MissingFiel
   const missingFields: MissingField[] = [];
   const record = entry.frontmatter.record;
 
-  if (!hasPresentFrontmatterValue(record?.entrySeq)) {
+  if ((entry.kind === 'note' || entry.kind === 'source') && !hasPresentFrontmatterValue(record?.entrySeq)) {
     missingFields.push('entrySeq');
   }
 

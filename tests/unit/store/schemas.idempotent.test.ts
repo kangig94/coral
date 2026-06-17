@@ -56,6 +56,7 @@ describe('store schema idempotency', () => {
       expect(objects).toContain('kb_corpus_state');
       expect(objects).toContain('consumer_cursors');
       expect(objects).toContain('kb_curate_scheduler');
+      expect(objects).toContain('kb_curate_conflict_quarantine');
       expect(objects).toContain('expansion_manifest_catalog');
 
       const meta = (
@@ -183,6 +184,16 @@ describe('store schema idempotency', () => {
           .all('9999-12-31T23:59:59.999Z') as Array<{ detail: string }>
       ).map((row) => row.detail);
       expect(retryPlan.some((detail) => detail.includes('USING INDEX kb_curate_retry_by_time'))).toBe(true);
+
+      expect(tableColumns(db, 'kb_curate_conflict_quarantine')).toEqual([
+        'entry_id',
+        'entry_kind',
+        'slug',
+        'path',
+        'recovery_ref',
+        'detected_at',
+      ]);
+      expect(rowCount(db, 'kb_curate_conflict_quarantine')).toEqual({ count: 0 });
 
       expect(tableColumns(db, 'kb_curate_discovery_backlog')).toEqual([
         'entry_id',

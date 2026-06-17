@@ -90,6 +90,7 @@ updatedAt: 2026-03-23
       tags: ['database', 'query-planning'],
       url: 'https://sqlite.org/queryplanner.html',
       importedAt: '2026-03-23T00:00:00.000Z',
+      inputFingerprint: 'source-fingerprint',
       entrySeq: 29,
       related: ['note:query-planner', 'source:sqlite-overview'],
     });
@@ -100,6 +101,7 @@ updatedAt: 2026-03-23
       tags: ['database', 'query-planning'],
       url: 'https://sqlite.org/queryplanner.html',
       importedAt: '2026-03-23T00:00:00.000Z',
+      inputFingerprint: 'source-fingerprint',
       entrySeq: 29,
       related: ['note:query-planner', 'source:sqlite-overview'],
     });
@@ -110,6 +112,7 @@ updatedAt: 2026-03-23
       createdAt: '2026-04-02',
       updatedAt: '2026-04-03',
       level: 1,
+      summaryInputFingerprint: 'summary-input-fingerprint',
       parent: 'community:platform-architecture',
       children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
     });
@@ -118,6 +121,7 @@ updatedAt: 2026-03-23
       createdAt: '2026-04-02',
       updatedAt: '2026-04-03',
       level: 1,
+      summaryInputFingerprint: 'summary-input-fingerprint',
       parent: 'community:platform-architecture',
       children: ['community:graph-rag-leaf', 'community:retrieval-leaf'],
     });
@@ -275,17 +279,20 @@ source:
   - kangig94/coral
 createdAt: 2026-03-23
 updatedAt: 2026-03-23
+inputFingerprint: abc123
 ---
 # Dynamic Import
 `),
     ).toMatchObject({
       createdAt: '2026-03-23',
       updatedAt: '2026-03-23',
+      inputFingerprint: 'abc123',
     });
     expect(
       buildNoteIndexEntry({
         slug: 'coral-test',
         title: 'Test',
+        body: 'Body.',
         tags: ['coral'],
         principles: [],
         source: ['test'],

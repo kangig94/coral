@@ -99,7 +99,8 @@ function collectDiscoveryCandidates(index: KbIndex): NoteClaimCandidate[] {
       entryId: noteEntryId(noteMeta.slug),
       slug: noteMeta.slug,
       updatedAt: noteMeta.updatedAt,
-      cursor: noteCursor(noteMeta.slug, noteMeta.entrySeq),
+      entrySeq: noteMeta.entrySeq,
+      cursor: noteCursor(noteMeta.slug, noteMeta.createdAt),
     });
   }
   return candidates.sort((left, right) => compareCursor(left.cursor, right.cursor));
@@ -122,13 +123,13 @@ export function sameDiscoverySelection(left: NoteClaimCandidate[], right: NoteCl
 function shouldRunDiscoveryBatch(
   newNotes: NoteClaimCandidate[],
   state: CurateState,
-  processedThrough: CurateCursor,
+  _processedThrough: CurateCursor,
 ): boolean {
   if (newNotes.length >= DISCOVERY_NEW_NOTE_THRESHOLD) {
     return true;
   }
 
-  return state.discoveryHighSeq > 0 && newNotes.length > 0 && state.discoveryHighSeq < processedThrough.entrySeq;
+  return state.discoveryHighSeq > 0 && newNotes.length > 0;
 }
 
 export function prepareDiscoveryBatch(
@@ -157,7 +158,7 @@ export function prepareDiscoveryBatch(
   const allClassified = filterCandidatesBeforeRepairFrontier(processedCandidates, repairFrontier);
   const newNotes: NoteClaimCandidate[] = [];
   for (const candidate of allClassified) {
-    if (candidate.cursor.entrySeq > normalizedState.discoveryHighSeq) {
+    if (candidate.entrySeq !== undefined && candidate.entrySeq > normalizedState.discoveryHighSeq) {
       newNotes.push(candidate);
     }
   }
@@ -180,7 +181,7 @@ export function selectDiscoveryBatch(
   const newNotes: NoteClaimCandidate[] = [];
   const oldNotes: NoteClaimCandidate[] = [];
   for (const candidate of allClassified) {
-    if (candidate.cursor.entrySeq > highSeq) {
+    if (candidate.entrySeq !== undefined && candidate.entrySeq > highSeq) {
       newNotes.push(candidate);
     } else {
       oldNotes.push(candidate);
@@ -204,7 +205,7 @@ export function selectDiscoveryBatch(
 
   let nextHighSeq = highSeq;
   for (const candidate of selected) {
-    nextHighSeq = Math.max(nextHighSeq, candidate.cursor.entrySeq);
+    nextHighSeq = Math.max(nextHighSeq, candidate.entrySeq ?? 0);
   }
   return { selected, nextHighSeq, nextOffset };
 }

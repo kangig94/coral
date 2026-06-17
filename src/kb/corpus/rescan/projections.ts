@@ -261,12 +261,14 @@ export function buildKbIndex(
     entries[noteEntryId(note.note)] = buildNoteIndexEntry({
       slug: note.note,
       title: note.title,
+      body: note.body,
       tags: note.tags,
       principles: note.principles,
       source: note.source,
       createdAt: note.createdAt,
       updatedAt: note.updatedAt,
       related: note.related ?? [],
+      ...(note.inputFingerprint === undefined ? {} : { inputFingerprint: note.inputFingerprint }),
       ...(note.entrySeq === undefined ? {} : { entrySeq: note.entrySeq }),
     });
   }
@@ -275,11 +277,13 @@ export function buildKbIndex(
     entries[sourceEntryId(source.slug)] = buildSourceIndexEntry({
       slug: source.slug,
       title: source.title,
+      body: source.body,
       type: source.type,
       tags: source.tags,
       ...(source.url === undefined ? {} : { url: source.url }),
       importedAt: source.importedAt,
       related: source.related ?? [],
+      ...(source.inputFingerprint === undefined ? {} : { inputFingerprint: source.inputFingerprint }),
       ...(source.entrySeq === undefined ? {} : { entrySeq: source.entrySeq }),
     });
   }
@@ -293,6 +297,9 @@ export function buildKbIndex(
       ...(community.parent === undefined ? {} : { parent: community.parent }),
       ...(community.children === undefined ? {} : { children: community.children }),
       ...(community.summary === undefined ? {} : { summary: community.summary }),
+      ...(community.summaryInputFingerprint === undefined
+        ? {}
+        : { summaryInputFingerprint: community.summaryInputFingerprint }),
       createdAt: community.createdAt,
       updatedAt: community.updatedAt,
     });

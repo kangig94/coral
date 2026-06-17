@@ -6,6 +6,7 @@ import {
   noteEntryId,
   sourceEntryId,
   type CuratableEntry,
+  type KbEntryId,
   type KbIndex,
 } from '../entry-types.js';
 import {
@@ -20,18 +21,22 @@ import { filterCandidatesBeforeRepairFrontier } from './metadata-commit.js';
 import { CurateJsonParseError, runCurateAssistant } from './operations.js';
 import {
   compareCursor,
-  compareOptionalCursor,
   getCurateRepairFrontier,
   isClaimStale,
   noteCursor,
   readCurateState,
   resolveCurateTimings,
+  sourceCursor,
   writeCurateState,
   type CurateCursor,
 } from './state/index.js';
 import type { ClaimCandidate, ClassificationAssignment, CurateClaim, CurateClaimedEntry } from './pipeline-types.js';
 import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';
+import {
+  deleteCurateConflictQuarantineEntry,
+  readCurateConflictQuarantine,
+} from './conflict-quarantine.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
@@ -46,13 +51,6 @@ function getCuratableEntries(index: KbIndex): CuratableEntry[] {
     }
   }
   return entries;
-}
-
-function sourceCursor(slug: string, entrySeq: number): CurateCursor {
-  return {
-    entryId: sourceEntryId(slug),
-    entrySeq,
-  };
 }
 
 function compareCursorDates(target: string | null, now: string): number {
@@ -73,33 +71,73 @@ function compareCursorDates(target: string | null, now: string): number {
   return targetMs - nowMs;
 }
 
-function collectClaimCandidates(index: KbIndex): ClaimCandidate[] {
+function classificationPending(entry: CuratableEntry): boolean {
+  return entry.inputFingerprint === undefined || entry.inputFingerprint !== entry.bodyHash;
+}
+
+function hasCursorTimestamp(timestamp: string): boolean {
+  return timestamp.trim().length > 0 && !Number.isNaN(Date.parse(timestamp));
+}
+
+function collectClaimCandidates(index: KbIndex, quarantinedEntries: ReadonlySet<KbEntryId> = new Set()): ClaimCandidate[] {
   const candidates: ClaimCandidate[] = [];
   for (const entry of getCuratableEntries(index)) {
-    if (entry.entrySeq === undefined) {
+    const entryId = isNoteEntry(entry) ? noteEntryId(entry.slug) : sourceEntryId(entry.slug);
+    if (quarantinedEntries.has(entryId)) {
+      continue;
+    }
+
+    if (!classificationPending(entry)) {
       continue;
     }
 
     if (isNoteEntry(entry)) {
+      if (!hasCursorTimestamp(entry.createdAt)) {
+        continue;
+      }
       candidates.push({
         kind: 'note',
-        entryId: noteEntryId(entry.slug),
+        entryId,
         slug: entry.slug,
         updatedAt: entry.updatedAt,
-        cursor: noteCursor(entry.slug, entry.entrySeq),
+        ...(entry.entrySeq === undefined ? {} : { entrySeq: entry.entrySeq }),
+        cursor: noteCursor(entry.slug, entry.createdAt),
       });
       continue;
     }
 
+    if (!hasCursorTimestamp(entry.importedAt)) {
+      continue;
+    }
     candidates.push({
       kind: 'source',
-      entryId: sourceEntryId(entry.slug),
+      entryId,
       slug: entry.slug,
-      cursor: sourceCursor(entry.slug, entry.entrySeq),
+      ...(entry.entrySeq === undefined ? {} : { entrySeq: entry.entrySeq }),
+      cursor: sourceCursor(entry.slug, entry.importedAt),
     });
   }
 
   return candidates.sort((left, right) => compareCursor(left.cursor, right.cursor));
+}
+
+function activeClassificationQuarantine(db: ReturnType<typeof curateDb>, index: KbIndex): Set<KbEntryId> {
+  const quarantinedEntries = new Set<KbEntryId>();
+  for (const quarantine of readCurateConflictQuarantine(db)) {
+    const entry = index.entries[quarantine.entryId];
+    if (entry === undefined) {
+      deleteCurateConflictQuarantineEntry(db, quarantine.entryId);
+      continue;
+    }
+    if (isNoteEntry(entry) || isSourceEntry(entry)) {
+      if (!classificationPending(entry)) {
+        deleteCurateConflictQuarantineEntry(db, quarantine.entryId);
+        continue;
+      }
+      quarantinedEntries.add(quarantine.entryId);
+    }
+  }
+  return quarantinedEntries;
 }
 
 function pendingExtendsBeyondCursor(pendingEntries: ClaimCandidate[], cursor: CurateCursor | null): boolean {
@@ -124,14 +162,13 @@ export async function claimCurateRun(kb: KbRuntime, today: string): Promise<Cura
       return null;
     }
 
-    const repairFrontier = getCurateRepairFrontier(curateDb(kb));
-    const unprocessedCandidates: ClaimCandidate[] = [];
-    for (const candidate of collectClaimCandidates(index)) {
-      if (compareOptionalCursor(state.processedThrough, candidate.cursor) < 0) {
-        unprocessedCandidates.push(candidate);
-      }
-    }
-    const pendingEntries = filterCandidatesBeforeRepairFrontier(unprocessedCandidates, repairFrontier);
+    const db = curateDb(kb);
+    const repairFrontier = getCurateRepairFrontier(db);
+    const quarantinedEntries = activeClassificationQuarantine(db, index);
+    const pendingEntries = filterCandidatesBeforeRepairFrontier(
+      collectClaimCandidates(index, quarantinedEntries),
+      repairFrontier,
+    );
     if (pendingEntries.length === 0) {
       return null;
     }
@@ -242,8 +279,13 @@ export async function hasPendingEntriesBeyondCursor(kb: KbRuntime, cursor: Curat
       return false;
     }
 
-    const repairFrontier = getCurateRepairFrontier(curateDb(kb));
-    for (const candidate of filterCandidatesBeforeRepairFrontier(collectClaimCandidates(index), repairFrontier)) {
+    const db = curateDb(kb);
+    const repairFrontier = getCurateRepairFrontier(db);
+    const quarantinedEntries = activeClassificationQuarantine(db, index);
+    for (const candidate of filterCandidatesBeforeRepairFrontier(
+      collectClaimCandidates(index, quarantinedEntries),
+      repairFrontier,
+    )) {
       if (compareCursor(candidate.cursor, cursor) > 0) {
         return true;
       }

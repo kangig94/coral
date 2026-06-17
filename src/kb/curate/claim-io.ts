@@ -48,7 +48,8 @@ export function readClaimedEntry(kb: KbRuntime, candidate: ClaimCandidate): Cura
       title,
       body,
       updatedAt: candidate.updatedAt,
-      entrySeq: candidate.cursor.entrySeq,
+      ...(candidate.entrySeq === undefined ? {} : { entrySeq: candidate.entrySeq }),
+      cursor: candidate.cursor,
     };
   }
 
@@ -60,6 +61,7 @@ export function readClaimedEntry(kb: KbRuntime, candidate: ClaimCandidate): Cura
     title,
     body: excerptSourceBody(body),
     claimTimeFingerprint: fingerprintEntryContent(raw),
-    entrySeq: candidate.cursor.entrySeq,
+    ...(candidate.entrySeq === undefined ? {} : { entrySeq: candidate.entrySeq }),
+    cursor: candidate.cursor,
   };
 }

@@ -1,11 +1,18 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { Option, type Command } from 'commander';
 
 import { parseKbEntryId, vaultLinkToEntryId, type KbPromoteInput } from '../../kb/entry-types.js';
 import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
 import { resolveProjectSource } from '../../infra/project-source.js';
+import { runEntityGraphMergeDriver } from '../../kb/curate/entity-graph-merge-driver.js';
+import {
+  runFrontmatterMergeDriver,
+  type FrontmatterMergeDriverHost,
+} from '../../kb/curate/frontmatter-merge-driver.js';
 import { UsageError } from '../errors.js';
 import {
   makeClient,
@@ -55,6 +62,14 @@ import {
 
 const REF_FORMAT_HINT =
   'note:<slug>, source:<slug>, community:<slug>, wiki:<slug>, or [[notes/<slug>]] / [[sources/<slug>]] / [[communities/<slug>]] / [[wiki/<slug>]]';
+
+const frontmatterMergeDriverHost: FrontmatterMergeDriverHost = {
+  readFileSync,
+  writeFileSync,
+  createTempDir: (prefix) => mkdtempSync(join(tmpdir(), prefix)),
+  rmSync,
+  execFileSync: (command, args, options) => execFileSync(command, args, options),
+};
 
 function assertRefFormat(value: string, field: string): string {
   if (parseKbEntryId(value) === null && vaultLinkToEntryId(value) === null) {
@@ -441,6 +456,56 @@ export function registerKbCommands(program: Command): void {
         const client = makeClient(process.cwd(), kbDiagnoseCommand);
         const result = await client.kbDiagnose({});
         emit(result, outputFormat, formatKbDiagnose);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbMergeEntityGraphCommand = kb.command('merge-entity-graph', { hidden: true });
+  kbMergeEntityGraphCommand
+    .description('Git merge driver for KB .entity-graph.json files')
+    .argument('<base>', 'Git %O ancestor path; intentionally ignored')
+    .argument('<ours>', 'Git %A current path; overwritten with merged graph')
+    .argument('<theirs>', 'Git %B incoming path')
+    .action((base: string, ours: string, theirs: string) => {
+      try {
+        runEntityGraphMergeDriver(
+          {
+            basePath: base,
+            oursPath: ours,
+            theirsPath: theirs,
+          },
+          {
+            readFileSync,
+            writeFileSync,
+          },
+        );
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbMergeFrontmatterCommand = kb.command('merge-frontmatter', { hidden: true });
+  kbMergeFrontmatterCommand
+    .description('Git merge driver for KB markdown frontmatter and bodies')
+    .argument('<base>', 'Git %O ancestor path')
+    .argument('<ours>', 'Git %A current path; overwritten with merged markdown')
+    .argument('<theirs>', 'Git %B incoming path')
+    .argument('<path>', 'Git %P repository-relative markdown path')
+    .action((base: string, ours: string, theirs: string, path: string) => {
+      try {
+        const result = runFrontmatterMergeDriver(
+          {
+            basePath: base,
+            oursPath: ours,
+            theirsPath: theirs,
+            filePath: path,
+          },
+          frontmatterMergeDriverHost,
+        );
+        if (result.status !== 0) {
+          process.exitCode = result.status;
+        }
       } catch (error) {
         emitError(error);
       }

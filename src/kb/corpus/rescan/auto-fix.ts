@@ -349,19 +349,23 @@ function buildIndexUpdater(target: MarkdownRepairTarget, content: string): (inde
     case 'note': {
       const frontmatter = parseFrontmatter(content);
       const title = extractTitle(content);
+      const body = extractBody(content);
       return (index) => {
         index.entries[target.entryId] = buildNoteIndexEntry({
           slug: target.slug,
           title,
+          body,
           ...frontmatter,
         });
       };
     }
     case 'source': {
       const frontmatter = parseSourceFrontmatter(content);
+      const body = extractBody(content);
       return (index) => {
         index.entries[target.entryId] = buildSourceIndexEntry({
           slug: target.slug,
+          body,
           ...frontmatter,
         });
       };

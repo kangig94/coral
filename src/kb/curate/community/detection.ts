@@ -62,6 +62,7 @@ const COMMUNITY_RESOLUTION_TARGET_MIN = 20;
 const COMMUNITY_RESOLUTION_TARGET_MAX = 30;
 const COMMUNITY_RESOLUTION_TARGET_MIDPOINT = (COMMUNITY_RESOLUTION_TARGET_MIN + COMMUNITY_RESOLUTION_TARGET_MAX) / 2;
 const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
+const COMMUNITY_MODULARITY_DECIMALS = 12;
 export const COMMUNITY_LOUVAIN_NODE_CAP = 2_000;
 export const COMMUNITY_LOUVAIN_EDGE_CAP = 10_000;
 
@@ -317,6 +318,13 @@ function maxLeafCommunitySizeFromPartitions(partitions: readonly number[][]): nu
   return Math.max(...counts.values(), 0);
 }
 
+export function normalizeCommunityModularity(value: number): number {
+  if (!Number.isFinite(value)) {
+    return value;
+  }
+  return Number(value.toFixed(COMMUNITY_MODULARITY_DECIMALS));
+}
+
 function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEvaluation {
   const details = louvain.detailed(graph.graph, {
     getEdgeWeight: 'weight',
@@ -331,7 +339,7 @@ function evaluateResolution(graph: TagGraph, resolution: number): ResolutionEval
   return {
     resolution,
     levels,
-    modularity: details.modularity,
+    modularity: normalizeCommunityModularity(details.modularity),
     maxLeafSize,
     targetPenalty,
     midpointPenalty: Math.abs(maxLeafSize - COMMUNITY_RESOLUTION_TARGET_MIDPOINT),

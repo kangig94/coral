@@ -2,6 +2,7 @@ import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
 import { captureNoteManifestDeltas, captureSourceManifestDeltas } from '../corpus/manifest-authority.js';
 import {
+  extractBody,
   extractTitle,
   parseFrontmatter,
   parseSourceFrontmatter,
@@ -10,6 +11,7 @@ import {
 } from '../corpus/frontmatter.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { recordMetadataMutation } from '../corpus/index-mutations.js';
+import { computeBodySurfaceHash } from '../corpus/snapshot.js';
 import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
@@ -41,6 +43,7 @@ import {
 } from './state/index.js';
 import {
   consolidateEntityGraph,
+  entityGraphsEqual,
   resolveCanonicalEntityId,
   type ConsolidationResult,
   type EntityConsolidationDelta,
@@ -75,11 +78,10 @@ function snapshotEntityGraph(currentIndex: {
   };
 }
 
-function entityGraphsEqual(left: EntityGraph, right: EntityGraph): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-export function isCursorBeforeRepairFrontier(cursor: CurateCursor, frontier: CurateRepairFrontier): boolean {
+export function isEntrySeqBeforeRepairFrontier(
+  entrySeq: number | undefined,
+  frontier: CurateRepairFrontier,
+): boolean {
   if (frontier.kind === 'none') {
     return true;
   }
@@ -87,10 +89,10 @@ export function isCursorBeforeRepairFrontier(cursor: CurateCursor, frontier: Cur
     return false;
   }
 
-  return compareCursor(cursor, frontier.cursor) < 0;
+  return entrySeq !== undefined && entrySeq < frontier.entrySeq;
 }
 
-export function filterCandidatesBeforeRepairFrontier<T extends { cursor: CurateCursor }>(
+export function filterCandidatesBeforeRepairFrontier<T extends { entrySeq?: number }>(
   candidates: T[],
   frontier: CurateRepairFrontier,
 ): T[] {
@@ -100,7 +102,7 @@ export function filterCandidatesBeforeRepairFrontier<T extends { cursor: CurateC
 
   const filtered: T[] = [];
   for (const candidate of candidates) {
-    if (isCursorBeforeRepairFrontier(candidate.cursor, frontier)) {
+    if (isEntrySeqBeforeRepairFrontier(candidate.entrySeq, frontier)) {
       filtered.push(candidate);
     }
   }
@@ -108,10 +110,7 @@ export function filterCandidatesBeforeRepairFrontier<T extends { cursor: CurateC
 }
 
 export function cursorFromTarget(target: MetadataTarget): CurateCursor {
-  return {
-    entryId: target.entryId,
-    entrySeq: target.entrySeq,
-  };
+  return target.cursor;
 }
 
 export function compareMetadataTarget(left: MetadataTarget, right: MetadataTarget): number {
@@ -289,7 +288,7 @@ export async function commitMetadataTargetsLocked(
 
   for (const target of sortedTargets) {
     const cursor = cursorFromTarget(target);
-    if (!isCursorBeforeRepairFrontier(cursor, repairFrontier)) {
+    if (!isEntrySeqBeforeRepairFrontier(target.entrySeq, repairFrontier)) {
       cursorCanAdvance = false;
       continue;
     }
@@ -314,9 +313,16 @@ export async function commitMetadataTargetsLocked(
         continue;
       }
 
+      const liveBody = extractBody(raw);
+      const inputFingerprint = computeBodySurfaceHash(liveBody);
       const metadataDecision = buildLiveNoteMetadataDecision(target, liveFrontmatter.tags, liveFrontmatter.principles);
       const nextRelated = buildLiveRelatedMetadata(target, liveFrontmatter.related ?? []);
-      if (!metadataDecision.shouldWrite && sameStringList(nextRelated, liveFrontmatter.related ?? [])) {
+      const fingerprintChanged = liveFrontmatter.inputFingerprint !== inputFingerprint;
+      if (
+        !metadataDecision.shouldWrite &&
+        sameStringList(nextRelated, liveFrontmatter.related ?? []) &&
+        !fingerprintChanged
+      ) {
         processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
         continue;
       }
@@ -327,8 +333,11 @@ export async function commitMetadataTargetsLocked(
         source: liveFrontmatter.source,
         createdAt: liveFrontmatter.createdAt,
         updatedAt: liveFrontmatter.updatedAt,
+        inputFingerprint,
         related: nextRelated,
-        entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
+        ...((liveFrontmatter.entrySeq ?? target.entrySeq) === undefined
+          ? {}
+          : { entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq }),
       };
       const nextRaw = replaceFrontmatter(raw, nextFrontmatter);
 
@@ -342,11 +351,13 @@ export async function commitMetadataTargetsLocked(
       nextIndex.entries[noteEntryId(target.slug)] = buildNoteIndexEntry({
         slug: target.slug,
         title: existingIndexNote?.title ?? extractTitle(raw),
+        body: liveBody,
         tags: metadataDecision.nextTags,
         principles: metadataDecision.nextPrinciples,
         source: liveFrontmatter.source,
         createdAt: liveFrontmatter.createdAt,
         updatedAt: liveFrontmatter.updatedAt,
+        inputFingerprint,
         related: nextRelated,
         entrySeq: nextFrontmatter.entrySeq,
       });
@@ -374,9 +385,16 @@ export async function commitMetadataTargetsLocked(
     }
 
     const liveFrontmatter = parseSourceFrontmatter(raw);
+    const liveBody = extractBody(raw);
+    const inputFingerprint = computeBodySurfaceHash(liveBody);
     const nextTags = buildLiveSourceMetadataDecision(target, liveFrontmatter.tags);
     const nextRelated = buildLiveRelatedMetadata(target, liveFrontmatter.related ?? []);
-    if (sameStringList(nextTags, liveFrontmatter.tags) && sameStringList(nextRelated, liveFrontmatter.related ?? [])) {
+    const fingerprintChanged = liveFrontmatter.inputFingerprint !== inputFingerprint;
+    if (
+      sameStringList(nextTags, liveFrontmatter.tags) &&
+      sameStringList(nextRelated, liveFrontmatter.related ?? []) &&
+      !fingerprintChanged
+    ) {
       processedThrough = advanceProcessedThrough(processedThrough, cursorCanAdvance, cursor);
       continue;
     }
@@ -387,8 +405,11 @@ export async function commitMetadataTargetsLocked(
       tags: nextTags,
       ...(liveFrontmatter.url === undefined ? {} : { url: liveFrontmatter.url }),
       importedAt: liveFrontmatter.importedAt,
+      inputFingerprint,
       related: nextRelated,
-      entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq,
+      ...((liveFrontmatter.entrySeq ?? target.entrySeq) === undefined
+        ? {}
+        : { entrySeq: liveFrontmatter.entrySeq ?? target.entrySeq }),
     };
     const nextRaw = replaceSourceFrontmatter(raw, nextFrontmatter);
 
@@ -402,10 +423,12 @@ export async function commitMetadataTargetsLocked(
     nextIndex.entries[sourceEntryId(target.slug)] = buildSourceIndexEntry({
       slug: target.slug,
       title: existingIndexSource?.title ?? liveFrontmatter.title,
+      body: liveBody,
       type: liveFrontmatter.type,
       tags: nextTags,
       ...(liveFrontmatter.url === undefined ? {} : { url: liveFrontmatter.url }),
       importedAt: liveFrontmatter.importedAt,
+      inputFingerprint,
       related: nextRelated,
       entrySeq: nextFrontmatter.entrySeq,
     });

@@ -1,8 +1,7 @@
 export type CurateAssistantPurpose =
   | 'classification'
   | 'principle-discovery'
-  | 'community-summary'
-  | 'git-conflict-resolution';
+  | 'community-summary';
 
 export type CurateAssistantPermissionMode = 'default' | 'bypassPermissions';
 

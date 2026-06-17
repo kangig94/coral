@@ -24,6 +24,7 @@ describe('expansion retrieval role registration integration', () => {
           source: [],
           createdAt: '2026-05-03',
           updatedAt: '2026-05-03',
+          bodyHash: 'dummy-test-role-body-hash',
         },
       },
       principles: {},

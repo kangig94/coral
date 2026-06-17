@@ -1,7 +1,15 @@
 import { z } from 'zod';
 
 import type { KbCurateSchedulerRow } from '../state/schema.js';
-import { type CurateCursor, cursorEntryKind, kbEntryIdSchema } from './state/model.js';
+import {
+  type CurateCursor,
+  cursorEntryId,
+  cursorEntryKind,
+  cursorFromEntryId,
+  cursorTimestampFromStorageSeq,
+  cursorTimestampToStorageSeq,
+  kbEntryIdSchema,
+} from './state/model.js';
 import { prepareCached, type Database } from '../../store/db.js';
 import type { ReadonlyDatabase } from '../../store/read-port.js';
 
@@ -63,7 +71,7 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
 function parseStoredCursor(
   label: string,
   entrySeq: number | null,
-  entryId: CurateCursor['entryId'] | null,
+  entryId: string | null,
   entryKind: 'note' | 'source' | null,
 ): CurateCursor | null {
   if (entrySeq === null && entryId === null && entryKind === null) {
@@ -77,10 +85,8 @@ function parseStoredCursor(
     throw new Error(`kb_curate_scheduler ${label} columns must be all null or all populated`);
   }
 
-  const cursor = {
-    entrySeq,
-    entryId,
-  };
+  const parsedEntryId = kbEntryIdSchema.parse(entryId);
+  const cursor = cursorFromEntryId(cursorTimestampFromStorageSeq(entrySeq), parsedEntryId, 'curate scheduler');
   if (cursorEntryKind(cursor, 'curate scheduler') !== entryKind) {
     throw new Error(`kb_curate_scheduler ${label} entry kind must match the stored entry ID`);
   }
@@ -115,7 +121,7 @@ function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): Curat
     consecutiveCommunityBatchFailures: parsed.consecutive_community_batch_failures,
     claimLaneDisabledAt: parsed.claim_lane_disabled_at,
     communityBatchLaneDisabledAt: parsed.community_batch_lane_disabled_at,
-    communityTopologyHash: parsed.community_topology_hash ?? undefined,
+    communityTopologyHash: undefined,
     communitySummaryTopologyHash: parsed.community_summary_topology_hash ?? undefined,
     initialized: parsed.initialized === 1,
   };
@@ -154,6 +160,12 @@ export function writeCurateSchedulerState(db: Database, state: CurateSchedulerSt
     state.processedThrough === null ? null : cursorEntryKind(state.processedThrough, 'curate scheduler');
   const lastAttemptedThroughEntryKind =
     state.lastAttemptedThrough === null ? null : cursorEntryKind(state.lastAttemptedThrough, 'curate scheduler');
+  const processedThroughSeq =
+    state.processedThrough === null ? null : cursorTimestampToStorageSeq(state.processedThrough, 'curate scheduler');
+  const lastAttemptedThroughSeq =
+    state.lastAttemptedThrough === null
+      ? null
+      : cursorTimestampToStorageSeq(state.lastAttemptedThrough, 'curate scheduler');
 
   prepareCached<
     [
@@ -197,21 +209,21 @@ export function writeCurateSchedulerState(db: Database, state: CurateSchedulerSt
             initialized = ?
       WHERE id = 1`,
   ).run(
-    state.processedThrough?.entrySeq ?? null,
-    state.processedThrough?.entryId ?? null,
+    processedThroughSeq,
+    state.processedThrough === null ? null : cursorEntryId(state.processedThrough),
     processedThroughEntryKind,
     state.discoveryHighSeq,
     state.discoveryOffset,
     state.lastRunDay,
-    state.lastAttemptedThrough?.entrySeq ?? null,
-    state.lastAttemptedThrough?.entryId ?? null,
+    lastAttemptedThroughSeq,
+    state.lastAttemptedThrough === null ? null : cursorEntryId(state.lastAttemptedThrough),
     lastAttemptedThroughEntryKind,
     state.retryNotBefore,
     state.consecutiveClaimFailures,
     state.consecutiveCommunityBatchFailures,
     state.claimLaneDisabledAt,
     state.communityBatchLaneDisabledAt,
-    state.communityTopologyHash ?? null,
+    null,
     state.communitySummaryTopologyHash ?? null,
     state.initialized ? 1 : 0,
   );

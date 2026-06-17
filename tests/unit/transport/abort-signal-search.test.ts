@@ -36,6 +36,7 @@ function nonEmptyIndex(): KbIndex {
         source: [],
         createdAt: '2026-05-03',
         updatedAt: '2026-05-03',
+        bodyHash: 'abort-anchor-body-hash',
       },
     },
     principles: {},

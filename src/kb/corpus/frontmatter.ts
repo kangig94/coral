@@ -193,6 +193,7 @@ export function parseFrontmatter(content: string): KbNoteFrontmatter {
   const record = parseFrontmatterRecord(content);
   const entrySeq = normalizeOptionalEntrySeq(record.entrySeq);
   const related = normalizeRelatedList(record.related);
+  const inputFingerprint = normalizeOptionalNonEmptyText(record.inputFingerprint, 'inputFingerprint');
   return {
     tags: normalizeStringList(record.tags, 'tags'),
     principles: normalizePrincipleList(record.principles),
@@ -200,6 +201,7 @@ export function parseFrontmatter(content: string): KbNoteFrontmatter {
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
     related,
+    ...(inputFingerprint === undefined ? {} : { inputFingerprint }),
     ...(entrySeq === undefined ? {} : { entrySeq }),
   };
 }
@@ -209,6 +211,7 @@ export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
   const url = normalizeOptionalNonEmptyText(record.url, 'url');
   const entrySeq = normalizeOptionalEntrySeq(record.entrySeq);
   const related = normalizeRelatedList(record.related);
+  const inputFingerprint = normalizeOptionalNonEmptyText(record.inputFingerprint, 'inputFingerprint');
 
   return {
     title: assertNonEmptyText(record.title, 'title'),
@@ -217,6 +220,7 @@ export function parseSourceFrontmatter(content: string): KbSourceFrontmatter {
     ...(url === undefined ? {} : { url }),
     importedAt: assertNonEmptyText(record.importedAt, 'importedAt'),
     related,
+    ...(inputFingerprint === undefined ? {} : { inputFingerprint }),
     ...(entrySeq === undefined ? {} : { entrySeq }),
   };
 }
@@ -226,12 +230,17 @@ export function parseCommunityFrontmatter(content: string): CommunityFrontmatter
   const level = parseNonNegativeInteger(record.level ?? 0, 'level');
   const parent = normalizeCommunityParent(record.parent);
   const children = normalizeCommunityChildren(record.children);
+  const summaryInputFingerprint = normalizeOptionalNonEmptyText(
+    record.summaryInputFingerprint,
+    'summaryInputFingerprint',
+  );
   return {
     createdAt: assertNonEmptyText(record.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(record.updatedAt, 'updatedAt'),
     level,
     ...(parent === undefined ? {} : { parent }),
     ...(children === undefined ? {} : { children }),
+    ...(summaryInputFingerprint === undefined ? {} : { summaryInputFingerprint }),
   };
 }
 
@@ -301,6 +310,9 @@ export function serializeFrontmatter(meta: KbNoteFrontmatter): string {
     source: normalizeStringList(meta.source, 'source'),
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
+    ...(meta.inputFingerprint === undefined
+      ? {}
+      : { inputFingerprint: assertNonEmptyText(meta.inputFingerprint, 'inputFingerprint') }),
     ...(entrySeq === undefined ? {} : { entrySeq }),
     ...(relatedLinks.length === 0 ? {} : { related: relatedLinks }),
   });
@@ -320,12 +332,17 @@ export function serializeSourceFrontmatter(meta: KbSourceFrontmatter): string {
     tags: normalizeStringList(meta.tags, 'tags'),
     ...(url === undefined ? {} : { url }),
     importedAt: assertNonEmptyText(meta.importedAt, 'importedAt'),
+    ...(meta.inputFingerprint === undefined
+      ? {}
+      : { inputFingerprint: assertNonEmptyText(meta.inputFingerprint, 'inputFingerprint') }),
     ...(entrySeq === undefined ? {} : { entrySeq }),
     ...(relatedLinks.length === 0 ? {} : { related: relatedLinks }),
   });
 }
 
-export function serializeCommunityFrontmatter(meta: Omit<CommunityFrontmatter, 'level'> & { level?: number }): string {
+export function serializeCommunityFrontmatter(
+  meta: Omit<CommunityFrontmatter, 'level'> & { level?: number; summaryInputFingerprint?: string },
+): string {
   const level = parseNonNegativeInteger(meta.level ?? 0, 'level');
   const parent = normalizeCommunityParent(meta.parent);
   const children = normalizeCommunityChildren(meta.children);
@@ -333,6 +350,9 @@ export function serializeCommunityFrontmatter(meta: Omit<CommunityFrontmatter, '
     createdAt: assertNonEmptyText(meta.createdAt, 'createdAt'),
     updatedAt: assertNonEmptyText(meta.updatedAt, 'updatedAt'),
     level,
+    ...(meta.summaryInputFingerprint === undefined
+      ? {}
+      : { summaryInputFingerprint: assertNonEmptyText(meta.summaryInputFingerprint, 'summaryInputFingerprint') }),
     ...(parent === undefined ? {} : { parent }),
     ...(children === undefined ? {} : { children }),
   });
@@ -352,6 +372,10 @@ export function replaceFrontmatter(content: string, meta: KbNoteFrontmatter): st
 
 export function replaceSourceFrontmatter(content: string, meta: KbSourceFrontmatter): string {
   return replaceFrontmatterBlock(content, serializeSourceFrontmatter(meta));
+}
+
+export function replaceCommunityFrontmatter(content: string, meta: CommunityFrontmatter): string {
+  return replaceFrontmatterBlock(content, serializeCommunityFrontmatter(meta));
 }
 
 export function extractTitle(content: string): string {

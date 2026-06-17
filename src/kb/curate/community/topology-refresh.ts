@@ -58,7 +58,7 @@ export function prepareCommunityTopologyRefresh(
   });
   const partitionTree = buildCommunityPartitionTree(graph);
   const topologyHash = partitionTree.computeTopologyFingerprint();
-  if (state.communityTopologyHash === topologyHash) {
+  if (state.communitySummaryTopologyHash === topologyHash) {
     const communityEntries: CommunityEntry[] = [];
     for (const entry of Object.values(index.entries)) {
       if (isCommunityEntry(entry)) {

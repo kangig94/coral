@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type { ConsumerHandleStatus } from '#src/store/consumer-contract.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { EntityGraph, KbEntryId, KbSearchResponse } from '#src/kb/entry-types.js';
+import { communityEntryId, type EntityGraph, type KbEntryId, type KbSearchResponse } from '#src/kb/entry-types.js';
 import {
   bindEmbedding,
   bindOramaFtsForTest,
@@ -218,16 +218,12 @@ async function ensureFreshCommunityIndex(
   await applyOramaProjection(kb);
 }
 
-async function markCommunityStateFresh(kb: { readIndex: () => any; recordMutationCommitted?: any }) {
-  const [
-    { computeCommunityTopologyFingerprint },
-    { computeCommunitySummaryInputFingerprints },
-    { readCurateState, writeCurateState },
-  ] = await Promise.all([
-    import('#src/kb/curate/community/detection.js'),
-    import('#src/kb/curate/community/summary.js'),
-    import('#src/kb/curate/state/index.js'),
-  ]);
+async function markCommunityStateFresh(kb: KbRuntime) {
+  const [{ computeCommunitySummaryInputFingerprints }, { parseCommunityFrontmatter, replaceCommunityFrontmatter }] =
+    await Promise.all([
+      import('#src/kb/curate/community/summary.js'),
+      import('#src/kb/corpus/frontmatter.js'),
+    ]);
   const index = kb.readIndex();
   expect(index).not.toBeNull();
 
@@ -241,19 +237,39 @@ async function markCommunityStateFresh(kb: { readIndex: () => any; recordMutatio
       ...(community.children === undefined ? {} : { children: community.children }),
       ...(community.summary === undefined ? {} : { summary: community.summary }),
     }));
-  const topologyHash = computeCommunityTopologyFingerprint(index);
   const fingerprints = computeCommunitySummaryInputFingerprints(communities, kb as any, index);
+  const nextIndex = {
+    ...index!,
+    entries: {
+      ...index!.entries,
+    },
+  };
 
-  writeCurateState(curateDb(kb as any), {
-    ...readCurateState(curateDb(kb as any)),
-    communityTopologyHash: topologyHash,
-    communitySummaryTopologyHash: topologyHash,
-    communitySummaryInputFingerprints: fingerprints,
-  });
-  // Mirror production: curate state freshness changes are paired with a metadata
-  // mutation record so the corpus snapshot bumps and downstream consumers (Orama
-  // projection apply) re-materialize with the new community freshness.
-  kb.recordMutationCommitted?.('metadata', 'test:markCommunityStateFresh');
+  for (const [slug, summaryInputFingerprint] of Object.entries(fingerprints)) {
+    const communityPath = kb.communityPath(slug);
+    const raw = kb.storagePort.readFileSync(communityPath, 'utf-8');
+    const frontmatter = parseCommunityFrontmatter(raw);
+    kb.storagePort.writeFileSync(
+      communityPath,
+      replaceCommunityFrontmatter(raw, {
+        ...frontmatter,
+        summaryInputFingerprint,
+      }),
+    );
+
+    const entryId = communityEntryId(slug);
+    const entry = nextIndex.entries[entryId];
+    if (entry?.kind === 'community') {
+      nextIndex.entries[entryId] = {
+        ...entry,
+        summaryInputFingerprint,
+      };
+    }
+  }
+
+  kb.writeIndex(nextIndex);
+  kb.recordMutationCommitted('metadata', 'test:markCommunityStateFresh');
+  await applyOramaProjection(kb);
 }
 
 function resultNotes(results: { note: string }[]): string[] {

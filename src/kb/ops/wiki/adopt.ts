@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { nowIsoString } from '../../../infra/time.js';
 import { captureNoteManifestDeltas } from '../../corpus/manifest-authority.js';
+import { extractBody } from '../../corpus/frontmatter.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../../corpus/index-mutations.js';
 import { buildNoteIndexEntry } from '../../corpus/index-records.js';
@@ -135,7 +136,11 @@ export async function adoptIntoWiki(
 
       mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(noteSlug, noteRaw));
       commitIndexUpdate(rt, (index) => {
-        setEntry(index, noteEntryId(noteSlug), buildNoteIndexEntry({ slug: noteSlug, title, ...noteMeta }));
+        setEntry(
+          index,
+          noteEntryId(noteSlug),
+          buildNoteIndexEntry({ slug: noteSlug, title, body: extractBody(noteRaw), ...noteMeta }),
+        );
       });
       recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_wiki_adopt.');
 

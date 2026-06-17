@@ -9,8 +9,15 @@ import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
+import {
+  cursorTimestampFromStorageSeq,
+  noteCursor,
+  readCurateState,
+  sourceCursor,
+  writeCurateState,
+} from '#src/kb/curate/state/index.js';
 import { parseFrontmatter, parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { entryIdToVaultLink, noteEntryId, sourceEntryId, type KbEntryId } from '#src/kb/entry-types.js';
@@ -207,6 +214,7 @@ describe('curate related-resolution and budget guards', () => {
           createdAt: DEFAULT_CREATED_AT,
           updatedAt: '2026-03-21T00:00:00.000Z',
           related: ['source:sqlite-overview'],
+          bodyHash: computeBodySurfaceHash('Alpha body.'),
           entrySeq: 4,
         },
       },
@@ -235,10 +243,9 @@ describe('curate related-resolution and budget guards', () => {
     expect(runtime.readIndex()?.entries[noteEntryId('coral-alpha')]).toMatchObject({
       related: ['source:sqlite-overview', 'note:coral-beta'],
     });
-    expect(readCurateState(curateDb(runtime)).processedThrough).toEqual({
-      entryId: noteEntryId('coral-alpha'),
-      entrySeq: 4,
-    });
+    expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(
+      noteCursor('coral-alpha', cursorTimestampFromStorageSeq(4)),
+    );
   });
 
   it('appends source related links, preserves source bytes, and refreshes the live source index', async () => {
@@ -262,6 +269,7 @@ describe('curate related-resolution and budget guards', () => {
           tags: ['database'],
           importedAt: DEFAULT_IMPORTED_AT,
           related: ['note:coral-alpha'],
+          bodyHash: computeBodySurfaceHash('## Outline\nKeep the source body stable.'),
           entrySeq: 7,
         },
       },
@@ -290,6 +298,7 @@ describe('curate related-resolution and budget guards', () => {
       tags: ['database', 'kb'],
       importedAt: DEFAULT_IMPORTED_AT,
       related: ['note:coral-alpha', 'source:sqlite-overview'],
+      inputFingerprint: computeBodySurfaceHash('## Outline\nKeep the source body stable.'),
       entrySeq: 7,
     });
     expect(updatedRaw).toContain('"[[notes/coral-alpha]]"');
@@ -302,6 +311,8 @@ describe('curate related-resolution and budget guards', () => {
       tags: ['database', 'kb'],
       importedAt: DEFAULT_IMPORTED_AT,
       related: ['note:coral-alpha', 'source:sqlite-overview'],
+      bodyHash: computeBodySurfaceHash('## Outline\nKeep the source body stable.'),
+      inputFingerprint: computeBodySurfaceHash('## Outline\nKeep the source body stable.'),
       entrySeq: 7,
     });
   });
@@ -329,6 +340,7 @@ describe('curate related-resolution and budget guards', () => {
       tags: ['database', 'query-planning'],
       importedAt: DEFAULT_IMPORTED_AT,
       related: ['note:coral-alpha', 'source:sqlite-deep-dive'],
+      bodyHash: computeBodySurfaceHash('Reference body.'),
       entrySeq: 9,
     });
   });
@@ -359,6 +371,7 @@ describe('curate related-resolution and budget guards', () => {
         tags: string[];
         importedAt: string;
         related: string[];
+        bodyHash: string;
         entrySeq: number;
       }
     > = {};
@@ -378,6 +391,7 @@ describe('curate related-resolution and budget guards', () => {
         tags: ['database'],
         importedAt: DEFAULT_IMPORTED_AT,
         related: [],
+        bodyHash: computeBodySurfaceHash(`Reference body ${index}.`),
         entrySeq: index,
       };
       assignments.push({
@@ -432,9 +446,8 @@ describe('curate related-resolution and budget guards', () => {
 
     expect(nonRuntimeStatus).toEqual([]);
     expect(lastCommit).toContain('curate:');
-    expect(readCurateState(curateDb(runtime)).processedThrough).toEqual({
-      entryId: sourceEntryId('sqlite-source-10'),
-      entrySeq: 10,
-    });
+    expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(
+      sourceCursor('sqlite-source-10', DEFAULT_IMPORTED_AT),
+    );
   });
 });

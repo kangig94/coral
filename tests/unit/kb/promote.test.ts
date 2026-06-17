@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { noteEntryId, wikiEntryId } from '#src/kb/entry-types.js';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -146,6 +147,7 @@ memo body
       createdAt: '2026-03-23T01:02:03.000Z',
       updatedAt: '2026-03-23T01:02:03.000Z',
       related: [],
+      bodyHash: computeBodySurfaceHash('## Rule\nPromote through the tool.'),
       entrySeq: 1,
     });
   });
@@ -370,6 +372,8 @@ Original body.
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-20T00:00:00.000Z',
+          bodyHash: computeBodySurfaceHash('Original body.'),
+          related: [],
           entrySeq: 7,
         },
       },
@@ -411,6 +415,7 @@ Original body.
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-24T05:06:07.000Z',
       related: [],
+      bodyHash: computeBodySurfaceHash('Updated body.'),
       entrySeq: 7,
     });
   });
@@ -433,6 +438,7 @@ Original body.
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-24T05:06:07.000Z',
           related: [],
+          bodyHash: computeBodySurfaceHash('note body'),
           entrySeq: 7,
         },
       },

@@ -28,10 +28,18 @@ import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/cu
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { readCurateState, writeCurateState, type CurateState } from '#src/kb/curate/state/index.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
-import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
+import { parseCommunityFrontmatter, parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
-import { noteEntryId, type EntityGraph, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
+import {
+  noteEntryId,
+  sourceEntryId,
+  type EntityGraph,
+  type KbIndex,
+  type NoteEntry,
+  type SourceEntry,
+} from '#src/kb/entry-types.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
@@ -68,11 +76,8 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
   };
 }
 
-function cursor(note: string, entrySeq: number) {
-  return {
-    entryId: noteEntryId(note),
-    entrySeq,
-  };
+function cursor(note: string, _entrySeq: number) {
+  return curateState.noteCursor(note, DEFAULT_CREATED_AT);
 }
 
 function renderNote({
@@ -84,6 +89,7 @@ function renderNote({
   updatedAt = DEFAULT_UPDATED_AT,
   entrySeq,
   body = 'Body.',
+  inputFingerprint,
 }: {
   title: string;
   tags?: string[];
@@ -93,6 +99,7 @@ function renderNote({
   updatedAt?: string;
   entrySeq?: number;
   body?: string;
+  inputFingerprint?: string;
 }): string {
   const lines = [
     '---',
@@ -102,6 +109,37 @@ function renderNote({
     ...source.map((entry) => `  - ${entry}`),
     `createdAt: ${createdAt}`,
     `updatedAt: ${updatedAt}`,
+    ...(inputFingerprint === undefined ? [] : [`inputFingerprint: ${inputFingerprint}`]),
+    ...(entrySeq === undefined ? [] : [`entrySeq: ${entrySeq}`]),
+    '---',
+    `# ${title}`,
+    '',
+    body,
+  ];
+  return `${lines.join('\n')}\n`;
+}
+
+function renderSource({
+  title,
+  type = 'reference',
+  tags = ['source'],
+  importedAt = DEFAULT_CREATED_AT,
+  entrySeq,
+  body = 'Source body.',
+}: {
+  title: string;
+  type?: string;
+  tags?: string[];
+  importedAt?: string;
+  entrySeq?: number;
+  body?: string;
+}): string {
+  const lines = [
+    '---',
+    `title: ${title}`,
+    `type: ${type}`,
+    `tags: [${tags.join(', ')}]`,
+    `importedAt: ${importedAt}`,
     ...(entrySeq === undefined ? [] : [`entrySeq: ${entrySeq}`]),
     '---',
     `# ${title}`,
@@ -119,6 +157,8 @@ function createIndexNote({
   createdAt = DEFAULT_CREATED_AT,
   updatedAt = DEFAULT_UPDATED_AT,
   entrySeq,
+  body = 'Body.',
+  inputFingerprint,
 }: {
   title: string;
   tags?: string[];
@@ -127,6 +167,8 @@ function createIndexNote({
   createdAt?: string;
   updatedAt?: string;
   entrySeq?: number;
+  body?: string;
+  inputFingerprint?: string;
 }): Omit<NoteEntry, 'kind' | 'slug'> {
   return {
     title,
@@ -135,6 +177,34 @@ function createIndexNote({
     source,
     createdAt,
     updatedAt,
+    bodyHash: computeBodySurfaceHash(body),
+    ...(inputFingerprint === undefined ? {} : { inputFingerprint }),
+    ...(entrySeq === undefined ? {} : { entrySeq }),
+  };
+}
+
+function createIndexSource({
+  title,
+  type = 'reference',
+  tags = ['source'],
+  importedAt = DEFAULT_CREATED_AT,
+  entrySeq,
+  body = 'Source body.',
+}: {
+  title: string;
+  type?: string;
+  tags?: string[];
+  importedAt?: string;
+  entrySeq?: number;
+  body?: string;
+}): Omit<SourceEntry, 'kind' | 'slug'> {
+  return {
+    title,
+    type,
+    tags,
+    importedAt,
+    related: [],
+    bodyHash: computeBodySurfaceHash(body),
     ...(entrySeq === undefined ? {} : { entrySeq }),
   };
 }
@@ -178,6 +248,7 @@ function buildClaimedNote({
     body,
     updatedAt,
     entrySeq,
+    cursor: cursor(slug, entrySeq),
   };
 }
 
@@ -200,6 +271,7 @@ let runtime: KbRuntime;
 let scheduler: CurateHandle;
 let internals: CurateTestHandle;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
+let originalClaudeConfigDir: string | undefined;
 
 function useScheduler(curateAssistant: CurateAssistantPort = noopCurateAssistant, scheduleDebounceMs = 0): void {
   scheduler = createCurateScheduler({
@@ -228,12 +300,30 @@ function writeNote(
     updatedAt?: string;
     entrySeq?: number;
     body?: string;
+    inputFingerprint?: string;
   },
 ): string {
   mkdirSync(runtime.notesDir(), { recursive: true });
   const notePath = join(runtime.notesDir(), `${slug}.md`);
   writeFileSync(notePath, renderNote(options), 'utf-8');
   return notePath;
+}
+
+function writeSource(
+  slug: string,
+  options: {
+    title: string;
+    type?: string;
+    tags?: string[];
+    importedAt?: string;
+    entrySeq?: number;
+    body?: string;
+  },
+): string {
+  mkdirSync(runtime.sourcesDir(), { recursive: true });
+  const sourcePath = join(runtime.sourcesDir(), `${slug}.md`);
+  writeFileSync(sourcePath, renderSource(options), 'utf-8');
+  return sourcePath;
 }
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
@@ -249,6 +339,8 @@ async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-'));
+  originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude-config');
   gitSyncRuntime = createRealRuntime('prod');
   const db = createKbTestDb(tempDir);
   ({ kb: runtime } = createKbTestRuntime({
@@ -269,6 +361,11 @@ afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  if (originalClaudeConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+  }
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -1049,7 +1146,7 @@ describe('curate', () => {
       });
     });
 
-    it('claims a new-day cohort in mutation-sequence order', async () => {
+    it('claims a new-day cohort in content-cursor order', async () => {
       const specs: Array<[string, number]> = [
         ['coral-ten', 10],
         ['coral-two', 2],
@@ -1089,27 +1186,108 @@ describe('curate', () => {
       const claim = await internals.claimCurateRun('2026-03-25');
 
       expect(claim).not.toBeNull();
-      expect(claim?.entries.map((note) => note.entrySeq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(claim?.entries.map((note) => note.entrySeq)).toEqual([8, 5, 4, 9, 1, 7, 6, 10, 3, 2]);
       expect(claim?.entries.map((note) => note.slug)).toEqual([
-        'coral-one',
-        'coral-two',
-        'coral-three',
-        'coral-four',
-        'coral-five',
-        'coral-six',
-        'coral-seven',
         'coral-eight',
+        'coral-five',
+        'coral-four',
         'coral-nine',
+        'coral-one',
+        'coral-seven',
+        'coral-six',
         'coral-ten',
+        'coral-three',
+        'coral-two',
       ]);
-      expect(claim?.through).toEqual(cursor('coral-ten', 10));
+      expect(claim?.through).toEqual(cursor('coral-two', 2));
       expect(readCurateState(curateDb(runtime))).toMatchObject({
         lastRunDay: '2026-03-25',
-        lastAttemptedThrough: cursor('coral-ten', 10),
+        lastAttemptedThrough: cursor('coral-two', 2),
         activeClaim: {
-          through: cursor('coral-ten', 10),
+          through: cursor('coral-two', 2),
         },
       });
+    });
+
+    it('orders pending notes and sources by timestamp, kind, and slug rather than entrySeq', async () => {
+      const timestamp = '2026-03-20T00:00:00.000Z';
+      const entries: KbIndex['entries'] = {};
+
+      for (const [slug, seq] of [
+        ['source-e', 1],
+        ['source-d', 2],
+        ['source-c', 3],
+        ['source-b', 4],
+        ['source-a', 5],
+      ] as const) {
+        writeSource(slug, {
+          title: slug,
+          importedAt: timestamp,
+          entrySeq: seq,
+          body: `${slug} body.`,
+        });
+        entries[sourceEntryId(slug)] = {
+          kind: 'source',
+          slug,
+          ...createIndexSource({
+            title: slug,
+            importedAt: timestamp,
+            entrySeq: seq,
+            body: `${slug} body.`,
+          }),
+        };
+      }
+
+      for (const [slug, seq] of [
+        ['coral-e', 10],
+        ['coral-d', 9],
+        ['coral-c', 8],
+        ['coral-b', 7],
+        ['coral-a', 6],
+      ] as const) {
+        writeNote(slug, {
+          title: slug,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          entrySeq: seq,
+          body: `${slug} body.`,
+        });
+        entries[noteEntryId(slug)] = {
+          kind: 'note',
+          slug,
+          ...createIndexNote({
+            title: slug,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            entrySeq: seq,
+            body: `${slug} body.`,
+          }),
+        };
+      }
+
+      runtime.writeIndex({ entries, principles: {}, entityMeta: {}, relationships: [] });
+      writeCurateState(
+        curateDb(runtime),
+        createCurateState({
+          lastRunDay: '2026-03-24',
+        }),
+      );
+
+      const claim = await internals.claimCurateRun('2026-03-25');
+
+      expect(claim?.entries.map((entry) => entry.entryId)).toEqual([
+        noteEntryId('coral-a'),
+        noteEntryId('coral-b'),
+        noteEntryId('coral-c'),
+        noteEntryId('coral-d'),
+        noteEntryId('coral-e'),
+        sourceEntryId('source-a'),
+        sourceEntryId('source-b'),
+        sourceEntryId('source-c'),
+        sourceEntryId('source-d'),
+        sourceEntryId('source-e'),
+      ]);
+      expect(claim?.through).toEqual(curateState.sourceCursor('source-e', timestamp));
     });
 
     it('claims at most one hundred notes when the max-size threshold is reached', async () => {
@@ -1224,19 +1402,21 @@ describe('curate', () => {
       expect(buildMetadataTargets(assignments, index, claimedNotes)).toEqual([
         {
           kind: 'note',
-          entryId: noteEntryId('coral-beta'),
-          slug: 'coral-beta',
-          entrySeq: 1,
-          claimTimeUpdatedAt: '2026-03-23T00:00:00.000Z',
-        },
-        {
-          kind: 'note',
           entryId: noteEntryId('coral-alpha'),
           slug: 'coral-alpha',
           entrySeq: 2,
+          cursor: cursor('coral-alpha', 2),
           claimTimeUpdatedAt: '2026-03-22T00:00:00.000Z',
           desiredTags: ['coral', 'kb'],
           addPrinciples: ['deterministic-ordering'],
+        },
+        {
+          kind: 'note',
+          entryId: noteEntryId('coral-beta'),
+          slug: 'coral-beta',
+          entrySeq: 1,
+          cursor: cursor('coral-beta', 1),
+          claimTimeUpdatedAt: '2026-03-23T00:00:00.000Z',
         },
       ]);
     });
@@ -1273,6 +1453,7 @@ describe('curate', () => {
           entryId: noteEntryId('coral-alpha'),
           slug: 'coral-alpha',
           entrySeq: 4,
+          cursor: cursor('coral-alpha', 4),
           claimTimeUpdatedAt: updatedAt,
           addTags: ['kb'],
           addPrinciples: ['deterministic-ordering'],
@@ -1286,6 +1467,7 @@ describe('curate', () => {
         source: ['kangig94/coral'],
         createdAt: DEFAULT_CREATED_AT,
         updatedAt,
+        inputFingerprint: computeBodySurfaceHash('Alpha body.'),
         related: [],
         entrySeq: 4,
       });
@@ -1293,11 +1475,13 @@ describe('curate', () => {
         kind: 'note',
         slug: 'coral-alpha',
         title: 'Alpha',
+        bodyHash: computeBodySurfaceHash('Alpha body.'),
         tags: ['coral', 'existing-tag', 'kb'],
         principles: ['existing-principle', 'deterministic-ordering'],
         source: ['kangig94/coral'],
         createdAt: DEFAULT_CREATED_AT,
         updatedAt,
+        inputFingerprint: computeBodySurfaceHash('Alpha body.'),
         related: [],
         entrySeq: 4,
       });
@@ -1350,6 +1534,7 @@ describe('curate', () => {
           entryId: noteEntryId('coral-fresh'),
           slug: 'coral-fresh',
           entrySeq: 3,
+          cursor: cursor('coral-fresh', 3),
           claimTimeUpdatedAt: '2026-03-23T00:00:00.000Z',
           addTags: ['kb'],
         },
@@ -1358,6 +1543,7 @@ describe('curate', () => {
           entryId: noteEntryId('coral-stale'),
           slug: 'coral-stale',
           entrySeq: 2,
+          cursor: cursor('coral-stale', 2),
           claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
           addTags: ['kb'],
         },
@@ -1366,6 +1552,7 @@ describe('curate', () => {
           entryId: noteEntryId('coral-missing'),
           slug: 'coral-missing',
           entrySeq: 1,
+          cursor: cursor('coral-missing', 1),
           claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
           addTags: ['kb'],
         },
@@ -1389,15 +1576,19 @@ describe('curate', () => {
     });
 
     it('does not write or advance past the repair frontier during metadata commits', async () => {
+      const safeCursor = curateState.noteCursor('coral-safe', '2026-03-20T00:00:04.000Z');
+      const blockedCursor = curateState.noteCursor('coral-blocked', '2026-03-20T00:00:06.000Z');
       writeNote('coral-safe', {
         title: 'Safe',
         tags: ['coral'],
+        createdAt: safeCursor.timestamp,
         updatedAt: '2026-03-21T00:00:00.000Z',
         entrySeq: 4,
       });
       writeNote('coral-blocked', {
         title: 'Blocked',
         tags: ['coral'],
+        createdAt: blockedCursor.timestamp,
         updatedAt: '2026-03-22T00:00:00.000Z',
         entrySeq: 6,
       });
@@ -1406,12 +1597,14 @@ describe('curate', () => {
           'coral-safe': createIndexNote({
             title: 'Safe',
             tags: ['coral'],
+            createdAt: safeCursor.timestamp,
             updatedAt: '2026-03-21T00:00:00.000Z',
             entrySeq: 4,
           }),
           'coral-blocked': createIndexNote({
             title: 'Blocked',
             tags: ['coral'],
+            createdAt: blockedCursor.timestamp,
             updatedAt: '2026-03-22T00:00:00.000Z',
             entrySeq: 6,
           }),
@@ -1435,6 +1628,7 @@ describe('curate', () => {
           entryId: noteEntryId('coral-safe'),
           slug: 'coral-safe',
           entrySeq: 4,
+          cursor: safeCursor,
           claimTimeUpdatedAt: '2026-03-21T00:00:00.000Z',
           addTags: ['kb'],
         },
@@ -1443,6 +1637,7 @@ describe('curate', () => {
           entryId: noteEntryId('coral-blocked'),
           slug: 'coral-blocked',
           entrySeq: 6,
+          cursor: blockedCursor,
           claimTimeUpdatedAt: '2026-03-22T00:00:00.000Z',
           addTags: ['kb'],
         },
@@ -1456,7 +1651,7 @@ describe('curate', () => {
         'coral',
       ]);
       expect(readCurateState(curateDb(runtime))).toMatchObject({
-        processedThrough: cursor('coral-safe', 4),
+        processedThrough: safeCursor,
       });
       expect(readCurateRetryQueue(curateDb(runtime))).toMatchObject([
         {
@@ -2086,7 +2281,181 @@ describe('curate', () => {
         'stable-parent',
         'stable-parent-child',
       ]);
-      expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(cursor('coral-note-10', 10));
+      expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(cursor('coral-pattern-note', 1));
+    });
+
+    it('does not re-classify a peer-classified note when inputFingerprint matches bodyHash', async () => {
+      const body = 'Peer classified body.';
+      const inputFingerprint = computeBodySurfaceHash(body);
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async () => {
+        throw new Error('classification should be skipped');
+      });
+
+      writeNote('coral-peer-classified', {
+        title: 'Peer Classified',
+        tags: ['coral', 'peer-classified'],
+        inputFingerprint,
+        entrySeq: 2,
+        body,
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-peer-classified': createIndexNote({
+            title: 'Peer Classified',
+            tags: ['coral', 'peer-classified'],
+            inputFingerprint,
+            entrySeq: 2,
+            body,
+          }),
+        }),
+        principles: {},
+        entityMeta: {
+          coral: { type: 'domain', description: 'Coral domain.' },
+          'peer-classified': { type: 'concept', description: 'Peer-provided classification.' },
+        },
+        relationships: [],
+      });
+      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
+      useScheduler(assistantFromComplete(spawn));
+
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
+
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('re-classifies a note after the body changes and stamps the current inputFingerprint', async () => {
+      const oldBody = 'Original classified body.';
+      const editedBody = 'Edited classified body.';
+      const oldFingerprint = computeBodySurfaceHash(oldBody);
+      const expectedFingerprint = computeBodySurfaceHash(editedBody);
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async (request) =>
+        request.purpose === 'classification'
+          ? JSON.stringify([
+              {
+                entry: noteEntryId('coral-edited-body'),
+                tags: ['edited-body'],
+                newEntities: {
+                  'edited-body': {
+                    type: 'concept',
+                    description: 'Edited body classification.',
+                  },
+                },
+              },
+            ])
+          : '[]',
+      );
+
+      writeNote('coral-edited-body', {
+        title: 'Edited Body',
+        tags: ['coral'],
+        inputFingerprint: oldFingerprint,
+        entrySeq: 2,
+        body: editedBody,
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-edited-body': createIndexNote({
+            title: 'Edited Body',
+            tags: ['coral'],
+            inputFingerprint: oldFingerprint,
+            entrySeq: 2,
+            body: editedBody,
+          }),
+        }),
+        principles: {},
+        entityMeta: {
+          coral: { type: 'domain', description: 'Coral domain.' },
+          'edited-body': { type: 'concept', description: 'Edited body classification.' },
+        },
+        relationships: [],
+      });
+      writeCurateState(
+        curateDb(runtime),
+        createCurateState({
+          initialized: true,
+          lastAttemptedThrough: cursor('coral-prior', 1),
+          retryNotBefore: '2026-03-25T11:00:00.000Z',
+        }),
+      );
+      useScheduler(assistantFromComplete(spawn));
+
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
+
+      expect(spawn.mock.calls.filter(([request]) => request.purpose === 'classification')).toHaveLength(1);
+      const raw = readFileSync(join(runtime.notesDir(), 'coral-edited-body.md'), 'utf-8');
+      expect(parseFrontmatter(raw)).toMatchObject({
+        tags: ['edited-body'],
+        inputFingerprint: expectedFingerprint,
+      });
+      expect(runtime.readIndex()?.entries[noteEntryId('coral-edited-body')]).toMatchObject({
+        bodyHash: expectedFingerprint,
+        inputFingerprint: expectedFingerprint,
+      });
+    });
+
+    it('classifies a note that has no inputFingerprint', async () => {
+      const body = 'Seed body awaiting classification.';
+      const expectedFingerprint = computeBodySurfaceHash(body);
+      const spawn = vi.fn<CurateAssistantPort['complete']>(async (request) =>
+        request.purpose === 'classification'
+          ? JSON.stringify([
+              {
+                entry: noteEntryId('coral-seed-note'),
+                tags: ['seed-classified'],
+                newEntities: {
+                  'seed-classified': {
+                    type: 'concept',
+                    description: 'Seed note classification.',
+                  },
+                },
+              },
+            ])
+          : '[]',
+      );
+
+      writeNote('coral-seed-note', {
+        title: 'Seed Note',
+        tags: ['coral'],
+        entrySeq: 2,
+        body,
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-seed-note': createIndexNote({
+            title: 'Seed Note',
+            tags: ['coral'],
+            entrySeq: 2,
+            body,
+          }),
+        }),
+        principles: {},
+        entityMeta: {
+          coral: { type: 'domain', description: 'Coral domain.' },
+          'seed-classified': { type: 'concept', description: 'Seed note classification.' },
+        },
+        relationships: [],
+      });
+      writeCurateState(
+        curateDb(runtime),
+        createCurateState({
+          initialized: true,
+          lastAttemptedThrough: cursor('coral-prior', 1),
+          retryNotBefore: '2026-03-25T11:00:00.000Z',
+        }),
+      );
+      useScheduler(assistantFromComplete(spawn));
+
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
+
+      expect(spawn.mock.calls.filter(([request]) => request.purpose === 'classification')).toHaveLength(1);
+      const raw = readFileSync(join(runtime.notesDir(), 'coral-seed-note.md'), 'utf-8');
+      expect(parseFrontmatter(raw)).toMatchObject({
+        tags: ['seed-classified'],
+        inputFingerprint: expectedFingerprint,
+      });
     });
 
     it('aborts the active spawn on stop() without leaving retry state or an active claim', async () => {
@@ -2414,14 +2783,12 @@ describe('curate', () => {
 
       const state = readCurateState(curateDb(runtime));
       expect(state).toMatchObject({
-        communityTopologyHash: expect.any(String),
-        communitySummaryTopologyHash: expect.any(String),
+        communityTopologyHash: undefined,
         consecutiveClaimFailures: 3,
         consecutiveCommunityBatchFailures: 0,
       });
       expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
-      expect(state.communitySummaryInputFingerprints).toBeDefined();
-      expect(Object.keys(state.communitySummaryInputFingerprints ?? {})).not.toHaveLength(0);
+      expect(state.communitySummaryInputFingerprints).toBeUndefined();
 
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(communityFiles.length).toBeGreaterThan(0);
@@ -2430,6 +2797,110 @@ describe('curate', () => {
           readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
         ),
       ).toBe(true);
+      expect(
+        communityFiles.every((entry) => {
+          const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
+          return parseCommunityFrontmatter(raw).summaryInputFingerprint !== undefined;
+        }),
+      ).toBe(true);
+    });
+
+    it('skips a pulled community summary when markdown frontmatter carries the matching fingerprint', async () => {
+      writeNote('coral-peer-community', {
+        title: 'Peer Community',
+        tags: ['graph-rag', 'retrieval'],
+        entrySeq: 1,
+        body: 'Graph-backed retrieval improves context selection.',
+      });
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-peer-community': createIndexNote({
+            title: 'Peer Community',
+            tags: ['graph-rag', 'retrieval'],
+            entrySeq: 1,
+          }),
+        }),
+        principles: {},
+        entityMeta: {
+          'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+          retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+        },
+        relationships: [
+          {
+            source: 'graph-rag',
+            target: 'retrieval',
+            type: 'enables',
+            description: 'Graph structure improves retrieval.',
+            evidence: ['note:coral-peer-community'],
+          },
+        ],
+      });
+      await runtime.writeEntityGraph({
+        entityMeta: {
+          'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+          retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+        },
+        relationships: [
+          {
+            source: 'graph-rag',
+            target: 'retrieval',
+            type: 'enables',
+            description: 'Graph structure improves retrieval.',
+            evidence: ['note:coral-peer-community'],
+          },
+        ],
+      });
+      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
+
+      const initialSpawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Peer generated summary.');
+      useScheduler(assistantFromComplete(initialSpawn));
+
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+      expect(initialSpawn).toHaveBeenCalled();
+
+      const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+      expect(communityFiles.length).toBeGreaterThan(0);
+      const generatedFrontmatter = communityFiles.map((entry) =>
+        parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8')),
+      );
+      expect(generatedFrontmatter.every((frontmatter) => frontmatter.summaryInputFingerprint !== undefined)).toBe(
+        true,
+      );
+
+      const legacyDb = curateDb(runtime);
+      for (const entry of communityFiles) {
+        legacyDb
+          .prepare(
+            `INSERT OR REPLACE INTO kb_curate_community_summary_input_fingerprints (
+               community_slug,
+               fingerprint
+             ) VALUES (?, ?)`,
+          )
+          .run(entry.replace(/\.md$/, ''), 'stale-local-fingerprint');
+      }
+
+      const skipSpawn = vi.fn<CurateAssistantPort['complete']>(async () => {
+        throw new Error('matching community frontmatter fingerprint should skip summary generation');
+      });
+      useScheduler(assistantFromComplete(skipSpawn));
+
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+
+      expect(skipSpawn).not.toHaveBeenCalled();
+
+      writeNote('coral-peer-community', {
+        title: 'Peer Community',
+        tags: ['graph-rag', 'retrieval'],
+        entrySeq: 1,
+        body: 'Graph-backed retrieval now emphasizes changed member evidence.',
+      });
+
+      const changedInputSpawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Updated community summary.');
+      useScheduler(assistantFromComplete(changedInputSpawn));
+
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+
+      expect(changedInputSpawn).toHaveBeenCalled();
     });
 
     it('discards the prepared community batch on summary failures and retries cleanly on the next run', async () => {
@@ -2508,9 +2979,13 @@ describe('curate', () => {
         consecutiveClaimFailures: 2,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(Object.keys(readCurateState(curateDb(runtime)).communitySummaryInputFingerprints ?? {})).not.toHaveLength(
-        0,
-      );
+      expect(readCurateState(curateDb(runtime)).communitySummaryInputFingerprints).toBeUndefined();
+      expect(
+        filesAfterRecovery.every((entry) => {
+          const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
+          return parseCommunityFrontmatter(raw).summaryInputFingerprint !== undefined;
+        }),
+      ).toBe(true);
     });
 
     it('backs off community batch retries by scheduler tick and resets on success', async () => {

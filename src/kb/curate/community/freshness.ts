@@ -1,13 +1,10 @@
 import type { KbRuntime } from '../../contract.js';
 import { isCommunityEntry, type CommunityEntry, type KbIndex } from '../../entry-types.js';
-import { computeCommunityTopologyFingerprint } from './detection.js';
 import { computeCommunitySummaryInputFingerprints } from './summary.js';
-import { readCurateState, type CurateState } from '../state/index.js';
-import { curateDb } from '../db-access.js';
 
 type CommunityFreshnessRuntime = Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>;
 
-export function areCommunityDocumentsFresh(kb: KbRuntime, index: KbIndex, state?: CurateState): boolean {
+export function areCommunityDocumentsFresh(kb: KbRuntime, index: KbIndex): boolean {
   // Avoid touching curate state when there are no community entries.
   let hasCommunityEntries = false;
   for (const entry of Object.values(index.entries)) {
@@ -19,14 +16,10 @@ export function areCommunityDocumentsFresh(kb: KbRuntime, index: KbIndex, state?
   if (!hasCommunityEntries) {
     return true;
   }
-  return isCommunityStateFreshForIndex(state ?? readCurateState(curateDb(kb)), kb, index);
+  return isCommunityStateFreshForIndex(kb, index);
 }
 
 function isCommunityStateFreshForIndex(
-  state: Pick<
-    CurateState,
-    'communityTopologyHash' | 'communitySummaryTopologyHash' | 'communitySummaryInputFingerprints'
-  >,
   kb: CommunityFreshnessRuntime,
   index: KbIndex,
 ): boolean {
@@ -40,11 +33,6 @@ function isCommunityStateFreshForIndex(
     return true;
   }
 
-  const topologyHash = computeCommunityTopologyFingerprint(index);
-  if (state.communityTopologyHash !== topologyHash || state.communitySummaryTopologyHash !== topologyHash) {
-    return false;
-  }
-
   try {
     const communities: Array<{
       slug: string;
@@ -53,6 +41,7 @@ function isCommunityStateFreshForIndex(
       members: string[];
       children?: string[];
       summary?: string;
+      summaryInputFingerprint?: string;
     }> = [];
     for (const community of communityEntries) {
       communities.push({
@@ -62,10 +51,13 @@ function isCommunityStateFreshForIndex(
         members: community.members,
         ...(community.children === undefined ? {} : { children: community.children }),
         ...(community.summary === undefined ? {} : { summary: community.summary }),
+        ...(community.summaryInputFingerprint === undefined
+          ? {}
+          : { summaryInputFingerprint: community.summaryInputFingerprint }),
       });
     }
     const currentFingerprints = computeCommunitySummaryInputFingerprints(communities, kb, index);
-    return isCommunitySummaryFresh(currentFingerprints, state.communitySummaryInputFingerprints);
+    return isCommunitySummaryFresh(currentFingerprints, communityEntries);
   } catch {
     return false;
   }
@@ -73,18 +65,17 @@ function isCommunityStateFreshForIndex(
 
 function isCommunitySummaryFresh(
   currentFingerprints: Readonly<Record<string, string>>,
-  storedFingerprints: Readonly<Record<string, string>> | undefined,
+  communities: readonly CommunityEntry[],
 ): boolean {
   const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
-  const storedEntries: Array<[string, string]> = [];
-  for (const [slug, fingerprint] of Object.entries(storedFingerprints ?? {})) {
-    if (slug in currentFingerprints) {
-      storedEntries.push([slug, fingerprint]);
-    }
-  }
-  storedEntries.sort(([left], [right]) => left.localeCompare(right));
+  const storedEntries = communities
+    .flatMap((community): Array<[string, string]> =>
+      community.summaryInputFingerprint === undefined ? [] : [[community.slug, community.summaryInputFingerprint]],
+    )
+    .filter(([slug]) => slug in currentFingerprints)
+    .sort(([left], [right]) => left.localeCompare(right));
 
-  if (currentEntries.length !== storedEntries.length) {
+  if (currentEntries.length === 0 || currentEntries.length !== storedEntries.length) {
     return false;
   }
   for (let index = 0; index < currentEntries.length; index += 1) {

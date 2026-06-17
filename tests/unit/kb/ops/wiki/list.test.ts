@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 
@@ -93,6 +94,7 @@ describe('listWikis', () => {
           createdAt: '2026-04-15T00:00:00.000Z',
           updatedAt: '2026-04-15T00:00:00.000Z',
           related: [],
+          bodyHash: computeBodySurfaceHash('Foreign note.'),
         },
       },
     });

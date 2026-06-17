@@ -54,7 +54,7 @@ export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir' 
     try {
       const frontmatter = parseCommunityFrontmatter(raw);
       const body = extractBody(raw);
-      generated.push({
+      const community: ExistingGeneratedCommunity = {
         slug,
         title: extractTitle(raw),
         level: frontmatter.level,
@@ -62,9 +62,13 @@ export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir' 
         ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
         ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
         summary: parseSummaryFromBody(body),
+        ...(frontmatter.summaryInputFingerprint === undefined
+          ? {}
+          : { summaryInputFingerprint: frontmatter.summaryInputFingerprint }),
         createdAt: frontmatter.createdAt,
         updatedAt: frontmatter.updatedAt,
-      });
+      };
+      generated.push(community);
     } catch {
       reservedSlugs.add(slug);
     }
@@ -80,6 +84,7 @@ export function renderCommunityDocument(document: {
   parent?: string;
   children?: string[];
   summary?: string;
+  summaryInputFingerprint?: string;
   createdAt: string;
   updatedAt: string;
 }): string {
@@ -87,6 +92,9 @@ export function renderCommunityDocument(document: {
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
     level: document.level,
+    ...(document.summaryInputFingerprint === undefined
+      ? {}
+      : { summaryInputFingerprint: document.summaryInputFingerprint }),
     ...(document.parent === undefined ? {} : { parent: document.parent }),
     ...(document.children === undefined ? {} : { children: document.children }),
   });
@@ -113,9 +121,10 @@ export function buildCommunityDocuments(
     const priorCommunity = priorBySlug.get(community.slug);
     const createdAt = priorCommunity?.createdAt ?? options.today;
     const summary = priorCommunity?.summary;
+    const summaryInputFingerprint = priorCommunity?.summaryInputFingerprint;
     const title = community.title;
 
-    documents.push({
+    const document: CommunityDocument = {
       slug: community.slug,
       title,
       level: community.level,
@@ -123,6 +132,7 @@ export function buildCommunityDocuments(
       ...(community.parent === undefined ? {} : { parent: community.parent }),
       ...(community.children === undefined ? {} : { children: community.children }),
       ...(summary === undefined ? {} : { summary }),
+      ...(summaryInputFingerprint === undefined ? {} : { summaryInputFingerprint }),
       createdAt,
       updatedAt: options.today,
       content: renderCommunityDocument({
@@ -132,10 +142,12 @@ export function buildCommunityDocuments(
         ...(community.parent === undefined ? {} : { parent: community.parent }),
         ...(community.children === undefined ? {} : { children: community.children }),
         ...(summary === undefined ? {} : { summary }),
+        ...(summaryInputFingerprint === undefined ? {} : { summaryInputFingerprint }),
         createdAt,
         updatedAt: options.today,
       }),
-    });
+    };
+    documents.push(document);
   }
   return documents;
 }

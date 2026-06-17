@@ -340,10 +340,11 @@ export function buildInboundSyncIndexDelta(
       const notePath = paths.notePath(slug);
 
       try {
-        const { frontmatter, title } = loadKbNote(paths.storagePort, notePath);
+        const { body, frontmatter, title } = loadKbNote(paths.storagePort, notePath);
         nextIndex.entries[entryId] = buildNoteIndexEntry({
           slug,
           title,
+          body,
           ...frontmatter,
         });
       } catch (error: unknown) {
@@ -384,9 +385,10 @@ export function buildInboundSyncIndexDelta(
       const sourcePath = paths.sourcePath(slug);
 
       try {
-        const { frontmatter } = loadKbSource(paths.storagePort, sourcePath);
+        const { body, frontmatter } = loadKbSource(paths.storagePort, sourcePath);
         nextIndex.entries[entryId] = buildSourceIndexEntry({
           slug,
+          body,
           ...frontmatter,
         });
       } catch (error: unknown) {

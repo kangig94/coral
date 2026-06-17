@@ -14,8 +14,33 @@ import type { KbIndexStore } from './index-store.js';
 import type { ManifestAuthority } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockController } from './mutation-lock.js';
+import { readEntityGraphFile, renderEntityGraph } from './entity-graph-store.js';
 import { buildCorpusSurface, type CorpusSurface } from './surface.js';
 import { buildCorpusScanView } from './rescan/scan.js';
+import { consolidateCanonicalEntityGraph } from '../curate/entity-graph-merge-driver.js';
+
+function isEntityGraphSyncPath(path: string): boolean {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '') === '.entity-graph.json';
+}
+
+function structuredSyncMayChangeEntityGraph(result: unknown): boolean {
+  if (!isGitSyncResult(result)) {
+    return false;
+  }
+  if (result.kind === 'ambiguous') {
+    return true;
+  }
+  if (result.kind !== 'paths') {
+    return false;
+  }
+
+  return result.changes.some((change) => {
+    if (change.status === 'renamed') {
+      return isEntityGraphSyncPath(change.previousPath) || isEntityGraphSyncPath(change.path);
+    }
+    return isEntityGraphSyncPath(change.path);
+  });
+}
 
 export interface CorpusInboundSyncTarget {
   markdownRoot: string;
@@ -55,6 +80,9 @@ export class CorpusInboundSyncService {
       const target = this.options.target;
       const beforeSurface = options.structuredDiff === true ? null : this.buildCurrentSurface();
       const result = await fn();
+      if (options.structuredDiff !== true || structuredSyncMayChangeEntityGraph(result)) {
+        this.normalizeEntityGraphAfterInboundSync();
+      }
 
       if (options.structuredDiff === true && isGitSyncResult(result)) {
         if (result.kind === 'ambiguous') {
@@ -107,5 +135,20 @@ export class CorpusInboundSyncService {
 
   private buildCurrentSurface(): CorpusSurface {
     return buildCorpusSurface(buildCorpusScanView(this.options.target));
+  }
+
+  private normalizeEntityGraphAfterInboundSync(): void {
+    const target = this.options.target;
+    const graph = readEntityGraphFile(target.storagePort, target.entityGraphPath());
+    if (graph === null) {
+      return;
+    }
+
+    const canonicalGraph = consolidateCanonicalEntityGraph(graph);
+    if (renderEntityGraph(graph) === renderEntityGraph(canonicalGraph)) {
+      return;
+    }
+
+    this.options.mutationEffects.writeEntityGraph(canonicalGraph);
   }
 }

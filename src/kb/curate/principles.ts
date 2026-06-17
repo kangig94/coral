@@ -22,7 +22,7 @@ import {
   compareMetadataTarget,
   cursorFromTarget,
   filterCandidatesBeforeRepairFrontier,
-  isCursorBeforeRepairFrontier,
+  isEntrySeqBeforeRepairFrontier,
 } from './metadata-commit.js';
 import { CURATE_STALE_REASON, persistCurateState, runCurateAssistant, CurateJsonParseError } from './operations.js';
 import {
@@ -70,7 +70,7 @@ function buildPrincipleAssignmentTargets(
       continue;
     }
 
-    const cursor = noteCursor(note, noteMeta.entrySeq);
+    const cursor = noteCursor(note, noteMeta.createdAt);
     if (compareCursor(cursor, processedThrough) > 0 || noteMeta.principles.includes(principle)) {
       continue;
     }
@@ -80,6 +80,7 @@ function buildPrincipleAssignmentTargets(
       entryId: noteEntryId(note),
       slug: note,
       entrySeq: noteMeta.entrySeq,
+      cursor,
       claimTimeUpdatedAt: noteMeta.updatedAt,
       addPrinciples: [principle],
     });
@@ -197,7 +198,7 @@ function pendingDiscoverySatisfied(kb: KbRuntime, entry: PendingDiscovery, proce
     if (noteMeta.entrySeq === undefined) {
       return false;
     }
-    if (compareCursor(noteCursor(note, noteMeta.entrySeq), processedThrough) > 0) {
+    if (compareCursor(noteCursor(note, noteMeta.createdAt), processedThrough) > 0) {
       return false;
     }
 
@@ -346,7 +347,7 @@ export async function runPrincipleDiscovery(
         index = nextIndex;
       }
 
-      const targetCandidates: Array<{ cursor: CurateCursor; target: MetadataTarget }> = [];
+      const targetCandidates: Array<{ cursor: CurateCursor; entrySeq?: number; target: MetadataTarget }> = [];
       for (const target of buildPrincipleAssignmentTargets(
         entry.principle,
         entry.notes,
@@ -355,6 +356,7 @@ export async function runPrincipleDiscovery(
       )) {
         targetCandidates.push({
           cursor: cursorFromTarget(target),
+          ...(target.entrySeq === undefined ? {} : { entrySeq: target.entrySeq }),
           target,
         });
       }
@@ -409,10 +411,10 @@ export async function runPrincipleDiscovery(
             continue;
           }
 
-          const cursor = noteCursor(note, noteMeta.entrySeq);
+          const cursor = noteCursor(note, noteMeta.createdAt);
           if (
             compareCursor(cursor, effectiveProcessedThrough) > 0 ||
-            !isCursorBeforeRepairFrontier(cursor, repairFrontier)
+            !isEntrySeqBeforeRepairFrontier(noteMeta.entrySeq, repairFrontier)
           ) {
             continue;
           }
@@ -422,6 +424,7 @@ export async function runPrincipleDiscovery(
             entryId: noteEntryId(assertNoteSlug(note, 'note')),
             slug: assertNoteSlug(note, 'note'),
             entrySeq: noteMeta.entrySeq,
+            cursor,
             claimTimeUpdatedAt: noteMeta.updatedAt,
             addPrinciples: [proposal.slug],
             removePrinciples: [absorbSlug],

@@ -187,6 +187,21 @@ CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (
 );
 CREATE INDEX IF NOT EXISTS kb_curate_retry_by_time ON kb_curate_retry_queue(retry_not_before);
 
+-- Entries quarantined after a non-auto-resolvable git body conflict.
+-- The local commits are preserved on recovery_ref before the daemon resets
+-- the worktree to origin; this table prevents the curator from recreating
+-- the same conflicting commit until the entry's tracked fingerprint is current.
+CREATE TABLE IF NOT EXISTS kb_curate_conflict_quarantine (
+  entry_id                   TEXT PRIMARY KEY,
+  entry_kind                 TEXT NOT NULL,
+  slug                       TEXT NOT NULL,
+  path                       TEXT NOT NULL,
+  recovery_ref               TEXT NOT NULL,
+  detected_at                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS kb_curate_conflict_quarantine_by_ref
+  ON kb_curate_conflict_quarantine(recovery_ref);
+
 CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog (
   entry_id                   TEXT PRIMARY KEY,
   principle_slug            TEXT NOT NULL,

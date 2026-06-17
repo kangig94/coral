@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { detectCommunities } from '#src/kb/curate/community/detection.js';
+import { detectCommunities, normalizeCommunityModularity } from '#src/kb/curate/community/detection.js';
 import { buildEntityRelationshipGraph } from '#src/kb/curate/community/graph.js';
 import { renderCommunityDocument } from '#src/kb/curate/community/documents.js';
+import type { ExistingGeneratedCommunity } from '#src/kb/curate/community/contracts.js';
 import {
   extractBody,
   parseCommunityFrontmatter,
@@ -127,6 +128,45 @@ describe('community-detection', () => {
         expect(first.some((candidate) => `community:${candidate.slug}` === child)).toBe(true);
       }
     }
+  });
+
+  it('is byte-stable for a fixed graph plus prior community state pair', () => {
+    const graph = buildEntityRelationshipGraph(createEntityGraph());
+    const priorCommunities: ExistingGeneratedCommunity[] = [
+      {
+        slug: 'retrieval-stack',
+        title: 'Retrieval / Graph RAG / Embeddings',
+        level: 0,
+        members: ['embeddings', 'graph-rag', 'indexing', 'retrieval'],
+        createdAt: '2026-04-02',
+        updatedAt: '2026-04-02',
+      },
+    ];
+    const reservedSlugs = new Set(['embeddings']);
+    const outputs = new Set<string>();
+
+    for (let index = 0; index < 8; index += 1) {
+      outputs.add(
+        JSON.stringify(
+          detectCommunities(graph, {
+            priorCommunities,
+            reservedSlugs,
+          }),
+        ),
+      );
+    }
+
+    expect(outputs.size).toBe(1);
+    expect([...outputs][0]).toContain('retrieval-stack');
+  });
+
+  it('rounds modularity comparisons to avoid architecture-sized floating point drift', () => {
+    expect(normalizeCommunityModularity(0.1234567890123)).toBe(
+      normalizeCommunityModularity(0.1234567890124),
+    );
+    expect(normalizeCommunityModularity(0.1234567890129)).not.toBe(
+      normalizeCommunityModularity(0.1234567890139),
+    );
   });
 
   it('renders and parses hierarchy metadata and summary sections round-trip', () => {

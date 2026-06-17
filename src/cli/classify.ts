@@ -15,6 +15,8 @@ export type StaticCommandPath =
   | 'expansion info'
   | 'kb search'
   | 'kb diagnose'
+  | 'kb merge-entity-graph'
+  | 'kb merge-frontmatter'
   | 'kb principles'
   | 'kb read'
   | 'kb source import'
@@ -56,6 +58,8 @@ export const commandClassMap = {
   'expansion info': 'read',
   'kb search': 'read',
   'kb diagnose': 'read',
+  'kb merge-entity-graph': 'mutate',
+  'kb merge-frontmatter': 'mutate',
   'kb principles': 'read',
   'kb read': 'read',
   'kb source import': 'mutate',

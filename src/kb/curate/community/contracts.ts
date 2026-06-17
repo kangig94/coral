@@ -33,6 +33,7 @@ export type ExistingGeneratedCommunity = {
   parent?: string;
   children?: string[];
   summary?: string;
+  summaryInputFingerprint?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -45,6 +46,7 @@ export type CommunityDocument = {
   parent?: string;
   children?: string[];
   summary?: string;
+  summaryInputFingerprint?: string;
   createdAt: string;
   updatedAt: string;
   content: string;

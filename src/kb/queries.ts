@@ -25,6 +25,7 @@ import {
   type KbResolvedReadResult,
 } from './read.js';
 import { readCurateRetryQueue } from './curate/retry.js';
+import { readCurateConflictQuarantine } from './curate/conflict-quarantine.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
 import { listSources } from './ops/source-store.js';
@@ -100,7 +101,7 @@ export async function generateKnowledgeBaseWakeUpPacket(
 }
 
 export function diagnoseKnowledgeBase(host: KbQueryHost): KbDiagnoseResult {
-  return buildKbDiagnoseResult(readCurateRetryQueue(host.readDb));
+  return buildKbDiagnoseResult(readCurateRetryQueue(host.readDb), readCurateConflictQuarantine(host.readDb));
 }
 
 export function listKnowledgeBaseMemos(

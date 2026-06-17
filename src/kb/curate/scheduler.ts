@@ -27,6 +27,7 @@ import type { CurateAssistantPort } from './assistant.js';
 import { isUsageBudgetExhausted } from './usage-budget.js';
 import { curateDb } from './db-access.js';
 import { bubbleUpWikiKnowledge } from '../ops/wiki/mutation.js';
+import { runPendingKbMigrations } from '../migrations/index.js';
 
 export type CurateHandle = {
   start(): Promise<void>;
@@ -373,6 +374,8 @@ export function createCurateScheduler({
     }
 
     gitSync.ensureKbGitignore();
+    gitSync.ensureKbMergeDrivers();
+    await runPendingKbMigrations(kb);
     // Curate classifies entries against the current Corpus, so it needs the
     // blocking variant — running against a stale snapshot would mis-route work.
     await kb.ensureCorpusFreshness({ wait: true });

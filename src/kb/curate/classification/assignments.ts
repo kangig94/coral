@@ -18,6 +18,7 @@ import type {
   CurateClaimedEntry,
   MetadataTarget,
 } from '../pipeline-types.js';
+import { compareCursor } from '../state/index.js';
 import { classificationEntityNameSegments, isKnownEntityType, isKnownRelationshipType } from './schema.js';
 
 function isDescriptiveEntityName(value: string, minimumSegments = 2): boolean {
@@ -378,7 +379,8 @@ export function buildMetadataTargets(
         kind: 'source',
         entryId: claimedEntry.entryId,
         slug: claimedEntry.slug,
-        entrySeq: claimedEntry.entrySeq,
+        ...(claimedEntry.entrySeq === undefined ? {} : { entrySeq: claimedEntry.entrySeq }),
+        cursor: claimedEntry.cursor,
         claimTimeFingerprint: claimedEntry.claimTimeFingerprint,
         ...(desiredTags === undefined ? {} : { desiredTags }),
         ...(addRelated.length === 0 ? {} : { addRelated }),
@@ -402,7 +404,8 @@ export function buildMetadataTargets(
       kind: 'note',
       entryId: claimedEntry.entryId,
       slug: claimedEntry.slug,
-      entrySeq: claimedEntry.entrySeq,
+      ...(claimedEntry.entrySeq === undefined ? {} : { entrySeq: claimedEntry.entrySeq }),
+      cursor: claimedEntry.cursor,
       claimTimeUpdatedAt: claimedEntry.updatedAt,
       ...(desiredTags === undefined ? {} : { desiredTags }),
       ...(addRelated.length === 0 ? {} : { addRelated }),
@@ -412,8 +415,9 @@ export function buildMetadataTargets(
   }
 
   return targets.sort((left, right) => {
-    if (left.entrySeq !== right.entrySeq) {
-      return left.entrySeq - right.entrySeq;
+    const cursorOrder = compareCursor(left.cursor, right.cursor);
+    if (cursorOrder !== 0) {
+      return cursorOrder;
     }
     return compareLocale(left.entryId, right.entryId);
   });

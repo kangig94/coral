@@ -12,11 +12,26 @@ import {
   isSourceEntry,
   isWikiEntry,
 } from '../entry-types.js';
+import { computeBodySurfaceHash } from './snapshot.js';
 
-type NoteIndexEntrySource = Omit<NoteEntry, 'kind'>;
-type SourceIndexEntrySource = Omit<SourceEntry, 'kind'>;
+type BodyHashSource = {
+  body?: string;
+  bodyHash?: string;
+};
+type NoteIndexEntrySource = Omit<NoteEntry, 'kind' | 'bodyHash'> & BodyHashSource;
+type SourceIndexEntrySource = Omit<SourceEntry, 'kind' | 'bodyHash'> & BodyHashSource;
 type CommunityIndexEntrySource = Omit<CommunityEntry, 'kind'>;
 type WikiIndexEntrySource = Omit<WikiEntry, 'kind'>;
+
+function resolveBodyHash(meta: BodyHashSource): string {
+  if (meta.bodyHash !== undefined) {
+    return meta.bodyHash;
+  }
+  if (meta.body !== undefined) {
+    return computeBodySurfaceHash(meta.body);
+  }
+  throw new Error('KB index entry bodyHash requires a body or bodyHash');
+}
 
 export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
   return {
@@ -29,6 +44,8 @@ export function buildNoteIndexEntry(meta: NoteIndexEntrySource): NoteEntry {
     createdAt: meta.createdAt,
     updatedAt: meta.updatedAt,
     related: [...(meta.related ?? [])],
+    bodyHash: resolveBodyHash(meta),
+    ...(meta.inputFingerprint === undefined ? {} : { inputFingerprint: meta.inputFingerprint }),
     ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
 }
@@ -42,7 +59,9 @@ export function buildSourceIndexEntry(meta: SourceIndexEntrySource): SourceEntry
     tags: [...meta.tags],
     importedAt: meta.importedAt,
     related: [...(meta.related ?? [])],
+    bodyHash: resolveBodyHash(meta),
     ...(meta.url === undefined ? {} : { url: meta.url }),
+    ...(meta.inputFingerprint === undefined ? {} : { inputFingerprint: meta.inputFingerprint }),
     ...(meta.entrySeq === undefined ? {} : { entrySeq: meta.entrySeq }),
   };
 }
@@ -59,6 +78,9 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
     ...(meta.parent === undefined ? {} : { parent: meta.parent }),
     ...(meta.children === undefined ? {} : { children: [...meta.children] }),
     ...(meta.summary === undefined ? {} : { summary: meta.summary }),
+    ...(meta.summaryInputFingerprint === undefined
+      ? {}
+      : { summaryInputFingerprint: meta.summaryInputFingerprint }),
   };
 }
 

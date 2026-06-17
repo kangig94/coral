@@ -1,9 +1,10 @@
 import { errorMessage } from '../../../infra/error-format.js';
 import { backendLog } from '../../../infra/backend-log.js';
-import { replaceFrontmatter, replaceSourceFrontmatter } from '../../corpus/frontmatter.js';
+import { extractBody, replaceFrontmatter, replaceSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../../corpus/index-records.js';
+import { computeBodySurfaceHash } from '../../corpus/snapshot.js';
 import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../../index-state.js';
 import { stripMdExt } from '../../paths.js';
 import { loadKbNote, loadKbSource } from '../../read.js';
@@ -27,6 +28,7 @@ import {
   compareCursor,
   noteCursor,
   sameStringList,
+  sourceCursor,
   type CurateCursor,
   type CurateState,
   type PendingRepair,
@@ -108,12 +110,11 @@ function scanSource(kb: Pick<KbRuntime, 'sourcePath' | 'storagePort'>, slug: str
   };
 }
 
-function hasCuratedNoteMetadata(frontmatter: KbNoteFrontmatter): boolean {
-  return frontmatter.tags.length > 0 || frontmatter.principles.length > 0 || (frontmatter.related ?? []).length > 0;
-}
-
-function hasCuratedSourceMetadata(frontmatter: KbSourceFrontmatter): boolean {
-  return frontmatter.tags.length > 0 || (frontmatter.related ?? []).length > 0;
+function hasCurrentInputFingerprint(frontmatter: KbNoteFrontmatter | KbSourceFrontmatter, content: string): boolean {
+  return (
+    frontmatter.inputFingerprint !== undefined &&
+    frontmatter.inputFingerprint === computeBodySurfaceHash(extractBody(content))
+  );
 }
 
 function inferProcessedThrough(
@@ -127,27 +128,22 @@ function inferProcessedThrough(
 
   let highestCuratedCursor: CurateCursor | null = null;
   for (const scannedNote of scannedNotes) {
-    const entrySeq = scannedNote.frontmatter.entrySeq;
-    if (entrySeq === undefined || !hasCuratedNoteMetadata(scannedNote.frontmatter)) {
+    if (!hasCurrentInputFingerprint(scannedNote.frontmatter, scannedNote.content)) {
       continue;
     }
 
-    const cursor = noteCursor(scannedNote.note, entrySeq);
+    const cursor = noteCursor(scannedNote.note, scannedNote.frontmatter.createdAt);
     if (highestCuratedCursor === null || compareCursor(cursor, highestCuratedCursor) > 0) {
       highestCuratedCursor = cursor;
     }
   }
 
   for (const scannedSource of scannedSources) {
-    const entrySeq = scannedSource.frontmatter.entrySeq;
-    if (entrySeq === undefined || !hasCuratedSourceMetadata(scannedSource.frontmatter)) {
+    if (!hasCurrentInputFingerprint(scannedSource.frontmatter, scannedSource.content)) {
       continue;
     }
 
-    const cursor: CurateCursor = {
-      entryId: sourceEntryId(scannedSource.slug),
-      entrySeq,
-    };
+    const cursor = sourceCursor(scannedSource.slug, scannedSource.frontmatter.importedAt);
     if (highestCuratedCursor === null || compareCursor(cursor, highestCuratedCursor) > 0) {
       highestCuratedCursor = cursor;
     }
@@ -159,12 +155,14 @@ function inferProcessedThrough(
 function syncIndexNote(
   note: string,
   title: string,
+  content: string,
   frontmatter: KbNoteFrontmatter,
   nextIndex: ReturnType<typeof cloneKbIndex>,
 ): boolean {
   const nextEntry = buildNoteIndexEntry({
     slug: note,
     title,
+    body: extractBody(content),
     ...frontmatter,
   });
   const existingEntry = nextIndex.entries[noteEntryId(note)];
@@ -173,6 +171,8 @@ function syncIndexNote(
     existing !== undefined &&
     existing.title === nextEntry.title &&
     existing.entrySeq === nextEntry.entrySeq &&
+    existing.bodyHash === nextEntry.bodyHash &&
+    existing.inputFingerprint === nextEntry.inputFingerprint &&
     sameStringList(existing.tags, nextEntry.tags) &&
     sameStringList(existing.principles, nextEntry.principles) &&
     sameStringList(existing.source, nextEntry.source) &&
@@ -189,11 +189,13 @@ function syncIndexNote(
 
 function syncIndexSource(
   slug: string,
+  content: string,
   frontmatter: KbSourceFrontmatter,
   nextIndex: ReturnType<typeof cloneKbIndex>,
 ): boolean {
   const nextEntry = buildSourceIndexEntry({
     slug,
+    body: extractBody(content),
     ...frontmatter,
   });
   const existingEntry = nextIndex.entries[sourceEntryId(slug)];
@@ -205,6 +207,8 @@ function syncIndexSource(
     existing.url === nextEntry.url &&
     existing.importedAt === nextEntry.importedAt &&
     existing.entrySeq === nextEntry.entrySeq &&
+    existing.bodyHash === nextEntry.bodyHash &&
+    existing.inputFingerprint === nextEntry.inputFingerprint &&
     sameStringList(existing.tags, nextEntry.tags) &&
     sameStringList(existing.related ?? [], nextEntry.related ?? [])
   ) {
@@ -342,11 +346,13 @@ export function syncIndex(
 
   for (const scannedNote of scannedNotes) {
     indexChanged =
-      syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.frontmatter, nextIndex) || indexChanged;
+      syncIndexNote(scannedNote.note, scannedNote.title, scannedNote.content, scannedNote.frontmatter, nextIndex) ||
+      indexChanged;
   }
 
   for (const scannedSource of scannedSources) {
-    indexChanged = syncIndexSource(scannedSource.slug, scannedSource.frontmatter, nextIndex) || indexChanged;
+    indexChanged =
+      syncIndexSource(scannedSource.slug, scannedSource.content, scannedSource.frontmatter, nextIndex) || indexChanged;
   }
 
   if (indexChanged) {
@@ -410,7 +416,6 @@ export async function initializeCurateStateIfNeeded(kb: KbRuntime): Promise<void
       scannedSources,
       retryQueue,
     );
-
     rewriteFrontmatter(kb, rewrittenNotes, rewrittenSources);
     syncIndex(kb, nextIndex, scannedNotes, scannedSources);
     reconcileSeqs(kb, indexState, highestAssignedEntrySeq);

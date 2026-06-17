@@ -1,6 +1,6 @@
 import { nowIsoString } from '../../infra/time.js';
 import { captureNoteManifestDeltas } from '../corpus/manifest-authority.js';
-import { parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
+import { extractBody, parseMemoFrontmatter, serializeNote } from '../corpus/frontmatter.js';
 import { memoPathFromContext } from '../paths.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js';
@@ -43,7 +43,11 @@ export async function promote(
     writeFileAtomic(rt, notePath, noteRaw);
     mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(noteSlug, noteRaw));
     commitIndexUpdate(rt, (index) => {
-      setEntry(index, noteEntryId(noteSlug), buildNoteIndexEntry({ slug: noteSlug, title, ...noteMeta }));
+      setEntry(
+        index,
+        noteEntryId(noteSlug),
+        buildNoteIndexEntry({ slug: noteSlug, title, body: extractBody(noteRaw), ...noteMeta }),
+      );
     });
     recordContentAndMetadataMutation(rt, 'KB text snapshot is stale after kb_promote.');
     rt.storagePort.rmSync(memoPath, { force: true });

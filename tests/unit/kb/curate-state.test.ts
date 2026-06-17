@@ -13,13 +13,18 @@ import {
   applyRecordDiscoveryAttempt,
   applyRemovePendingDiscovery,
   compareCursor,
+  cursorTimestampFromStorageSeq,
   isClaimStale,
   normalizeCurateStateRepairFrontier,
+  noteCursor,
   readCurateState,
+  sourceCursor,
   writeCurateState,
   type CurateState,
   type PendingRepair,
 } from '#src/kb/curate/state/index.js';
+import { applyMutationLane, captureIndexStateSnapshot, mutationLanesFromDiff } from '#src/kb/corpus/lanes.js';
+import { currentEntrySeq } from '#src/kb/index-state.js';
 import {
   assignEntrySeqs,
   persistState,
@@ -33,6 +38,7 @@ import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry
 import { writeCurateSchedulerState, readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { cloneKbIndex } from '#src/kb/corpus/index-records.js';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -90,10 +96,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
 }
 
 function cursor(note: string, entrySeq: number) {
-  return {
-    entryId: noteEntryId(note),
-    entrySeq,
-  };
+  return noteCursor(note, cursorTimestampFromStorageSeq(entrySeq));
 }
 
 function renderNote({
@@ -103,6 +106,7 @@ function renderNote({
   source = ['kangig94/coral'],
   createdAt = '2026-03-20T00:00:00.000Z',
   updatedAt = '2026-03-20T00:00:00.000Z',
+  inputFingerprint,
   entrySeq,
   body = 'Body.',
 }: {
@@ -112,6 +116,7 @@ function renderNote({
   source?: string[];
   createdAt?: string;
   updatedAt?: string;
+  inputFingerprint?: string;
   entrySeq?: number;
   body?: string;
 }): string {
@@ -123,6 +128,7 @@ function renderNote({
     ...source.map((entry) => `  - ${entry}`),
     `createdAt: ${createdAt}`,
     `updatedAt: ${updatedAt}`,
+    ...(inputFingerprint === undefined ? [] : [`inputFingerprint: ${inputFingerprint}`]),
     ...(entrySeq === undefined ? [] : [`entrySeq: ${entrySeq}`]),
     '---',
     `# ${title}`,
@@ -137,6 +143,7 @@ function renderSource({
   type = 'spec',
   tags = ['reference'],
   importedAt = '2026-03-20T00:00:00.000Z',
+  inputFingerprint,
   entrySeq,
   body = 'Body.',
 }: {
@@ -144,6 +151,7 @@ function renderSource({
   type?: string;
   tags?: string[];
   importedAt?: string;
+  inputFingerprint?: string;
   entrySeq?: number;
   body?: string;
 }): string {
@@ -153,6 +161,7 @@ function renderSource({
     `type: ${type}`,
     `tags: [${tags.join(', ')}]`,
     `importedAt: ${importedAt}`,
+    ...(inputFingerprint === undefined ? [] : [`inputFingerprint: ${inputFingerprint}`]),
     ...(entrySeq === undefined ? [] : [`entrySeq: ${entrySeq}`]),
     '---',
     `# ${title}`,
@@ -162,7 +171,7 @@ function renderSource({
   return `${lines.join('\n')}\n`;
 }
 
-function createIndexNote(title: string, entrySeq?: number): Omit<NoteEntry, 'kind' | 'slug'> {
+function createIndexNote(title: string, entrySeq?: number, body = 'Body.'): Omit<NoteEntry, 'kind' | 'slug'> {
   return {
     title,
     tags: ['coral'],
@@ -171,6 +180,7 @@ function createIndexNote(title: string, entrySeq?: number): Omit<NoteEntry, 'kin
     createdAt: '2026-03-20T00:00:00.000Z',
     updatedAt: '2026-03-20T00:00:00.000Z',
     related: [],
+    bodyHash: computeBodySurfaceHash(body),
     ...(entrySeq === undefined ? {} : { entrySeq }),
   };
 }
@@ -198,9 +208,12 @@ let readDb: ReadonlyDatabase;
 let scheduler: CurateHandle;
 let internals: CurateTestHandle;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
+let originalClaudeConfigDir: string | undefined;
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'coral-kb-curate-state-'));
+  originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude-config');
   gitSyncRuntime = createRealRuntime('prod');
   ({ kb: runtime, readDb } = createKbTestRuntime({
     markdownRoot: tempDir,
@@ -228,6 +241,11 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+  if (originalClaudeConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
+  }
   rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -284,7 +302,7 @@ describe('curate state', () => {
       consecutiveCommunityBatchFailures: 3,
       claimLaneDisabledAt: null,
       communityBatchLaneDisabledAt: null,
-      communityTopologyHash: 'graph-hash',
+      communityTopologyHash: undefined,
       communitySummaryTopologyHash: 'graph-hash',
       initialized: true,
     });
@@ -297,10 +315,14 @@ describe('curate state', () => {
       },
     ]);
 
-    expect(readCurateState(curateDb(runtime))).toEqual(persisted);
+    expect(readCurateState(curateDb(runtime))).toEqual({
+      ...persisted,
+      communityTopologyHash: undefined,
+      communitySummaryInputFingerprints: undefined,
+    });
   });
 
-  it('treats missing community fingerprint rows as undefined when reading scheduler state', () => {
+  it('does not surface legacy community fingerprint rows or topology hashes from local state', () => {
     writeCurateSchedulerState(curateDb(runtime), {
       processedThrough: cursor('coral-prior', 8),
       discoveryHighSeq: 0,
@@ -312,14 +334,24 @@ describe('curate state', () => {
       consecutiveCommunityBatchFailures: 0,
       claimLaneDisabledAt: null,
       communityBatchLaneDisabledAt: null,
-      communityTopologyHash: undefined,
+      communityTopologyHash: 'legacy-topology',
       communitySummaryTopologyHash: undefined,
       initialized: true,
     });
+    curateDb(runtime)
+      .prepare(
+        `INSERT INTO kb_curate_community_summary_input_fingerprints (
+           community_slug,
+           fingerprint
+         ) VALUES (?, ?)`,
+      )
+      .run('graph-rag', 'legacy-fingerprint');
 
     expect(readCurateState(curateDb(runtime))).toEqual(
       createCurateState({
         processedThrough: cursor('coral-prior', 8),
+        communityTopologyHash: undefined,
+        communitySummaryInputFingerprints: undefined,
         initialized: true,
       }),
     );
@@ -377,10 +409,6 @@ describe('curate state', () => {
           createdAt: '2026-03-25T12:00:00.000Z',
         },
       ],
-      communitySummaryInputFingerprints: {
-        'contract-first-design': 'summary-input-hash',
-        'graph-rag': 'members-hash',
-      },
       initialized: true,
     });
 
@@ -408,7 +436,7 @@ describe('curate state', () => {
       discoveryOffset: 3,
       activeClaim: baseline.activeClaim,
       pendingDiscoveries: baseline.pendingDiscoveries,
-      communitySummaryInputFingerprints: baseline.communitySummaryInputFingerprints,
+      communitySummaryInputFingerprints: undefined,
       initialized: true,
     });
     expectPendingRepairEntries(readCurateRetryQueue(curateDb(runtime)), [
@@ -442,7 +470,7 @@ describe('curate state', () => {
     ).toEqual(
       createCurateState({
         processedThrough: cursor('coral-alpha', 5),
-        lastAttemptedThrough: null,
+        lastAttemptedThrough: cursor('coral-gamma', 5),
         discoveryHighSeq: 4,
         discoveryOffset: 0,
       }),
@@ -463,6 +491,41 @@ describe('curate state', () => {
       cursor('coral-gamma', 3),
       cursor('coral-alpha', 5),
     ]);
+  });
+
+  it('keeps same-timestamp note and source cursors distinct and deterministically ordered', () => {
+    const timestamp = '2026-03-20T00:00:00.000Z';
+    const noteAlpha = noteCursor('coral-alpha', timestamp);
+    const noteBeta = noteCursor('coral-beta', timestamp);
+    const sourceAlpha = sourceCursor('coral-alpha', timestamp);
+
+    expect(new Set([noteAlpha, noteBeta, sourceAlpha].map((entry) => JSON.stringify(entry))).size).toBe(3);
+    expect([sourceAlpha, noteBeta, noteAlpha].sort(compareCursor)).toEqual([noteAlpha, noteBeta, sourceAlpha]);
+  });
+
+  it('keeps freshness counters as the entry-sequence and inbound-sync delta authority', () => {
+    const initial = {
+      contentSeq: 7,
+      metadataSeq: 3,
+    };
+    const afterMetadata = applyMutationLane(initial, 'metadata');
+    const afterContent = applyMutationLane(afterMetadata, 'content');
+
+    expect(currentEntrySeq(initial)).toBe(7);
+    expect(afterMetadata).toEqual({
+      contentSeq: 7,
+      metadataSeq: 8,
+    });
+    expect(afterContent).toEqual({
+      contentSeq: 9,
+      metadataSeq: 8,
+    });
+    expect(mutationLanesFromDiff(captureIndexStateSnapshot(initial), captureIndexStateSnapshot(afterMetadata))).toEqual(
+      ['metadata'],
+    );
+    expect(
+      mutationLanesFromDiff(captureIndexStateSnapshot(afterMetadata), captureIndexStateSnapshot(afterContent)),
+    ).toEqual(['content']);
   });
 
   it('treats no claim and recent claims as fresh, and claims older than fifteen minutes as stale', () => {
@@ -804,7 +867,11 @@ describe('curate state', () => {
 
       writeFileSync(
         join(runtime.notesDir(), 'coral-processed.md'),
-        renderNote({ title: 'Processed', entrySeq: 4 }),
+        renderNote({
+          title: 'Processed',
+          inputFingerprint: computeBodySurfaceHash('Body.'),
+          entrySeq: 4,
+        }),
         'utf-8',
       );
 
@@ -831,7 +898,7 @@ describe('curate state', () => {
 
       const state = readCurateState(curateDb(runtime));
       expect(state).toMatchObject({
-        processedThrough: cursor('coral-processed', 4),
+        processedThrough: noteCursor('coral-processed', '2026-03-20T00:00:00.000Z'),
         discoveryOffset: 3,
         initialized: true,
       });
@@ -872,14 +939,14 @@ describe('curate state', () => {
       metadataSeq: 8,
     });
     writeCurateState(curateDb(runtime), createCurateState());
-    const existingContent = readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8');
 
     await internals.initializeCurateStateIfNeeded();
 
     expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-first.md'), 'utf-8')).entrySeq).toBe(12);
     expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-second.md'), 'utf-8')).entrySeq).toBe(13);
-    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).entrySeq).toBe(11);
-    expect(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8')).toBe(existingContent);
+    expect(parseFrontmatter(readFileSync(join(runtime.notesDir(), 'coral-third.md'), 'utf-8'))).toMatchObject({
+      entrySeq: 11,
+    });
     expect(runtime.readIndex()).toEqual({
       entries: createIndexEntries({
         'coral-first': createIndexNote('Coral First', 12),
@@ -1163,9 +1230,16 @@ describe('curate state', () => {
     );
   });
 
-  it('infers bootstrap progress from curated metadata after assigning a missing sequence', async () => {
+  it('infers bootstrap progress from a current input fingerprint after assigning a missing sequence', async () => {
     mkdirSync(runtime.notesDir(), { recursive: true });
-    writeFileSync(join(runtime.notesDir(), 'coral-curated.md'), renderNote({ title: 'Curated Note' }), 'utf-8');
+    writeFileSync(
+      join(runtime.notesDir(), 'coral-curated.md'),
+      renderNote({
+        title: 'Curated Note',
+        inputFingerprint: computeBodySurfaceHash('Body.'),
+      }),
+      'utf-8',
+    );
     runtime.writeIndex({
       entries: {},
       principles: {},
@@ -1181,7 +1255,7 @@ describe('curate state', () => {
 
     expect(readCurateState(curateDb(runtime))).toEqual(
       createCurateState({
-        processedThrough: cursor('coral-curated', 1),
+        processedThrough: noteCursor('coral-curated', '2026-03-20T00:00:00.000Z'),
         initialized: true,
       }),
     );

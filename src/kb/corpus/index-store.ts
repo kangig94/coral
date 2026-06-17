@@ -191,11 +191,19 @@ function parseCorpusStructuralKey(value: unknown): CorpusStructuralKey | undefin
   };
 }
 
+function normalizeOptionalNonEmptyIndexString(value: unknown, field: string): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return assertNonEmptyText(value, `KB index entry ${field}`);
+}
+
 function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): NoteEntry {
   const slug = assertNoteSlug(value.slug, 'KB index entry slug');
   if (entryId !== noteEntryId(slug)) {
     throw new Error('Invalid KB index');
   }
+  const inputFingerprint = normalizeOptionalNonEmptyIndexString(value.inputFingerprint, 'inputFingerprint');
 
   return {
     kind: 'note',
@@ -206,6 +214,8 @@ function parseNoteIndexEntry(entryId: string, value: Record<string, unknown>): N
     source: parseStringArray(value.source),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
+    bodyHash: assertNonEmptyText(value.bodyHash, 'KB index entry bodyHash'),
+    ...(inputFingerprint === undefined ? {} : { inputFingerprint }),
     ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
@@ -220,6 +230,7 @@ function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>):
   if (url !== undefined && typeof url !== 'string') {
     throw new Error('Invalid KB index');
   }
+  const inputFingerprint = normalizeOptionalNonEmptyIndexString(value.inputFingerprint, 'inputFingerprint');
 
   return {
     kind: 'source',
@@ -229,6 +240,8 @@ function parseSourceIndexEntry(entryId: string, value: Record<string, unknown>):
     tags: parseStringArray(value.tags),
     ...(url === undefined ? {} : { url: assertNonEmptyText(url, 'KB index entry url') }),
     importedAt: assertNonEmptyText(value.importedAt, 'KB index entry importedAt'),
+    bodyHash: assertNonEmptyText(value.bodyHash, 'KB index entry bodyHash'),
+    ...(inputFingerprint === undefined ? {} : { inputFingerprint }),
     ...(value.entrySeq !== undefined ? { entrySeq: parsePositiveInteger(value.entrySeq, 'entrySeq') } : {}),
     related: value.related === undefined ? [] : parseEntryIdArray(value.related),
   };
@@ -243,6 +256,10 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
   const parent = normalizeCommunityParent(value.parent);
   const children = normalizeCommunityChildren(value.children);
   const summary = parseOptionalTrimmedString(value.summary, 'summary');
+  const summaryInputFingerprint = normalizeOptionalNonEmptyIndexString(
+    value.summaryInputFingerprint,
+    'summaryInputFingerprint',
+  );
 
   return {
     kind: 'community',
@@ -253,6 +270,7 @@ function parseCommunityIndexEntry(entryId: string, value: Record<string, unknown
     ...(parent === undefined ? {} : { parent }),
     ...(children === undefined ? {} : { children }),
     ...(summary === undefined ? {} : { summary }),
+    ...(summaryInputFingerprint === undefined ? {} : { summaryInputFingerprint }),
     createdAt: assertNonEmptyText(value.createdAt, 'KB index entry createdAt'),
     updatedAt: assertNonEmptyText(value.updatedAt, 'KB index entry updatedAt'),
   };

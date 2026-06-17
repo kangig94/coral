@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import { OramaBaseProjection } from '#src/engines/orama/backend.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -62,6 +63,7 @@ function seedNote(kb: KbRuntime, slug: string, body: string, entrySeq: number): 
         createdAt: '2026-04-01T00:00:00.000Z',
         updatedAt: '2026-04-01T00:00:00.000Z',
         related: [],
+        bodyHash: computeBodySurfaceHash(body),
         entrySeq,
       },
     },

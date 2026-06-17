@@ -1,6 +1,6 @@
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { captureRemovedSourceManifestDeltas, captureSourceManifestDeltas } from '../corpus/manifest-authority.js';
-import { parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
+import { extractBody, parseSourceFrontmatter, replaceSourceFrontmatter } from '../corpus/frontmatter.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
 import { buildSourceIndexEntry } from '../corpus/index-records.js';
@@ -90,6 +90,7 @@ export async function persistPreparedSource(
             sourceEntryId(normalizedSlug),
             buildSourceIndexEntry({
               slug: normalizedSlug,
+              body: extractBody(persistedSource),
               ...persistedMeta,
             }),
           );

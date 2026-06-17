@@ -145,6 +145,7 @@ function createProjectionInput(count: number): KbProjectionInput {
       source: [],
       createdAt: '2026-05-05T00:00:00.000Z',
       updatedAt: '2026-05-05T00:00:00.000Z',
+      bodyHash: `note-${index}-body-hash`,
       entrySeq: index + 1,
     };
     entries[noteEntryId(slug)] = entry;

@@ -205,6 +205,7 @@ function buildFileBaselineRecord(file: CorpusMarkdownFileScan): CorpusAuthorityB
       const entry = buildNoteIndexEntry({
         slug: file.slug,
         title,
+        body: extractBody(file.content),
         ...frontmatter,
       });
       return {
@@ -223,6 +224,7 @@ function buildFileBaselineRecord(file: CorpusMarkdownFileScan): CorpusAuthorityB
       const entry = buildSourceIndexEntry({
         slug: file.slug,
         title,
+        body: extractBody(file.content),
         ...metadata,
       });
       return {
