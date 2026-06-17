@@ -597,7 +597,7 @@ function parseExtraUsage(eu) {
 
 function formatExtraUsage(eu) {
   if (!eu) return null;
-  return `${DIM}mo$${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
+  return `${DIM}mo:${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
 }
 
 function formatLimits(data) {

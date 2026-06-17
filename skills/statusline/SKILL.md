@@ -61,7 +61,7 @@ The install command reads this file and writes it to `CONFIG_DIR/hud/coral-hud.m
 - `CONFIG_DIR` is the Claude config dir from the SessionStart context (see Config directory above); each config dir keeps its own HUD install and its own Codex opt-in flag
 - If re-running install, overwrite the existing script (this updates the HUD to the latest version)
 - Claude rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
-- Enterprise/extra-usage plans have no 5h/weekly windows; instead the usage API returns `extra_usage` (a monthly dollar cap), shown in the limits slot as `mo$ <pct> ($used/$limit)`
+- Enterprise/extra-usage plans have no 5h/weekly windows; instead the usage API returns `extra_usage` (a monthly dollar cap), shown in the limits slot as `mo: <pct> ($used/$limit)`
 - Codex rate limits and spark limits are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`~/.codex/auth.json`)
 - Two-line layout: Line 1 (Claude) shows model, limits, ctx, session, and last active skill; Line 2 (Codex) shows codex model, codex limits, and spark limits
 - Skill detection reads last 500KB of `transcript_path` JSONL (tail-read for performance), finds last `Skill` or `proxy_Skill` tool_use block
