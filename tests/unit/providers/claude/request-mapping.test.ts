@@ -51,6 +51,22 @@ describe('Claude continuity refs', () => {
     });
   });
 
+  it('preserves persisted bootstrap signatures with auto permission mode', () => {
+    expect(
+      readClaudePersistedContinuity({
+        bootstrapSignature: {
+          cwd: '/workspace',
+          systemPromptHash: 'sha256:test',
+          permissionMode: 'auto',
+        },
+      }).bootstrapSignature,
+    ).toEqual({
+      cwd: '/workspace',
+      systemPromptHash: 'sha256:test',
+      permissionMode: 'auto',
+    });
+  });
+
   it('builds continuity from non-empty refs only', () => {
     expect(
       buildClaudeContinuity({

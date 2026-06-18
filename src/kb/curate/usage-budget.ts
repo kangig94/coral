@@ -2,8 +2,8 @@ import { join } from 'node:path';
 import type { StoragePort } from '../../infra/port-types.js';
 
 const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
-const USAGE_5H_THRESHOLD = 90;
-const USAGE_WK_THRESHOLD = 100;
+const USAGE_5H_THRESHOLD = 50;
+const USAGE_WK_THRESHOLD = 70;
 
 export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 

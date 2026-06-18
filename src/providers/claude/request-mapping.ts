@@ -48,14 +48,14 @@ export function readClaudePersistedContinuity(
 }
 
 export function buildClaudeBootstrapSignature(
-  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions'>,
+  request: Pick<ProviderRequest, 'cwd'> & { bypassPermissions?: boolean; permissionMode?: PermissionMode },
   ids: Pick<IdPort, 'sha256'>,
   derivedSystemPrompt?: string,
 ): ClaudeBootstrapSignature {
   return {
     cwd: request.cwd,
     systemPromptHash: buildSystemPromptSignature(ids, derivedSystemPrompt),
-    permissionMode: resolveClaudePermissionMode(request.bypassPermissions),
+    permissionMode: request.permissionMode ?? resolveClaudePermissionMode(request.bypassPermissions ?? false),
   };
 }
 

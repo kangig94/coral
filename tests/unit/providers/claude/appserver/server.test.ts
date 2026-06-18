@@ -52,6 +52,15 @@ describe('claude appserver PTY child args', () => {
     );
   });
 
+  it('passes auto permission mode through to Claude', () => {
+    expect(buildClaudeChildArgs(spawnOptions({ permissionMode: 'auto' }))).toEqual([
+      '--session-id',
+      TEST_SESSION_ID,
+      '--permission-mode',
+      'auto',
+    ]);
+  });
+
   it('surfaces an actionable provider error when the PTY backend cannot load', async () => {
     const factory = createNodeClaudeChildFactory(process.stderr, async () => {
       throw new Error('Failed to load native module: pty.node');

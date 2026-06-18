@@ -19,6 +19,15 @@ const GITATTRIBUTES_HEADER = '# Coral KB merge drivers (auto-managed)';
 const DEFERRED_COMMIT_DELAY_MS = 60_000;
 const RECOVERY_REF_NAMESPACE = 'refs/coral-recovery';
 const RECOVERY_REF_KEEP_PER_BRANCH = 20;
+const GIT_OPERATION_PATHS = [
+  'rebase-merge',
+  'rebase-apply',
+  'MERGE_HEAD',
+  'CHERRY_PICK_HEAD',
+  'REVERT_HEAD',
+  'BISECT_LOG',
+  'sequencer',
+];
 const KB_GIT_DIFF_PATHS = [
   'notes/',
   'sources/',
@@ -257,6 +266,26 @@ export function createGitSyncController({
     } catch {
       return true;
     }
+  }
+
+  function isGitOperationInProgress(): boolean {
+    try {
+      return GIT_OPERATION_PATHS.some((path) => storagePort.existsSync(gitPath(path)));
+    } catch {
+      return true;
+    }
+  }
+
+  function hasUnmergedIndex(): boolean {
+    try {
+      return git(['ls-files', '-u'], 5000).trim().length > 0;
+    } catch {
+      return true;
+    }
+  }
+
+  function isSafeForAutoCommit(): boolean {
+    return !isGitOperationInProgress() && !hasUnmergedIndex() && !hasConflictMarkers();
   }
 
   function kbGitPaths(): string[] {
@@ -656,10 +685,7 @@ export function createGitSyncController({
       }
 
       try {
-        await runCurateAssistant(curateAssistant, prompt, 'git-conflict-resolution', signal, {
-          permissionMode: 'bypassPermissions',
-          model: 'sonnet',
-        });
+        await runCurateAssistant(curateAssistant, prompt, 'git-conflict-resolution', signal);
       } catch {
         return false;
       }
@@ -755,7 +781,7 @@ export function createGitSyncController({
       await gitAsync(['fetch', 'origin'], 30000);
 
       try {
-        if (git(['status', '--porcelain'], 5000).trim().length > 0) {
+        if (git(['status', '--porcelain'], 5000).trim().length > 0 && isSafeForAutoCommit()) {
           git(['add', '-A'], 5000);
           gitCommit('auto: pre-sync snapshot');
         }
@@ -811,6 +837,9 @@ export function createGitSyncController({
       return;
     }
     try {
+      if (!isSafeForAutoCommit()) {
+        return;
+      }
       const paths = kbGitPaths();
       if (paths.length === 0) {
         return;
@@ -830,6 +859,9 @@ export function createGitSyncController({
       return;
     }
     try {
+      if (!isSafeForAutoCommit()) {
+        return;
+      }
       const paths = kbGitPaths();
       if (paths.length === 0) {
         return;
@@ -845,7 +877,7 @@ export function createGitSyncController({
   }
 
   function scheduleDeferredCommit(): void {
-    if (!isGitRepo() || deferredCommitTimer !== null) {
+    if (!isGitRepo() || deferredCommitTimer !== null || !isSafeForAutoCommit()) {
       return;
     }
     deferredCommitTimer = kb.time.setTimeout(() => {

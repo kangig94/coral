@@ -9,7 +9,12 @@ import {
   type CurateCursor,
   type CurateState,
 } from './state/index.js';
-import type { CurateAssistantPort, CurateAssistantPurpose } from './assistant.js';
+import {
+  CURATE_ASSISTANT_MODEL,
+  CURATE_ASSISTANT_PERMISSION_MODE,
+  type CurateAssistantPort,
+  type CurateAssistantPurpose,
+} from './assistant.js';
 import { curateDb } from './db-access.js';
 
 export const CURATE_STALE_REASON = 'KB text snapshot is stale after kb_curate.';
@@ -67,13 +72,12 @@ export async function runCurateAssistant(
   prompt: string,
   purpose: CurateAssistantPurpose,
   signal?: AbortSignal,
-  options: { model?: string; permissionMode?: 'default' | 'bypassPermissions' } = {},
 ): Promise<string> {
   return curateAssistant.complete({
     prompt,
     purpose,
+    model: CURATE_ASSISTANT_MODEL,
+    permissionMode: CURATE_ASSISTANT_PERMISSION_MODE,
     signal,
-    ...(options.model === undefined ? {} : { model: options.model }),
-    ...(options.permissionMode === undefined ? {} : { permissionMode: options.permissionMode }),
   });
 }
