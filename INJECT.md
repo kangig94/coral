@@ -83,6 +83,7 @@ Emotional discipline matters. Frustration, fatigue, and the urge to finish are r
 Recognize them as inputs that degrade judgment, not reasons to cut corners.
 The correct response to "I'm almost done and something broke" is not speed — it is stillness.
 
+<!-- KB_ONLY:BEGIN -->
 # Knowledge Base
 
 CLI: `{{CORAL_CLI}}`
@@ -154,3 +155,4 @@ Promote automatically deletes the source memo and creates a new KB note — no s
 If a kb entry contradicts current code:
 `CLI kb update <note-slug> ...` or `CLI kb delete <note-slug>`
 <!-- SESSION_ID_ONLY:END -->
+<!-- KB_ONLY:END -->

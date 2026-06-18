@@ -32,6 +32,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_KB_PATH` | `~/.coral/kb` (prod) / `~/.coral/kb-dev` (dev) | KB markdown-root override. Runtime KB state remains flavor-separated under `~/.coral/data/kb/` or `~/.coral/data-dev/kb/` |
 | `CORAL_KB_IMPORT_MAX_BYTES` | `1073741824` (1 GiB) | Admin KB source-import cap in bytes, read from the backend daemon's environment at startup. `0` or `unlimited` disables the admin byte cap. Changing it requires exporting the var and restarting the backend daemon; setting it in an ad-hoc CLI shell does not affect an already-running daemon |
 | `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync |
+| `CORAL_KB_ENABLED` | _(unset → enabled)_ | Set `0` to boot the daemon without the KB subsystem — no corpus indexing, curate, retrieval, or KB content injected into sessions/agents. `1` or unset enables it; a malformed value warns once and leaves KB enabled. Read from the daemon's environment at startup like `CORAL_KB_IMPORT_MAX_BYTES`. Flipping `0`→`1` and running any `kb …` command transparently restarts the daemon to bring KB online (that one command waits for daemon-ready; KB itself then boots non-blocking) |
 | `GEMINI_API_KEY` | _(none)_ | API key the Gemini embedding expansion reads when equipped (`coral-cli expansion equip gemini`) |
 
 ### Per-Config-Dir Isolation
@@ -57,7 +58,10 @@ export CORAL_CODEX_MODEL=gpt-5.5
 export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_MAX_EPOCHS=3
 export CORAL_KB_PATH=/path/to/my-kb
+export CORAL_KB_ENABLED=0   # boot the daemon without KB; set to 1 (or unset) to re-enable
 ```
+
+`CORAL_KB_ENABLED` is re-read at daemon startup. Setting it while a daemon is already running takes effect only after a restart — but setting it to `1` and running any `kb …` command triggers that restart automatically, so no manual `coral-cli backend shutdown` is needed.
 
 Unset `CORAL_FLAVOR` is treated as `prod`. Hooks use it only to decide whether the current hook bundle should run; daemon identity still comes from `bridge/manifest.json`. For local dev hooks, prefer the project `.claude/settings.local.json` `env` block over shell exports so Claude Code launches hooks with the intended flavor consistently.
 

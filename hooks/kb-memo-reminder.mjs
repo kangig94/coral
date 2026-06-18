@@ -10,8 +10,10 @@ import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, coralProjectDir, sweepStale, isValidSessionId } from './lib/hook-utils.mjs';
 import { activeBridgeCommand, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
+if (!isKbEnabled()) process.exit(0);
 
 const THROTTLE_MIN = 60;
 const FLAG_PREFIX = 'memo-reminded-';

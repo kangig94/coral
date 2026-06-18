@@ -229,6 +229,7 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_MAX_WORKERS` | `10` | 최대 동시 워커 수 (1–10) |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_KB_GIT_SYNC` | `0` | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화) |
+| `CORAL_KB_ENABLED` | _(미설정 → 활성)_ | `0`이면 KB 서브시스템 없이 데몬을 부팅 — 인덱싱·curate·KB 컨텍스트 주입이 모두 없습니다. 다시 `1`로 바꾸고 `kb …` 명령을 실행하면 데몬이 자동 재시작되어 재활성화됩니다 ([상세](docs/configuration.md)) |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 설정 디렉터리 — Coral은 config dir별로 백엔드 데몬과 상태를 분리해, 여러 Claude 설정이 독립적으로 동작합니다 ([상세](docs/configuration.md)) |
 
 > **팁:** `CORAL_CLAUDE_MODEL_CAP=sonnet`으로 설정하면 모든 서브에이전트 호출을 Sonnet 티어로 제한합니다. Pro 구독이거나 사용량을 절약하고 싶을 때.

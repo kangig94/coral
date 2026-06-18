@@ -451,6 +451,22 @@ describe('kb-lookup-reminder.mjs', () => {
       }
     }
   });
+
+  it('no-ops when CORAL_KB_ENABLED=0', () => {
+    const fixture = createFixture();
+    const kbDir = join(fixture.root, '.coral', 'kb', 'notes');
+    mkdirSync(kbDir, { recursive: true });
+    writeFileSync(join(kbDir, 'hooks-paths.md'), '# Hooks', 'utf-8');
+
+    const result = runHook(
+      KB_LOOKUP_REMINDER_HOOK,
+      { hook_event_name: 'PostToolUseFailure' },
+      { HOME: fixture.root, CORAL_KB_ENABLED: '0' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('');
+  });
 });
 
 describe('hooks.json', () => {

@@ -10,8 +10,10 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin, resolveKbRoot } from './lib/hook-utils.mjs';
+import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
+if (!isKbEnabled()) process.exit(0);
 
 const MASKING_RE = /\|\s*tee\b|\|\|\s*(true|:)\b/;
 const FAILURE_RE = /Failed to build|BUILD FAILED|Traceback \(most recent call last\)|npm ERR!|^error\[E\d+\]/m;

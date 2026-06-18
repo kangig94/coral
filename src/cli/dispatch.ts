@@ -61,7 +61,8 @@ import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
-import { ensure } from '../transport/ipc/ensure.js';
+import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
+import { CORAL_KB_ENABLED_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { classifyCommand, commandPath } from './classify.js';
 
 type SessionRequestOptions = {
@@ -401,7 +402,36 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const commandClass = resolution.commandClass;
   const defaultContext = createDefaultInvocationContext(projectRoot);
 
+  // Lazy KB re-enable: a `kb …` command run with CORAL_KB_ENABLED=1 against a
+  // daemon that booted with KB disabled restarts the daemon so it respawns with
+  // KB on. Admin shutdown is identity-agnostic (the handoff path refuses to
+  // replace a same-bundle daemon), so it is the correct restart trigger here.
+  // Runs at most once per command and only on the actual mismatch.
+  let kbReconcileDone = false;
+  const reconcileKbBoot = async (): Promise<void> => {
+    if (kbReconcileDone || !path.startsWith('kb ')) return;
+    kbReconcileDone = true;
+    if (!resolveKbEnabled(process.env[CORAL_KB_ENABLED_ENV])) return;
+    try {
+      const client = await ensure(getPluginRoot());
+      const health = await client.health<RawCoordinatorHealth>({ timeoutMs: HEALTH_TIMEOUT_MS });
+      const kbDisabled = (health.subsystems ?? []).some(
+        (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
+      );
+      if (kbDisabled) {
+        process.stderr.write('KB was disabled; restarting the Coral daemon to enable it…\n');
+        // Drain + wait for socket release so the next ensure() respawns a fresh
+        // daemon that inherits this CLI's env (KB enabled) — no race with the
+        // still-running incumbent.
+        await shutdownAndAwaitRelease(getPluginRoot());
+      }
+    } catch {
+      // Best-effort: fall through and let the command run against the daemon.
+    }
+  };
+
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
+    await reconcileKbBoot();
     const client = await ensure(resolvePluginRoot());
     return client.request<TResult>(method, params, { timeoutMs: TOOL_TIMEOUT_MS });
   };
@@ -415,6 +445,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       throw new Error(`Command "${path}" is classified as ${commandClass} and cannot open subscriptions.`);
     }
 
+    await reconcileKbBoot();
     const client = await ensure(resolvePluginRoot());
     return client.subscribe<TResult>(method, params, {
       timeoutMs: HEALTH_TIMEOUT_MS,

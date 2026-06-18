@@ -1,5 +1,6 @@
 import type { Subsystem, SubsystemId, SubsystemStatus } from './contract.js';
 import { SubsystemUnavailableError } from './contract.js';
+import { KB_DISABLED_REASON } from '../../infra/kb-toggle.js';
 
 export type SubsystemErrorEnvelope = { ok: false; code: string; message: string; remediation?: string };
 
@@ -53,6 +54,25 @@ function phaseEnvelope(id: SubsystemId, phase: 'initializing' | 'offline'): Subs
   };
 }
 
+/**
+ * Envelope for a subsystem that is registered but not serving. A KB subsystem
+ * disabled via `CORAL_KB_ENABLED=0` gets an env-specific remediation (a bare
+ * daemon restart re-reads the same `0` and stays off); everything else falls
+ * back to the generic phase envelope.
+ */
+function notServingEnvelope(sub: Subsystem<unknown>): SubsystemErrorEnvelope {
+  const status = sub.status;
+  if (status.phase === 'offline' && status.reason === KB_DISABLED_REASON) {
+    return {
+      ok: false,
+      code: 'kb_disabled',
+      message: 'Knowledge base is disabled (CORAL_KB_ENABLED=0)',
+      remediation: 'Set CORAL_KB_ENABLED=1 (or unset it) and re-run; the next kb command restarts the daemon automatically.',
+    };
+  }
+  return phaseEnvelope(sub.id, status.phase === 'initializing' ? 'initializing' : 'offline');
+}
+
 export function createSubsystemRegistry(): SubsystemRegistry {
   const subs = new Map<SubsystemId, Subsystem<unknown>>();
 
@@ -90,8 +110,7 @@ export function createSubsystemRegistry(): SubsystemRegistry {
           throw error;
         }
       }
-      const code = phase === 'initializing' ? 'initializing' : 'offline';
-      return phaseEnvelope(id, code);
+      return notServingEnvelope(sub);
     },
     async runAsync<R, T>(id: SubsystemId, fn: (resource: R) => Promise<T>): Promise<T | SubsystemErrorEnvelope> {
       const sub = subs.get(id);
@@ -109,8 +128,7 @@ export function createSubsystemRegistry(): SubsystemRegistry {
           throw error;
         }
       }
-      const code = phase === 'initializing' ? 'initializing' : 'offline';
-      return phaseEnvelope(id, code);
+      return notServingEnvelope(sub);
     },
     list() {
       return [...subs.values()].map((s) => s.status);

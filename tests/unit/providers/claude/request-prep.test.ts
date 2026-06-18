@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveClaudeModel } from '#src/providers/claude/request-prep.js';
+import { buildPreparedClaudeRequest, resolveClaudeModel } from '#src/providers/claude/request-prep.js';
 
 describe('resolveClaudeModel', () => {
   it('returns undefined when CORAL_CLAUDE_MODEL is absent', () => {
@@ -42,5 +42,26 @@ describe('resolveClaudeModel', () => {
     expect(resolveClaudeModel('opus', { CORAL_CLAUDE_MODEL_CAP: 'opus' })).toBeUndefined();
     // ...and a present request model is never overridden by the env default (unlike Codex).
     expect(resolveClaudeModel('sonnet', { CORAL_CLAUDE_MODEL: 'opus' })).toBeUndefined();
+  });
+});
+
+describe('buildPreparedClaudeRequest KB gating', () => {
+  type PrepArgs = Parameters<typeof buildPreparedClaudeRequest>;
+  const INJECT_MD = 'Guidelines\n<!-- KB_ONLY:BEGIN -->\n# Knowledge Base\nkb stuff\n<!-- KB_ONLY:END -->';
+  const storage = {
+    readFileSync: (p: string) => (p.endsWith('INJECT.md') ? INJECT_MD : ''),
+  } as unknown as PrepArgs[1];
+  const requestWith = (coralEnv: Record<string, string>) =>
+    ({ prompt: 'hi', coralEnv } as unknown as PrepArgs[0]);
+
+  it('omits KB guidance from the system prompt when coralEnv disables KB', () => {
+    const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLED: '0' }), storage, '/mock/kb');
+    expect(result.systemPrompt).toContain('Guidelines');
+    expect(result.systemPrompt).not.toContain('kb stuff');
+  });
+
+  it('includes KB guidance when coralEnv enables KB', () => {
+    const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLED: '1' }), storage, '/mock/kb');
+    expect(result.systemPrompt).toContain('kb stuff');
   });
 });
