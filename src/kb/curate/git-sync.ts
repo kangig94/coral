@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { nowIsoString } from '../../infra/time.js';
@@ -8,6 +8,7 @@ import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';
 import { upsertCurateConflictQuarantine, type ConflictQuarantineKind } from './conflict-quarantine.js';
+import { runCurateAssistant } from './operations.js';
 
 declare const __PLUGIN_ROOT__: string;
 
@@ -140,6 +141,7 @@ export function detectGitConflictState({
 
 export function createGitSyncController({
   kb,
+  curateAssistant,
   processPort,
   storagePort,
   envPort,
@@ -232,6 +234,26 @@ export function createGitSyncController({
   function hasConflictMarkers(): boolean {
     try {
       return detectGitConflictState({ root, processPort }).hasMarkers;
+    } catch {
+      return true;
+    }
+  }
+
+  function gitPath(path: string): string {
+    try {
+      const resolved = git(['rev-parse', '--git-path', path], 5000).trim();
+      if (resolved.length > 0) {
+        return isAbsolute(resolved) ? resolved : join(root, resolved);
+      }
+    } catch {
+      // Fall back to the common worktree layout below.
+    }
+    return join(root, '.git', path);
+  }
+
+  function isRebaseInProgress(): boolean {
+    try {
+      return storagePort.existsSync(gitPath('rebase-merge')) || storagePort.existsSync(gitPath('rebase-apply'));
     } catch {
       return true;
     }
@@ -618,28 +640,100 @@ export function createGitSyncController({
     return true;
   }
 
-  async function continueOrRecoverRebase(branch: string, signal?: AbortSignal): Promise<'continued' | 'recovered' | 'failed'> {
+  async function resolveConflictsWithClaude(signal?: AbortSignal): Promise<boolean> {
+    const prompt = [
+      'Git rebase conflict in the Coral KB repository.',
+      'The deterministic KB merge drivers have already handled derivative files and markdown frontmatter set fields.',
+      'Resolve only the remaining <<<<<<< / ======= / >>>>>>> conflicts in note, source, community, or wiki body content.',
+      "Preserve both sides' authored intent where possible; do not silently discard either side's prose.",
+      'Do not touch frontmatter.',
+      'Stage all resolved files with git add.',
+    ].join(' ');
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (signal?.aborted) {
+        return false;
+      }
+
+      try {
+        await runCurateAssistant(curateAssistant, prompt, 'git-conflict-resolution', signal, {
+          permissionMode: 'bypassPermissions',
+          model: 'sonnet',
+        });
+      } catch {
+        return false;
+      }
+
+      if (signal?.aborted) {
+        return false;
+      }
+      if (hasConflictMarkers()) {
+        continue;
+      }
+
+      try {
+        git(['add', '-A'], 5000);
+        git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'rebase', '--continue'], 30000);
+        return true;
+      } catch {
+        if (isRebaseInProgress() && hasConflictMarkers()) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function abortInProgressRebase(): void {
+    try {
+      git(['rebase', '--abort'], 10000);
+    } catch (error: unknown) {
+      backendLog.error('[KB] git rebase cancellation could not abort the in-progress rebase', error);
+    }
+  }
+
+  async function continueOrRecoverRebase(
+    branch: string,
+    signal?: AbortSignal,
+  ): Promise<'continued' | 'llm-resolved' | 'recovered' | 'failed'> {
+    let usedLlmConflictResolution = false;
+
     for (let attempt = 0; attempt < 64; attempt += 1) {
       if (signal?.aborted) {
-        try {
-          git(['rebase', '--abort'], 10000);
-        } catch (error: unknown) {
-          backendLog.error('[KB] git rebase cancellation could not abort the in-progress rebase', error);
-        }
+        abortInProgressRebase();
         return 'failed';
       }
 
       if (hasConflictMarkers()) {
+        if (await resolveConflictsWithClaude(signal)) {
+          usedLlmConflictResolution = true;
+          if (!isRebaseInProgress() && !hasConflictMarkers()) {
+            return 'llm-resolved';
+          }
+          continue;
+        }
+        if (signal?.aborted) {
+          abortInProgressRebase();
+          return 'failed';
+        }
         return recoverRebaseConflict(branch, detectConflictState()) ? 'recovered' : 'failed';
       }
 
       try {
         git(['add', '-A'], 5000);
         git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'rebase', '--continue'], 30000);
-        return 'continued';
+        if (!isRebaseInProgress() && !hasConflictMarkers()) {
+          return usedLlmConflictResolution ? 'llm-resolved' : 'continued';
+        }
       } catch {
         // A later commit in the rebase may now be stopped; loop to inspect it.
       }
+    }
+
+    const conflictState = detectConflictState();
+    if (conflictState.hasMarkers || isRebaseInProgress()) {
+      return recoverRebaseConflict(branch, conflictState) ? 'recovered' : 'failed';
     }
 
     return 'failed';
@@ -655,6 +749,7 @@ export function createGitSyncController({
     const branch = getDefaultBranch();
     const headBeforeSync = readHead();
     let usedConflictRecovery = false;
+    let usedLlmConflictResolution = false;
 
     try {
       await gitAsync(['fetch', 'origin'], 30000);
@@ -675,6 +770,9 @@ export function createGitSyncController({
         if (rebaseResult === 'recovered') {
           usedConflictRecovery = true;
         }
+        if (rebaseResult === 'llm-resolved') {
+          usedLlmConflictResolution = true;
+        }
       }
     } catch {
       // Offline or no remote; continue with local state.
@@ -685,6 +783,9 @@ export function createGitSyncController({
       return { kind: 'no-change' };
     }
     if (usedConflictRecovery) {
+      return { kind: 'ambiguous' };
+    }
+    if (usedLlmConflictResolution) {
       return { kind: 'ambiguous' };
     }
     if (headBeforeSync === null || headAfterSync === null) {

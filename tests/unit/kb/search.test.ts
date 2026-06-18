@@ -226,8 +226,11 @@ async function markCommunityStateFresh(kb: KbRuntime) {
     ]);
   const index = kb.readIndex();
   expect(index).not.toBeNull();
+  if (index === null) {
+    throw new Error('expected community index to be available');
+  }
 
-  const communities = Object.values(index!.entries)
+  const communities = Object.values(index.entries)
     .filter((entry: any) => entry.kind === 'community')
     .map((community: any) => ({
       slug: community.slug,
@@ -239,9 +242,9 @@ async function markCommunityStateFresh(kb: KbRuntime) {
     }));
   const fingerprints = computeCommunitySummaryInputFingerprints(communities, kb as any, index);
   const nextIndex = {
-    ...index!,
+    ...index,
     entries: {
-      ...index!.entries,
+      ...index.entries,
     },
   };
 

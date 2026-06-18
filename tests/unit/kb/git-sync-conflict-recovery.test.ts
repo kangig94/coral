@@ -7,12 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { extractBody } from '#src/kb/corpus/frontmatter.js';
 import { createGitSyncController, detectGitConflictState } from '#src/kb/curate/git-sync.js';
+import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import { claimCurateRun } from '#src/kb/curate/runner.js';
 import { readCurateConflictQuarantine } from '#src/kb/curate/conflict-quarantine.js';
 import { curateDb } from '#src/kb/curate/db-access.js';
 import { noteCursor, readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
 import { noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { ExecResult, RuntimeExecOptions } from '#src/runtime/ports.js';
 import { createKbTestDb } from './runtime-test-helpers.js';
 import { createTestKbRuntime } from '../../fixtures/test-runtime.js';
 
@@ -136,6 +138,237 @@ describe('git sync conflict recovery', () => {
     expect(conflictState.markerPaths).toEqual(['notes/staged.md']);
   });
 
+  it('uses the mocked assistant as the last-resort body resolver before recovery quarantine', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-llm-resolve-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const remote = join(root, 'remote.git');
+    const seed = join(root, 'seed');
+    const local = join(root, 'local');
+    const peer = join(root, 'peer');
+    const pluginRoot = join(root, 'plugin');
+    writeFakeMergeDriver(pluginRoot);
+
+    git(root, ['init', '--bare', '--initial-branch=main', remote]);
+    mkdirSync(seed, { recursive: true });
+    initRepo(seed);
+    mkdirSync(join(seed, 'notes'), { recursive: true });
+    writeFileSync(join(seed, '.gitattributes'), '*.md merge=coral-frontmatter\n', 'utf-8');
+    writeFileSync(join(seed, 'notes', 'conflict.md'), renderConflictNote('Base body.'), 'utf-8');
+    git(seed, ['add', '.gitattributes', 'notes/conflict.md']);
+    git(seed, ['commit', '-m', 'seed']);
+    git(seed, ['remote', 'add', 'origin', remote]);
+    git(seed, ['push', '-u', 'origin', 'main']);
+
+    git(root, ['clone', remote, local]);
+    git(root, ['clone', remote, peer]);
+    git(local, ['config', 'user.name', 'Coral Test']);
+    git(local, ['config', 'user.email', 'coral-test@example.invalid']);
+    git(local, ['config', 'core.editor', 'true']);
+    git(peer, ['config', 'user.name', 'Coral Test']);
+    git(peer, ['config', 'user.email', 'coral-test@example.invalid']);
+
+    writeFileSync(join(peer, 'notes', 'conflict.md'), renderConflictNote('Peer body.'), 'utf-8');
+    git(peer, ['add', 'notes/conflict.md']);
+    git(peer, ['commit', '-m', 'peer body']);
+    git(peer, ['push', 'origin', 'main']);
+
+    writeFileSync(join(local, 'notes', 'conflict.md'), renderConflictNote('Local curate output.', 'local-fp'), 'utf-8');
+    git(local, ['add', 'notes/conflict.md']);
+    git(local, ['commit', '-m', 'curate local output']);
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: local,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+    const complete = vi.fn(async (request: Parameters<CurateAssistantPort['complete']>[0]) => {
+      expect(request.purpose).toBe('git-conflict-resolution');
+      expect(request.model).toBe('sonnet');
+      expect(request.permissionMode).toBe('bypassPermissions');
+      expect(request.prompt).toContain('body content');
+      expect(request.prompt).toContain('Do not touch frontmatter');
+
+      writeFileSync(
+        join(local, 'notes', 'conflict.md'),
+        renderConflictNote(['Peer body.', '', 'Local curate output.'].join('\n'), 'local-fp'),
+        'utf-8',
+      );
+      git(local, ['add', 'notes/conflict.md']);
+      return 'resolved';
+    });
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: {
+        get: (key: string) => {
+          if (key === 'CORAL_KB_GIT_SYNC') {
+            return '1';
+          }
+          if (key === 'CLAUDE_PLUGIN_ROOT') {
+            return pluginRoot;
+          }
+          return undefined;
+        },
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(git(local, ['for-each-ref', '--format=%(refname)', 'refs/coral-recovery/main']).trim()).toBe('');
+    expect(readCurateConflictQuarantine(curateDb(kb))).toEqual([]);
+    const resolved = git(local, ['show', 'HEAD:notes/conflict.md']);
+    expect(resolved).toContain('Peer body.');
+    expect(resolved).toContain('Local curate output.');
+    expect(resolved).not.toContain('<<<<<<<');
+    expect(git(local, ['status', '--porcelain']).trim()).toBe('');
+  });
+
+  it('keeps resolving when a successful rebase continue stops on another conflicting commit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-rebase-multi-llm-resolve-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+
+    const runtime = createRealRuntime('prod');
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+
+    let rebaseInProgress = false;
+    let conflictMarkers = false;
+    let head = 'local-before';
+    let continueCalls = 0;
+
+    const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', status: 0 });
+    const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, status: 1 });
+
+    const processPort = {
+      exec: vi.fn(async (command: string, args: string[], _options?: RuntimeExecOptions): Promise<ExecResult> => {
+        expect(command).toBe('git');
+        if (args[0] === 'fetch' && args[1] === 'origin') {
+          return ok();
+        }
+        if (args[0] === 'rebase' && args[1] === 'origin/main') {
+          rebaseInProgress = true;
+          conflictMarkers = true;
+          return fail('CONFLICT (content): Merge conflict in notes/conflict.md');
+        }
+        throw new Error(`unexpected async git ${args.join(' ')}`);
+      }),
+      execSync: vi.fn((command: string, args: string[], _options?: RuntimeExecOptions): ExecResult => {
+        expect(command).toBe('git');
+
+        if (args[0] === 'rev-parse' && args[1] === '--is-inside-work-tree') {
+          return ok('true\n');
+        }
+        if (args[0] === 'remote') {
+          return ok('origin\n');
+        }
+        if (args[0] === 'config') {
+          return ok();
+        }
+        if (args[0] === 'symbolic-ref') {
+          return ok('origin/main\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === 'HEAD') {
+          return ok(`${head}\n`);
+        }
+        if (args[0] === 'status' && args[1] === '--porcelain') {
+          return ok();
+        }
+        if (args[0] === 'ls-files' && args[1] === '-u') {
+          return ok(conflictMarkers ? '100644 deadbeef 1\tnotes/conflict.md\n' : '');
+        }
+        if (args[0] === 'diff' && args[1] === '--check') {
+          return conflictMarkers ? fail('notes/conflict.md:9: leftover conflict marker') : ok();
+        }
+        if (args[0] === 'add' && args[1] === '-A') {
+          return ok();
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-merge') {
+          return ok('.git/rebase-merge\n');
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--git-path' && args[2] === 'rebase-apply') {
+          return ok('.git/rebase-apply\n');
+        }
+        if (args.at(-2) === 'rebase' && args.at(-1) === '--continue') {
+          continueCalls += 1;
+          if (continueCalls === 1) {
+            rebaseInProgress = true;
+            conflictMarkers = true;
+            return ok('stopped again on notes/conflict.md\n');
+          }
+          if (continueCalls === 2) {
+            rebaseInProgress = false;
+            conflictMarkers = false;
+            head = 'local-after';
+            return ok('successfully rebased and updated refs/heads/main\n');
+          }
+          throw new Error('unexpected extra rebase continue');
+        }
+
+        throw new Error(`unexpected sync git ${args.join(' ')}`);
+      }),
+    };
+
+    const storagePort = {
+      readFileSync: vi.fn(() => {
+        throw new Error('missing');
+      }),
+      writeAtomicSync: vi.fn(() => true),
+      existsSync: vi.fn((path: string) => {
+        if (path === join(root, '.git', 'rebase-merge')) {
+          return rebaseInProgress;
+        }
+        if (path === join(root, '.git', 'rebase-apply')) {
+          return false;
+        }
+        return false;
+      }),
+    };
+
+    const complete = vi.fn(async () => {
+      expect(rebaseInProgress).toBe(true);
+      expect(conflictMarkers).toBe(true);
+      conflictMarkers = false;
+      return 'resolved';
+    });
+
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete },
+      processPort,
+      storagePort,
+      envPort: {
+        get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+
+    const syncResult = await controller.gitSync();
+
+    expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(continueCalls).toBe(2);
+    expect(rebaseInProgress).toBe(false);
+    expect(conflictMarkers).toBe(false);
+    expect(
+      processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort'),
+    ).toBe(false);
+  });
+
   it('preserves conflicting local commits on a recovery ref, unwedges push, and quarantines the entry', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-rebase-recovery-'));
     roots.push(root);
@@ -174,6 +407,7 @@ describe('git sync conflict recovery', () => {
     git(local, ['add', 'notes/conflict.md']);
     git(local, ['commit', '-m', 'curate local output']);
 
+    const complete = vi.fn(async () => '');
     const runtime = createRealRuntime('prod');
     const db = createKbTestDb(root);
     const kb = createTestKbRuntime({
@@ -184,7 +418,7 @@ describe('git sync conflict recovery', () => {
     });
     const controller = createGitSyncController({
       kb,
-      curateAssistant: { complete: async () => '' },
+      curateAssistant: { complete },
       processPort: runtime.process,
       storagePort: runtime.storage,
       envPort: {
@@ -204,6 +438,7 @@ describe('git sync conflict recovery', () => {
     const syncResult = await controller.gitSync();
 
     expect(syncResult).toEqual({ kind: 'ambiguous' });
+    expect(complete).toHaveBeenCalledTimes(3);
     const refs = git(local, ['for-each-ref', '--format=%(refname)', 'refs/coral-recovery/main'])
       .trim()
       .split('\n')
@@ -256,7 +491,12 @@ describe('git sync conflict recovery', () => {
       retryNotBefore: '2026-06-16T00:00:00.000Z',
     });
 
-    expect(pendingIndex.entries[noteEntryId('conflict')]?.inputFingerprint).not.toBe(remoteBodyHash);
+    const pendingConflictEntry = pendingIndex.entries[noteEntryId('conflict')];
+    expect(pendingConflictEntry?.kind).toBe('note');
+    if (pendingConflictEntry?.kind !== 'note') {
+      throw new Error('expected conflict fixture to be indexed as a note');
+    }
+    expect(pendingConflictEntry.inputFingerprint).not.toBe(remoteBodyHash);
     expect(readCurateConflictQuarantine(curateDb(kb))).toHaveLength(1);
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-17T12:00:00.000Z'));
