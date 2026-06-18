@@ -188,7 +188,7 @@ describe('git sync conflict recovery', () => {
     const complete = vi.fn(async (request: Parameters<CurateAssistantPort['complete']>[0]) => {
       expect(request.purpose).toBe('git-conflict-resolution');
       expect(request.model).toBe('sonnet');
-      expect(request.permissionMode).toBe('bypassPermissions');
+      expect(request.permissionMode).toBe('auto');
       expect(request.prompt).toContain('body content');
       expect(request.prompt).toContain('Do not touch frontmatter');
 
@@ -501,5 +501,92 @@ describe('git sync conflict recovery', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-17T12:00:00.000Z'));
     await expect(claimCurateRun(kb, '2026-06-17')).resolves.toBeNull();
+  });
+
+  it('does not schedule a deferred auto commit while a git operation is in progress', async () => {
+    vi.useFakeTimers();
+    const root = mkdtempSync(join(tmpdir(), 'coral-deferred-rebase-guard-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod');
+    initRepo(root);
+    mkdirSync(join(root, 'notes'), { recursive: true });
+    writeFileSync(join(root, 'notes', 'auto.md'), renderConflictNote('Original body.'), 'utf-8');
+    git(root, ['add', 'notes/auto.md']);
+    git(root, ['commit', '-m', 'seed']);
+    writeFileSync(join(root, 'notes', 'auto.md'), renderConflictNote('Promoted body.'), 'utf-8');
+    mkdirSync(join(root, '.git', 'rebase-merge'), { recursive: true });
+
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete: async () => '' },
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: {
+        get: () => undefined,
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+    const headBefore = git(root, ['rev-parse', 'HEAD']).trim();
+
+    controller.scheduleDeferredCommit();
+    rmSync(join(root, '.git', 'rebase-merge'), { recursive: true, force: true });
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(git(root, ['rev-parse', 'HEAD']).trim()).toBe(headBefore);
+    expect(git(root, ['status', '--porcelain']).trim()).toContain('M notes/auto.md');
+  });
+
+  it('skips auto commits while the index has unresolved merge conflicts', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-auto-commit-conflict-guard-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod');
+    initRepo(root);
+    mkdirSync(join(root, 'notes'), { recursive: true });
+    writeFileSync(join(root, 'notes', 'conflict.md'), renderConflictNote('Base body.'), 'utf-8');
+    git(root, ['add', 'notes/conflict.md']);
+    git(root, ['commit', '-m', 'seed']);
+    git(root, ['checkout', '-b', 'feature']);
+    writeFileSync(join(root, 'notes', 'conflict.md'), renderConflictNote('Feature body.'), 'utf-8');
+    git(root, ['add', 'notes/conflict.md']);
+    git(root, ['commit', '-m', 'feature body']);
+    git(root, ['checkout', 'main']);
+    writeFileSync(join(root, 'notes', 'conflict.md'), renderConflictNote('Main body.'), 'utf-8');
+    git(root, ['add', 'notes/conflict.md']);
+    git(root, ['commit', '-m', 'main body']);
+    const merge = spawnSync('git', ['merge', 'feature'], { cwd: root, encoding: 'utf-8' });
+    expect(merge.status).not.toBe(0);
+
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete: async () => '' },
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: {
+        get: () => undefined,
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+    const headBefore = git(root, ['rev-parse', 'HEAD']).trim();
+
+    controller.gitAutoCommit('auto: kb mutation');
+
+    expect(git(root, ['rev-parse', 'HEAD']).trim()).toBe(headBefore);
+    expect(git(root, ['ls-files', '-u']).trim()).not.toBe('');
   });
 });

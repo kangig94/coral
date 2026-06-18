@@ -14,7 +14,7 @@ export type ClaudeOneShotRequest = {
   readonly prompt: string;
   readonly model?: string;
   readonly effort?: EffortLevel;
-  readonly permissionMode?: Extract<PermissionMode, 'default' | 'bypassPermissions'>;
+  readonly permissionMode?: Extract<PermissionMode, 'default' | 'bypassPermissions' | 'auto'>;
   readonly systemPrompt?: string;
   readonly controllerEnv?: Record<string, string>;
   readonly signal?: AbortSignal;
@@ -63,7 +63,7 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
       ...buildClaudeBootstrapSignature(
         {
           cwd: request.cwd,
-          bypassPermissions: request.permissionMode === 'bypassPermissions',
+          permissionMode: request.permissionMode ?? 'default',
         },
         deps.ids,
         request.systemPrompt,

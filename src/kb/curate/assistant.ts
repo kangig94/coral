@@ -4,7 +4,10 @@ export type CurateAssistantPurpose =
   | 'community-summary'
   | 'git-conflict-resolution';
 
-export type CurateAssistantPermissionMode = 'default' | 'bypassPermissions';
+export const CURATE_ASSISTANT_MODEL = 'sonnet';
+export const CURATE_ASSISTANT_PERMISSION_MODE = 'auto';
+
+export type CurateAssistantPermissionMode = 'default' | 'auto' | 'bypassPermissions';
 
 export type CurateAssistantRequest = {
   prompt: string;

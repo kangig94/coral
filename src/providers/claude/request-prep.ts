@@ -18,7 +18,7 @@ export type PreparedClaudeRequest = {
   effort: EffortLevel;
 };
 
-export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk']);
+export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk']);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
 
 export interface ClaudeBootstrapSignature {

@@ -109,6 +109,7 @@ describe('runClaudeOneShotTurn', () => {
       {
         cwd: '/workspace/kb',
         prompt: 'Classify this note.',
+        permissionMode: 'auto',
       },
     );
 
@@ -137,6 +138,7 @@ describe('runClaudeOneShotTurn', () => {
 
     await expect(turn).resolves.toBe('done');
     expect(rpc.mock.calls.map(([method]) => method)).toEqual(['session/ensure', 'turn/start', 'session/close']);
+    expect(rpc.mock.calls[0]?.[1]).toMatchObject({ permissionMode: 'auto' });
     expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
     expect(release).toHaveBeenCalledTimes(1);
   });
