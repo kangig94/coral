@@ -478,6 +478,29 @@ export function consolidateEntityGraph(
   existingGraph: EntityGraph,
   delta?: EntityConsolidationDelta,
 ): ConsolidationResult {
+  const result = consolidateEntityGraphOnce(existingGraph, delta);
+  let canonicalGraph = result.canonicalGraph;
+  let replacementMap = result.replacementMap;
+
+  for (let iteration = 0; iteration < 32; iteration += 1) {
+    const next = consolidateEntityGraphOnce(canonicalGraph);
+    replacementMap = composeReplacementMaps(replacementMap, next.replacementMap);
+    if (entityGraphsEqual(canonicalGraph, next.canonicalGraph)) {
+      return {
+        canonicalGraph,
+        replacementMap,
+      };
+    }
+    canonicalGraph = next.canonicalGraph;
+  }
+
+  throw new Error('Entity graph consolidation did not converge.');
+}
+
+function consolidateEntityGraphOnce(
+  existingGraph: EntityGraph,
+  delta?: EntityConsolidationDelta,
+): ConsolidationResult {
   const candidates = collectEntityCandidates(existingGraph, delta);
   const observedKeys = new Set<string>();
 
@@ -499,4 +522,30 @@ export function consolidateEntityGraph(
     },
     replacementMap,
   };
+}
+
+export function entityGraphsEqual(left: EntityGraph, right: EntityGraph): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function composeReplacementMaps(
+  previous: EntityReplacementMap,
+  next: EntityReplacementMap,
+): EntityReplacementMap {
+  const entries = new Map<string, string>();
+
+  for (const [source, target] of Object.entries(previous)) {
+    entries.set(source, next[target] ?? target);
+  }
+  for (const [source, target] of Object.entries(next)) {
+    if (!entries.has(source)) {
+      entries.set(source, target);
+    }
+  }
+
+  const replacementMap: EntityReplacementMap = {};
+  for (const [source, target] of [...entries.entries()].sort(([left], [right]) => compareLocale(left, right))) {
+    replacementMap[source] = target;
+  }
+  return replacementMap;
 }

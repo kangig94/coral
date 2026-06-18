@@ -77,12 +77,27 @@ export const SET_LIKE_FRONTMATTER_ARRAY_FIELDS = new Set([
 
 /** Builds the canonical retrieval text that both text and vector indexing hash/embed. */
 export function buildRetrievalAuthorityText(title: string, body: string): string {
-  return `# ${title}\n\n${body}`.trim();
+  return `# ${title}\n\n${normalizeContentBody(body)}`.trim();
 }
 
 /** Hashes the user-visible content surface for one entry. */
 export function computeContentSurfaceHash(entry: Pick<ContentManifestEntry, 'title' | 'body'>): string {
   return sha256Hex(buildRetrievalAuthorityText(entry.title, entry.body));
+}
+
+/** Normalizes read-time markdown body text for content-derived hashes. */
+export function normalizeContentBody(body: string): string {
+  return body
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+$/u, ''))
+    .join('\n')
+    .trim();
+}
+
+/** Hashes only the normalized body input used by classification. */
+export function computeBodySurfaceHash(body: string): string {
+  return sha256Hex(normalizeContentBody(body));
 }
 
 /** Hashes either canonical frontmatter or raw bytes for metadata freshness checks. */

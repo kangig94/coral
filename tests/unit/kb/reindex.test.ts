@@ -6,6 +6,8 @@ import type * as NodeOs from 'node:os';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { ReadonlyDatabase } from '#src/store/read-port.js';
 import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type EntityGraph } from '#src/kb/entry-types.js';
+import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
+import { cursorTimestampFromStorageSeq, noteCursor } from '#src/kb/curate/state/index.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
@@ -181,6 +183,7 @@ Make the contract explicit first.
           createdAt: '2026-03-01',
           updatedAt: '2026-03-01',
           related: [],
+          bodyHash: computeBodySurfaceHash('stale'),
           entrySeq: 1,
         },
       },
@@ -211,6 +214,7 @@ Make the contract explicit first.
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-21T00:00:00.000Z',
           related: [],
+          bodyHash: computeBodySurfaceHash('## Rule\nKeep the JSON index authoritative.'),
           entrySeq: 11,
         },
       },
@@ -1031,16 +1035,11 @@ This note has malformed frontmatter.
 `,
       'utf-8',
     );
+    const validNoteCursor = noteCursor('valid-note', cursorTimestampFromStorageSeq(12));
     writeCurateState(curateDb(kb), {
       ...readCurateState(curateDb(kb)),
-      processedThrough: {
-        entryId: noteEntryId('valid-note'),
-        entrySeq: 12,
-      },
-      lastAttemptedThrough: {
-        entryId: noteEntryId('valid-note'),
-        entrySeq: 12,
-      },
+      processedThrough: validNoteCursor,
+      lastAttemptedThrough: validNoteCursor,
       discoveryHighSeq: 12,
       discoveryOffset: 3,
     });
@@ -1055,8 +1054,8 @@ This note has malformed frontmatter.
       },
     ]);
     expect(readCurateState(curateDb(kb))).toMatchObject({
-      processedThrough: null,
-      lastAttemptedThrough: null,
+      processedThrough: validNoteCursor,
+      lastAttemptedThrough: validNoteCursor,
       discoveryHighSeq: 6,
       discoveryOffset: 0,
     });
@@ -1106,6 +1105,7 @@ This note is valid now.
       createdAt: '2026-03-20T00:00:00.000Z',
       updatedAt: '2026-03-21T00:00:00.000Z',
       related: [],
+      bodyHash: computeBodySurfaceHash('This note is valid now.'),
       entrySeq: 7,
     });
   });
@@ -1174,6 +1174,7 @@ Source body.
       tags: ['reference'],
       importedAt: '2026-03-21T00:00:00.000Z',
       related: [],
+      bodyHash: computeBodySurfaceHash('Source body.'),
       entrySeq: 8,
     });
   });

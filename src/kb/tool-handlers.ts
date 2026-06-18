@@ -15,6 +15,7 @@ import { rewriteWikiUnderstanding } from './ops/wiki/rewrite.js';
 import { unlinkWikiKnowledge } from './ops/wiki/unlink.js';
 import { generateWakeUpPacket } from './ops/wake-up.js';
 import { readCurateRetryQueue } from './curate/retry.js';
+import { readCurateConflictQuarantine } from './curate/conflict-quarantine.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
 import { type KbReadKind } from './selector.js';
 import { readEntry, readEntryByKind, type KbReadOptions, type KbReadPathResolver } from './read.js';
@@ -425,7 +426,12 @@ export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime
     return kbValidationError(parsed.error);
   }
 
-  return runKbSyncAction(() => buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.readDb)));
+  return runKbSyncAction(() =>
+    buildKbDiagnoseResult(
+      readCurateRetryQueue(kbSubsystem.readDb),
+      readCurateConflictQuarantine(kbSubsystem.readDb),
+    ),
+  );
 }
 
 export async function handleKbSourceList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {

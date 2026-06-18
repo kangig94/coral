@@ -56,6 +56,15 @@ export interface KbCurateRetryQueueRow {
   retry_count: number;
 }
 
+export interface KbCurateConflictQuarantineRow {
+  entry_id: string;
+  entry_kind: string;
+  slug: string;
+  path: string;
+  recovery_ref: string;
+  detected_at: string;
+}
+
 export interface KbCurateDiscoveryBacklogRow {
   entry_id: string;
   principle_slug: string;

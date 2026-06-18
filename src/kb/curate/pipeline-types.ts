@@ -16,6 +16,7 @@ export type NoteClaimCandidate = {
   entryId: KbEntryId;
   slug: string;
   updatedAt: string;
+  entrySeq?: number;
   cursor: CurateCursor;
 };
 
@@ -23,6 +24,7 @@ export type SourceClaimCandidate = {
   kind: 'source';
   entryId: KbEntryId;
   slug: string;
+  entrySeq?: number;
   cursor: CurateCursor;
 };
 
@@ -35,7 +37,8 @@ export type NoteCurateClaimedEntry = {
   title: string;
   body: string;
   updatedAt: string;
-  entrySeq: number;
+  entrySeq?: number;
+  cursor: CurateCursor;
 };
 
 export type SourceCurateClaimedEntry = {
@@ -45,7 +48,8 @@ export type SourceCurateClaimedEntry = {
   title: string;
   body: string;
   claimTimeFingerprint: string;
-  entrySeq: number;
+  entrySeq?: number;
+  cursor: CurateCursor;
 };
 
 export type CurateClaimedEntry = NoteCurateClaimedEntry | SourceCurateClaimedEntry;
@@ -55,7 +59,8 @@ export type NoteMetadataTarget = {
   kind: 'note';
   entryId: KbEntryId;
   slug: string;
-  entrySeq: number;
+  entrySeq?: number;
+  cursor: CurateCursor;
   claimTimeUpdatedAt: string;
   addTags?: string[];
   addRelated?: string[];
@@ -98,7 +103,8 @@ export type MetadataTarget =
       kind: 'source';
       entryId: KbEntryId;
       slug: string;
-      entrySeq: number;
+      entrySeq?: number;
+      cursor: CurateCursor;
       claimTimeFingerprint: string;
       addTags?: string[];
       desiredTags?: string[];

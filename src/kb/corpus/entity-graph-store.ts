@@ -18,6 +18,10 @@ export function parseEntityGraph(value: unknown): EntityGraph {
   };
 }
 
+export function renderEntityGraph(graph: EntityGraph): string {
+  return `${JSON.stringify(parseEntityGraph(graph), null, 2)}\n`;
+}
+
 export function readEntityGraphFile(storage: Pick<StoragePort, 'readFileSync'>, graphPath: string): EntityGraph | null {
   try {
     const raw = storage.readFileSync(graphPath, 'utf-8');
@@ -47,7 +51,7 @@ export function writeEntityGraphFile(
   raw: string;
 } {
   const normalized = parseEntityGraph(graph);
-  const raw = `${JSON.stringify(normalized, null, 2)}\n`;
+  const raw = renderEntityGraph(normalized);
   writeJsonAtomic(host, graphPath, normalized);
   return { normalized, raw };
 }

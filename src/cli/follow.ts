@@ -7,12 +7,12 @@ import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobTerminal } from '../jobs/records.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
-import { TransientHttpError, isTransientStreamError } from '../infra/http-errors.js';
+import { isTransientStreamError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
-import { isRecord } from '../infra/json.js';
 import { ensure } from '../transport/ipc/ensure.js';
 import { formatLaunch } from './format/jobs.js';
 import { openCliCauseRefRenderer } from './cause-renderer.js';
+import { mapWaitSubscriptionError } from './wait-stream-error.js';
 import {
   formatWaitProgress,
   formatWaitQueued,
@@ -117,32 +117,6 @@ async function waitForRetry(signal: AbortSignal, backoffScheduler?: BackoffSched
   } catch {
     return false;
   }
-}
-
-function waitSubscriptionStatusCode(body: Record<string, unknown>): number {
-  switch (body.code) {
-    case 'scope_mismatch':
-      return 403;
-    case 'jobs_not_found':
-      return 404;
-    case 'backend_recovering':
-    case 'backend_shutting_down':
-      return 503;
-    default:
-      return 400;
-  }
-}
-
-function mapWaitSubscriptionError(error: unknown): unknown {
-  if (!(error instanceof Error) || !isRecord(error.cause) || typeof error.cause.message !== 'string') {
-    return error;
-  }
-
-  if (error.cause.code === 'backend_recovering' || error.cause.code === 'backend_shutting_down') {
-    return new TransientHttpError(503, error.cause.message);
-  }
-
-  return new BackendToolHttpError(error.cause.message, waitSubscriptionStatusCode(error.cause), error.cause);
 }
 
 function fallbackExitCode(): number {

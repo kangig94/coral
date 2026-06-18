@@ -4,7 +4,6 @@ import { recordMetadataMutation } from '../../corpus/index-mutations.js';
 import { compareLocale } from '../../validation.js';
 import { communitySlugFromReference } from './identity.js';
 import { buildCommunityPartitionTree } from './detection.js';
-import { normalizedCommunitySummaryFingerprints } from './topology-refresh.js';
 import {
   buildCommunityDocuments,
   generateCommunityFiles,
@@ -18,6 +17,7 @@ import { CURATE_STALE_REASON, runCurateAssistant } from '../operations.js';
 import { readCurateState, writeCurateState } from '../state/index.js';
 import type { CurateAssistantPort } from '../assistant.js';
 import { curateDb } from '../db-access.js';
+import { readCurateConflictQuarantine } from '../conflict-quarantine.js';
 
 export type RunCommunitySubphaseOptions = {
   signal?: AbortSignal;
@@ -28,13 +28,33 @@ export type RunCommunitySubphaseOptions = {
 type CommunityPreparedPayload = {
   capturedBaselineSnapshot: KbCorpusSnapshot;
   capturedBaselineState: ReturnType<typeof readCurateState>;
-  capturedBaselineSummaryFingerprints: Record<string, string> | undefined;
   priorGeneratedCommunities: ExistingGeneratedCommunity[];
   reservedSlugs: Set<string>;
   generatedCommunityDocs: CommunityDocument[];
-  summaryFingerprints: Record<string, string> | undefined;
-  topologyHash: string;
+  quarantinedCommunitySlugs: Set<string>;
 };
+
+type PickedOptionalCommunityFields = {
+  parent?: string;
+  children?: string[];
+  summary?: string;
+  summaryInputFingerprint?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function pickOptionalCommunityFields(community: PickedOptionalCommunityFields): PickedOptionalCommunityFields {
+  return {
+    ...(community.parent === undefined ? {} : { parent: community.parent }),
+    ...(community.children === undefined ? {} : { children: community.children }),
+    ...(community.summary === undefined ? {} : { summary: community.summary }),
+    ...(community.summaryInputFingerprint === undefined
+      ? {}
+      : { summaryInputFingerprint: community.summaryInputFingerprint }),
+    createdAt: community.createdAt,
+    updatedAt: community.updatedAt,
+  };
+}
 
 function communitySummaryChildren(
   community: { children?: string[] },
@@ -76,6 +96,7 @@ function toExistingGeneratedCommunity(document: {
   parent?: string;
   children?: string[];
   summary?: string;
+  summaryInputFingerprint?: string;
   createdAt: string;
   updatedAt: string;
 }): ExistingGeneratedCommunity {
@@ -84,34 +105,24 @@ function toExistingGeneratedCommunity(document: {
     title: document.title,
     level: document.level,
     members: document.members,
-    ...(document.parent === undefined ? {} : { parent: document.parent }),
-    ...(document.children === undefined ? {} : { children: document.children }),
-    ...(document.summary === undefined ? {} : { summary: document.summary }),
-    createdAt: document.createdAt,
-    updatedAt: document.updatedAt,
+    ...pickOptionalCommunityFields(document),
   };
 }
 
-function renderExistingCommunityDocument(community: ExistingGeneratedCommunity): CommunityDocument {
+function renderExistingCommunityDocument(
+  community: ExistingGeneratedCommunity,
+): CommunityDocument {
   return {
     slug: community.slug,
     title: community.title,
     level: community.level,
     members: community.members,
-    ...(community.parent === undefined ? {} : { parent: community.parent }),
-    ...(community.children === undefined ? {} : { children: community.children }),
-    ...(community.summary === undefined ? {} : { summary: community.summary }),
-    createdAt: community.createdAt,
-    updatedAt: community.updatedAt,
+    ...pickOptionalCommunityFields(community),
     content: renderCommunityDocument({
       title: community.title,
       members: community.members,
       level: community.level,
-      ...(community.parent === undefined ? {} : { parent: community.parent }),
-      ...(community.children === undefined ? {} : { children: community.children }),
-      ...(community.summary === undefined ? {} : { summary: community.summary }),
-      createdAt: community.createdAt,
-      updatedAt: community.updatedAt,
+      ...pickOptionalCommunityFields(community),
     }),
   };
 }
@@ -145,25 +156,22 @@ async function prepareCommunityPayload(
     relationships: capturedFinalIndex.relationships,
   });
   const partitionTree = buildCommunityPartitionTree(graph);
-  const topologyHash = partitionTree.computeTopologyFingerprint();
   const { generated: priorGeneratedCommunities, reservedSlugs } = loadExistingCommunityState(kb);
+  const quarantinedCommunitySlugs = new Set<string>();
+  for (const entry of readCurateConflictQuarantine(curateDb(kb))) {
+    if (entry.kind === 'community') {
+      quarantinedCommunitySlugs.add(entry.slug);
+    }
+  }
 
   const detectedCommunities = partitionTree.detect({
     priorCommunities: priorGeneratedCommunities,
     reservedSlugs,
   });
-  let initialCommunityDocs: CommunityDocument[];
-  if (capturedBaselineState.communityTopologyHash !== topologyHash) {
-    initialCommunityDocs = buildCommunityDocuments(detectedCommunities, {
-      priorGeneratedCommunities,
-      today,
-    });
-  } else {
-    initialCommunityDocs = [];
-    for (const community of priorGeneratedCommunities) {
-      initialCommunityDocs.push(renderExistingCommunityDocument(community));
-    }
-  }
+  const initialCommunityDocs = buildCommunityDocuments(detectedCommunities, {
+    priorGeneratedCommunities,
+    today,
+  });
 
   const activeCommunities: ExistingGeneratedCommunity[] = [];
   const communitiesBySlug = new Map<string, ExistingGeneratedCommunity>();
@@ -172,13 +180,6 @@ async function prepareCommunityPayload(
     activeCommunities.push(community);
     communitiesBySlug.set(community.slug, community);
   }
-  const capturedBaselineSummaryFingerprints = normalizedCommunitySummaryFingerprints(
-    capturedBaselineState.communitySummaryInputFingerprints,
-    activeCommunities,
-  );
-  const summaryInputFingerprints = {
-    ...(capturedBaselineSummaryFingerprints ?? {}),
-  };
 
   for (const community of [...activeCommunities].sort((left, right) => {
     if (left.level !== right.level) {
@@ -189,6 +190,9 @@ async function prepareCommunityPayload(
     if (shouldStop() || signal?.aborted) {
       return null;
     }
+    if (quarantinedCommunitySlugs.has(community.slug)) {
+      continue;
+    }
 
     const summaryInputFingerprint = computeCommunitySummaryInputFingerprintForCommunity(
       community,
@@ -196,7 +200,8 @@ async function prepareCommunityPayload(
       kb,
       capturedFinalIndex,
     );
-    const currentSummaryFingerprint = summaryInputFingerprints[community.slug];
+    const currentSummaryFingerprint = community.summaryInputFingerprint;
+    let nextCommunity = communitiesBySlug.get(community.slug) ?? community;
 
     if (community.summary === undefined || currentSummaryFingerprint !== summaryInputFingerprint) {
       const summary = await generateCommunitySummary({
@@ -219,14 +224,17 @@ async function prepareCommunityPayload(
         signal,
       });
 
-      communitiesBySlug.set(community.slug, {
+      nextCommunity = {
         ...community,
         ...(summary === undefined ? {} : { summary }),
         updatedAt: today,
-      });
+      };
     }
 
-    summaryInputFingerprints[community.slug] = summaryInputFingerprint;
+    communitiesBySlug.set(community.slug, {
+      ...nextCommunity,
+      summaryInputFingerprint,
+    });
   }
 
   const generatedCommunityDocs: CommunityDocument[] = [];
@@ -234,18 +242,19 @@ async function prepareCommunityPayload(
     compareLocale(left.slug, right.slug),
   );
   for (const community of orderedCommunities) {
+    if (quarantinedCommunitySlugs.has(community.slug)) {
+      continue;
+    }
     generatedCommunityDocs.push(renderExistingCommunityDocument(community));
   }
 
   return {
     capturedBaselineSnapshot,
     capturedBaselineState,
-    capturedBaselineSummaryFingerprints,
     priorGeneratedCommunities,
     reservedSlugs,
     generatedCommunityDocs,
-    summaryFingerprints: normalizedCommunitySummaryFingerprints(summaryInputFingerprints, generatedCommunityDocs),
-    topologyHash,
+    quarantinedCommunitySlugs,
   };
 }
 
@@ -275,23 +284,19 @@ export async function runCommunitySubphase(
 
     const nextState = {
       ...prepared.capturedBaselineState,
-      communityTopologyHash: prepared.topologyHash,
-      communitySummaryTopologyHash: prepared.topologyHash,
-      communitySummaryInputFingerprints: prepared.summaryFingerprints,
       consecutiveCommunityBatchFailures: 0,
       // A successful community batch implicitly clears the lane-disabled stamp
       // (the lane was unblocked); see scheduler.ts INVARIANT.MAX_CONSECUTIVE_FAILURES.
       communityBatchLaneDisabledAt: null,
     };
     const shouldWriteState =
-      prepared.capturedBaselineState.communityTopologyHash !== nextState.communityTopologyHash ||
-      prepared.capturedBaselineState.communitySummaryTopologyHash !== nextState.communitySummaryTopologyHash ||
-      JSON.stringify(prepared.capturedBaselineSummaryFingerprints ?? {}) !==
-        JSON.stringify(nextState.communitySummaryInputFingerprints ?? {}) ||
       prepared.capturedBaselineState.consecutiveCommunityBatchFailures !== 0 ||
       prepared.capturedBaselineState.communityBatchLaneDisabledAt !== null;
 
-    if (generateCommunityFiles(kb, mutation, prepared.generatedCommunityDocs, prepared.priorGeneratedCommunities)) {
+    const writablePriorCommunities = prepared.priorGeneratedCommunities.filter(
+      (community) => !prepared.quarantinedCommunitySlugs.has(community.slug),
+    );
+    if (generateCommunityFiles(kb, mutation, prepared.generatedCommunityDocs, writablePriorCommunities)) {
       wroteCommunityFiles = true;
     }
     if (shouldWriteState) {

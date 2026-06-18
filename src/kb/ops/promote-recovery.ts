@@ -178,6 +178,7 @@ async function completeForward(rt: PromoteRecoveryHost, marker: PromoteRecoveryM
           buildNoteIndexEntry({
             slug: marker.noteSlug,
             title: extractTitle(noteRaw),
+            body: extractBody(noteRaw),
             tags: marker.noteTags,
             principles: [],
             source: marker.noteSource,

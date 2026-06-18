@@ -37,6 +37,7 @@ export async function applyNoteUpdateLocked(
         buildNoteIndexEntry({
           slug: input.note,
           title: nextTitle,
+          body: nextContent,
           ...nextFrontmatter,
         }),
       );

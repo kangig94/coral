@@ -94,12 +94,14 @@ type TranscriptFixture = {
 
 function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptFixture {
   const previousHome = process.env.HOME;
+  const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   const home = mkdtempSync(join(tmpdir(), 'coral-claude-home-'));
   const projectDir = join(home, '.claude', 'projects', 'workspace');
   mkdirSync(projectDir, { recursive: true });
   const transcriptPath = join(projectDir, `${conversationRef}.jsonl`);
   writeFileSync(transcriptPath, '');
   process.env.HOME = home;
+  delete process.env.CLAUDE_CONFIG_DIR;
 
   return {
     transcriptPath,
@@ -108,6 +110,11 @@ function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptF
         delete process.env.HOME;
       } else {
         process.env.HOME = previousHome;
+      }
+      if (previousClaudeConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
       }
       rmSync(home, { recursive: true, force: true });
     },

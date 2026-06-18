@@ -8,6 +8,7 @@ import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSy
 import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
+import { createHash } from "crypto";
 
 // Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
 // inherited by this statusLine subprocess). Falls back to ~/.claude.
@@ -597,7 +598,7 @@ function parseExtraUsage(eu) {
 
 function formatExtraUsage(eu) {
   if (!eu) return null;
-  return `${DIM}mo$${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
+  return `${DIM}mo:${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
 }
 
 function formatLimits(data) {
@@ -838,12 +839,22 @@ async function renderCodexData() {
 
 // --- coral backend ---
 
-// Production coordinator metadata lives at `~/.coral/run/coordinator.json`
-// (per `src/infra/path/coordinator.ts`); one coordinator per host, no
-// per-installation tree. The statusline is gated to the prod flavor by
-// `hud-auto-update.mjs`, so we read prod's runDir directly.
+// Coordinator state is partitioned per Claude config dir: a non-default
+// CLAUDE_CONFIG_DIR is a distinct daemon registered under
+// `~/.coral/by-config/<slot>/run/`, while the default `~/.claude` keeps the
+// unpartitioned `~/.coral/run/`. Mirrors `claudeConfigSlot`/`coralStateRoot`
+// in `src/infra/path/root.ts` so the HUD reads the same backend the CLI does.
+function coralStateRoot() {
+  const home = homedir();
+  if (CLAUDE_DIR === join(home, ".claude")) return join(home, ".coral");
+  const slot = createHash("sha256").update(CLAUDE_DIR).digest("hex").slice(0, 8);
+  return join(home, ".coral", "by-config", slot);
+}
+
+// The statusline is gated to the prod flavor by `hud-auto-update.mjs`, so we
+// read prod's runDir directly.
 function resolveBackendInfoPath() {
-  const infoPath = join(homedir(), ".coral", "run", "coordinator.json");
+  const infoPath = join(coralStateRoot(), "run", "coordinator.json");
   try {
     const info = JSON.parse(readFileSync(infoPath, "utf-8"));
     if (!info?.pid) return null;

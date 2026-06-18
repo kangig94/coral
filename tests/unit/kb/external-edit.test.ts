@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { KbRuntime } from '#src/kb/contract.js';
+import { renderEntityGraph } from '#src/kb/corpus/entity-graph-store.js';
 import { noteEntryId, sourceEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { nowDate } from '#src/infra/time.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
@@ -181,10 +182,6 @@ function renderCommunity({
     body,
     '',
   ].join('\n');
-}
-
-function renderEntityGraph(graph: EntityGraph): string {
-  return `${JSON.stringify(graph, null, 2)}\n`;
 }
 
 function seedCorpus(kb: KbRuntime): {

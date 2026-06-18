@@ -31,6 +31,7 @@ function createIndex(noteTags: Record<string, string[]>): KbIndex {
           source: ['kangig94/coral'],
           createdAt: '2026-03-20T00:00:00.000Z',
           updatedAt: '2026-03-20T00:00:00.000Z',
+          bodyHash: `${note}-body-hash`,
         },
       ]),
     ),

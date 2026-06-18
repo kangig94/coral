@@ -1,11 +1,18 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { Option, type Command } from 'commander';
 
 import { parseKbEntryId, vaultLinkToEntryId, type KbPromoteInput } from '../../kb/entry-types.js';
 import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
 import { resolveProjectSource } from '../../infra/project-source.js';
+import { runEntityGraphMergeDriver } from '../../kb/curate/entity-graph-merge-driver.js';
+import {
+  runFrontmatterMergeDriver,
+  type FrontmatterMergeDriverHost,
+} from '../../kb/curate/frontmatter-merge-driver.js';
 import { UsageError } from '../errors.js';
 import {
   makeClient,
@@ -55,6 +62,14 @@ import {
 
 const REF_FORMAT_HINT =
   'note:<slug>, source:<slug>, community:<slug>, wiki:<slug>, or [[notes/<slug>]] / [[sources/<slug>]] / [[communities/<slug>]] / [[wiki/<slug>]]';
+
+const frontmatterMergeDriverHost: FrontmatterMergeDriverHost = {
+  readFileSync,
+  writeFileSync,
+  createTempDir: (prefix) => mkdtempSync(join(tmpdir(), prefix)),
+  rmSync,
+  execFileSync: (command, args, options) => execFileSync(command, args, options),
+};
 
 function assertRefFormat(value: string, field: string): string {
   if (parseKbEntryId(value) === null && vaultLinkToEntryId(value) === null) {
@@ -446,6 +461,56 @@ export function registerKbCommands(program: Command): void {
       }
     });
 
+  const kbMergeEntityGraphCommand = kb.command('merge-entity-graph', { hidden: true });
+  kbMergeEntityGraphCommand
+    .description('Git merge driver for KB .entity-graph.json files')
+    .argument('<base>', 'Git %O ancestor path; intentionally ignored')
+    .argument('<ours>', 'Git %A current path; overwritten with merged graph')
+    .argument('<theirs>', 'Git %B incoming path')
+    .action((base: string, ours: string, theirs: string) => {
+      try {
+        runEntityGraphMergeDriver(
+          {
+            basePath: base,
+            oursPath: ours,
+            theirsPath: theirs,
+          },
+          {
+            readFileSync,
+            writeFileSync,
+          },
+        );
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const kbMergeFrontmatterCommand = kb.command('merge-frontmatter', { hidden: true });
+  kbMergeFrontmatterCommand
+    .description('Git merge driver for KB markdown frontmatter and bodies')
+    .argument('<base>', 'Git %O ancestor path')
+    .argument('<ours>', 'Git %A current path; overwritten with merged markdown')
+    .argument('<theirs>', 'Git %B incoming path')
+    .argument('<path>', 'Git %P repository-relative markdown path')
+    .action((base: string, ours: string, theirs: string, path: string) => {
+      try {
+        const result = runFrontmatterMergeDriver(
+          {
+            basePath: base,
+            oursPath: ours,
+            theirsPath: theirs,
+            filePath: path,
+          },
+          frontmatterMergeDriverHost,
+        );
+        if (result.status !== 0) {
+          process.exitCode = result.status;
+        }
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
   const kbPrinciplesCommand = kb.command('principles');
   kbPrinciplesCommand
     .description('List KB principles')
@@ -497,24 +562,23 @@ export function registerKbCommands(program: Command): void {
   const kbPromoteCommand = kb.command('promote');
   kbPromoteCommand
     .description('Promote a memo into a KB note. To attach the new note to a wiki, use `kb wiki adopt`.')
-    .option('--memo <filename>', 'Memo filename (e.g. 20260325-topic.md)')
-    .option('--title <text>', 'Note title')
-    .option('--content-file <path>', 'Read content from file')
-    .option('--domain <slug>', 'Note domain')
-    .option('--topic <slug>', 'Note topic')
+    .requiredOption('--memo <filename>', '(required) Memo filename (e.g. 20260325-topic.md)')
+    .requiredOption('--title <text>', '(required) Note title')
+    .requiredOption('--content-file <path>', '(required) Read content from file')
+    .requiredOption('--domain <slug>', '(required) Note domain')
+    .requiredOption('--topic <slug>', '(required) Note topic')
     .action(async (opts: KbPromoteOptions) => {
       try {
-        const content =
-          opts.contentFile !== undefined ? readFileSync(resolveFilePath(opts.contentFile), 'utf8') : undefined;
-        const args = {
-          ...(opts.memo !== undefined ? { memo: opts.memo } : {}),
-          ...(opts.title !== undefined ? { title: opts.title } : {}),
-          ...(content !== undefined ? { content } : {}),
-          ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
-          ...(opts.topic !== undefined ? { topic: opts.topic } : {}),
+        const content = readFileSync(resolveFilePath(opts.contentFile), 'utf8');
+        const args: KbPromoteInput = {
+          memo: opts.memo,
+          title: opts.title,
+          content,
+          domain: opts.domain,
+          topic: opts.topic,
         };
         const client = makeClient(process.cwd(), kbPromoteCommand);
-        const result = await client.kbPromote(args as KbPromoteInput);
+        const result = await client.kbPromote(args);
         emitText(result, formatKbPromote);
       } catch (error) {
         emitError(error);

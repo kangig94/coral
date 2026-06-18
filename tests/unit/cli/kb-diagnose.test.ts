@@ -8,7 +8,6 @@ import type * as MainMod from '#src/cli/program.js';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { storePaths } from '#src/infra/path/store.js';
 
 const REPO_ROOT = process.cwd();
 
@@ -38,7 +37,7 @@ function seedRetryQueue(
 ): void {
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
-    path: storePaths('prod').dbFile,
+    path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
   });
 

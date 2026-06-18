@@ -9,7 +9,6 @@ import type * as MainMod from '#src/cli/program.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
-import { storePaths } from '#src/infra/path/store.js';
 
 const REPO_ROOT = process.cwd();
 // Keep this fixed clock aligned with the snapshot's relative-time offsets vs. seeded `created_at` values.
@@ -41,7 +40,7 @@ async function seedKbSearchSnapshot(): Promise<void> {
   const db = openWritableStoreDbNoReset(realRuntime);
   const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: kbPaths.kbRuntimeDir('prod'),
+    runtimeDir: kbPaths.kbRuntimeDir('prod', realRuntime.paths.configSlot),
     db,
     runtime: realRuntime,
   });
@@ -98,7 +97,7 @@ Make the contract explicit first.
 function seedStore(projectRoot: string): void {
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
-    path: storePaths('prod').dbFile,
+    path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
   });
 
@@ -235,8 +234,11 @@ describe('cli coral-store read parity', () => {
   });
 
   it('degrades direct-read kb search when the Orama snapshot is absent', async () => {
-    const [{ kbRuntimeDir }] = await Promise.all([import('#src/kb/paths.js')]);
-    rmSync(kbRuntimeDir('prod'), { recursive: true, force: true });
+    const [{ kbRuntimeDir }, { createRealRuntime }] = await Promise.all([
+      import('#src/kb/paths.js'),
+      import('#src/runtime/real.js'),
+    ]);
+    rmSync(kbRuntimeDir('prod', createRealRuntime('prod').paths.configSlot), { recursive: true, force: true });
 
     const { searchKnowledgeBase } = await import('#src/kb/queries.js');
     const { createKbQueryHost } = await import('#src/read-model/kb-query-runtime.js');

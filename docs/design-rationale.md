@@ -20,6 +20,10 @@ KB notes, sources, principles, communities, and wiki entries are **spatial**: th
 
 Event-sourcing the KB would force bi-directional sync: external edits → synthetic events → reconstructed markdown, with conflict resolution for Obsidian-vs-coordinator races. The filesystem already offers atomic rename; git already provides sync. Reinventing these inside a journal adds complexity without elegance gain.
 
+The same principle applies to Corpus derivatives, not just authored markdown. Expensive LLM derivatives carry their input provenance in the tracked file that owns them: note/source classification writes `inputFingerprint` and peers compare it to the indexed body hash; community summaries write `summaryInputFingerprint`, which a peer recomputes from the community's current input documents and skips the LLM summary when it matches. Token savings and conflict avoidance are one mechanism: sync the derivative with the input it summarizes so another full curator can skip the LLM without asking a leader.
+
+Derivative conflicts are made impossible where the format allows it, not resolved after the fact. The entity graph merge driver canonical-sorts `ours ∪ theirs` and runs `consolidateEntityGraph` to an idempotent fixpoint; the markdown merge driver unions frontmatter set fields (`tags`, `principles`, `related`) and leaves only genuine same-region body prose edits to `git merge-file`. Derivatives and frontmatter are conflict-free by construction without the LLM; only genuine same-region body-prose conflicts fall back to the LLM as a last resort, with recovery-ref/quarantine as the final safety net.
+
 ### 1.3 Why one coordinator over two authorities
 
 Single-writer discipline eliminates distributed-consensus machinery. The coordinator:

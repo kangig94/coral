@@ -1,4 +1,4 @@
-import type { KbCurateActiveClaimRow, KbCurateCommunitySummaryInputFingerprintRow } from '../../state/schema.js';
+import type { KbCurateActiveClaimRow } from '../../state/schema.js';
 import { parsePositiveInteger } from '../../validation.js';
 import { prepareCached, withImmediate, type Database } from '../../../store/db.js';
 import type { ReadonlyDatabase } from '../../../store/read-port.js';
@@ -6,10 +6,13 @@ import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../disco
 import { readCurateRetryQueue } from '../retry.js';
 import {
   compareCursor,
+  cursorEntryId,
   cursorEntryKind,
+  cursorFromEntryId,
+  cursorTimestampFromStorageSeq,
+  cursorTimestampToStorageSeq,
   defaultCurateState,
   kbEntryIdSchema,
-  type CurateCursor,
   type CurateRepairFrontier,
   type CurateState,
   type PendingRepair,
@@ -27,16 +30,10 @@ function comparePendingRepair(left: PendingRepair, right: PendingRepair): number
     return left.entrySeq === null ? -1 : 1;
   }
 
-  return compareCursor(
-    {
-      entryId: left.entryId,
-      entrySeq: left.entrySeq,
-    },
-    {
-      entryId: right.entryId,
-      entrySeq: right.entrySeq,
-    },
-  );
+  if (left.entrySeq !== right.entrySeq) {
+    return left.entrySeq - right.entrySeq;
+  }
+  return left.entryId.localeCompare(right.entryId);
 }
 
 export function getCurateRepairFrontier(db: ReadHandle): CurateRepairFrontier {
@@ -59,22 +56,9 @@ export function getCurateRepairFrontier(db: ReadHandle): CurateRepairFrontier {
 
   return {
     kind: 'known',
-    cursor: {
-      entryId: first.entryId,
-      entrySeq: first.entrySeq,
-    },
+    entryId: first.entryId,
+    entrySeq: first.entrySeq,
   };
-}
-
-function clampCursorToRepairFrontier(cursor: CurateCursor | null, frontier: CurateRepairFrontier): CurateCursor | null {
-  if (cursor === null || frontier.kind === 'none') {
-    return cursor;
-  }
-  if (frontier.kind === 'unknown') {
-    return null;
-  }
-
-  return compareCursor(cursor, frontier.cursor) >= 0 ? null : cursor;
 }
 
 export function normalizeCurateStateRepairFrontier(db: ReadHandle, state: CurateState): CurateState {
@@ -90,21 +74,17 @@ export function normalizeCurateStateRepairFrontier(db: ReadHandle, state: Curate
     };
   }
 
-  if (frontier.kind === 'known' && state.discoveryHighSeq >= frontier.cursor.entrySeq) {
-    return {
-      ...state,
-      processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
-      lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
-      discoveryHighSeq: Math.max(frontier.cursor.entrySeq - 1, 0),
-      discoveryOffset: 0,
-    };
+  if (frontier.kind === 'known') {
+    if (state.discoveryHighSeq >= frontier.entrySeq) {
+      return {
+        ...state,
+        discoveryHighSeq: Math.max(frontier.entrySeq - 1, 0),
+        discoveryOffset: 0,
+      };
+    }
   }
 
-  return {
-    ...state,
-    processedThrough: clampCursorToRepairFrontier(state.processedThrough, frontier),
-    lastAttemptedThrough: clampCursorToRepairFrontier(state.lastAttemptedThrough, frontier),
-  };
+  return state;
 }
 
 function readActiveClaim(db: ReadHandle): CurateState['activeClaim'] {
@@ -118,10 +98,12 @@ function readActiveClaim(db: ReadHandle): CurateState['activeClaim'] {
     return null;
   }
 
-  const through = {
-    entryId: kbEntryIdSchema.parse(row.through_entry_id),
-    entrySeq: parsePositiveInteger(row.through_seq, 'kb_curate_active_claim.through_seq'),
-  };
+  const throughEntryId = kbEntryIdSchema.parse(row.through_entry_id);
+  const through = cursorFromEntryId(
+    cursorTimestampFromStorageSeq(parsePositiveInteger(row.through_seq, 'kb_curate_active_claim.through_seq')),
+    throughEntryId,
+    'kb_curate_active_claim',
+  );
   if (cursorEntryKind(through) !== row.through_entry_kind) {
     throw new Error('kb_curate_active_claim through_entry_kind must match the stored entry ID');
   }
@@ -152,6 +134,8 @@ function writeActiveClaim(db: Database, activeClaim: CurateState['activeClaim'])
   }
 
   const throughEntryKind = cursorEntryKind(activeClaim.through);
+  const throughEntryId = cursorEntryId(activeClaim.through);
+  const throughSeq = cursorTimestampToStorageSeq(activeClaim.through, 'kb_curate_active_claim');
   if (existing === null) {
     prepareCached<[number, string, 'note' | 'source', string]>(
       db,
@@ -162,7 +146,7 @@ function writeActiveClaim(db: Database, activeClaim: CurateState['activeClaim'])
          through_entry_kind,
          started_at
        ) VALUES (1, ?, ?, ?, ?)`,
-    ).run(activeClaim.through.entrySeq, activeClaim.through.entryId, throughEntryKind, activeClaim.startedAt);
+    ).run(throughSeq, throughEntryId, throughEntryKind, activeClaim.startedAt);
     return;
   }
 
@@ -174,63 +158,11 @@ function writeActiveClaim(db: Database, activeClaim: CurateState['activeClaim'])
             through_entry_kind = ?,
             started_at = ?
       WHERE id = 1`,
-  ).run(activeClaim.through.entrySeq, activeClaim.through.entryId, throughEntryKind, activeClaim.startedAt);
+  ).run(throughSeq, throughEntryId, throughEntryKind, activeClaim.startedAt);
 }
 
-function readCommunitySummaryInputFingerprints(db: ReadHandle): Record<string, string> | undefined {
-  const rows = prepareCached<[], KbCurateCommunitySummaryInputFingerprintRow>(
-    db,
-    `SELECT community_slug, fingerprint
-       FROM kb_curate_community_summary_input_fingerprints
-      ORDER BY community_slug ASC`,
-  ).all();
-  if (rows.length === 0) {
-    return undefined;
-  }
-
-  const fingerprints: Record<string, string> = {};
-  for (const { community_slug, fingerprint } of rows) {
-    fingerprints[community_slug] = fingerprint;
-  }
-  return fingerprints;
-}
-
-function writeCommunitySummaryInputFingerprints(db: Database, fingerprints: Record<string, string> | undefined): void {
-  const existing = readCommunitySummaryInputFingerprints(db) ?? {};
-  const next = fingerprints ?? {};
-
-  for (const communitySlug of Object.keys(existing)) {
-    if (!(communitySlug in next)) {
-      prepareCached<[string]>(
-        db,
-        `DELETE FROM kb_curate_community_summary_input_fingerprints
-          WHERE community_slug = ?`,
-      ).run(communitySlug);
-    }
-  }
-
-  const nextEntries = Object.entries(next).sort(([left], [right]) => left.localeCompare(right));
-  for (const [communitySlug, fingerprint] of nextEntries) {
-    if (!(communitySlug in existing)) {
-      prepareCached<[string, string]>(
-        db,
-        `INSERT INTO kb_curate_community_summary_input_fingerprints (
-           community_slug,
-           fingerprint
-         ) VALUES (?, ?)`,
-      ).run(communitySlug, fingerprint);
-      continue;
-    }
-
-    if (existing[communitySlug] !== fingerprint) {
-      prepareCached<[string, string]>(
-        db,
-        `UPDATE kb_curate_community_summary_input_fingerprints
-            SET fingerprint = ?
-          WHERE community_slug = ?`,
-      ).run(fingerprint, communitySlug);
-    }
-  }
+function clearCommunitySummaryInputFingerprints(db: Database): void {
+  prepareCached<[]>(db, `DELETE FROM kb_curate_community_summary_input_fingerprints`).run();
 }
 
 export function readCurateState(db: ReadHandle): CurateState {
@@ -245,9 +177,9 @@ export function readCurateState(db: ReadHandle): CurateState {
     retryNotBefore: scheduler.retryNotBefore,
     activeClaim: readActiveClaim(db),
     pendingDiscoveries: readCurateDiscoveryBacklog(db),
-    communityTopologyHash: scheduler.communityTopologyHash,
+    communityTopologyHash: undefined,
     communitySummaryTopologyHash: scheduler.communitySummaryTopologyHash,
-    communitySummaryInputFingerprints: readCommunitySummaryInputFingerprints(db),
+    communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: scheduler.consecutiveClaimFailures,
     consecutiveCommunityBatchFailures: scheduler.consecutiveCommunityBatchFailures,
     claimLaneDisabledAt: scheduler.claimLaneDisabledAt,
@@ -270,12 +202,12 @@ export function writeCurateState(db: Database, state: CurateState): void {
       consecutiveCommunityBatchFailures: normalized.consecutiveCommunityBatchFailures,
       claimLaneDisabledAt: normalized.claimLaneDisabledAt,
       communityBatchLaneDisabledAt: normalized.communityBatchLaneDisabledAt,
-      communityTopologyHash: normalized.communityTopologyHash,
+      communityTopologyHash: undefined,
       communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
       initialized: normalized.initialized,
     });
     syncCurateDiscoveryBacklog(db, normalized.pendingDiscoveries);
     writeActiveClaim(db, normalized.activeClaim);
-    writeCommunitySummaryInputFingerprints(db, normalized.communitySummaryInputFingerprints);
+    clearCommunitySummaryInputFingerprints(db);
   });
 }

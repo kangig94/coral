@@ -206,7 +206,7 @@ async function createWritableKbRuntime() {
   });
   const kb = createKbRuntime({
     markdownRoot: runtime.paths.coral.corpus.kbRoot,
-    runtimeDir: kbRuntimeDir('prod'),
+    runtimeDir: kbRuntimeDir('prod', runtime.paths.configSlot),
     db,
     time: runtime.time,
     envPort: runtime.env,

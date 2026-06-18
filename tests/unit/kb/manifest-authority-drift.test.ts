@@ -10,13 +10,18 @@ import { persistPreparedSource } from '#src/kb/ops/source-store.js';
 import { promote } from '#src/kb/ops/promote.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
-import { noteEntryId, type EntityGraph } from '#src/kb/entry-types.js';
+import type { EntityGraph } from '#src/kb/entry-types.js';
 import { memoDir } from '#src/kb/paths.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
 import { runPrincipleDiscovery } from '#src/kb/curate/principles.js';
 import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
 import { generateCommunityFiles, renderCommunityDocument } from '#src/kb/curate/community/documents.js';
-import { readCurateState, writeCurateState } from '#src/kb/curate/state/index.js';
+import {
+  cursorTimestampFromStorageSeq,
+  noteCursor,
+  readCurateState,
+  writeCurateState,
+} from '#src/kb/curate/state/index.js';
 import { recordMetadataMutation } from '#src/kb/corpus/index-mutations.js';
 import { computeCorpusSurfaceManifestHash } from '#src/kb/corpus/surface.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
@@ -149,10 +154,7 @@ function setProcessedThrough(kb: KbRuntime, slug: string, entrySeq: number): voi
   writeCurateState(curateDb(kb), {
     ...state,
     initialized: true,
-    processedThrough: {
-      entryId: noteEntryId(slug),
-      entrySeq,
-    },
+    processedThrough: noteCursor(slug, cursorTimestampFromStorageSeq(entrySeq)),
   });
 }
 
@@ -288,6 +290,7 @@ describe('manifest authority drift checks', () => {
             entryId: 'note:coral-alpha',
             slug: 'coral-alpha',
             entrySeq: note.entrySeq,
+            cursor: noteCursor('coral-alpha', cursorTimestampFromStorageSeq(note.entrySeq)),
             claimTimeUpdatedAt: note.updatedAt,
             addTags: ['drift'],
           },
@@ -330,8 +333,7 @@ describe('manifest authority drift checks', () => {
             ]),
           ),
           {
-            entryId: noteEntryId('coral-discovery-03'),
-            entrySeq: 3,
+            ...noteCursor('coral-discovery-03', cursorTimestampFromStorageSeq(3)),
           },
         );
 

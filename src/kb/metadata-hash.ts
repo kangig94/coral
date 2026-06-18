@@ -3,9 +3,12 @@ import type { NoteEntry, SourceEntry, WikiEntry } from './entry-types.js';
 
 type NoteMetadataHashInput = Pick<
   NoteEntry,
-  'tags' | 'principles' | 'source' | 'createdAt' | 'updatedAt' | 'entrySeq' | 'related'
+  'tags' | 'principles' | 'source' | 'createdAt' | 'updatedAt' | 'inputFingerprint' | 'entrySeq' | 'related'
 >;
-type SourceMetadataHashInput = Pick<SourceEntry, 'type' | 'tags' | 'url' | 'importedAt' | 'entrySeq' | 'related'>;
+type SourceMetadataHashInput = Pick<
+  SourceEntry,
+  'type' | 'tags' | 'url' | 'importedAt' | 'inputFingerprint' | 'entrySeq' | 'related'
+>;
 type WikiMetadataHashInput = Pick<WikiEntry, 'tags' | 'createdAt' | 'updatedAt'>;
 
 export function noteMetadataHash(entry: NoteMetadataHashInput): string {
@@ -16,6 +19,7 @@ export function noteMetadataHash(entry: NoteMetadataHashInput): string {
       source: entry.source,
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
+      inputFingerprint: entry.inputFingerprint,
       entrySeq: entry.entrySeq,
       related: entry.related,
     } as CanonicalFrontmatterRecord,
@@ -29,6 +33,7 @@ export function sourceMetadataHash(entry: SourceMetadataHashInput): string {
       tags: entry.tags,
       url: entry.url,
       importedAt: entry.importedAt,
+      inputFingerprint: entry.inputFingerprint,
       entrySeq: entry.entrySeq,
       related: entry.related,
     } as CanonicalFrontmatterRecord,

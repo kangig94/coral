@@ -69,6 +69,7 @@ export type NoteEntry = KbNoteFrontmatter & {
   kind: 'note';
   slug: string;
   title: string;
+  bodyHash: string;
 };
 
 export interface KbSourceFrontmatter {
@@ -77,6 +78,7 @@ export interface KbSourceFrontmatter {
   tags: string[];
   url?: string;
   importedAt: string;
+  inputFingerprint?: string;
   entrySeq?: number;
   related?: string[];
 }
@@ -103,6 +105,7 @@ export type KbSourceListResult = {
 export type SourceEntry = KbSourceFrontmatter & {
   kind: 'source';
   slug: string;
+  bodyHash: string;
 };
 
 export interface CommunityFrontmatter {
@@ -111,6 +114,7 @@ export interface CommunityFrontmatter {
   level: number;
   parent?: string;
   children?: string[];
+  summaryInputFingerprint?: string;
 }
 
 export type CommunityEntry = CommunityFrontmatter & {
@@ -271,6 +275,7 @@ export interface KbNoteFrontmatter {
   source: string[];
   createdAt: string;
   updatedAt: string;
+  inputFingerprint?: string;
   entrySeq?: number;
   related?: string[];
 }

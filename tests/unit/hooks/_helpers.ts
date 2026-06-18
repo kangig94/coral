@@ -104,6 +104,7 @@ export function runHook(
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.CORAL_CHILD;
   delete env.CORAL_KB_PATH;
+  delete env.CLAUDE_CONFIG_DIR;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
@@ -141,6 +142,7 @@ export async function runHookAsync(
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.CORAL_CHILD;
   delete env.CORAL_KB_PATH;
+  delete env.CLAUDE_CONFIG_DIR;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {

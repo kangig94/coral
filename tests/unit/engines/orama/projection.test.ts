@@ -224,6 +224,7 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     [noteEntryId('graph-rag')]: buildNoteIndexEntry({
       slug: 'graph-rag',
       title: 'Graph RAG',
+      body: 'Graph structure improves retrieval quality for note search.',
       tags: ['graph-rag', 'retrieval'],
       principles: ['deterministic-ordering'],
       source: ['kangig94/coral'],
@@ -234,6 +235,7 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     [noteEntryId('sqlite-planner')]: buildNoteIndexEntry({
       slug: 'sqlite-planner',
       title: 'SQLite Planner',
+      body: 'SQLite query planning benefits from predictable metadata.',
       tags: ['sqlite', 'planner'],
       principles: [],
       source: ['kangig94/coral'],
@@ -244,6 +246,7 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     [noteEntryId('metadata-note')]: buildNoteIndexEntry({
       slug: 'metadata-note',
       title: 'Metadata Note',
+      body: 'Metadata-only updates should preserve text authority.',
       tags: ['metadata', 'commit'],
       principles: [],
       source: ['kangig94/coral'],
@@ -254,6 +257,7 @@ function seedCorpus(runtime: ReturnType<typeof createKbRuntime>): void {
     [sourceEntryId('retrieval-paper')]: buildSourceIndexEntry({
       slug: 'retrieval-paper',
       title: 'Retrieval Paper',
+      body: 'A source document covering retrieval theory and graph search.',
       type: 'article',
       tags: ['retrieval', 'paper'],
       importedAt: '2026-04-01',

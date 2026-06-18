@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { errorMessage } from '../../../infra/error-format.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type { EnvPort } from '../../../infra/port-types.js';
-import { noteEntryId, parseKbEntryId, type KbEntryId } from '../../entry-types.js';
+import { noteEntryId, parseKbEntryId, sourceEntryId, type KbEntryId } from '../../entry-types.js';
 
 /**
  * Curate timing operator knobs (see §16(d) triage rule). Defaults match the
@@ -81,9 +81,12 @@ export const INVARIANT = {
   MAX_CONSECUTIVE_FAILURES: 10,
 } as const;
 
+export type CurateCursorKind = 'note' | 'source';
+
 export type CurateCursor = {
-  entrySeq: number;
-  entryId: KbEntryId;
+  timestamp: string;
+  kind: CurateCursorKind;
+  slug: string;
 };
 
 export type PendingRepair = {
@@ -137,7 +140,8 @@ export type CurateRepairFrontier =
   | { kind: 'unknown' }
   | {
       kind: 'known';
-      cursor: CurateCursor;
+      entryId: KbEntryId;
+      entrySeq: number;
     };
 
 export const kbEntryIdSchema = z.string().transform((value, ctx): KbEntryId => {
@@ -175,29 +179,71 @@ export function defaultCurateState(): CurateState {
 }
 
 export function compareCursor(left: CurateCursor, right: CurateCursor): number {
-  if (left.entrySeq !== right.entrySeq) {
-    return left.entrySeq - right.entrySeq;
+  const leftMs = Date.parse(left.timestamp);
+  const rightMs = Date.parse(right.timestamp);
+  if (!Number.isNaN(leftMs) && !Number.isNaN(rightMs) && leftMs !== rightMs) {
+    return leftMs - rightMs;
   }
 
-  return left.entryId.localeCompare(right.entryId);
+  const timestampOrder = left.timestamp.localeCompare(right.timestamp);
+  if (timestampOrder !== 0) {
+    return timestampOrder;
+  }
+
+  const kindOrder = left.kind.localeCompare(right.kind);
+  if (kindOrder !== 0) {
+    return kindOrder;
+  }
+
+  return left.slug.localeCompare(right.slug);
 }
 
-export function noteCursor(note: string, entrySeq: number): CurateCursor {
+export function noteCursor(note: string, timestamp: string): CurateCursor {
   return {
-    entryId: noteEntryId(note),
-    entrySeq,
+    timestamp,
+    kind: 'note',
+    slug: note,
   };
 }
 
-export function cursorEntryKind(cursor: CurateCursor, label = 'curate'): 'note' | 'source' {
-  if (cursor.entryId.startsWith('note:')) {
-    return 'note';
-  }
-  if (cursor.entryId.startsWith('source:')) {
-    return 'source';
+export function sourceCursor(slug: string, timestamp: string): CurateCursor {
+  return {
+    timestamp,
+    kind: 'source',
+    slug,
+  };
+}
+
+export function cursorEntryId(cursor: CurateCursor): KbEntryId {
+  return cursor.kind === 'note' ? noteEntryId(cursor.slug) : sourceEntryId(cursor.slug);
+}
+
+export function cursorEntryKind(cursor: CurateCursor, _label = 'curate'): CurateCursorKind {
+  return cursor.kind;
+}
+
+export function cursorFromEntryId(timestamp: string, entryId: KbEntryId, label = 'curate'): CurateCursor {
+  const parsed = parseKbEntryId(entryId);
+  if (parsed === null || (!parsed.startsWith('note:') && !parsed.startsWith('source:'))) {
+    throw new Error(`${label} cursor must point at a note or source entry: ${entryId}`);
   }
 
-  throw new Error(`${label} cursor must point at a note or source entry: ${cursor.entryId}`);
+  if (parsed.startsWith('note:')) {
+    return noteCursor(parsed.slice('note:'.length), timestamp);
+  }
+  return sourceCursor(parsed.slice('source:'.length), timestamp);
+}
+
+export function cursorTimestampToStorageSeq(cursor: CurateCursor, label = 'curate'): number {
+  const timestampMs = Date.parse(cursor.timestamp);
+  if (!Number.isSafeInteger(timestampMs) || timestampMs <= 0) {
+    throw new Error(`${label} cursor timestamp must be a parseable positive timestamp: ${cursor.timestamp}`);
+  }
+  return timestampMs;
+}
+
+export function cursorTimestampFromStorageSeq(value: number): string {
+  return nowIsoString(value);
 }
 
 export function compareOptionalCursor(left: CurateCursor | null, right: CurateCursor): number {

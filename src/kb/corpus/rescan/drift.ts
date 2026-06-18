@@ -210,6 +210,7 @@ async function detectStructuredTextDrift(
         const next = buildNoteIndexEntry({
           slug: file.slug,
           title,
+          body: extractBody(file.content),
           ...frontmatter,
         });
         return {
@@ -235,6 +236,7 @@ async function detectStructuredTextDrift(
       loadEntry: (file) => {
         const next = buildSourceIndexEntry({
           slug: file.slug,
+          body: extractBody(file.content),
           ...parseSourceFrontmatter(file.content),
         });
         return {

@@ -25,6 +25,7 @@ import { flushPendingReadStoreNote } from '../read-store.js';
 import { normalizeUsageError } from '../errors.js';
 import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
+import { mapWaitSubscriptionError } from '../wait-stream-error.js';
 import {
   formatWaitProgress,
   formatWaitQueued,
@@ -245,7 +246,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
           causeRenderer.close();
         }
       } catch (error) {
-        emitError(error);
+        emitError(mapWaitSubscriptionError(error));
       }
     });
 

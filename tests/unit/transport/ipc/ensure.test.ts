@@ -7,7 +7,7 @@
 //   - Mismatched bundle → call `requestIncumbentShutdown`, wait for release, spawn
 //   - Health unreachable + no `coordinator.json` → spawn fresh
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -129,7 +129,22 @@ async function importEnsure() {
   return await import('#src/transport/ipc/ensure.js');
 }
 
+// createRealRuntime reads CLAUDE_CONFIG_DIR from process.env and derives a
+// config slot that partitions the coordinator path. The test helpers compute
+// coordinatorPaths(flavor) with no slot, so an ambient CLAUDE_CONFIG_DIR would
+// make ensure() read a partitioned path that never matches the seeded discovery.
+const savedClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+
+beforeEach(() => {
+  delete process.env.CLAUDE_CONFIG_DIR;
+});
+
 afterEach(() => {
+  if (savedClaudeConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = savedClaudeConfigDir;
+  }
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
