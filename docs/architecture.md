@@ -192,6 +192,7 @@ KB is the only subsystem in 0.7.1; new long-init subsystems register through `su
 - `coral-cli kb ...` maps to resource routes under `/kb/*`
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
 - KB markdown is the Corpus authority for notes, sources, principles, communities, and wiki entries. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes or wiki entries. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, wiki mutations, and memo operations stay direct commands.
+- KB markdown syncs across machines through git. Custom merge drivers make derivative files converge where possible (`.entity-graph.json`, note/source/community frontmatter), while tracked provenance (`inputFingerprint` and `summaryInputFingerprint`) lets a peer skip LLM work already computed for the current content.
 - Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer (constructor-time default of the `kb.vector` and `kb.fts` `RuntimeBinding<Backed<T>>` cells); Needle is an Expansion that binds `kb.vector` when equipped. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling expansion status.
 
 ## Module Map
