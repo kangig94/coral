@@ -28,7 +28,9 @@ vi.mock('#src/cli/read-store.js', () => ({
 
 import { ensure } from '#src/transport/ipc/ensure.js';
 import { makeClient } from '#src/cli/dispatch.js';
+import { markProviderCommand } from '#src/cli/classify.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
+import { FORWARDED_NETWORK_ENV_KEYS } from '#src/infra/network-env.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
   let current = root;
@@ -50,12 +52,72 @@ function buildProgram(): Command {
   kb.command('reindex');
   const discuss = program.command('discuss');
   discuss.command('watch');
+  markProviderCommand(program.command('claude'));
+  program.command('workflow');
   return program;
 }
 
 describe('command client routing', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('forwards the caller shell proxy/CA env to provider launches as networkEnv', async () => {
+    for (const key of FORWARDED_NETWORK_ENV_KEYS) {
+      vi.stubEnv(key, '');
+    }
+    vi.stubEnv('HTTP_PROXY', 'http://proxy:8080');
+    vi.stubEnv('NO_PROXY', 'localhost');
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.createSession('claude', 'hi', {});
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'sessions.create',
+      expect.objectContaining({
+        provider: 'claude',
+        prompt: 'hi',
+        networkEnv: { HTTP_PROXY: 'http://proxy:8080', NO_PROXY: 'localhost' },
+      }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('omits networkEnv when no proxy/CA env is set', async () => {
+    // Clear every forwarded key — a stray lowercase proxy var in the runner's
+    // real shell would otherwise populate networkEnv and flake this assertion.
+    for (const key of FORWARDED_NETWORK_ENV_KEYS) {
+      vi.stubEnv(key, '');
+    }
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.createSession('claude', 'hi', {});
+
+    const [, body] = mockState.request.mock.calls[0];
+    expect(body).not.toHaveProperty('networkEnv');
+  });
+
+  it('forwards networkEnv on the workflow launch path', async () => {
+    for (const key of FORWARDED_NETWORK_ENV_KEYS) {
+      vi.stubEnv(key, '');
+    }
+    vi.stubEnv('HTTPS_PROXY', 'http://proxy:8443');
+    mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
+
+    await client.workflow('agent("x")', { startPrompt: 'go' });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'workflow.run',
+      expect.objectContaining({ networkEnv: { HTTPS_PROXY: 'http://proxy:8443' } }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 
   it('reads discuss watch from CoralStore without starting the coordinator', async () => {

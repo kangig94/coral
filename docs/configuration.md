@@ -43,6 +43,12 @@ A Claude Code plugin installs *inside* the config dir (`<CLAUDE_CONFIG_DIR>/plug
 
 The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set to a non-loopback address, Coral refuses to start unless `CORAL_BACKEND_ALLOW_REMOTE=1` is also set. Use that opt-in only behind a trusted reverse proxy or private network boundary, terminate TLS there, and protect the backend token as a bearer credential. Coral sets permissive CORS headers, including browser private-network preflight opt-in, for token-bearing clients; do not expose the port directly on an untrusted network.
 
+### Proxy and TLS Forwarding
+
+The backend is a long-lived shared daemon whose environment is frozen at boot, so a proxy or CA bundle exported in the invoking shell *after* the daemon started would never reach a spawned provider. Coral therefore forwards the caller shell's network env on every provider launch (`coral-cli claude`/`codex`, workflow, discuss): `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (upper- and lower-case), and `NODE_EXTRA_CA_CERTS`. Non-empty values are forwarded verbatim as real environment variables on the `claude`/`codex` broker child; an exported-but-empty variable is omitted so it does not shadow the daemon's own setting. This set is fixed and not user-configurable; volatile per-terminal variables are deliberately excluded so broker identity stays stable across turns.
+
+The forwarded env participates in broker identity, so a changed proxy re-establishes the provider rather than silently reusing a stale one — but the two providers differ in mechanism. Codex carries this env in its provider-server spec, so a different proxy keys a distinct Codex broker process. Claude keeps the one shared broker regardless; the proxy instead enters the session's env hash, and a mismatch forces a fresh session bootstrap on that broker rather than a new broker process.
+
 ### KB Source Imports
 
 Source-import authority is interim and transport-derived: local IPC calls run as `admin`; HTTP calls run as `user`. The request body is not a trust signal. Admin imports, representing the local IPC owner, may read any file path the daemon account can read and use the admin size cap from `CORAL_KB_IMPORT_MAX_BYTES`, defaulting to 1 GiB. User imports are sandboxed to the project root and always have a fixed 128 MiB cap.

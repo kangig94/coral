@@ -66,7 +66,7 @@ function buildQueryContext(
 
 function stripTransportContextKeys<T extends Record<string, unknown>>(
   parsed: T,
-): Omit<T, 'projectRoot' | 'owner' | 'effort' | 'claudeModelCap' | 'jobId' | 'sessionId'> {
+): Omit<T, 'projectRoot' | 'owner' | 'effort' | 'claudeModelCap' | 'jobId' | 'sessionId' | 'networkEnv'> {
   const {
     projectRoot: _projectRoot,
     owner: _owner,
@@ -74,6 +74,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     claudeModelCap: _claudeModelCap,
     jobId: _jobId,
     sessionId: _sessionId,
+    networkEnv: _networkEnv,
     ...args
   } = parsed as T & {
     projectRoot?: unknown;
@@ -82,6 +83,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     claudeModelCap?: unknown;
     jobId?: unknown;
     sessionId?: unknown;
+    networkEnv?: unknown;
   };
   return args;
 }
@@ -183,7 +185,15 @@ export async function executeCatalogRequest(
       const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
-      const { projectRoot: _projectRoot, claudeModelCap: _claudeModelCap, ...workflowCommand } = parsed;
+      // Strip only the pure transport-context keys that are NOT workflow command
+      // fields. `owner` is a genuine workflowCommandSchema field and must reach
+      // executeWorkflow, so this deliberately does not use stripTransportContextKeys.
+      const {
+        projectRoot: _projectRoot,
+        claudeModelCap: _claudeModelCap,
+        networkEnv: _networkEnv,
+        ...workflowCommand
+      } = parsed;
       const result = await rpcPorts.workflows.execute(workflowCommand as WorkflowPortInput, ctx);
       if (result.kind === 'invalid_request') {
         return unaryHttp(domainResultToHttp(invalidRequestResult(result.message, result.detail)));

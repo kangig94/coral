@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
+import { networkEnvSchema } from '../infra/network-env.js';
 import { retentionPolicySchema } from './entry.js';
 
 const modelNameSchema = z
@@ -37,5 +38,6 @@ export const sessionCreateSchema = z
     bypassPermissions: z.boolean().optional(),
     systemPrompt: z.string().optional(),
     retention: retentionPolicySchema.optional(),
+    networkEnv: networkEnvSchema.optional(),
   })
   .strict();

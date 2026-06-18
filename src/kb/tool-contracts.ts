@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { parseBooleanQuery } from '../infra/json.js';
+import { networkEnvSchema } from '../infra/network-env.js';
 
 // Local schema duplicate of `src/jobs/launch.ts` sourceImportReadinessSchema —
 // kept inline to avoid a `kb -> jobs` runtime edge that would form a
@@ -19,6 +20,7 @@ const transportContextFieldsShape = {
   claudeModelCap: z.string().optional(),
   jobId: z.string().optional(),
   sessionId: z.string().optional(),
+  networkEnv: networkEnvSchema.optional(),
 } satisfies z.ZodRawShape;
 const optionalTransportContextFieldsShape = {
   projectRoot: projectRootSchema.optional(),
@@ -27,6 +29,7 @@ const optionalTransportContextFieldsShape = {
   claudeModelCap: z.string().optional(),
   jobId: z.string().optional(),
   sessionId: z.string().optional(),
+  networkEnv: networkEnvSchema.optional(),
 } satisfies z.ZodRawShape;
 
 export const kbSearchSchema = z

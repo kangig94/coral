@@ -63,6 +63,7 @@ import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
 import { CORAL_KB_ENABLED_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
+import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import { classifyCommand, commandPath } from './classify.js';
 
 type SessionRequestOptions = {
@@ -344,6 +345,14 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Invoc
     if (typeof value === 'string' && value.length > 0) {
       body[field] = value;
     }
+  }
+
+  // Forward the caller shell's proxy/CA env to spawned providers. The daemon's
+  // own env is frozen at boot, so these must travel per-request to reach the
+  // claude/codex broker children.
+  const networkEnv = collectForwardedNetworkEnv(process.env);
+  if (Object.keys(networkEnv).length > 0) {
+    body.networkEnv = networkEnv;
   }
 
   return body;
