@@ -1,3 +1,4 @@
+import { sqlPlaceholders } from '../store/db.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import type { SessionEntry } from './entry.js';
 import { readProjectionSessionEntriesById } from './projections.js';
@@ -170,12 +171,4 @@ function readTerminalReleasePairsBySession(
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
-}
-
-function sqlPlaceholders(count: number): string {
-  const placeholders: string[] = [];
-  for (let index = 0; index < count; index += 1) {
-    placeholders.push('?');
-  }
-  return placeholders.join(', ');
 }

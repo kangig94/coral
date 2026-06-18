@@ -1,4 +1,4 @@
-import type { Database } from '../store/db.js';
+import { sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
@@ -281,14 +281,6 @@ export const reduceSessionAdapterUnparseable: Reducer<SessionAdapterUnparseableF
 
 export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: string): SessionEntry | null {
   return readProjectionSession(db, sessionId)?.entry ?? null;
-}
-
-function sqlPlaceholders(count: number): string {
-  const placeholders: string[] = [];
-  for (let index = 0; index < count; index += 1) {
-    placeholders.push('?');
-  }
-  return placeholders.join(', ');
 }
 
 export function readProjectionSessionEntriesById(

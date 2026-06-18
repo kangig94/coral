@@ -25,7 +25,7 @@ export type JobProjectionDetail = {
   exit: JobExit | null;
 };
 import { decodeBody, decodeEventJson, type StoreReadContext } from '../store/body-codec.js';
-import { prepareCached } from '../store/db.js';
+import { prepareCached, sqlPlaceholders } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
 import type { EventsRow } from '../store/schema.js';
 
@@ -164,14 +164,6 @@ function emptyJobProjectionDetail(): JobProjectionDetail {
     runtime: null,
     exit: null,
   };
-}
-
-function sqlPlaceholders(count: number): string {
-  const placeholders: string[] = [];
-  for (let index = 0; index < count; index += 1) {
-    placeholders.push('?');
-  }
-  return placeholders.join(', ');
 }
 
 function readProjectionRow(db: Database, jobId: string): ProjectionRow | null {
