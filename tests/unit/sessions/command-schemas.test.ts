@@ -10,6 +10,7 @@ describe('session wire schemas', () => {
       'claudeModelCap',
       'effort',
       'model',
+      'networkEnv',
       'owner',
       'projectRoot',
       'prompt',
@@ -36,6 +37,26 @@ describe('session wire schemas', () => {
         prompt: 'hello',
         projectRoot: '/tmp/project',
         retention: 'discard',
+      }),
+    ).toThrow();
+  });
+
+  it('sessionCreateSchema accepts a known networkEnv map and rejects unknown keys', () => {
+    expect(
+      sessionCreateSchema.parse({
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        networkEnv: { HTTP_PROXY: 'http://p:1' },
+      }).networkEnv,
+    ).toEqual({ HTTP_PROXY: 'http://p:1' });
+
+    expect(() =>
+      sessionCreateSchema.parse({
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        networkEnv: { PATH: '/usr/bin' },
       }),
     ).toThrow();
   });

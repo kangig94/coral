@@ -559,3 +559,16 @@ export function withImmediate<T>(db: Database, fn: () => T): T {
     throw error;
   }
 }
+
+/**
+ * Render `count` comma-separated `?` bind placeholders for an `IN (...)` clause
+ * or multi-row `VALUES`. Empty string when `count <= 0` (callers must guard
+ * against emitting `IN ()`, which is not valid SQL).
+ */
+export function sqlPlaceholders(count: number): string {
+  const placeholders: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    placeholders.push('?');
+  }
+  return placeholders.join(', ');
+}

@@ -17,6 +17,7 @@ import {
 } from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
 import { readProjectScopedWakeUp } from './lib/wake-up-read.mjs';
+import { isKbEnabled } from './lib/kb-toggle.mjs';
 
 // Unconditionally spawn coral-backend on session start. The daemon's own
 // socket-as-lock contention is the single source of truth for staleness:
@@ -90,18 +91,20 @@ try {
     ensureCoralSymlink(projectDir, gitRoot);
   }
 
+  const kbEnabled = isKbEnabled();
   const injectContent = renderInject({
     pluginRoot: PLUGIN_ROOT,
     projectDir,
     sessionId,
     asOwner: true,
+    kbEnabled,
   });
 
   const aiAgent = process.env.AI_AGENT ?? '';
   const host = aiAgent.startsWith('claude') ? 'claude' : 'codex';
 
   const projectSlug = projectDir ? resolveProjectSource(projectDir).replace(/\//g, '-') : undefined;
-  const wakeUpPayload = projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
+  const wakeUpPayload = kbEnabled && projectSlug ? readProjectScopedWakeUp(resolveKbRoot(), projectSlug) : null;
   const head = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
   const additionalContext = wakeUpPayload === null ? head : `${head}\n\n${wakeUpPayload}`;
 

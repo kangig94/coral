@@ -13,6 +13,8 @@ export interface ResolveInjectMdOptions {
   coralProjects?: string;
   /** Resolved project source — caller passes from `runtime.paths.projectSource(cwd)`; absent when no cwd. */
   projectSource?: string;
+  /** When false, strip the KB_ONLY block so no KB guidance reaches the provider. */
+  kbEnabled?: boolean;
 }
 
 let injectMdCache: string | undefined;
@@ -44,6 +46,10 @@ function stripOwnerOnly(text: string): string {
   return text.replace(/<!-- OWNER_ONLY:BEGIN -->[\s\S]*?<!-- OWNER_ONLY:END -->\n?/g, '');
 }
 
+function stripKbOnly(text: string): string {
+  return text.replace(/<!-- KB_ONLY:BEGIN -->[\s\S]*?<!-- KB_ONLY:END -->\n?/g, '');
+}
+
 export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const md = getInjectMd(opts.storage);
   if (!md) return '';
@@ -51,7 +57,8 @@ export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const { ownerSessionId, kbRoot, coralProjects, projectSource } = opts;
   const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
   const cliPath = `node "${join(pluginRoot(), 'bridge', 'coral-cli.cjs')}"`;
-  const rendered = md
+  const base = opts.kbEnabled === false ? stripKbOnly(md) : md;
+  const rendered = base
     .replaceAll('{{CORAL_KB}}', kbRoot)
     .replaceAll('{{CORAL_CLI}}', cliPath)
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')

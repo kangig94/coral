@@ -17,6 +17,8 @@ import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js'
 import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
 import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
+import { shutdownBackend } from '../http/backend/shutdown.js';
+import type { TransportSubsystemStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
 export const STARTUP_POLL_MS = 200;
@@ -49,6 +51,7 @@ export type RawCoordinatorHealth = {
   namespace: string;
   pid?: number;
   processStartedAt?: number;
+  subsystems?: TransportSubsystemStatus[];
 };
 
 export type VerifiedBackendInfo = {
@@ -136,7 +139,8 @@ function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
     typeof value.instanceId === 'string' &&
     value.instanceId.length > 0 &&
     typeof value.namespace === 'string' &&
-    value.namespace.length > 0
+    value.namespace.length > 0 &&
+    (value.subsystems === undefined || Array.isArray(value.subsystems))
   );
 }
 
@@ -412,6 +416,24 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
   throw new BackendUnreachableError(
     'Timed out waiting for Coral coordinator socket release. Run `coral-cli backend status` to check coordinator health.',
   );
+}
+
+/**
+ * Shut down the running coordinator (admin drain) and wait until its socket is
+ * released, so a follow-up `ensure()` spawns a fresh daemon instead of racing a
+ * still-`running` incumbent. The CLI's lazy KB re-enable path uses this: the
+ * daemon must restart to pick up a changed `CORAL_KB_ENABLED`, and admin
+ * shutdown is identity-agnostic (the handoff path refuses to replace a
+ * same-bundle daemon).
+ */
+export async function shutdownAndAwaitRelease(pluginRoot?: string, timePort?: TimePort): Promise<void> {
+  const root = resolvePluginRoot(pluginRoot);
+  const flavor = readBuildFlavor(root);
+  const runtime = createRealRuntime(flavor);
+  const ipcTime = timePort ?? runtime.time;
+  const paths = runtime.paths.coral.coordinator;
+  await shutdownBackend(root);
+  await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, ipcTime);
 }
 
 /**

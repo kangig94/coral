@@ -139,4 +139,32 @@ describe('resolveInjectMd', () => {
     expect(result).toContain('projects: {{CORAL_PROJECTS}}');
     expect(result).toContain('source: {{PROJECT_SOURCE}}');
   });
+
+  it('strips the KB_ONLY block when kbEnabled is false', async () => {
+    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb', kbEnabled: false });
+    expect(result).toContain('top');
+    expect(result).not.toContain('kb stuff');
+    expect(result).toContain('bottom');
+  });
+
+  it('keeps KB_ONLY content when kbEnabled is true', async () => {
+    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb', kbEnabled: true });
+    expect(result).toContain('top');
+    expect(result).toContain('kb stuff');
+    expect(result).toContain('bottom');
+  });
+
+  it('keeps KB_ONLY content when kbEnabled is omitted (unset inherits enabled)', async () => {
+    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    expect(result).toContain('kb stuff');
+  });
 });

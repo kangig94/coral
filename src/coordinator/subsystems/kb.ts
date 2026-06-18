@@ -1,5 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { KB_DISABLED_REASON } from '../../infra/kb-toggle.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { createKbSubsystem as buildKbRuntime } from '../../kb/subsystem.js';
@@ -33,6 +34,30 @@ export type CreateKbSubsystemDeps = CreateKbSubsystemOptions & {
    */
   build?: (options: CreateKbSubsystemOptions) => Promise<KnowledgeBaseRuntime>;
 };
+
+/**
+ * KB subsystem used when `CORAL_KB_ENABLED=0`. It registers like any subsystem
+ * so `/health` and KB-routed handlers behave uniformly, but it never builds a
+ * runtime, never runs a boot sequence, and reports a terminal `offline` status
+ * with a `disabled` reason. The coordinator wires this instead of the real
+ * factory at startup; flipping the env back to enabled requires a daemon
+ * restart (the CLI triggers that automatically — see the ensure reconcile).
+ */
+export function disabledKbSubsystem(): Subsystem<KnowledgeBaseRuntime> {
+  const status: SubsystemStatus = { id: KB_ID, phase: 'offline', reason: KB_DISABLED_REASON };
+  return {
+    id: KB_ID,
+    get status() {
+      return status;
+    },
+    resource: () => {
+      throw new SubsystemUnavailableError(KB_ID, 'offline');
+    },
+    onStatusChange: () => () => {},
+    init: async () => {},
+    dispose: async () => {},
+  };
+}
 
 const RETRY_BACKOFFS_MS = [1_000, 4_000, 16_000] as const;
 const MAX_ATTEMPTS = RETRY_BACKOFFS_MS.length + 1;

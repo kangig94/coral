@@ -3,6 +3,7 @@
 import { existsSync } from 'node:fs';
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
 import { renderInject } from './lib/inject-render.mjs';
+import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -19,6 +20,7 @@ try {
     projectDir,
     sessionId,
     asOwner: false,
+    kbEnabled: isKbEnabled(),
   });
 
   console.log(JSON.stringify({

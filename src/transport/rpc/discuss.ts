@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { discussBidSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
+import { networkEnvSchema } from '../../infra/network-env.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const sessionIdSchema = z.string().min(1, 'Session ID is required');
@@ -32,6 +33,7 @@ export const discussSessionCreateRequestSchema = discussStartSchema
     owner: z.string().optional(),
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
+    networkEnv: networkEnvSchema.optional(),
   })
   .strict();
 
@@ -55,6 +57,7 @@ export const discussSessionBidRequestSchema = discussBidSchema
     owner: z.string().optional(),
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
+    networkEnv: networkEnvSchema.optional(),
   })
   .strict();
 
@@ -66,5 +69,6 @@ export const discussSessionSpeechRequestSchema = discussSpeechSchema
     owner: z.string().optional(),
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
+    networkEnv: networkEnvSchema.optional(),
   })
   .strict();

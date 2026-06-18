@@ -2,7 +2,7 @@
 
 // Coral HUD Statusline
 // Line 1: model │ limits │ ctx │ session │ skill
-// Line 2: codex model │ codex limits │ spark limits
+// Line 2: codex model │ codex limits │ codex credits
 
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, statSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
 import { join } from "path";
@@ -601,11 +601,76 @@ function formatExtraUsage(eu) {
   return `${DIM}mo:${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
 }
 
+function parseCodexCredits(credits) {
+  if (!credits) return null;
+  return {
+    hasCredits: Boolean(credits.has_credits),
+    unlimited: Boolean(credits.unlimited),
+    overageLimitReached: Boolean(credits.overage_limit_reached),
+    balance: typeof credits.balance === "string" ? credits.balance : null,
+  };
+}
+
+function parseCodexSpendControl(spendControl) {
+  if (!spendControl) return null;
+  return {
+    reached: Boolean(spendControl.reached),
+    individualLimit: spendControl.individual_limit ?? null,
+  };
+}
+
+function formatCreditBalanceUsd(raw, showZero) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    if (numeric > 0) return fmtUsd(numeric / 25);
+    if (showZero && numeric === 0) return fmtUsd(0);
+    return null;
+  }
+
+  return null;
+}
+
+function formatCreditValueUsd(value, showZero = false) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  if (numeric > 0) return fmtUsd(numeric / 25);
+  return showZero && numeric === 0 ? fmtUsd(0) : null;
+}
+
+function formatCodexCreditState(credits, spendControl, showZero = false) {
+  if (!credits || !credits.hasCredits) return null;
+  const parts = [];
+  if (credits.unlimited) {
+    parts.push(`${DIM}cr:${RESET}${GREEN}\u221e${RESET}`);
+  } else {
+    const balance = formatCreditBalanceUsd(credits.balance, showZero || spendControl?.reached);
+    if (balance) {
+      const color = spendControl?.reached || balance === "$0" ? RED : GREEN;
+      parts.push(`${DIM}cr:${RESET}${color}${balance}${RESET}`);
+    }
+  }
+
+  const individualLimit = formatCreditValueUsd(spendControl?.individualLimit);
+  if (individualLimit) {
+    const hit = spendControl?.reached ? ` ${RED}hit${RESET}` : "";
+    parts.push(`${DIM}cap:${RESET}${individualLimit}${hit}`);
+  }
+
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
 function formatLimits(data) {
   if (!data) return null;
-  const parts = [
+  const windows = [
     formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h"),
     formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true),
+  ].filter(Boolean);
+  const parts = [
+    ...windows,
     formatExtraUsage(data.extraUsage),
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : null;
@@ -740,6 +805,17 @@ function parseLimitsFromRl(rl) {
   };
 }
 
+function attachCodexAccountState(limits, body) {
+  const credits = parseCodexCredits(body.credits);
+  const spendControl = parseCodexSpendControl(body.spend_control);
+  if (!limits && !credits && !spendControl) return null;
+  return {
+    ...(limits || {}),
+    ...(credits ? { credits } : {}),
+    ...(spendControl ? { spendControl } : {}),
+  };
+}
+
 async function fetchCodexUsage(accessToken, accountId, signal) {
   try {
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -756,26 +832,9 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
     if (!resp.ok) return null;
     const body = await resp.json();
 
-    const codex = parseLimitsFromRl(body.rate_limit);
+    const codex = attachCodexAccountState(parseLimitsFromRl(body.rate_limit), body);
 
-    let spark = null;
-    let modelName = "codex";
-    let additionalLabel = "spark";
-    const addEntry = (body.additional_rate_limits || [])
-      .find(e => e.metered_feature === "codex_bengalfox");
-    if (addEntry?.limit_name) {
-      const lower = addEntry.limit_name.toLowerCase();
-      const lastDash = lower.lastIndexOf("-");
-      if (lastDash >= 0) {
-        modelName = lower.slice(0, lastDash);
-        additionalLabel = lower.slice(lastDash + 1);
-      } else {
-        modelName = lower;
-      }
-      spark = parseLimitsFromRl(addEntry.rate_limit);
-    }
-
-    return { codex, spark, modelName, additionalLabel };
+    return { codex };
   } catch {
     return null;
   }
@@ -975,14 +1034,16 @@ async function main() {
   const claudeModel = renderModel(input);
   const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.5";
   let col1Claude, col1Codex, col2Claude, col2Codex;
-  const addonTier = codexData.additionalLabel?.toLowerCase() || null;
-  const hasAddon = addonTier ? envModel.toLowerCase().endsWith(`-${addonTier}`) : false;
+  let codexCreditStr = null;
 
   if (codexData.kind === "data") {
-    const codexModel = hasAddon ? envModel.slice(0, envModel.lastIndexOf("-")) : envModel;
-
-    [col1Claude, col1Codex] = alignColumns(claudeModel, codexModel);
+    [col1Claude, col1Codex] = alignColumns(claudeModel, envModel);
     const codexLimits = formatLimits(codexData.codex);
+    codexCreditStr = formatCodexCreditState(
+      codexData.codex?.credits,
+      codexData.codex?.spendControl,
+      !codexLimits,
+    );
     [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
   } else {
     col1Claude = claudeModel;
@@ -1008,14 +1069,11 @@ async function main() {
 
   // Line 2: Codex
   if (codexData.kind === "data") {
-    const sparkLabel = hasAddon ? `${GREEN}${codexData.additionalLabel}${RESET}` : codexData.additionalLabel;
-    const sparkLimits = codexData.spark ? formatLimits(codexData.spark) : null;
-    const sparkStr = sparkLimits ? `${sparkLabel} ${sparkLimits}` : null;
-    if (col1Codex) col1Codex = hasAddon ? col1Codex : `${GREEN}${col1Codex}${RESET}`;
+    if (col1Codex) col1Codex = `${GREEN}${col1Codex}${RESET}`;
     const line2 = [
       col1Codex,
       col2Codex,
-      sparkStr,
+      codexCreditStr,
     ].filter(Boolean);
     if (line2.length > 0) {
       output += "\n" + line2.join(SEP);

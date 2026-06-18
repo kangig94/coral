@@ -15,14 +15,20 @@ import { coralProjectDir, resolveKbRoot, resolveProjectSource } from './hook-uti
 import { activeBridgeCommand } from './plugin-paths.mjs';
 
 const OWNER_ONLY_RE = /<!-- OWNER_ONLY:BEGIN -->[\s\S]*?<!-- OWNER_ONLY:END -->\n?/g;
+const KB_ONLY_RE = /<!-- KB_ONLY:BEGIN -->[\s\S]*?<!-- KB_ONLY:END -->\n?/g;
 
 function stripOwnerOnly(text) {
   return text.replace(OWNER_ONLY_RE, '');
 }
 
-export function renderInject({ pluginRoot, projectDir, sessionId, asOwner }) {
+function stripKbOnly(text) {
+  return text.replace(KB_ONLY_RE, '');
+}
+
+export function renderInject({ pluginRoot, projectDir, sessionId, asOwner, kbEnabled = true }) {
   const raw = readFileSync(join(pluginRoot, 'INJECT.md'), 'utf-8');
-  const base = asOwner ? raw : stripOwnerOnly(raw);
+  const kbScoped = kbEnabled ? raw : stripKbOnly(raw);
+  const base = asOwner ? kbScoped : stripOwnerOnly(kbScoped);
   return base
     .replaceAll('{{CORAL_KB}}', resolveKbRoot())
     .replaceAll('{{CORAL_CLI}}', activeBridgeCommand(pluginRoot))

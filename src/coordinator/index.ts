@@ -5,6 +5,8 @@ import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { nowDate } from '../infra/time.js';
+import { backendLog } from '../infra/backend-log.js';
+import { CORAL_KB_ENABLED_ENV, resolveKbEnabled } from '../infra/kb-toggle.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -17,7 +19,7 @@ import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { CreateKbSubsystemOptions } from '../kb/subsystem.js';
-import { createKbSubsystem } from './subsystems/kb.js';
+import { createKbSubsystem, disabledKbSubsystem } from './subsystems/kb.js';
 import { KB_ID } from './subsystems/contract.js';
 import { isErrorEnvelope } from './subsystems/registry.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
@@ -275,6 +277,16 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
 
+  // KB boot gate: CORAL_KB_ENABLED=0 wires a terminal offline KB subsystem so
+  // the daemon boots without the KB runtime, curate scheduler, or corpus
+  // projection. Only the explicit '0' disables; a malformed value warns once
+  // and leaves KB enabled.
+  const rawKbEnabled = runtime.env.get(CORAL_KB_ENABLED_ENV);
+  if (rawKbEnabled !== undefined && !['0', '1'].includes(rawKbEnabled)) {
+    backendLog.warn(`${CORAL_KB_ENABLED_ENV}="${rawKbEnabled}" is not 1 or 0; leaving KB enabled.`);
+  }
+  const kbEnabled = resolveKbEnabled(rawKbEnabled);
+
   const recordingDir = resolveSpawnRecordingDir(runtime.env.get('CORAL_SIMULATE_RECORD'), runtime.env.cwd());
   if (recordingDir) {
     attachRecordingObserver({
@@ -494,6 +506,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     createKbSubsystemFn: (ctx) => {
+      // CORAL_KB_ENABLED=0: register a terminal offline KB and skip all
+      // corpus/curate wiring below. KB stays off until a daemon restart.
+      if (!kbEnabled) {
+        return disabledKbSubsystem();
+      }
       // Coordinator wires the KB subsystem with its corpus + curate
       // callbacks. The subsystem owns the retry loop; `runBootSequence`
       // below contains the seven boot steps (I0..I6) that previously lived

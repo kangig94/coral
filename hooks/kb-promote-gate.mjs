@@ -23,8 +23,10 @@ import {
 } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { KB_SKILL_FIELD_RE, KB_SKILL_MESSAGE_RE } from './lib/coral-skills.mjs';
+import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
+if (!isKbEnabled()) process.exit(0);
 
 const FLAG_PREFIX = 'kb-active-';
 const FLAG_SWEEP_TTL_MS = 24 * 60 * 60_000;

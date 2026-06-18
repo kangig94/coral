@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const mockState = vi.hoisted(() => ({
   request: vi.fn(),
   subscribe: vi.fn(),
+  health: vi.fn(async () => ({ subsystems: [] as Array<Record<string, unknown>> })),
+  shutdownAndAwaitRelease: vi.fn(async () => {}),
   readStore: {
     discuss: {
       watch: vi.fn(),
@@ -15,7 +17,9 @@ vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: vi.fn(async () => ({
     request: mockState.request,
     subscribe: mockState.subscribe,
+    health: mockState.health,
   })),
+  shutdownAndAwaitRelease: mockState.shutdownAndAwaitRelease,
 }));
 
 vi.mock('#src/cli/read-store.js', () => ({
@@ -24,6 +28,9 @@ vi.mock('#src/cli/read-store.js', () => ({
 
 import { ensure } from '#src/transport/ipc/ensure.js';
 import { makeClient } from '#src/cli/dispatch.js';
+import { markProviderCommand } from '#src/cli/classify.js';
+import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
+import { FORWARDED_NETWORK_ENV_KEYS } from '#src/infra/network-env.js';
 
 function findCommand(root: Command, ...path: string[]): Command {
   let current = root;
@@ -45,12 +52,72 @@ function buildProgram(): Command {
   kb.command('reindex');
   const discuss = program.command('discuss');
   discuss.command('watch');
+  markProviderCommand(program.command('claude'));
+  program.command('workflow');
   return program;
 }
 
 describe('command client routing', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('forwards the caller shell proxy/CA env to provider launches as networkEnv', async () => {
+    for (const key of FORWARDED_NETWORK_ENV_KEYS) {
+      vi.stubEnv(key, '');
+    }
+    vi.stubEnv('HTTP_PROXY', 'http://proxy:8080');
+    vi.stubEnv('NO_PROXY', 'localhost');
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.createSession('claude', 'hi', {});
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'sessions.create',
+      expect.objectContaining({
+        provider: 'claude',
+        prompt: 'hi',
+        networkEnv: { HTTP_PROXY: 'http://proxy:8080', NO_PROXY: 'localhost' },
+      }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('omits networkEnv when no proxy/CA env is set', async () => {
+    // Clear every forwarded key — a stray lowercase proxy var in the runner's
+    // real shell would otherwise populate networkEnv and flake this assertion.
+    for (const key of FORWARDED_NETWORK_ENV_KEYS) {
+      vi.stubEnv(key, '');
+    }
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.createSession('claude', 'hi', {});
+
+    const [, body] = mockState.request.mock.calls[0];
+    expect(body).not.toHaveProperty('networkEnv');
+  });
+
+  it('forwards networkEnv on the workflow launch path', async () => {
+    for (const key of FORWARDED_NETWORK_ENV_KEYS) {
+      vi.stubEnv(key, '');
+    }
+    vi.stubEnv('HTTPS_PROXY', 'http://proxy:8443');
+    mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
+
+    await client.workflow('agent("x")', { startPrompt: 'go' });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'workflow.run',
+      expect.objectContaining({ networkEnv: { HTTPS_PROXY: 'http://proxy:8443' } }),
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
   });
 
   it('reads discuss watch from CoralStore without starting the coordinator', async () => {
@@ -146,5 +213,65 @@ describe('command client routing', () => {
       }),
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
+  });
+});
+
+describe('kb lazy reconcile', () => {
+  const prevKbEnabled = process.env.CORAL_KB_ENABLED;
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    if (prevKbEnabled === undefined) {
+      delete process.env.CORAL_KB_ENABLED;
+    } else {
+      process.env.CORAL_KB_ENABLED = prevKbEnabled;
+    }
+  });
+
+  it('restarts the daemon when a kb command runs with KB enabled against a KB-disabled daemon', async () => {
+    process.env.CORAL_KB_ENABLED = '1';
+    mockState.health.mockResolvedValueOnce({
+      subsystems: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
+    });
+    mockState.request.mockResolvedValueOnce({ status: 'running' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+
+    await client.kbReindex({ async: true });
+
+    expect(mockState.shutdownAndAwaitRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not restart when the daemon already has KB online', async () => {
+    process.env.CORAL_KB_ENABLED = '1';
+    mockState.health.mockResolvedValueOnce({ subsystems: [{ id: 'kb', phase: 'online' }] });
+    mockState.request.mockResolvedValueOnce({ status: 'running' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+
+    await client.kbReindex({ async: true });
+
+    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
+  });
+
+  it('does not probe or restart when the caller wants KB disabled', async () => {
+    process.env.CORAL_KB_ENABLED = '0';
+    mockState.request.mockResolvedValueOnce({ status: 'running' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+
+    await client.kbReindex({ async: true });
+
+    expect(mockState.health).not.toHaveBeenCalled();
+    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
+  });
+
+  it('falls through to the command when the health probe fails', async () => {
+    process.env.CORAL_KB_ENABLED = '1';
+    mockState.health.mockRejectedValueOnce(new Error('unreachable'));
+    mockState.request.mockResolvedValueOnce({ status: 'running' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
+
+    await client.kbReindex({ async: true });
+
+    expect(mockState.shutdownAndAwaitRelease).not.toHaveBeenCalled();
+    expect(mockState.request).toHaveBeenCalled();
   });
 });
