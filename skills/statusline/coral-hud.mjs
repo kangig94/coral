@@ -601,12 +601,61 @@ function formatExtraUsage(eu) {
   return `${DIM}mo:${RESET}${colorPct(clampPct(eu.pct))} ${DIM}(${fmtUsd(eu.used)}/${fmtUsd(eu.limit)})${RESET}`;
 }
 
+function parseCodexCredits(credits) {
+  if (!credits) return null;
+  return {
+    hasCredits: Boolean(credits.has_credits),
+    unlimited: Boolean(credits.unlimited),
+    overageLimitReached: Boolean(credits.overage_limit_reached),
+    balance: typeof credits.balance === "string" ? credits.balance : null,
+  };
+}
+
+function parseCodexSpendControl(spendControl) {
+  if (!spendControl) return null;
+  return {
+    reached: Boolean(spendControl.reached),
+    individualLimit: spendControl.individual_limit ?? null,
+  };
+}
+
+function formatCreditBalance(raw, showZero) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    if (numeric > 0) return `${Math.round(numeric)}c`;
+    if (showZero && numeric === 0) return "0c";
+    return null;
+  }
+
+  return trimmed;
+}
+
+function formatCodexCredits(credits, spendControl, showZero = false) {
+  if (!credits || !credits.hasCredits) return null;
+  if (credits.unlimited) return `${DIM}cr:${RESET}${GREEN}\u221e${RESET}`;
+
+  const exhausted = Boolean(credits.overageLimitReached || spendControl?.reached);
+  const balance = formatCreditBalance(credits.balance, showZero || exhausted);
+  if (!balance) return null;
+
+  const color = exhausted || balance === "0c" ? RED : GREEN;
+  return `${DIM}cr:${RESET}${color}${balance}${RESET}`;
+}
+
 function formatLimits(data) {
   if (!data) return null;
-  const parts = [
+  const windows = [
     formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h"),
     formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true),
+  ].filter(Boolean);
+  const parts = [
+    ...windows,
     formatExtraUsage(data.extraUsage),
+    formatCodexCredits(data.credits, data.spendControl, windows.length === 0),
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(" ") : null;
 }
@@ -740,6 +789,17 @@ function parseLimitsFromRl(rl) {
   };
 }
 
+function attachCodexAccountState(limits, body) {
+  const credits = parseCodexCredits(body.credits);
+  const spendControl = parseCodexSpendControl(body.spend_control);
+  if (!limits && !credits && !spendControl) return null;
+  return {
+    ...(limits || {}),
+    ...(credits ? { credits } : {}),
+    ...(spendControl ? { spendControl } : {}),
+  };
+}
+
 async function fetchCodexUsage(accessToken, accountId, signal) {
   try {
     const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -756,7 +816,7 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
     if (!resp.ok) return null;
     const body = await resp.json();
 
-    const codex = parseLimitsFromRl(body.rate_limit);
+    const codex = attachCodexAccountState(parseLimitsFromRl(body.rate_limit), body);
 
     let spark = null;
     let modelName = "codex";
