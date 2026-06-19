@@ -62,7 +62,7 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
-import { CORAL_KB_ENABLED_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
+import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import { classifyCommand, commandPath } from './classify.js';
 
@@ -418,7 +418,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const commandClass = resolution.commandClass;
   const defaultContext = createDefaultInvocationContext(projectRoot);
 
-  // Lazy KB re-enable: a `kb …` command run with CORAL_KB_ENABLED=1 against a
+  // Lazy KB re-enable: a `kb …` command run with CORAL_KB_ENABLE=1 against a
   // daemon that booted with KB disabled restarts the daemon so it respawns with
   // KB on. Admin shutdown is identity-agnostic (the handoff path refuses to
   // replace a same-bundle daemon), so it is the correct restart trigger here.
@@ -427,7 +427,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const reconcileKbBoot = async (): Promise<void> => {
     if (kbReconcileDone || !path.startsWith('kb ')) return;
     kbReconcileDone = true;
-    if (!resolveKbEnabled(process.env[CORAL_KB_ENABLED_ENV])) return;
+    if (!resolveKbEnabled(process.env[CORAL_KB_ENABLE_ENV])) return;
     try {
       const client = await ensure(getPluginRoot());
       const health = await client.health<RawCoordinatorHealth>({ timeoutMs: HEALTH_TIMEOUT_MS });

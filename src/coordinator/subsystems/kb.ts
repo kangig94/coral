@@ -36,7 +36,7 @@ export type CreateKbSubsystemDeps = CreateKbSubsystemOptions & {
 };
 
 /**
- * KB subsystem used when `CORAL_KB_ENABLED=0`. It registers like any subsystem
+ * KB subsystem used when `CORAL_KB_ENABLE=0`. It registers like any subsystem
  * so `/health` and KB-routed handlers behave uniformly, but it never builds a
  * runtime, never runs a boot sequence, and reports a terminal `offline` status
  * with a `disabled` reason. The coordinator wires this instead of the real

@@ -422,7 +422,7 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
  * Shut down the running coordinator (admin drain) and wait until its socket is
  * released, so a follow-up `ensure()` spawns a fresh daemon instead of racing a
  * still-`running` incumbent. The CLI's lazy KB re-enable path uses this: the
- * daemon must restart to pick up a changed `CORAL_KB_ENABLED`, and admin
+ * daemon must restart to pick up a changed `CORAL_KB_ENABLE`, and admin
  * shutdown is identity-agnostic (the handoff path refuses to replace a
  * same-bundle daemon).
  */

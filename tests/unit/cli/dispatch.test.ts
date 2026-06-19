@@ -247,19 +247,19 @@ describe('command client routing', () => {
 });
 
 describe('kb lazy reconcile', () => {
-  const prevKbEnabled = process.env.CORAL_KB_ENABLED;
+  const prevKbEnabled = process.env.CORAL_KB_ENABLE;
 
   afterEach(() => {
     vi.clearAllMocks();
     if (prevKbEnabled === undefined) {
-      delete process.env.CORAL_KB_ENABLED;
+      delete process.env.CORAL_KB_ENABLE;
     } else {
-      process.env.CORAL_KB_ENABLED = prevKbEnabled;
+      process.env.CORAL_KB_ENABLE = prevKbEnabled;
     }
   });
 
   it('restarts the daemon when a kb command runs with KB enabled against a KB-disabled daemon', async () => {
-    process.env.CORAL_KB_ENABLED = '1';
+    process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockResolvedValueOnce({
       subsystems: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
     });
@@ -272,7 +272,7 @@ describe('kb lazy reconcile', () => {
   });
 
   it('does not restart when the daemon already has KB online', async () => {
-    process.env.CORAL_KB_ENABLED = '1';
+    process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockResolvedValueOnce({ subsystems: [{ id: 'kb', phase: 'online' }] });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
@@ -283,7 +283,7 @@ describe('kb lazy reconcile', () => {
   });
 
   it('does not probe or restart when the caller wants KB disabled', async () => {
-    process.env.CORAL_KB_ENABLED = '0';
+    process.env.CORAL_KB_ENABLE = '0';
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
 
@@ -294,7 +294,7 @@ describe('kb lazy reconcile', () => {
   });
 
   it('falls through to the command when the health probe fails', async () => {
-    process.env.CORAL_KB_ENABLED = '1';
+    process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockRejectedValueOnce(new Error('unreachable'));
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));

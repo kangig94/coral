@@ -55,13 +55,13 @@ describe('buildPreparedClaudeRequest KB gating', () => {
     ({ prompt: 'hi', coralEnv } as unknown as PrepArgs[0]);
 
   it('omits KB guidance from the system prompt when coralEnv disables KB', () => {
-    const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLED: '0' }), storage, '/mock/kb');
+    const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLE: '0' }), storage, '/mock/kb');
     expect(result.systemPrompt).toContain('Guidelines');
     expect(result.systemPrompt).not.toContain('kb stuff');
   });
 
   it('includes KB guidance when coralEnv enables KB', () => {
-    const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLED: '1' }), storage, '/mock/kb');
+    const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLE: '1' }), storage, '/mock/kb');
     expect(result.systemPrompt).toContain('kb stuff');
   });
 });
