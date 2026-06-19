@@ -18,6 +18,17 @@ export interface ShellInstallerSpec {
   readonly buildInstallCommand: (binDir: string) => string;
   /** Absolute path to the binary that must exist after a successful install. */
   readonly binaryPath: (binDir: string) => string;
+  /**
+   * Update the already-installed binary in place (e.g. its own `update`
+   * subcommand). When provided, `update` runs this instead of reinstalling.
+   */
+  readonly buildUpdateCommand?: (binary: string) => string;
+  /**
+   * Tear down side effects the binary registered outside its own directory
+   * (e.g. agent configs / MCP registration) via its own `uninstall`
+   * subcommand. Run best-effort before the binary directory is removed.
+   */
+  readonly buildUninstallCommand?: (binary: string) => string;
 }
 
 // Mirrors the installer-level error construction in src/engines/needle/install.ts;
@@ -113,13 +124,19 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
     async install(opts: EngineInstallerOptions): Promise<unknown> {
       const targetDir = dataDirOf(opts.runtime, opts.name);
       const binary = spec.binaryPath(targetDir);
+      const alreadyInstalled = isFile(opts.runtime, binary);
 
-      if (isFile(opts.runtime, binary) && opts.update !== true) {
+      if (alreadyInstalled && opts.update !== true) {
         return { status: 'already_installed', method: 'shell', version: opts.version, targetDir, command: binary };
       }
 
+      // Update the installed binary in place when it can update itself; otherwise
+      // (fresh install, or update with no self-update) run the full install pipeline.
+      const selfUpdate = opts.update === true && alreadyInstalled ? spec.buildUpdateCommand : undefined;
+      const command = selfUpdate ? selfUpdate(binary) : spec.buildInstallCommand(targetDir);
+
       return withInstallLock(opts, async () => {
-        const result = await opts.runtime.process.exec('bash', ['-c', spec.buildInstallCommand(targetDir)], {
+        const result = await opts.runtime.process.exec('bash', ['-c', command], {
           timeout: INSTALL_TIMEOUT_MS,
           inheritEnv: true,
           encoding: 'utf-8',
@@ -152,10 +169,23 @@ export function createShellInstaller(spec: ShellInstallerSpec): EngineInstaller 
 
     async uninstall(opts: EngineInstallerOptions): Promise<unknown> {
       const targetDir = dataDirOf(opts.runtime, opts.name);
-      if (!isFile(opts.runtime, spec.binaryPath(targetDir))) {
+      const binary = spec.binaryPath(targetDir);
+      if (!isFile(opts.runtime, binary)) {
         return { status: 'not_equipped' };
       }
       return withInstallLock(opts, async () => {
+        // Let the binary tear down what it registered outside its own directory
+        // (agent configs / MCP registration). Best-effort: its teardown is
+        // advisory and we must still remove Coral's artifact regardless.
+        if (spec.buildUninstallCommand !== undefined) {
+          await opts.runtime.process
+            .exec('bash', ['-c', spec.buildUninstallCommand(binary)], {
+              timeout: INSTALL_TIMEOUT_MS,
+              inheritEnv: true,
+              encoding: 'utf-8',
+            })
+            .catch(() => undefined);
+        }
         opts.runtime.storage.rmSync(targetDir, { recursive: true, force: true });
         return { status: 'uninstalled' };
       });

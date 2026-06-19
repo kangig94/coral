@@ -33,6 +33,9 @@ export const INSTALL_ONLY_PACKAGES: readonly InstallOnlyManifest[] = [
       binaryPath: (binDir) => join(binDir, CODEBASE_MEMORY_BINARY),
       buildInstallCommand: (binDir) =>
         `curl -fsSL ${CODEBASE_MEMORY_INSTALL_URL} | bash -s -- --ui --dir=${singleQuote(binDir)}`,
+      // The binary self-updates and tears down its own agent registrations.
+      buildUpdateCommand: (binary) => `${singleQuote(binary)} update`,
+      buildUninstallCommand: (binary) => `${singleQuote(binary)} uninstall`,
     }),
     onboarding: [
       {

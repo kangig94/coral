@@ -160,16 +160,30 @@ describe('install-only codebase-memory', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it('re-runs the pipeline and reports updated when update is requested', async () => {
+  it('updates an installed package in place via the binary update subcommand', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
     mkdirSync(dataDir(fixture.baseDir), { recursive: true });
     writeFileSync(binaryPath(fixture.baseDir), 'old');
-    stubSuccessfulInstall(runtime);
+    const exec = vi.spyOn(runtime.process, 'exec').mockResolvedValue({ stdout: '', stderr: '', status: 0 });
 
     const result = await installExpansion(PACKAGE, { runtime, update: true });
 
     expect(result).toMatchObject({ status: 'updated', method: 'shell' });
+    const command = exec.mock.calls[0]?.[1]?.[1] ?? '';
+    expect(command).toContain(`${binaryPath(fixture.baseDir)}' update`);
+    expect(command).not.toContain('install.sh');
+  });
+
+  it('runs the install pipeline for update when not yet installed', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const exec = stubSuccessfulInstall(runtime);
+
+    const result = await installExpansion(PACKAGE, { runtime, update: true });
+
+    expect(result).toMatchObject({ status: 'updated', command: binaryPath(fixture.baseDir) });
+    expect(exec.mock.calls[0]?.[1]?.[1] as string).toContain('install.sh');
   });
 
   it('surfaces expansion_install_command_failed with stderr detail on non-zero exit', async () => {
@@ -240,11 +254,24 @@ describe('install-only codebase-memory', () => {
     });
   });
 
-  it('uninstalls by removing the package data directory', async () => {
+  it('runs the binary uninstall subcommand, then removes the package data directory', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);
     mkdirSync(dataDir(fixture.baseDir), { recursive: true });
     writeFileSync(binaryPath(fixture.baseDir), 'binary');
+    const exec = vi.spyOn(runtime.process, 'exec').mockResolvedValue({ stdout: '', stderr: '', status: 0 });
+
+    expect(await uninstallExpansion(PACKAGE, { runtime })).toEqual({ status: 'uninstalled' });
+    expect(exec.mock.calls[0]?.[1]?.[1] ?? '').toContain(`${binaryPath(fixture.baseDir)}' uninstall`);
+    expect(pathExists(dataDir(fixture.baseDir))).toBe(false);
+  });
+
+  it('still removes the binary when the binary uninstall subcommand fails', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    mkdirSync(dataDir(fixture.baseDir), { recursive: true });
+    writeFileSync(binaryPath(fixture.baseDir), 'binary');
+    vi.spyOn(runtime.process, 'exec').mockRejectedValue(new Error('spawn failed'));
 
     expect(await uninstallExpansion(PACKAGE, { runtime })).toEqual({ status: 'uninstalled' });
     expect(pathExists(dataDir(fixture.baseDir))).toBe(false);
