@@ -1,9 +1,10 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`cli coral-store read parity > preserves jobs output via CoralStore reads 1`] = `
-"JOB ID            PHASE    PROVIDER  CWD                                          AGE   
-----------------  -------  --------  -------------------------------------------  ------
-job-store-read-1  running  codex     <project-root>  1d ago
+"Current project (<project-root>)
+JOB ID            PHASE    PROVIDER  AGE   
+----------------  -------  --------  ------
+job-store-read-1  running  codex     1d ago
 "
 `;
 

@@ -11,6 +11,7 @@ export type JobsListItem = {
   phase: string;
   provider: string;
   cwd: string;
+  jobKind: string;
   age: string;
 };
 
@@ -18,6 +19,8 @@ export type JobsListDisplayFilters = {
   phase?: string;
   provider?: string;
   all?: boolean;
+  /** Current working directory, used to surface its jobs as the primary group. */
+  cwd?: string;
 };
 
 export type CauseRefDescriber = (ref: CauseRef) => string;
@@ -82,7 +85,7 @@ function formatRelativeAge(updatedAt: string, now = Date.now()): string {
 }
 
 function describeJobsMatch(filters: JobsListDisplayFilters): string {
-  const parts = ['current project'];
+  const parts: string[] = [];
 
   if (filters.all === true) {
     parts.push('all phases');
@@ -116,17 +119,59 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     phase: status.phase,
     provider: status.provider ?? status.jobKind,
     cwd: status.projectRoot,
+    jobKind: status.jobKind,
     age: formatRelativeAge(status.updatedAt, now),
   }));
 }
 
+const JOBS_TABLE_HEADERS = ['JOB ID', 'PHASE', 'PROVIDER', 'AGE'];
+
+function jobsTable(rows: JobsListItem[]): string {
+  return formatTable(
+    JOBS_TABLE_HEADERS,
+    rows.map((row) => [row.jobId, row.phase, row.provider, row.age]),
+  );
+}
+
+/**
+ * Renders every live job across all projects, grouped so the current directory's
+ * jobs lead, shared KB jobs follow, and any remaining projects appear as a
+ * directory-keyed map. KB jobs are global (they run against the shared corpus),
+ * so they list here regardless of which directory `coral jobs` runs from.
+ */
 export function renderJobsList(rows: JobsListItem[], filters: JobsListDisplayFilters = {}): string {
   if (rows.length === 0) {
     return `No jobs match ${describeJobsMatch(filters)}`;
   }
 
-  return formatTable(
-    ['JOB ID', 'PHASE', 'PROVIDER', 'CWD', 'AGE'],
-    rows.map((row) => [row.jobId, row.phase, row.provider, row.cwd, row.age]),
-  );
+  const kbRows = rows.filter((row) => row.jobKind === 'kb');
+  const projectRows = rows.filter((row) => row.jobKind !== 'kb');
+  const currentRows = filters.cwd === undefined ? [] : projectRows.filter((row) => row.cwd === filters.cwd);
+  const otherRows = projectRows.filter((row) => filters.cwd === undefined || row.cwd !== filters.cwd);
+
+  const sections: string[] = [];
+
+  if (currentRows.length > 0) {
+    sections.push(joinLines([`Current project (${filters.cwd})`, jobsTable(currentRows)]));
+  }
+
+  if (kbRows.length > 0) {
+    sections.push(joinLines(['KB jobs (shared corpus)', jobsTable(kbRows)]));
+  }
+
+  const otherByDir = new Map<string, JobsListItem[]>();
+  for (const row of otherRows) {
+    const group = otherByDir.get(row.cwd) ?? [];
+    group.push(row);
+    otherByDir.set(row.cwd, group);
+  }
+  if (otherByDir.size > 0) {
+    const blocks: string[] = ['Other projects'];
+    for (const [dir, dirRows] of [...otherByDir.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      blocks.push(joinLines([`  ${dir}`, jobsTable(dirRows)]));
+    }
+    sections.push(joinLines(blocks));
+  }
+
+  return sections.join('\n\n');
 }

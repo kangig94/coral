@@ -26,6 +26,8 @@ const TEST_CURATE_ASSISTANT_NOOP: CurateAssistantPort = {
 export interface CreateTestKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
+  /** Daemon version stamped on KB commits; defaults to a test sentinel. */
+  version?: string;
   db: Database;
   /**
    * Source for the port slots (`storage`/`processPort`/`envPort`).
@@ -54,6 +56,7 @@ export function createTestKbRuntime(options: CreateTestKbRuntimeOptions): KbRunt
   return createKbRuntime({
     markdownRoot: options.markdownRoot,
     runtimeDir: options.runtimeDir,
+    version: options.version ?? 'dev',
     db: options.db,
     ...(options.corpusPublishCallbacks === undefined ? {} : { corpusPublishCallbacks: options.corpusPublishCallbacks }),
     ...(options.readOnlyOrama === undefined ? {} : { readOnlyOrama: options.readOnlyOrama }),

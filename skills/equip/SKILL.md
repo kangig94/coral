@@ -74,6 +74,7 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 ### `<package>`
 
+0. **Consent gate for install-only packages.** Unless you already know the package's `activation` from a prior `--list`/`info` in this session, run `coral-cli expansion info <package>` first. If `activation` is `'none'` (install-only), equipping it runs the package's own install script through your shell (typically `curl … | bash`) — code Coral fetches from a remote host and executes. Tell the user the package id and that equipping will download and run a remote install script, then ask them to confirm. If they decline, stop without running equip. (Engine packages — `activation: 'equip'` — need no extra prompt; proceed directly.) The install runs synchronously and its script output is not streamed back — only the final status returns — so tell the user it may take up to a minute before reporting.
 1. Bash(`coral-cli expansion equip <package>`)
 2. Parse the single-line JSON result.
 3. Route by `status`:
@@ -82,8 +83,8 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 |----------------------|------------------------------------------------------------------------------------------------------------------|
 | `already_installed`  | Inform user; `expansion equip` continues activation when applicable                                              |
 | `already_up_to_date` | Inform user with version; `expansion equip` continues activation when applicable                                 |
-| `installed`          | Show method used. For install-only packages, show `command` when present                                         |
-| `updated`            | Show method and version. For install-only packages, show `command` when present                                  |
+| `installed`          | Show method used. For install-only packages, show `command` when present, then tell the user to restart their coding agent so any tooling the install script registered (e.g. an MCP server) takes effect |
+| `updated`            | Show method and version. For install-only packages, show `command` when present, then tell the user to restart their coding agent for the updated tooling to take effect |
 | `equipped`           | Expansion is installed and active in the coordinator (equipment-backed packages only)                            |
 | `catching_up`        | Expansion is activating; tell the user to poll `/equip --list` until it reaches `equipped`                       |
 | `already_equipped`   | Inform the user the expansion is already active                                                                  |
@@ -132,4 +133,5 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 - Corpus indexes stay under `~/.coral/data/kb/`
 - Under a non-default `CLAUDE_CONFIG_DIR`, these data paths nest beneath `~/.coral/by-config/<slot>/` — the daemon is isolated per config dir; the default config dir keeps the paths above unchanged
 - Some installed engines may have native artifacts or model downloads; follow the `userMessage` and `remediation` returned by the CLI for missing prerequisites.
+- An install-only package (`activation: 'none'`) installs by running the package's own install script (which Coral executes via the shell, e.g. `curl … | bash`). That external script — not Coral — may register the tool with the coding agent (for example as an MCP server); when it does, the agent must be restarted before the newly installed tooling is available.
 - On Windows, `unequip` after activation may require a Coral restart when a loaded native addon remains mapped for the coordinator process lifetime.

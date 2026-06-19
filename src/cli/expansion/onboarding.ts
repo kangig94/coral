@@ -1,6 +1,9 @@
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import { INSTALL_ONLY_PACKAGES } from '../../expansion/install-only.js';
 import type { EngineManifest, OnboardingStep } from '../../expansion/contract.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
+
+type OnboardingManifest = { readonly id: string; readonly onboarding?: readonly OnboardingStep[] };
 
 export interface OnboardingContext {
   readBinding(id: string): Promise<{ bound: boolean; heldBy?: string }>;
@@ -19,12 +22,12 @@ function catalogFor(ctx: OnboardingContext): readonly EngineManifest[] {
   return ctx.catalog ?? BUNDLED_ENGINES;
 }
 
-function resolveEngine(id: string, ctx: OnboardingContext): EngineManifest | null {
-  return catalogFor(ctx).find((entry) => entry.id === id) ?? null;
+function resolveEngine(id: string, ctx: OnboardingContext): OnboardingManifest | null {
+  return catalogFor(ctx).find((entry) => entry.id === id) ?? INSTALL_ONLY_PACKAGES.find((entry) => entry.id === id) ?? null;
 }
 
 async function requireBinding(
-  engine: EngineManifest,
+  engine: OnboardingManifest,
   step: Extract<OnboardingStep, { kind: 'require-binding' }>,
   ctx: OnboardingContext,
 ): Promise<void> {
@@ -52,7 +55,7 @@ async function requireBinding(
 }
 
 async function requireEnv(
-  engine: EngineManifest,
+  engine: OnboardingManifest,
   step: Extract<OnboardingStep, { kind: 'env-var' }>,
   ctx: OnboardingContext,
 ): Promise<void> {
@@ -69,7 +72,7 @@ async function requireEnv(
 }
 
 async function confirmDownload(
-  engine: EngineManifest,
+  engine: OnboardingManifest,
   step: Extract<OnboardingStep, { kind: 'confirm-download' }>,
   ctx: OnboardingContext,
 ): Promise<void> {
@@ -79,7 +82,7 @@ async function confirmDownload(
   }
 }
 
-async function runStep(engine: EngineManifest, step: OnboardingStep, ctx: OnboardingContext): Promise<void> {
+async function runStep(engine: OnboardingManifest, step: OnboardingStep, ctx: OnboardingContext): Promise<void> {
   if (step.kind === 'require-binding') {
     await requireBinding(engine, step, ctx);
   } else if (step.kind === 'env-var') {

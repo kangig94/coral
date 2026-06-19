@@ -271,6 +271,12 @@ function runCliSubprocess(
       ...process.env,
       HOME: fixture.home,
       TMPDIR: fixture.home,
+      // Pin the config dir to the fixture's default `<home>/.claude` so the
+      // store resolves to the flat state root the test seeds. Without this the
+      // subprocess inherits the runner's ambient CLAUDE_CONFIG_DIR, which
+      // hashes into a `by-config/<slot>` path (see claudeConfigSlot) and the
+      // seeded store is never found.
+      CLAUDE_CONFIG_DIR: join(fixture.home, '.claude'),
       CORAL_KB_PATH: fixture.kbRoot,
       CLAUDE_PLUGIN_ROOT: fixture.root,
       NODE_OPTIONS: `--require ${fixture.probeScriptPath}`,
@@ -307,7 +313,7 @@ async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Prom
 
     switch (testCase.name) {
       case 'jobs':
-        return `${renderJobsList(formatJobsList({ jobs: store.jobs.list({ projectRoot: fixture.projectRoot }) }, FIXED_NOW.getTime()))}\n`;
+        return `${renderJobsList(formatJobsList({ jobs: store.jobs.list({}) }, FIXED_NOW.getTime()), { cwd: fixture.projectRoot })}\n`;
       case 'kb search':
         return `${formatKbSearch(await store.kb.search({ query: 'authoritative' }))}\n`;
       case 'kb principles':
@@ -430,7 +436,7 @@ describe('cli library-direct reads', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout).toBe(
-      `No jobs match current project, live phases\n(no store at ${expectedStorePath} — showing empty results)\n`,
+      `No jobs match live phases\n(no store at ${expectedStorePath} — showing empty results)\n`,
     );
     expect(readProbeAttempts(fixture)).toEqual([]);
     expect(existsSync(artifacts.infoFile)).toBe(false);

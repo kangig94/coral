@@ -138,6 +138,8 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   readonly capabilityRegistry: KbCapabilityRegistry;
   readonly roleRegistry: RoleRegistry;
   readonly markdownRoot: string;
+  /** Daemon build version, stamped onto KB git commits by the git-sync controller. */
+  readonly version: string;
   readonly engineArtifactRegistry: EngineArtifactRegistry;
   readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
   /**

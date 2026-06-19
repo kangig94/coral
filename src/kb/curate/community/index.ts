@@ -200,6 +200,15 @@ async function prepareCommunityPayload(
       kb,
       capturedFinalIndex,
     );
+    // The freshness gate reads `summaryInputFingerprint` from the community
+    // markdown frontmatter (via the index), NOT from the local curate DB. This
+    // is deliberate: the KB corpus syncs across machines over git, so the
+    // freshness state must travel WITH the content. A DB-local fingerprint
+    // would not propagate — each machine would re-run this LLM summary on the
+    // same unchanged input, and concurrent re-summaries would fight through git
+    // merges. The DB table `kb_curate_community_summary_input_fingerprints` is
+    // bookkeeping for topology-refresh only and is intentionally NOT the gate
+    // authority (see curate.test.ts: a stale DB row does not trigger a re-run).
     const currentSummaryFingerprint = community.summaryInputFingerprint;
     let nextCommunity = communitiesBySlug.get(community.slug) ?? community;
 

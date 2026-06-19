@@ -191,10 +191,13 @@ export function createGitSyncController({
   }
 
   function gitCommit(message: string): void {
+    // Stamp the daemon build version so KB git history records which build
+    // produced each commit. `kb.version` is threaded from the composed identity.
+    const stamped = `${message}\n\nCoral-Version: ${kb.version}`;
     try {
-      git(['commit', '-m', message], 10000);
+      git(['commit', '-m', stamped], 10000);
     } catch {
-      git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'commit', '-m', message], 10000);
+      git(['-c', 'user.name=Claude', '-c', 'user.email=noreply@anthropic.com', 'commit', '-m', stamped], 10000);
     }
   }
 

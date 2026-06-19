@@ -23,6 +23,11 @@ import {
   type ReadBindingResult,
   type RemoveExpansionCatalogResult,
 } from '../../expansion/rpc-contract.js';
+import {
+  INSTALL_ONLY_PACKAGES,
+  resolveInstallOnlyManifest,
+  type InstallOnlyManifest,
+} from '../../expansion/install-only.js';
 import { encodeInstallError } from './contract.js';
 import { readExpansionCatalog, resolveCatalogManifest } from './catalog.js';
 import { inspectExpansionInstallState, installExpansion, resolveRuntime, uninstallExpansion } from './install.js';
@@ -117,6 +122,24 @@ function toCatalogEntry(
     ...(passive?.lastError === undefined ? {} : { lastError: passive.lastError }),
     ...(provides === undefined ? {} : { provides }),
     ...(passive?.capabilityStatus === undefined ? {} : { capabilityStatus: passive.capabilityStatus }),
+  });
+}
+
+function toInstallOnlyCatalogEntry(manifest: InstallOnlyManifest, runtime: Runtime): CatalogEntry {
+  const local = inspectExpansionInstallState(runtime, manifest.id);
+  const status: CatalogEntry['status'] = local.installLocked
+    ? 'installing'
+    : local.installed
+      ? 'installed'
+      : 'not_installed';
+  return catalogEntrySchema.parse({
+    id: manifest.id,
+    name: manifest.id,
+    description: manifest.description,
+    activation: 'none',
+    status,
+    version: manifest.version,
+    ...(local.installed && typeof local.addonPath === 'string' ? { command: local.addonPath } : {}),
   });
 }
 
@@ -229,7 +252,10 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
         return catalogResultSchema.parse({
           status: 'catalog',
-          packages: catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
+          packages: [
+            ...catalog.map((entry) => toCatalogEntry(entry, runtime, expansionByName.get(entry.id) ?? null)),
+            ...INSTALL_ONLY_PACKAGES.map((manifest) => toInstallOnlyCatalogEntry(manifest, runtime)),
+          ],
         });
       } catch (error: unknown) {
         return encodeInstallError(error);
@@ -239,6 +265,11 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     async info(name: string): Promise<InstallResponse> {
       try {
         const runtime = resolveRuntime();
+        const installOnly = resolveInstallOnlyManifest(name);
+        if (installOnly) {
+          return infoResultSchema.parse({ status: 'info', package: toInstallOnlyCatalogEntry(installOnly, runtime) });
+        }
+
         const catalog = readExpansionCatalog(runtime);
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
@@ -263,6 +294,12 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       try {
         const runtime = resolveRuntime();
         const catalog = readExpansionCatalog(runtime);
+
+        if (resolveInstallOnlyManifest(name)) {
+          await runExpansionOnboarding(name, createNonInteractiveOnboardingContext(lowLevel, catalog));
+          return await installExpansion(name, { runtime });
+        }
+
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
           return unknownExpansionResponse(name);
@@ -286,6 +323,11 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     async unequip(name: string): Promise<InstallResponse> {
       try {
         const runtime = resolveRuntime();
+
+        if (resolveInstallOnlyManifest(name)) {
+          return await uninstallExpansion(name, { runtime });
+        }
+
         const catalog = readExpansionCatalog(runtime);
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {
@@ -348,6 +390,11 @@ export function createCliExpansionActivation(): CliExpansionActivation {
     async update(name: string): Promise<InstallResponse> {
       try {
         const runtime = resolveRuntime();
+
+        if (resolveInstallOnlyManifest(name)) {
+          return await installExpansion(name, { runtime, update: true });
+        }
+
         const catalog = readExpansionCatalog(runtime);
         const entry = resolveCatalogManifest(catalog, name);
         if (!entry) {

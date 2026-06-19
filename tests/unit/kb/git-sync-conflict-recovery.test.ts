@@ -589,4 +589,43 @@ describe('git sync conflict recovery', () => {
     expect(git(root, ['rev-parse', 'HEAD']).trim()).toBe(headBefore);
     expect(git(root, ['ls-files', '-u']).trim()).not.toBe('');
   });
+
+  it('stamps the daemon version as a Coral-Version trailer on KB commits', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-commit-version-trailer-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod');
+    initRepo(root);
+    mkdirSync(join(root, 'notes'), { recursive: true });
+    writeFileSync(join(root, 'notes', 'seed.md'), renderConflictNote('Seed body.'), 'utf-8');
+    git(root, ['add', 'notes/seed.md']);
+    git(root, ['commit', '-m', 'seed']);
+    writeFileSync(join(root, 'notes', 'seed.md'), renderConflictNote('Updated body.'), 'utf-8');
+
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+    const controller = createGitSyncController({
+      kb,
+      curateAssistant: { complete: async () => '' },
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: {
+        get: () => undefined,
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+
+    controller.gitAutoCommit('curate: detect communities');
+
+    const message = git(root, ['log', '-1', '--format=%B']).trim();
+    expect(message).toContain('curate: detect communities');
+    // `__VERSION__` is injected by esbuild in the bundle; under vitest it is
+    // undefined, so the trailer falls back to `dev`.
+    expect(message).toContain('Coral-Version: dev');
+  });
 });

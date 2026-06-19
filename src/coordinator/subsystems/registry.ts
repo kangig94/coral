@@ -56,7 +56,7 @@ function phaseEnvelope(id: SubsystemId, phase: 'initializing' | 'offline'): Subs
 
 /**
  * Envelope for a subsystem that is registered but not serving. A KB subsystem
- * disabled via `CORAL_KB_ENABLED=0` gets an env-specific remediation (a bare
+ * disabled via `CORAL_KB_ENABLE=0` gets an env-specific remediation (a bare
  * daemon restart re-reads the same `0` and stays off); everything else falls
  * back to the generic phase envelope.
  */
@@ -66,8 +66,8 @@ function notServingEnvelope(sub: Subsystem<unknown>): SubsystemErrorEnvelope {
     return {
       ok: false,
       code: 'kb_disabled',
-      message: 'Knowledge base is disabled (CORAL_KB_ENABLED=0)',
-      remediation: 'Set CORAL_KB_ENABLED=1 (or unset it) and re-run; the next kb command restarts the daemon automatically.',
+      message: 'Knowledge base is disabled (CORAL_KB_ENABLE=0)',
+      remediation: 'Set CORAL_KB_ENABLE=1 (or unset it) and re-run; the next kb command restarts the daemon automatically.',
     };
   }
   return phaseEnvelope(sub.id, status.phase === 'initializing' ? 'initializing' : 'offline');

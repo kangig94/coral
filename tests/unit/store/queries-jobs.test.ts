@@ -172,6 +172,47 @@ describe('jobs queries', () => {
           runningJobIds: ['job-completed'],
         },
       },
+      {
+        type: 'job.launch.requested',
+        stream: { kind: 'job', id: 'job-kb-global' },
+        refs: {},
+        bodyVersion: 1,
+        body: {
+          projectRoot: '/workspace/other-project',
+          backendNamespace: 'tests',
+          bundleHash: 'bundle-kb',
+          jobKind: 'kb',
+          pool: 'default',
+          enqueueSequence: 4,
+          operation: 'kb.reindex',
+          request: {},
+          createdAt: '2026-04-20T00:02:30.000Z',
+        },
+      },
+      {
+        type: 'job.launch.requested',
+        stream: { kind: 'job', id: 'job-other-project' },
+        refs: { sessionId: 'session-other' },
+        bodyVersion: 1,
+        body: {
+          sessionId: 'session-other',
+          provider: 'codex',
+          providerAction: 'exec',
+          projectRoot: '/workspace/other-project',
+          backendNamespace: 'tests',
+          bundleHash: 'bundle-other',
+          jobKind: 'provider',
+          pool: 'default',
+          enqueueSequence: 5,
+          request: {
+            prompt: 'Run in another project.',
+            cwd: '/workspace/other-project',
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          createdAt: '2026-04-20T00:02:40.000Z',
+        },
+      },
     ];
 
     commitInputs(db, inputs, {
@@ -268,8 +309,31 @@ describe('jobs queries', () => {
 
     expect(projectionQuery).toContain('backend_namespace = ?');
     expect(projectionQuery).toContain('phase IN (?, ?, ?)');
-    expect(projectionQuery).toContain('project_root = ?');
+    expect(projectionQuery).toContain("(project_root = ? OR job_kind = 'kb')");
     expect(projectionQuery).toContain('phase = ?');
     expect(projectionQuery).toContain('provider = ?');
+  });
+
+  it('keeps KB jobs visible from any project while scoping other projects out', () => {
+    const jobs = listJobs(db, { namespace: 'tests', projectRoot: '/workspace/coral' }, readCtx);
+    const ids = jobs.map((entry) => entry.jobId);
+
+    // KB jobs run against the shared corpus, so they surface regardless of cwd...
+    expect(ids).toContain('job-kb-global');
+    // ...the current project's own live job still lists...
+    expect(ids).toContain('job-queued');
+    // ...but a different project's non-KB job stays scoped out.
+    expect(ids).not.toContain('job-other-project');
+  });
+
+  it('keeps the KB exception under the all-phases filter', () => {
+    const jobs = listJobs(db, { namespace: 'tests', projectRoot: '/workspace/coral', all: true }, readCtx);
+    const ids = jobs.map((entry) => entry.jobId);
+
+    // `all` widens phases but does not change the project scope: KB stays global,
+    // the current project's terminal job now appears, the foreign non-KB stays out.
+    expect(ids).toContain('job-kb-global');
+    expect(ids).toContain('job-completed');
+    expect(ids).not.toContain('job-other-project');
   });
 });

@@ -20,7 +20,7 @@ import {
   formatPersonaSeed,
 } from '#src/cli/format/discuss.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
-import { formatAbortResult, formatLaunch } from '#src/cli/format/jobs.js';
+import { formatAbortResult, formatLaunch, renderJobsList, type JobsListItem } from '#src/cli/format/jobs.js';
 import {
   formatKbDelete,
   formatKbMemo,
@@ -954,5 +954,42 @@ describe('cli format', () => {
       expect(rendered.startsWith('\rabc')).toBe(true);
       expect(rendered).toHaveLength(81);
     });
+  });
+});
+
+describe('renderJobsList grouping', () => {
+  const item = (jobId: string, cwd: string, jobKind: string): JobsListItem => ({
+    jobId,
+    phase: 'running',
+    provider: jobKind === 'kb' ? 'kb' : 'codex',
+    cwd,
+    jobKind,
+    age: '1m ago',
+  });
+
+  it('groups jobs into current project, then KB, then other projects by directory', () => {
+    const rows = [
+      item('cur-1', '/work/coral', 'provider'),
+      item('kb-1', '/work/other', 'kb'),
+      item('other-a', '/work/alpha', 'provider'),
+      item('other-b', '/work/beta', 'provider'),
+    ];
+
+    const rendered = renderJobsList(rows, { cwd: '/work/coral' });
+
+    expect(rendered).toContain('Current project (/work/coral)');
+    expect(rendered).toContain('KB jobs (shared corpus)');
+    expect(rendered).toContain('Other projects');
+    // Section order: current → KB → other.
+    expect(rendered.indexOf('Current project')).toBeLessThan(rendered.indexOf('KB jobs'));
+    expect(rendered.indexOf('KB jobs')).toBeLessThan(rendered.indexOf('Other projects'));
+    // The KB job lists under the KB section even though its projectRoot is /work/other.
+    expect(rendered).toContain('kb-1');
+    // Other projects are directory-keyed and sorted.
+    expect(rendered.indexOf('/work/alpha')).toBeLessThan(rendered.indexOf('/work/beta'));
+  });
+
+  it('renders a no-match message when there are no rows', () => {
+    expect(renderJobsList([], { cwd: '/work/coral' })).toBe('No jobs match live phases');
   });
 });

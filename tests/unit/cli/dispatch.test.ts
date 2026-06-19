@@ -120,6 +120,36 @@ describe('command client routing', () => {
     );
   });
 
+  it('omits projectRoot from jobs.list when listing across all projects', async () => {
+    mockState.request.mockResolvedValueOnce({ jobs: [] });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.listJobs({ allProjects: true, phase: 'running' });
+
+    // The bare `coral jobs` listing must reach the backend unscoped so every
+    // project's jobs (and KB jobs) surface regardless of cwd.
+    expect(mockState.request).toHaveBeenCalledWith(
+      'jobs.list',
+      { phase: 'running' },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('scopes jobs.list to the caller project root by default', async () => {
+    mockState.request.mockResolvedValueOnce({ jobs: [] });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.listJobs({ phase: 'running' });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'jobs.list',
+      { projectRoot: '/tmp/project', phase: 'running' },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
   it('reads discuss watch from CoralStore without starting the coordinator', async () => {
     const watchState = {
       session: 'discuss-1',
@@ -217,19 +247,19 @@ describe('command client routing', () => {
 });
 
 describe('kb lazy reconcile', () => {
-  const prevKbEnabled = process.env.CORAL_KB_ENABLED;
+  const prevKbEnabled = process.env.CORAL_KB_ENABLE;
 
   afterEach(() => {
     vi.clearAllMocks();
     if (prevKbEnabled === undefined) {
-      delete process.env.CORAL_KB_ENABLED;
+      delete process.env.CORAL_KB_ENABLE;
     } else {
-      process.env.CORAL_KB_ENABLED = prevKbEnabled;
+      process.env.CORAL_KB_ENABLE = prevKbEnabled;
     }
   });
 
   it('restarts the daemon when a kb command runs with KB enabled against a KB-disabled daemon', async () => {
-    process.env.CORAL_KB_ENABLED = '1';
+    process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockResolvedValueOnce({
       subsystems: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
     });
@@ -242,7 +272,7 @@ describe('kb lazy reconcile', () => {
   });
 
   it('does not restart when the daemon already has KB online', async () => {
-    process.env.CORAL_KB_ENABLED = '1';
+    process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockResolvedValueOnce({ subsystems: [{ id: 'kb', phase: 'online' }] });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
@@ -253,7 +283,7 @@ describe('kb lazy reconcile', () => {
   });
 
   it('does not probe or restart when the caller wants KB disabled', async () => {
-    process.env.CORAL_KB_ENABLED = '0';
+    process.env.CORAL_KB_ENABLE = '0';
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
 
@@ -264,7 +294,7 @@ describe('kb lazy reconcile', () => {
   });
 
   it('falls through to the command when the health probe fails', async () => {
-    process.env.CORAL_KB_ENABLED = '1';
+    process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockRejectedValueOnce(new Error('unreachable'));
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));

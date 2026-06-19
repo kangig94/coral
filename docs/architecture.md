@@ -184,7 +184,7 @@ Backend boot is split into three sequential eras so the CLI gets a usable socket
 
 The CLI's fail-fast path watches Era I and II only: `KERNEL_BIND_DEADLINE_MS` (5s) for first health response after spawn, `KERNEL_READY_DEADLINE_MS` (15s) for the daemon to reach the `running` phase. Era III takes whatever time it needs without holding the CLI. `HANDOFF_DRAIN_TIMEOUT_MS` (30s) bounds the incumbent's drain on socket handoff. All three values are constants in `src/transport/ipc/ensure.ts` and `src/coordinator/shutdown.ts`.
 
-KB is the only subsystem in 0.7.1; new long-init subsystems register through `subsystems.register(createXxxSubsystem(...))` in `coordinator/composition/index.ts` and inherit the same retry/error-envelope/`/health` surface. A subsystem can also be registered as an intentionally inert variant — `disabledKbSubsystem()` (wired when `CORAL_KB_ENABLED=0`) conforms to the same `Subsystem<R>` contract but builds no runtime, runs no boot sequence, and reports a terminal `offline` status; this is the pattern for a feature-flag-gated subsystem.
+KB is the only subsystem in 0.7.1; new long-init subsystems register through `subsystems.register(createXxxSubsystem(...))` in `coordinator/composition/index.ts` and inherit the same retry/error-envelope/`/health` surface. A subsystem can also be registered as an intentionally inert variant — `disabledKbSubsystem()` (wired when `CORAL_KB_ENABLE=0`) conforms to the same `Subsystem<R>` contract but builds no runtime, runs no boot sequence, and reports a terminal `offline` status; this is the pattern for a feature-flag-gated subsystem.
 
 ### Discuss and KB
 
@@ -261,7 +261,7 @@ Coordinator startup
     -> discuss shell recovery startup
     -> workflowRecover.resumeAll
   Era III — Subsystems (fire-and-forget; CLI no longer blocked)
-    -> CORAL_KB_ENABLED=0 ? subsystems.register(disabledKbSubsystem())  // terminal offline, no boot work
+    -> CORAL_KB_ENABLE=0 ? subsystems.register(disabledKbSubsystem())  // terminal offline, no boot work
                           : subsystems.register(createKbSubsystem(...))
     -> subsystems.initAll()
         KB subsystem retry loop (3×1/4/16s), enabled path only:

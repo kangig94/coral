@@ -73,6 +73,8 @@ import { buildCurrentCorpusSurface } from './corpus/surface.js';
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
   runtimeDir: string;
+  /** Daemon build version, surfaced on the runtime for KB commit provenance. */
+  version: string;
   db: Database;
   corpusPublishCallbacks?: KbCorpusPublishCallbacks;
   /**
@@ -93,6 +95,7 @@ export interface CreateKbRuntimeOptions {
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
+  readonly version: string;
   readonly runtimeDir: string;
   readonly db: Database;
   readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
@@ -132,6 +135,7 @@ class KbRuntimeImpl implements KbRuntime {
   constructor({
     markdownRoot,
     runtimeDir,
+    version,
     db,
     corpusPublishCallbacks,
     time,
@@ -144,6 +148,7 @@ class KbRuntimeImpl implements KbRuntime {
     engineArtifactRegistry,
   }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
+    this.version = version;
     this.runtimeDir = runtimeDir;
     this.db = db;
     this.time = time;

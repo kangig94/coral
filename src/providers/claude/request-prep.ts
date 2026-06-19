@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { resolveInjectMd } from '../inject.js';
-import { CORAL_KB_ENABLED_ENV, resolveKbEnabled } from '../../infra/kb-toggle.js';
+import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../../infra/kb-toggle.js';
 import type { ProviderRequest, EffortLevel } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
@@ -143,7 +143,7 @@ export function buildPreparedClaudeRequest(
     storage,
     ownerSessionId: request.coralEnv?.CORAL_OWNER,
     kbRoot,
-    kbEnabled: resolveKbEnabled(request.coralEnv?.[CORAL_KB_ENABLED_ENV]),
+    kbEnabled: resolveKbEnabled(request.coralEnv?.[CORAL_KB_ENABLE_ENV]),
     ...(coralProjects === undefined ? {} : { coralProjects }),
     ...(projectSource === undefined ? {} : { projectSource }),
   });

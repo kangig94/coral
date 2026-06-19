@@ -6,7 +6,7 @@ import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { nowDate } from '../infra/time.js';
 import { backendLog } from '../infra/backend-log.js';
-import { CORAL_KB_ENABLED_ENV, resolveKbEnabled } from '../infra/kb-toggle.js';
+import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../infra/kb-toggle.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -277,13 +277,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
 
-  // KB boot gate: CORAL_KB_ENABLED=0 wires a terminal offline KB subsystem so
+  // KB boot gate: CORAL_KB_ENABLE=0 wires a terminal offline KB subsystem so
   // the daemon boots without the KB runtime, curate scheduler, or corpus
   // projection. Only the explicit '0' disables; a malformed value warns once
   // and leaves KB enabled.
-  const rawKbEnabled = runtime.env.get(CORAL_KB_ENABLED_ENV);
+  const rawKbEnabled = runtime.env.get(CORAL_KB_ENABLE_ENV);
   if (rawKbEnabled !== undefined && !['0', '1'].includes(rawKbEnabled)) {
-    backendLog.warn(`${CORAL_KB_ENABLED_ENV}="${rawKbEnabled}" is not 1 or 0; leaving KB enabled.`);
+    backendLog.warn(`${CORAL_KB_ENABLE_ENV}="${rawKbEnabled}" is not 1 or 0; leaving KB enabled.`);
   }
   const kbEnabled = resolveKbEnabled(rawKbEnabled);
 
@@ -506,7 +506,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     createKbSubsystemFn: (ctx) => {
-      // CORAL_KB_ENABLED=0: register a terminal offline KB and skip all
+      // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
       // corpus/curate wiring below. KB stays off until a daemon restart.
       if (!kbEnabled) {
         return disabledKbSubsystem();
