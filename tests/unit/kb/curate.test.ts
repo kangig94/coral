@@ -31,6 +31,11 @@ import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry
 import { parseCommunityFrontmatter, parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
+import {
+  applyCommunitySummary,
+  listStaleCommunities,
+  readCommunitySummaryInput,
+} from '#src/kb/curate/community/summary-surface.js';
 import { bindOramaFtsForTest } from '#tests/unit/kb/expansion-test-helpers.js';
 import {
   noteEntryId,
@@ -3236,5 +3241,74 @@ describe('curate', () => {
       const state = readCurateState(curateDb(runtime));
       expect(state.initialized).toBe(true);
     });
+  });
+});
+
+describe('community summary agent surface', () => {
+  it('detects stale communities and closes the gate when a summary is applied', async () => {
+    writeNote('coral-peer-community', {
+      title: 'Peer Community',
+      tags: ['graph-rag', 'retrieval'],
+      entrySeq: 1,
+      body: 'Graph-backed retrieval improves context selection.',
+    });
+    const entityMeta: EntityGraph['entityMeta'] = {
+      'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+      retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+    };
+    const relationships: EntityGraph['relationships'] = [
+      {
+        source: 'graph-rag',
+        target: 'retrieval',
+        type: 'enables',
+        description: 'Graph structure improves retrieval.',
+        evidence: ['note:coral-peer-community'],
+      },
+    ];
+    runtime.writeIndex({
+      entries: createIndexEntries({
+        'coral-peer-community': createIndexNote({ title: 'Peer Community', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+      }),
+      principles: {},
+      entityMeta,
+      relationships,
+    });
+    await runtime.writeEntityGraph({ entityMeta, relationships });
+    writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
+
+    // Materialize community files with summaries + fingerprints via the subphase.
+    useScheduler(assistantFromComplete(vi.fn<CurateAssistantPort['complete']>(async () => 'Initial summary.')));
+    await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+
+    // Freshly summarized → the server recomputes a matching fingerprint, so nothing is stale.
+    expect(listStaleCommunities(runtime)).toEqual([]);
+
+    // Simulate the churn-stripped state: remove the fingerprint from one community file.
+    const files = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+    expect(files.length).toBeGreaterThan(0);
+    const slug = files[0].replace(/\.md$/, '');
+    const path = join(runtime.communitiesDir(), files[0]);
+    writeFileSync(
+      path,
+      readFileSync(path, 'utf-8')
+        .split('\n')
+        .filter((line) => !line.startsWith('summaryInputFingerprint:'))
+        .join('\n'),
+      'utf-8',
+    );
+    expect(listStaleCommunities(runtime).some((community) => community.slug === slug)).toBe(true);
+
+    // The agent reads the input context for that community.
+    const input = readCommunitySummaryInput(runtime, slug);
+    expect(input).not.toBeNull();
+    expect(input?.input).toContain('graph-rag');
+
+    // Applying a summary recomputes the fingerprint server-side and closes the gate.
+    expect((await applyCommunitySummary(runtime, slug, 'Graph-backed retrieval cluster.')).written).toBe(true);
+    expect(listStaleCommunities(runtime).some((community) => community.slug === slug)).toBe(false);
+
+    // Unknown slugs are no-ops, not crashes.
+    expect(readCommunitySummaryInput(runtime, 'no-such-community')).toBeNull();
+    expect((await applyCommunitySummary(runtime, 'no-such-community', 'x')).written).toBe(false);
   });
 });

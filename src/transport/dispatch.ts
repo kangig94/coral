@@ -589,6 +589,30 @@ export async function executeCatalogRequest(
       return unaryHttp(domainResultToHttp(rpcPorts.kb.readCommunity(slug)));
     }
 
+    case 'kb.community.list-stale':
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.listStaleCommunities()));
+
+    case 'kb.community.summary-input': {
+      const parsed = request as { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readCommunitySummaryInput(slug)));
+    }
+
+    case 'kb.community.set-summary': {
+      const parsed = request as Record<string, unknown> & { slug: string };
+      const slug = decodePathSegment(parsed.slug);
+      if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
+      return unaryHttp(
+        domainResultToHttp(
+          await rpcPorts.kb.setCommunitySummary(
+            { ...stripTransportContextKeys(parsed), slug },
+            maybeBuildBodyInvocationContext(parsed, rpcPorts, authority),
+          ),
+        ),
+      );
+    }
+
     case 'kb.memo.list': {
       const parsed = request as { projectRoot: string; owner?: string };
       return unaryHttp(

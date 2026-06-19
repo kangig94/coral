@@ -17,6 +17,11 @@ import { generateWakeUpPacket } from './ops/wake-up.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { readCurateConflictQuarantine } from './curate/conflict-quarantine.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
+import {
+  applyCommunitySummary,
+  listStaleCommunities,
+  readCommunitySummaryInput,
+} from './curate/community/summary-surface.js';
 import { type KbReadKind } from './selector.js';
 import { readEntry, readEntryByKind, type KbReadOptions, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
@@ -25,6 +30,7 @@ import { assertOwnerId } from '../infra/identifiers.js';
 import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import {
+  kbCommunitySetSummarySchema,
   kbDeleteSchema,
   kbDiagnoseSchema,
   kbMemoDeleteConsolidatedSchema,
@@ -450,6 +456,33 @@ export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeB
   }
 
   return runKbMutationAction(kbSubsystem, () => deleteSource(kbSubsystem.kb, { slug: parsed.data.slug }));
+}
+
+export function handleKbCommunityListStale(kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
+  return runKbSyncAction(() => listStaleCommunities(kbSubsystem.kb));
+}
+
+export function handleKbCommunitySummaryInput(slug: string, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
+  const input = readCommunitySummaryInput(kbSubsystem.kb, slug);
+  return input === null ? kbNotFoundResult('community', slug) : kbSuccess(input);
+}
+
+export async function handleKbCommunitySetSummary(
+  args: KbArgs,
+  kbSubsystem: KnowledgeBaseRuntime,
+): Promise<KbToolResult> {
+  const parsed = kbCommunitySetSummarySchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
+  }
+
+  return runKbMutationAction(kbSubsystem, async () => {
+    const { written } = await applyCommunitySummary(kbSubsystem.kb, parsed.data.slug, parsed.data.summary);
+    if (!written) {
+      throw new Error(`KB community not found: ${parsed.data.slug}`);
+    }
+    return { slug: parsed.data.slug };
+  });
 }
 
 export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {

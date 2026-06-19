@@ -62,6 +62,9 @@ export interface KbRequestPort {
   readNote(slug: string): KbToolResult;
   readSource(slug: string): KbToolResult;
   readCommunity(slug: string): KbToolResult;
+  listStaleCommunities(): KbToolResult;
+  readCommunitySummaryInput(slug: string): KbToolResult;
+  setCommunitySummary(args: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
   readWiki(slug: string): KbToolResult;
   readMemo(slug: string, ctx: InvocationContext): KbToolResult;
   readPrinciple(slug: string): KbToolResult;

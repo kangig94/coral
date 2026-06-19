@@ -30,7 +30,10 @@ import {
   handleDiscussWatch,
 } from '../../discuss/shell/tools.js';
 import {
+  handleKbCommunityListStale,
   handleKbCommunityRead,
+  handleKbCommunitySetSummary,
+  handleKbCommunitySummaryInput,
   handleKbDiagnose,
   handleKbMemo,
   handleKbMemoDeleteConsolidated,
@@ -380,6 +383,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
       readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
       readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
+      listStaleCommunities: () => withKb((kbSubsystem) => handleKbCommunityListStale(kbSubsystem)),
+      readCommunitySummaryInput: (slug) => withKb((kbSubsystem) => handleKbCommunitySummaryInput(slug, kbSubsystem)),
+      setCommunitySummary: async (args, ctx) => {
+        const result = await withKbAsync((kbSubsystem) => handleKbCommunitySetSummary(args, kbSubsystem));
+        recordHostedKbFailure('community_set_summary', ctx, result);
+        return result;
+      },
       readWiki: (slug) => withKb((kbSubsystem) => handleKbWikiRead(slug, kbSubsystem, runtime)),
       readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),
       readPrinciple: (slug) => withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, runtime)),

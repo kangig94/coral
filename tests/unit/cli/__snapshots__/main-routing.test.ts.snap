@@ -123,6 +123,7 @@ Commands:
   diagnose [options]        Show KB entries with pending manual repair actions
   principles [options]      List KB principles
   source                    Manage KB sources
+  community                 Manage KB community summaries
   wiki                      Manage KB wikis
   memo                      Manage project memos
   read [options] <note>     Read a KB entry by slug or explicit selector

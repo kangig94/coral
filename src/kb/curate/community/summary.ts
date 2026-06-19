@@ -226,6 +226,35 @@ export function computeCommunitySummaryInputFingerprintForCommunity(
   );
 }
 
+/**
+ * Build the LLM input context for (re)summarizing one community — the same
+ * instructions + entity/excerpt (leaf) or child-summary (parent) blocks the
+ * curate scheduler would have sent. Mirrors the branching of
+ * {@link computeCommunitySummaryInputFingerprintForCommunity} so the fingerprint
+ * and the agent-visible input describe the same inputs.
+ */
+export function buildCommunitySummaryInput(
+  community: SummaryCommunity,
+  communitiesBySlug: ReadonlyMap<string, SummaryCommunity>,
+  kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
+  index: KbIndex,
+): { kind: 'leaf' | 'parent'; input: string } {
+  if (community.children === undefined || community.children.length === 0) {
+    return {
+      kind: 'leaf',
+      input: buildLeafCommunitySummaryPrompt(
+        community,
+        index,
+        selectRepresentativeDocuments(kb, index, community.members),
+      ),
+    };
+  }
+  return {
+    kind: 'parent',
+    input: buildParentCommunitySummaryPrompt(community, childCommunitiesForCommunity(community, communitiesBySlug)),
+  };
+}
+
 export function computeCommunitySummaryInputFingerprints(
   communities: SummaryCommunity[],
   kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
@@ -330,7 +359,7 @@ function buildParentCommunitySummaryPrompt(
   ].join('\n');
 }
 
-function normalizeGeneratedSummary(raw: string): string | undefined {
+export function normalizeGeneratedSummary(raw: string): string | undefined {
   const normalized = stripMarkdownCodeFences(raw).replace(/\s+/g, ' ').trim();
   return normalized ? normalized : undefined;
 }

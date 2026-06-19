@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { Option, type Command } from 'commander';
 
 import { parseKbEntryId, vaultLinkToEntryId, type KbPromoteInput } from '../../kb/entry-types.js';
-import { assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
+import { assertCommunitySlug, assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
 import { assertOwnerId } from '../../infra/identifiers.js';
 import { resolveProjectSource } from '../../infra/project-source.js';
 import { runEntityGraphMergeDriver } from '../../kb/curate/entity-graph-merge-driver.js';
@@ -151,6 +151,57 @@ function registerKbSourceCommands(kb: Command): void {
         const client = makeClient(process.cwd(), kbSourceDeleteCommand);
         const result = await client.kbSourceDelete({ slug: assertSourceSlug(slug, 'source') });
         emitText(result, formatKbSourceDelete);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+}
+
+function registerKbCommunityCommands(kb: Command): void {
+  const kbCommunityCommand = kb.command('community').description('Manage KB community summaries');
+
+  const listStaleCommand = kbCommunityCommand.command('list-stale');
+  listStaleCommand
+    .description('List communities whose summary is missing or stale, in dependency order')
+    .addOption(createOutputFormatOption())
+    .action(async () => {
+      const outputFormat = getOutputFormat(listStaleCommand);
+      try {
+        const client = makeClient(process.cwd(), listStaleCommand);
+        const result = await client.kbCommunityListStale();
+        emit(result, outputFormat, (rows) => rows.map((row) => `${row.slug}\t(level ${row.level})`).join('\n') || '(none)');
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const summaryInputCommand = kbCommunityCommand.command('summary-input');
+  summaryInputCommand
+    .description('Print the summarization input context for one community')
+    .argument('<slug>', 'Community slug')
+    .addOption(createOutputFormatOption())
+    .action(async (slug: string) => {
+      const outputFormat = getOutputFormat(summaryInputCommand);
+      try {
+        const client = makeClient(process.cwd(), summaryInputCommand);
+        const result = await client.kbCommunitySummaryInput({ slug: assertCommunitySlug(slug, 'community') });
+        emit(result, outputFormat, (data) => data.input);
+      } catch (error) {
+        emitError(error);
+      }
+    });
+
+  const setSummaryCommand = kbCommunityCommand.command('set-summary');
+  setSummaryCommand
+    .description('Store a generated summary for one community')
+    .argument('<slug>', 'Community slug')
+    .requiredOption('--from <path>', 'File whose contents become the summary')
+    .action(async (slug: string, opts: { from: string }) => {
+      try {
+        const summary = readFileSync(resolveFilePath(opts.from), 'utf8');
+        const client = makeClient(process.cwd(), setSummaryCommand);
+        const result = await client.kbCommunitySetSummary({ slug: assertCommunitySlug(slug, 'community'), summary });
+        emitText(result, (data) => `Set summary for community ${data.slug}`);
       } catch (error) {
         emitError(error);
       }
@@ -536,6 +587,7 @@ export function registerKbCommands(program: Command): void {
     });
 
   registerKbSourceCommands(kb);
+  registerKbCommunityCommands(kb);
   registerKbWikiCommands(kb);
   registerKbMemoCommands(kb);
 

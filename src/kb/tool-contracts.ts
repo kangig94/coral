@@ -228,6 +228,14 @@ export const kbNoteReadRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbSourceListRequestSchema = z.object({}).strict();
 export const kbSourceReadRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbCommunityReadRequestSchema = z.object({ slug: slugSchema }).strict();
+export const kbCommunityListStaleRequestSchema = z.object({}).strict();
+export const kbCommunitySummaryInputRequestSchema = z.object({ slug: slugSchema }).strict();
+export const kbCommunitySetSummarySchema = z
+  .object({ slug: slugSchema, summary: z.string().min(1, 'summary must not be empty') })
+  .strict();
+export const kbCommunitySetSummaryRequestSchema = kbCommunitySetSummarySchema
+  .extend(optionalTransportContextFieldsShape)
+  .strict();
 export const kbMemoReadRequestSchema = z
   .object({
     slug: slugSchema,
