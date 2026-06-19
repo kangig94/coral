@@ -18,7 +18,10 @@ import {
 } from './discuss.js';
 import { jobAbortSchema, jobDetailRequestSchema, jobsListRequestSchema, jobWaitSchema } from './jobs.js';
 import {
+  kbCommunityListStaleRequestSchema,
   kbCommunityReadRequestSchema,
+  kbCommunitySetSummaryRequestSchema,
+  kbCommunitySummaryInputRequestSchema,
   kbDiagnoseRequestSchema,
   kbEntriesRequestSchema,
   kbMemoCreateRequestSchema,
@@ -386,6 +389,30 @@ export const rpcCatalog = [
     responseKind: 'json',
     portKey: 'kb',
     http: { method: 'GET', path: '/kb/communities/:slug' },
+  },
+  {
+    name: 'kb.community.list-stale',
+    kind: 'unary',
+    requestSchema: kbCommunityListStaleRequestSchema,
+    responseKind: 'json',
+    portKey: 'kb',
+    http: { method: 'GET', path: '/kb/communities-stale' },
+  },
+  {
+    name: 'kb.community.summary-input',
+    kind: 'unary',
+    requestSchema: kbCommunitySummaryInputRequestSchema,
+    responseKind: 'json',
+    portKey: 'kb',
+    http: { method: 'GET', path: '/kb/communities/:slug/summary-input' },
+  },
+  {
+    name: 'kb.community.set-summary',
+    kind: 'unary',
+    requestSchema: kbCommunitySetSummaryRequestSchema,
+    responseKind: 'json',
+    portKey: 'kb',
+    http: { method: 'POST', path: '/kb/communities/:slug/summary' },
   },
   {
     name: 'kb.memo.list',

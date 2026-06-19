@@ -26,7 +26,7 @@ export const jobQueueAdmittedBodySchema = z
 export const jobRuntimeStartedBodySchema = z
   .object({
     transport: z.enum(['durable-cli', 'app-server', 'internal']).optional(),
-    operation: z.enum(['kb.source_import', 'kb.reindex']).optional(),
+    operation: z.enum(['kb.source_import', 'kb.reindex', 'kb.community_summary']).optional(),
     pid: z.number().finite().optional(),
     stdoutPath: z.string().optional(),
     stderrPath: z.string().optional(),

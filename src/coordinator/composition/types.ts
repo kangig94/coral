@@ -27,6 +27,7 @@ import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
 import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import.js';
+import type { KbJobRecorder } from '../services/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 
@@ -133,5 +134,6 @@ export type CoordinatorCoreResult = {
   resolveProjectSource: (projectRoot: string) => string;
   isDrainRequested: () => boolean;
   requestDrain: (reason: string) => void;
+  getKbJobRecorder: () => KbJobRecorder;
   hooks: LifecycleHooks;
 };

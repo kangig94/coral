@@ -154,6 +154,11 @@ export type CliCommandClient = AbortCapableClient & {
   kbSourceImport(args: KbSourcePersistInput): Promise<KbSourceImportResponse>;
   kbSourceList(): Promise<KbSourceListResult>;
   kbSourceDelete(args: KbSourceDeleteInput): Promise<KbSourceDeleteResponse>;
+  kbCommunityListStale(): Promise<Array<{ slug: string; level: number }>>;
+  kbCommunitySummaryInput(args: {
+    slug: string;
+  }): Promise<{ slug: string; level: number; kind: 'leaf' | 'parent'; input: string }>;
+  kbCommunitySetSummary(args: { slug: string; summary: string }): Promise<{ slug: string }>;
   kbMemo(args: KbMemoInput): Promise<KbMemoResponse>;
   kbMemoList(args: KbMemoListInput): Promise<KbMemoListResult>;
   kbMemoDelete(args: KbMemoDeleteInput): Promise<KbMemoDeleteResult>;
@@ -626,6 +631,16 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       request<KbSourceDeleteResponse>(
         'kb.source.delete',
         buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
+      ),
+    kbCommunityListStale: async () => request<Array<{ slug: string; level: number }>>('kb.community.list-stale', {}),
+    kbCommunitySummaryInput: async (args) =>
+      request<{ slug: string; level: number; kind: 'leaf' | 'parent'; input: string }>('kb.community.summary-input', {
+        slug: args.slug,
+      }),
+    kbCommunitySetSummary: async (args) =>
+      request<{ slug: string }>(
+        'kb.community.set-summary',
+        buildKbMutationTransportContextBody({ slug: args.slug, summary: args.summary }, defaultContext),
       ),
     kbMemo: async (args) =>
       request<KbMemoResponse>('kb.memo.create', buildKbMutationTransportContextBody(args, defaultContext)),

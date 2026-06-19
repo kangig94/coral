@@ -22,6 +22,9 @@ export type StaticCommandPath =
   | 'kb source import'
   | 'kb source list'
   | 'kb source delete'
+  | 'kb community list-stale'
+  | 'kb community summary-input'
+  | 'kb community set-summary'
   | 'kb wiki create'
   | 'kb wiki rewrite'
   | 'kb wiki link'
@@ -65,6 +68,9 @@ export const commandClassMap = {
   'kb source import': 'mutate',
   'kb source list': 'read',
   'kb source delete': 'mutate',
+  'kb community list-stale': 'read',
+  'kb community summary-input': 'read',
+  'kb community set-summary': 'mutate',
   'kb wiki create': 'mutate',
   'kb wiki rewrite': 'mutate',
   'kb wiki link': 'mutate',
@@ -95,6 +101,7 @@ export const commandContainerPaths = new Set<string>([
   'expansion',
   'kb',
   'kb source',
+  'kb community',
   'kb wiki',
   'kb memo',
 ]);

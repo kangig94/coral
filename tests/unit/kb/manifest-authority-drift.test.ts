@@ -372,7 +372,7 @@ describe('manifest authority drift checks', () => {
           ],
         });
 
-        await runCommunitySubphase(fixture.kb, discoverySpawn('Shared themes across graph-backed retrieval.'));
+        await runCommunitySubphase(fixture.kb);
 
         assertAuthorityMatchesDisk(fixture.kb);
       },
