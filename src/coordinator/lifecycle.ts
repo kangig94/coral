@@ -608,6 +608,7 @@ async function runLifecycleStartup({
     try {
       const kbSubsystem = createKbSubsystemFn({
         db: progressStore.getDb(),
+        version,
         paths: {
           markdownRoot: runtime.paths.coral.corpus.kbRoot,
           runtimeDir: kbRuntimeDir(flavor, runtime.paths.configSlot),

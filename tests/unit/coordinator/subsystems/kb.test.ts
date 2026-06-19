@@ -28,6 +28,7 @@ function fakeDeps(overrides: Partial<CreateKbSubsystemDeps> = {}): CreateKbSubsy
   return {
     db: {} as CreateKbSubsystemDeps['db'],
     paths: { markdownRoot: '/tmp/kb', runtimeDir: '/tmp/kb-runtime' },
+    version: 'dev',
     curateAssistant: {
       complete: async () => {
         throw new Error('curateAssistant not mocked');

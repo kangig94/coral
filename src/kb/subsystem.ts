@@ -29,6 +29,7 @@ export type KbSubsystemPaths = {
 export type CreateKbSubsystemOptions = {
   db: Database;
   paths: KbSubsystemPaths;
+  version: string;
   curateAssistant: CurateAssistantPort;
   processPort: ProcessPort;
   storagePort: StoragePort;
@@ -44,6 +45,7 @@ export type CreateKbSubsystemOptions = {
 export async function createKbSubsystem({
   db,
   paths,
+  version,
   curateAssistant,
   processPort,
   storagePort,
@@ -58,6 +60,7 @@ export async function createKbSubsystem({
   const kb = createKbRuntime({
     markdownRoot: paths.markdownRoot,
     runtimeDir: paths.runtimeDir,
+    version,
     db,
     time: timePort,
     ids: idsPort,

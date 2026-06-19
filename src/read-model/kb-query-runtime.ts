@@ -148,6 +148,9 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
   return createKbRuntime({
     markdownRoot: resolveQueryMarkdownRoot(context),
     runtimeDir: kbRuntimeDir(flavor, runtime.paths.configSlot),
+    // Read-only query runtime: it never runs git-sync, so the version is inert
+    // (only the daemon's curate path stamps commits with a real identity.version).
+    version: '0.0.0',
     db: getDefaultKbQueryDb(context) as Database,
     time: runtime.time,
     envPort: runtime.env,

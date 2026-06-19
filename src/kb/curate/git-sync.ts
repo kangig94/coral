@@ -11,14 +11,6 @@ import { upsertCurateConflictQuarantine, type ConflictQuarantineKind } from './c
 import { runCurateAssistant } from './operations.js';
 
 declare const __PLUGIN_ROOT__: string;
-declare const __VERSION__: string;
-
-/**
- * Daemon version stamped as a `Coral-Version:` trailer on every KB commit so the
- * git history records which build produced each curate/sync commit. Falls back to
- * `dev` outside the esbuild bundle (e.g. vitest), where `__VERSION__` is undefined.
- */
-const CORAL_COMMIT_VERSION = typeof __VERSION__ === 'string' ? __VERSION__ : 'dev';
 
 const GITIGNORE_ENTRIES = ['data/', '.obsidian/'];
 const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
@@ -199,7 +191,9 @@ export function createGitSyncController({
   }
 
   function gitCommit(message: string): void {
-    const stamped = `${message}\n\nCoral-Version: ${CORAL_COMMIT_VERSION}`;
+    // Stamp the daemon build version so KB git history records which build
+    // produced each commit. `kb.version` is threaded from the composed identity.
+    const stamped = `${message}\n\nCoral-Version: ${kb.version}`;
     try {
       git(['commit', '-m', stamped], 10000);
     } catch {
