@@ -170,7 +170,8 @@ Options:
 Commands:
   codex [options] [agent]   Run a prompt via codex
   claude [options] [agent]  Run a prompt via claude
-  jobs [options]            List jobs for the current project
+  jobs [options]            List live jobs across all projects (current project
+                            first, then KB jobs, then other directories)
   wait [options]            Stream job progress (text output)
   abort [options]           Abort running jobs
   workflow [options]        Execute a workflow pipeline

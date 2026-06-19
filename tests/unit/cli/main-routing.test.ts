@@ -650,10 +650,10 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'jobs', '--phase', 'running']);
 
     expect(mockState.listJobs).toHaveBeenCalledWith({
-      projectRoot: process.cwd(),
+      allProjects: true,
       phase: 'running',
     });
-    expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { phase: 'running' })}\n`);
+    expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { phase: 'running', cwd: process.cwd() })}\n`);
     expect(stderr).toBe('');
   });
 
@@ -669,10 +669,10 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'jobs', '--provider', 'claude']);
 
     expect(mockState.listJobs).toHaveBeenCalledWith({
-      projectRoot: process.cwd(),
+      allProjects: true,
       provider: 'claude',
     });
-    expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { provider: 'claude' })}\n`);
+    expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { provider: 'claude', cwd: process.cwd() })}\n`);
     expect(stderr).toBe('');
   });
 
@@ -688,10 +688,10 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'jobs', '--all']);
 
     expect(mockState.listJobs).toHaveBeenCalledWith({
-      projectRoot: process.cwd(),
+      allProjects: true,
       all: true,
     });
-    expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { all: true })}\n`);
+    expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { all: true, cwd: process.cwd() })}\n`);
     expect(stderr).toBe('');
   });
 
@@ -718,10 +718,10 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'jobs', '--provider', 'codex']);
 
     expect(mockState.listJobs).toHaveBeenCalledWith({
-      projectRoot: process.cwd(),
+      allProjects: true,
       provider: 'codex',
     });
-    expect(stdout).toBe('No jobs match current project, live phases, provider=codex\n');
+    expect(stdout).toBe('No jobs match live phases, provider=codex\n');
     expect(stderr).toBe('');
   });
 

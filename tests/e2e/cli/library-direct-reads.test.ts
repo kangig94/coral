@@ -307,7 +307,7 @@ async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Prom
 
     switch (testCase.name) {
       case 'jobs':
-        return `${renderJobsList(formatJobsList({ jobs: store.jobs.list({ projectRoot: fixture.projectRoot }) }, FIXED_NOW.getTime()))}\n`;
+        return `${renderJobsList(formatJobsList({ jobs: store.jobs.list({}) }, FIXED_NOW.getTime()), { cwd: fixture.projectRoot })}\n`;
       case 'kb search':
         return `${formatKbSearch(await store.kb.search({ query: 'authoritative' }))}\n`;
       case 'kb principles':
@@ -430,7 +430,7 @@ describe('cli library-direct reads', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout).toBe(
-      `No jobs match current project, live phases\n(no store at ${expectedStorePath} — showing empty results)\n`,
+      `No jobs match live phases\n(no store at ${expectedStorePath} — showing empty results)\n`,
     );
     expect(readProbeAttempts(fixture)).toEqual([]);
     expect(existsSync(artifacts.infoFile)).toBe(false);

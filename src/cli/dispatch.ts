@@ -96,6 +96,13 @@ type JobsListOptions = {
   phase?: JobStatus['phase'];
   all?: boolean;
   provider?: string;
+  /**
+   * List across every project instead of scoping to the caller's cwd. When set,
+   * no `projectRoot` filter is sent, so the backend returns all projects' jobs
+   * (KB jobs included). Used by `coral jobs`; the abort selector leaves it unset
+   * to keep bulk aborts project-scoped.
+   */
+  allProjects?: boolean;
 };
 
 type DiscussSeedArgs = {
@@ -479,7 +486,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     listJobs: async (options = {}) => {
       const filters = {
-        projectRoot: options.projectRoot ?? projectRoot,
+        ...(options.allProjects === true ? {} : { projectRoot: options.projectRoot ?? projectRoot }),
         ...(options.phase !== undefined ? { phase: options.phase } : {}),
         ...(options.provider !== undefined ? { provider: options.provider } : {}),
         ...(options.all === true ? { all: true } : {}),

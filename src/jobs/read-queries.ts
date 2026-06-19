@@ -213,7 +213,9 @@ function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): Pro
     params.push(...LIVE_JOB_PHASES);
   }
   if (filters?.projectRoot !== undefined) {
-    clauses.push('project_root = ?');
+    // KB jobs belong to no single project — they run against the shared corpus,
+    // so they stay visible and abortable from every project's view regardless of cwd.
+    clauses.push("(project_root = ? OR job_kind = 'kb')");
     params.push(filters.projectRoot);
   }
   if (filters?.phase !== undefined) {

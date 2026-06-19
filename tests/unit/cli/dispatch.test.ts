@@ -120,6 +120,36 @@ describe('command client routing', () => {
     );
   });
 
+  it('omits projectRoot from jobs.list when listing across all projects', async () => {
+    mockState.request.mockResolvedValueOnce({ jobs: [] });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.listJobs({ allProjects: true, phase: 'running' });
+
+    // The bare `coral jobs` listing must reach the backend unscoped so every
+    // project's jobs (and KB jobs) surface regardless of cwd.
+    expect(mockState.request).toHaveBeenCalledWith(
+      'jobs.list',
+      { phase: 'running' },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('scopes jobs.list to the caller project root by default', async () => {
+    mockState.request.mockResolvedValueOnce({ jobs: [] });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.listJobs({ phase: 'running' });
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'jobs.list',
+      { projectRoot: '/tmp/project', phase: 'running' },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
   it('reads discuss watch from CoralStore without starting the coordinator', async () => {
     const watchState = {
       session: 'discuss-1',

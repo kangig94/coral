@@ -89,7 +89,9 @@ export function createCoordinatorControl({
         continue;
       }
 
-      if (status.projectRoot !== projectRoot) {
+      // KB jobs run against the shared corpus and belong to no single project,
+      // so they stay abortable from any project's cwd (namespace still applies).
+      if (status.projectRoot !== projectRoot && status.jobKind !== 'kb') {
         mismatch.push(jobId);
         continue;
       }

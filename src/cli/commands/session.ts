@@ -140,7 +140,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
 
   const jobsCommand = program.command('jobs');
   jobsCommand
-    .description('List jobs for the current project')
+    .description('List live jobs across all projects (current project first, then KB jobs, then other directories)')
     .option('--phase <phase>', 'Limit jobs to a single phase')
     .option('--provider <name>', 'Limit jobs to a registered provider')
     .option('--all', 'Include terminal jobs in addition to live jobs')
@@ -149,8 +149,11 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const parsed = jobsOptionsSchema.parse(opts);
         const projectRoot = process.cwd();
         const client = makeClient(projectRoot, jobsCommand);
+        // List every live job across all projects (allProjects bypasses the
+        // dispatch-level cwd default), then group by directory at render time
+        // with the current project surfaced first.
         const result = await client.listJobs({
-          projectRoot,
+          allProjects: true,
           ...(parsed.phase !== undefined ? { phase: parsed.phase } : {}),
           ...(parsed.provider !== undefined ? { provider: parsed.provider } : {}),
           ...(parsed.all === true ? { all: true } : {}),
@@ -162,6 +165,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             phase: parsed.phase,
             provider: parsed.provider,
             all: parsed.all,
+            cwd: projectRoot,
           }) + '\n',
         );
         flushPendingReadStoreNote('text');
@@ -254,8 +258,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   abortCommand
     .description('Abort running jobs')
     .option('--jobs <ids>', 'Comma-separated job IDs')
-    .option('--all', 'Abort all live jobs in the current project')
-    .option('--phase <phase>', 'Abort live jobs in a single phase')
+    .option('--all', 'Abort all live jobs in the current project (plus shared KB jobs)')
+    .option('--phase <phase>', 'Abort live jobs in a single phase (current project + KB jobs)')
     .option('--provider <name>', 'Abort live jobs for a registered provider')
     .action(async (opts: AbortOptions) => {
       try {
