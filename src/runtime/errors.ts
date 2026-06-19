@@ -20,6 +20,7 @@ export type SerializedCoralSetupError = CoralSetupErrorInit;
 
 export type DocumentedCoralSetupErrorCode =
   | 'expansion_install_lock_contended'
+  | 'expansion_install_command_failed'
   | 'startup_not_ready'
   | 'store_schema_outdated'
   | 'store_reset_lock_contended'
@@ -79,6 +80,15 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Another coral-cli expansion equip is in progress for ${stringContextValue(context, 'name', 'this expansion')}.`,
     remediation: 'Wait for the in-flight install to complete or remove the stale lock file.',
+  },
+  expansion_install_command_failed: {
+    userMessage: (context) =>
+      `The install command for ${stringContextValue(context, 'name', 'this expansion')} failed.`,
+    remediation: (context) => {
+      const detail = stringContextValue(context, 'detail', '');
+      const base = 'Check network access and the prerequisites named by the install script, then retry.';
+      return detail.length > 0 ? `${detail}\n${base}` : base;
+    },
   },
   startup_not_ready: {
     userMessage: 'Coral backend is still starting.',

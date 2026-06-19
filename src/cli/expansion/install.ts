@@ -2,9 +2,10 @@ import { rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import { INSTALL_ONLY_PACKAGES } from '../../expansion/install-only.js';
 import { createExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
 import { parseEngineManifest } from '../../expansion/manifest-schema.js';
-import type { EngineInstallerOptions, LocalExpansionInstallState } from '../../expansion/contract.js';
+import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -50,9 +51,19 @@ function genericInstallState(runtime: Runtime, name: string): LocalExpansionInst
   };
 }
 
+type InstallerPackage = { readonly version: string; readonly installer: EngineInstaller };
+
+function resolveInstallerPackage(name: string): InstallerPackage | null {
+  const engine = BUNDLED_ENGINES.find((candidate) => candidate.id === name);
+  if (engine?.installer) {
+    return { version: engine.version, installer: engine.installer };
+  }
+  const installOnly = INSTALL_ONLY_PACKAGES.find((candidate) => candidate.id === name);
+  return installOnly === undefined ? null : { version: installOnly.version, installer: installOnly.installer };
+}
+
 export function inspectExpansionInstallState(runtime: Runtime, name: string): LocalExpansionInstallState {
-  const entry = BUNDLED_ENGINES.find((candidate) => candidate.id === name);
-  return entry?.installer?.inspect(runtime, name) ?? genericInstallState(runtime, name);
+  return resolveInstallerPackage(name)?.installer.inspect(runtime, name) ?? genericInstallState(runtime, name);
 }
 
 async function applyPostInstallCatalogActions(
@@ -89,16 +100,16 @@ async function applyPostInstallCatalogActions(
 }
 
 export async function installExpansion(name: string, opts: InstallExpansionOptions = {}): Promise<InstallResponse> {
-  const entry = BUNDLED_ENGINES.find((candidate) => candidate.id === name);
-  if (!entry?.installer) {
+  const pkg = resolveInstallerPackage(name);
+  if (!pkg) {
     return toInstallError('unknown_expansion', name);
   }
 
   const runtime = resolveRuntime(opts.runtime);
   const result = installResponseSchema.parse(
-    await entry.installer.install({
+    await pkg.installer.install({
       name,
-      version: entry.version,
+      version: pkg.version,
       runtime,
       logger: opts.logger,
       lockTimeoutMs: opts.lockTimeoutMs,
@@ -113,15 +124,15 @@ export async function removeInstallArtifacts(runtime: Runtime, name: string): Pr
 }
 
 export async function uninstallExpansion(name: string, opts: UninstallExpansionOptions = {}): Promise<InstallResponse> {
-  const entry = BUNDLED_ENGINES.find((candidate) => candidate.id === name);
-  if (!entry?.installer) {
+  const pkg = resolveInstallerPackage(name);
+  if (!pkg) {
     return toInstallError('unknown_expansion', name);
   }
 
   return installResponseSchema.parse(
-    await entry.installer.uninstall({
+    await pkg.installer.uninstall({
       name,
-      version: entry.version,
+      version: pkg.version,
       runtime: resolveRuntime(opts.runtime),
       logger: opts.logger,
       lockTimeoutMs: opts.lockTimeoutMs,
