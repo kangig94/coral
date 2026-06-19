@@ -96,12 +96,25 @@ function warnPermanentlyDisabledLanes(lanes: PermanentlyDisabledLanes): void {
   }
 }
 
+/**
+ * Records and runs the community-summary agent as an observable, abortable
+ * `kb.community_summary` job. Returns whether the agent wrote summaries (so the
+ * scheduler knows to commit). The coordinator supplies this; when omitted (e.g.
+ * tests that exercise topology only), the summary pass is skipped.
+ *
+ * `runSignal` is the scheduler's run abort signal: the implementation composes
+ * it with the job's own (`coral-cli abort`) signal so a scheduler stop cancels
+ * the in-flight agent turn rather than blocking `stop()` on it.
+ */
+export type RunCommunitySummaryJob = (runSignal: AbortSignal) => Promise<boolean>;
+
 export function createCurateScheduler({
   kb,
   curateAssistant,
   processPort,
   storagePort,
   envPort,
+  runCommunitySummaryJob,
   scheduleDebounceMs = CURATE_SCHEDULE_DEBOUNCE_MS,
 }: {
   kb: KbRuntime;
@@ -109,6 +122,7 @@ export function createCurateScheduler({
   processPort: GitSyncRuntimePicks['processPort'];
   storagePort: GitSyncRuntimePicks['storagePort'];
   envPort: GitSyncRuntimePicks['envPort'];
+  runCommunitySummaryJob?: RunCommunitySummaryJob;
   scheduleDebounceMs?: number;
 }): CurateHandle {
   let runtimeStarted = false;
@@ -181,10 +195,16 @@ export function createCurateScheduler({
         shouldStop: () => stopped,
         onFreshnessMismatch: schedule,
       });
+      // Topology is materialized; now fill stale summaries via the recorded
+      // agent (one turn, no-op when the work-list is already empty).
+      let wroteSummaries = false;
+      if (runCommunitySummaryJob !== undefined && !stopped && !signal.aborted) {
+        wroteSummaries = await runCommunitySummaryJob(signal);
+      }
       if (readCurateState(curateDb(kb)).consecutiveCommunityBatchFailures === 0) {
         pendingCommunitySkipTicks = 0;
       }
-      return wroteCommunityFiles;
+      return wroteCommunityFiles || wroteSummaries;
     } catch (error: unknown) {
       if (stopped || signal.aborted) {
         return false;
@@ -273,7 +293,7 @@ export function createCurateScheduler({
 
     if (!stopped && !signal.aborted) {
       if (await runCommunityBatch(signal)) {
-        gitSync.gitAutoCommit('curate: detect communities');
+        gitSync.gitAutoCommit('curate: update communities');
       }
     }
 
@@ -320,7 +340,7 @@ export function createCurateScheduler({
               disabledLaneAlreadyWarned: disabledLanes.communityBatch,
             })
           ) {
-            gitSync.gitAutoCommit('curate: detect communities');
+            gitSync.gitAutoCommit('curate: update communities');
           }
           if (await runTouchDrainSubphase(kb)) {
             gitSync.gitAutoCommit('curate: drain wiki touches');

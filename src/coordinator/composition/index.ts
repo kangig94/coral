@@ -733,6 +733,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     resolveProjectSource: world.resolveProjectSource,
     isDrainRequested: control.isDrainRequested,
     requestDrain: control.requestDrain,
+    getKbJobRecorder,
     hooks: discuss.hooks,
   };
 }

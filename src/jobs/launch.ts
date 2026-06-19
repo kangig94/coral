@@ -8,7 +8,7 @@ import type { LaunchPool } from './contracts/admission.js';
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 export const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
-export type KbJobOperation = 'kb.source_import' | 'kb.reindex';
+export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
 
 export type LaunchDecision =
   | { status: 'running'; job: string; session: string }
@@ -124,10 +124,18 @@ export const kbReindexJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   })
   .strict();
 
+export const kbCommunitySummaryJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
+  .extend({
+    operation: z.literal('kb.community_summary'),
+    request: z.object({}).strict(),
+  })
+  .strict();
+
 export const jobLaunchRequestBodySchema = z.union([
   providerJobLaunchRequestBodySchema,
   kbSourceImportJobLaunchRequestBodySchema,
   kbReindexJobLaunchRequestBodySchema,
+  kbCommunitySummaryJobLaunchRequestBodySchema,
 ]);
 
 export type ProviderJobLaunchRequestBody = z.infer<typeof providerJobLaunchRequestBodySchema>;

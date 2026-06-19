@@ -94,7 +94,7 @@ export interface JobLaunch {
   pool: string;
   enqueueSequence: number;
   providerAction?: ProviderAction;
-  operation?: 'kb.source_import' | 'kb.reindex';
+  operation?: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
   request: {
     prompt?: string;
     name?: string;
@@ -129,7 +129,7 @@ export interface AppServerRuntime {
 
 export interface InternalJobRuntime {
   transport: 'internal';
-  operation: 'kb.source_import' | 'kb.reindex';
+  operation: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
   startTime: string;
 }
 

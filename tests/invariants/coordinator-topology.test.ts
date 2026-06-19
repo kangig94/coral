@@ -62,6 +62,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-abort.ts',
   'src/coordinator/services/job-launch.ts',
   'src/coordinator/services/job-wait.ts',
+  'src/coordinator/services/kb/community-summary.ts',
   'src/coordinator/services/kb/curate-assistant.ts',
   'src/coordinator/services/kb/recorder.ts',
   'src/coordinator/services/kb/reindex.ts',

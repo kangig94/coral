@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as curateState from '#src/kb/curate/state/index.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
+import { createCurateScheduler, type CurateHandle, type RunCommunitySummaryJob } from '#src/kb/curate/scheduler.js';
 import {
   buildClassificationPrompt,
   chunkEntriesByPromptBudget,
@@ -278,7 +278,11 @@ let internals: CurateTestHandle;
 let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 let originalClaudeConfigDir: string | undefined;
 
-function useScheduler(curateAssistant: CurateAssistantPort = noopCurateAssistant, scheduleDebounceMs = 0): void {
+function useScheduler(
+  curateAssistant: CurateAssistantPort = noopCurateAssistant,
+  scheduleDebounceMs = 0,
+  runCommunitySummaryJob?: RunCommunitySummaryJob,
+): void {
   scheduler = createCurateScheduler({
     kb: runtime,
     curateAssistant,
@@ -286,6 +290,7 @@ function useScheduler(curateAssistant: CurateAssistantPort = noopCurateAssistant
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
     scheduleDebounceMs,
+    ...(runCommunitySummaryJob === undefined ? {} : { runCommunitySummaryJob }),
   });
   internals = createCurateTestHandle({
     kb: runtime,
@@ -3210,6 +3215,56 @@ describe('curate', () => {
       await settleCurateRuntime(scheduler);
       // Topology docs written (by rescan or community batch) without summaries.
       expect(readdirSync(runtime.communitiesDir()).some((entry) => entry.endsWith('.md'))).toBe(true);
+    });
+
+    it('runs the community-summary job after topology materializes and commits on its result', async () => {
+      writeNote('coral-peer-summary', {
+        title: 'Peer Summary',
+        tags: ['graph-rag', 'retrieval'],
+        entrySeq: 1,
+        body: 'Graph-backed retrieval improves context selection.',
+      });
+      const entityMeta: EntityGraph['entityMeta'] = {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+      };
+      const relationships: EntityGraph['relationships'] = [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure improves retrieval.',
+          evidence: ['note:coral-peer-summary'],
+        },
+      ];
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-peer-summary': createIndexNote({ title: 'Peer Summary', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+        }),
+        principles: {},
+        entityMeta,
+        relationships,
+      });
+      await runtime.writeEntityGraph({ entityMeta, relationships });
+      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
+
+      // The summary job runs after topology and reports it wrote summaries.
+      let topologyExistedWhenCalled = false;
+      const summaryJob = vi.fn<RunCommunitySummaryJob>(async () => {
+        topologyExistedWhenCalled = readdirSync(runtime.communitiesDir()).some((entry) => entry.endsWith('.md'));
+        return true;
+      });
+      useScheduler(noopCurateAssistant, 0, summaryJob);
+
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+      // The subphase itself does not run the summary job — that is the scheduler's
+      // responsibility — so drive a full scheduler run to exercise the wiring.
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
+
+      expect(summaryJob).toHaveBeenCalled();
+      expect(summaryJob.mock.calls[0][0]).toBeInstanceOf(AbortSignal);
+      expect(topologyExistedWhenCalled).toBe(true);
     });
   });
 

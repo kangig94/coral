@@ -16,6 +16,7 @@ import {
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
 import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
+import { createRunCommunitySummaryJob } from './services/kb/community-summary.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { CreateKbSubsystemOptions } from '../kb/subsystem.js';
@@ -321,6 +322,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return getStoreServices().storeDb;
   };
   const getQueryDb = () => getStoreDb();
+  const getKbJobRecorder = () => {
+    if (core === null) {
+      throw documentedCoralSetupError('startup_not_ready');
+    }
+    return core.getKbJobRecorder();
+  };
 
   const getConsumerDriver = () => {
     const consumerDriver = getStoreServices().consumerDriver;
@@ -539,6 +546,16 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         onCorpusPublishSuccess: () => {
           curateSchedulerHealth.onCorpusPublishSuccess();
         },
+        // The curate scheduler fills stale community summaries via one recorded,
+        // abortable `kb.community_summary` agent turn. The job is backend-global,
+        // so it records against the KB corpus root.
+        createCommunitySummaryJob: (kb: KbRuntime) =>
+          createRunCommunitySummaryJob({
+            kb,
+            curateAssistant: ctx.curateAssistant,
+            recorder: getKbJobRecorder(),
+            projectRoot: ctx.paths.markdownRoot,
+          }),
       };
 
       const prepareRuntime = (built: KnowledgeBaseRuntime): void => {

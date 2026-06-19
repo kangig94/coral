@@ -40,7 +40,7 @@ type JobLaunchProjection = {
   pool: string;
   enqueueSequence: number;
   providerAction?: 'exec' | 'resume';
-  operation?: 'kb.source_import' | 'kb.reindex';
+  operation?: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
   request:
     | {
         prompt: string;
@@ -92,7 +92,7 @@ type JobAppServerRuntimeProjection = {
 
 type JobInternalRuntimeProjection = {
   transport: 'internal';
-  operation: 'kb.source_import' | 'kb.reindex';
+  operation: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
   startTime: string;
 };
 
@@ -413,7 +413,11 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
   }
 
   if (parsed.transport === 'internal') {
-    if (parsed.operation !== 'kb.source_import' && parsed.operation !== 'kb.reindex') {
+    if (
+      parsed.operation !== 'kb.source_import' &&
+      parsed.operation !== 'kb.reindex' &&
+      parsed.operation !== 'kb.community_summary'
+    ) {
       throw new Error('Internal job runtime requires a KB operation.');
     }
     return {

@@ -1,6 +1,6 @@
 import type { Database } from '../store/db.js';
 
-import { createCurateScheduler, type CurateHandle } from './curate/scheduler.js';
+import { createCurateScheduler, type CurateHandle, type RunCommunitySummaryJob } from './curate/scheduler.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from './contract.js';
 import { createKbRuntime } from './runtime.js';
 import { asReadonlyDatabase, type ReadonlyDatabase } from '../store/read-port.js';
@@ -40,6 +40,12 @@ export type CreateKbSubsystemOptions = {
   notifyCorpusMutation?: KbCorpusPublishCallbacks['notifyCorpusMutation'];
   onCorpusPublishFailure?: KbCorpusPublishCallbacks['onPublishFailure'];
   onCorpusPublishSuccess?: KbCorpusPublishCallbacks['onPublishSuccess'];
+  /**
+   * Factory for the scheduler's community-summary job runner, bound to the
+   * freshly-built `kb`. The coordinator supplies it (closing over the KB job
+   * recorder); the KB subsystem itself owns no job-recording machinery.
+   */
+  createCommunitySummaryJob?: (kb: KbRuntime) => RunCommunitySummaryJob;
 };
 
 export async function createKbSubsystem({
@@ -56,6 +62,7 @@ export async function createKbSubsystem({
   notifyCorpusMutation,
   onCorpusPublishFailure,
   onCorpusPublishSuccess,
+  createCommunitySummaryJob,
 }: CreateKbSubsystemOptions): Promise<KnowledgeBaseRuntime> {
   const kb = createKbRuntime({
     markdownRoot: paths.markdownRoot,
@@ -84,6 +91,9 @@ export async function createKbSubsystem({
     processPort,
     storagePort,
     envPort,
+    ...(createCommunitySummaryJob === undefined
+      ? {}
+      : { runCommunitySummaryJob: createCommunitySummaryJob(kb) }),
   });
 
   return {
