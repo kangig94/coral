@@ -2821,11 +2821,11 @@ describe('curate', () => {
         entrySeq: 1,
         body: 'Graph-backed retrieval improves context selection.',
       });
-      const entityMeta = {
+      const entityMeta: EntityGraph['entityMeta'] = {
         'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
         retrieval: { type: 'operation', description: 'Retrieval workflows.' },
       };
-      const relationships = [
+      const relationships: EntityGraph['relationships'] = [
         {
           source: 'graph-rag',
           target: 'retrieval',
@@ -2889,11 +2889,11 @@ describe('curate', () => {
         entrySeq: 1,
         body: 'Graph-backed retrieval improves context selection.',
       });
-      const metaA = {
+      const metaA: EntityGraph['entityMeta'] = {
         'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
         retrieval: { type: 'operation', description: 'Retrieval workflows.' },
       };
-      const relsA = [
+      const relsA: EntityGraph['relationships'] = [
         {
           source: 'graph-rag',
           target: 'retrieval',
@@ -2926,12 +2926,12 @@ describe('curate', () => {
         entrySeq: 2,
         body: 'Vector stores index embeddings for similarity search.',
       });
-      const metaAB = {
+      const metaAB: EntityGraph['entityMeta'] = {
         ...metaA,
         'vector-db': { type: 'technology', description: 'Vector database.' },
         embedding: { type: 'concept', description: 'Embedding vectors.' },
       };
-      const relsAB = [
+      const relsAB: EntityGraph['relationships'] = [
         ...relsA,
         {
           source: 'vector-db',
