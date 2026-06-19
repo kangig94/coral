@@ -271,6 +271,12 @@ function runCliSubprocess(
       ...process.env,
       HOME: fixture.home,
       TMPDIR: fixture.home,
+      // Pin the config dir to the fixture's default `<home>/.claude` so the
+      // store resolves to the flat state root the test seeds. Without this the
+      // subprocess inherits the runner's ambient CLAUDE_CONFIG_DIR, which
+      // hashes into a `by-config/<slot>` path (see claudeConfigSlot) and the
+      // seeded store is never found.
+      CLAUDE_CONFIG_DIR: join(fixture.home, '.claude'),
       CORAL_KB_PATH: fixture.kbRoot,
       CLAUDE_PLUGIN_ROOT: fixture.root,
       NODE_OPTIONS: `--require ${fixture.probeScriptPath}`,
