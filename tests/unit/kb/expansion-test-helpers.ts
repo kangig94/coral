@@ -1,5 +1,9 @@
 import { loadExpansions } from '#src/expansion/loader.js';
-import { createOramaBaseProjection, type OramaBaseProjection } from '#src/engines/orama/backend.js';
+import {
+  createOramaBaseProjection,
+  type OramaBaseProjection,
+  type OramaBaseProjectionOptions,
+} from '#src/engines/orama/backend.js';
 import { createOramaFtsBacked } from '#src/engines/orama/index.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';
@@ -144,7 +148,10 @@ const oramaFtsScopes = new WeakMap<KbRuntime, Disposable>();
  * the projection internally, so tests that exercise the FTS read path through
  * reading the kb.fts capability need this explicit bind.
  */
-export function bindOramaFtsForTest(runtime: KbRuntime): OramaFtsBinding {
+export function bindOramaFtsForTest(
+  runtime: KbRuntime,
+  options: OramaBaseProjectionOptions = {},
+): OramaFtsBinding {
   const previous = oramaFtsScopes.get(runtime);
   if (previous !== undefined) {
     previous[Symbol.dispose]();
@@ -154,7 +161,7 @@ export function bindOramaFtsForTest(runtime: KbRuntime): OramaFtsBinding {
     { files: runtime.projectionArtifacts.files },
     runtime.projectionArtifacts.runtimeDir,
   );
-  const projection = createOramaBaseProjection(runtime, snapshotStore);
+  const projection = createOramaBaseProjection(runtime, snapshotStore, options);
   const ftsBacked = createOramaFtsBacked(projection);
   const scope = createScope();
   runtime.capabilityRegistry.runtimeView().bind(KB_FTS_CAPABILITY, ftsBacked, scope, 'orama');

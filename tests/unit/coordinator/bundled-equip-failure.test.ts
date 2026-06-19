@@ -32,7 +32,7 @@ const FIXED_NOW = '2026-04-27T00:00:00.000Z';
 
 const stubFtsRetrieval = {
   search: async () => ({ hits: [], exhausted: true }),
-  tokenize: () => [],
+  tokenize: async () => [],
   warnings: () => [],
 };
 

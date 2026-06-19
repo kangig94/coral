@@ -3,7 +3,7 @@ import type { CurateAssistantPort } from '../../../kb/curate/assistant.js';
 import type { KbRuntime } from '../../../kb/contract.js';
 import { runCommunitySummaryAgent } from '../../../kb/curate/community/summary-agent.js';
 import type { RunCommunitySummaryJob } from '../../../kb/curate/scheduler.js';
-import { KbJobRecorder, normalizeKbFailureDetail } from './recorder.js';
+import { type KbJobRecorder, normalizeKbFailureDetail } from './recorder.js';
 
 /**
  * Builds the scheduler's `runCommunitySummaryJob` callback: records one

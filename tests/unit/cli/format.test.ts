@@ -279,6 +279,7 @@ describe('cli format', () => {
       active: 2,
       activeJobs: 1,
       inflightRequests: 0,
+      textProjectionState: 'idle' as const,
       kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
     };
 

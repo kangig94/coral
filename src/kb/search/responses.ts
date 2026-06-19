@@ -9,7 +9,7 @@ import {
 } from '../entry-types.js';
 import { corpusStructuralCacheKey, type CorpusStructuralKey } from '../corpus/structural-key.js';
 import type { RetrievalDiagnostic, RetrievalEvidence } from './contract.js';
-import { extractSnippet, hasTokenOverlap, type QueryContext } from './snippets.js';
+import { extractSnippet, hasTokenOverlap, tokenizeMany, type QueryContext } from './snippets.js';
 import {
   type HybridKbSearchHit,
   type ResolvedKbSearchEntry,
@@ -196,23 +196,32 @@ function evidenceFrom(hit: ResolvedKbSearchEntry | ResolvedKbSearchHit | HybridK
   return evidence;
 }
 
-function toResult(hit: ResolvedKbSearchHit, query: QueryContext, evidence: RetrievalEvidence[] = []): KbResult {
+async function toResult(
+  hit: ResolvedKbSearchHit,
+  query: QueryContext,
+  evidence: RetrievalEvidence[] = [],
+): Promise<KbResult> {
   const matchedBy = new Set<KbMatchSurface>();
+  const surfaces: Array<{ readonly surface: KbMatchSurface; readonly text: string }> = [
+    { surface: 'filename', text: hit.slug },
+    ...hit.principles.map((principle) => ({ surface: 'principle' as const, text: principle })),
+    ...hit.tags.map((tag) => ({ surface: 'tag' as const, text: tag })),
+    { surface: 'title', text: hit.title },
+  ];
+  const tokenizedSurfaces = await tokenizeMany(
+    query.fts,
+    surfaces.map((surface) => surface.text),
+  );
 
-  if (hasTokenOverlap(query.queryTokens, query.fts.tokenize(hit.slug))) {
-    matchedBy.add('filename');
-  }
-  if (hit.principles.some((principle) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(principle)))) {
-    matchedBy.add('principle');
-  }
-  if (hit.tags.some((tag) => hasTokenOverlap(query.queryTokens, query.fts.tokenize(tag)))) {
-    matchedBy.add('tag');
-  }
-  if (hasTokenOverlap(query.queryTokens, query.fts.tokenize(hit.title))) {
-    matchedBy.add('title');
+  for (let index = 0; index < surfaces.length; index += 1) {
+    const surface = surfaces[index];
+    const tokens = tokenizedSurfaces[index] ?? [];
+    if (surface !== undefined && hasTokenOverlap(query.queryTokens, tokens)) {
+      matchedBy.add(surface.surface);
+    }
   }
 
-  const snippet = extractSnippet(hit.document.body, query);
+  const snippet = await extractSnippet(hit.document.body, query);
   if (snippet !== undefined) {
     matchedBy.add('content');
   } else if (matchedBy.size === 0) {
@@ -250,21 +259,21 @@ function toVectorOnlyResult(
   );
 }
 
-function toHybridResult(
+async function toHybridResult(
   hit: ResolvedKbSearchHit | HybridKbSearchHit,
   query: QueryContext,
   communityContext?: string[],
-): KbResult {
+): Promise<KbResult> {
   const evidence = evidenceFrom(hit);
   const base =
     hit.document === null
       ? toVectorOnlyResult(hit, communityContext, evidence)
-      : withCommunityContext(toResult(hit as ResolvedKbSearchHit, query, evidence), communityContext);
+      : withCommunityContext(await toResult(hit as ResolvedKbSearchHit, query, evidence), communityContext);
 
   return base;
 }
 
-export function buildTextResponse(
+export async function buildTextResponse(
   hits: Array<ResolvedKbSearchHit | HybridKbSearchHit>,
   query: QueryContext,
   topK: number,
@@ -273,12 +282,12 @@ export function buildTextResponse(
   structuralKey: CorpusStructuralKey | null,
   responseWarnings: SearchResponseWarnings = {},
   retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
-): KbSearchResponse {
+): Promise<KbSearchResponse> {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, structuralKey);
   const results: KbResult[] = [];
   for (const hit of finalHits) {
-    results.push(toHybridResult(hit, query, communityContext.get(hit.entryId)));
+    results.push(await toHybridResult(hit, query, communityContext.get(hit.entryId)));
   }
 
   return {
@@ -290,7 +299,7 @@ export function buildTextResponse(
   };
 }
 
-export function buildHybridResponse(
+export async function buildHybridResponse(
   hits: HybridKbSearchHit[],
   query: QueryContext,
   topK: number,
@@ -299,12 +308,12 @@ export function buildHybridResponse(
   structuralKey: CorpusStructuralKey | null,
   responseWarnings: SearchResponseWarnings = {},
   retrievalDiagnostics: readonly RetrievalDiagnostic[] = [],
-): KbSearchResponse {
+): Promise<KbSearchResponse> {
   const finalHits = hits.slice(0, topK);
   const communityContext = buildCommunityContextMap(finalHits, index, communitiesFresh, structuralKey);
   const results: KbResult[] = [];
   for (const hit of finalHits) {
-    results.push(toHybridResult(hit, query, communityContext.get(hit.entryId)));
+    results.push(await toHybridResult(hit, query, communityContext.get(hit.entryId)));
   }
 
   return {

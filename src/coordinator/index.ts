@@ -60,7 +60,7 @@ import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
 import type { SourceImportReadiness } from '../jobs/launch.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
-import { ExpansionLifecycleService } from './expansion/lifecycle.js';
+import { ExpansionLifecycleService, startKiwiArtifactFetchOnBoot } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
@@ -68,6 +68,7 @@ import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
+import type { TextProjectionHealthState } from '../transport/server-ports.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -121,6 +122,41 @@ function resolveBootFreshnessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_BOOT_FRESHNESS_TIMEOUT_MS;
+}
+
+function createTextProjectionHealthTracker(): {
+  readonly beginModelFetch: () => void;
+  readonly endModelFetch: () => void;
+  readonly beginReindex: () => void;
+  readonly endReindex: () => void;
+  readonly read: () => TextProjectionHealthState;
+} {
+  let modelFetchCount = 0;
+  let reindexCount = 0;
+
+  return {
+    beginModelFetch: () => {
+      modelFetchCount += 1;
+    },
+    endModelFetch: () => {
+      modelFetchCount = Math.max(0, modelFetchCount - 1);
+    },
+    beginReindex: () => {
+      reindexCount += 1;
+    },
+    endReindex: () => {
+      reindexCount = Math.max(0, reindexCount - 1);
+    },
+    read: () => {
+      if (modelFetchCount > 0) {
+        return 'fetching';
+      }
+      if (reindexCount > 0) {
+        return 'reindexing';
+      }
+      return 'idle';
+    },
+  };
 }
 
 export async function finalizeStoreServices(ref: StoreServicesRef): Promise<void> {
@@ -309,6 +345,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
+  const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
 
   const getStoreServices = (): CoordinatorStoreServices => {
@@ -400,6 +437,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         prepareCurrentProjectionInput: (options) =>
           requireKbRuntime('kb.corpusProjectionReader').corpusProjectionReader.prepareCurrentProjectionInput(options),
       },
+      onTextProjectionApplyStart: textProjectionHealth.beginReindex,
+      onTextProjectionApplyEnd: textProjectionHealth.endReindex,
       onTextProjectionSync: () => {
         requireKbRuntime('kb.textProjectionSync').recordIndexSyncSuccess();
       },
@@ -486,6 +525,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     // fill empty bindings.
     await getExpansionLifecycleService().recoverOnBoot();
     signal.throwIfAborted();
+    // Korean analyzer artifacts are intentionally fetched out-of-band:
+    // boot/search stays on the Intl baseline while the model downloads, then
+    // the text projection is force-reapplied once the artifact lands.
+    startKiwiArtifactFetchOnBoot({
+      runtime,
+      kb: built.kb,
+      driver,
+      timeoutMs: bootFreshnessTimeoutMs,
+      signal,
+      onModelFetchStart: textProjectionHealth.beginModelFetch,
+      onModelFetchEnd: textProjectionHealth.endModelFetch,
+    });
     // Boot step 4: repair unchanged-snapshot projection artifacts before
     // readiness waits.
     await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
@@ -512,6 +563,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
+    getTextProjectionState: textProjectionHealth.read,
     createKbSubsystemFn: (ctx) => {
       // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
       // corpus/curate wiring below. KB stays off until a daemon restart.

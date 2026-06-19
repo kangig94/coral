@@ -2,7 +2,14 @@ import { load, save, type RawData } from '@orama/orama';
 
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbCorpusSnapshot, KbProjectionArtifactFilePort } from '../../kb/contract.js';
-import { computeOramaArtifactDigest, createOramaProjectionMetadata } from './artifact-port.js';
+import {
+  computeOramaArtifactDigest,
+  createOramaEntryManifestFromArtifact,
+  createOramaProjectionMetadata,
+  readOramaProjectionArtifact,
+  type OramaProjectionIdentityInput,
+  type OramaProjectionMetadata,
+} from './artifact-port.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
@@ -10,6 +17,7 @@ import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 export interface KbCachedOramaIndex {
   db: KbOramaDb;
   tokenizer: KbOramaTokenizer;
+  metadata?: OramaProjectionMetadata;
 }
 
 export type OramaSnapshotPorts = {
@@ -29,7 +37,10 @@ export class OramaSnapshotStore {
   }
 
   hasPersistedSnapshot(): boolean {
-    return this.ports.files.existsSync(oramaIndexPath(this.runtimeDir));
+    return (
+      this.ports.files.existsSync(oramaIndexPath(this.runtimeDir)) &&
+      this.ports.files.existsSync(oramaIndexMetadataPath(this.runtimeDir))
+    );
   }
 
   getCache(): KbCachedOramaIndex | null {
@@ -50,10 +61,13 @@ export class OramaSnapshotStore {
   }
 
   async load(): Promise<KbCachedOramaIndex> {
+    const artifactPath = oramaIndexPath(this.runtimeDir);
+    const metadataPath = oramaIndexMetadataPath(this.runtimeDir);
+    const { artifactRaw, metadata } = readOramaProjectionArtifact(this.ports.files, artifactPath, metadataPath);
     const { db, tokenizer } = await createOramaDb();
-    const raw = JSON.parse(this.ports.files.readFileSync(oramaIndexPath(this.runtimeDir), 'utf-8')) as RawData;
+    const raw = JSON.parse(artifactRaw) as RawData;
     load(db, raw);
-    return { db, tokenizer };
+    return { db, tokenizer, metadata };
   }
 
   async loadIfPresent(): Promise<KbCachedOramaIndex | null> {
@@ -91,14 +105,15 @@ export class OramaSnapshotStore {
     }
   }
 
-  persist(projected: KbCorpusSnapshot, db: KbOramaDb): void {
+  persist(projected: KbCorpusSnapshot, db: KbOramaDb, identityInput: OramaProjectionIdentityInput = {}): void {
     const snapshot = save(db) as unknown as RawData;
     const artifactPath = oramaIndexPath(this.runtimeDir);
     this.ports.files.writeJsonAtomic(artifactPath, snapshot);
     const artifactRaw = this.ports.files.readFileSync(artifactPath, 'utf-8');
+    const entryManifest = createOramaEntryManifestFromArtifact(snapshot);
     this.ports.files.writeJsonAtomic(
       oramaIndexMetadataPath(this.runtimeDir),
-      createOramaProjectionMetadata(projected, computeOramaArtifactDigest(artifactRaw)),
+      createOramaProjectionMetadata(projected, computeOramaArtifactDigest(artifactRaw), entryManifest, identityInput),
     );
   }
 }

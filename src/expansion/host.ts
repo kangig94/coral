@@ -63,6 +63,7 @@ function engineFacingKbRuntime(kb: KbRuntime, consumerDriver: ConsumerDriverPort
     runtimeDir: kb.runtimeDir,
     time: kb.time,
     ids: kb.ids,
+    declaredAnalyzers: kb.declaredAnalyzers,
     projectionArtifacts: kb.projectionArtifacts,
     corpusProjectionReader: kb.corpusProjectionReader,
     journalReader: consumerDriver.getJournalReader(),

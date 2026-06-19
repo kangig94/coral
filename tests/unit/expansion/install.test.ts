@@ -6,7 +6,7 @@ import { gzipSync } from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
-import type * as DownloadModule from '#src/engines/needle/download.js';
+import type * as DownloadModule from '#src/runtime/download.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
@@ -17,8 +17,8 @@ const mockState = vi.hoisted(() => ({
   downloadBuffer: vi.fn(),
 }));
 
-vi.mock('#src/engines/needle/download.js', async () => {
-  const actual = await vi.importActual<typeof DownloadModule>('#src/engines/needle/download.js');
+vi.mock('#src/runtime/download.js', async () => {
+  const actual = await vi.importActual<typeof DownloadModule>('#src/runtime/download.js');
   return {
     ...actual,
     downloadBuffer: mockState.downloadBuffer,

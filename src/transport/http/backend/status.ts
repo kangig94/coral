@@ -22,6 +22,7 @@ export type BackendStatus =
       inflightRequests: number;
       queueDepth?: number;
       kernel: BackendHealth['kernel'];
+      textProjectionState: BackendHealth['textProjectionState'];
       subsystems: BackendHealth['subsystems'];
       diagnostics?: BackendHealth['diagnostics'];
     }

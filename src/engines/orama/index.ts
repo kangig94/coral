@@ -9,6 +9,9 @@ function asFtsRetrieval(searchPort: OramaSearchPort): FtsRetrieval {
     tokenize(text) {
       return searchPort.tokenize(text);
     },
+    tokenizeBatch(texts) {
+      return searchPort.tokenizeBatch(texts);
+    },
     warnings() {
       return searchPort.warnings();
     },

@@ -35,6 +35,7 @@ function createNeedleRuntime(kb: KbRuntime, driver: ConsumerDriver): KbEngineRun
     runtimeDir: kb.runtimeDir,
     time: kb.time,
     ids: kb.ids,
+    declaredAnalyzers: kb.declaredAnalyzers,
     projectionArtifacts: kb.projectionArtifacts,
     corpusProjectionReader: kb.corpusProjectionReader,
     journalReader: driver.getJournalReader(),

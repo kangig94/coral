@@ -1,6 +1,7 @@
 import type { Database } from '../store/db.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
+import { backendLog } from '../infra/backend-log.js';
 import type { IdPort, ProcessPort } from '../runtime/ports.js';
 import type { CurateAssistantPort } from './curate/assistant.js';
 import type {
@@ -69,6 +70,7 @@ import { CorpusInboundSyncService } from './corpus/inbound-sync-service.js';
 import { CorpusMutationFinalizer, type KbRuntimeMutationLockContext } from './corpus/mutation-finalizer.js';
 import { CorpusPublicationService } from './corpus/publication-service.js';
 import { buildCurrentCorpusSurface } from './corpus/surface.js';
+import { readDeclaredKbAnalyzersFromEnv, type KbDeclaredAnalyzer } from './extra-langs.js';
 
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
@@ -105,6 +107,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly curateAssistant: CurateAssistantPort;
   readonly processPort: ProcessPort;
   readonly envPort: EnvPort;
+  readonly declaredAnalyzers: readonly KbDeclaredAnalyzer[];
   readonly capabilityRegistry: KbRuntime['capabilityRegistry'];
   readonly capabilities: KbRuntime['capabilities'];
   readonly roleRegistry: KbRuntime['roleRegistry'];
@@ -158,6 +161,9 @@ class KbRuntimeImpl implements KbRuntime {
     this.curateAssistant = curateAssistant;
     this.processPort = processPort;
     this.envPort = envPort;
+    this.declaredAnalyzers = readDeclaredKbAnalyzersFromEnv(envPort, (message) => {
+      backendLog.warn(message);
+    });
     this.paths = createKbRuntimePaths(this.markdownRoot, this.runtimeDir);
     const capabilityRegistry = createCapabilityRegistry();
     capabilityRegistry.registerBuiltin(

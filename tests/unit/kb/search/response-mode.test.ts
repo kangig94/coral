@@ -109,7 +109,7 @@ function testRuntime(
     async search() {
       return { hits: [], exhausted: true };
     },
-    tokenize(text) {
+    async tokenize(text) {
       return text.trim().toLowerCase().split(/\s+/u).filter(Boolean);
     },
     warnings() {

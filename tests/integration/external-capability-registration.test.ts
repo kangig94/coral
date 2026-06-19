@@ -31,7 +31,7 @@ const TEST_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
     host.bind(KB_FTS_CAPABILITY, {
       read: () => ({
         search: async () => ({ hits: [], exhausted: true }),
-        tokenize: () => [],
+        tokenize: async () => [],
         warnings: () => [],
       }),
       consumer: {
