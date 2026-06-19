@@ -2805,6 +2805,164 @@ describe('curate', () => {
       ).toBe(true);
     });
 
+    it('keeps the frontmatter fingerprint through a rescan so an unchanged community is not re-summarized', async () => {
+      const readCommunityFingerprints = (): Array<string | undefined> =>
+        readdirSync(runtime.communitiesDir())
+          .filter((entry) => entry.endsWith('.md'))
+          .map(
+            (entry) =>
+              parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8'))
+                .summaryInputFingerprint,
+          );
+
+      writeNote('coral-peer-community', {
+        title: 'Peer Community',
+        tags: ['graph-rag', 'retrieval'],
+        entrySeq: 1,
+        body: 'Graph-backed retrieval improves context selection.',
+      });
+      const entityMeta = {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+      };
+      const relationships = [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure improves retrieval.',
+          evidence: ['note:coral-peer-community'],
+        },
+      ];
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-peer-community': createIndexNote({
+            title: 'Peer Community',
+            tags: ['graph-rag', 'retrieval'],
+            entrySeq: 1,
+          }),
+        }),
+        principles: {},
+        entityMeta,
+        relationships,
+      });
+      await runtime.writeEntityGraph({ entityMeta, relationships });
+      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
+
+      // Round 1: generate summaries + fingerprints into community frontmatter.
+      const firstSpawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Peer summary.');
+      useScheduler(assistantFromComplete(firstSpawn));
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+      expect(firstSpawn).toHaveBeenCalled();
+      expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
+
+      // Rescan drives the topology-refresh writer (the subphase never sets
+      // communitySummaryTopologyHash, so the refresh rebuilds the files).
+      await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
+
+      // The frontmatter fingerprint must survive the refresh, otherwise the
+      // freshness gate reopens and the next run re-summarizes unchanged work.
+      expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
+
+      // Round 2: inputs unchanged, so no summary should be generated.
+      const skipSpawn = vi.fn<CurateAssistantPort['complete']>(async () => {
+        throw new Error('unchanged community should skip summary generation after a rescan');
+      });
+      useScheduler(assistantFromComplete(skipSpawn));
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+      expect(skipSpawn).not.toHaveBeenCalled();
+    });
+
+    it('preserves an unrelated community fingerprint when a new cluster shifts the topology', async () => {
+      const fingerprintBySlug = (): Map<string, string | undefined> => {
+        const map = new Map<string, string | undefined>();
+        for (const entry of readdirSync(runtime.communitiesDir()).filter((file) => file.endsWith('.md'))) {
+          const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
+          map.set(entry.replace(/\.md$/, ''), parseCommunityFrontmatter(raw).summaryInputFingerprint);
+        }
+        return map;
+      };
+
+      writeNote('coral-peer-community', {
+        title: 'Peer Community',
+        tags: ['graph-rag', 'retrieval'],
+        entrySeq: 1,
+        body: 'Graph-backed retrieval improves context selection.',
+      });
+      const metaA = {
+        'graph-rag': { type: 'concept', description: 'Graph-backed retrieval.' },
+        retrieval: { type: 'operation', description: 'Retrieval workflows.' },
+      };
+      const relsA = [
+        {
+          source: 'graph-rag',
+          target: 'retrieval',
+          type: 'enables',
+          description: 'Graph structure improves retrieval.',
+          evidence: ['note:coral-peer-community'],
+        },
+      ];
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-peer-community': createIndexNote({ title: 'Peer Community', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+        }),
+        principles: {},
+        entityMeta: metaA,
+        relationships: relsA,
+      });
+      await runtime.writeEntityGraph({ entityMeta: metaA, relationships: relsA });
+      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
+
+      useScheduler(assistantFromComplete(vi.fn<CurateAssistantPort['complete']>(async () => 'Cluster A summary.')));
+      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+      const before = fingerprintBySlug();
+      expect([...before.values()].every((fp) => fp !== undefined)).toBe(true);
+
+      // Introduce a second, disjoint cluster — the entity-graph topology changes
+      // but cluster A's members and evidence are untouched.
+      writeNote('coral-vector-store', {
+        title: 'Vector Store',
+        tags: ['vector-db', 'embedding'],
+        entrySeq: 2,
+        body: 'Vector stores index embeddings for similarity search.',
+      });
+      const metaAB = {
+        ...metaA,
+        'vector-db': { type: 'technology', description: 'Vector database.' },
+        embedding: { type: 'concept', description: 'Embedding vectors.' },
+      };
+      const relsAB = [
+        ...relsA,
+        {
+          source: 'vector-db',
+          target: 'embedding',
+          type: 'requires',
+          description: 'Vector DBs store embeddings.',
+          evidence: ['note:coral-vector-store'],
+        },
+      ];
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-peer-community': createIndexNote({ title: 'Peer Community', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+          'coral-vector-store': createIndexNote({ title: 'Vector Store', tags: ['vector-db', 'embedding'], entrySeq: 2 }),
+        }),
+        principles: {},
+        entityMeta: metaAB,
+        relationships: relsAB,
+      });
+      await runtime.writeEntityGraph({ entityMeta: metaAB, relationships: relsAB });
+
+      // Rescan with the shifted topology drives the topology-refresh rebuild.
+      await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
+
+      // Cluster A's fingerprint must be carried through unchanged; if the refresh
+      // drops it, the next curate run re-summarizes work that never changed.
+      const after = fingerprintBySlug();
+      for (const [slug, fp] of before) {
+        expect(after.get(slug)).toBe(fp);
+      }
+    });
+
     it('skips a pulled community summary when markdown frontmatter carries the matching fingerprint', async () => {
       writeNote('coral-peer-community', {
         title: 'Peer Community',
