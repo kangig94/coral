@@ -2651,7 +2651,7 @@ describe('curate', () => {
       expect(readCurateState(curateDb(runtime)).retryNotBefore).not.toBeNull();
     });
 
-    it('rebuilds text artifacts for entity-graph communities and persists summary fingerprints', async () => {
+    it('rebuilds text artifacts for entity-graph communities (topology only, no LLM summary)', async () => {
       const notes: Record<string, ReturnType<typeof createIndexNote>> = {
         'coral-transformers-a': createIndexNote({
           title: 'Transformers A',
@@ -2773,8 +2773,7 @@ describe('curate', () => {
         }),
       );
 
-      const spawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Shared themes across the community.');
-      useScheduler(assistantFromComplete(spawn));
+      useScheduler();
 
       const lockSpy = vi.spyOn(runtime, 'withMutationLock');
       const indexSyncSuccessSpy = vi.spyOn(runtime, 'recordIndexSyncSuccess');
@@ -2784,7 +2783,6 @@ describe('curate', () => {
       expect(lockSpy).toHaveBeenCalledTimes(1);
       await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
       expect(indexSyncSuccessSpy.mock.calls.length).toBeGreaterThan(0);
-      expect(spawn.mock.calls.length).toBeGreaterThan(0);
 
       const state = readCurateState(curateDb(runtime));
       expect(state).toMatchObject({
@@ -2795,22 +2793,23 @@ describe('curate', () => {
       expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
       expect(state.communitySummaryInputFingerprints).toBeUndefined();
 
+      // Topology materialized docs without summaries; stale communities await the agent.
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(communityFiles.length).toBeGreaterThan(0);
       expect(
-        communityFiles.some((entry) =>
-          readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
+        communityFiles.every((entry) =>
+          !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
         ),
       ).toBe(true);
       expect(
         communityFiles.every((entry) => {
           const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
-          return parseCommunityFrontmatter(raw).summaryInputFingerprint !== undefined;
+          return parseCommunityFrontmatter(raw).summaryInputFingerprint === undefined;
         }),
       ).toBe(true);
     });
 
-    it('keeps the frontmatter fingerprint through a rescan so an unchanged community is not re-summarized', async () => {
+    it('carries prior summary and fingerprint through a topology rebuild', async () => {
       const readCommunityFingerprints = (): Array<string | undefined> =>
         readdirSync(runtime.communitiesDir())
           .filter((entry) => entry.endsWith('.md'))
@@ -2854,11 +2853,15 @@ describe('curate', () => {
       await runtime.writeEntityGraph({ entityMeta, relationships });
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      // Round 1: generate summaries + fingerprints into community frontmatter.
-      const firstSpawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Peer summary.');
-      useScheduler(assistantFromComplete(firstSpawn));
+      // Round 1: topology materializes community docs without summaries.
+      useScheduler();
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
-      expect(firstSpawn).toHaveBeenCalled();
+      expect(readCommunityFingerprints().every((fp) => fp === undefined)).toBe(true);
+
+      // Simulate the agent applying a summary (sets fingerprint server-side).
+      const files = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+      const slug = files[0].replace(/\.md$/, '');
+      await applyCommunitySummary(runtime, slug, 'Peer summary.');
       expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
 
       // Rescan drives the topology-refresh writer (the subphase never sets
@@ -2866,16 +2869,12 @@ describe('curate', () => {
       await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
 
       // The frontmatter fingerprint must survive the refresh, otherwise the
-      // freshness gate reopens and the next run re-summarizes unchanged work.
+      // freshness gate reopens and the agent re-summarizes unchanged work.
       expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
 
-      // Round 2: inputs unchanged, so no summary should be generated.
-      const skipSpawn = vi.fn<CurateAssistantPort['complete']>(async () => {
-        throw new Error('unchanged community should skip summary generation after a rescan');
-      });
-      useScheduler(assistantFromComplete(skipSpawn));
+      // Round 2: topology rebuild carries the prior fingerprint; no LLM call.
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
-      expect(skipSpawn).not.toHaveBeenCalled();
+      expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
     });
 
     it('preserves an unrelated community fingerprint when a new cluster shifts the topology', async () => {
@@ -2918,8 +2917,15 @@ describe('curate', () => {
       await runtime.writeEntityGraph({ entityMeta: metaA, relationships: relsA });
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      useScheduler(assistantFromComplete(vi.fn<CurateAssistantPort['complete']>(async () => 'Cluster A summary.')));
+      // Topology run materializes cluster A docs without summaries.
+      useScheduler();
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
+
+      // Simulate the agent applying summaries to cluster A communities.
+      const clusterAFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+      for (const file of clusterAFiles) {
+        await applyCommunitySummary(runtime, file.replace(/\.md$/, ''), 'Cluster A summary.');
+      }
       const before = fingerprintBySlug();
       expect([...before.values()].every((fp) => fp !== undefined)).toBe(true);
 
@@ -2961,14 +2967,14 @@ describe('curate', () => {
       await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
 
       // Cluster A's fingerprint must be carried through unchanged; if the refresh
-      // drops it, the next curate run re-summarizes work that never changed.
+      // drops it, the agent would re-summarize work that never changed.
       const after = fingerprintBySlug();
       for (const [slug, fp] of before) {
         expect(after.get(slug)).toBe(fp);
       }
     });
 
-    it('skips a pulled community summary when markdown frontmatter carries the matching fingerprint', async () => {
+    it('topology run writes docs without summaries and a stale DB fingerprint does not prevent doc writes', async () => {
       writeNote('coral-peer-community', {
         title: 'Peer Community',
         tags: ['graph-rag', 'retrieval'],
@@ -3015,21 +3021,18 @@ describe('curate', () => {
       });
       writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      const initialSpawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Peer generated summary.');
-      useScheduler(assistantFromComplete(initialSpawn));
-
+      useScheduler();
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
-      expect(initialSpawn).toHaveBeenCalled();
 
+      // Topology only: no summary, no frontmatter fingerprint.
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(communityFiles.length).toBeGreaterThan(0);
       const generatedFrontmatter = communityFiles.map((entry) =>
         parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8')),
       );
-      expect(generatedFrontmatter.every((frontmatter) => frontmatter.summaryInputFingerprint !== undefined)).toBe(
-        true,
-      );
+      expect(generatedFrontmatter.every((frontmatter) => frontmatter.summaryInputFingerprint === undefined)).toBe(true);
 
+      // A stale DB fingerprint does not affect the topology phase (it only gates the agent).
       const legacyDb = curateDb(runtime);
       for (const entry of communityFiles) {
         legacyDb
@@ -3042,15 +3045,7 @@ describe('curate', () => {
           .run(entry.replace(/\.md$/, ''), 'stale-local-fingerprint');
       }
 
-      const skipSpawn = vi.fn<CurateAssistantPort['complete']>(async () => {
-        throw new Error('matching community frontmatter fingerprint should skip summary generation');
-      });
-      useScheduler(assistantFromComplete(skipSpawn));
-
-      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
-
-      expect(skipSpawn).not.toHaveBeenCalled();
-
+      // Re-run with changed input: topology still writes docs, no LLM call.
       writeNote('coral-peer-community', {
         title: 'Peer Community',
         tags: ['graph-rag', 'retrieval'],
@@ -3058,15 +3053,17 @@ describe('curate', () => {
         body: 'Graph-backed retrieval now emphasizes changed member evidence.',
       });
 
-      const changedInputSpawn = vi.fn<CurateAssistantPort['complete']>(async () => 'Updated community summary.');
-      useScheduler(assistantFromComplete(changedInputSpawn));
-
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
-
-      expect(changedInputSpawn).toHaveBeenCalled();
+      expect(
+        communityFiles.every(
+          (entry) =>
+            parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8'))
+              .summaryInputFingerprint === undefined,
+        ),
+      ).toBe(true);
     });
 
-    it('discards the prepared community batch on summary failures and retries cleanly on the next run', async () => {
+    it('discards the topology batch on mutation-lock failures and retries cleanly on the next run', async () => {
       writeNote('coral-graph-rag', {
         title: 'Graph RAG',
         tags: ['graph-rag', 'retrieval'],
@@ -3109,13 +3106,13 @@ describe('curate', () => {
         }),
       );
 
-      useScheduler(
-        assistantFromComplete(async () => {
-          throw new Error('summary failed');
-        }),
-      );
+      useScheduler();
 
-      await expect(internals.runCommunitySubphase()).rejects.toThrow('summary failed');
+      // Simulate a topology failure by making the mutation lock throw.
+      const lockSpy = vi.spyOn(runtime, 'withMutationLock').mockRejectedValueOnce(new Error('topology failed'));
+
+      await expect(internals.runCommunitySubphase()).rejects.toThrow('topology failed');
+      lockSpy.mockRestore();
 
       const stateAfterFailure = readCurateState(curateDb(runtime));
       const filesAfterFailure = existsSync(runtime.communitiesDir())
@@ -3125,30 +3122,25 @@ describe('curate', () => {
       expect(stateAfterFailure.communityTopologyHash).toBeUndefined();
       expect(stateAfterFailure.communitySummaryTopologyHash).toBeUndefined();
       expect(stateAfterFailure.communitySummaryInputFingerprints).toBeUndefined();
+      // The throw must skip the success-path state write: the seeded failure
+      // counter survives unchanged (not reset to 0).
+      expect(stateAfterFailure.consecutiveCommunityBatchFailures).toBe(4);
       expect(filesAfterFailure).toEqual([]);
-
-      useScheduler(assistantFromText('Recovered community summary.'));
 
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       const filesAfterRecovery = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(filesAfterRecovery.length).toBeGreaterThan(0);
+      // Topology only: docs are written without summaries.
       expect(
-        filesAfterRecovery.every((entry) =>
-          readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
+        filesAfterRecovery.every(
+          (entry) => !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
         ),
       ).toBe(true);
       expect(readCurateState(curateDb(runtime))).toMatchObject({
         consecutiveClaimFailures: 2,
         consecutiveCommunityBatchFailures: 0,
       });
-      expect(readCurateState(curateDb(runtime)).communitySummaryInputFingerprints).toBeUndefined();
-      expect(
-        filesAfterRecovery.every((entry) => {
-          const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
-          return parseCommunityFrontmatter(raw).summaryInputFingerprint !== undefined;
-        }),
-      ).toBe(true);
     });
 
     it('backs off community batch retries by scheduler tick and resets on success', async () => {
@@ -3185,42 +3177,39 @@ describe('curate', () => {
           },
         ],
       });
-      writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-      let attempts = 0;
-      const spawn = vi.fn<CurateAssistantPort['complete']>(async () => {
-        attempts += 1;
-        if (attempts === 1) {
-          throw new Error('summary failed');
-        }
+      // Pre-seed one failure so the scheduler starts with 2 skip ticks (2^1 = 2).
+      writeCurateState(
+        curateDb(runtime),
+        createCurateState({ initialized: true, consecutiveCommunityBatchFailures: 1 }),
+      );
 
-        return 'Recovered community summary.';
-      });
-      useScheduler(assistantFromComplete(spawn), 100);
+      useScheduler(noopCurateAssistant, 100);
+
+      // Spy on captureCorpusSnapshot which is called only from prepareCommunityPayload
+      // (the community batch phase), not from the topology-refresh rescan path.
+      const captureSnapshotSpy = vi.spyOn(runtime, 'captureCorpusSnapshot');
 
       await scheduler.start();
       expect(internals.calculateCommunityBatchBackoffTicks(7)).toBe(64);
+      // With 1 failure, 2 skip ticks are queued; two ticks pass without community batch.
+      const snapshotsAfterStart = captureSnapshotSpy.mock.calls.length;
 
       await vi.advanceTimersByTimeAsync(100);
-      expect(spawn).toHaveBeenCalledTimes(1);
-      expect(readCurateState(curateDb(runtime)).consecutiveCommunityBatchFailures).toBe(1);
+      // Tick 1: community batch skipped (pendingCommunitySkipTicks 2→1).
+      expect(captureSnapshotSpy.mock.calls.length).toBe(snapshotsAfterStart);
 
       await vi.advanceTimersByTimeAsync(100);
-      expect(spawn).toHaveBeenCalledTimes(1);
+      // Tick 2: community batch skipped (pendingCommunitySkipTicks 1→0).
+      expect(captureSnapshotSpy.mock.calls.length).toBe(snapshotsAfterStart);
 
       await vi.advanceTimersByTimeAsync(100);
-      expect(spawn).toHaveBeenCalledTimes(1);
-
-      await vi.advanceTimersByTimeAsync(100);
-      expect(spawn).toHaveBeenCalledTimes(2);
-      expect(readCurateState(curateDb(runtime)).consecutiveCommunityBatchFailures).toBe(0);
+      // Tick 3: skip ticks exhausted, community batch runs.
+      expect(captureSnapshotSpy.mock.calls.length).toBeGreaterThan(snapshotsAfterStart);
 
       await settleCurateRuntime(scheduler);
-      expect(
-        readdirSync(runtime.communitiesDir()).some((entry) =>
-          readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
-        ),
-      ).toBe(true);
+      // Topology docs written (by rescan or community batch) without summaries.
+      expect(readdirSync(runtime.communitiesDir()).some((entry) => entry.endsWith('.md'))).toBe(true);
     });
   });
 
@@ -3276,15 +3265,20 @@ describe('community summary agent surface', () => {
     await runtime.writeEntityGraph({ entityMeta, relationships });
     writeCurateState(curateDb(runtime), createCurateState({ initialized: true }));
 
-    // Materialize community files with summaries + fingerprints via the subphase.
-    useScheduler(assistantFromComplete(vi.fn<CurateAssistantPort['complete']>(async () => 'Initial summary.')));
+    // Materialize community topology docs (no summaries; subphase is topology-only).
+    useScheduler();
     await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
-    // Freshly summarized → the server recomputes a matching fingerprint, so nothing is stale.
+    // Apply a summary for each community via the surface so nothing is stale.
+    const files = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
+    for (const file of files) {
+      await applyCommunitySummary(runtime, file.replace(/\.md$/, ''), 'Initial summary.');
+    }
+
+    // All summaries applied → the server recomputes a matching fingerprint, so nothing is stale.
     expect(listStaleCommunities(runtime)).toEqual([]);
 
     // Simulate the churn-stripped state: remove the fingerprint from one community file.
-    const files = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
     expect(files.length).toBeGreaterThan(0);
     const slug = files[0].replace(/\.md$/, '');
     const path = join(runtime.communitiesDir(), files[0]);

@@ -176,7 +176,7 @@ export function createCurateScheduler({
     }
 
     try {
-      const wroteCommunityFiles = await runCommunitySubphase(kb, curateAssistant, {
+      const wroteCommunityFiles = await runCommunitySubphase(kb, {
         signal,
         shouldStop: () => stopped,
         onFreshnessMismatch: schedule,

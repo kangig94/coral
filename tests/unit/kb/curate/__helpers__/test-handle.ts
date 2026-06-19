@@ -114,7 +114,7 @@ export function createCurateTestHandle({
       return removePendingDiscovery(kb, entry);
     },
     runCommunitySubphase() {
-      return runCommunitySubphase(kb, curateAssistant, { shouldStop });
+      return runCommunitySubphase(kb, { shouldStop });
     },
     calculateCommunityBatchBackoffTicks,
     async initializeCurateStateIfNeeded() {
