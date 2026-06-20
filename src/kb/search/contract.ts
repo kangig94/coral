@@ -101,7 +101,7 @@ export interface RoleQueryContext {
   /** Lazy memoized normalized query accessor. */
   normalizedQuery(): string;
   /** Lazy memoized token accessor. */
-  tokens(): readonly string[];
+  tokens(): Promise<readonly string[]>;
   /** Lazy memoized query embedding accessor. */
   embedding(): Promise<Float32Array>;
   /** Lazy memoized KB index accessor. */

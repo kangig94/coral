@@ -6,12 +6,26 @@ type SnippetAnchor = {
   length: number;
 };
 
+const SNIPPET_WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'word' });
+const WORD_SCRIPT_RUN_PATTERN =
+  /[\p{Script=Latin}\p{Mark}\p{Number}_'-]+|[\p{Script=Hangul}\p{Mark}\p{Number}_'-]+|[\p{Script=Han}\p{Mark}\p{Number}_'-]+|[\p{Script=Hiragana}\p{Mark}\p{Number}_'-]+|[\p{Script=Katakana}\p{Mark}\p{Number}_'-]+|[\p{Letter}\p{Mark}\p{Number}_'-]+/gu;
+
 export type QueryContext = {
   rawQuery: string;
   normalizedQuery: string;
   queryTokens: readonly string[];
   fts: FtsRetrieval;
 };
+
+export async function tokenizeMany(
+  fts: FtsRetrieval,
+  texts: readonly string[],
+): Promise<readonly (readonly string[])[]> {
+  if (texts.length === 0) {
+    return [];
+  }
+  return fts.tokenizeBatch?.(texts) ?? Promise.all(texts.map((text) => fts.tokenize(text)));
+}
 
 export function hasTokenOverlap(queryTokens: readonly string[], fieldTokens: readonly string[]): boolean {
   if (queryTokens.length === 0 || fieldTokens.length === 0) {
@@ -114,28 +128,49 @@ function findPhraseAnchor(content: string, rawQuery: string, normalizedQuery: st
   return bestAnchor;
 }
 
-// Inverse of Orama English SPLITTER, preserving the indexer's word boundaries.
-function findTokenAnchor(content: string, queryTokens: readonly string[], fts: FtsRetrieval): SnippetAnchor | null {
-  for (const match of content.matchAll(/[A-Za-zàèéìòóù0-9_'-]+/gim)) {
-    const value = match[0];
-    const valueTokens = fts.tokenize(value);
+function* snippetTokenCandidates(content: string): Iterable<SnippetAnchor> {
+  for (const segment of SNIPPET_WORD_SEGMENTER.segment(content)) {
+    if (segment.isWordLike !== true) {
+      continue;
+    }
+
+    for (const run of segment.segment.matchAll(WORD_SCRIPT_RUN_PATTERN)) {
+      yield {
+        index: segment.index + (run.index ?? 0),
+        length: run[0].length,
+      };
+    }
+  }
+}
+
+// Mirrors the tokenizer's Intl word segmentation, splitting mixed-script words into script runs.
+async function findTokenAnchor(
+  content: string,
+  queryTokens: readonly string[],
+  fts: FtsRetrieval,
+): Promise<SnippetAnchor | null> {
+  const candidates = [...snippetTokenCandidates(content)];
+  const tokenizedCandidates = await tokenizeMany(
+    fts,
+    candidates.map((candidate) => content.slice(candidate.index, candidate.index + candidate.length)),
+  );
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const valueTokens = tokenizedCandidates[index] ?? [];
     if (!hasTokenOverlap(queryTokens, valueTokens)) {
       continue;
     }
 
-    return {
-      index: match.index ?? 0,
-      length: value.length,
-    };
+    return candidate ?? null;
   }
 
   return null;
 }
 
-export function extractSnippet(content: string, query: QueryContext): string | undefined {
-  const anchor =
-    findPhraseAnchor(content, query.rawQuery, query.normalizedQuery) ??
-    findTokenAnchor(content, query.queryTokens, query.fts);
+export async function extractSnippet(content: string, query: QueryContext): Promise<string | undefined> {
+  const phraseAnchor = findPhraseAnchor(content, query.rawQuery, query.normalizedQuery);
+  const anchor = phraseAnchor ?? (await findTokenAnchor(content, query.queryTokens, query.fts));
 
   if (anchor === null) {
     return undefined;

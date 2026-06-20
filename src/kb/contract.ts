@@ -17,6 +17,7 @@ import type { EntityGraph, KbIndex, KbSearchScope } from './entry-types.js';
 import type { FtsSearchResult, RoleCatalogView, RoleRegistry } from './search/contract.js';
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 import type { KbCapabilityCatalogView, KbCapabilityRegistry } from './capability/contract.js';
+import type { KbDeclaredAnalyzer } from './extra-langs.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
@@ -67,7 +68,8 @@ export interface Backed<T> {
  */
 export interface FtsRetrieval {
   search(query: string, topK: number, scope?: KbSearchScope): Promise<FtsSearchResult>;
-  tokenize(text: string): readonly string[];
+  tokenize(text: string): Promise<readonly string[]>;
+  tokenizeBatch?(texts: readonly string[]): Promise<readonly (readonly string[])[]>;
   warnings(): readonly string[];
 }
 
@@ -118,6 +120,7 @@ export interface KbEngineRuntimeBase {
   readonly runtimeDir: string;
   readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly ids: Pick<IdPort, 'uuid'>;
+  readonly declaredAnalyzers: readonly KbDeclaredAnalyzer[];
   readonly projectionArtifacts: KbProjectionArtifactPort;
   readonly corpusProjectionReader: KbCorpusProjectionReader;
   readonly capabilities: KbCapabilityCatalogView;

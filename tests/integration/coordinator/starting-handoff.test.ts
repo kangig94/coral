@@ -46,6 +46,7 @@ function buildPorts(opts: {
     liveDiscuss: 0,
     queueDepth: 0,
     inflightRequests: 0,
+    textProjectionState: 'idle',
     env: {},
     subsystems: [{ id: 'kb', phase: 'offline', reason: 'test' }],
   };

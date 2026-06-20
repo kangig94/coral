@@ -30,6 +30,7 @@ import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import
 import type { KbJobRecorder } from '../services/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
+import type { HealthSnapshot } from '../../transport/server-ports.js';
 
 export type CoordinatorBootSnapshot = {
   version?: string;
@@ -101,6 +102,7 @@ export type CoordinatorCoreOptions = {
    * `kbRuntime.mutationLockDiagnostics()`.
    */
   getMutationBlocked: () => { blocked: false } | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
+  getTextProjectionState?: () => HealthSnapshot['textProjectionState'];
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;

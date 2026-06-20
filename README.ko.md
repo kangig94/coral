@@ -230,11 +230,18 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
 | `CORAL_KB_GIT_SYNC` | `0` | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화) |
 | `CORAL_KB_ENABLE` | _(미설정 → 활성)_ | `0`이면 KB 서브시스템 없이 데몬을 부팅 — 인덱싱·curate·KB 컨텍스트 주입이 모두 없습니다. 다시 `1`로 바꾸고 `kb …` 명령을 실행하면 데몬이 자동 재시작되어 재활성화됩니다 ([상세](docs/configuration.md)) |
+| `CORAL_KB_EXTRA_LANGS` | _(없음)_ | 상시 활성 `Intl.Segmenter` 기본값 위에 추가하는 KB 언어 분석기. `ko` 같은 소문자 쉼표 구분 코드. `ko`는 Kiwi 형태소 분석기를 켭니다 (로드 시 약 1 GB 메모리) |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 설정 디렉터리 — Coral은 config dir별로 백엔드 데몬과 상태를 분리해, 여러 Claude 설정이 독립적으로 동작합니다 ([상세](docs/configuration.md)) |
 
 > **팁:** `CORAL_CLAUDE_MODEL_CAP=sonnet`으로 설정하면 모든 서브에이전트 호출을 Sonnet 티어로 제한합니다. Pro 구독이거나 사용량을 절약하고 싶을 때.
 >
 > **⚠️ 기업 사용자:** KB git 동기화는 **기본 비활성화**입니다. KB 노트에는 사내 코드베이스에서 학습한 지식이 포함될 수 있습니다. 자동 push를 활성화하면 기업 IP가 외부 remote로 유출될 수 있습니다. KB remote가 해당 콘텐츠를 수신해도 되는 곳인지 확인한 후에만 활성화하세요.
+
+### KB 언어 분석기
+
+Coral은 항상 `Intl.Segmenter`를 기본값으로 사용해 KB 텍스트를 인덱싱합니다. **다국어 검색에는 별도 설정이 필요 없습니다** — 한국어·중국어·일본어 같은 비라틴 문자도 기본값으로 단어/어절 단위 검색이 동작합니다. `CORAL_KB_EXTRA_LANGS`는 그 상시 활성 기본값 위에 특정 언어용 형태소 분석기를 추가로 켭니다. 값은 `ko`처럼 소문자 쉼표 구분 언어 코드로 씁니다. 현재 엔진이 있는 코드는 `ko`뿐입니다.
+
+한국어 엔진은 Kiwi `cong`입니다. 선택하면 로드된 동안 resident memory가 약 1 GB 늘 수 있습니다. 엔진은 lazy-loaded 및 idle-evicted 방식으로 동작하며, 필요할 때 Coral이 약 88 MB 모델을 자동으로 가져옵니다.
 
 `.claude/settings.json`에 설정 (세션 간 유지):
 
@@ -242,7 +249,8 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 {
   "env": {
     "CORAL_KB_PATH": "/path/to/my-obsidian-vault",
-    "CORAL_CLAUDE_MODEL_CAP": "sonnet"
+    "CORAL_CLAUDE_MODEL_CAP": "sonnet",
+    "CORAL_KB_EXTRA_LANGS": "ko"
   }
 }
 ```

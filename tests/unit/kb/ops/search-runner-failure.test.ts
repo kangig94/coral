@@ -109,7 +109,7 @@ function runtimeWith(roles: readonly { readonly role: RetrievalRole; readonly cr
     async search() {
       return { hits: [], exhausted: true };
     },
-    tokenize(text) {
+    async tokenize(text) {
       return text.trim().toLowerCase().split(/\s+/u).filter(Boolean);
     },
     warnings() {

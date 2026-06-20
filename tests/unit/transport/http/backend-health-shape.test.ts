@@ -20,6 +20,7 @@ const HEALTHY_BASE: BackendHealth = {
   activeJobs: 0,
   inflightRequests: 0,
   queueDepth: 0,
+  textProjectionState: 'idle',
   subsystems: [{ id: 'kb', phase: 'online' }],
 };
 
@@ -94,6 +95,11 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(starting)).toBe(true);
   });
 
+  it('accepts text projection fetch and reindex states', () => {
+    expect(isBackendHealth({ ...HEALTHY_BASE, textProjectionState: 'fetching' })).toBe(true);
+    expect(isBackendHealth({ ...HEALTHY_BASE, textProjectionState: 'reindexing' })).toBe(true);
+  });
+
   it('rejects a `mutationBlocked` shape missing required diagnostic fields', () => {
     const malformed = {
       ...HEALTHY_BASE,
@@ -135,6 +141,14 @@ describe('/health typed shape (AC10a)', () => {
     const malformed = {
       ...HEALTHY_BASE,
       kernel: { phase: 'frobnicating', readyAt: 0 },
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects an unknown text projection state', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      textProjectionState: 'indexing',
     };
     expect(isBackendHealth(malformed)).toBe(false);
   });

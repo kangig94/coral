@@ -22,6 +22,8 @@ export type TransportSubsystemStatus =
     }
   | { id: string; phase: 'offline'; reason: string; lastLogLine?: string };
 
+export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
+
 export interface BackendHealth {
   /**
    * Legacy strict-enum status field kept so older CLIs that validate
@@ -43,6 +45,7 @@ export interface BackendHealth {
   activeJobs: number;
   inflightRequests: number;
   queueDepth: number;
+  textProjectionState: TextProjectionHealthState;
   subsystems: TransportSubsystemStatus[];
   diagnostics?: {
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
@@ -99,6 +102,10 @@ function isSubsystemStatus(value: unknown): value is TransportSubsystemStatus {
   }
 }
 
+function isTextProjectionState(value: unknown): value is TextProjectionHealthState {
+  return value === 'idle' || value === 'fetching' || value === 'reindexing';
+}
+
 function isKernel(value: unknown): value is BackendHealth['kernel'] {
   if (!isRecord(value)) {
     return false;
@@ -144,6 +151,7 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     Number.isInteger(value.activeJobs) &&
     Number.isInteger(value.inflightRequests) &&
     Number.isInteger(value.queueDepth) &&
+    isTextProjectionState(value.textProjectionState) &&
     Array.isArray(value.subsystems) &&
     value.subsystems.every(isSubsystemStatus) &&
     (value.diagnostics === undefined || isDiagnostics(value.diagnostics))

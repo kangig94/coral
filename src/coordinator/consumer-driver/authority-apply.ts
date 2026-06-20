@@ -37,6 +37,8 @@ export interface AuthorityApplyDeps {
   readonly journalReader: JournalConsumerReadPort;
   readonly corpusStateReader: CorpusStateReadPort;
   readonly corpusProjectionReader: KbCorpusProjectionReader;
+  readonly onTextProjectionApplyStart?: () => void;
+  readonly onTextProjectionApplyEnd?: () => void;
   readonly onTextProjectionSync?: () => void;
   readonly resolveWaiters: (state: ConsumerState, newCursor: number | KbCorpusSnapshot) => void;
   readonly rejectWaiters: (state: ConsumerState, applyError: ConsumerApplyError) => void;
@@ -232,36 +234,46 @@ export async function runCorpusApply(
       return true;
     }
 
-    const controller = new AbortController();
-    if (state.kind === 'corpus') {
-      state.activeController = controller;
+    const trackTextProjection = reg.projectionSync === 'text-index';
+    if (trackTextProjection) {
+      deps.onTextProjectionApplyStart?.();
     }
-    const projectionInput = await prepareCorpusProjectionInput(controller.signal, deps);
-    const applyResult = await reg.apply({
-      snapshot,
-      journalReader: deps.journalReader,
-      corpusStateReader: deps.corpusStateReader,
-      projectionInput,
-      signal: controller.signal,
-    });
-    if (applyResult?.advance === false) {
+    try {
+      const controller = new AbortController();
+      if (state.kind === 'corpus') {
+        state.activeController = controller;
+      }
+      const projectionInput = await prepareCorpusProjectionInput(controller.signal, deps);
+      const applyResult = await reg.apply({
+        snapshot,
+        journalReader: deps.journalReader,
+        corpusStateReader: deps.corpusStateReader,
+        projectionInput,
+        signal: controller.signal,
+      });
+      if (applyResult?.advance === false) {
+        if (state.kind === 'corpus') {
+          state.lastApplyError = null;
+        }
+        return true;
+      }
+      if (reg.projectionSync === 'text-index') {
+        deps.onTextProjectionSync?.();
+      }
+      deps.repository.advanceCorpusCursor(reg, snapshot);
+      if (state.kind === 'corpus' && options.forceGeneration !== undefined) {
+        state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, options.forceGeneration);
+      }
       if (state.kind === 'corpus') {
         state.lastApplyError = null;
       }
+      deps.resolveWaiters(state, snapshot);
       return true;
+    } finally {
+      if (trackTextProjection) {
+        deps.onTextProjectionApplyEnd?.();
+      }
     }
-    if (reg.projectionSync === 'text-index') {
-      deps.onTextProjectionSync?.();
-    }
-    deps.repository.advanceCorpusCursor(reg, snapshot);
-    if (state.kind === 'corpus' && options.forceGeneration !== undefined) {
-      state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, options.forceGeneration);
-    }
-    if (state.kind === 'corpus') {
-      state.lastApplyError = null;
-    }
-    deps.resolveWaiters(state, snapshot);
-    return true;
   } catch (err) {
     const applyError = toConsumerApplyError(err, deps.now().toISOString());
     if (state.kind === 'corpus') {

@@ -74,6 +74,14 @@ export type OnboardingStep =
   | { readonly kind: 'env-var'; readonly name: string; readonly message?: string }
   | { readonly kind: 'confirm-download'; readonly message: string };
 
+export interface InstallOnlyManifest {
+  readonly id: string;
+  readonly version: string;
+  readonly description: string;
+  readonly installer: EngineInstaller;
+  readonly onboarding?: readonly OnboardingStep[];
+}
+
 export interface EngineManifestProvides {
   readonly retrievalRoles?: RetrievalRoleDescriptor[];
   readonly capabilities?: KbCapabilityDescriptor[];

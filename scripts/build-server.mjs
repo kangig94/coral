@@ -80,9 +80,17 @@ const sharedOpts = {
   external: ['node:*', 'better-sqlite3', '@lydell/node-pty'],
   loader: { '.sql': 'text' },
   minify: true,
-  banner: { js: 'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' },
+  banner: {
+    js:
+      'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
+      'var __importMetaUrl=require("url").pathToFileURL(__filename).href;',
+  },
   define: {
     __VERSION__: JSON.stringify(version),
+    // esbuild empties `import.meta` in CJS output, so `import.meta.url` would be
+    // `undefined`; redirect it to a banner-injected file URL of the bundle file
+    // so `createRequire(import.meta.url)` (e.g. engines/kiwi/paths.ts) resolves.
+    'import.meta.url': '__importMetaUrl',
   },
 };
 

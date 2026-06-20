@@ -34,7 +34,7 @@ const fallbackFts: FtsRetrieval = {
   async search() {
     return { hits: [], exhausted: true };
   },
-  tokenize(text) {
+  async tokenize(text) {
     const normalized = normalizeWhitespace(text.toLowerCase());
     return normalized === '' ? [] : normalized.split(/\s+/u);
   },
@@ -61,7 +61,7 @@ type SearchExecutionContext = SearchRuntime & {
   rt: KbRuntime;
   request: SearchRequest;
   roleQueryContext: RoleQueryContext;
-  getQueryContext(): QueryContext;
+  getQueryContext(): Promise<QueryContext>;
   getCommunitiesFresh(): boolean;
   getCorpusStructuralKey(): CorpusStructuralKey | null;
 };
@@ -175,7 +175,7 @@ function createSearchExecutionContext(
     return fts;
   };
 
-  const getQueryContext = (): QueryContext => {
+  const getQueryContext = async (): Promise<QueryContext> => {
     if (queryContext !== undefined) {
       return queryContext;
     }
@@ -188,7 +188,7 @@ function createSearchExecutionContext(
     }
 
     const normalized = getNormalizedQuery();
-    const tokens = queryFts.tokenize(normalized);
+    const tokens = await queryFts.tokenize(normalized);
     queryContext = {
       rawQuery: request.rawQuery,
       normalizedQuery: normalized,
@@ -228,11 +228,11 @@ function createSearchExecutionContext(
     scope: request.scope,
     signal: request.signal,
     normalizedQuery: getNormalizedQuery,
-    tokens() {
+    async tokens() {
       if (queryTokens !== undefined) {
         return queryTokens;
       }
-      queryTokens = readFts().tokenize(getNormalizedQuery());
+      queryTokens = await readFts().tokenize(getNormalizedQuery());
       return queryTokens;
     },
     embedding() {
@@ -494,7 +494,7 @@ function emptyResponse(
   };
 }
 
-function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetrieval): KbSearchResponse {
+async function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetrieval): Promise<KbSearchResponse> {
   if (retrieval.hits.length === 0) {
     return emptyResponse(retrieval.mode, retrieval.diagnostics, retrieval.responseWarnings);
   }
@@ -505,7 +505,7 @@ function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetri
   if (retrieval.mode === 'hybrid') {
     return buildHybridResponse(
       retrieval.hits,
-      ctx.getQueryContext(),
+      await ctx.getQueryContext(),
       ctx.request.topK,
       ctx.index,
       ctx.getCommunitiesFresh(),
@@ -516,7 +516,7 @@ function buildSearchResponse(ctx: SearchExecutionContext, retrieval: SearchRetri
   }
   return buildTextResponse(
     retrieval.hits,
-    ctx.getQueryContext(),
+    await ctx.getQueryContext(),
     ctx.request.topK,
     ctx.index,
     ctx.getCommunitiesFresh(),

@@ -9,6 +9,9 @@ function asFtsRetrieval(searchPort: OramaSearchPort): FtsRetrieval {
     tokenize(text) {
       return searchPort.tokenize(text);
     },
+    tokenizeBatch(texts) {
+      return searchPort.tokenizeBatch(texts);
+    },
     warnings() {
       return searchPort.warnings();
     },
@@ -17,7 +20,7 @@ function asFtsRetrieval(searchPort: OramaSearchPort): FtsRetrieval {
 
 export function createOramaFtsBacked(
   projection: OramaBaseProjection,
-  searchPort: OramaSearchPort = projection.createSearchPort(),
+  searchPort: OramaSearchPort = projection.getSearchPort(),
 ): Backed<FtsRetrieval> {
   const retrieval = asFtsRetrieval(searchPort);
   return {

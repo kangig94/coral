@@ -1,19 +1,7 @@
 import { join } from 'node:path';
-import type { EngineInstaller, OnboardingStep } from './contract.js';
+import { BUNDLED_INSTALL_ONLY_PACKAGES } from './bundled.js';
+import type { InstallOnlyManifest } from './contract.js';
 import { createShellInstaller } from './shell-installer.js';
-
-/**
- * An install-only package installs a local binary and never activates inside
- * the coordinator (`activation: 'none'`). Unlike an engine it fills no `kb.*`
- * binding and has no `specifier` — `equip` installs it and stops.
- */
-export interface InstallOnlyManifest {
-  readonly id: string;
-  readonly version: string;
-  readonly description: string;
-  readonly installer: EngineInstaller;
-  readonly onboarding?: readonly OnboardingStep[];
-}
 
 const CODEBASE_MEMORY_INSTALL_URL = 'https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh';
 const CODEBASE_MEMORY_BINARY = 'codebase-memory-mcp';
@@ -24,6 +12,7 @@ function singleQuote(value: string): string {
 }
 
 export const INSTALL_ONLY_PACKAGES: readonly InstallOnlyManifest[] = [
+  ...BUNDLED_INSTALL_ONLY_PACKAGES,
   {
     id: 'codebase-memory',
     version: 'latest',

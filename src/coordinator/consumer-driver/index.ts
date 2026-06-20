@@ -54,6 +54,8 @@ export interface ConsumerDriverOptions {
   readonly now: () => Date;
   readonly time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   readonly corpusProjectionReader?: KbCorpusProjectionReader;
+  readonly onTextProjectionApplyStart?: () => void;
+  readonly onTextProjectionApplyEnd?: () => void;
   readonly onTextProjectionSync?: () => void;
 }
 
@@ -99,6 +101,8 @@ export class ConsumerDriver {
       journalReader: this.journalReader,
       corpusStateReader: this.corpusStateReader,
       corpusProjectionReader: opts.corpusProjectionReader ?? DEFAULT_CORPUS_PROJECTION_READER,
+      onTextProjectionApplyStart: opts.onTextProjectionApplyStart,
+      onTextProjectionApplyEnd: opts.onTextProjectionApplyEnd,
       onTextProjectionSync: opts.onTextProjectionSync,
       resolveWaiters: (state, newCursor) => resolveWaiters(state, newCursor, this.timers),
       rejectWaiters: (state, applyError): void => rejectWaitersForApplyFailure(state, applyError, this.timers),

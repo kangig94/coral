@@ -582,6 +582,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           liveDiscuss: listAttachedSessions(world.discussRegistry).length,
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
+          textProjectionState: options.getTextProjectionState?.() ?? 'idle',
           subsystems,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,

@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import type { EngineManifest, LocalExpansionInstallState } from '../../expansion/contract.js';
+import type { EngineManifest, InstallOnlyManifest, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
@@ -23,11 +23,7 @@ import {
   type ReadBindingResult,
   type RemoveExpansionCatalogResult,
 } from '../../expansion/rpc-contract.js';
-import {
-  INSTALL_ONLY_PACKAGES,
-  resolveInstallOnlyManifest,
-  type InstallOnlyManifest,
-} from '../../expansion/install-only.js';
+import { INSTALL_ONLY_PACKAGES, resolveInstallOnlyManifest } from '../../expansion/install-only.js';
 import { encodeInstallError } from './contract.js';
 import { readExpansionCatalog, resolveCatalogManifest } from './catalog.js';
 import { inspectExpansionInstallState, installExpansion, resolveRuntime, uninstallExpansion } from './install.js';

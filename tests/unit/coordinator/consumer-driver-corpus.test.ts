@@ -63,6 +63,59 @@ function readCursorRow(db: Database, consumerId: string): CursorRow {
 }
 
 describe('ConsumerDriver corpus registrations', () => {
+  it('brackets text-index corpus applies with in-progress callbacks', async () => {
+    const db = createDb();
+    const applyStarted = createDeferred<void>();
+    const releaseApply = createDeferred<void>();
+    const events: string[] = [];
+    const driver = new ConsumerDriver({
+      db,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
+      now: realConsumerDriverNow,
+      onTextProjectionApplyStart: () => {
+        events.push('reindex:start');
+      },
+      onTextProjectionApplyEnd: () => {
+        events.push('reindex:end');
+      },
+      onTextProjectionSync: () => {
+        events.push('sync:complete');
+      },
+    });
+    const snapshot = buildSnapshot({ snapshotId: 'snapshot-2', contentSeq: 2 });
+
+    try {
+      driver.register({
+        id: 'orama-base',
+        authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'base',
+        corpusInterest: 'both',
+        projectionSync: 'text-index',
+        async apply() {
+          events.push('apply:start');
+          applyStarted.resolve();
+          await releaseApply.promise;
+          events.push('apply:end');
+        },
+      });
+
+      driver.notify('corpus', snapshot);
+      await applyStarted.promise;
+
+      expect(events).toEqual(['reindex:start', 'apply:start']);
+
+      releaseApply.resolve();
+      await driver.drainAll();
+
+      expect(events).toEqual(['reindex:start', 'apply:start', 'apply:end', 'sync:complete', 'reindex:end']);
+    } finally {
+      releaseApply.resolve();
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
   it('rejects missing corpusInterest on corpus consumers', () => {
     const db = createDb();
     const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });

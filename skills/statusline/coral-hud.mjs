@@ -9,6 +9,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { execSync } from "child_process";
 import { createHash } from "crypto";
+import { pathToFileURL } from "url";
 
 // Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
 // inherited by this statusLine subprocess). Falls back to ~/.claude.
@@ -476,25 +477,33 @@ function readBackendSlot() {
     const raw = JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8"));
     if (!raw || !Number.isFinite(raw.ts)) return null;
     if (Date.now() - raw.ts > CORAL_HEALTH_TTL_MS) return null;
-    return raw;
+    return normalizeBackendSlot(raw);
   } catch {
     return null;
   }
 }
 
-function readStaleBackendLine() {
+function normalizeBackendSlot(raw) {
+  if (!raw || typeof raw.line !== "string") return null;
+  return {
+    line: raw.line,
+    indicator: typeof raw.indicator === "string" && raw.indicator.length > 0 ? raw.indicator : null,
+  };
+}
+
+function readStaleBackendSlot() {
   try {
-    return JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8"))?.line ?? null;
+    return normalizeBackendSlot(JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8")));
   } catch {
     return null;
   }
 }
 
-function writeBackendSlot(line, online) {
+function writeBackendSlot(slot, online) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
     const tmp = `${BACKEND_CACHE_FILE}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify({ ts: Date.now(), line, online }), { mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify({ ts: Date.now(), ...slot, online }), { mode: 0o600 });
     renameSync(tmp, BACKEND_CACHE_FILE);
   } catch {}
 }
@@ -936,6 +945,33 @@ function readReefInfo() {
   }
 }
 
+export function renderTextProjectionIndicator(state) {
+  if (state === "fetching") return `${YELLOW}fetching${RESET}`;
+  if (state === "reindexing") return `${YELLOW}reindexing${RESET}`;
+  return null;
+}
+
+export function composeCoralThirdLine(coralLine, rightIndicator, lastUserMessage, targetWidth) {
+  let right = rightIndicator;
+  if (!right && lastUserMessage && targetWidth > 0) {
+    const maxMsg = Math.min(40, targetWidth - visualLen(coralLine) - 3);
+    if (maxMsg > 8) {
+      const oneLineMessage = lastUserMessage.replace(/[\n\r]+/g, " ");
+      const truncated =
+        oneLineMessage.length > maxMsg ? oneLineMessage.slice(0, maxMsg - 1) + "\u2026" : oneLineMessage;
+      right = DIM + truncated + RESET;
+    }
+  }
+
+  if (!right) return coralLine;
+
+  const gap = targetWidth - visualLen(coralLine) - visualLen(right);
+  if (gap > 0) {
+    return coralLine + " ".repeat(gap) + right;
+  }
+  return `${coralLine} ${right}`;
+}
+
 async function renderCoralLine() {
   // Migrate: remove legacy backend slot from shared cache
   try {
@@ -944,7 +980,7 @@ async function renderCoralLine() {
   } catch {}
 
   const cached = readBackendSlot();
-  if (cached) return cached.line;
+  if (cached) return cached;
 
   const backendInfoPath = resolveBackendInfoPath();
   if (!backendInfoPath) return null;
@@ -959,7 +995,7 @@ async function renderCoralLine() {
 
   const lock = acquireFetchLock("backend");
   if (!lock) {
-    return readStaleBackendLine();
+    return readStaleBackendSlot();
   }
 
   try {
@@ -968,15 +1004,16 @@ async function renderCoralLine() {
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
     if (!resp.ok) {
-      const line = `${DIM}coral${RESET}`;
-      writeBackendSlot(line, false);
-      return line;
+      const slot = { line: `${DIM}coral${RESET}`, indicator: null };
+      writeBackendSlot(slot, false);
+      return slot;
     }
     const data = await resp.json();
     const parts = [`\x1b[38;2;255;133;89mcoral${RESET}`];
     if (data.active > 0) parts.push(`${MAGENTA}⚙ ${data.active}${RESET}`);
     if (data.queueDepth > 0) parts.push(`${MAGENTA}⏳ ${data.queueDepth}${RESET}`);
     if (data.liveDiscuss > 0) parts.push(`${MAGENTA}💬 ${data.liveDiscuss}${RESET}`);
+    const indicator = renderTextProjectionIndicator(data.textProjectionState);
 
     const reefInfo = readReefInfo();
     if (reefInfo) {
@@ -986,13 +1023,13 @@ async function renderCoralLine() {
       } catch {}
     }
 
-    const line = parts.join(" ");
-    writeBackendSlot(line, true);
-    return line;
+    const slot = { line: parts.join(" "), indicator };
+    writeBackendSlot(slot, true);
+    return slot;
   } catch {
-    const line = `${DIM}coral${RESET}`;
-    writeBackendSlot(line, false);
-    return line;
+    const slot = { line: `${DIM}coral${RESET}`, indicator: null };
+    writeBackendSlot(slot, false);
+    return slot;
   } finally {
     releaseFetchLock(lock);
   }
@@ -1023,7 +1060,7 @@ async function main() {
   }
 
   const safe = (p) => p.catch(() => null);
-  const [limits, rawCodexData, coralLine] = await Promise.all([
+  const [limits, rawCodexData, coralSlot] = await Promise.all([
     safe(renderLimits()),
     safe(renderCodexData()),
     safe(renderCoralLine()),
@@ -1083,21 +1120,11 @@ async function main() {
   }
 
   // Line 3: Coral backend + right-aligned last user input
-  if (coralLine) {
+  if (coralSlot) {
+    const coralLine = typeof coralSlot === "string" ? coralSlot : coralSlot.line;
+    const rightIndicator = typeof coralSlot === "string" ? null : coralSlot.indicator;
     const targetWidth = visualLen(line1.join(SEP));
-    const lastMsg = transcript.lastUserMessage?.replace(/[\n\r]+/g, " ");
-    let coralFinal = coralLine;
-    if (lastMsg && targetWidth > 0) {
-      const coralLen = visualLen(coralLine);
-      const maxMsg = Math.min(40, targetWidth - coralLen - 3);
-      if (maxMsg > 8) {
-        const truncated = lastMsg.length > maxMsg ? lastMsg.slice(0, maxMsg - 1) + "\u2026" : lastMsg;
-        const gap = targetWidth - coralLen - truncated.length;
-        if (gap > 0) {
-          coralFinal = coralLine + " ".repeat(gap) + DIM + truncated + RESET;
-        }
-      }
-    }
+    const coralFinal = composeCoralThirdLine(coralLine, rightIndicator, transcript.lastUserMessage, targetWidth);
     output += "\n" + coralFinal;
   }
 
@@ -1115,4 +1142,6 @@ async function main() {
   process.stdout.write(output);
 }
 
-main().catch(() => process.stdout.write(""));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(() => process.stdout.write(""));
+}

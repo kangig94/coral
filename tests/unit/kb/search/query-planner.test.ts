@@ -64,7 +64,7 @@ function plan(intent: KbSearchIntent, scope: KbSearchScope, roles: readonly Regi
     scope,
     signal: new AbortController().signal,
     normalizedQuery: () => 'query',
-    tokens: () => ['query'],
+    tokens: async () => ['query'],
     embedding: async () => new Float32Array([1]),
     index: () => ({ entries: {}, principles: {}, entityMeta: {}, relationships: [] }),
     corpusStructuralKey: () => null,

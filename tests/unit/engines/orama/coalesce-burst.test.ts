@@ -91,7 +91,7 @@ function makeContext(
 }
 
 describe('orama coalescing burst', () => {
-  it('skips redundant prepare calls when newer snapshots arrive while preparing', async () => {
+  it('applies one delta for a latest settled snapshot when bursts are already coalesced', async () => {
     const root = allocateRoot();
     const kb = createTestKbRuntime({
       markdownRoot: root,
@@ -99,7 +99,7 @@ describe('orama coalescing burst', () => {
       db: createKbTestDb(join(root, '.runtime')),
     });
 
-    seedNote(kb, 'alpha', 'Body alpha.', 1);
+    seedNote(kb, 'alpha-note', 'Body alpha.', 1);
     const snapshotV1 = kb.captureCorpusSnapshot();
 
     const projection = new OramaBaseProjection(
@@ -109,24 +109,28 @@ describe('orama coalescing burst', () => {
 
     // First apply: install snapshotV1 from scratch.
     await projection.apply(makeContext(snapshotV1, snapshotV1, createKbProjectionInput(kb)));
-    const prepareSpy = vi.spyOn(projection, 'prepareFullSnapshot');
+    const fullInstallSpy = vi.spyOn(projection, 'installFullSnapshot');
+    const deltaSpy = vi.spyOn(
+      projection as unknown as {
+        applyDeltaFromManifest: (...args: unknown[]) => Promise<void>;
+      },
+      'applyDeltaFromManifest',
+    );
 
     // Three rapid metadata-lane bursts each producing a new snapshot id.
-    seedNote(kb, 'alpha', 'Body alpha v2.', 2);
+    seedNote(kb, 'alpha-note', 'Body alpha v2.', 2);
     const snapshotV2 = kb.captureCorpusSnapshot();
-    seedNote(kb, 'alpha', 'Body alpha v3.', 3);
+    seedNote(kb, 'alpha-note', 'Body alpha v3.', 3);
     const snapshotV3 = kb.captureCorpusSnapshot();
-    seedNote(kb, 'alpha', 'Body alpha v4.', 4);
+    seedNote(kb, 'alpha-note', 'Body alpha v4.', 4);
     const snapshotV4 = kb.captureCorpusSnapshot();
 
     // Apply snapshotV2 with current=V4: coalescing should skip V2/V3 prepares
-    // and install V4 in a single round. The exact prepare count is impl-specific
-    // but must be strictly less than 3 (one per burst) — validating the bursts
-    // were coalesced.
+    // and install V4 through a single persisted-manifest delta.
     await projection.apply(makeContext(snapshotV2, snapshotV4, createKbProjectionInput(kb)));
 
-    expect(prepareSpy).toHaveBeenCalled();
-    expect(prepareSpy.mock.calls.length).toBeLessThan(3);
+    expect(fullInstallSpy).not.toHaveBeenCalled();
+    expect(deltaSpy).toHaveBeenCalledTimes(1);
 
     // The installed snapshot must match the latest known snapshot, not V2/V3.
     const loaded = await projection.ensureLoaded();

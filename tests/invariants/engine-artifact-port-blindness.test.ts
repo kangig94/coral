@@ -183,17 +183,17 @@ describe('engine artifact port blindness', () => {
     const { db } = await createOramaDb();
     store.persist(snapshot, db);
 
-    const present = await createOramaArtifactPort(portFiles, root).describeArtifacts();
+    const present = await createOramaArtifactPort(portFiles, root, []).describeArtifacts();
     expect(present[0]?.freshness).toEqual({
       status: 'present',
       projected: expect.objectContaining(snapshot),
     });
 
     writeFileSync(oramaIndexMetadataPath(root), `${JSON.stringify({ snapshotId: 'legacy-only' })}\n`, 'utf-8');
-    const corrupt = await createOramaArtifactPort(portFiles, root).describeArtifacts();
+    const corrupt = await createOramaArtifactPort(portFiles, root, []).describeArtifacts();
     expect(corrupt[0]?.freshness).toMatchObject({
       status: 'corrupt',
-      diagnostic: expect.stringContaining('required identity fields'),
+      diagnostic: expect.stringContaining('missing required identity'),
     });
     expect(existsSync(oramaIndexPath(root))).toBe(true);
   });

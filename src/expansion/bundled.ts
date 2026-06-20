@@ -1,6 +1,7 @@
 import oramaExpansion from '#src/engines/orama/expansion.js';
 import { needleInstaller } from '#src/engines/needle/install.js';
-import type { EngineManifest, Expansion, ExpansionHost } from './contract.js';
+import { KIWI_INSTALLER_VERSION, kiwiInstaller } from '#src/engines/kiwi/install.js';
+import type { EngineManifest, Expansion, ExpansionHost, InstallOnlyManifest } from './contract.js';
 import { parseEngineManifests } from './manifest-schema.js';
 
 const PACKAGE_VERSION = '0.5.2';
@@ -42,6 +43,23 @@ export const BUNDLED_ENGINES: readonly EngineManifest[] = parseEngineManifests([
     fills: ['kb.fts'],
   },
 ]);
+
+export const BUNDLED_INSTALL_ONLY_PACKAGES: readonly InstallOnlyManifest[] = [
+  {
+    id: 'kiwi',
+    version: KIWI_INSTALLER_VERSION,
+    description:
+      'Kiwi Korean morphological analyzer artifact - installs kiwi-nlp WASM support plus the CoNg base model for opt-in Korean KB tokenization',
+    installer: kiwiInstaller,
+    onboarding: [
+      {
+        kind: 'confirm-download',
+        message:
+          "This downloads the Kiwi CoNg base model (~88 MB) from github.com/bab2min/Kiwi releases into Coral's engine data directory. Continue?",
+      },
+    ],
+  },
+];
 
 // `tier: 'bundled'` engines must be statically reachable so esbuild inlines
 // them into coral-backend.cjs. A marketplace install ships src/ alongside the

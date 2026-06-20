@@ -1,4 +1,4 @@
-import type { AnyOrama, DefaultTokenizer } from '@orama/orama';
+import type { AnyOrama, Tokenizer } from '@orama/orama';
 
 export const ORAMA_SCHEMA = {
   entryId: 'string',
@@ -14,4 +14,4 @@ export const ORAMA_SCHEMA = {
 } as const;
 
 export type KbOramaDb = AnyOrama<typeof ORAMA_SCHEMA>;
-export type KbOramaTokenizer = DefaultTokenizer;
+export type KbOramaTokenizer = Tokenizer;

@@ -281,7 +281,7 @@ async function searchTextRoleHits(rt: KbRuntime, ctx: RoleQueryContext): Promise
   }
 
   const normalizedQuery = normalizeWhitespace(ctx.rawQuery);
-  const queryTokens = fts.tokenize(normalizedQuery);
+  const queryTokens = await fts.tokenize(normalizedQuery);
   if (queryTokens.length === 0) {
     return { hits: [] };
   }

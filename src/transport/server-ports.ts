@@ -31,6 +31,8 @@ export type TransportSubsystemStatus =
     }
   | { id: string; phase: 'offline'; reason: string; lastLogLine?: string };
 
+export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
+
 export type HealthSnapshot = {
   /**
    * Legacy lifecycle visibility surface kept for older CLIs that validate the
@@ -71,6 +73,7 @@ export type HealthSnapshot = {
   liveDiscuss: number;
   queueDepth: number;
   inflightRequests: number;
+  textProjectionState: TextProjectionHealthState;
   env: Record<string, string>;
   subsystems: TransportSubsystemStatus[];
   /**
