@@ -1,13 +1,22 @@
 import type { Expansion } from '#src/expansion/contract.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
+import type { Disposable } from '#src/runtime/ports.js';
+import type { ConsumerApplyError } from '#src/store/consumer-contract.js';
 
-import { createOramaBaseProjection, type OramaAnalyzerManager } from './backend.js';
+import {
+  createOramaBaseProjection,
+  type OramaAnalyzerManager,
+  type OramaReconcileReason,
+} from './backend.js';
 import { createOramaFtsBacked } from './index.js';
 import { OramaSnapshotStore } from './snapshot.js';
 import { createOramaArtifactPort } from './artifact-port.js';
 
 export type OramaExpansionOptions = {
   readonly analyzerManager?: OramaAnalyzerManager;
+  readonly requestProjectionReconcile?: (reason: OramaReconcileReason) => void;
+  readonly onApplyFailure?: (error: ConsumerApplyError) => void;
+  readonly registerAnalyzerDegradedObserver?: (scope: Disposable) => void;
 };
 
 const EMPTY_ANALYZERS = [] as const;
@@ -23,8 +32,12 @@ export function createOramaExpansion(options: OramaExpansionOptions = {}): Expan
     const projection = createOramaBaseProjection(host.kb, snapshotStore, {
       kiwiRuntime: host.runtime,
       ...(analyzerManager === undefined ? {} : { analyzerManager }),
+      ...(options.requestProjectionReconcile === undefined
+        ? {}
+        : { requestProjectionReconcile: options.requestProjectionReconcile }),
+      ...(options.onApplyFailure === undefined ? {} : { onApplyFailure: options.onApplyFailure }),
     });
-    const searchPort = projection.createSearchPort();
+    const searchPort = projection.getSearchPort();
     const handle = host.registerConsumer(
       {
         id: projection.id,
@@ -32,6 +45,7 @@ export function createOramaExpansion(options: OramaExpansionOptions = {}): Expan
         corpusInterest: projection.corpusInterest,
         kind: projection.kind,
         projectionSync: projection.projectionSync,
+        ...(projection.onApplyFailure === undefined ? {} : { onApplyFailure: projection.onApplyFailure }),
         apply: (ctx) => projection.apply(ctx),
       },
       host.scope,
@@ -49,6 +63,7 @@ export function createOramaExpansion(options: OramaExpansionOptions = {}): Expan
       host.scope,
     );
     host.bind(KB_FTS_CAPABILITY, createOramaFtsBacked(projection, searchPort));
+    options.registerAnalyzerDegradedObserver?.(host.scope);
   };
 }
 

@@ -8,11 +8,13 @@ import {
   createOramaProjectionIdentityInput,
   type OramaProjectionMetadata,
 } from '#src/engines/orama/artifact-port.js';
-import { OramaBaseProjection } from '#src/engines/orama/backend.js';
+import { OramaBaseProjection, type OramaAnalyzerManager } from '#src/engines/orama/backend.js';
+import type { OramaTokenizerAnalyzer } from '#src/engines/orama/document-builder.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
+import { createScope } from '#src/expansion/scope.js';
 import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
 import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
@@ -127,7 +129,7 @@ function engineRuntime(kb: KbRuntime): KbEngineRuntime {
 }
 
 describe('Orama AC14 analyzer manager integration', () => {
-  it('rebuilds to Intl baseline tier after terminal Kiwi reload failure before serving search', async () => {
+  it('serves empty degraded search and fires the degrade callback after terminal Kiwi reload failure', async () => {
     const root = allocateRoot();
     const runtime = withKoEnv(createRealRuntime('prod'));
     const kb = createTestKbRuntime({
@@ -142,15 +144,29 @@ describe('Orama AC14 analyzer manager integration', () => {
       { files: kb.projectionArtifacts.files },
       kb.projectionArtifacts.runtimeDir,
     );
-    const manager = new KiwiAnalyzerManager({
+    const kiwiAnalyzer: OramaTokenizerAnalyzer = { tokens: (raw) => [raw] };
+    const kiwiBuildManager: OramaAnalyzerManager = {
+      withAnalyzerLease: async (_runtime, declared, run) => run({ analyzer: kiwiAnalyzer, activeAnalyzers: declared }),
+      effectiveDeclaredAnalyzers: (declared) => declared,
+      currentAnalyzer: () => kiwiAnalyzer,
+      isTerminalLoadError: () => false,
+    };
+    const failingManager = new KiwiAnalyzerManager({
       inspectModelArtifact: () => missingKiwiState(),
       loadAnalyzer: async () => {
         throw new Error('Kiwi model deleted');
       },
       logger: () => {},
     });
+    const degradedEvents: string[] = [];
+    failingManager.observeDegraded(createScope(), (event) => {
+      degradedEvents.push(event.modelStateKey);
+    });
 
-    const initialProjection = new OramaBaseProjection(kb, snapshotStore, { analyzerManager: manager });
+    const initialProjection = new OramaBaseProjection(kb, snapshotStore, {
+      analyzerManager: kiwiBuildManager,
+      kiwiRuntime: runtime,
+    });
     await initialProjection.installFullSnapshot(
       snapshot,
       await initialProjection.prepareFullSnapshot(createKbProjectionInput(kb)),
@@ -159,22 +175,108 @@ describe('Orama AC14 analyzer manager integration', () => {
       ORAMA_PROJECTION_IDENTITY_HASH({ declaredAnalyzers: ['ko'] }),
     );
 
+    const requestedReasons: string[] = [];
     const searchingProjection = new OramaBaseProjection(
       engineRuntime(kb),
       new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir),
-      { analyzerManager: manager, kiwiRuntime: runtime },
+      {
+        analyzerManager: failingManager,
+        kiwiRuntime: runtime,
+        requestProjectionReconcile: (reason) => {
+          requestedReasons.push(reason);
+        },
+      },
+    );
+
+    const result = await searchingProjection.search('searchable marker', 5, 'all');
+
+    expect(result.hits).toEqual([]);
+    expect(failingManager.effectiveDeclaredAnalyzers(kb.declaredAnalyzers, runtime)).toEqual([]);
+    expect(degradedEvents).toEqual(['missing:cong.mdl']);
+    expect(requestedReasons).toEqual(['terminal-analyzer-failure', 'incompatible']);
+    expect(searchingProjection.warnings()).toContain('fts_index_uninitialized');
+    const persistedMetadata = readMetadata(kb);
+    expect(persistedMetadata.projectionIdentityHash).toBe(
+      ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko'])),
+    );
+    expect(Object.values(persistedMetadata.entryManifest).map((entry) => entry.documentId)).toEqual([
+      noteEntryId('kiwi-terminal-failure'),
+    ]);
+  });
+
+  it('serves the Intl artifact without synchronously rebuilding when a Kiwi upgrade is pending', async () => {
+    const root = allocateRoot();
+    const runtime = withKoEnv(createRealRuntime('prod'));
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: join(root, '.runtime'),
+      db: createKbTestDb(join(root, '.runtime')),
+      runtime,
+    });
+    seedNote(kb);
+    const snapshot = kb.captureCorpusSnapshot();
+
+    // The persisted index was built on the Intl baseline (Kiwi not yet available).
+    const intlBaselineManager: OramaAnalyzerManager = {
+      withAnalyzerLease: async (_runtime, _declared, run) => run({ analyzer: null, activeAnalyzers: [] }),
+      effectiveDeclaredAnalyzers: () => [],
+      currentAnalyzer: () => null,
+      isTerminalLoadError: () => false,
+    };
+    const buildProjection = new OramaBaseProjection(
+      kb,
+      new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir),
+      { analyzerManager: intlBaselineManager },
+    );
+    await buildProjection.installFullSnapshot(
+      snapshot,
+      await buildProjection.prepareFullSnapshot(createKbProjectionInput(kb)),
+    );
+    const intlIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], []));
+    expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
+
+    // Mid-run upgrade window: the Kiwi model has landed and the analyzer is loaded,
+    // so the expected tier is now Kiwi, but the persisted index is still the valid
+    // Intl one and the background Kiwi reindex has not swapped in yet. A search
+    // arrives during this window.
+    const kiwiAnalyzer: OramaTokenizerAnalyzer = { tokens: (raw) => [raw] };
+    const kiwiLoadedManager: OramaAnalyzerManager = {
+      withAnalyzerLease: async (_runtime, declared, run) => run({ analyzer: kiwiAnalyzer, activeAnalyzers: declared }),
+      effectiveDeclaredAnalyzers: (declared) => declared,
+      currentAnalyzer: () => kiwiAnalyzer,
+      isTerminalLoadError: () => false,
+    };
+    const requestedReasons: string[] = [];
+    const searchStore = new OramaSnapshotStore(
+      { files: kb.projectionArtifacts.files },
+      kb.projectionArtifacts.runtimeDir,
+    );
+    const searchingProjection = new OramaBaseProjection(
+      engineRuntime(kb),
+      searchStore,
+      {
+        analyzerManager: kiwiLoadedManager,
+        kiwiRuntime: runtime,
+        requestProjectionReconcile: (reason) => {
+          requestedReasons.push(reason);
+        },
+      },
     );
 
     const result = await searchingProjection.search('searchable marker', 5, 'all');
 
     expect(result.hits.map((hit) => hit.documentId)).toContain(noteEntryId('kiwi-terminal-failure'));
-    expect(manager.effectiveDeclaredAnalyzers(kb.declaredAnalyzers, runtime)).toEqual([]);
-    const rebuiltMetadata = readMetadata(kb);
-    const degradedIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], []));
-    expect(rebuiltMetadata.projectionIdentityHash).toBe(degradedIdentity);
-    expect(rebuiltMetadata.projectionIdentityHash).not.toBe(ORAMA_PROJECTION_IDENTITY_HASH({ declaredAnalyzers: [] }));
-    expect(Object.values(rebuiltMetadata.entryManifest).map((entry) => entry.documentId)).toEqual([
-      noteEntryId('kiwi-terminal-failure'),
-    ]);
+    expect(readMetadata(kb).projectionIdentityHash).toBe(intlIdentity);
+    expect(searchingProjection.warnings()).toContain('fts_index_stale_tier');
+    expect(requestedReasons).toEqual(['stale-tier']);
+
+    const kiwiIdentity = ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'], ['ko']));
+    await searchingProjection.installFullSnapshot(
+      snapshot,
+      await searchingProjection.prepareFullSnapshot(createKbProjectionInput(kb)),
+    );
+
+    expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentity);
+    expect(searchingProjection.warnings()).not.toContain('fts_index_stale_tier');
   });
 });

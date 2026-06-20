@@ -41,7 +41,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
-import { ConsumerDriver } from './consumer-driver/index.js';
+import { ConsumerDriver, FreshnessTimeout } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
@@ -60,7 +60,13 @@ import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
 import type { SourceImportReadiness } from '../jobs/launch.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
-import { ExpansionLifecycleService, startKiwiArtifactFetchOnBoot } from './expansion/lifecycle.js';
+import {
+  createLifecycleBundledLoaders,
+  createOramaProjectionReconcileRequester,
+  ExpansionLifecycleService,
+  isOramaOnlyRepairTarget,
+  startKiwiArtifactFetchOnBoot,
+} from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
@@ -268,11 +274,15 @@ export async function waitForCorpusReadiness(params: {
   }
 }
 
-async function repairProjectionArtifactLagOnBoot(
+type BootProjectionArtifactRepairResult = {
+  readonly allowStaleFts: boolean;
+};
+
+export async function repairProjectionArtifactLagOnBoot(
   kb: KbRuntime,
   driver: ConsumerDriver,
   timeoutMs: number,
-): Promise<void> {
+): Promise<BootProjectionArtifactRepairResult> {
   const lag = detectProjectionArtifactLag(kb, await kb.engineArtifactRegistry.describeArtifacts());
   const targetConsumerIds: string[] = [];
   const seenTargetConsumers = new Set<string>();
@@ -286,7 +296,7 @@ async function repairProjectionArtifactLagOnBoot(
     }
   }
   if (targetConsumerIds.length === 0) {
-    return;
+    return { allowStaleFts: false };
   }
 
   const snapshot = kb.getCorpusStateSnapshot();
@@ -294,11 +304,23 @@ async function repairProjectionArtifactLagOnBoot(
     reason: 'projection-artifact-lag',
     consumers: targetConsumerIds,
   });
-  await Promise.all(
-    forced.consumers.map((consumerId) =>
-      driver.waitFreshUntil('corpus', { snapshot, atLeastGeneration: forced.generation }, consumerId, timeoutMs),
-    ),
-  );
+  try {
+    await Promise.all(
+      forced.consumers.map((consumerId) =>
+        driver.waitFreshUntil('corpus', { snapshot, atLeastGeneration: forced.generation }, consumerId, timeoutMs),
+      ),
+    );
+  } catch (error: unknown) {
+    if (isOramaOnlyRepairTarget(targetConsumerIds) && error instanceof FreshnessTimeout) {
+      backendLog.warn(
+        `[kb] Orama projection artifact repair timed out during boot; ` +
+          'KB will start with stale or uninitialized FTS while background reconcile continues.',
+      );
+      return { allowStaleFts: true };
+    }
+    throw error;
+  }
+  return { allowStaleFts: false };
 }
 
 export function createCoordinatorServer(options: CoordinatorServerOptions = {}): CoordinatorServerController {
@@ -443,6 +465,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         requireKbRuntime('kb.textProjectionSync').recordIndexSyncSuccess();
       },
     });
+    const oramaReconcileRequester = createOramaProjectionReconcileRequester({
+      kb: {
+        getCorpusStateSnapshot: () => requireKbRuntime('orama-reconcile').getCorpusStateSnapshot(),
+        invalidateTextSnapshot: (reason) => requireKbRuntime('orama-reconcile').invalidateTextSnapshot(reason),
+      },
+      driver: consumerDriver,
+    });
     const expansionLifecycleService = new ExpansionLifecycleService({
       makeHost: (manifest, scope) => {
         const kbRuntime = requireKbRuntime(manifest.id);
@@ -455,6 +484,11 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       state: expansionStateStore,
       manifest: expansionManifestCatalog.listManifests(),
       manifestCatalog: expansionManifestCatalog,
+      bundledLoaders: createLifecycleBundledLoaders({
+        requestProjectionReconcile: oramaReconcileRequester.requestProjectionReconcile,
+        onApplyFailure: () => oramaReconcileRequester.requestProjectionReconcile('terminal-analyzer-failure'),
+        requestKiwiDegradedReconcile: oramaReconcileRequester.requestKiwiDegradedReconcile,
+      }),
       now: () => nowDate(runtime.time).toISOString(),
       resolveKbRuntime,
       getLifecyclePhase: () => {
@@ -539,14 +573,22 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     // Boot step 4: repair unchanged-snapshot projection artifacts before
     // readiness waits.
-    await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
+    const projectionArtifactRepair = await repairProjectionArtifactLagOnBoot(
+      built.kb,
+      driver,
+      bootFreshnessTimeoutMs,
+    );
     signal.throwIfAborted();
     // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
     const corpusSnapshot = built.kb.getCorpusStateSnapshot();
     driver.notifyCorpus(corpusSnapshot);
     const ftsConsumerId = built.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
       .consumer.id;
-    await driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs);
+    if (projectionArtifactRepair.allowStaleFts) {
+      backendLog.warn('[kb] Skipping boot FTS freshness wait after stale Orama projection repair timeout.');
+    } else {
+      await driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs);
+    }
     signal.throwIfAborted();
     if (built.curateScheduler) {
       // Boot step 6: start background curation only after the read

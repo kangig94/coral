@@ -3,8 +3,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { decorateDispose } from '#src/expansion/scope.js';
 import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
-import type { Runtime } from '../../runtime/ports.js';
+import type { Disposable, Runtime } from '../../runtime/ports.js';
 import {
   inspectKiwiModelArtifact,
   type KiwiModelArtifactState,
@@ -71,6 +72,13 @@ type DegradedState = {
   readonly failedAt: number;
 };
 
+export type KiwiAnalyzerDegradedEvent = {
+  readonly reason: string;
+  readonly modelStateKey: string;
+};
+
+export type KiwiAnalyzerDegradedObserver = (event: KiwiAnalyzerDegradedEvent) => void | Promise<void>;
+
 /** Terminal Kiwi load failure that triggers projection degradation. */
 export class KiwiAnalyzerTerminalLoadError extends Error {
   readonly degradedAnalyzers: readonly KbDeclaredAnalyzer[];
@@ -134,7 +142,9 @@ export class KiwiAnalyzerManager {
   private idleTimer: TimerHandle | null = null;
   private idleTimerRuntime: Runtime | null = null;
   private readonly zeroLeaseWaiters: Array<() => void> = [];
+  private readonly degradedObservers = new Map<Disposable, KiwiAnalyzerDegradedObserver>();
   private degraded: DegradedState | null = null;
+  private lastNotifiedDegradedModelStateKey: string | null = null;
 
   constructor(options: KiwiAnalyzerManagerOptions = {}) {
     this.idleTtlMs = options.idleTtlMs ?? KIWI_ANALYZER_IDLE_TTL_MS;
@@ -176,6 +186,15 @@ export class KiwiAnalyzerManager {
     this.degraded = null;
   }
 
+  observeDegraded(scope: Disposable, observer: KiwiAnalyzerDegradedObserver): void {
+    this.degradedObservers.set(scope, observer);
+    decorateDispose(scope, () => {
+      if (this.degradedObservers.get(scope) === observer) {
+        this.degradedObservers.delete(scope);
+      }
+    });
+  }
+
   effectiveDeclaredAnalyzers(
     declaredAnalyzers: readonly KbDeclaredAnalyzer[],
     runtime?: Runtime,
@@ -187,6 +206,7 @@ export class KiwiAnalyzerManager {
 
     if (this.degraded !== null && runtime !== undefined && this.modelChangedSinceFailure(runtime, this.degraded)) {
       this.degraded = null;
+      this.lastNotifiedDegradedModelStateKey = null;
     }
 
     return this.degraded === null ? normalized : withoutKiwi(normalized);
@@ -231,6 +251,7 @@ export class KiwiAnalyzerManager {
 
     if (this.degraded !== null && this.modelChangedSinceFailure(runtime, this.degraded)) {
       this.degraded = null;
+      this.lastNotifiedDegradedModelStateKey = null;
     }
 
     if (this.degraded !== null) {
@@ -295,6 +316,7 @@ export class KiwiAnalyzerManager {
       };
       this.activeHandle = handle;
       this.degraded = null;
+      this.lastNotifiedDegradedModelStateKey = null;
       return handle;
     } catch (error: unknown) {
       this.markDegraded(runtime, error);
@@ -316,6 +338,30 @@ export class KiwiAnalyzerManager {
       failedAt: runtime.time.now(),
     };
     this.logger(`[kiwi] analyzer unavailable; degrading Orama projection to Intl baseline: ${reason}`);
+    this.notifyDegraded({ reason, modelStateKey: stateKey });
+  }
+
+  private notifyDegraded(event: KiwiAnalyzerDegradedEvent): void {
+    if (this.lastNotifiedDegradedModelStateKey === event.modelStateKey) {
+      return;
+    }
+    this.lastNotifiedDegradedModelStateKey = event.modelStateKey;
+
+    for (const [scope, observer] of [...this.degradedObservers.entries()]) {
+      if (this.degradedObservers.get(scope) !== observer) {
+        continue;
+      }
+      void Promise.resolve()
+        .then(() => {
+          if (this.degradedObservers.get(scope) !== observer) {
+            return;
+          }
+          return observer(event);
+        })
+        .catch((error: unknown) => {
+          this.logger(`[kiwi] degraded observer failed: ${errorMessage(error)}`);
+        });
+    }
   }
 
   private modelChangedSinceFailure(runtime: Runtime, degraded: DegradedState): boolean {

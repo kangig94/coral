@@ -654,7 +654,10 @@ describe('orama AC10 incremental projection', () => {
       kb.projectionArtifacts.runtimeDir,
     );
     const projection = new OramaBaseProjection(coalescingRuntime, snapshotStore);
+    const FULL_INDEX_LOADS_FOR_DELTA_BASE = 1;
+    const METADATA_ONLY_LOADS_FOR_PRE_PERSIST_GUARD = 1;
     const loadSpy = vi.spyOn(snapshotStore, 'load');
+    const loadMetadataSpy = vi.spyOn(snapshotStore, 'loadMetadata');
     const fullInstallSpy = vi.spyOn(projection, 'installFullSnapshot');
 
     await projection.apply({
@@ -669,7 +672,10 @@ describe('orama AC10 incremental projection', () => {
     });
 
     expect(prepareCurrentProjectionInput).toHaveBeenCalledTimes(2);
-    expect(loadSpy).toHaveBeenCalledTimes(1);
+    // AC7 uses one full index load for the delta base, then a metadata-only
+    // pre-persist guard so stale writers cannot clobber a newer artifact.
+    expect(loadSpy).toHaveBeenCalledTimes(FULL_INDEX_LOADS_FOR_DELTA_BASE);
+    expect(loadMetadataSpy).toHaveBeenCalledTimes(METADATA_ONLY_LOADS_FOR_PRE_PERSIST_GUARD);
     expect(fullInstallSpy).not.toHaveBeenCalled();
     expect(readMetadata(kb).snapshotId).toBe(snapshotV3.snapshotId);
     expectManifestEntryIds(kb, [noteEntryId('alpha-note')]);

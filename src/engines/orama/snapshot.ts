@@ -6,18 +6,21 @@ import {
   computeOramaArtifactDigest,
   createOramaEntryManifestFromArtifact,
   createOramaProjectionMetadata,
+  oramaProjectionTokenizerTier,
   readOramaProjectionArtifact,
+  readOramaProjectionMetadata,
   type OramaProjectionIdentityInput,
   type OramaProjectionMetadata,
 } from './artifact-port.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
-import { createOramaDb } from './document-builder.js';
+import { createOramaDb, type OramaTokenizerAnalyzer } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;
   tokenizer: KbOramaTokenizer;
   metadata?: OramaProjectionMetadata;
+  fallback?: true;
 }
 
 export type OramaSnapshotPorts = {
@@ -26,11 +29,16 @@ export type OramaSnapshotPorts = {
 
 export class OramaSnapshotStore {
   private cached: KbCachedOramaIndex | null = null;
+  private currentKiwiAnalyzer: () => OramaTokenizerAnalyzer | null = () => null;
 
   constructor(
     private readonly ports: OramaSnapshotPorts,
     private readonly runtimeDir: string,
   ) {}
+
+  setCurrentKiwiAnalyzer(getter: () => OramaTokenizerAnalyzer | null): void {
+    this.currentKiwiAnalyzer = getter;
+  }
 
   hasCache(): boolean {
     return this.cached !== null;
@@ -64,10 +72,16 @@ export class OramaSnapshotStore {
     const artifactPath = oramaIndexPath(this.runtimeDir);
     const metadataPath = oramaIndexMetadataPath(this.runtimeDir);
     const { artifactRaw, metadata } = readOramaProjectionArtifact(this.ports.files, artifactPath, metadataPath);
-    const { db, tokenizer } = await createOramaDb();
+    const { db, tokenizer } = await createOramaDb({
+      currentKiwiAnalyzer: this.currentKiwiAnalyzerFor(metadata),
+    });
     const raw = JSON.parse(artifactRaw) as RawData;
     load(db, raw);
     return { db, tokenizer, metadata };
+  }
+
+  loadMetadata(): OramaProjectionMetadata {
+    return readOramaProjectionMetadata(this.ports.files, oramaIndexMetadataPath(this.runtimeDir));
   }
 
   async loadIfPresent(): Promise<KbCachedOramaIndex | null> {
@@ -105,15 +119,27 @@ export class OramaSnapshotStore {
     }
   }
 
-  persist(projected: KbCorpusSnapshot, db: KbOramaDb, identityInput: OramaProjectionIdentityInput = {}): void {
+  persist(
+    projected: KbCorpusSnapshot,
+    db: KbOramaDb,
+    identityInput: OramaProjectionIdentityInput = {},
+  ): OramaProjectionMetadata {
     const snapshot = save(db) as unknown as RawData;
     const artifactPath = oramaIndexPath(this.runtimeDir);
     this.ports.files.writeJsonAtomic(artifactPath, snapshot);
     const artifactRaw = this.ports.files.readFileSync(artifactPath, 'utf-8');
     const entryManifest = createOramaEntryManifestFromArtifact(snapshot);
-    this.ports.files.writeJsonAtomic(
-      oramaIndexMetadataPath(this.runtimeDir),
-      createOramaProjectionMetadata(projected, computeOramaArtifactDigest(artifactRaw), entryManifest, identityInput),
+    const metadata = createOramaProjectionMetadata(
+      projected,
+      computeOramaArtifactDigest(artifactRaw),
+      entryManifest,
+      identityInput,
     );
+    this.ports.files.writeJsonAtomic(oramaIndexMetadataPath(this.runtimeDir), metadata);
+    return metadata;
+  }
+
+  private currentKiwiAnalyzerFor(metadata: OramaProjectionMetadata): () => OramaTokenizerAnalyzer | null {
+    return oramaProjectionTokenizerTier(metadata) === 'kiwi' ? () => this.currentKiwiAnalyzer() : () => null;
   }
 }

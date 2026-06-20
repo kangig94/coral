@@ -20,7 +20,7 @@ function asFtsRetrieval(searchPort: OramaSearchPort): FtsRetrieval {
 
 export function createOramaFtsBacked(
   projection: OramaBaseProjection,
-  searchPort: OramaSearchPort = projection.createSearchPort(),
+  searchPort: OramaSearchPort = projection.getSearchPort(),
 ): Backed<FtsRetrieval> {
   const retrieval = asFtsRetrieval(searchPort);
   return {

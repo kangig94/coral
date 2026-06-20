@@ -1,9 +1,18 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { hasKiwiModelArtifact, ensureKiwiModelArtifact } from '../../engines/kiwi/model-artifact.js';
-import { getKiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '../../engines/kiwi/analyzer-manager.js';
-import { createOramaExpansion } from '../../engines/orama/expansion.js';
-import { ORAMA_BASE_CONSUMER_ID, type OramaAnalyzerManager } from '../../engines/orama/backend.js';
+import {
+  getKiwiAnalyzerManager,
+  isKiwiAnalyzerTerminalLoadError,
+  type KiwiAnalyzerDegradedEvent,
+  type KiwiAnalyzerManager,
+} from '../../engines/kiwi/analyzer-manager.js';
+import { createOramaExpansion, type OramaExpansionOptions } from '../../engines/orama/expansion.js';
+import {
+  ORAMA_BASE_CONSUMER_ID,
+  type OramaAnalyzerManager,
+  type OramaReconcileReason,
+} from '../../engines/orama/backend.js';
 import type { EngineManifest, Expansion, ExpansionHost } from '../../expansion/contract.js';
 import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
 import { disposeExpansionScope } from '../../expansion/host.js';
@@ -22,8 +31,7 @@ type ExpansionModule = {
   default: (host: ExpansionHost) => void | Promise<void>;
 };
 
-function createKiwiAnalyzerManagerPort(): OramaAnalyzerManager {
-  const manager = getKiwiAnalyzerManager();
+function createKiwiAnalyzerManagerPort(manager: KiwiAnalyzerManager = getKiwiAnalyzerManager()): OramaAnalyzerManager {
   return {
     withAnalyzerLease: (runtime, declaredAnalyzers, run) =>
       manager.withAnalyzerLease(runtime, declaredAnalyzers, run),
@@ -34,9 +42,37 @@ function createKiwiAnalyzerManagerPort(): OramaAnalyzerManager {
   };
 }
 
-const LIFECYCLE_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = {
-  orama: createOramaExpansion({ analyzerManager: createKiwiAnalyzerManagerPort() }),
+export type LifecycleBundledLoaderOptions = Pick<
+  OramaExpansionOptions,
+  'requestProjectionReconcile' | 'onApplyFailure'
+> & {
+  readonly requestKiwiDegradedReconcile?: (event: KiwiAnalyzerDegradedEvent) => void;
 };
+
+export function createLifecycleBundledLoaders(
+  options: LifecycleBundledLoaderOptions = {},
+): Readonly<Record<string, Expansion>> {
+  const manager = getKiwiAnalyzerManager();
+  const requestKiwiDegradedReconcile = options.requestKiwiDegradedReconcile;
+  return {
+    orama: createOramaExpansion({
+      analyzerManager: createKiwiAnalyzerManagerPort(manager),
+      ...(options.requestProjectionReconcile === undefined
+        ? {}
+        : { requestProjectionReconcile: options.requestProjectionReconcile }),
+      ...(options.onApplyFailure === undefined ? {} : { onApplyFailure: options.onApplyFailure }),
+      ...(requestKiwiDegradedReconcile === undefined
+        ? {}
+        : {
+            registerAnalyzerDegradedObserver: (scope) => {
+              manager.observeDegraded(scope, requestKiwiDegradedReconcile);
+            },
+          }),
+    }),
+  };
+}
+
+const LIFECYCLE_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = createLifecycleBundledLoaders();
 
 export type KiwiArtifactBootHandle = {
   readonly started: boolean;
@@ -55,6 +91,77 @@ type KiwiArtifactBootDriver = {
     timeoutMs: number,
   ): Promise<void>;
 };
+
+type OramaProjectionReconcileResult = {
+  readonly generation: number;
+  readonly consumers: readonly string[];
+};
+
+type OramaProjectionReconcileDriver = {
+  forceCorpusApply(
+    snapshot: KbCorpusSnapshot,
+    options: { readonly reason: 'projection-artifact-lag'; readonly consumers: readonly string[] },
+  ): OramaProjectionReconcileResult | PromiseLike<OramaProjectionReconcileResult>;
+};
+
+export type OramaProjectionReconcileRuntime = Pick<KbRuntime, 'getCorpusStateSnapshot' | 'invalidateTextSnapshot'>;
+
+/**
+ * True when the only projection-artifact-lag repair target is the Orama base
+ * (FTS) consumer. Lives here — the documented engine-import wiring point — so
+ * the coordinator boot path does not import `ORAMA_BASE_CONSUMER_ID` directly
+ * from `src/engines/**` (architecture-boundary invariant AC7.1).
+ */
+export function isOramaOnlyRepairTarget(consumerIds: readonly string[]): boolean {
+  return consumerIds.length === 1 && consumerIds[0] === ORAMA_BASE_CONSUMER_ID;
+}
+
+export type OramaProjectionReconcileRequester = {
+  readonly requestProjectionReconcile: (reason: OramaReconcileReason) => void;
+  readonly requestKiwiDegradedReconcile: (event: KiwiAnalyzerDegradedEvent) => void;
+  readonly waitForIdle: () => Promise<void>;
+};
+
+export function createOramaProjectionReconcileRequester(params: {
+  readonly kb: OramaProjectionReconcileRuntime;
+  readonly driver: OramaProjectionReconcileDriver;
+  readonly log?: (message: string) => void;
+}): OramaProjectionReconcileRequester {
+  let inFlight: Promise<void> | null = null;
+  const log = params.log ?? ((message) => backendLog.warn(message));
+
+  const request = (reason: OramaReconcileReason | 'kiwi-degraded'): void => {
+    if (inFlight !== null) {
+      return;
+    }
+
+    inFlight = Promise.resolve()
+      .then(async () => {
+        if (reason === 'kiwi-degraded') {
+          params.kb.invalidateTextSnapshot('kiwi-degraded');
+        }
+        const snapshot = params.kb.getCorpusStateSnapshot();
+        await params.driver.forceCorpusApply(snapshot, {
+          reason: 'projection-artifact-lag',
+          consumers: [ORAMA_BASE_CONSUMER_ID],
+        });
+      })
+      .catch((error: unknown) => {
+        log(`[orama] projection reconcile request failed (${reason}): ${errorMessage(error)}`);
+      })
+      .finally(() => {
+        inFlight = null;
+      });
+  };
+
+  return {
+    requestProjectionReconcile: request,
+    requestKiwiDegradedReconcile: () => request('kiwi-degraded'),
+    waitForIdle: async () => {
+      await inFlight;
+    },
+  };
+}
 
 export type StartKiwiArtifactFetchOnBootOptions = {
   readonly runtime: Runtime;

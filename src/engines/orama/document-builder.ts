@@ -606,6 +606,10 @@ export function createOramaTokenizer(options: CreateOramaTokenizerOptions = {}):
   };
 }
 
+export function createIntlOramaTokenizer(): KbOramaTokenizer {
+  return createOramaTokenizer({ currentKiwiAnalyzer: () => null });
+}
+
 export async function createOramaDb(
   options: CreateOramaTokenizerOptions = {},
 ): Promise<{ db: KbOramaDb; tokenizer: KbOramaTokenizer }> {

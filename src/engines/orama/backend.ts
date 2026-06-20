@@ -2,7 +2,7 @@ import { insert, insertMultiple, remove, search as oramaSearch } from '@orama/or
 
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
-import type { FtsRetrieval, KbEngineRuntime, KbEngineRuntimeBase, KbCorpusSnapshot } from '../../kb/contract.js';
+import type { FtsRetrieval, KbEngineRuntimeBase, KbCorpusSnapshot } from '../../kb/contract.js';
 import type {
   ConsumerApplyError,
   CorpusConsumerApplyContext,
@@ -15,6 +15,7 @@ import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../kb
 import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
 import {
   createOramaDb,
+  createIntlOramaTokenizer,
   createOramaTokenizer,
   normalizeOramaTerm,
   toOramaDocument,
@@ -25,9 +26,12 @@ import {
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import {
   ORAMA_PROJECTION_IDENTITY_HASH,
+  classifyProjectionMismatch,
   createOramaProjectionIdentityInput,
+  oramaProjectionTokenizerTier,
   type OramaEntryManifest,
   type OramaEntryManifestEntry,
+  type OramaProjectionMismatchClassification,
   type OramaProjectionIdentityInput,
   type OramaProjectionMetadata,
 } from './artifact-port.js';
@@ -51,6 +55,10 @@ const ORAMA_SEARCH_BOOST = {
 } as const;
 
 export const ORAMA_BASE_CONSUMER_ID = 'orama-base';
+const FTS_INDEX_UNINITIALIZED_WARNING = 'fts_index_uninitialized';
+const FTS_INDEX_STALE_TIER_WARNING = 'fts_index_stale_tier';
+
+export type OramaReconcileReason = 'stale-tier' | 'incompatible' | 'terminal-analyzer-failure';
 
 export interface PreparedOramaProjection {
   db: KbOramaDb;
@@ -64,6 +72,15 @@ export interface OramaLoadedIndex {
   db: KbOramaDb;
   tokenizer: KbOramaTokenizer;
 }
+
+type OramaServedIndex = {
+  readonly db: KbOramaDb;
+  readonly metadata?: OramaProjectionMetadata;
+  readonly servedTokenizerIdentity: string;
+  readonly dbTokenizer: KbOramaTokenizer;
+  readonly snippetTokenizer: KbOramaTokenizer;
+  readonly fallback?: true;
+};
 
 export type OramaAnalyzerLeaseContext = {
   readonly analyzer: OramaTokenizerAnalyzer | null;
@@ -87,6 +104,8 @@ export type OramaAnalyzerManager = {
 export type OramaBaseProjectionOptions = {
   readonly kiwiRuntime?: Runtime;
   readonly analyzerManager?: OramaAnalyzerManager;
+  readonly requestProjectionReconcile?: (reason: OramaReconcileReason) => void;
+  readonly onApplyFailure?: (error: ConsumerApplyError) => void;
 };
 
 type OramaSearchPortOptions = {
@@ -94,7 +113,7 @@ type OramaSearchPortOptions = {
   readonly kiwiRuntime?: Runtime;
   readonly analyzerManager?: OramaAnalyzerManager;
   readonly projectionIdentityInput?: () => OramaProjectionIdentityInput;
-  readonly onTerminalAnalyzerFailure?: (error: unknown) => Promise<void>;
+  readonly requestProjectionReconcile?: (reason: OramaReconcileReason) => void;
 };
 
 const NOOP_ANALYZER_MANAGER: OramaAnalyzerManager = {
@@ -161,89 +180,224 @@ function toRetrievedDocument(document: KbOramaDocument): RetrievedDocument {
 
 export class OramaSearchPort implements FtsRetrieval {
   private readonly warningSet = new Set<string>();
+  private readonly requestedReconcileReasons = new Set<OramaReconcileReason>();
   private fallbackCacheActive = false;
-  private lazyTokenizer: KbOramaTokenizer | null = null;
+  private servedIndex: OramaServedIndex | null = null;
 
   constructor(
     private readonly snapshotStore: OramaSnapshotStore,
     private readonly options: OramaSearchPortOptions = {},
   ) {}
 
-  private projectionIdentityHash(): string | null {
+  private indexIdentityClassification(cached: KbCachedOramaIndex): OramaProjectionMismatchClassification {
     const input = this.options.projectionIdentityInput?.();
-    return input === undefined ? null : ORAMA_PROJECTION_IDENTITY_HASH(input);
+    if (input === undefined || cached.fallback === true) {
+      return 'match';
+    }
+    return classifyProjectionMismatch(cached.metadata, input);
   }
 
-  private cachedIdentityMatches(cached: KbCachedOramaIndex): boolean {
-    const expectedIdentity = this.projectionIdentityHash();
-    if (expectedIdentity === null || cached.metadata === undefined) {
-      return true;
+  private clearServedIndex(): void {
+    this.servedIndex = null;
+  }
+
+  private requestProjectionReconcile(reason: OramaReconcileReason): void {
+    const request = this.options.requestProjectionReconcile;
+    if (request === undefined || this.requestedReconcileReasons.has(reason)) {
+      return;
     }
-    return cached.metadata.projectionIdentityHash === expectedIdentity;
+
+    this.requestedReconcileReasons.add(reason);
+    try {
+      const result = request(reason) as unknown;
+      void Promise.resolve(result).catch((error: unknown) => {
+        this.requestedReconcileReasons.delete(reason);
+        backendLog.warn(`[orama] projection reconcile request failed: ${errorMessage(error)}`);
+      });
+    } catch (error: unknown) {
+      this.requestedReconcileReasons.delete(reason);
+      backendLog.warn(`[orama] projection reconcile request failed: ${errorMessage(error)}`);
+    }
+  }
+
+  private markMatchedServedIndex(): void {
+    this.warningSet.delete(FTS_INDEX_UNINITIALIZED_WARNING);
+    this.warningSet.delete(FTS_INDEX_STALE_TIER_WARNING);
+    this.requestedReconcileReasons.clear();
+  }
+
+  private createServedIndex(cached: KbCachedOramaIndex): OramaServedIndex | null {
+    if (cached.fallback === true) {
+      const tokenizer = createOramaTokenizer({
+        currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
+      });
+      cached.db.tokenizer = tokenizer;
+      return {
+        db: cached.db,
+        dbTokenizer: tokenizer,
+        snippetTokenizer: tokenizer,
+        servedTokenizerIdentity: this.options.projectionIdentityInput?.().tokenizerIdentity ?? 'fallback-current',
+        fallback: true,
+      };
+    }
+
+    if (cached.metadata === undefined) {
+      return null;
+    }
+
+    const tier = oramaProjectionTokenizerTier(cached.metadata);
+    if (tier === 'intl') {
+      const tokenizer = createIntlOramaTokenizer();
+      cached.db.tokenizer = tokenizer;
+      return {
+        db: cached.db,
+        metadata: cached.metadata,
+        dbTokenizer: tokenizer,
+        snippetTokenizer: tokenizer,
+        servedTokenizerIdentity: cached.metadata.tokenizerIdentity ?? 'intl-baseline',
+      };
+    }
+
+    if (tier === 'kiwi') {
+      if ((this.options.analyzerManager?.currentAnalyzer() ?? null) === null) {
+        return null;
+      }
+      const tokenizer = createOramaTokenizer({
+        currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
+      });
+      cached.db.tokenizer = tokenizer;
+      return {
+        db: cached.db,
+        metadata: cached.metadata,
+        dbTokenizer: tokenizer,
+        snippetTokenizer: tokenizer,
+        servedTokenizerIdentity: cached.metadata.tokenizerIdentity ?? 'kiwi',
+      };
+    }
+
+    return null;
+  }
+
+  private activateServedIndex(cached: KbCachedOramaIndex): OramaServedIndex | null {
+    const served = this.createServedIndex(cached);
+    if (served === null) {
+      this.clearServedIndex();
+      return null;
+    }
+    this.servedIndex = served;
+    this.snapshotStore.install({ ...cached, tokenizer: served.dbTokenizer });
+    return served;
+  }
+
+  private serveClassifiedIndex(
+    cached: KbCachedOramaIndex,
+    classification: OramaProjectionMismatchClassification,
+  ): OramaServedIndex | null {
+    const served = this.activateServedIndex(cached);
+    if (served === null) {
+      return null;
+    }
+
+    if (cached.fallback === true) {
+      return served;
+    }
+
+    this.fallbackCacheActive = false;
+    if (classification === 'tier-only-upgrade') {
+      this.warningSet.delete(FTS_INDEX_UNINITIALIZED_WARNING);
+      this.warningSet.add(FTS_INDEX_STALE_TIER_WARNING);
+      this.requestProjectionReconcile('stale-tier');
+      return served;
+    }
+
+    this.markMatchedServedIndex();
+    return served;
   }
 
   async ensureLoaded(): Promise<OramaLoadedIndex> {
+    return this.withAnalyzerLease(async () => {
+      const served = await this.ensureServedIndex();
+      return {
+        db: served.db,
+        tokenizer: served.snippetTokenizer,
+      };
+    });
+  }
+
+  private async ensureServedIndex(): Promise<OramaServedIndex> {
     const cached = this.snapshotStore.getCache();
-    if (
-      cached !== null &&
-      this.cachedIdentityMatches(cached) &&
-      !(this.fallbackCacheActive && this.snapshotStore.hasPersistedSnapshot())
-    ) {
-      if (!this.fallbackCacheActive) {
-        this.warningSet.delete('fts_index_uninitialized');
-      }
-      return cached;
-    }
-
-    if (cached !== null && !this.cachedIdentityMatches(cached)) {
-      this.snapshotStore.clear();
-    }
-
     if (this.fallbackCacheActive && this.snapshotStore.hasPersistedSnapshot()) {
       this.snapshotStore.clear();
+      this.clearServedIndex();
+    } else if (cached !== null) {
+      const classification = this.indexIdentityClassification(cached);
+      if (classification === 'match' || classification === 'tier-only-upgrade') {
+        const served = this.serveClassifiedIndex(cached, classification);
+        if (served !== null) {
+          return served;
+        }
+      }
+
+      this.snapshotStore.clear();
+      this.clearServedIndex();
+      this.fallbackCacheActive = false;
+      this.requestProjectionReconcile('incompatible');
     }
 
     const loaded = await this.snapshotStore.loadReadOnly();
-    if (loaded !== null && this.cachedIdentityMatches(loaded)) {
-      this.fallbackCacheActive = false;
-      this.warningSet.delete('fts_index_uninitialized');
-      return loaded;
-    }
     if (loaded !== null) {
-      this.snapshotStore.clear();
-      if (this.options.onTerminalAnalyzerFailure !== undefined) {
-        await this.options.onTerminalAnalyzerFailure(
-          new Error('Orama projection identity does not match the active analyzer tier.'),
-        );
-        const rebuilt = await this.snapshotStore.loadReadOnly();
-        if (rebuilt !== null && this.cachedIdentityMatches(rebuilt)) {
-          this.fallbackCacheActive = false;
-          this.warningSet.delete('fts_index_uninitialized');
-          return rebuilt;
+      const classification = this.indexIdentityClassification(loaded);
+      if (classification === 'match' || classification === 'tier-only-upgrade') {
+        const served = this.serveClassifiedIndex(loaded, classification);
+        if (served !== null) {
+          return served;
         }
       }
+
+      this.snapshotStore.clear();
+      this.clearServedIndex();
+      this.fallbackCacheActive = false;
+      this.requestProjectionReconcile('incompatible');
     }
 
-    this.warningSet.add('fts_index_uninitialized');
+    this.warningSet.add(FTS_INDEX_UNINITIALIZED_WARNING);
+    this.warningSet.delete(FTS_INDEX_STALE_TIER_WARNING);
+    this.requestProjectionReconcile('incompatible');
     const created = await createOramaDb({
       currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
     });
-    this.snapshotStore.install(created);
+    this.snapshotStore.install({ ...created, fallback: true });
+    const served = this.activateServedIndex({ ...created, fallback: true });
     this.fallbackCacheActive = true;
-    return created;
+    if (served === null) {
+      throw new Error('fallback Orama index activation failed');
+    }
+    return served;
   }
 
   probeFreshness(): void {
+    const cached = this.snapshotStore.getCache();
+    if (cached !== null && cached.fallback !== true && this.indexIdentityClassification(cached) === 'match') {
+      this.markMatchedServedIndex();
+      this.fallbackCacheActive = false;
+      return;
+    }
+    if (this.fallbackCacheActive) {
+      this.warningSet.add(FTS_INDEX_UNINITIALIZED_WARNING);
+      this.warningSet.delete(FTS_INDEX_STALE_TIER_WARNING);
+      return;
+    }
     if (this.snapshotStore.hasPersistedSnapshot()) {
-      this.warningSet.delete('fts_index_uninitialized');
+      this.warningSet.delete(FTS_INDEX_UNINITIALIZED_WARNING);
       this.fallbackCacheActive = false;
       return;
     }
     if (this.snapshotStore.hasCache() && !this.fallbackCacheActive) {
-      this.warningSet.delete('fts_index_uninitialized');
+      this.warningSet.delete(FTS_INDEX_UNINITIALIZED_WARNING);
       return;
     }
-    this.warningSet.add('fts_index_uninitialized');
+    this.warningSet.add(FTS_INDEX_UNINITIALIZED_WARNING);
+    this.warningSet.delete(FTS_INDEX_STALE_TIER_WARNING);
   }
 
   async search(query: string, topK: number, scope?: RetrievalScope): Promise<FtsSearchResult> {
@@ -254,7 +408,7 @@ export class OramaSearchPort implements FtsRetrieval {
     }
 
     return this.withAnalyzerLease(async () => {
-      const { db } = await this.ensureLoaded();
+      const { db } = await this.ensureServedIndex();
       const limit = Math.max(safeTopK * 5, safeTopK);
 
       const response = await oramaSearch(db, {
@@ -304,8 +458,8 @@ export class OramaSearchPort implements FtsRetrieval {
     if (texts.length === 0) {
       return [];
     }
-    return this.withAnalyzerLease(() => {
-      const tokenizer = this.tokenizerProbe();
+    return this.withAnalyzerLease(async () => {
+      const tokenizer = await this.tokenizerProbe();
       return texts.map((text) => tokenizeQuery(normalizeOramaTerm(text), tokenizer));
     });
   }
@@ -315,15 +469,18 @@ export class OramaSearchPort implements FtsRetrieval {
     return [...this.warningSet];
   }
 
-  private tokenizerProbe(): KbOramaTokenizer {
+  private async tokenizerProbe(): Promise<KbOramaTokenizer> {
     const cached = this.snapshotStore.getCache();
-    if (cached !== null && this.cachedIdentityMatches(cached) && !this.fallbackCacheActive) {
-      return cached.tokenizer;
+    const classification = cached === null ? 'incompatible' : this.indexIdentityClassification(cached);
+    if (
+      cached !== null &&
+      this.servedIndex !== null &&
+      (classification === 'match' || classification === 'tier-only-upgrade') &&
+      cached.db === this.servedIndex.db
+    ) {
+      return this.servedIndex.snippetTokenizer;
     }
-    this.lazyTokenizer ??= createOramaTokenizer({
-      currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
-    });
-    return this.lazyTokenizer;
+    return (await this.ensureServedIndex()).snippetTokenizer;
   }
 
   private async withAnalyzerLease<T>(run: () => T | Promise<T>): Promise<T> {
@@ -340,7 +497,7 @@ export class OramaSearchPort implements FtsRetrieval {
       if (manager.isTerminalLoadError?.(error) !== true) {
         throw error;
       }
-      await this.options.onTerminalAnalyzerFailure?.(error);
+      this.requestProjectionReconcile('terminal-analyzer-failure');
       return execute();
     }
   }
@@ -362,6 +519,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   private readonly searchPort: OramaSearchPort;
   private readonly kiwiRuntime?: Runtime;
   private readonly analyzerManager: OramaAnalyzerManager;
+  private readonly requestProjectionReconcile?: (reason: OramaReconcileReason) => void;
 
   constructor(
     private readonly runtime: KbEngineRuntimeBase,
@@ -370,6 +528,14 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   ) {
     this.kiwiRuntime = options.kiwiRuntime;
     this.analyzerManager = options.analyzerManager ?? NOOP_ANALYZER_MANAGER;
+    this.requestProjectionReconcile = options.requestProjectionReconcile;
+    // Apply-time failures are supplemental; primary tier reconciliation is requested by the coordinator callback.
+    this.onApplyFailure =
+      options.onApplyFailure ??
+      (options.requestProjectionReconcile === undefined
+        ? undefined
+        : () => options.requestProjectionReconcile?.('terminal-analyzer-failure'));
+    this.snapshotStore.setCurrentKiwiAnalyzer(() => this.analyzerManager.currentAnalyzer());
     this.searchPort = this.createSearchPort();
   }
 
@@ -408,13 +574,17 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     return this.searchPort.warnings();
   }
 
+  getSearchPort(): OramaSearchPort {
+    return this.searchPort;
+  }
+
   createSearchPort(): OramaSearchPort {
     return new OramaSearchPort(this.snapshotStore, {
       runtime: this.runtime,
       kiwiRuntime: this.kiwiRuntime,
       analyzerManager: this.analyzerManager,
       projectionIdentityInput: () => this.projectionIdentityInput(),
-      onTerminalAnalyzerFailure: (error) => this.rebuildIntlBaselineAfterAnalyzerFailure(error),
+      requestProjectionReconcile: this.requestProjectionReconcile,
     });
   }
 
@@ -460,10 +630,16 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     if (preparedProjection.documents.length > 0) {
       await insertMultiple(preparedProjection.db, preparedProjection.documents);
     }
-    this.snapshotStore.persist(snapshot, preparedProjection.db, this.projectionIdentityInput());
+    const identityInput = this.projectionIdentityInput();
+    if (await this.shouldSkipStaleProjectionWrite(snapshot, ORAMA_PROJECTION_IDENTITY_HASH(identityInput))) {
+      this.searchPort.probeFreshness();
+      return;
+    }
+    const metadata = this.snapshotStore.persist(snapshot, preparedProjection.db, identityInput);
     this.snapshotStore.install({
       db: preparedProjection.db,
       tokenizer: preparedProjection.tokenizer,
+      metadata,
     });
     this.searchPort.probeFreshness();
   }
@@ -501,10 +677,16 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       return;
     }
 
-    this.snapshotStore.persist(snapshot, loaded.db, this.projectionIdentityInput());
+    const identityInput = this.projectionIdentityInput();
+    if (await this.shouldSkipStaleProjectionWrite(snapshot, ORAMA_PROJECTION_IDENTITY_HASH(identityInput))) {
+      this.searchPort.probeFreshness();
+      return;
+    }
+    const metadata = this.snapshotStore.persist(snapshot, loaded.db, identityInput);
     this.snapshotStore.install({
       db: loaded.db,
       tokenizer: loaded.tokenizer,
+      metadata,
     });
     this.searchPort.probeFreshness();
   }
@@ -514,6 +696,69 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       return { ...right };
     }
     return { ...left };
+  }
+
+  private async shouldSkipStaleProjectionWrite(
+    sourceSnapshot: KbCorpusSnapshot,
+    targetProjectionIdentityHash: string,
+  ): Promise<boolean> {
+    const cached = this.snapshotStore.getCache();
+    if (cached?.metadata !== undefined) {
+      if (
+        this.shouldSkipProjectionWriteAgainstMetadata(
+          cached.metadata,
+          sourceSnapshot,
+          targetProjectionIdentityHash,
+        )
+      ) {
+        return true;
+      }
+    }
+
+    try {
+      return this.shouldSkipProjectionWriteAgainstMetadata(
+        this.snapshotStore.loadMetadata(),
+        sourceSnapshot,
+        targetProjectionIdentityHash,
+      );
+    } catch {
+      // A missing or unreadable persisted artifact is handled by the normal write path.
+      return false;
+    }
+  }
+
+  private shouldSkipProjectionWriteAgainstMetadata(
+    persistedMetadata: OramaProjectionMetadata,
+    sourceSnapshot: KbCorpusSnapshot,
+    targetProjectionIdentityHash: string,
+  ): boolean {
+    const persistedSnapshot = this.snapshotFromMetadata(persistedMetadata);
+    if (this.isSnapshotStrictlyFresherForInterest(persistedSnapshot, sourceSnapshot)) {
+      return true;
+    }
+
+    return (
+      persistedMetadata.projectionIdentityHash === targetProjectionIdentityHash &&
+      this.snapshotsMatchForInterest(persistedSnapshot, sourceSnapshot)
+    );
+  }
+
+  private isSnapshotStrictlyFresherForInterest(candidate: KbCorpusSnapshot, source: KbCorpusSnapshot): boolean {
+    return (
+      isSnapshotFresherForInterest(candidate, source, this.corpusInterest) &&
+      !isSnapshotFresherForInterest(source, candidate, this.corpusInterest)
+    );
+  }
+
+  // Orama has "both" corpus interest; this intentionally compares every snapshot field.
+  private snapshotsMatchForInterest(left: KbCorpusSnapshot, right: KbCorpusSnapshot): boolean {
+    return (
+      left.snapshotId === right.snapshotId &&
+      left.contentSeq === right.contentSeq &&
+      left.metadataSeq === right.metadataSeq &&
+      left.contentManifestHash === right.contentManifestHash &&
+      left.metadataManifestHash === right.metadataManifestHash
+    );
   }
 
   private async resolveLatestSettledProjectionInput(ctx: CorpusConsumerApplyContext): Promise<{
@@ -642,24 +887,6 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       }
       return execute();
     }
-  }
-
-  private async rebuildIntlBaselineAfterAnalyzerFailure(error: unknown): Promise<void> {
-    const runtimeWithCorpusState = this.runtimeWithCorpusState();
-    if (runtimeWithCorpusState === null) {
-      throw error;
-    }
-
-    backendLog.warn(
-      `[kiwi] rebuilding Orama projection with Intl baseline after analyzer failure: ${errorMessage(error)}`,
-    );
-    const snapshot = runtimeWithCorpusState.corpusStateReader.readCurrentSnapshot();
-    const projectionInput = await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput();
-    await this.installFullSnapshot(snapshot, await this.prepareFullSnapshot(projectionInput));
-  }
-
-  private runtimeWithCorpusState(): KbEngineRuntime | null {
-    return 'corpusStateReader' in this.runtime ? (this.runtime as KbEngineRuntime) : null;
   }
 
   private manifestEntryMatchesDocument(
