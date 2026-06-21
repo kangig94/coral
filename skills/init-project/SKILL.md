@@ -16,6 +16,43 @@ argument-hint: "[existing|new]"
   **Autonomy**: Execute all phases (1→2→3→4→5→6) end-to-end without pausing for user confirmation.
   Evidence gates are self-checks, not user approval points. Do not ask "shall I continue?" between phases.
 </Role>
+<Execution_Discipline>
+  Work conventions that guard failure modes which recur in this protocol. They bind across
+  all phases — treat each as a precondition, not advice. Governing principle: **setup work is
+  verified to the same bar as feature code — confirm against the authoritative source (the
+  templates), never declare "sufficient" from memory or a partial scan.**
+
+  1. **Full-tree discovery before any "missing" conclusion.** Never decide a template or
+     reference is absent from a depth-limited or filtered listing. Run
+     `find {skill_base_dir}/templates -type f` (no `-maxdepth`, no `grep` pre-filter) once and
+     treat that inventory as authoritative. The "template not found" fallback may fire only
+     after a full listing confirms absence.
+
+  2. **Fixed artifacts are copied, never authored from memory.** Every artifact the protocol
+     calls fixed — `templates/skills/tier-review/SKILL.md`, `templates/agents/{code,doc,test,ux}-critic.md` —
+     is produced by: read the template file → copy it → graft only project-specific hooks. Do
+     not reconstruct it from another repo's output or recollection; you will drop required sections.
+
+  3. **Read every template in full; obey directives in its body.** Templates contain
+     instructions, not only `{placeholders}` (e.g. tier-review's "add coral:architect to the list
+     with tier 1 by default"). Read the whole file before instantiating and treat its imperative
+     sentences as requirements.
+
+  4. **Diff-against-template is part of Phase 4.** Verification asserts each generated fixed
+     artifact contains every section and directive its template has — a structural diff, not a
+     frontmatter-key existence check. "name: present" does not catch a dropped section.
+
+  5. **Enumerate concerns before writing agents; one agent per concern; justify omissions.**
+     In the Tier-2 fallback, first produce an explicit `concern → severity → agent` table for the
+     domain. Give each distinct failure mode its own agent — do not bundle several into one
+     guardian — and record in `agents.md` why any plausible agent was deliberately NOT created
+     (covered-by-X), so the roster is a justified decision, not an accident.
+
+  6. **Tier discipline is explicit.** Tier-1/2 safety guardians are binary gates
+     (PASS / NEEDS WORK on BLOCKING findings, no rubric); Tier-3 quality agents are rubric-scored.
+     A guardian without a score and a critic with one are both correct — do not "fix" either
+     toward the other.
+</Execution_Discipline>
 <Protocol>
   ## Phase 1: Gather Context
 
@@ -320,6 +357,11 @@ argument-hint: "[existing|new]"
   | Report everything (created + enhanced + updated) | Hide enhanced/updated files from the user |
   | Follow merge policy exactly | Overwrite existing user files |
   | Execute phases in order (1→2→3→4→5→6) | Skip to file generation without plan |
+  | List the full `templates/` tree (`find … -type f`) before concluding a template is missing | Conclude "no template" from a depth-limited or filtered `find` |
+  | Copy fixed artifacts (tier-review SKILL, *-critic agents) from their template, then graft project hooks | Author fixed artifacts from memory or another repo's output |
+  | Read each template in full and obey directives in its body | Treat templates as `{placeholder}`-only |
+  | Diff each generated fixed artifact against its template in Phase 4 | Pass verification on a frontmatter-key existence check |
+  | Enumerate concerns→severity→agent before writing agents; one agent per concern; justify omissions in agents.md | Bundle multiple distinct concerns into one guardian |
 </Constraints>
 <Error_Handling>
   | Scenario | Action |
@@ -328,6 +370,6 @@ argument-hint: "[existing|new]"
   | Reviewer spawn fails | Proceed with other reviewer's feedback; if both fail, do single self-review |
   | Phase 3 generation fails partway | Report error with partial results |
   | Domain reference file not found | Proceed with available references, note the missing domain |
-  | Template file not found | Report error for that artifact, continue with others |
+  | Template file not found | FIRST confirm genuine absence with a full `find {skill_base_dir}/templates -type f` (no `-maxdepth`, no `grep`) — a partial or filtered listing has falsely triggered this fallback. Only then report for that artifact and continue |
   | File already exists | Follow merge rule from plan: enhance (append missing sections) or update (patch stale content). Preserve non-cited content. Include in report as enhanced/updated |
 </Error_Handling>
