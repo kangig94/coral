@@ -27,6 +27,10 @@ export type OramaSnapshotPorts = {
   files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'>;
 };
 
+export type OramaSnapshotLoadOptions = {
+  currentKiwiAnalyzer?: () => OramaTokenizerAnalyzer | null;
+};
+
 export class OramaSnapshotStore {
   private cached: KbCachedOramaIndex | null = null;
   private currentKiwiAnalyzer: () => OramaTokenizerAnalyzer | null = () => null;
@@ -70,12 +74,12 @@ export class OramaSnapshotStore {
     this.ports.files.rmSync(oramaIndexMetadataPath(this.runtimeDir), { force: true });
   }
 
-  async load(): Promise<KbCachedOramaIndex> {
+  async load(options: OramaSnapshotLoadOptions = {}): Promise<KbCachedOramaIndex> {
     const artifactPath = oramaIndexPath(this.runtimeDir);
     const metadataPath = oramaIndexMetadataPath(this.runtimeDir);
     const { artifactRaw, metadata } = readOramaProjectionArtifact(this.ports.files, artifactPath, metadataPath);
     const { db, tokenizer } = await createOramaDb({
-      currentKiwiAnalyzer: this.currentKiwiAnalyzerFor(metadata),
+      currentKiwiAnalyzer: this.currentKiwiAnalyzerFor(metadata, options.currentKiwiAnalyzer),
     });
     const raw = JSON.parse(artifactRaw) as RawData;
     load(db, raw);
@@ -86,13 +90,13 @@ export class OramaSnapshotStore {
     return readOramaProjectionMetadata(this.ports.files, oramaIndexMetadataPath(this.runtimeDir));
   }
 
-  async loadIfPresent(): Promise<KbCachedOramaIndex | null> {
+  async loadIfPresent(options: OramaSnapshotLoadOptions = {}): Promise<KbCachedOramaIndex | null> {
     if (this.cached !== null) {
       return this.cached;
     }
 
     try {
-      const loaded = await this.load();
+      const loaded = await this.load(options);
       this.install(loaded);
       return loaded;
     } catch (error: unknown) {
@@ -104,13 +108,13 @@ export class OramaSnapshotStore {
     }
   }
 
-  async loadReadOnly(): Promise<KbCachedOramaIndex | null> {
+  async loadReadOnly(options: OramaSnapshotLoadOptions = {}): Promise<KbCachedOramaIndex | null> {
     if (this.cached !== null) {
       return this.cached;
     }
 
     try {
-      const loaded = await this.load();
+      const loaded = await this.load(options);
       this.install(loaded);
       return loaded;
     } catch (error: unknown) {
@@ -141,7 +145,10 @@ export class OramaSnapshotStore {
     return metadata;
   }
 
-  private currentKiwiAnalyzerFor(metadata: OramaProjectionMetadata): () => OramaTokenizerAnalyzer | null {
-    return oramaProjectionTokenizerTier(metadata) === 'kiwi' ? () => this.currentKiwiAnalyzer() : () => null;
+  private currentKiwiAnalyzerFor(
+    metadata: OramaProjectionMetadata,
+    currentKiwiAnalyzer: () => OramaTokenizerAnalyzer | null = this.currentKiwiAnalyzer,
+  ): () => OramaTokenizerAnalyzer | null {
+    return oramaProjectionTokenizerTier(metadata) === 'kiwi' ? currentKiwiAnalyzer : () => null;
   }
 }
