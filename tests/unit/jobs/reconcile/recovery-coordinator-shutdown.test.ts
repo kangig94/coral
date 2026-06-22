@@ -5,7 +5,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
+import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';

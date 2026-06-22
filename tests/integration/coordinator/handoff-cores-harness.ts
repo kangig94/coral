@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
+import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
