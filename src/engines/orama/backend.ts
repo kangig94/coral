@@ -228,10 +228,10 @@ export class OramaSearchPort implements FtsRetrieval {
     this.requestedReconcileReasons.clear();
   }
 
-  private createServedIndex(cached: KbCachedOramaIndex): OramaServedIndex | null {
+  private createServedIndex(cached: KbCachedOramaIndex, lease: OramaAnalyzerLeaseContext): OramaServedIndex | null {
     if (cached.fallback === true) {
       const tokenizer = createOramaTokenizer({
-        currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
+        currentKiwiAnalyzer: () => lease.analyzer,
       });
       cached.db.tokenizer = tokenizer;
       return {
@@ -261,11 +261,11 @@ export class OramaSearchPort implements FtsRetrieval {
     }
 
     if (tier === 'kiwi') {
-      if ((this.options.analyzerManager?.currentAnalyzer() ?? null) === null) {
+      if (lease.analyzer === null) {
         return null;
       }
       const tokenizer = createOramaTokenizer({
-        currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
+        currentKiwiAnalyzer: () => lease.analyzer,
       });
       cached.db.tokenizer = tokenizer;
       return {
@@ -280,8 +280,8 @@ export class OramaSearchPort implements FtsRetrieval {
     return null;
   }
 
-  private activateServedIndex(cached: KbCachedOramaIndex): OramaServedIndex | null {
-    const served = this.createServedIndex(cached);
+  private activateServedIndex(cached: KbCachedOramaIndex, lease: OramaAnalyzerLeaseContext): OramaServedIndex | null {
+    const served = this.createServedIndex(cached, lease);
     if (served === null) {
       this.clearServedIndex();
       return null;
@@ -294,8 +294,9 @@ export class OramaSearchPort implements FtsRetrieval {
   private serveClassifiedIndex(
     cached: KbCachedOramaIndex,
     classification: OramaProjectionMismatchClassification,
+    lease: OramaAnalyzerLeaseContext,
   ): OramaServedIndex | null {
-    const served = this.activateServedIndex(cached);
+    const served = this.activateServedIndex(cached, lease);
     if (served === null) {
       return null;
     }
@@ -317,8 +318,8 @@ export class OramaSearchPort implements FtsRetrieval {
   }
 
   async ensureLoaded(): Promise<OramaLoadedIndex> {
-    return this.withAnalyzerLease(async () => {
-      const served = await this.ensureServedIndex();
+    return this.withAnalyzerLease(async (lease) => {
+      const served = await this.ensureServedIndex(lease);
       return {
         db: served.db,
         tokenizer: served.snippetTokenizer,
@@ -326,7 +327,7 @@ export class OramaSearchPort implements FtsRetrieval {
     });
   }
 
-  private async ensureServedIndex(): Promise<OramaServedIndex> {
+  private async ensureServedIndex(lease: OramaAnalyzerLeaseContext): Promise<OramaServedIndex> {
     const cached = this.snapshotStore.getCache();
     if (this.fallbackCacheActive && this.snapshotStore.hasPersistedSnapshot()) {
       this.snapshotStore.clear();
@@ -334,7 +335,7 @@ export class OramaSearchPort implements FtsRetrieval {
     } else if (cached !== null) {
       const classification = this.indexIdentityClassification(cached);
       if (classification === 'match' || classification === 'tier-only-upgrade') {
-        const served = this.serveClassifiedIndex(cached, classification);
+        const served = this.serveClassifiedIndex(cached, classification, lease);
         if (served !== null) {
           return served;
         }
@@ -346,11 +347,13 @@ export class OramaSearchPort implements FtsRetrieval {
       this.requestProjectionReconcile('incompatible');
     }
 
-    const loaded = await this.snapshotStore.loadReadOnly();
+    const loaded = await this.snapshotStore.loadReadOnly({
+      currentKiwiAnalyzer: () => lease.analyzer,
+    });
     if (loaded !== null) {
       const classification = this.indexIdentityClassification(loaded);
       if (classification === 'match' || classification === 'tier-only-upgrade') {
-        const served = this.serveClassifiedIndex(loaded, classification);
+        const served = this.serveClassifiedIndex(loaded, classification, lease);
         if (served !== null) {
           return served;
         }
@@ -366,10 +369,10 @@ export class OramaSearchPort implements FtsRetrieval {
     this.warningSet.delete(FTS_INDEX_STALE_TIER_WARNING);
     this.requestProjectionReconcile('incompatible');
     const created = await createOramaDb({
-      currentKiwiAnalyzer: () => this.options.analyzerManager?.currentAnalyzer() ?? null,
+      currentKiwiAnalyzer: () => lease.analyzer,
     });
     this.snapshotStore.install({ ...created, fallback: true });
-    const served = this.activateServedIndex({ ...created, fallback: true });
+    const served = this.activateServedIndex({ ...created, fallback: true }, lease);
     this.fallbackCacheActive = true;
     if (served === null) {
       throw new Error('fallback Orama index activation failed');
@@ -409,8 +412,8 @@ export class OramaSearchPort implements FtsRetrieval {
       return { hits: [], exhausted: true };
     }
 
-    return this.withAnalyzerLease(async () => {
-      const { db } = await this.ensureServedIndex();
+    return this.withAnalyzerLease(async (lease) => {
+      const { db } = await this.ensureServedIndex(lease);
       const limit = Math.max(safeTopK * 5, safeTopK);
 
       const response = await oramaSearch(db, {
@@ -460,8 +463,8 @@ export class OramaSearchPort implements FtsRetrieval {
     if (texts.length === 0) {
       return [];
     }
-    return this.withAnalyzerLease(async () => {
-      const tokenizer = await this.tokenizerProbe();
+    return this.withAnalyzerLease(async (lease) => {
+      const tokenizer = await this.tokenizerProbe(lease);
       return texts.map((text) => tokenizeQuery(normalizeOramaTerm(text), tokenizer));
     });
   }
@@ -471,7 +474,7 @@ export class OramaSearchPort implements FtsRetrieval {
     return [...this.warningSet];
   }
 
-  private async tokenizerProbe(): Promise<KbOramaTokenizer> {
+  private async tokenizerProbe(lease: OramaAnalyzerLeaseContext): Promise<KbOramaTokenizer> {
     const cached = this.snapshotStore.getCache();
     const classification = cached === null ? 'incompatible' : this.indexIdentityClassification(cached);
     if (
@@ -482,17 +485,18 @@ export class OramaSearchPort implements FtsRetrieval {
     ) {
       return this.servedIndex.snippetTokenizer;
     }
-    return (await this.ensureServedIndex()).snippetTokenizer;
+    return (await this.ensureServedIndex(lease)).snippetTokenizer;
   }
 
-  private async withAnalyzerLease<T>(run: () => T | Promise<T>): Promise<T> {
+  private async withAnalyzerLease<T>(run: (lease: OramaAnalyzerLeaseContext) => T | Promise<T>): Promise<T> {
     const manager = this.options.analyzerManager;
     const runtime = this.options.runtime;
     if (manager === undefined || runtime === undefined) {
-      return run();
+      return run({ analyzer: null, activeAnalyzers: [] });
     }
 
-    const execute = () => manager.withAnalyzerLease(this.options.kiwiRuntime, readDeclaredAnalyzers(runtime), run);
+    const execute = () =>
+      manager.withAnalyzerLease(this.options.kiwiRuntime, readDeclaredAnalyzers(runtime), (lease) => run(lease));
     try {
       return await execute();
     } catch (error: unknown) {
@@ -546,7 +550,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   }
 
   async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
-    await this.withAnalyzerLease(() => this.installLatestCoalescedSnapshot(ctx));
+    await this.withAnalyzerLease((lease) => this.installLatestCoalescedSnapshot(ctx, lease));
   }
 
   async ensureLoaded(): Promise<OramaLoadedIndex> {
@@ -613,9 +617,10 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
 
   private async prepareFullSnapshotFromDocuments(
     currentByEntryId: CurrentOramaDocumentMap,
+    lease?: OramaAnalyzerLeaseContext,
   ): Promise<PreparedOramaProjection> {
     const { db, tokenizer } = await createOramaDb({
-      currentKiwiAnalyzer: () => this.analyzerManager.currentAnalyzer(),
+      currentKiwiAnalyzer: () => lease?.analyzer ?? this.analyzerManager.currentAnalyzer(),
     });
 
     return {
@@ -655,12 +660,15 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
    * Keep apply awaited until the installed artifact catches up; the driver
    * advances the consumer cursor only after this method returns.
    */
-  private async installLatestCoalescedSnapshot(ctx: CorpusConsumerApplyContext): Promise<void> {
+  private async installLatestCoalescedSnapshot(
+    ctx: CorpusConsumerApplyContext,
+    lease: OramaAnalyzerLeaseContext,
+  ): Promise<void> {
     const { snapshot, projectionInput } = await this.resolveLatestSettledProjectionInput(ctx);
     const currentByEntryId = this.prepareCurrentDocumentMap(projectionInput);
-    const loaded = await this.loadPersistedDeltaBase();
+    const loaded = await this.loadPersistedDeltaBase(lease);
     if (loaded === null) {
-      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId));
+      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease));
       return;
     }
 
@@ -672,14 +680,14 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     }
 
     if (this.requiresFullInstallFromManifest(loaded.metadata.entryManifest, currentByEntryId)) {
-      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId));
+      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease));
       return;
     }
 
     try {
       await this.applyDeltaFromManifest(loaded.db, loaded.metadata.entryManifest, currentByEntryId);
     } catch {
-      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId));
+      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease));
       return;
     }
 
@@ -784,9 +792,13 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     }
   }
 
-  private async loadPersistedDeltaBase(): Promise<(KbCachedOramaIndex & { metadata: OramaProjectionMetadata }) | null> {
+  private async loadPersistedDeltaBase(
+    lease: OramaAnalyzerLeaseContext,
+  ): Promise<(KbCachedOramaIndex & { metadata: OramaProjectionMetadata }) | null> {
     try {
-      const loaded = await this.snapshotStore.load();
+      const loaded = await this.snapshotStore.load({
+        currentKiwiAnalyzer: () => lease.analyzer,
+      });
       if (loaded.metadata?.projectionIdentityHash !== this.projectionIdentityHash()) {
         return null;
       }
@@ -878,9 +890,11 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     }
   }
 
-  private async withAnalyzerLease<T>(run: () => T | Promise<T>): Promise<T> {
+  private async withAnalyzerLease<T>(run: (lease: OramaAnalyzerLeaseContext) => T | Promise<T>): Promise<T> {
     const execute = () =>
-      this.analyzerManager.withAnalyzerLease(this.kiwiRuntime, readDeclaredAnalyzers(this.runtime), () => run());
+      this.analyzerManager.withAnalyzerLease(this.kiwiRuntime, readDeclaredAnalyzers(this.runtime), (lease) =>
+        run(lease),
+      );
     try {
       return await execute();
     } catch (error: unknown) {
