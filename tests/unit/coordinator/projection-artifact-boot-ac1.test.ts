@@ -87,8 +87,9 @@ describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const driver = driverThatTimesOut(['vector-base']);
 
-    await expect(repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(['vector-base'])), driver, 25)).rejects
-      .toBeInstanceOf(FreshnessTimeout);
+    await expect(
+      repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(['vector-base'])), driver, 25),
+    ).rejects.toBeInstanceOf(FreshnessTimeout);
   });
 
   it('does not swallow mixed Orama and non-Orama FreshnessTimeout failures', async () => {
@@ -96,7 +97,8 @@ describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
     const targets = [ORAMA_BASE_CONSUMER_ID, 'vector-base'];
     const driver = driverThatTimesOut(targets);
 
-    await expect(repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(targets)), driver, 25)).rejects
-      .toBeInstanceOf(FreshnessTimeout);
+    await expect(
+      repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(targets)), driver, 25),
+    ).rejects.toBeInstanceOf(FreshnessTimeout);
   });
 });

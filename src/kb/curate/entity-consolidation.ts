@@ -497,10 +497,7 @@ export function consolidateEntityGraph(
   throw new Error('Entity graph consolidation did not converge.');
 }
 
-function consolidateEntityGraphOnce(
-  existingGraph: EntityGraph,
-  delta?: EntityConsolidationDelta,
-): ConsolidationResult {
+function consolidateEntityGraphOnce(existingGraph: EntityGraph, delta?: EntityConsolidationDelta): ConsolidationResult {
   const candidates = collectEntityCandidates(existingGraph, delta);
   const observedKeys = new Set<string>();
 
@@ -528,10 +525,7 @@ export function entityGraphsEqual(left: EntityGraph, right: EntityGraph): boolea
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function composeReplacementMaps(
-  previous: EntityReplacementMap,
-  next: EntityReplacementMap,
-): EntityReplacementMap {
+function composeReplacementMaps(previous: EntityReplacementMap, next: EntityReplacementMap): EntityReplacementMap {
   const entries = new Map<string, string>();
 
   for (const [source, target] of Object.entries(previous)) {

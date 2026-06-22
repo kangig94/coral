@@ -21,9 +21,9 @@ describe('resolveClaudeModel', () => {
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'claude-opus-4-8' })).toBe('claude-opus-4-8');
     // `opus[1m]` is not an abstract tier, so it is sent as-is (and is not tier-capped).
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'opus[1m]' })).toBe('opus[1m]');
-    expect(
-      resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'opus[1m]', CORAL_CLAUDE_MODEL_CAP: 'sonnet' }),
-    ).toBe('opus[1m]');
+    expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'opus[1m]', CORAL_CLAUDE_MODEL_CAP: 'sonnet' })).toBe(
+      'opus[1m]',
+    );
   });
 
   it('caps an over-cap CORAL_CLAUDE_MODEL default to CORAL_CLAUDE_MODEL_CAP', () => {
@@ -51,8 +51,7 @@ describe('buildPreparedClaudeRequest KB gating', () => {
   const storage = {
     readFileSync: (p: string) => (p.endsWith('INJECT.md') ? INJECT_MD : ''),
   } as unknown as PrepArgs[1];
-  const requestWith = (coralEnv: Record<string, string>) =>
-    ({ prompt: 'hi', coralEnv } as unknown as PrepArgs[0]);
+  const requestWith = (coralEnv: Record<string, string>) => ({ prompt: 'hi', coralEnv }) as unknown as PrepArgs[0];
 
   it('omits KB guidance from the system prompt when coralEnv disables KB', () => {
     const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLE: '0' }), storage, '/mock/kb');

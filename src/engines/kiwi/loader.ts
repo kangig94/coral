@@ -182,10 +182,7 @@ export function kiwiAnalyzerIdentity(): KiwiAnalyzerIdentity {
   };
 }
 
-export async function loadKiwiAnalyzer(
-  runtime: Runtime,
-  options: LoadKiwiAnalyzerOptions = {},
-): Promise<KiwiAnalyzer> {
+export async function loadKiwiAnalyzer(runtime: Runtime, options: LoadKiwiAnalyzerOptions = {}): Promise<KiwiAnalyzer> {
   if (options.installIfMissing === true) {
     const result = await ensureKiwiModelArtifact(runtime);
     if (result.status === 'error') {

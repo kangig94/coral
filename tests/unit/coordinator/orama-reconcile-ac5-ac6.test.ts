@@ -8,10 +8,7 @@ import {
   createOramaProjectionReconcileRequester,
   type OramaProjectionReconcileRuntime,
 } from '#src/coordinator/expansion/lifecycle.js';
-import {
-  KiwiAnalyzerManager,
-  isKiwiAnalyzerTerminalLoadError,
-} from '#src/engines/kiwi/analyzer-manager.js';
+import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import {
@@ -167,8 +164,7 @@ function createKiwiAnalyzer(): KiwiAnalyzer {
 
 function createKiwiAnalyzerManagerPort(manager: KiwiAnalyzerManager): OramaAnalyzerManager {
   return {
-    withAnalyzerLease: (runtime, declaredAnalyzers, run) =>
-      manager.withAnalyzerLease(runtime, declaredAnalyzers, run),
+    withAnalyzerLease: (runtime, declaredAnalyzers, run) => manager.withAnalyzerLease(runtime, declaredAnalyzers, run),
     effectiveDeclaredAnalyzers: (declaredAnalyzers, runtime) =>
       manager.effectiveDeclaredAnalyzers(declaredAnalyzers, runtime),
     currentAnalyzer: () => manager.currentAnalyzer(),
@@ -414,10 +410,7 @@ describe('Orama coordinator reconcile ownership', () => {
       analyzerManager: createKiwiAnalyzerManagerPort(manager),
       kiwiRuntime: runtime,
     });
-    await projection.installFullSnapshot(
-      snapshot,
-      await projection.prepareFullSnapshot(createKbProjectionInput(kb)),
-    );
+    await projection.installFullSnapshot(snapshot, await projection.prepareFullSnapshot(createKbProjectionInput(kb)));
     expect(readMetadata(kb).projectionIdentityHash).toBe(kiwiIdentityHash());
     expect(oramaProjectionTokenizerTier(readMetadata(kb))).toBe('kiwi');
 

@@ -364,9 +364,9 @@ describe('git sync conflict recovery', () => {
     expect(continueCalls).toBe(2);
     expect(rebaseInProgress).toBe(false);
     expect(conflictMarkers).toBe(false);
-    expect(
-      processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort'),
-    ).toBe(false);
+    expect(processPort.execSync.mock.calls.some(([, args]) => args[0] === 'rebase' && args[1] === '--abort')).toBe(
+      false,
+    );
   });
 
   it('preserves conflicting local commits on a recovery ref, unwedges push, and quarantines the entry', async () => {
@@ -449,7 +449,9 @@ describe('git sync conflict recovery', () => {
     expect(git(local, ['rev-parse', 'HEAD']).trim()).toBe(git(local, ['rev-parse', 'origin/main']).trim());
 
     await controller.gitPush();
-    expect(spawnSync('git', ['push', '--porcelain', 'origin', 'main'], { cwd: local, encoding: 'utf-8' }).status).toBe(0);
+    expect(spawnSync('git', ['push', '--porcelain', 'origin', 'main'], { cwd: local, encoding: 'utf-8' }).status).toBe(
+      0,
+    );
 
     const quarantined = readCurateConflictQuarantine(curateDb(kb));
     expect(quarantined).toMatchObject([

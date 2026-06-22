@@ -146,9 +146,7 @@ export class KbSourceImportService {
       } satisfies KbSourceImportStarted);
     }
 
-    return this.shell.runSync('kb.source_import', jobCtx, (job) =>
-      this.runImport(job, resolvedRequest, kbSubsystem),
-    );
+    return this.shell.runSync('kb.source_import', jobCtx, (job) => this.runImport(job, resolvedRequest, kbSubsystem));
   }
 
   private jobContext(request: KbSourceImportResolvedRequest, ctx: { projectRoot: string }): KbOperationJobContext {

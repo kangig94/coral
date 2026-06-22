@@ -227,7 +227,9 @@ export function hasCompleteOramaProjectionIdentityMetadata(
   );
 }
 
-export function oramaProjectionTokenizerTier(metadata: OramaProjectionMetadata | undefined): OramaProjectionTokenizerTier {
+export function oramaProjectionTokenizerTier(
+  metadata: OramaProjectionMetadata | undefined,
+): OramaProjectionTokenizerTier {
   if (!hasCompleteOramaProjectionIdentityMetadata(metadata)) {
     return 'unknown';
   }
@@ -385,10 +387,7 @@ export function readOramaProjectionArtifact(
   return { artifactRaw, metadata };
 }
 
-export function readOramaProjectionMetadata(
-  files: OramaArtifactFiles,
-  metadataPath: string,
-): OramaProjectionMetadata {
+export function readOramaProjectionMetadata(files: OramaArtifactFiles, metadataPath: string): OramaProjectionMetadata {
   const metadata = JSON.parse(files.readFileSync(metadataPath, 'utf-8')) as unknown;
   if (!isOramaProjectionMetadata(metadata)) {
     throw new Error('projection metadata sidecar is missing required identity or manifest fields');

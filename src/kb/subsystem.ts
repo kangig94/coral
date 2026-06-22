@@ -91,9 +91,7 @@ export async function createKbSubsystem({
     processPort,
     storagePort,
     envPort,
-    ...(createCommunitySummaryJob === undefined
-      ? {}
-      : { runCommunitySummaryJob: createCommunitySummaryJob(kb) }),
+    ...(createCommunitySummaryJob === undefined ? {} : { runCommunitySummaryJob: createCommunitySummaryJob(kb) }),
   });
 
   return {

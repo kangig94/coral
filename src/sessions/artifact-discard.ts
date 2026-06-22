@@ -20,7 +20,8 @@ export function collectArtifactHandles(
   // every job scope, so it is always included even when narrowing to one job.
   const handles = entry.artifactHandles
     .filter(
-      (artifact) => opts.jobId === undefined || artifact.sourceJobId === undefined || artifact.sourceJobId === opts.jobId,
+      (artifact) =>
+        opts.jobId === undefined || artifact.sourceJobId === undefined || artifact.sourceJobId === opts.jobId,
     )
     .map((artifact) => artifact.handle);
   if (

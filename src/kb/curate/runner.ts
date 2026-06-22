@@ -33,10 +33,7 @@ import {
 import type { ClaimCandidate, ClassificationAssignment, CurateClaim, CurateClaimedEntry } from './pipeline-types.js';
 import type { CurateAssistantPort } from './assistant.js';
 import { curateDb } from './db-access.js';
-import {
-  deleteCurateConflictQuarantineEntry,
-  readCurateConflictQuarantine,
-} from './conflict-quarantine.js';
+import { deleteCurateConflictQuarantineEntry, readCurateConflictQuarantine } from './conflict-quarantine.js';
 
 const CURATE_MIN_CLAIM_SIZE = 10;
 const CURATE_IMMEDIATE_CLAIM_SIZE = 30;
@@ -79,7 +76,10 @@ function hasCursorTimestamp(timestamp: string): boolean {
   return timestamp.trim().length > 0 && !Number.isNaN(Date.parse(timestamp));
 }
 
-function collectClaimCandidates(index: KbIndex, quarantinedEntries: ReadonlySet<KbEntryId> = new Set()): ClaimCandidate[] {
+function collectClaimCandidates(
+  index: KbIndex,
+  quarantinedEntries: ReadonlySet<KbEntryId> = new Set(),
+): ClaimCandidate[] {
   const candidates: ClaimCandidate[] = [];
   for (const entry of getCuratableEntries(index)) {
     const entryId = isNoteEntry(entry) ? noteEntryId(entry.slug) : sourceEntryId(entry.slug);

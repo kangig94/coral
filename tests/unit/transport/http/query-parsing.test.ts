@@ -173,10 +173,15 @@ describe('transport HTTP query parsing', () => {
   });
 
   it('rebuilds InvocationContext from query params using the injected CORAL env snapshot only', () => {
-    const context = buildInvocationContextFromQuery('/repo/project', '/plugin/root', {
-      CORAL_OWNER: 'transport-owner',
-      CORAL_EFFORT: 'high',
-    }, 'admin');
+    const context = buildInvocationContextFromQuery(
+      '/repo/project',
+      '/plugin/root',
+      {
+        CORAL_OWNER: 'transport-owner',
+        CORAL_EFFORT: 'high',
+      },
+      'admin',
+    );
 
     expect(context.projectRoot).toBe('/repo/project');
     expect(context.pluginRoot).toBe('/plugin/root');

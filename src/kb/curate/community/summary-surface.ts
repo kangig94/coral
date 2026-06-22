@@ -61,7 +61,9 @@ export function listStaleCommunities(kb: KbRuntime): StaleCommunity[] {
       stale.push({ slug: community.slug, level: community.level });
     }
   }
-  stale.sort((left, right) => (left.level !== right.level ? left.level - right.level : compareLocale(left.slug, right.slug)));
+  stale.sort((left, right) =>
+    left.level !== right.level ? left.level - right.level : compareLocale(left.slug, right.slug),
+  );
   return stale;
 }
 
@@ -82,7 +84,11 @@ export function readCommunitySummaryInput(kb: KbRuntime, slug: string): Communit
  * closes for this community on the next pass. Returns whether a file was written
  * (false when the slug is unknown).
  */
-export async function applyCommunitySummary(kb: KbRuntime, slug: string, rawSummary: string): Promise<{ written: boolean }> {
+export async function applyCommunitySummary(
+  kb: KbRuntime,
+  slug: string,
+  rawSummary: string,
+): Promise<{ written: boolean }> {
   const summary = normalizeGeneratedSummary(rawSummary);
   if (summary === undefined) {
     throw new Error(`Refusing to store an empty summary for community ${slug}.`);

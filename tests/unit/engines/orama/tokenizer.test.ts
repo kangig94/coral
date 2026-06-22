@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  createOramaTokenizer,
-  normalizeOramaTerm,
-  tokenizeQuery,
-} from '#src/engines/orama/document-builder.js';
+import { createOramaTokenizer, normalizeOramaTerm, tokenizeQuery } from '#src/engines/orama/document-builder.js';
 
 describe('orama multilingual tokenizer', () => {
   it('emits word tokens for Korean, Chinese, Japanese, and English input', () => {

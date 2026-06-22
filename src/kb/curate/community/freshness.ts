@@ -19,10 +19,7 @@ export function areCommunityDocumentsFresh(kb: KbRuntime, index: KbIndex): boole
   return isCommunityStateFreshForIndex(kb, index);
 }
 
-function isCommunityStateFreshForIndex(
-  kb: CommunityFreshnessRuntime,
-  index: KbIndex,
-): boolean {
+function isCommunityStateFreshForIndex(kb: CommunityFreshnessRuntime, index: KbIndex): boolean {
   const communityEntries: CommunityEntry[] = [];
   for (const entry of Object.values(index.entries)) {
     if (isCommunityEntry(entry)) {
@@ -69,8 +66,9 @@ function isCommunitySummaryFresh(
 ): boolean {
   const currentEntries = Object.entries(currentFingerprints).sort(([left], [right]) => left.localeCompare(right));
   const storedEntries = communities
-    .flatMap((community): Array<[string, string]> =>
-      community.summaryInputFingerprint === undefined ? [] : [[community.slug, community.summaryInputFingerprint]],
+    .flatMap(
+      (community): Array<[string, string]> =>
+        community.summaryInputFingerprint === undefined ? [] : [[community.slug, community.summaryInputFingerprint]],
     )
     .filter(([slug]) => slug in currentFingerprints)
     .sort(([left], [right]) => left.localeCompare(right));

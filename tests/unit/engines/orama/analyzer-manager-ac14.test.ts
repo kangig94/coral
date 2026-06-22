@@ -171,9 +171,7 @@ describe('Orama AC14 analyzer manager integration', () => {
       snapshot,
       await initialProjection.prepareFullSnapshot(createKbProjectionInput(kb)),
     );
-    expect(readMetadata(kb).projectionIdentityHash).toBe(
-      ORAMA_PROJECTION_IDENTITY_HASH({ declaredAnalyzers: ['ko'] }),
-    );
+    expect(readMetadata(kb).projectionIdentityHash).toBe(ORAMA_PROJECTION_IDENTITY_HASH({ declaredAnalyzers: ['ko'] }));
 
     const requestedReasons: string[] = [];
     const searchingProjection = new OramaBaseProjection(
@@ -251,17 +249,13 @@ describe('Orama AC14 analyzer manager integration', () => {
       { files: kb.projectionArtifacts.files },
       kb.projectionArtifacts.runtimeDir,
     );
-    const searchingProjection = new OramaBaseProjection(
-      engineRuntime(kb),
-      searchStore,
-      {
-        analyzerManager: kiwiLoadedManager,
-        kiwiRuntime: runtime,
-        requestProjectionReconcile: (reason) => {
-          requestedReasons.push(reason);
-        },
+    const searchingProjection = new OramaBaseProjection(engineRuntime(kb), searchStore, {
+      analyzerManager: kiwiLoadedManager,
+      kiwiRuntime: runtime,
+      requestProjectionReconcile: (reason) => {
+        requestedReasons.push(reason);
       },
-    );
+    });
 
     const result = await searchingProjection.search('searchable marker', 5, 'all');
 

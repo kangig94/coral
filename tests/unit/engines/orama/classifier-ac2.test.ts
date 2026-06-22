@@ -104,9 +104,7 @@ function combinations<T>(values: readonly T[]): readonly (readonly T[])[] {
   return rows;
 }
 
-function expectedClassificationFor(
-  mismatches: readonly DiscriminatingField[],
-): OramaProjectionMismatchClassification {
+function expectedClassificationFor(mismatches: readonly DiscriminatingField[]): OramaProjectionMismatchClassification {
   if (mismatches.length === 0) {
     return 'match';
   }
@@ -150,9 +148,7 @@ describe('Orama AC2 projection mismatch classifier', () => {
     const incompleteMetadata = { ...metadataFor(BASE_INPUT) } as Record<string, unknown>;
     delete incompleteMetadata[field];
 
-    expect(classifyProjectionMismatch(incompleteMetadata as OramaProjectionMetadata, BASE_INPUT)).toBe(
-      'incompatible',
-    );
+    expect(classifyProjectionMismatch(incompleteMetadata as OramaProjectionMetadata, BASE_INPUT)).toBe('incompatible');
   });
 
   it('classifies a Kiwi persisted index with matching Kiwi expected input as match', () => {

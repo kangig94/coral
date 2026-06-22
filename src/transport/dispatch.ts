@@ -190,6 +190,7 @@ export async function executeCatalogRequest(
       // executeWorkflow, so this deliberately does not use stripTransportContextKeys.
       const {
         projectRoot: _projectRoot,
+        effort: _effort,
         claudeModelCap: _claudeModelCap,
         networkEnv: _networkEnv,
         ...workflowCommand
@@ -629,9 +630,7 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string; projectRoot: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(
-        domainResultToHttp(rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts, authority))),
-      );
+      return unaryHttp(domainResultToHttp(rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts, authority))));
     }
 
     case 'kb.memo.create': {

@@ -705,11 +705,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     const cached = this.snapshotStore.getCache();
     if (cached?.metadata !== undefined) {
       if (
-        this.shouldSkipProjectionWriteAgainstMetadata(
-          cached.metadata,
-          sourceSnapshot,
-          targetProjectionIdentityHash,
-        )
+        this.shouldSkipProjectionWriteAgainstMetadata(cached.metadata, sourceSnapshot, targetProjectionIdentityHash)
       ) {
         return true;
       }
@@ -889,10 +885,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     }
   }
 
-  private manifestEntryMatchesDocument(
-    previous: OramaEntryManifestEntry,
-    current: KbOramaDocument,
-  ): boolean {
+  private manifestEntryMatchesDocument(previous: OramaEntryManifestEntry, current: KbOramaDocument): boolean {
     return (
       previous.documentId === current.id &&
       previous.contentHash === current.contentHash &&

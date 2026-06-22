@@ -6,15 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OramaBaseProjection, createOramaBaseProjection } from '#src/engines/orama/backend.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
-import {
-  type OramaEntryManifest,
-  type OramaProjectionMetadata,
-} from '#src/engines/orama/artifact-port.js';
-import {
-  buildCommunityIndexEntry,
-  buildNoteIndexEntry,
-  buildSourceIndexEntry,
-} from '#src/kb/corpus/index-records.js';
+import { type OramaEntryManifest, type OramaProjectionMetadata } from '#src/engines/orama/artifact-port.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '#src/kb/corpus/index-records.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbCorpusSnapshot, KbEngineRuntimeBase, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
@@ -542,9 +535,7 @@ describe('orama AC10 incremental projection', () => {
       previousCommunityMetadataHash,
     );
     expectManifestEntryIds(kb, [communityEntryId('retrieval-topology')]);
-    await expectSearchDocumentIds(projection, 'rebuiltonlytopology', [
-      communityEntryId('retrieval-topology'),
-    ]);
+    await expectSearchDocumentIds(projection, 'rebuiltonlytopology', [communityEntryId('retrieval-topology')]);
     await expectSearchDocumentIds(projection, 'oldonlytopology', []);
   });
 

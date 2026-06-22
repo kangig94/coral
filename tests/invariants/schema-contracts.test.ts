@@ -226,6 +226,7 @@ describe('workflowRequestSchema', () => {
       workDir: '/tmp/project/work',
       projectRoot: '/tmp/project',
       owner: 'owner-1',
+      effort: 'high',
       claudeModelCap: 'haiku',
     });
 
@@ -234,6 +235,7 @@ describe('workflowRequestSchema', () => {
       provider: 'claude',
       workDir: '/tmp/project/work',
       owner: 'owner-1',
+      effort: 'high',
       claudeModelCap: 'haiku',
     });
   });
@@ -286,13 +288,13 @@ describe('workflowRequestSchema', () => {
     );
   });
 
-  it('rejects effort and other unknown keys via strict mode', () => {
+  it('rejects unrelated unknown keys via strict mode', () => {
     expect(
       workflowRequestSchema.safeParse({
         expression: 'architect',
         startPrompt: 'hello',
         projectRoot: '/tmp/project',
-        effort: 'high',
+        extra: true,
       }).success,
     ).toBe(false);
   });

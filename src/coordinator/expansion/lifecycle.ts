@@ -33,8 +33,7 @@ type ExpansionModule = {
 
 function createKiwiAnalyzerManagerPort(manager: KiwiAnalyzerManager = getKiwiAnalyzerManager()): OramaAnalyzerManager {
   return {
-    withAnalyzerLease: (runtime, declaredAnalyzers, run) =>
-      manager.withAnalyzerLease(runtime, declaredAnalyzers, run),
+    withAnalyzerLease: (runtime, declaredAnalyzers, run) => manager.withAnalyzerLease(runtime, declaredAnalyzers, run),
     effectiveDeclaredAnalyzers: (declaredAnalyzers, runtime) =>
       manager.effectiveDeclaredAnalyzers(declaredAnalyzers, runtime),
     currentAnalyzer: () => manager.currentAnalyzer(),

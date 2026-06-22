@@ -195,12 +195,9 @@ export const kbMemoDeleteConsolidatedSchema = z
 
 export const kbMemoDeleteQuerySchema = z
   .object({
-    projectRoot: projectRootSchema,
+    ...transportContextFieldsShape,
     pattern: z.string().optional(),
-    owner: z.string().optional(),
     all: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
-    jobId: z.string().optional(),
-    sessionId: z.string().optional(),
   })
   .strict()
   .refine((data) => (data.pattern !== undefined) !== (data.all === true), {

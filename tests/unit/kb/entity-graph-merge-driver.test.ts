@@ -369,9 +369,7 @@ describe('entity graph merge driver', () => {
       '.entity-graph.json merge=coral-entity-graph',
     );
     expect(gitCalls).toContainEqual(['config', 'rebase.backend', 'merge']);
-    const driverCall = gitCalls.find(
-      (args) => args[0] === 'config' && args[1] === 'merge.coral-entity-graph.driver',
-    );
+    const driverCall = gitCalls.find((args) => args[0] === 'config' && args[1] === 'merge.coral-entity-graph.driver');
     expect(driverCall?.[2]).toContain('kb merge-entity-graph "%O" "%A" "%B"');
     expect(driverCall?.[2]).toContain(join('bridge', 'coral-cli.cjs'));
   });

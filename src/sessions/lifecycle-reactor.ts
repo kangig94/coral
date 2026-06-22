@@ -104,7 +104,9 @@ export class LifecycleReactor {
     const provider = this.options.providers.get(entry.provider);
     if (!provider) return;
     if (provider.artifacts.kind !== 'managed') {
-      this.log(`On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`);
+      this.log(
+        `On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`,
+      );
       return;
     }
     const handles = collectArtifactHandles(entry, provider, this.options.runtime);

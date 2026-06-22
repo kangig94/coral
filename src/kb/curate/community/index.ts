@@ -3,11 +3,7 @@ import type { KbCorpusSnapshot, KbRuntime } from '../../contract.js';
 import { recordMetadataMutation } from '../../corpus/index-mutations.js';
 import { compareLocale } from '../../validation.js';
 import { buildCommunityPartitionTree } from './detection.js';
-import {
-  buildCommunityDocuments,
-  generateCommunityFiles,
-  loadExistingCommunityState,
-} from './documents.js';
+import { buildCommunityDocuments, generateCommunityFiles, loadExistingCommunityState } from './documents.js';
 import { buildEntityRelationshipGraph } from './graph.js';
 import type { CommunityDocument, ExistingGeneratedCommunity } from './contracts.js';
 import { CURATE_STALE_REASON } from '../operations.js';
@@ -98,10 +94,7 @@ async function prepareCommunityPayload(
   };
 }
 
-export async function runCommunitySubphase(
-  kb: KbRuntime,
-  options: RunCommunitySubphaseOptions = {},
-): Promise<boolean> {
+export async function runCommunitySubphase(kb: KbRuntime, options: RunCommunitySubphaseOptions = {}): Promise<boolean> {
   const prepared = await prepareCommunityPayload(kb, options);
   if (prepared === null) {
     return false;

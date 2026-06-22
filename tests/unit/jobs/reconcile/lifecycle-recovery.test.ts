@@ -538,8 +538,8 @@ function createActualRecoveryService(
       pluginRoot: options.pluginRoot,
       coralEnv: {},
       authority: 'admin',
-          },
-          {
+    },
+    {
       runtime,
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',

@@ -119,7 +119,15 @@ describe('source import runtime isolation', () => {
     writeFileSync(input, '# Runtime Isolated\n\nBody\n', 'utf8');
     const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
 
-    const prepared = await prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {});
+    const prepared = await prepareSourceImport(
+      sourceFile,
+      undefined,
+      policy.maxBytes,
+      () => {},
+      runtimeRoot,
+      runtime,
+      {},
+    );
 
     expect(prepared.stagedPath).toBe(join(runtimeRoot, 'source-import-staging', 'fixed-source-import-id.md'));
     expect(readFileSync(prepared.stagedPath, 'utf8')).toContain('importedAt: 2026-04-24T00:00:00.000Z');
@@ -167,11 +175,17 @@ describe('source import runtime isolation', () => {
     const policy = deriveSourceImportReadPolicy('admin', '/project', envWith('0'));
 
     expect(policy).toEqual({ kind: 'unrestricted', resolveBase: '/project', maxBytes: null });
-    expect(resolveSourceImportFile('/outside/huge.md', policy, coherentSizeStorage(USER_SOURCE_IMPORT_MAX_BYTES * 4))).toEqual({
+    expect(
+      resolveSourceImportFile('/outside/huge.md', policy, coherentSizeStorage(USER_SOURCE_IMPORT_MAX_BYTES * 4)),
+    ).toEqual({
       path: '/outside/huge.md',
     });
     expect(() =>
-      resolveSourceImportFile('/outside/directory', policy, coherentSizeStorage(USER_SOURCE_IMPORT_MAX_BYTES * 4, false)),
+      resolveSourceImportFile(
+        '/outside/directory',
+        policy,
+        coherentSizeStorage(USER_SOURCE_IMPORT_MAX_BYTES * 4, false),
+      ),
     ).toThrow(/must be a file/);
   });
 
@@ -195,7 +209,15 @@ describe('source import runtime isolation', () => {
     writeFileSync(input, '# In Scope\n\nBody\n', 'utf8');
     const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
 
-    const prepared = await prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {});
+    const prepared = await prepareSourceImport(
+      sourceFile,
+      undefined,
+      policy.maxBytes,
+      () => {},
+      runtimeRoot,
+      runtime,
+      {},
+    );
 
     expect(readFileSync(prepared.stagedPath, 'utf8')).toContain('# In Scope\n\nBody');
   });
@@ -215,7 +237,15 @@ describe('source import runtime isolation', () => {
     );
     const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
 
-    const prepared = await prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {});
+    const prepared = await prepareSourceImport(
+      sourceFile,
+      undefined,
+      policy.maxBytes,
+      () => {},
+      runtimeRoot,
+      runtime,
+      {},
+    );
     const staged = readFileSync(prepared.stagedPath, 'utf8');
 
     expect(staged).toContain('# HTML Import');

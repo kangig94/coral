@@ -549,7 +549,9 @@ export function createGitSyncController({
     return recoveryRef;
   }
 
-  function entryForConflictPath(path: string): { entryId: KbEntryId; kind: ConflictQuarantineKind; slug: string } | null {
+  function entryForConflictPath(
+    path: string,
+  ): { entryId: KbEntryId; kind: ConflictQuarantineKind; slug: string } | null {
     const normalized = path.replace(/\\/gu, '/');
     const match = /^(notes|sources|communities|wiki)\/(.+)\.md$/u.exec(normalized);
     if (match === null) {
@@ -626,7 +628,10 @@ export function createGitSyncController({
     try {
       git(['rebase', '--abort'], 10000);
     } catch (error: unknown) {
-      backendLog.error('[KB] git rebase conflict recovery could not abort the rebase; leaving worktree untouched', error);
+      backendLog.error(
+        '[KB] git rebase conflict recovery could not abort the rebase; leaving worktree untouched',
+        error,
+      );
       return false;
     }
 
@@ -634,7 +639,10 @@ export function createGitSyncController({
     try {
       recoveryRef = preserveHeadOnRecoveryRef(branch);
     } catch (error: unknown) {
-      backendLog.error('[KB] git rebase conflict recovery could not preserve local commits; leaving worktree untouched', error);
+      backendLog.error(
+        '[KB] git rebase conflict recovery could not preserve local commits; leaving worktree untouched',
+        error,
+      );
       return false;
     }
     if (recoveryRef === null) {

@@ -78,9 +78,7 @@ export function buildCommunityIndexEntry(meta: CommunityIndexEntrySource): Commu
     ...(meta.parent === undefined ? {} : { parent: meta.parent }),
     ...(meta.children === undefined ? {} : { children: [...meta.children] }),
     ...(meta.summary === undefined ? {} : { summary: meta.summary }),
-    ...(meta.summaryInputFingerprint === undefined
-      ? {}
-      : { summaryInputFingerprint: meta.summaryInputFingerprint }),
+    ...(meta.summaryInputFingerprint === undefined ? {} : { summaryInputFingerprint: meta.summaryInputFingerprint }),
   };
 }
 
