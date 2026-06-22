@@ -23,11 +23,12 @@ export interface Subsystem<R = unknown> {
 }
 
 export class SubsystemUnavailableError extends Error {
-  constructor(
-    public readonly id: SubsystemId,
-    public readonly phase: 'initializing' | 'offline',
-  ) {
+  public readonly id: SubsystemId;
+  public readonly phase: 'initializing' | 'offline';
+  constructor(id: SubsystemId, phase: 'initializing' | 'offline') {
     super(`Subsystem ${id} ${phase}`);
+    this.id = id;
+    this.phase = phase;
     this.name = 'SubsystemUnavailableError';
   }
 }

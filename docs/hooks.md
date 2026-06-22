@@ -6,19 +6,19 @@ Hooks provide automatic context injection, backend warm-start, compaction recove
 
 Hook registration lives in `hooks/hooks.json`. Coral uses these Claude Code hook events:
 
-| Event | Scripts | Purpose |
-| --- | --- | --- |
-| `SessionStart` (`*`) | `session-start.mjs`, `hud-auto-update.mjs` | Inject `INJECT.md` (and spawn the backend daemon — absorbed from the former `backend-warm-start.mjs`), refresh HUD |
-| `SessionStart` (`compact`) | `kb-promote-gate.mjs`, `post-compact.mjs` | Restore KB/promotion guidance and recover active jobs after compaction |
-| `SubagentStart` | `subagent-start.mjs` | Inject subagent-safe `INJECT.md` |
-| `PreCompact` | `pre-compact.mjs` | Snapshot active jobs before compaction |
-| `UserPromptSubmit` | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars |
-| `PreToolUse` (`Skill`) | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs` | Same state setup for skill-initiated flows |
-| `PreToolUse` (`Bash`) | `cli-resolve.mjs` | Resolve bare `coral-cli` calls to the plugin-local bundle |
-| `PreToolUse` (`Monitor`) | `cli-monitor-guard.mjs` | Guard Monitor tool calls |
-| `PostToolUseFailure` | `kb-lookup-reminder.mjs` | KB reminder on explicit tool failures |
-| `PostToolUse` (`Bash`) | `kb-lookup-reminder.mjs` | KB reminder on silent-failure command output |
-| `Stop` | `ralph-loop.mjs`, `kb-promote-gate.mjs` | Prompt-mode looping and KB promotion enforcement |
+| Event                      | Scripts                                                                                 | Purpose                                                                                                            |
+| -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `SessionStart` (`*`)       | `session-start.mjs`, `hud-auto-update.mjs`                                              | Inject `INJECT.md` (and spawn the backend daemon — absorbed from the former `backend-warm-start.mjs`), refresh HUD |
+| `SessionStart` (`compact`) | `kb-promote-gate.mjs`, `post-compact.mjs`                                               | Restore KB/promotion guidance and recover active jobs after compaction                                             |
+| `SubagentStart`            | `subagent-start.mjs`                                                                    | Inject subagent-safe `INJECT.md`                                                                                   |
+| `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                                                             |
+| `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                                                             |
+| `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                                                         |
+| `PreToolUse` (`Bash`)      | `cli-resolve.mjs`                                                                       | Resolve bare `coral-cli` calls to the plugin-local bundle                                                          |
+| `PreToolUse` (`Monitor`)   | `cli-monitor-guard.mjs`                                                                 | Guard Monitor tool calls                                                                                           |
+| `PostToolUseFailure`       | `kb-lookup-reminder.mjs`                                                                | KB reminder on explicit tool failures                                                                              |
+| `PostToolUse` (`Bash`)     | `kb-lookup-reminder.mjs`                                                                | KB reminder on silent-failure command output                                                                       |
+| `Stop`                     | `ralph-loop.mjs`, `kb-promote-gate.mjs`                                                 | Prompt-mode looping and KB promotion enforcement                                                                   |
 
 All hook scripts are Node.js ESM files that read JSON from stdin, write JSON to stdout, and fail open.
 
@@ -34,7 +34,7 @@ The HUD auto-update hook adds one more gate: it refreshes the HUD only when `bui
 
 KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
 
-The current Claude Code hook runtime verified for this implementation is Node.js `v22.18.0`, where `node:sqlite` still emits `ExperimentalWarning: SQLite is an experimental feature`. The hook imports `node:sqlite` through `hooks/lib/sqlite.mjs`, which suppresses the warning by detaching `warning` listeners around a lazy dynamic import and restoring them afterwards; missing or unreadable SQLite support therefore fails open instead of breaking hook startup.
+Hook SQLite access goes through the supported Node runtime's built-in `node:sqlite` module. Missing or unreadable snapshot data fails open instead of breaking hook startup.
 
 It also:
 
@@ -116,7 +116,9 @@ exitIfWrongFlavor();
 
 try {
   const input = JSON.parse(readFileSync('/dev/stdin', 'utf8'));
-  const output = { /* hook result */ };
+  const output = {
+    /* hook result */
+  };
   process.stdout.write(JSON.stringify(output) + '\n');
 } catch {
   process.exit(0);

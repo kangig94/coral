@@ -49,8 +49,10 @@ export type IncumbentHealth = {
  * stays unchanged.
  */
 export class IncumbentMatchesError extends Error {
-  constructor(public readonly identity: DesiredIncumbentIdentity) {
+  public readonly identity: DesiredIncumbentIdentity;
+  constructor(identity: DesiredIncumbentIdentity) {
     super('Coral backend already running');
+    this.identity = identity;
     this.name = 'IncumbentMatchesError';
   }
 }

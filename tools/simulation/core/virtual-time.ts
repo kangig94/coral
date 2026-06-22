@@ -75,7 +75,10 @@ function compareTimers(left: TimerRecord, right: TimerRecord): number {
 }
 
 export class VirtualTimerHandle implements TimerHandle {
-  constructor(readonly id: number) {}
+  readonly id: number;
+  constructor(id: number) {
+    this.id = id;
+  }
 
   unref(): void {}
 }

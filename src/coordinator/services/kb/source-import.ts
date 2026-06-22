@@ -112,7 +112,9 @@ export function parseKbSourceImportRequest(args: Record<string, unknown>): Parse
 export class KbSourceImportService {
   private readonly shell: KbOperationJobShell;
 
-  constructor(private readonly deps: KbSourceImportServiceDeps) {
+  private readonly deps: KbSourceImportServiceDeps;
+  constructor(deps: KbSourceImportServiceDeps) {
+    this.deps = deps;
     this.shell = new KbOperationJobShell(deps);
   }
 

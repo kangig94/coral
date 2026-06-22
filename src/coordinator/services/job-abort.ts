@@ -17,7 +17,10 @@ export interface JobAbortServiceDeps {
 }
 
 export class JobAbortService {
-  constructor(private readonly deps: JobAbortServiceDeps) {}
+  private readonly deps: JobAbortServiceDeps;
+  constructor(deps: JobAbortServiceDeps) {
+    this.deps = deps;
+  }
 
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];

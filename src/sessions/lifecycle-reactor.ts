@@ -63,7 +63,10 @@ export class LifecycleReactor {
   private readonly attemptFloorBySession = new Map<string, number>();
   private drainPromise: Promise<void> | null = null;
 
-  constructor(private readonly options: LifecycleReactorOptions) {}
+  private readonly options: LifecycleReactorOptions;
+  constructor(options: LifecycleReactorOptions) {
+    this.options = options;
+  }
 
   readonly observe: PostCommitObserver = (appended) => {
     const sessionIds = new Set<string>();

@@ -65,7 +65,10 @@ export class CorpusPublicationQueue {
   private drainRequested = false;
   private consecutiveFailureCount = 0;
 
-  constructor(private readonly options: CorpusPublicationQueueOptions) {}
+  private readonly options: CorpusPublicationQueueOptions;
+  constructor(options: CorpusPublicationQueueOptions) {
+    this.options = options;
+  }
 
   register(callbacks: KbCorpusPublishCallbacks): void {
     this.callbacks = callbacks;

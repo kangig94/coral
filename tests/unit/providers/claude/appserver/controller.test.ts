@@ -20,7 +20,10 @@ class FakeClaudeChild implements ClaudeBrokerChild {
   private readonly exitHandlers = new Set<(event: ChildExit) => void>();
   private exited = false;
 
-  constructor(private readonly autoReady = true) {}
+  private readonly autoReady;
+  constructor(autoReady = true) {
+    this.autoReady = autoReady;
+  }
 
   write(data: string): void {
     this.writes.push(data);

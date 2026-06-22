@@ -115,11 +115,9 @@ export class CoralStore implements StoreReadContext {
     view: (workflowId: string) => WorkflowView | null;
   };
 
-  constructor(
-    private readonly db: Database,
-    readCtx: StoreReadContext,
-    options: CoralStoreOptions = {},
-  ) {
+  private readonly db: Database;
+  constructor(db: Database, readCtx: StoreReadContext, options: CoralStoreOptions = {}) {
+    this.db = db;
     this.schemas = readCtx.schemas;
     this.upcasters = readCtx.upcasters;
     this.runtime = options.runtime;

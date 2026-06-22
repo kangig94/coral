@@ -36,7 +36,10 @@ export interface JobLaunchServiceDeps {
 }
 
 export class JobLaunchService {
-  constructor(private readonly deps: JobLaunchServiceDeps) {}
+  private readonly deps: JobLaunchServiceDeps;
+  constructor(deps: JobLaunchServiceDeps) {
+    this.deps = deps;
+  }
 
   async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);

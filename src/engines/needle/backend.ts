@@ -230,10 +230,9 @@ export class NeedleBackend implements NeedleBackendContract {
   private activeHandle: ActiveNeedleHandle | null = null;
   private readonly retiredHandles = new Set<ActiveNeedleHandle>();
 
-  constructor(
-    private readonly runtime: KbEngineRuntime,
-    options: NeedleBackendOptions & { embedder?: ResolvedNeedleEmbedder },
-  ) {
+  private readonly runtime: KbEngineRuntime;
+  constructor(runtime: KbEngineRuntime, options: NeedleBackendOptions & { embedder?: ResolvedNeedleEmbedder }) {
+    this.runtime = runtime;
     this.id = options.consumerId ?? NEEDLE_CONSUMER_ID;
     this.addonPath = options.addonPath;
     this.pluginRoot = options.pluginRoot;

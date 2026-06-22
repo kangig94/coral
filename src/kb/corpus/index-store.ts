@@ -392,7 +392,9 @@ export class KbIndexStore {
   private indexCache: { index: KbIndex | null } | null = null;
   private readonly host: FileAtomicHost;
 
-  constructor(private readonly options: KbIndexStoreOptions) {
+  private readonly options: KbIndexStoreOptions;
+  constructor(options: KbIndexStoreOptions) {
+    this.options = options;
     this.host = { storagePort: options.storage, ids: options.ids };
   }
 

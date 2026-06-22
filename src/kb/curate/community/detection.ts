@@ -627,10 +627,12 @@ function detectCommunitiesFromHierarchy(
 export class CommunityPartitionTree {
   private topologyFingerprint: string | null = null;
 
-  private constructor(
-    private readonly graphFingerprint: string,
-    private readonly hierarchySeeds: readonly HierarchySeed[],
-  ) {}
+  private readonly graphFingerprint: string;
+  private readonly hierarchySeeds: readonly HierarchySeed[];
+  private constructor(graphFingerprint: string, hierarchySeeds: readonly HierarchySeed[]) {
+    this.graphFingerprint = graphFingerprint;
+    this.hierarchySeeds = hierarchySeeds;
+  }
 
   static fromGraph(graph: TagGraph): CommunityPartitionTree {
     const graphFingerprint = computeGraphFingerprint(graph);

@@ -1,5 +1,3 @@
-import '../runtime/suppress-experimental-warnings.js';
-
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
 import { buildProgram } from './program.js';

@@ -305,7 +305,9 @@ export class ExpansionLifecycleService {
    */
   private readonly engineMutex = new Map<string, Promise<void>>();
 
-  constructor(private readonly options: ExpansionLifecycleServiceOptions) {
+  private readonly options: ExpansionLifecycleServiceOptions;
+  constructor(options: ExpansionLifecycleServiceOptions) {
+    this.options = options;
     this.manifest = options.manifest ?? BUNDLED_ENGINES;
     this.now = options.now;
   }

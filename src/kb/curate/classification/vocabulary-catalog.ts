@@ -33,7 +33,10 @@ type ClassificationVocabularyCandidate = {
 };
 
 export class ClassificationVocabularyCatalog {
-  private constructor(private readonly candidates: readonly ClassificationVocabularyCandidate[]) {}
+  private readonly candidates: readonly ClassificationVocabularyCandidate[];
+  private constructor(candidates: readonly ClassificationVocabularyCandidate[]) {
+    this.candidates = candidates;
+  }
 
   static fromIndex(index: KbIndex): ClassificationVocabularyCatalog {
     const candidates = buildClassificationVocabularyCandidates(index);

@@ -397,13 +397,21 @@ export function readOramaProjectionMetadata(files: OramaArtifactFiles, metadataP
 }
 
 export class OramaArtifactPort implements EngineArtifactPort {
+  private readonly files: OramaArtifactFiles;
+  private readonly runtimeDir: string;
+  private readonly declaredAnalyzers: readonly KbDeclaredAnalyzer[];
+  private readonly effectiveDeclaredAnalyzers: OramaEffectiveDeclaredAnalyzers;
   constructor(
-    private readonly files: OramaArtifactFiles,
-    private readonly runtimeDir: string,
-    private readonly declaredAnalyzers: readonly KbDeclaredAnalyzer[],
-    private readonly effectiveDeclaredAnalyzers: OramaEffectiveDeclaredAnalyzers = (declaredAnalyzers) =>
-      declaredAnalyzers,
-  ) {}
+    files: OramaArtifactFiles,
+    runtimeDir: string,
+    declaredAnalyzers: readonly KbDeclaredAnalyzer[],
+    effectiveDeclaredAnalyzers: OramaEffectiveDeclaredAnalyzers = (declaredAnalyzers) => declaredAnalyzers,
+  ) {
+    this.files = files;
+    this.runtimeDir = runtimeDir;
+    this.declaredAnalyzers = declaredAnalyzers;
+    this.effectiveDeclaredAnalyzers = effectiveDeclaredAnalyzers;
+  }
 
   private projectionIdentityHash(): string {
     return ORAMA_PROJECTION_IDENTITY_HASH(

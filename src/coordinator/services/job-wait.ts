@@ -17,7 +17,10 @@ export interface JobWaitServiceDeps {
 }
 
 export class JobWaitService {
-  constructor(private readonly deps: JobWaitServiceDeps) {}
+  private readonly deps: JobWaitServiceDeps;
+  constructor(deps: JobWaitServiceDeps) {
+    this.deps = deps;
+  }
 
   async waitForJobTerminal(jobId: string, timeoutMs?: number): Promise<void> {
     return this.deps.waitCoordinator.waitForJobTerminal(jobId, timeoutMs);

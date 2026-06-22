@@ -36,7 +36,9 @@ export interface CorpusMutationFinalizerOptions {
 export class CorpusMutationFinalizer {
   readonly mutationEffects: KbMutationEffects;
 
-  constructor(private readonly options: CorpusMutationFinalizerOptions) {
+  private readonly options: CorpusMutationFinalizerOptions;
+  constructor(options: CorpusMutationFinalizerOptions) {
+    this.options = options;
     this.mutationEffects = {
       queueManifestAuthorityDelta: (deltas) => {
         this.queueManifestAuthorityDelta(deltas);
