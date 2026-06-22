@@ -1,12 +1,12 @@
 # 🪸 Coral
 
-Claude Code는 이미 코딩할 줄 압니다. Coral은 *당신의 방식대로* 일하도록 가르칩니다.
+Claude Code는 이미 코딩할 줄 압니다. Coral은 _당신의 방식대로_ 일하도록 가르칩니다.
 
 Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, 지식 베이스 워크플로우는 지속형 HTTP 데몬을 통해 처리됩니다.
 
 ## 설치
 
-**요구사항:** Node.js 22+
+**요구사항:** Node.js 24+
 
 ```bash
 # Claude Code:
@@ -98,26 +98,26 @@ pathfind  →  preplan  →  plan  →  ralph
 
 각 단계는 다음 단계의 입력이 되는 산출물을 생성합니다. 필요한 지점부터 시작하면 됩니다.
 
-**pathfind** — *"문제는 있는데 뭘 만들어야 할지 모르겠다."*
+**pathfind** — _"문제는 있는데 뭘 만들어야 할지 모르겠다."_
 증상을 클러스터링하고, 근본 원인을 조사(코드베이스 분석을 위해 scanner 생성)하며,
 직교 레인을 통해 발산적 방향을 생성하고, pioneer를 생성해 우아한 대안을 탐색합니다.
 점수 매트릭스와 함께 순위가 매겨진 방향 목록을 출력합니다.
 선택된 방향을 preplan에 전달합니다.
 
-**preplan** — *"방향은 알지만 범위에 대한 합의가 필요하다."*
+**preplan** — _"방향은 알지만 범위에 대한 합의가 필요하다."_
 코드베이스 분석을 통해 7개 항목(문제 정의, 성공 기준, 범위, 가정, 영향 시스템, 제약, 접근 방향)의
 합의서를 자율적으로 작성한 후 사용자에게 수정을 요청합니다.
 Pioneer를 생성해 불확실한 항목의 우아한 대안을 탐색하며 기본/최소/우아한 스펙트럼을 제시합니다.
 `pre-{topic}.md`를 생성 — plan이 충족해야 하는 계약서입니다.
 
-**plan** — *"구현 전에 설계가 필요하다."*
+**plan** — _"구현 전에 설계가 필요하다."_
 다중 라운드 리뷰 루프: architect + critic + resolver를
 워크플로우로 디스패치하고, 피드백을 종합하여 plan 파일을 편집하며, exit gate를 평가합니다(`round=N`으로 라운드 예산 지정).
 Resolver는 findings를 분류(Adopt/Adapt/Defer/Diverge)하고 변경을 적용한 후,
 finding의 심각도와 성격에 따라 추가 라운드가 필요한지 판정합니다.
 수용 기준, 구현 단계, 실행 순서(의존성 그래프 + 병렬 배치)가 포함된 `{topic}.md`를 생성합니다.
 
-**ralph** — *"계획(또는 프롬프트)이 있다. 구현만 하면 된다."*
+**ralph** — _"계획(또는 프롬프트)이 있다. 구현만 하면 된다."_
 검증 루프를 갖춘 지속적 실행기.
 plan 모드에서는 실행 순서를 읽고 배치 단위로 디스패치하며 독립적인 AC들을 병렬 처리합니다.
 모든 완료 선언에는 검증 증거(lint → build → test)가 필요합니다.
@@ -162,17 +162,17 @@ plan 모드에서는 실행 순서를 읽고 배치 단위로 디스패치하며
 현상학자, 계산 신경과학자, AI 안전 연구자, 로봇공학 엔지니어, 동양철학 학자가 LLM이 AGI인지 토론합니다.
 5명의 에이전트, 15개의 발언, 3개의 수렴점.
 
-> *"로봇 이야기에 솔직히 멈칫했습니다. 1만 개의 물체를 만진 로봇 팔도
-> LLM처럼 일반화하지는 못하죠."*
+> _"로봇 이야기에 솔직히 멈칫했습니다. 1만 개의 물체를 만진 로봇 팔도
+> LLM처럼 일반화하지는 못하죠."_
 > — Klaus Hartmann 교수, Daan Vermeer의 경험적 반론에 양보하며
 
-> *"LLM은 불교 철학자들이 1,500년 전에 주장한 이론적 구조의 최초의 외부적
-> 구현일 수 있습니다."*
+> _"LLM은 불교 철학자들이 1,500년 전에 주장한 이론적 구조의 최초의 외부적
+> 구현일 수 있습니다."_
 > — Priya Raghunathan, 유식학의 아뢰야식을 트랜스포머 아키텍처에 대응시키며
 
-> *"일기장을 가진 기억상실 환자와 온전한 기억을 가진 사람의 차이를 생각해보세요.
+> _"일기장을 가진 기억상실 환자와 온전한 기억을 가진 사람의 차이를 생각해보세요.
 > 스캐폴딩은 우리에게 필요한 연속성을 주지 않습니다. 연속성처럼 보이게 할 뿐이고,
-> 오히려 그게 더 문제입니다."*
+> 오히려 그게 더 문제입니다."_
 > — Daan Vermeer, 영속적 메모리 도구가 시간적 불연속성을 해결하지 못하는 이유에 대해
 
 패널의 수렴점: LLM은 AGI가 아니지만 **전혀 새로운 유형의 시간적 존재** —
@@ -193,19 +193,19 @@ gpt-5.5  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 ## 스킬
 
-| 스킬 | 설명 | `--delegate` |
-|------|------|:------------:|
-| `/coral:analyze` | 심층 분석 및 조사 | ✓ |
-| `/coral:pathfind` | 문제 증상에서 발산적 방향 탐색 | - |
-| `/coral:preplan` | 계획 전 문제 정의 | ✓ |
-| `/coral:plan` | 구조화된 다중 라운드 리뷰 포함 계획. `round=N`으로 심층 반복 | ✓ |
-| `/coral:ralph` | 검증 포함 영속적 실행. `--red`로 적대적 테스트 | ✓ |
-| `/coral:bugfix` | 버그 진단, 계획, 수정을 한 번에 | ✓ |
-| `/coral:code-simplify` | 코드 명확성 향상 및 정리 | ✓ |
-| `/coral:init-project` | 프로젝트 초기화 오케스트레이터 | - |
-| `/coral:discuss` | 모더레이션 기반 다자간 AI 토론 | - |
-| `/coral:bid` | 활성 `--user` 토론 세션에서 입찰/발언 | - |
-| `/coral:statusline` | HUD 상태줄 설치/제거 | - |
+| 스킬                   | 설명                                                         | `--delegate` |
+| ---------------------- | ------------------------------------------------------------ | :----------: |
+| `/coral:analyze`       | 심층 분석 및 조사                                            |      ✓       |
+| `/coral:pathfind`      | 문제 증상에서 발산적 방향 탐색                               |      -       |
+| `/coral:preplan`       | 계획 전 문제 정의                                            |      ✓       |
+| `/coral:plan`          | 구조화된 다중 라운드 리뷰 포함 계획. `round=N`으로 심층 반복 |      ✓       |
+| `/coral:ralph`         | 검증 포함 영속적 실행. `--red`로 적대적 테스트               |      ✓       |
+| `/coral:bugfix`        | 버그 진단, 계획, 수정을 한 번에                              |      ✓       |
+| `/coral:code-simplify` | 코드 명확성 향상 및 정리                                     |      ✓       |
+| `/coral:init-project`  | 프로젝트 초기화 오케스트레이터                               |      -       |
+| `/coral:discuss`       | 모더레이션 기반 다자간 AI 토론                               |      -       |
+| `/coral:bid`           | 활성 `--user` 토론 세션에서 입찰/발언                        |      -       |
+| `/coral:statusline`    | HUD 상태줄 설치/제거                                         |      -       |
 
 ## 지식 베이스
 
@@ -215,23 +215,23 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 
 ## 설정
 
-| 변수 | 기본값 | 설명 |
-|------|--------|------|
-| `CORAL_KB_PATH` | `~/.coral/kb` | KB 저장 경로 |
-| `CORAL_CODEX_MODEL` | `gpt-5.5` | Codex CLI 기본 모델 |
-| `CORAL_CODEX_EFFORT` | `xhigh` | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`) |
-| `CORAL_CODEX_FAST` | _(없음)_ | Codex 서비스 티어 토글 (`1` = fast, `0` = flex). 미설정 시 `~/.codex/config.toml` 최상위 `service_tier`로 폴백 |
-| `CORAL_CLAUDE_MODEL` | _(없음)_ | Coral이 띄우는 Claude 세션의 기본 모델 — 예: `opus[1m]`(1M 컨텍스트 Opus), `opus`/`sonnet`/`haiku`, 또는 `claude-opus-4-8` 같은 전체 id. 미설정 시 Claude 자체 기본값. 요청별 모델이 우선하며, tier alias는 `CORAL_CLAUDE_MODEL_CAP`로 상한 적용 |
-| `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp |
-| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`) |
-| `CORAL_EFFORT` | _(없음)_ | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용 |
-| `CORAL_DEV_ASSERTIONS` | _(없음)_ | 기여자 전용 개발 어서션. 로컬 개발이나 `npm test` 실행 시 `1`로 두면 이미 비활성화된 continuity bridge 호출과 dispatcher 손상 상태를 조용히 넘기지 않고 예외로 드러냅니다. 미설정이 기본 프로덕션 동작이며, 배포 환경에서는 절대 켜지 마세요 |
-| `CORAL_MAX_WORKERS` | `10` | 최대 동시 워커 수 (1–10) |
-| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | 토론 자동 종료 전 최대 에포크 (1–10) |
-| `CORAL_KB_GIT_SYNC` | `0` | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화) |
-| `CORAL_KB_ENABLE` | _(미설정 → 활성)_ | `0`이면 KB 서브시스템 없이 데몬을 부팅 — 인덱싱·curate·KB 컨텍스트 주입이 모두 없습니다. 다시 `1`로 바꾸고 `kb …` 명령을 실행하면 데몬이 자동 재시작되어 재활성화됩니다 ([상세](docs/configuration.md)) |
-| `CORAL_KB_EXTRA_LANGS` | _(없음)_ | 상시 활성 `Intl.Segmenter` 기본값 위에 추가하는 KB 언어 분석기. `ko` 같은 소문자 쉼표 구분 코드. `ko`는 Kiwi 형태소 분석기를 켭니다 (로드 시 약 1 GB 메모리) |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code 설정 디렉터리 — Coral은 config dir별로 백엔드 데몬과 상태를 분리해, 여러 Claude 설정이 독립적으로 동작합니다 ([상세](docs/configuration.md)) |
+| 변수                       | 기본값            | 설명                                                                                                                                                                                                                                             |
+| -------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CORAL_KB_PATH`            | `~/.coral/kb`     | KB 저장 경로                                                                                                                                                                                                                                     |
+| `CORAL_CODEX_MODEL`        | `gpt-5.5`         | Codex CLI 기본 모델                                                                                                                                                                                                                              |
+| `CORAL_CODEX_EFFORT`       | `xhigh`           | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`)                                                                                                                                                                                             |
+| `CORAL_CODEX_FAST`         | _(없음)_          | Codex 서비스 티어 토글 (`1` = fast, `0` = flex). 미설정 시 `~/.codex/config.toml` 최상위 `service_tier`로 폴백                                                                                                                                   |
+| `CORAL_CLAUDE_MODEL`       | _(없음)_          | Coral이 띄우는 Claude 세션의 기본 모델 — 예: `opus[1m]`(1M 컨텍스트 Opus), `opus`/`sonnet`/`haiku`, 또는 `claude-opus-4-8` 같은 전체 id. 미설정 시 Claude 자체 기본값. 요청별 모델이 우선하며, tier alias는 `CORAL_CLAUDE_MODEL_CAP`로 상한 적용 |
+| `CORAL_CLAUDE_EFFORT`      | `xhigh`           | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp                                                                                                                             |
+| `CORAL_CLAUDE_MODEL_CAP`   | `opus`            | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`)                                                                                                                                                                                                |
+| `CORAL_EFFORT`             | _(없음)_          | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용                                                                                                                                                                          |
+| `CORAL_DEV_ASSERTIONS`     | _(없음)_          | 기여자 전용 개발 어서션. 로컬 개발이나 `npm test` 실행 시 `1`로 두면 이미 비활성화된 continuity bridge 호출과 dispatcher 손상 상태를 조용히 넘기지 않고 예외로 드러냅니다. 미설정이 기본 프로덕션 동작이며, 배포 환경에서는 절대 켜지 마세요     |
+| `CORAL_MAX_WORKERS`        | `10`              | 최대 동시 워커 수 (1–10)                                                                                                                                                                                                                         |
+| `CORAL_DISCUSS_MAX_EPOCHS` | `2`               | 토론 자동 종료 전 최대 에포크 (1–10)                                                                                                                                                                                                             |
+| `CORAL_KB_GIT_SYNC`        | `0`               | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화)                                                                                                                                                                                           |
+| `CORAL_KB_ENABLE`          | _(미설정 → 활성)_ | `0`이면 KB 서브시스템 없이 데몬을 부팅 — 인덱싱·curate·KB 컨텍스트 주입이 모두 없습니다. 다시 `1`로 바꾸고 `kb …` 명령을 실행하면 데몬이 자동 재시작되어 재활성화됩니다 ([상세](docs/configuration.md))                                          |
+| `CORAL_KB_EXTRA_LANGS`     | _(없음)_          | 상시 활성 `Intl.Segmenter` 기본값 위에 추가하는 KB 언어 분석기. `ko` 같은 소문자 쉼표 구분 코드. `ko`는 Kiwi 형태소 분석기를 켭니다 (로드 시 약 1 GB 메모리)                                                                                     |
+| `CLAUDE_CONFIG_DIR`        | `~/.claude`       | Claude Code 설정 디렉터리 — Coral은 config dir별로 백엔드 데몬과 상태를 분리해, 여러 Claude 설정이 독립적으로 동작합니다 ([상세](docs/configuration.md))                                                                                         |
 
 > **팁:** `CORAL_CLAUDE_MODEL_CAP=sonnet`으로 설정하면 모든 서브에이전트 호출을 Sonnet 티어로 제한합니다. Pro 구독이거나 사용량을 절약하고 싶을 때.
 >

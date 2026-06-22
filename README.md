@@ -2,13 +2,13 @@
 
 [한국어](README.ko.md)
 
-Claude Code already knows how to code. Coral teaches it how *you* work.
+Claude Code already knows how to code. Coral teaches it how _you_ work.
 
 Coral is a CLI-first plugin backed by a persistent local coordinator for orchestration, sessions, discussion, and knowledge-base workflows.
 
 ## Install
 
-**Requirements:** Node.js 22+
+**Requirements:** Node.js 24+
 
 ```bash
 # Claude Code:
@@ -100,26 +100,26 @@ pathfind  →  preplan  →  plan  →  ralph
 
 Each stage produces an artifact that feeds the next. Enter at any point — skip stages you don't need.
 
-**pathfind** — *"I have problems but don't know what to build."*
+**pathfind** — _"I have problems but don't know what to build."_
 Clusters symptoms, investigates root causes (spawns scanner for codebase analysis),
 generates divergent directions through orthogonal lanes, and spawns pioneer for elegant alternatives.
 Outputs a ranked direction list with scoring matrix.
 Hands off the chosen direction to preplan.
 
-**preplan** — *"I know the direction but need agreement on scope."*
+**preplan** — _"I know the direction but need agreement on scope."_
 Fills a 7-item agreement (problem statement, success criteria, scope, assumptions, affected systems, constraints, approach direction)
 autonomously from codebase analysis, then presents to the user for correction.
 Spawns pioneer to find elegant alternatives for uncertain items, offering default/minimal/elegant spectrums.
 Produces `pre-{topic}.md` — the contract that plan must satisfy.
 
-**plan** — *"I need a design before I build."*
+**plan** — _"I need a design before I build."_
 Multi-round review loop: dispatches architect + critic + resolver as a workflow,
 synthesizes findings, edits the plan file, and evaluates an exit gate (`round=N` sets the round budget).
 The resolver classifies findings (Adopt/Adapt/Defer/Diverge), applies changes,
 and decides whether another round is needed based on finding severity and nature.
 Produces `{topic}.md` with acceptance criteria, implementation phases, and execution order (dependency graph + parallel batches).
 
-**ralph** — *"I have a plan (or prompt). Just build it."*
+**ralph** — _"I have a plan (or prompt). Just build it."_
 Persistent executor with verification loop.
 In plan mode, reads the execution order and dispatches batches — parallelizing independent ACs.
 Every completion claim requires fresh verification evidence (lint → build → test).
@@ -165,17 +165,17 @@ A phenomenologist, a computational neuroscientist, an AI safety researcher,
 a robotics engineer, and an Eastern philosophy scholar debate whether LLMs constitute AGI.
 5 agents, 15 speeches, 3 convergence points.
 
-> *"Your robots have given me pause — genuinely. A robot arm that has touched ten thousand
-> objects still can't generalize the way an LLM can."*
+> _"Your robots have given me pause — genuinely. A robot arm that has touched ten thousand
+> objects still can't generalize the way an LLM can."_
 > — Prof. Klaus Hartmann, conceding to Daan Vermeer's empirical challenge
 
-> *"LLMs may be the first external instantiation of a theoretical structure Buddhist
-> philosophers argued for 1,500 years ago."*
+> _"LLMs may be the first external instantiation of a theoretical structure Buddhist
+> philosophers argued for 1,500 years ago."_
 > — Priya Raghunathan, mapping Yogacara's alaya-vijnana onto transformer architecture
 
-> *"Think of the difference between an amnesiac with a diary and a person with intact memory.
+> _"Think of the difference between an amnesiac with a diary and a person with intact memory.
 > The scaffolding doesn't buy us the continuity we need. It buys us the appearance of it,
-> which is worse."*
+> which is worse."_
 > — Daan Vermeer, on why persistent memory tools don't solve the temporal discontinuity problem
 
 The panel converged on: LLMs are not AGI but a **genuinely novel temporal entity** —
@@ -197,19 +197,19 @@ gpt-5.5  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 
 ## Skills
 
-| Skill | Description | `--delegate` |
-|-------|-------------|:------------:|
-| `/coral:analyze` | Deep analysis and investigation | ✓ |
-| `/coral:pathfind` | Divergent direction discovery from problem symptoms | - |
-| `/coral:preplan` | Problem definition before planning | ✓ |
-| `/coral:plan` | Multi-round planning with structured review. `round=N` for deeper iteration | ✓ |
-| `/coral:ralph` | Persistent execution with verification. `--red` for adversarial tests | ✓ |
-| `/coral:bugfix` | Bug diagnosis, planning, and fix in one shot | ✓ |
-| `/coral:code-simplify` | Simplify and refine code for clarity | ✓ |
-| `/coral:init-project` | Project initialization orchestrator | - |
-| `/coral:discuss` | Moderated multi-agent discussion | - |
-| `/coral:bid` | Submit bid/speech in active `--user` discuss session | - |
-| `/coral:statusline` | Install or remove HUD statusline | - |
+| Skill                  | Description                                                                 | `--delegate` |
+| ---------------------- | --------------------------------------------------------------------------- | :----------: |
+| `/coral:analyze`       | Deep analysis and investigation                                             |      ✓       |
+| `/coral:pathfind`      | Divergent direction discovery from problem symptoms                         |      -       |
+| `/coral:preplan`       | Problem definition before planning                                          |      ✓       |
+| `/coral:plan`          | Multi-round planning with structured review. `round=N` for deeper iteration |      ✓       |
+| `/coral:ralph`         | Persistent execution with verification. `--red` for adversarial tests       |      ✓       |
+| `/coral:bugfix`        | Bug diagnosis, planning, and fix in one shot                                |      ✓       |
+| `/coral:code-simplify` | Simplify and refine code for clarity                                        |      ✓       |
+| `/coral:init-project`  | Project initialization orchestrator                                         |      -       |
+| `/coral:discuss`       | Moderated multi-agent discussion                                            |      -       |
+| `/coral:bid`           | Submit bid/speech in active `--user` discuss session                        |      -       |
+| `/coral:statusline`    | Install or remove HUD statusline                                            |      -       |
 
 ## Knowledge Base
 
@@ -219,23 +219,23 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 
 ## Configuration
 
-| Variable | Default | Description |
-|---|---|---|
-| `CORAL_KB_PATH` | `~/.coral/kb` | Custom KB markdown root |
-| `CORAL_CODEX_MODEL` | `gpt-5.5` | Default Codex CLI model |
-| `CORAL_CODEX_EFFORT` | `xhigh` | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`) |
-| `CORAL_CODEX_FAST` | _(none)_ | Codex service tier toggle (`1` = fast, `0` = flex); falls back to `~/.codex/config.toml` top-level `service_tier` |
-| `CORAL_CLAUDE_MODEL` | _(none)_ | Default model for Coral-launched Claude sessions — e.g. `opus[1m]` (1M-context Opus), `opus`/`sonnet`/`haiku`, or a full id like `claude-opus-4-8`; unset = Claude's own default. A per-request model wins; tier aliases are capped by `CORAL_CLAUDE_MODEL_CAP` |
-| `CORAL_CLAUDE_EFFORT` | `xhigh` | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh`; the adapter collapses `xhigh` to the provider ceiling (`max`) |
-| `CORAL_CLAUDE_MODEL_CAP` | `opus` | Maximum Claude model tier (`opus`, `sonnet`, `haiku`) |
-| `CORAL_EFFORT` | _(none)_ | Global effort override used when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset |
-| `CORAL_DEV_ASSERTIONS` | _(none)_ | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls and dispatcher corrupt-state cases throw; leave unset for production behavior and never enable in production deploys |
-| `CORAL_MAX_WORKERS` | `10` | Max concurrent workers (1–10) |
-| `CORAL_DISCUSS_MAX_EPOCHS` | `2` | Max epochs before discussion auto-ends (1–10) |
-| `CORAL_KB_GIT_SYNC` | `0` | Enable KB git sync — auto push/pull with remote (`1` = enabled) |
-| `CORAL_KB_ENABLE` | _(unset → enabled)_ | Set `0` to boot the daemon without the KB subsystem — no indexing, curate, or KB content injected. Flipping back to `1` and running a `kb …` command auto-restarts the daemon to re-enable ([details](docs/configuration.md)) |
-| `CORAL_KB_EXTRA_LANGS` | _(none)_ | Extra KB language analyzers on top of the always-on `Intl.Segmenter` baseline; lowercase comma-separated codes such as `ko`. `ko` enables the Kiwi morphological analyzer (~1 GB resident when loaded) |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's config dir — Coral isolates its backend daemon and state per config dir, so multiple Claude configs run independently ([details](docs/configuration.md)) |
+| Variable                   | Default             | Description                                                                                                                                                                                                                                                     |
+| -------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CORAL_KB_PATH`            | `~/.coral/kb`       | Custom KB markdown root                                                                                                                                                                                                                                         |
+| `CORAL_CODEX_MODEL`        | `gpt-5.5`           | Default Codex CLI model                                                                                                                                                                                                                                         |
+| `CORAL_CODEX_EFFORT`       | `xhigh`             | Codex reasoning effort (`low`, `medium`, `high`, `xhigh`)                                                                                                                                                                                                       |
+| `CORAL_CODEX_FAST`         | _(none)_            | Codex service tier toggle (`1` = fast, `0` = flex); falls back to `~/.codex/config.toml` top-level `service_tier`                                                                                                                                               |
+| `CORAL_CLAUDE_MODEL`       | _(none)_            | Default model for Coral-launched Claude sessions — e.g. `opus[1m]` (1M-context Opus), `opus`/`sonnet`/`haiku`, or a full id like `claude-opus-4-8`; unset = Claude's own default. A per-request model wins; tier aliases are capped by `CORAL_CLAUDE_MODEL_CAP` |
+| `CORAL_CLAUDE_EFFORT`      | `xhigh`             | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh`; the adapter collapses `xhigh` to the provider ceiling (`max`)                                                                                                  |
+| `CORAL_CLAUDE_MODEL_CAP`   | `opus`              | Maximum Claude model tier (`opus`, `sonnet`, `haiku`)                                                                                                                                                                                                           |
+| `CORAL_EFFORT`             | _(none)_            | Global effort override used when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset                                                                                                                                                                   |
+| `CORAL_DEV_ASSERTIONS`     | _(none)_            | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls and dispatcher corrupt-state cases throw; leave unset for production behavior and never enable in production deploys                |
+| `CORAL_MAX_WORKERS`        | `10`                | Max concurrent workers (1–10)                                                                                                                                                                                                                                   |
+| `CORAL_DISCUSS_MAX_EPOCHS` | `2`                 | Max epochs before discussion auto-ends (1–10)                                                                                                                                                                                                                   |
+| `CORAL_KB_GIT_SYNC`        | `0`                 | Enable KB git sync — auto push/pull with remote (`1` = enabled)                                                                                                                                                                                                 |
+| `CORAL_KB_ENABLE`          | _(unset → enabled)_ | Set `0` to boot the daemon without the KB subsystem — no indexing, curate, or KB content injected. Flipping back to `1` and running a `kb …` command auto-restarts the daemon to re-enable ([details](docs/configuration.md))                                   |
+| `CORAL_KB_EXTRA_LANGS`     | _(none)_            | Extra KB language analyzers on top of the always-on `Intl.Segmenter` baseline; lowercase comma-separated codes such as `ko`. `ko` enables the Kiwi morphological analyzer (~1 GB resident when loaded)                                                          |
+| `CLAUDE_CONFIG_DIR`        | `~/.claude`         | Claude Code's config dir — Coral isolates its backend daemon and state per config dir, so multiple Claude configs run independently ([details](docs/configuration.md))                                                                                          |
 
 > **Tip:** Set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all subagent calls at Sonnet tier for Pro plans or to conserve usage.
 >
