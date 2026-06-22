@@ -178,7 +178,10 @@ export interface WaitCoordinatorDeps {
 }
 
 export class WaitCoordinator {
-  constructor(private readonly deps: WaitCoordinatorDeps) {}
+  private readonly deps: WaitCoordinatorDeps;
+  constructor(deps: WaitCoordinatorDeps) {
+    this.deps = deps;
+  }
 
   private readQueryStatus(jobId: string): JobStatus | null {
     return this.deps.loadJobProjectionDetail(jobId).status;

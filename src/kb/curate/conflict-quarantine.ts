@@ -49,9 +49,7 @@ function conflictQuarantineToRow(entry: CurateConflictQuarantineEntry): KbCurate
   });
 }
 
-export function readCurateConflictQuarantine(
-  db: Database | ReadonlyDatabase,
-): CurateConflictQuarantineEntry[] {
+export function readCurateConflictQuarantine(db: Database | ReadonlyDatabase): CurateConflictQuarantineEntry[] {
   const rows = prepareCached<[], KbCurateConflictQuarantineRow>(
     db,
     `SELECT

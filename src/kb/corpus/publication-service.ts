@@ -16,7 +16,10 @@ export interface CorpusPublicationServiceOptions {
 }
 
 export class CorpusPublicationService {
-  constructor(private readonly options: CorpusPublicationServiceOptions) {}
+  private readonly options: CorpusPublicationServiceOptions;
+  constructor(options: CorpusPublicationServiceOptions) {
+    this.options = options;
+  }
 
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
     this.options.publicationQueue.register(corpusPublishCallbacks);

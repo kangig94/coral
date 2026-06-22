@@ -84,11 +84,13 @@ class GeminiEmbeddingProvider implements GeminiEmbeddingService {
   readonly normalization = EMBEDDING_NORMALIZATION;
   readonly specId: string;
 
-  constructor(
-    private readonly apiKey: string,
-    readonly model: string = GEMINI_DEFAULT_MODEL,
-    readonly dims: number = GEMINI_DEFAULT_DIMS,
-  ) {
+  private readonly apiKey: string;
+  readonly model: string;
+  readonly dims: number;
+  constructor(apiKey: string, model: string = GEMINI_DEFAULT_MODEL, dims: number = GEMINI_DEFAULT_DIMS) {
+    this.apiKey = apiKey;
+    this.model = model;
+    this.dims = dims;
     this.specId = computeEmbeddingSpecId(this.name, this.model, this.dims, this.normalization);
   }
 

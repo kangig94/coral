@@ -104,7 +104,10 @@ export class LaunchOrchestrator {
   // delete job-pool entries, or release session continuity/claim.
   private readonly quiescedAppServerJobs = new Set<string>();
 
-  constructor(private readonly deps: LaunchOrchestratorDeps) {}
+  private readonly deps: LaunchOrchestratorDeps;
+  constructor(deps: LaunchOrchestratorDeps) {
+    this.deps = deps;
+  }
 
   /**
    * Synchronously detach durable terminal/completion side effects for active

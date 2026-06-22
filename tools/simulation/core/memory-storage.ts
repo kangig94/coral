@@ -130,10 +130,11 @@ export class InMemoryStorage implements StoragePort {
   private lastStamp: number;
   private subTickCounter: bigint = 0n;
 
-  constructor(
-    private readonly time: Pick<TimePort, 'now'>,
-    private readonly roots: InMemoryRoots = {},
-  ) {
+  private readonly time: Pick<TimePort, 'now'>;
+  private readonly roots: InMemoryRoots;
+  constructor(time: Pick<TimePort, 'now'>, roots: InMemoryRoots = {}) {
+    this.time = time;
+    this.roots = roots;
     this.lastStamp = this.time.now();
     this.directories.set('/', { kind: 'dir', ...this.nextIdentity(), ...this.nextStamps() });
     this.childIndex.set('/', new Set());

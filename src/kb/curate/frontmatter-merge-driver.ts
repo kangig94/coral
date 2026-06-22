@@ -175,12 +175,7 @@ function extractExitStatus(error: unknown): number {
   return 1;
 }
 
-function mergeFrontmatter(
-  ours: MarkdownDocument,
-  theirs: MarkdownDocument,
-  mergedBody: string,
-  path: string,
-): string {
+function mergeFrontmatter(ours: MarkdownDocument, theirs: MarkdownDocument, mergedBody: string, path: string): string {
   const context: BodyMergeContext = {
     oursBody: ours.body,
     theirsBody: theirs.body,
@@ -277,11 +272,7 @@ function mergeWikiFrontmatter(oursRaw: string, theirsRaw: string): string {
   });
 }
 
-function chooseUnknownFrontmatter(
-  ours: MarkdownDocument,
-  theirs: MarkdownDocument,
-  context: BodyMergeContext,
-): string {
+function chooseUnknownFrontmatter(ours: MarkdownDocument, theirs: MarkdownDocument, context: BodyMergeContext): string {
   if (ours.frontmatterBlock === theirs.frontmatterBlock) {
     return ours.frontmatterBlock;
   }
@@ -409,7 +400,8 @@ function chooseLexicographicSmallest(ours: string | undefined, theirs: string | 
 
 function sideMatchingMergedBody(context: BodyMergeContext): 'ours' | 'theirs' | null {
   const normalizedMerged = normalizeContentBody(context.mergedBody);
-  const oursMatches = context.oursBody === context.mergedBody || normalizeContentBody(context.oursBody) === normalizedMerged;
+  const oursMatches =
+    context.oursBody === context.mergedBody || normalizeContentBody(context.oursBody) === normalizedMerged;
   const theirsMatches =
     context.theirsBody === context.mergedBody || normalizeContentBody(context.theirsBody) === normalizedMerged;
 

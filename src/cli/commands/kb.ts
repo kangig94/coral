@@ -169,7 +169,11 @@ function registerKbCommunityCommands(kb: Command): void {
       try {
         const client = makeClient(process.cwd(), listStaleCommand);
         const result = await client.kbCommunityListStale();
-        emit(result, outputFormat, (rows) => rows.map((row) => `${row.slug}\t(level ${row.level})`).join('\n') || '(none)');
+        emit(
+          result,
+          outputFormat,
+          (rows) => rows.map((row) => `${row.slug}\t(level ${row.level})`).join('\n') || '(none)',
+        );
       } catch (error) {
         emitError(error);
       }

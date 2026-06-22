@@ -2,7 +2,10 @@ import type { AbortResult, JobAbortRegistryPort } from '../contracts/abort-regis
 import type { IdPort } from '../../runtime/ports.js';
 
 export class AbortRegistry implements JobAbortRegistryPort {
-  constructor(private readonly ids: IdPort) {}
+  private readonly ids: IdPort;
+  constructor(ids: IdPort) {
+    this.ids = ids;
+  }
 
   private readonly controllers = new Map<string, AbortController>();
 

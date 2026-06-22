@@ -43,7 +43,10 @@ export interface CorpusAuthorityBaselineRefreshOptions {
 }
 
 export class CorpusAuthorityBaselineRefresh {
-  constructor(private readonly options: CorpusAuthorityBaselineRefreshOptions) {}
+  private readonly options: CorpusAuthorityBaselineRefreshOptions;
+  constructor(options: CorpusAuthorityBaselineRefreshOptions) {
+    this.options = options;
+  }
 
   rebuildAuthorityBaselineFromDisk(): void {
     this.options.corpusAuthorityBaseline.rebuild(buildCorpusScanView(this.options.getRuntime()));

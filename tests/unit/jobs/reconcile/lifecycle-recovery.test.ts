@@ -8,7 +8,7 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { adaptLegacyKbFactory } from '#tests/helpers/kb-subsystem-adapter.js';
+import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -538,8 +538,8 @@ function createActualRecoveryService(
       pluginRoot: options.pluginRoot,
       coralEnv: {},
       authority: 'admin',
-          },
-          {
+    },
+    {
       runtime,
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',

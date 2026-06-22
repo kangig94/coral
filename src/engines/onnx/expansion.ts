@@ -195,12 +195,15 @@ class LocalOnnxProvider implements OnnxEmbeddingService {
   readonly specId: string;
   private sessionPromise: Promise<OnnxSession> | null = null;
 
-  constructor(
-    readonly model: SupportedOnnxModel,
-    readonly dims: number,
-    private readonly ort: OnnxRuntimeModule,
-    private readonly modelFilePath: string,
-  ) {
+  readonly model: SupportedOnnxModel;
+  readonly dims: number;
+  private readonly ort: OnnxRuntimeModule;
+  private readonly modelFilePath: string;
+  constructor(model: SupportedOnnxModel, dims: number, ort: OnnxRuntimeModule, modelFilePath: string) {
+    this.model = model;
+    this.dims = dims;
+    this.ort = ort;
+    this.modelFilePath = modelFilePath;
     this.specId = computeEmbeddingSpecId(this.name, this.model, this.dims, this.normalization);
   }
 

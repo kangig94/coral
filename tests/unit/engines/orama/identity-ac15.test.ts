@@ -12,10 +12,7 @@ import {
   createOramaArtifactPort,
   createOramaProjectionIdentityInput,
 } from '#src/engines/orama/artifact-port.js';
-import {
-  KiwiAnalyzerManager,
-  __setKiwiAnalyzerManagerForTests,
-} from '#src/engines/kiwi/analyzer-manager.js';
+import { KiwiAnalyzerManager, __setKiwiAnalyzerManagerForTests } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
@@ -155,9 +152,7 @@ describe('Orama AC15 projection identity', () => {
 
     expect(ORAMA_PROJECTION_IDENTITY_HASH({ ...baseInput, declaredAnalyzers: ['ko'] })).not.toBe(baseline);
     expect(ORAMA_PROJECTION_IDENTITY_HASH({ ...baseInput, icuVersion: 'icu-test-2' })).not.toBe(baseline);
-    expect(ORAMA_PROJECTION_IDENTITY_HASH({ ...baseInput, tokenizerIdentity: 'mock-tokenizer-v2' })).not.toBe(
-      baseline,
-    );
+    expect(ORAMA_PROJECTION_IDENTITY_HASH({ ...baseInput, tokenizerIdentity: 'mock-tokenizer-v2' })).not.toBe(baseline);
   });
 
   it('persists projection identity from the declared analyzer env config', async () => {
@@ -172,7 +167,9 @@ describe('Orama AC15 projection identity', () => {
     expect(metadata.projectionIdentityHash).toBe(
       ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput(['ko'])),
     );
-    expect(Object.values(metadata.entryManifest).map((entry) => entry.documentId)).toEqual([noteEntryId('korean-note')]);
+    expect(Object.values(metadata.entryManifest).map((entry) => entry.documentId)).toEqual([
+      noteEntryId('korean-note'),
+    ]);
   });
 
   it('keeps expected identity stable across Kiwi unloaded and loaded states for the same declared set', async () => {

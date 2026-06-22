@@ -3226,6 +3226,7 @@ describe('execution backend server', () => {
               workDir: '/tmp/workflow',
               projectRoot: '/tmp/project',
               owner: 'team-a',
+              effort: 'high',
               claudeModelCap: 'sonnet',
             }),
           });
@@ -3252,6 +3253,7 @@ describe('execution backend server', () => {
               coralEnv: expect.objectContaining({
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
                 CORAL_OWNER: 'team-a',
+                CORAL_EFFORT: 'high',
                 CORAL_CLAUDE_MODEL_CAP: 'sonnet',
               }),
             }),

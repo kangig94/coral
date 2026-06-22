@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  KiwiAnalyzerManager,
-  isKiwiAnalyzerTerminalLoadError,
-} from '#src/engines/kiwi/analyzer-manager.js';
+import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import type { TimerHandle } from '#src/infra/port-types.js';

@@ -30,7 +30,10 @@ export interface CorpusFreshnessServiceOptions {
 export class CorpusFreshnessService {
   private rebuildInFlight: Promise<void> | null = null;
 
-  constructor(private readonly options: CorpusFreshnessServiceOptions) {}
+  private readonly options: CorpusFreshnessServiceOptions;
+  constructor(options: CorpusFreshnessServiceOptions) {
+    this.options = options;
+  }
 
   async ensureCorpusFreshness(options: EnsureCorpusFreshnessOptions = {}): Promise<KbIndex> {
     const wait = options.wait ?? false;

@@ -8,11 +8,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
-import {
-  inspectExpansionInstallState,
-  installExpansion,
-  uninstallExpansion,
-} from '#src/cli/expansion/install.js';
+import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from '#src/cli/expansion/install.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const PACKAGE = 'codebase-memory';
@@ -226,7 +222,9 @@ describe('install-only codebase-memory', () => {
     });
 
     const first = installExpansion(PACKAGE, { runtime, lockTimeoutMs: 25 });
-    await waitForCondition(() => pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath(PACKAGE)));
+    await waitForCondition(() =>
+      pathExists(enginePaths('prod', { baseDir: fixture.baseDir }).installLockPath(PACKAGE)),
+    );
 
     const second = await installExpansion(PACKAGE, { runtime, lockTimeoutMs: 25 });
     blocker.resolve();

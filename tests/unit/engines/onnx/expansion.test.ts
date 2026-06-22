@@ -33,11 +33,14 @@ function createFixtureRuntime() {
 function createFakeOrt() {
   return {
     Tensor: class {
-      constructor(
-        readonly type: string,
-        readonly data: unknown,
-        readonly dims: readonly number[],
-      ) {}
+      readonly type: string;
+      readonly data: unknown;
+      readonly dims: readonly number[];
+      constructor(type: string, data: unknown, dims: readonly number[]) {
+        this.type = type;
+        this.data = data;
+        this.dims = dims;
+      }
     },
     InferenceSession: {
       create: vi.fn(async () => ({

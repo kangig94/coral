@@ -35,10 +35,7 @@ describe('buildControllerEnv networkEnv overlay', () => {
   });
 
   it('still applies transport context identity fields alongside networkEnv', () => {
-    const env = buildControllerEnv(
-      { owner: 'sess-1', networkEnv: { HTTP_PROXY: 'http://p:1' } },
-      snapshot,
-    );
+    const env = buildControllerEnv({ owner: 'sess-1', networkEnv: { HTTP_PROXY: 'http://p:1' } }, snapshot);
 
     expect(env.CORAL_OWNER).toBe('sess-1');
     expect(env.HTTP_PROXY).toBe('http://p:1');

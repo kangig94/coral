@@ -90,11 +90,12 @@ export class MockChildProcess extends EventEmitter implements ChildProcessLike {
   readonly stdout: ChildReadableLike | null;
   readonly stderr: ChildReadableLike | null;
 
-  constructor(
-    readonly pid: number,
-    private readonly onKill: (pid: number, signal?: NodeJS.Signals) => boolean,
-  ) {
+  readonly pid: number;
+  private readonly onKill: (pid: number, signal?: NodeJS.Signals) => boolean;
+  constructor(pid: number, onKill: (pid: number, signal?: NodeJS.Signals) => boolean) {
     super();
+    this.pid = pid;
+    this.onKill = onKill;
     this.stdin = new MockStdin();
     this.stdout = new PassThrough() as unknown as ChildReadableLike;
     this.stderr = new PassThrough() as unknown as ChildReadableLike;
@@ -134,7 +135,10 @@ export class MockDurableTransport implements DurableExecutionTransport {
   readonly launchCalls: DurableLaunchOptions[] = [];
   readonly waitForExitCalls: DurableLaunchResult[] = [];
 
-  constructor(private readonly spawner: MockProcessSpawner) {}
+  private readonly spawner: MockProcessSpawner;
+  constructor(spawner: MockProcessSpawner) {
+    this.spawner = spawner;
+  }
 
   enqueue(script: MockDurableScript): void {
     this.spawner.enqueueDurable(script);
@@ -166,11 +170,13 @@ export class MockProcessSpawner {
   private readonly durableScripts: MockDurableScript[] = [];
   private nextPid = 20_000;
 
-  constructor(
-    private readonly time: VirtualTime,
-    private readonly storage: InMemoryStorage,
-    private readonly options: MockProcessSpawnerOptions,
-  ) {
+  private readonly time: VirtualTime;
+  private readonly storage: InMemoryStorage;
+  private readonly options: MockProcessSpawnerOptions;
+  constructor(time: VirtualTime, storage: InMemoryStorage, options: MockProcessSpawnerOptions) {
+    this.time = time;
+    this.storage = storage;
+    this.options = options;
     this.durable = new MockDurableTransport(this);
   }
 

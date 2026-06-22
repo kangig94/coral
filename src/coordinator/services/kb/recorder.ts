@@ -67,7 +67,10 @@ export function normalizeHostedKbFailureDetail(detail: unknown): unknown {
 }
 
 export class KbJobRecorder {
-  constructor(private readonly deps: KbJobRecorderDeps) {}
+  private readonly deps: KbJobRecorderDeps;
+  constructor(deps: KbJobRecorderDeps) {
+    this.deps = deps;
+  }
 
   startInternalJob(params: {
     projectRoot: string;

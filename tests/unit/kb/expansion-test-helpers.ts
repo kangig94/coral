@@ -148,10 +148,7 @@ const oramaFtsScopes = new WeakMap<KbRuntime, Disposable>();
  * the projection internally, so tests that exercise the FTS read path through
  * reading the kb.fts capability need this explicit bind.
  */
-export function bindOramaFtsForTest(
-  runtime: KbRuntime,
-  options: OramaBaseProjectionOptions = {},
-): OramaFtsBinding {
+export function bindOramaFtsForTest(runtime: KbRuntime, options: OramaBaseProjectionOptions = {}): OramaFtsBinding {
   const previous = oramaFtsScopes.get(runtime);
   if (previous !== undefined) {
     previous[Symbol.dispose]();

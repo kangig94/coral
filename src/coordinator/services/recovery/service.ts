@@ -88,7 +88,10 @@ export interface RecoveryServiceDeps {
 }
 
 export class RecoveryService {
-  constructor(private readonly deps: RecoveryServiceDeps) {}
+  private readonly deps: RecoveryServiceDeps;
+  constructor(deps: RecoveryServiceDeps) {
+    this.deps = deps;
+  }
 
   private requestServer(
     spec: ProviderServerSpec,

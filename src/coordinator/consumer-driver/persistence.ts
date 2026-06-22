@@ -61,10 +61,11 @@ export class ConsumerCursorRepository {
     [string, number, number, string, string, string, number, number, string]
   >;
 
-  constructor(
-    private readonly db: Database,
-    private readonly now: () => Date,
-  ) {
+  private readonly db: Database;
+  private readonly now: () => Date;
+  constructor(db: Database, now: () => Date) {
+    this.db = db;
+    this.now = now;
     this.selectCursorMetadataStmt = this.db.prepare<[string], CursorMetadataRow>(
       'SELECT authority, lane, corpus_interest, registration_kind FROM consumer_cursors WHERE consumer_id = ?',
     );

@@ -3,11 +3,7 @@ import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import type { ConsumerApplyError } from '#src/store/consumer-contract.js';
 
-import {
-  createOramaBaseProjection,
-  type OramaAnalyzerManager,
-  type OramaReconcileReason,
-} from './backend.js';
+import { createOramaBaseProjection, type OramaAnalyzerManager, type OramaReconcileReason } from './backend.js';
 import { createOramaFtsBacked } from './index.js';
 import { OramaSnapshotStore } from './snapshot.js';
 import { createOramaArtifactPort } from './artifact-port.js';

@@ -220,10 +220,7 @@ async function ensureFreshCommunityIndex(
 
 async function markCommunityStateFresh(kb: KbRuntime) {
   const [{ computeCommunitySummaryInputFingerprints }, { parseCommunityFrontmatter, replaceCommunityFrontmatter }] =
-    await Promise.all([
-      import('#src/kb/curate/community/summary.js'),
-      import('#src/kb/corpus/frontmatter.js'),
-    ]);
+    await Promise.all([import('#src/kb/curate/community/summary.js'), import('#src/kb/corpus/frontmatter.js')]);
   const index = kb.readIndex();
   expect(index).not.toBeNull();
   if (index === null) {

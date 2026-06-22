@@ -48,11 +48,18 @@ export function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapsho
 }
 
 export class NeedleArtifactPort implements EngineArtifactPort {
+  private readonly runtime: Pick<KbEngineRuntime, 'runtimeDir'>;
+  private readonly files: NeedleArtifactFiles;
+  private readonly options: NeedleArtifactPortOptions;
   constructor(
-    private readonly runtime: Pick<KbEngineRuntime, 'runtimeDir'>,
-    private readonly files: NeedleArtifactFiles,
-    private readonly options: NeedleArtifactPortOptions,
-  ) {}
+    runtime: Pick<KbEngineRuntime, 'runtimeDir'>,
+    files: NeedleArtifactFiles,
+    options: NeedleArtifactPortOptions,
+  ) {
+    this.runtime = runtime;
+    this.files = files;
+    this.options = options;
+  }
 
   async describeArtifacts(): Promise<readonly EngineArtifactDescriptor[]> {
     const activePointerPath = needleActivePointerPath(this.runtime.runtimeDir);

@@ -772,7 +772,12 @@ describe('ExecutionService launch', () => {
       retention: 'discard_provider_artifacts_on_terminal',
     });
 
-    const response = await executeCatalogRequest(spec, request, createSessionTransportPorts(service, ctx.pluginRoot), 'admin');
+    const response = await executeCatalogRequest(
+      spec,
+      request,
+      createSessionTransportPorts(service, ctx.pluginRoot),
+      'admin',
+    );
 
     expect(response.kind).toBe('unary');
     if (response.kind !== 'unary') {

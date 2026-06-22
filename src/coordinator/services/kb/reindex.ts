@@ -25,7 +25,9 @@ export type KbReindexRequest = {
 export class KbReindexService {
   private readonly shell: KbOperationJobShell;
 
-  constructor(private readonly deps: KbReindexServiceDeps) {
+  private readonly deps: KbReindexServiceDeps;
+  constructor(deps: KbReindexServiceDeps) {
+    this.deps = deps;
     this.shell = new KbOperationJobShell(deps);
   }
 

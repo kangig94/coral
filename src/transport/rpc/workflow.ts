@@ -10,6 +10,7 @@ const modelNameSchema = z
 export const workflowRequestSchema = workflowCommandSchema
   .extend({
     projectRoot: projectRootSchema,
+    effort: z.string().optional(),
     claudeModelCap: modelNameSchema.optional(),
     networkEnv: networkEnvSchema.optional(),
   })

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { DatabaseSync } from './lib/sqlite.mjs';
+import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 

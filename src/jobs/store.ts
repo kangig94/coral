@@ -117,12 +117,16 @@ export class JobStore implements JobProgressStore {
   public readonly schemas: ComposedReducers['schemas'];
   public readonly upcasters: UpcasterRegistry;
 
+  private readonly namespace: string;
+  private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
   constructor(
-    private readonly namespace: string,
-    private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>,
+    namespace: string,
+    runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>,
     upcasters: UpcasterRegistry,
     options: JobStoreOptions,
   ) {
+    this.namespace = namespace;
+    this.runtime = runtime;
     const { eventBus = createNoopJobEventBus(), db, reducers = composeReducers(jobsRegistry) } = options;
 
     this.eventBus = eventBus;

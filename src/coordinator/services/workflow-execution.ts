@@ -46,7 +46,10 @@ export interface WorkflowExecutionServiceDeps {
 }
 
 export class WorkflowExecutionService {
-  constructor(private readonly deps: WorkflowExecutionServiceDeps) {}
+  private readonly deps: WorkflowExecutionServiceDeps;
+  constructor(deps: WorkflowExecutionServiceDeps) {
+    this.deps = deps;
+  }
 
   async executeWorkflow(
     providerName: string,

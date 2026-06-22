@@ -184,10 +184,12 @@ export class OramaSearchPort implements FtsRetrieval {
   private fallbackCacheActive = false;
   private servedIndex: OramaServedIndex | null = null;
 
-  constructor(
-    private readonly snapshotStore: OramaSnapshotStore,
-    private readonly options: OramaSearchPortOptions = {},
-  ) {}
+  private readonly snapshotStore: OramaSnapshotStore;
+  private readonly options: OramaSearchPortOptions;
+  constructor(snapshotStore: OramaSnapshotStore, options: OramaSearchPortOptions = {}) {
+    this.snapshotStore = snapshotStore;
+    this.options = options;
+  }
 
   private indexIdentityClassification(cached: KbCachedOramaIndex): OramaProjectionMismatchClassification {
     const input = this.options.projectionIdentityInput?.();
@@ -521,11 +523,15 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   private readonly analyzerManager: OramaAnalyzerManager;
   private readonly requestProjectionReconcile?: (reason: OramaReconcileReason) => void;
 
+  private readonly runtime: KbEngineRuntimeBase;
+  private readonly snapshotStore: OramaSnapshotStore;
   constructor(
-    private readonly runtime: KbEngineRuntimeBase,
-    private readonly snapshotStore: OramaSnapshotStore,
+    runtime: KbEngineRuntimeBase,
+    snapshotStore: OramaSnapshotStore,
     options: OramaBaseProjectionOptions = {},
   ) {
+    this.runtime = runtime;
+    this.snapshotStore = snapshotStore;
     this.kiwiRuntime = options.kiwiRuntime;
     this.analyzerManager = options.analyzerManager ?? NOOP_ANALYZER_MANAGER;
     this.requestProjectionReconcile = options.requestProjectionReconcile;
@@ -705,11 +711,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     const cached = this.snapshotStore.getCache();
     if (cached?.metadata !== undefined) {
       if (
-        this.shouldSkipProjectionWriteAgainstMetadata(
-          cached.metadata,
-          sourceSnapshot,
-          targetProjectionIdentityHash,
-        )
+        this.shouldSkipProjectionWriteAgainstMetadata(cached.metadata, sourceSnapshot, targetProjectionIdentityHash)
       ) {
         return true;
       }
@@ -889,10 +891,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     }
   }
 
-  private manifestEntryMatchesDocument(
-    previous: OramaEntryManifestEntry,
-    current: KbOramaDocument,
-  ): boolean {
+  private manifestEntryMatchesDocument(previous: OramaEntryManifestEntry, current: KbOramaDocument): boolean {
     return (
       previous.documentId === current.id &&
       previous.contentHash === current.contentHash &&

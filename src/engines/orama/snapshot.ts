@@ -31,10 +31,12 @@ export class OramaSnapshotStore {
   private cached: KbCachedOramaIndex | null = null;
   private currentKiwiAnalyzer: () => OramaTokenizerAnalyzer | null = () => null;
 
-  constructor(
-    private readonly ports: OramaSnapshotPorts,
-    private readonly runtimeDir: string,
-  ) {}
+  private readonly ports: OramaSnapshotPorts;
+  private readonly runtimeDir: string;
+  constructor(ports: OramaSnapshotPorts, runtimeDir: string) {
+    this.ports = ports;
+    this.runtimeDir = runtimeDir;
+  }
 
   setCurrentKiwiAnalyzer(getter: () => OramaTokenizerAnalyzer | null): void {
     this.currentKiwiAnalyzer = getter;

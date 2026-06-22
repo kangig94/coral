@@ -1,11 +1,7 @@
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from '../../expansion/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { KIWI_INSTALL_ONLY_ID, KIWI_MODEL_VERSION } from './constants.js';
-import {
-  ensureKiwiModelArtifact,
-  hasKiwiDurableState,
-  inspectKiwiModelArtifact,
-} from './model-artifact.js';
+import { ensureKiwiModelArtifact, hasKiwiDurableState, inspectKiwiModelArtifact } from './model-artifact.js';
 import { kiwiDataDir } from './paths.js';
 
 function isInstallLocked(runtime: Runtime): boolean {

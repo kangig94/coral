@@ -104,7 +104,8 @@ export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: Http
     method: spec.name,
     spec,
     // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
-    dispatch: async (request, abortSignal) => await executeCatalogRequest(spec, request, rpcPorts, 'admin', abortSignal),
+    dispatch: async (request, abortSignal) =>
+      await executeCatalogRequest(spec, request, rpcPorts, 'admin', abortSignal),
   };
 }
 

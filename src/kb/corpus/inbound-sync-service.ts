@@ -70,7 +70,10 @@ export interface CorpusInboundSyncServiceOptions {
 }
 
 export class CorpusInboundSyncService {
-  constructor(private readonly options: CorpusInboundSyncServiceOptions) {}
+  private readonly options: CorpusInboundSyncServiceOptions;
+  constructor(options: CorpusInboundSyncServiceOptions) {
+    this.options = options;
+  }
 
   async runInboundSync<T>(fn: () => Promise<T> | T, options: KbInboundSyncOptions = {}): Promise<T> {
     let mutationDiff: InboundSyncMutationDiff | null = null;

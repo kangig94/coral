@@ -78,10 +78,7 @@ function snapshotEntityGraph(currentIndex: {
   };
 }
 
-export function isEntrySeqBeforeRepairFrontier(
-  entrySeq: number | undefined,
-  frontier: CurateRepairFrontier,
-): boolean {
+export function isEntrySeqBeforeRepairFrontier(entrySeq: number | undefined, frontier: CurateRepairFrontier): boolean {
   if (frontier.kind === 'none') {
     return true;
   }

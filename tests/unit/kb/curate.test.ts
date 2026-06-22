@@ -2802,8 +2802,8 @@ describe('curate', () => {
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
       expect(communityFiles.length).toBeGreaterThan(0);
       expect(
-        communityFiles.every((entry) =>
-          !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
+        communityFiles.every(
+          (entry) => !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
         ),
       ).toBe(true);
       expect(
@@ -2913,7 +2913,11 @@ describe('curate', () => {
       ];
       runtime.writeIndex({
         entries: createIndexEntries({
-          'coral-peer-community': createIndexNote({ title: 'Peer Community', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+          'coral-peer-community': createIndexNote({
+            title: 'Peer Community',
+            tags: ['graph-rag', 'retrieval'],
+            entrySeq: 1,
+          }),
         }),
         principles: {},
         entityMeta: metaA,
@@ -2959,8 +2963,16 @@ describe('curate', () => {
       ];
       runtime.writeIndex({
         entries: createIndexEntries({
-          'coral-peer-community': createIndexNote({ title: 'Peer Community', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
-          'coral-vector-store': createIndexNote({ title: 'Vector Store', tags: ['vector-db', 'embedding'], entrySeq: 2 }),
+          'coral-peer-community': createIndexNote({
+            title: 'Peer Community',
+            tags: ['graph-rag', 'retrieval'],
+            entrySeq: 1,
+          }),
+          'coral-vector-store': createIndexNote({
+            title: 'Vector Store',
+            tags: ['vector-db', 'embedding'],
+            entrySeq: 2,
+          }),
         }),
         principles: {},
         entityMeta: metaAB,
@@ -3239,7 +3251,11 @@ describe('curate', () => {
       ];
       runtime.writeIndex({
         entries: createIndexEntries({
-          'coral-peer-summary': createIndexNote({ title: 'Peer Summary', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+          'coral-peer-summary': createIndexNote({
+            title: 'Peer Summary',
+            tags: ['graph-rag', 'retrieval'],
+            entrySeq: 1,
+          }),
         }),
         principles: {},
         entityMeta,
@@ -3311,7 +3327,11 @@ describe('community summary agent surface', () => {
     ];
     runtime.writeIndex({
       entries: createIndexEntries({
-        'coral-peer-community': createIndexNote({ title: 'Peer Community', tags: ['graph-rag', 'retrieval'], entrySeq: 1 }),
+        'coral-peer-community': createIndexNote({
+          title: 'Peer Community',
+          tags: ['graph-rag', 'retrieval'],
+          entrySeq: 1,
+        }),
       }),
       principles: {},
       entityMeta,

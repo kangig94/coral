@@ -433,10 +433,7 @@ export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime
   }
 
   return runKbSyncAction(() =>
-    buildKbDiagnoseResult(
-      readCurateRetryQueue(kbSubsystem.readDb),
-      readCurateConflictQuarantine(kbSubsystem.readDb),
-    ),
+    buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.readDb), readCurateConflictQuarantine(kbSubsystem.readDb)),
   );
 }
 

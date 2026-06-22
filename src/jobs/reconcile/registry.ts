@@ -12,7 +12,10 @@ export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
   private readonly abortHandlers = new Map<string, () => void>();
 
-  constructor(private readonly runtimeProcess?: Pick<ProcessPort, 'kill'>) {}
+  private readonly runtimeProcess?: Pick<ProcessPort, 'kill'>;
+  constructor(runtimeProcess?: Pick<ProcessPort, 'kill'>) {
+    this.runtimeProcess = runtimeProcess;
+  }
 
   register(jobId: string, launchRecord: JobLaunch, runtimeRecord?: JobRuntime, abortHandler?: () => void): void {
     this.entries.set(jobId, { launchRecord, runtimeRecord });

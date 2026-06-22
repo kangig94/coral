@@ -332,10 +332,12 @@ function buildGraphHits(
 }
 
 export class RuntimeGraphRetrieval implements GraphRetrieval {
-  constructor(
-    private readonly index: KbIndex,
-    private readonly graph: GraphSearchContext | null,
-  ) {}
+  private readonly index: KbIndex;
+  private readonly graph: GraphSearchContext | null;
+  constructor(index: KbIndex, graph: GraphSearchContext | null) {
+    this.index = index;
+    this.graph = graph;
+  }
 
   async search(query: string, scope: KbSearchScope = 'all'): Promise<GraphRetrievalResult> {
     return {

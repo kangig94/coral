@@ -91,8 +91,10 @@ describe('ipc client', () => {
       destroyed = false;
       writableEnded = false;
 
-      constructor(private readonly behavior: 'refused' | 'success') {
+      private readonly behavior: 'refused' | 'success';
+      constructor(behavior: 'refused' | 'success') {
         super();
+        this.behavior = behavior;
         queueMicrotask(() => {
           if (behavior === 'refused') {
             const error = new Error('ECONNREFUSED') as NodeJS.ErrnoException;

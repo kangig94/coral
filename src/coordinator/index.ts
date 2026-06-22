@@ -573,11 +573,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     // Boot step 4: repair unchanged-snapshot projection artifacts before
     // readiness waits.
-    const projectionArtifactRepair = await repairProjectionArtifactLagOnBoot(
-      built.kb,
-      driver,
-      bootFreshnessTimeoutMs,
-    );
+    const projectionArtifactRepair = await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
     signal.throwIfAborted();
     // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
     const corpusSnapshot = built.kb.getCorpusStateSnapshot();

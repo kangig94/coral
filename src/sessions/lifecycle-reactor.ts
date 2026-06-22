@@ -63,7 +63,10 @@ export class LifecycleReactor {
   private readonly attemptFloorBySession = new Map<string, number>();
   private drainPromise: Promise<void> | null = null;
 
-  constructor(private readonly options: LifecycleReactorOptions) {}
+  private readonly options: LifecycleReactorOptions;
+  constructor(options: LifecycleReactorOptions) {
+    this.options = options;
+  }
 
   readonly observe: PostCommitObserver = (appended) => {
     const sessionIds = new Set<string>();
@@ -104,7 +107,9 @@ export class LifecycleReactor {
     const provider = this.options.providers.get(entry.provider);
     if (!provider) return;
     if (provider.artifacts.kind !== 'managed') {
-      this.log(`On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`);
+      this.log(
+        `On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`,
+      );
       return;
     }
     const handles = collectArtifactHandles(entry, provider, this.options.runtime);

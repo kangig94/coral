@@ -23,7 +23,9 @@ function catalogFor(ctx: OnboardingContext): readonly EngineManifest[] {
 }
 
 function resolveEngine(id: string, ctx: OnboardingContext): OnboardingManifest | null {
-  return catalogFor(ctx).find((entry) => entry.id === id) ?? INSTALL_ONLY_PACKAGES.find((entry) => entry.id === id) ?? null;
+  return (
+    catalogFor(ctx).find((entry) => entry.id === id) ?? INSTALL_ONLY_PACKAGES.find((entry) => entry.id === id) ?? null
+  );
 }
 
 async function requireBinding(

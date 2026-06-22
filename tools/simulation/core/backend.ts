@@ -34,11 +34,7 @@ import type { StoragePort } from '../../../src/infra/port-types.js';
 import type { Runtime } from '../../../src/runtime/ports.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
 import { adaptLegacyKbFactory } from '../../testing/kb-subsystem-adapter.js';
-import type {
-  CoordinatorCoreResult,
-  CreateServerFn,
-  FetchFn,
-} from '../../../src/coordinator/composition/types.js';
+import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '../../../src/coordinator/composition/store-services-ref.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';

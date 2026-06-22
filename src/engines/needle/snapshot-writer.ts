@@ -33,7 +33,10 @@ export class NeedleSnapshotWriter {
   private entryCount = 0;
   private chunkCount = 0;
 
-  constructor(private readonly options: NeedleSnapshotWriterOptions) {}
+  private readonly options: NeedleSnapshotWriterOptions;
+  constructor(options: NeedleSnapshotWriterOptions) {
+    this.options = options;
+  }
 
   async write(): Promise<NeedleSnapshotWriteStats> {
     await this.ensureActiveSpec();

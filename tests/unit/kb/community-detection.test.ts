@@ -161,12 +161,8 @@ describe('community-detection', () => {
   });
 
   it('rounds modularity comparisons to avoid architecture-sized floating point drift', () => {
-    expect(normalizeCommunityModularity(0.1234567890123)).toBe(
-      normalizeCommunityModularity(0.1234567890124),
-    );
-    expect(normalizeCommunityModularity(0.1234567890129)).not.toBe(
-      normalizeCommunityModularity(0.1234567890139),
-    );
+    expect(normalizeCommunityModularity(0.1234567890123)).toBe(normalizeCommunityModularity(0.1234567890124));
+    expect(normalizeCommunityModularity(0.1234567890129)).not.toBe(normalizeCommunityModularity(0.1234567890139));
   });
 
   it('renders and parses hierarchy metadata and summary sections round-trip', () => {

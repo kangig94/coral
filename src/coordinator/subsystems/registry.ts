@@ -67,7 +67,8 @@ function notServingEnvelope(sub: Subsystem<unknown>): SubsystemErrorEnvelope {
       ok: false,
       code: 'kb_disabled',
       message: 'Knowledge base is disabled (CORAL_KB_ENABLE=0)',
-      remediation: 'Set CORAL_KB_ENABLE=1 (or unset it) and re-run; the next kb command restarts the daemon automatically.',
+      remediation:
+        'Set CORAL_KB_ENABLE=1 (or unset it) and re-run; the next kb command restarts the daemon automatically.',
     };
   }
   return phaseEnvelope(sub.id, status.phase === 'initializing' ? 'initializing' : 'offline');

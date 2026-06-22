@@ -226,10 +226,12 @@ function loadNativeAddon(addonPath: string): NativeNeedleAddon | null {
 export class NativeNeedleStore implements NeedleStore {
   private dbPath: string | null = null;
 
-  constructor(
-    private readonly addon: NativeNeedleAddon,
-    readonly runtimeDir: string,
-  ) {}
+  private readonly addon: NativeNeedleAddon;
+  readonly runtimeDir: string;
+  constructor(addon: NativeNeedleAddon, runtimeDir: string) {
+    this.addon = addon;
+    this.runtimeDir = runtimeDir;
+  }
 
   async init(dbPath: string): Promise<void> {
     mkdirSync(dirname(dbPath), { recursive: true });

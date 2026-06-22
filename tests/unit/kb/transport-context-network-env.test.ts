@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { kbNoteCreateRequestSchema } from '#src/kb/tool-contracts.js';
+import { kbMemoDeleteRequestSchema, kbNoteCreateRequestSchema } from '#src/kb/tool-contracts.js';
 
 // Regression: KB mutation commands route through the same buildTransportContextBody
 // as provider launches, so it attaches `networkEnv` whenever the caller shell has a
@@ -30,5 +30,27 @@ describe('kb transport-context schema networkEnv', () => {
 
   it('still rejects unknown keys inside networkEnv', () => {
     expect(() => kbNoteCreateRequestSchema.parse({ ...base, networkEnv: { PATH: '/usr/bin' } })).toThrow();
+  });
+
+  it('accepts transport context on a memo delete request', () => {
+    const parsed = kbMemoDeleteRequestSchema.parse({
+      projectRoot: '/tmp/project',
+      pattern: '2026-*',
+      effort: 'high',
+      claudeModelCap: 'sonnet',
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      networkEnv: { HTTPS_PROXY: 'http://proxy:8443' },
+    });
+
+    expect(parsed).toEqual({
+      projectRoot: '/tmp/project',
+      pattern: '2026-*',
+      effort: 'high',
+      claudeModelCap: 'sonnet',
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      networkEnv: { HTTPS_PROXY: 'http://proxy:8443' },
+    });
   });
 });

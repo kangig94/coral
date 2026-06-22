@@ -6,10 +6,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { decorateDispose } from '#src/expansion/scope.js';
 import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
-import {
-  inspectKiwiModelArtifact,
-  type KiwiModelArtifactState,
-} from './model-artifact.js';
+import { inspectKiwiModelArtifact, type KiwiModelArtifactState } from './model-artifact.js';
 import { loadKiwiAnalyzer, type KiwiAnalyzer } from './loader.js';
 
 export const KIWI_ANALYZER_IDLE_TTL_MS = 5 * 60 * 1000;
@@ -239,7 +236,10 @@ export class KiwiAnalyzerManager {
     await this.evictLoadedAnalyzer();
   }
 
-  private async acquire(runtime: Runtime | undefined, declaredAnalyzers: readonly KbDeclaredAnalyzer[]): Promise<KiwiLease> {
+  private async acquire(
+    runtime: Runtime | undefined,
+    declaredAnalyzers: readonly KbDeclaredAnalyzer[],
+  ): Promise<KiwiLease> {
     const normalized = normalDeclaredAnalyzers(declaredAnalyzers);
     if (!wantsKiwi(normalized)) {
       return noopLease(normalized);
