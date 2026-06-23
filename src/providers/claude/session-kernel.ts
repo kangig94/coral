@@ -7,7 +7,11 @@ import type {
   ProviderServerLease,
   ProviderTerminalEventBody,
 } from '../contract.js';
-import { providerRequestFailed } from '../fault.js';
+import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
+import {
+  sessionProviderFailureDiagnosticSchema,
+  type SessionProviderFailureDiagnostic,
+} from '../../sessions/fault.js';
 import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -29,10 +33,14 @@ import {
 } from './request-prep.js';
 import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 
-function buildClaudeSessionFailureCause(message: string) {
+function buildClaudeSessionFailureCause(
+  message: string,
+  diagnostic?: SessionProviderFailureDiagnostic,
+): ProviderFailureCause {
   return providerRequestFailed({
     provider: 'claude',
     message,
+    ...(diagnostic === undefined ? {} : { diagnostic }),
   });
 }
 
@@ -47,7 +55,7 @@ type ClaudeCompletedTurn = {
 
 type ClaudeTurnOutcome =
   | { kind: 'completed'; turn: ClaudeCompletedTurn }
-  | { kind: 'failed'; message: string }
+  | { kind: 'failed'; message: string; diagnostic?: SessionProviderFailureDiagnostic }
   | { kind: 'aborted'; reason: 'signal_abort' };
 
 type ClaudeTurnState = {
@@ -320,9 +328,11 @@ function applyNotification(
   if (message.method === turnFailed) {
     state.brokerTurnId = undefined;
     checkpointBrokerContinuity(runtime, state);
+    const diagnostic = readTurnFailureDiagnostic(params.diagnostic);
     resolveTerminalOnce(state, {
       kind: 'failed',
       message: buildProviderFailureMessage('Claude', readString(params.message), readString(params.status)),
+      ...(diagnostic === undefined ? {} : { diagnostic }),
     });
   }
 }
@@ -357,10 +367,14 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
     return buildAbortedTerminal(state.prepared.model, state.startedAt, nowMs);
   }
 
-  return buildFailedTerminal('', state.prepared.model, nowMs - state.startedAt, outcome.message);
+  return buildFailedTerminal('', state.prepared.model, nowMs - state.startedAt, outcome.message, outcome.diagnostic);
 }
 
-function buildAbortedTerminal(model: string | undefined, startedAt: number, nowMs: number) {
+function buildAbortedTerminal(
+  model: string | undefined,
+  startedAt: number,
+  nowMs: number,
+): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
@@ -373,7 +387,13 @@ function buildAbortedTerminal(model: string | undefined, startedAt: number, nowM
   };
 }
 
-function buildFailedTerminal(content: string, model: string | undefined, durationMs: number, message: string) {
+function buildFailedTerminal(
+  content: string,
+  model: string | undefined,
+  durationMs: number,
+  message: string,
+  diagnostic?: SessionProviderFailureDiagnostic,
+): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
@@ -383,7 +403,7 @@ function buildFailedTerminal(content: string, model: string | undefined, duratio
       outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),
-    failureCause: buildClaudeSessionFailureCause(message),
+    failureCause: buildClaudeSessionFailureCause(message, diagnostic),
   };
 }
 
@@ -438,4 +458,12 @@ function readErrors(value: unknown): string[] {
   }
 
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+}
+
+function readTurnFailureDiagnostic(value: unknown): SessionProviderFailureDiagnostic | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = sessionProviderFailureDiagnosticSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }

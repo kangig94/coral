@@ -375,6 +375,9 @@ function createWorkflowExecutionPort(
       job: input.jobId ?? 'resumed-job',
       session: input.sessionId,
     }),
+    recordContinuationLease: async () => {},
+    claimContinuationLease: async () => true,
+    clearContinuationLease: async () => true,
     abort: (jobIds) => ({ aborted: [...jobIds], notFound: [] }),
     awaitLaunch: async () => 'ready',
     waitStream: (req) => {

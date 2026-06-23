@@ -46,6 +46,7 @@ export const retentionDiscardCompletedOutcomeSchema = z.enum([
   'discarded',
   'skipped_no_handles',
   'provider_declares_none',
+  'skipped_protected',
 ]);
 
 export type RetentionDiscardCompletedOutcome = z.infer<typeof retentionDiscardCompletedOutcomeSchema>;
@@ -70,6 +71,96 @@ export const retentionDiscardStateSchema = z
   .strict();
 
 export type RetentionDiscardState = z.infer<typeof retentionDiscardStateSchema>;
+
+export const continuationLeaseReasonSchema = z.enum(['stale_recovery']);
+
+export type ContinuationLeaseReason = z.infer<typeof continuationLeaseReasonSchema>;
+
+export const continuationLeaseClearOutcomeSchema = z.enum([
+  'resume_rejected',
+  'launch_failed',
+  'resumed_released',
+  'explicit_clear',
+]);
+
+export type ContinuationLeaseClearOutcome = z.infer<typeof continuationLeaseClearOutcomeSchema>;
+
+const continuationLeaseBaseSchema = z
+  .object({
+    staleJobId: z.string().min(1),
+    reason: continuationLeaseReasonSchema,
+    expiresAt: z.string().datetime(),
+    recordedAt: z.string().datetime(),
+  })
+  .strict();
+
+export const pendingContinuationLeaseSchema = continuationLeaseBaseSchema.extend({
+  status: z.literal('pending'),
+});
+
+export const claimedContinuationLeaseSchema = continuationLeaseBaseSchema.extend({
+  status: z.literal('claimed'),
+  resumedJobId: z.string().min(1),
+  claimedAt: z.string().datetime(),
+});
+
+export const clearedContinuationLeaseSchema = continuationLeaseBaseSchema.extend({
+  status: z.literal('cleared'),
+  resumedJobId: z.string().min(1).optional(),
+  claimedAt: z.string().datetime().optional(),
+  clearedAt: z.string().datetime(),
+  clearedByJobId: z.string().min(1),
+  outcome: continuationLeaseClearOutcomeSchema,
+});
+
+export const expiredContinuationLeaseSchema = continuationLeaseBaseSchema.extend({
+  status: z.literal('expired'),
+  expiredAt: z.string().datetime(),
+});
+
+export const sessionContinuationLeaseSchema = z.discriminatedUnion('status', [
+  pendingContinuationLeaseSchema,
+  claimedContinuationLeaseSchema,
+  clearedContinuationLeaseSchema,
+  expiredContinuationLeaseSchema,
+]);
+
+export type PendingContinuationLease = z.infer<typeof pendingContinuationLeaseSchema>;
+export type ClaimedContinuationLease = z.infer<typeof claimedContinuationLeaseSchema>;
+export type ClearedContinuationLease = z.infer<typeof clearedContinuationLeaseSchema>;
+export type ExpiredContinuationLease = z.infer<typeof expiredContinuationLeaseSchema>;
+export type SessionContinuationLease = z.infer<typeof sessionContinuationLeaseSchema>;
+
+export const recordContinuationLeaseInputSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    jobId: z.string().min(1),
+    reason: continuationLeaseReasonSchema,
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+
+export type RecordContinuationLeaseInput = z.infer<typeof recordContinuationLeaseInputSchema>;
+
+export const claimContinuationLeaseInputSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    staleJobId: z.string().min(1),
+    resumedJobId: z.string().min(1),
+  })
+  .strict();
+
+export type ClaimContinuationLeaseInput = z.infer<typeof claimContinuationLeaseInputSchema>;
+
+export const clearContinuationLeaseInputSchema = z
+  .object({
+    sessionId: z.string().min(1),
+    jobId: z.string().min(1),
+    outcome: continuationLeaseClearOutcomeSchema,
+  })
+  .strict();
+
+export type ClearContinuationLeaseInput = z.infer<typeof clearContinuationLeaseInputSchema>;
 
 /** Identifier string for the session controller selecting per-session
  * provider continuity defaults. Distinct from the in-process
@@ -98,6 +189,7 @@ export interface SessionEntry {
   retention: RetentionPolicy;
   artifactHandles: readonly ProviderArtifactHandle[];
   retentionDiscard: RetentionDiscardState;
+  continuationLease?: SessionContinuationLease;
   activeJobId?: string;
   conversationRef?: string;
   providerContinuity: ProviderContinuityBlob | null;
@@ -124,6 +216,7 @@ export const sessionEntrySchema = z
     retention: retentionPolicySchema.default('retain'),
     artifactHandles: z.array(providerArtifactHandleSchema).default([]).readonly(),
     retentionDiscard: retentionDiscardStateSchema.default({ attempts: [] }),
+    continuationLease: sessionContinuationLeaseSchema.optional(),
     activeJobId: z.string().min(1).optional(),
     conversationRef: continuityRefSchema.optional(),
     providerContinuity: z.record(z.unknown()).nullable(),
@@ -147,4 +240,23 @@ export function sessionControllerFromProfile(profile?: SessionControllerProfile)
     return profile.owner;
   }
   return DEFAULT_SESSION_CONTROLLER;
+}
+
+export function isProtectiveContinuationLease(lease: SessionContinuationLease | undefined, nowMs: number): boolean {
+  if (lease === undefined) {
+    return false;
+  }
+  switch (lease.status) {
+    case 'pending':
+      return Date.parse(lease.expiresAt) > nowMs;
+    case 'claimed':
+      return true;
+    case 'cleared':
+    case 'expired':
+      return false;
+  }
+}
+
+export function hasUnterminalRetentionDiscardRequest(entry: Pick<SessionEntry, 'retentionDiscard'>): boolean {
+  return entry.retentionDiscard.attempts.some((attempt) => attempt.status === 'requested');
 }

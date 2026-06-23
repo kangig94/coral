@@ -11,6 +11,7 @@ import {
   tokenizeQuery,
   type KbOramaDocument,
 } from '#src/engines/orama/document-builder.js';
+import { buildOramaSearchChannelFields } from '#src/engines/orama/search-channels.js';
 import type { Runtime } from '#src/runtime/ports.js';
 
 function createRuntime(): Runtime {
@@ -79,16 +80,22 @@ function createManager(): KiwiAnalyzerManager {
 }
 
 function mixedScriptDocument(): KbOramaDocument {
+  const slug = 'mixed-script-router';
+  const title = 'Mixed Script Router';
+  const body = '검색 hello 검색API React훅 v2검색';
+  const tags: string[] = [];
+  const principles: string[] = [];
   return {
     id: 'note:mixed-script-router',
     entryId: 'note:mixed-script-router',
-    slug: 'mixed-script-router',
+    slug,
     kind: 'note',
     freshness: 'fresh',
-    title: 'Mixed Script Router',
-    body: '검색 hello 검색API React훅 v2검색',
-    tags: [],
-    principles: [],
+    title,
+    body,
+    tags,
+    principles,
+    ...buildOramaSearchChannelFields({ slug, title, body, tags, principles }),
     contentHash: 'content',
     metadataHash: 'metadata',
   };

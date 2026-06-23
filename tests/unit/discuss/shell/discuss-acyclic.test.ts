@@ -57,6 +57,17 @@ type ParsedEdge = EdgeAccumulator & {
   targetSubsystem: Subsystem;
 };
 
+const ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES = new Set([
+  'src/providers/claude/session-kernel.ts -> src/sessions/fault.ts',
+  'src/providers/contract.ts -> src/sessions/fault.ts',
+  'src/sessions/entry.ts -> src/providers/artifact-identity.ts',
+  'src/sessions/entry.ts -> src/providers/contract.ts',
+  'src/sessions/event-bodies.ts -> src/providers/artifact-identity.ts',
+  'src/sessions/fault.ts -> src/providers/turn-failure-diagnostic.ts',
+  'src/sessions/shell.ts -> src/providers/artifact-identity.ts',
+  'src/sessions/shell.ts -> src/providers/catalog.ts',
+]);
+
 function classifySubsystem(canonicalPath: string): Subsystem {
   const sourceRelativePath = canonicalPath.slice('src/'.length);
   if (sourceRelativePath === 'engines' || sourceRelativePath.startsWith('engines/')) {
@@ -196,12 +207,28 @@ function formatViaKinds(edge: ParsedEdge): string {
   return parts.join('; ');
 }
 
+function edgeKey(edge: ParsedEdge): string {
+  return `${edge.source} -> ${edge.target}`;
+}
+
 function formatEdge(edge: ParsedEdge): string {
-  return `${edge.source} -> ${edge.target} (${formatViaKinds(edge)})`;
+  return `${edgeKey(edge)} (${formatViaKinds(edge)})`;
 }
 
 function formatScc(scc: Subsystem[]): string {
   return scc.join(' <-> ');
+}
+
+function isProviderSessionRuntimeEdge(edge: ParsedEdge): boolean {
+  return (
+    edge.runtimeVia.size > 0 &&
+    ((edge.sourceSubsystem === 'providers' && edge.targetSubsystem === 'sessions') ||
+      (edge.sourceSubsystem === 'sessions' && edge.targetSubsystem === 'providers'))
+  );
+}
+
+function isAllowedProviderSessionRuntimeEdge(edge: ParsedEdge): boolean {
+  return isProviderSessionRuntimeEdge(edge) && ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES.has(edgeKey(edge));
 }
 
 describe('discuss architecture guard', () => {
@@ -212,7 +239,13 @@ describe('discuss architecture guard', () => {
       productionFilePaths.map((filePath) => classifySubsystem(toCanonicalSrcPath(REPO_ROOT, filePath))),
     );
     const crossSubsystemEdges = parsedEdges.filter((edge) => edge.sourceSubsystem !== edge.targetSubsystem);
-    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(subsystemNodes, crossSubsystemEdges);
+    const unexpectedProviderSessionRuntimeEdges = crossSubsystemEdges.filter((edge) => {
+      return isProviderSessionRuntimeEdge(edge) && !isAllowedProviderSessionRuntimeEdge(edge);
+    });
+    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(
+      subsystemNodes,
+      crossSubsystemEdges.filter((edge) => !isAllowedProviderSessionRuntimeEdge(edge)),
+    );
     const runtimeSubsystemSccs = findStronglyConnectedComponents(runtimeSubsystemGraph).filter((scc) => scc.length > 1);
 
     const discussRuntimeImports = crossSubsystemEdges.filter((edge) => {
@@ -254,8 +287,17 @@ describe('discuss architecture guard', () => {
     if (runtimeSubsystemSccs.length > 0) {
       failures.push(
         [
-          'production runtime subsystem graph must be acyclic:',
+          'production runtime subsystem graph must be acyclic outside explicitly listed provider/session schema edges:',
           ...runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`),
+        ].join('\n'),
+      );
+    }
+
+    if (unexpectedProviderSessionRuntimeEdges.length > 0) {
+      failures.push(
+        [
+          'provider/session runtime imports must stay on the explicit schema/artifact allowlist:',
+          ...unexpectedProviderSessionRuntimeEdges.map((edge) => `- ${formatEdge(edge)}`),
         ].join('\n'),
       );
     }

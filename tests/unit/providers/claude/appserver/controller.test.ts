@@ -5,74 +5,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MAX_BUFFER } from '#src/infra/process-constants.js';
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
-import type {
-  ChildExit,
-  ClaudeBrokerChild,
-  ControllerNotification,
-} from '#src/providers/claude/appserver/session-contract.js';
+import type { ControllerNotification } from '#src/providers/claude/appserver/session-contract.js';
+import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 const TEST_MODEL = 'claude-sonnet-test';
-
-class FakeClaudeChild implements ClaudeBrokerChild {
-  readonly writes: string[] = [];
-  private readonly dataHandlers = new Set<(chunk: string) => void>();
-  private readonly exitHandlers = new Set<(event: ChildExit) => void>();
-  private exited = false;
-
-  private readonly autoReady;
-  constructor(autoReady = true) {
-    this.autoReady = autoReady;
-  }
-
-  write(data: string): void {
-    this.writes.push(data);
-    if (data === '/exit\r') {
-      this.emitExit({ code: 0, signal: null });
-    }
-  }
-
-  kill(signal?: NodeJS.Signals): void {
-    this.emitExit({ code: null, signal: signal ?? null });
-  }
-
-  onData(handler: (chunk: string) => void): () => void {
-    this.dataHandlers.add(handler);
-    if (this.autoReady) {
-      queueMicrotask(() => {
-        if (this.dataHandlers.has(handler)) {
-          handler('\x1b[?2004h');
-        }
-      });
-    }
-    return () => {
-      this.dataHandlers.delete(handler);
-    };
-  }
-
-  onExit(handler: (event: ChildExit) => void): () => void {
-    this.exitHandlers.add(handler);
-    return () => {
-      this.exitHandlers.delete(handler);
-    };
-  }
-
-  private emitExit(event: ChildExit): void {
-    if (this.exited) {
-      return;
-    }
-    this.exited = true;
-    for (const handler of this.exitHandlers) {
-      handler(event);
-    }
-  }
-
-  emitData(chunk: string): void {
-    for (const handler of this.dataHandlers) {
-      handler(chunk);
-    }
-  }
-}
 
 const FAST_TIMING = { readySettleMs: 5, promptAckTimeoutMs: 10 } as const;
 

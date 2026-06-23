@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { raceTimeout } from '../../../infra/async.js';
+import { sha256Hex } from '../../../infra/hash.js';
 import { isRecord, readString } from '../../../infra/json.js';
 import { resolveClaudeConfigDir } from '../../../infra/path/index.js';
 import { MAX_BUFFER } from '../../../infra/process-constants.js';
@@ -17,6 +18,7 @@ import {
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
+  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   readSessionId,
   systemProgressMessage,
   toBootstrapSignature,
@@ -24,6 +26,9 @@ import {
   type SessionEnsureResult,
   type SessionProbeParams,
   type SessionProbeResult,
+  type TurnFailureDiagnostic,
+  type TurnFailureDiagnosticPhase,
+  type TurnFailureDiagnosticReason,
   type TurnInterruptParams,
   type TurnInterruptResult,
   type TurnStartParams,
@@ -37,14 +42,11 @@ import type {
   CreateBrokerSessionOptions,
   SingleSessionControllerOptions,
 } from './session-contract.js';
+import { DEFAULT_TURN_RECOVERY_BUDGET } from './turn-recovery-budget.js';
 
 const DEFAULT_OUTPUT_RING_LIMIT = 16_384;
 const CHILD_SHUTDOWN_GRACE_MS = 1_000;
 const CHILD_SHUTDOWN_TIMEOUT_MS = 2_500;
-// Ceiling on the readiness wait — used when the marker never arrives or the
-// output never quiesces. Proceed optimistically after this; the resend net
-// then recovers a prompt the child was not ready for.
-const CHILD_READY_TIMEOUT_MS = 5_000;
 // Adaptive readiness window: once Claude emits the bracketed-paste-enable
 // marker, the child is ready when its output stays quiet this long (the TUI
 // has finished mounting the input box). A prompt pasted too soon is silently
@@ -54,37 +56,58 @@ const CHILD_READY_QUIET_MS = 400;
 const BRACKETED_PASTE_ENABLED = '\x1b[?2004h';
 const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
-const POST_END_TURN_GRACE_MS = 1_500;
-const TURN_TIMEOUT_MS = 30 * 60 * 1_000;
 const MAX_TRANSCRIPT_READ_BYTES = MAX_BUFFER;
 const MAX_TRANSCRIPT_LINE_BYTES = MAX_BUFFER;
-// Safety net for a dropped prompt: if the transcript shows no activity within
-// this window after a send, re-send the prompt; after MAX_PROMPT_RESENDS with
-// no acknowledgement, fail fast instead of blocking until TURN_TIMEOUT_MS.
-const PROMPT_ACK_TIMEOUT_MS = 2_500;
-const MAX_PROMPT_RESENDS = 3;
+
+export type TurnPhase = TurnFailureDiagnosticPhase;
+type ActiveTurnFailurePhase = Exclude<TurnFailureDiagnosticPhase, 'terminal'>;
+
+const ALLOWED_TURN_PHASE_TRANSITIONS = {
+  sent: new Set<TurnPhase>(['registered', 'responding', 'terminal']),
+  registered: new Set<TurnPhase>(['responding', 'terminal']),
+  responding: new Set<TurnPhase>(['ending', 'terminal']),
+  ending: new Set<TurnPhase>(['terminal']),
+  terminal: new Set<TurnPhase>(),
+} as const satisfies Record<TurnPhase, ReadonlySet<TurnPhase>>;
+
+export function advanceTurnPhase(current: TurnPhase, next: TurnPhase): TurnPhase {
+  if (current === next) {
+    return current;
+  }
+  if (!ALLOWED_TURN_PHASE_TRANSITIONS[current].has(next)) {
+    throw new Error(`Illegal Claude turn phase transition: ${current} -> ${next}`);
+  }
+  return next;
+}
 
 type ActiveTurnState = {
   brokerTurnId: string;
   startedAt: number;
+  phase: TurnPhase;
+  phaseEnteredAt: number;
+  lastSemanticProgressAt: number;
+  promptTranscriptOffset: number;
   transcriptOffset: number;
+  transcriptLineStartOffset: number;
   transcriptRemainder: string;
   transcriptRemainderBytes: number;
   transcriptDecoder: StringDecoder;
   interruptRequested: boolean;
   interruptSent: boolean;
   userMessageSent: boolean;
-  sawEndTurnAt: number | null;
   lastAssistantText: string;
   model: string | null;
   durationMs: number | null;
   usage: unknown;
   costUsd: number | null;
   errors: string[];
-  promptPayload: string;
+  promptText: string;
+  promptTextHash: string;
   lastPromptSentAt: number;
-  promptResends: number;
-  promptAcknowledged: boolean;
+  promptSendAttempts: number;
+  replacementAttempts: number;
+  continuationSentAt: number | null;
+  continuationPhase: 'registered' | 'responding' | null;
 };
 
 type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
@@ -95,9 +118,11 @@ type ControllerTurnStartParams = Omit<TurnStartParams, 'brokerSessionKey'>;
 type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey'>;
 
 type ChildBinding = {
+  generation: number;
   child: ClaudeBrokerChild;
   closed: Promise<ChildExit>;
   ready: Promise<void>;
+  expectedExit: boolean;
   dispose: () => void;
 };
 
@@ -124,6 +149,7 @@ export class SingleSessionController {
   private lastTerminalTurnId: string | null = null;
   private outputRing = '';
   private shuttingDown = false;
+  private childGeneration = 0;
 
   constructor(options: SingleSessionControllerOptions) {
     this.spawnChild = options.spawnChild;
@@ -132,7 +158,7 @@ export class SingleSessionController {
     this.ids = options.ids;
     this.onUnexpectedExit = options.onUnexpectedExit;
     this.readySettleMs = options.readySettleMs ?? CHILD_READY_QUIET_MS;
-    this.promptAckTimeoutMs = options.promptAckTimeoutMs ?? PROMPT_ACK_TIMEOUT_MS;
+    this.promptAckTimeoutMs = options.promptAckTimeoutMs ?? DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs;
   }
 
   subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void {
@@ -208,33 +234,43 @@ export class SingleSessionController {
       throw new ClaudeBrokerRpcError(CLAUDE_BROKER_BUSY_RPC_CODE, 'Claude broker is busy.', this.errorData());
     }
 
+    const now = Date.now();
+    const transcriptOffset = await this.readTranscriptOffsetBeforeTurn();
     const turn: ActiveTurnState = {
       brokerTurnId: params.brokerTurnId,
-      startedAt: Date.now(),
-      transcriptOffset: await this.readTranscriptOffsetBeforeTurn(),
+      startedAt: now,
+      phase: 'sent',
+      phaseEnteredAt: now,
+      lastSemanticProgressAt: now,
+      promptTranscriptOffset: transcriptOffset,
+      transcriptOffset,
+      transcriptLineStartOffset: transcriptOffset,
       transcriptRemainder: '',
       transcriptRemainderBytes: 0,
       transcriptDecoder: new StringDecoder('utf8'),
       interruptRequested: false,
       interruptSent: false,
       userMessageSent: false,
-      sawEndTurnAt: null,
       lastAssistantText: '',
       model: this.bootstrapConfig?.model ?? null,
       durationMs: null,
       usage: undefined,
       costUsd: null,
       errors: [],
-      promptPayload: bracketedPaste(params.prompt),
+      promptText: params.prompt,
+      promptTextHash: hashPromptText(params.prompt),
       lastPromptSentAt: 0,
-      promptResends: 0,
-      promptAcknowledged: false,
+      promptSendAttempts: 0,
+      replacementAttempts: 0,
+      continuationSentAt: null,
+      continuationPhase: null,
     };
     this.activeTurn = turn;
 
     try {
-      this.writeToChild(turn.promptPayload);
+      this.sendTuiPrompt(turn.promptText);
       turn.userMessageSent = true;
+      turn.promptSendAttempts = 1;
       turn.lastPromptSentAt = Date.now();
 
       if (turn.interruptRequested) {
@@ -246,9 +282,7 @@ export class SingleSessionController {
         await this.onTurnStarted?.({ brokerTurnId: turn.brokerTurnId });
         void this.monitorTranscript(turn).catch((error) => {
           if (this.activeTurn === turn) {
-            this.activeTurn = null;
-            this.lastTerminalTurnId = turn.brokerTurnId;
-            this.emitTurnFailure(turn.brokerTurnId, this.errorMessage(error));
+            this.failActiveTurn(turn, this.errorMessage(error));
           }
         });
       }
@@ -260,6 +294,7 @@ export class SingleSessionController {
       };
     } catch (error) {
       if (this.activeTurn === turn) {
+        this.transitionTurnPhase(turn, 'terminal');
         this.activeTurn = null;
       }
       this.lastTerminalTurnId = turn.brokerTurnId;
@@ -408,7 +443,7 @@ export class SingleSessionController {
       quietTimer = setTimeout(finishReady, this.readySettleMs);
       quietTimer.unref?.();
     };
-    capTimer = setTimeout(finishReady, CHILD_READY_TIMEOUT_MS);
+    capTimer = setTimeout(finishReady, DEFAULT_TURN_RECOVERY_BUDGET.replacement.childReadyMs);
     capTimer.unref?.();
 
     const child = await this.spawnChild({
@@ -438,22 +473,31 @@ export class SingleSessionController {
     const closed = new Promise<ChildExit>((resolve) => {
       resolveClosed = resolve;
     });
+    const generation = ++this.childGeneration;
+    // Forward reference: the onExit closure (created next) captures `binding`, and
+    // `binding.dispose` references `offExit`, so the two form a cycle that cannot be
+    // initialized in a single const declaration.
+    // eslint-disable-next-line prefer-const
+    let binding!: ChildBinding;
     const offExit = child.onExit((event) => {
       finishReady();
       resolveClosed(event);
-      this.handleChildExit(event);
+      this.handleChildExit(binding, event);
     });
 
-    this.childBinding = {
+    binding = {
+      generation,
       child,
       closed,
       ready,
+      expectedExit: false,
       dispose: () => {
         finishReady();
         offData();
         offExit();
       },
     };
+    this.childBinding = binding;
   }
 
   private async waitForChildReady(): Promise<void> {
@@ -486,52 +530,222 @@ export class SingleSessionController {
         return;
       }
       const now = Date.now();
-      if (!turn.promptAcknowledged && this.resendUnacknowledgedPrompt(turn, now)) {
-        return;
-      }
-      if (
-        turn.sawEndTurnAt !== null &&
-        (turn.durationMs !== null || now - turn.sawEndTurnAt >= POST_END_TURN_GRACE_MS)
-      ) {
-        this.completeTurn(turn);
-        return;
-      }
-      if (now - turn.startedAt > TURN_TIMEOUT_MS) {
-        this.activeTurn = null;
-        this.lastTerminalTurnId = turn.brokerTurnId;
-        this.emitTurnFailure(turn.brokerTurnId, 'Claude turn timed out waiting for a JSONL completion record.');
+      if (await this.recoverStalledTurn(turn, now)) {
         return;
       }
       await delay(TRANSCRIPT_POLL_MS);
     }
   }
 
-  // Claude can silently drop the first bracketed-paste prompt when its TUI is
-  // not yet ready for input. Until the transcript shows activity for this turn,
-  // re-send the prompt on a fixed cadence; once attempts are exhausted, fail
-  // fast rather than block until TURN_TIMEOUT_MS. Returns true when the turn was
-  // terminated so the caller stops monitoring.
-  private resendUnacknowledgedPrompt(turn: ActiveTurnState, now: number): boolean {
+  private async recoverStalledTurn(turn: ActiveTurnState, now: number): Promise<boolean> {
+    if (this.activeTurn !== turn) {
+      return true;
+    }
+
+    if (turn.phase === 'ending') {
+      return this.recoverEndingTurn(turn, now);
+    }
+
+    if (now - turn.lastSemanticProgressAt >= DEFAULT_TURN_RECOVERY_BUDGET['hard-cap'].hardCapMs) {
+      this.failActiveTurn(turn, 'Claude turn exceeded the no-semantic-progress recovery budget.');
+      return true;
+    }
+
+    switch (turn.phase) {
+      case 'sent':
+        return this.recoverSentTurn(turn, now);
+      case 'registered':
+        if (!this.isContinuationBudgetBreached(turn, now, 'registered')) {
+          return false;
+        }
+        return this.recoverByRespawningChild(turn, 'registered');
+      case 'responding':
+        if (!this.isContinuationBudgetBreached(turn, now, 'responding')) {
+          return false;
+        }
+        return this.recoverByRespawningChild(turn, 'responding');
+      case 'terminal':
+        return true;
+    }
+  }
+
+  private recoverSentTurn(turn: ActiveTurnState, now: number): boolean {
     if (now - turn.lastPromptSentAt < this.promptAckTimeoutMs) {
       return false;
     }
-    if (turn.promptResends >= MAX_PROMPT_RESENDS) {
-      this.activeTurn = null;
-      this.lastTerminalTurnId = turn.brokerTurnId;
-      this.emitTurnFailure(
-        turn.brokerTurnId,
-        `Claude did not register the prompt after ${MAX_PROMPT_RESENDS} resend attempts; the interactive turn never started.`,
+    if (turn.promptSendAttempts > DEFAULT_TURN_RECOVERY_BUDGET.registration.promptResends) {
+      this.failActiveTurn(
+        turn,
+        `Claude did not register the prompt after ${DEFAULT_TURN_RECOVERY_BUDGET.registration.promptResends} resend attempts; the interactive turn never started.`,
       );
       return true;
     }
-    this.writeToChild(turn.promptPayload);
-    turn.promptResends += 1;
+    this.sendTuiPrompt(turn.promptText);
+    turn.promptSendAttempts += 1;
     turn.lastPromptSentAt = now;
     this.emitTurnProgress(
       turn.brokerTurnId,
-      `Claude did not acknowledge the prompt; re-sending (attempt ${turn.promptResends + 1}).`,
+      `Claude did not register the prompt; re-sending (attempt ${turn.promptSendAttempts}).`,
     );
     return false;
+  }
+
+  private recoverEndingTurn(turn: ActiveTurnState, now: number): boolean {
+    if (
+      turn.durationMs === null &&
+      now - turn.phaseEnteredAt < DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs
+    ) {
+      return false;
+    }
+    this.completeTurn(turn);
+    return true;
+  }
+
+  private isContinuationBudgetBreached(
+    turn: ActiveTurnState,
+    now: number,
+    phase: 'registered' | 'responding',
+  ): boolean {
+    if (turn.continuationPhase === phase && turn.continuationSentAt !== null) {
+      return now - turn.continuationSentAt >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.continuationAckMs;
+    }
+
+    if (phase === 'registered') {
+      return now - turn.phaseEnteredAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
+    }
+    return now - turn.lastSemanticProgressAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs;
+  }
+
+  private async recoverByRespawningChild(
+    turn: ActiveTurnState,
+    phase: 'registered' | 'responding',
+  ): Promise<boolean> {
+    if (turn.replacementAttempts >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts) {
+      this.failActiveTurn(
+        turn,
+        phase === 'registered'
+          ? 'Claude turn stalled after prompt registration and exhausted child respawn recovery.'
+          : 'Claude turn stalled while responding and exhausted child respawn recovery.',
+      );
+      return true;
+    }
+
+    const conversationRef = this.currentConversationRef();
+    if (conversationRef === null || this.bootstrapSignature === null || this.bootstrapConfig === null) {
+      this.failActiveTurn(turn, 'Claude turn recovery could not resume because the session bootstrap is unavailable.');
+      return true;
+    }
+
+    turn.replacementAttempts += 1;
+    turn.continuationSentAt = null;
+    turn.continuationPhase = null;
+    const attempt = turn.replacementAttempts;
+    const maxAttempts = DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts;
+    this.emitTurnProgress(
+      turn.brokerTurnId,
+      `Claude turn stalled in ${phase}; respawning child for recovery (attempt ${attempt}/${maxAttempts}).`,
+    );
+
+    try {
+      await this.replaceChildForRecovery(conversationRef);
+      if (this.activeTurn !== turn) {
+        return true;
+      }
+      this.sendTuiPrompt(this.continuationPromptForPhase(phase));
+      turn.continuationSentAt = Date.now();
+      turn.continuationPhase = phase;
+      this.emitTurnProgress(
+        turn.brokerTurnId,
+        phase === 'registered'
+          ? 'Claude child resumed; requested continuation for the unanswered user message.'
+          : 'Claude child resumed; requested continuation of the partial assistant response.',
+      );
+      return false;
+    } catch (error) {
+      if (this.activeTurn !== turn) {
+        return true;
+      }
+      const message = this.errorMessage(error);
+      if (turn.replacementAttempts >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts) {
+        this.failActiveTurn(turn, `Claude child respawn recovery failed after ${turn.replacementAttempts} attempts: ${message}`);
+        return true;
+      }
+      turn.continuationSentAt = Date.now();
+      turn.continuationPhase = phase;
+      this.emitTurnProgress(
+        turn.brokerTurnId,
+        `Claude child respawn recovery attempt ${attempt} failed: ${message}`,
+      );
+      return false;
+    }
+  }
+
+  private async replaceChildForRecovery(conversationRef: string): Promise<void> {
+    if (this.bootstrapSignature === null || this.bootstrapConfig === null) {
+      throw new ClaudeBrokerRpcError(
+        CLAUDE_BROKER_STATE_RPC_CODE,
+        'Claude broker session has no bootstrap configuration for recovery.',
+        this.errorData(),
+      );
+    }
+
+    const oldBinding = this.childBinding;
+    if (oldBinding !== null) {
+      this.beginExpectedChildShutdown(oldBinding);
+    }
+    this.initialized = false;
+    this.resumeExistingConversation = true;
+    this.latestSessionId = conversationRef;
+    this.bootstrapConfig = {
+      ...this.bootstrapConfig,
+      conversationRef,
+    };
+
+    await this.attachNewChild(this.bootstrapConfig, this.bootstrapSignature, conversationRef, true);
+    await this.waitForChildReady();
+    if (!this.childBinding) {
+      throw new ClaudeBrokerRpcError(
+        CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
+        'Claude child exited before the recovered interactive prompt was ready.',
+        this.errorData(),
+      );
+    }
+    this.initialized = true;
+    this.emitSessionUpdated(conversationRef);
+  }
+
+  private beginExpectedChildShutdown(binding: ChildBinding): void {
+    binding.expectedExit = true;
+    try {
+      binding.child.kill('SIGTERM');
+    } catch {
+      // The replacement path still proceeds; the background wait below will
+      // detach this binding if the child never reports an exit.
+    }
+    void this.finishExpectedChildShutdown(binding).catch(() => {
+      binding.dispose();
+    });
+  }
+
+  private async finishExpectedChildShutdown(binding: ChildBinding): Promise<void> {
+    if (await this.waitForChildExit(binding.closed, DEFAULT_TURN_RECOVERY_BUDGET.replacement.replacementShutdownMs)) {
+      return;
+    }
+
+    try {
+      binding.child.kill('SIGKILL');
+    } catch {
+      // The child is already considered replaced; disposal below removes our
+      // stale listeners either way.
+    }
+    binding.dispose();
+  }
+
+  private continuationPromptForPhase(phase: 'registered' | 'responding'): string {
+    if (phase === 'registered') {
+      return 'Continue the unanswered user message from the resumed transcript. Do not restate or re-paste the original prompt; produce the assistant response now.';
+    }
+    return 'Continue the partial assistant response from the resumed transcript. Do not restart the answer, repeat prior assistant text, or re-paste the original prompt; continue from where the transcript stopped.';
   }
 
   private readTranscriptAppend(turn: ActiveTurnState): void {
@@ -548,7 +762,6 @@ export class SingleSessionController {
     if (read.bytes.length === 0) {
       return;
     }
-    turn.promptAcknowledged = true;
 
     const text = turn.transcriptDecoder.write(read.bytes);
     if (text.length > 0) {
@@ -571,11 +784,15 @@ export class SingleSessionController {
         return;
       }
 
+      const lineStartOffset = turn.transcriptLineStartOffset;
+      const lineEndOffset = lineStartOffset + turn.transcriptRemainderBytes;
+      const lineBreakBytes = Buffer.byteLength(text.slice(fragmentEnd, newlineIndex + 1), 'utf8');
       const line = turn.transcriptRemainder;
       turn.transcriptRemainder = '';
       turn.transcriptRemainderBytes = 0;
+      turn.transcriptLineStartOffset = lineEndOffset + lineBreakBytes;
       if (line.trim().length > 0) {
-        this.processTranscriptLine(turn, line);
+        this.processTranscriptLine(turn, line, lineStartOffset);
         if (this.activeTurn !== turn) {
           return;
         }
@@ -606,15 +823,38 @@ export class SingleSessionController {
 
     turn.transcriptRemainder = '';
     turn.transcriptRemainderBytes = 0;
-    this.activeTurn = null;
-    this.lastTerminalTurnId = turn.brokerTurnId;
-    this.emitTurnFailure(
-      turn.brokerTurnId,
+    this.failActiveTurn(
+      turn,
       `Claude transcript JSONL line exceeded ${MAX_TRANSCRIPT_LINE_BYTES} bytes (observed ${observedBytes}).`,
     );
   }
 
-  private processTranscriptLine(turn: ActiveTurnState, line: string): void {
+  private transitionTurnPhase(turn: ActiveTurnState, next: TurnPhase): void {
+    const current = turn.phase;
+    const advanced = advanceTurnPhase(current, next);
+    if (advanced === current) {
+      return;
+    }
+    const now = Date.now();
+    turn.phase = advanced;
+    turn.phaseEnteredAt = now;
+    if (advanced !== 'terminal') {
+      this.recordSemanticProgressAt(turn, now);
+    }
+  }
+
+  private recordSemanticProgress(turn: ActiveTurnState): void {
+    this.recordSemanticProgressAt(turn, Date.now());
+  }
+
+  private recordSemanticProgressAt(turn: ActiveTurnState, now: number): void {
+    turn.lastSemanticProgressAt = now;
+    turn.replacementAttempts = 0;
+    turn.continuationSentAt = null;
+    turn.continuationPhase = null;
+  }
+
+  private processTranscriptLine(turn: ActiveTurnState, line: string, lineStartOffset: number): void {
     let row: unknown;
     try {
       row = JSON.parse(line);
@@ -625,7 +865,13 @@ export class SingleSessionController {
       return;
     }
 
-    this.maybeUpdateSessionId(readSessionId(row));
+    const sessionId = readSessionId(row);
+    if (row.type === 'user') {
+      this.handleUserTranscriptRow(turn, row, lineStartOffset, sessionId);
+      return;
+    }
+
+    this.maybeUpdateSessionId(sessionId);
     if (row.type === 'assistant') {
       this.handleAssistantTranscriptRow(turn, row);
       return;
@@ -635,10 +881,51 @@ export class SingleSessionController {
     }
   }
 
+  private handleUserTranscriptRow(
+    turn: ActiveTurnState,
+    row: Record<string, unknown>,
+    lineStartOffset: number,
+    sessionId: string | null,
+  ): void {
+    if (!this.isCurrentTurnPromptRegistration(turn, row, lineStartOffset, sessionId)) {
+      return;
+    }
+    this.transitionTurnPhase(turn, 'registered');
+  }
+
+  private isCurrentTurnPromptRegistration(
+    turn: ActiveTurnState,
+    row: Record<string, unknown>,
+    lineStartOffset: number,
+    sessionId: string | null,
+  ): boolean {
+    if (turn.phase !== 'sent') {
+      return false;
+    }
+    if (lineStartOffset < turn.promptTranscriptOffset) {
+      return false;
+    }
+    if (sessionId !== null && sessionId !== this.currentConversationRef()) {
+      return false;
+    }
+    const message = isRecord(row.message) ? row.message : null;
+    if (message === null || message.role !== 'user') {
+      return false;
+    }
+    const text = readUserMessageText(message.content);
+    if (text === null) {
+      return false;
+    }
+    return hashPromptText(text) === turn.promptTextHash;
+  }
+
   private handleAssistantTranscriptRow(turn: ActiveTurnState, row: Record<string, unknown>): void {
     const message = isRecord(row.message) ? row.message : null;
     if (message === null) {
       return;
+    }
+    if (turn.phase === 'sent' || turn.phase === 'registered' || turn.phase === 'responding') {
+      this.transitionTurnPhase(turn, 'responding');
     }
 
     const model = readString(message.model);
@@ -672,7 +959,9 @@ export class SingleSessionController {
     }
 
     if (readString(message.stop_reason) === 'end_turn') {
-      turn.sawEndTurnAt = Date.now();
+      this.transitionTurnPhase(turn, 'ending');
+    } else {
+      this.recordSemanticProgress(turn);
     }
   }
 
@@ -710,6 +999,7 @@ export class SingleSessionController {
       ...(turn.errors.length > 0 ? { errors: turn.errors } : {}),
     };
 
+    this.transitionTurnPhase(turn, 'terminal');
     this.activeTurn = null;
     this.lastTerminalTurnId = turn.brokerTurnId;
     this.emitNotification({
@@ -718,23 +1008,35 @@ export class SingleSessionController {
     });
   }
 
-  private handleChildExit(event: ChildExit): void {
-    const childBinding = this.childBinding;
-    if (childBinding) {
-      childBinding.dispose();
+  private failActiveTurn(turn: ActiveTurnState, message: string): void {
+    if (this.activeTurn !== turn) {
+      return;
     }
-    this.childBinding = null;
-    this.initialized = false;
+    if (turn.phase === 'terminal') {
+      return;
+    }
+    const failedAt = Date.now();
+    const failurePhase = turn.phase;
+    this.transitionTurnPhase(turn, 'terminal');
+    this.activeTurn = null;
+    this.lastTerminalTurnId = turn.brokerTurnId;
+    this.emitTurnFailure(turn, message, failurePhase, failedAt);
+  }
 
-    if (this.shuttingDown) {
+  private handleChildExit(binding: ChildBinding, event: ChildExit): void {
+    binding.dispose();
+    if (this.childBinding === binding) {
+      this.childBinding = null;
+      this.initialized = false;
+    }
+
+    if (this.shuttingDown || binding.expectedExit) {
       return;
     }
 
     const turn = this.activeTurn;
     if (turn) {
-      this.activeTurn = null;
-      this.lastTerminalTurnId = turn.brokerTurnId;
-      this.emitTurnFailure(turn.brokerTurnId, this.childExitError(event).message);
+      this.failActiveTurn(turn, this.childExitError(event).message);
     }
 
     this.onUnexpectedExit?.();
@@ -782,9 +1084,11 @@ export class SingleSessionController {
       return;
     }
 
-    this.activeTurn = null;
-    this.lastTerminalTurnId = turn.brokerTurnId;
-    this.emitTurnFailure(turn.brokerTurnId, 'Claude turn interrupted.');
+    this.failActiveTurn(turn, 'Claude turn interrupted.');
+  }
+
+  private sendTuiPrompt(prompt: string): void {
+    this.writeToChild(bracketedPaste(prompt));
   }
 
   private writeToChild(data: string): void {
@@ -895,17 +1199,99 @@ export class SingleSessionController {
     });
   }
 
-  private emitTurnFailure(brokerTurnId: string, message: string): void {
+  private emitTurnFailure(
+    turn: ActiveTurnState,
+    message: string,
+    phase: ActiveTurnFailurePhase,
+    failedAt: number,
+  ): void {
+    const diagnostic = this.buildTurnFailureDiagnostic(turn, message, phase, failedAt);
     this.emitNotification({
       method: 'turn/failed',
       params: {
-        brokerTurnId,
+        brokerTurnId: turn.brokerTurnId,
         message,
         sessionId: this.latestSessionId,
         conversationRef: this.currentConversationRef(),
-        stderr: this.outputRing || undefined,
+        diagnostic,
       },
     });
+  }
+
+  private buildTurnFailureDiagnostic(
+    turn: ActiveTurnState,
+    message: string,
+    phase: ActiveTurnFailurePhase,
+    failedAt: number,
+  ): TurnFailureDiagnostic {
+    const childOutputTail = this.outputRing;
+    return {
+      schemaVersion: TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
+      reason: this.turnFailureReason(message, phase, childOutputTail),
+      phase,
+      idleMs: this.turnFailureIdleMs(turn, phase, failedAt),
+      attempts: this.turnFailureAttempts(turn, phase),
+      childOutputTail,
+      transcriptTail: this.readTranscriptTail(),
+      sessionId: nonEmptyOrNull(this.latestSessionId),
+      conversationRef: nonEmptyOrNull(this.currentConversationRef()),
+    };
+  }
+
+  private turnFailureReason(
+    message: string,
+    phase: ActiveTurnFailurePhase,
+    childOutputTail: string,
+  ): TurnFailureDiagnosticReason {
+    if (phase === 'ending') {
+      return 'finalization-failure';
+    }
+    if (message.includes('interrupted')) {
+      return 'interrupted';
+    }
+    if (containsClaudeApiError(message) || containsClaudeApiError(childOutputTail)) {
+      return 'api-error';
+    }
+    // These substrings are produced by this controller's child-exit paths above;
+    // matching them keeps the diagnostic reason stable without parsing RPC text.
+    if (message.includes('child exited') || message.includes('child failed')) {
+      return 'child-exit';
+    }
+    if (phase === 'sent' || phase === 'registered' || phase === 'responding') {
+      return 'silent-hang';
+    }
+    return 'internal-error';
+  }
+
+  private turnFailureIdleMs(turn: ActiveTurnState, phase: ActiveTurnFailurePhase, failedAt: number): number {
+    let idleStartedAt: number;
+    switch (phase) {
+      case 'sent':
+        idleStartedAt = turn.lastPromptSentAt === 0 ? turn.startedAt : turn.lastPromptSentAt;
+        break;
+      case 'registered':
+        idleStartedAt = turn.continuationSentAt ?? turn.phaseEnteredAt;
+        break;
+      case 'responding':
+        idleStartedAt = turn.continuationSentAt ?? turn.lastSemanticProgressAt;
+        break;
+      case 'ending':
+        idleStartedAt = turn.phaseEnteredAt;
+        break;
+    }
+    return Math.max(0, Math.floor(failedAt - idleStartedAt));
+  }
+
+  private turnFailureAttempts(turn: ActiveTurnState, phase: TurnFailureDiagnosticPhase): number {
+    if (phase === 'sent') {
+      return Math.max(0, turn.promptSendAttempts - 1);
+    }
+    return Math.max(0, turn.replacementAttempts);
+  }
+
+  private readTranscriptTail(): string {
+    const path = this.resolveTranscriptPath();
+    return path === null ? '' : readFileTail(path, this.outputLimit);
   }
 
   private captureOutput(chunk: string): void {
@@ -959,6 +1345,38 @@ function bracketedPaste(prompt: string): string {
   return `\x1b[200~${prompt}\x1b[201~\r`;
 }
 
+function hashPromptText(prompt: string): string {
+  return sha256Hex(normalizePromptText(prompt));
+}
+
+function normalizePromptText(prompt: string): string {
+  return prompt.replace(/\r\n?/g, '\n');
+}
+
+function readUserMessageText(content: unknown): string | null {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+
+  const textParts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block)) {
+      continue;
+    }
+    if (block.type === 'tool_result') {
+      return null;
+    }
+    if (block.type === 'text' && typeof block.text === 'string') {
+      textParts.push(block.text);
+    }
+  }
+
+  return textParts.length > 0 ? textParts.join('') : null;
+}
+
 function readFileSlice(path: string, offset: number): { bytes: Buffer; offset: number } | null {
   let fd: number | null = null;
   try {
@@ -976,6 +1394,31 @@ function readFileSlice(path: string, offset: number): { bytes: Buffer; offset: n
     };
   } catch {
     return null;
+  } finally {
+    if (fd !== null) {
+      closeSync(fd);
+    }
+  }
+}
+
+function readFileTail(path: string, limit: number): string {
+  if (limit <= 0) {
+    return '';
+  }
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, limit);
+    if (length === 0) {
+      return '';
+    }
+    const buffer = Buffer.allocUnsafe(length);
+    const bytesRead = readSync(fd, buffer, 0, length, size - length);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return '';
   } finally {
     if (fd !== null) {
       closeSync(fd);
@@ -1008,4 +1451,23 @@ function appendRingBuffer(current: string, chunk: string, limit: number): string
   }
   const combined = current + chunk;
   return combined.length <= limit ? combined : combined.slice(-limit);
+}
+
+function containsClaudeApiError(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes('api error') ||
+    normalized.includes('apierror') ||
+    normalized.includes('anthropic api') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('429') ||
+    normalized.includes('529')
+  );
+}
+
+function nonEmptyOrNull(value: string | null): string | null {
+  if (value === null || value.length === 0) {
+    return null;
+  }
+  return value;
 }

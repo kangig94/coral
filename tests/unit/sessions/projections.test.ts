@@ -225,7 +225,9 @@ describe('sessions projections', () => {
       h.commit([openedInput(entry, 'scope-discard')]);
       h.commit([discardEventInput('session.retention.discard.requested', 'session-discard', 1)]);
 
-      expect(readProjectionSessionEntry(h.db, 'session-discard')?.retentionDiscard.attempts).toEqual([
+      const afterFirstRequest = readProjectionSessionEntry(h.db, 'session-discard');
+      expect(afterFirstRequest?.version).toBe(entry.version + 1);
+      expect(afterFirstRequest?.retentionDiscard.attempts).toEqual([
         { attempt: 1, handles: ['/tmp/handle.jsonl'], status: 'requested' },
       ]);
 

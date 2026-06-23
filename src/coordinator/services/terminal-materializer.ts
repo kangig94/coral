@@ -134,7 +134,13 @@ function planSessionProviderFailed(
   options: RuntimeIngestOptions,
 ): RuntimeIngestPlan {
   const sessionId = requireSessionId(options, 'session.provider_failed');
-  return planFailed(sessionProviderFailedEvent(fault, { ...options, sessionId }));
+  const body: SessionProviderFailedFault = {
+    provider: fault.provider,
+    reason: fault.reason,
+    message: fault.message,
+    ...(fault.diagnostic === undefined ? {} : { diagnostic: fault.diagnostic }),
+  };
+  return planFailed(sessionProviderFailedEvent(body, { ...options, sessionId }));
 }
 
 function planSessionAdapterUnparseable(

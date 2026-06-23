@@ -15,6 +15,7 @@ import {
   type WikiEntry,
 } from '../../kb/entry-types.js';
 import { ORAMA_SCHEMA, type KbOramaDb, type KbOramaTokenizer } from './schema.js';
+import { buildOramaSearchChannelFields, type OramaSearchChannelFields } from './search-channels.js';
 import { normalizeWhitespace } from '../../kb/text-normalization.js';
 
 const TOKENIZER_LANGUAGE = 'multilingual';
@@ -38,7 +39,7 @@ export type KbOramaDocument = {
   principles: string[];
   contentHash: string;
   metadataHash: string;
-};
+} & OramaSearchChannelFields;
 
 type KbReindexWikiRecord = Omit<WikiEntry, 'kind'> & {
   path: string;
@@ -464,16 +465,20 @@ export function toOramaDocument(
 ): KbOramaDocument {
   if ('note' in record) {
     const entryId = noteEntryId(record.note);
+    const slug = normalizeHyphens(record.note);
+    const tags = record.tags.map(normalizeHyphens);
+    const principles = record.principles.map(normalizeHyphens);
     return {
       id: entryId,
       entryId,
-      slug: normalizeHyphens(record.note),
+      slug,
       kind: 'note',
       freshness: 'fresh',
       title: record.title,
       body: record.body,
-      tags: record.tags.map(normalizeHyphens),
-      principles: record.principles.map(normalizeHyphens),
+      tags,
+      principles,
+      ...buildOramaSearchChannelFields({ slug, title: record.title, body: record.body, tags, principles }),
       contentHash:
         options.contentHash ??
         computeContentSurfaceHash({
@@ -499,16 +504,20 @@ export function toOramaDocument(
 
   if ('type' in record) {
     const entryId = sourceEntryId(record.slug);
+    const slug = normalizeHyphens(record.slug);
+    const tags = record.tags.map(normalizeHyphens);
+    const principles: string[] = [];
     return {
       id: entryId,
       entryId,
-      slug: normalizeHyphens(record.slug),
+      slug,
       kind: 'source',
       freshness: 'fresh',
       title: record.title,
       body: record.body,
-      tags: record.tags.map(normalizeHyphens),
-      principles: [],
+      tags,
+      principles,
+      ...buildOramaSearchChannelFields({ slug, title: record.title, body: record.body, tags, principles }),
       contentHash:
         options.contentHash ??
         computeContentSurfaceHash({
@@ -533,16 +542,20 @@ export function toOramaDocument(
 
   if ('knowledge' in record) {
     const entryId = wikiEntryId(record.slug);
+    const slug = normalizeHyphens(record.slug);
+    const tags = record.tags.map(normalizeHyphens);
+    const principles: string[] = [];
     return {
       id: entryId,
       entryId,
-      slug: normalizeHyphens(record.slug),
+      slug,
       kind: 'wiki',
       freshness: 'fresh',
       title: record.title,
       body: record.body,
-      tags: record.tags.map(normalizeHyphens),
-      principles: [],
+      tags,
+      principles,
+      ...buildOramaSearchChannelFields({ slug, title: record.title, body: record.body, tags, principles }),
       contentHash:
         options.contentHash ??
         computeContentSurfaceHash({
@@ -562,16 +575,20 @@ export function toOramaDocument(
   }
 
   const entryId = communityEntryId(record.slug);
+  const slug = normalizeHyphens(record.slug);
+  const tags = record.members.map(normalizeHyphens);
+  const principles: string[] = [];
   return {
     id: entryId,
     entryId,
-    slug: normalizeHyphens(record.slug),
+    slug,
     kind: 'community',
     freshness: options.communityFresh === false ? 'stale' : 'fresh',
     title: record.title,
     body: record.body,
-    tags: record.members.map(normalizeHyphens),
-    principles: [],
+    tags,
+    principles,
+    ...buildOramaSearchChannelFields({ slug, title: record.title, body: record.body, tags, principles }),
     contentHash:
       options.contentHash ??
       computeContentSurfaceHash({

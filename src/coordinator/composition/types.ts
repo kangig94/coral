@@ -103,6 +103,7 @@ export type CoordinatorCoreOptions = {
    */
   getMutationBlocked: () => { blocked: false } | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
   getTextProjectionState?: () => HealthSnapshot['textProjectionState'];
+  disposeLifecycleReactor?: () => void;
   onStopped?: () => void;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;

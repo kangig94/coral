@@ -23,6 +23,7 @@ import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
+import { appendRetentionDiscardRequested } from '#src/sessions/retention-outbox.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -71,6 +72,7 @@ describe('sessions shell store', () => {
     db: ReturnType<typeof openStoreDatabase>;
     mgr: SessionManager;
     workDir: string;
+    coordinatorCommit: CommitEventsFn;
     appendedBatches: AppendedEvent[][];
   } {
     const workDir = join(tmpHome, projectName);
@@ -95,6 +97,7 @@ describe('sessions shell store', () => {
       db,
       mgr: new SessionManager(workDir, runtime, coordinatorCommit, undefined, db),
       workDir,
+      coordinatorCommit,
       appendedBatches,
     };
   }
@@ -328,6 +331,38 @@ describe('sessions shell store', () => {
       activeJobId: 'job-1',
       version: entry.version + 1,
     });
+  });
+
+  it('claimForJobAtomic rejects sessions with an in-flight retention discard request', async () => {
+    const { mgr, workDir, coordinatorCommit } = setupWithJournal('claim-retention-discard-in-flight');
+    const entry = mgr.allocate({
+      provider: 'codex',
+      name: 'alpha',
+      cwd: workDir,
+      projectRoot: workDir,
+      backendNamespace: 'ns-local',
+      retention: 'discard_provider_artifacts_on_terminal',
+    });
+
+    const beforeRequest = mgr.get('codex', entry.sessionId);
+    expect(beforeRequest).not.toBeNull();
+    expect(
+      appendRetentionDiscardRequested(coordinatorCommit, {
+        sessionId: entry.sessionId,
+        attempt: 1,
+        handles: [],
+      }),
+    ).toMatchObject({ kind: 'appended' });
+
+    const afterRequest = mgr.get('codex', entry.sessionId);
+    expect(afterRequest?.version).toBe((beforeRequest?.version ?? 0) + 1);
+    await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-stale-version', beforeRequest?.version)).resolves.toBe(
+      false,
+    );
+    await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-fresh-version', afterRequest?.version)).resolves.toBe(
+      false,
+    );
+    expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBeUndefined();
   });
 
   it('releaseJob clears activeJobId', () => {

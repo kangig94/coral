@@ -1,11 +1,13 @@
 import { backendLog } from '../infra/backend-log.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import { errorMessage } from '../infra/error-format.js';
+import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderDefinition } from '../providers/define.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { collectArtifactHandles } from './artifact-discard.js';
+import { sessionContinuationLeaseExpiredEvent } from './continuation-lease-events.js';
 import { listProjectionSessionEntries, readProjectionSessionEntriesById } from './projections.js';
 import {
   appendRetentionDiscardCompleted,
@@ -14,7 +16,14 @@ import {
   hasTerminalRetentionDiscardOutcome,
   readNextRetentionDiscardAttempt,
 } from './retention-outbox.js';
-import type { RetentionDiscardCompletedOutcome } from './entry.js';
+import {
+  hasUnterminalRetentionDiscardRequest,
+  isProtectiveContinuationLease,
+  type ExpiredContinuationLease,
+  type PendingContinuationLease,
+  type RetentionDiscardCompletedOutcome,
+  type SessionEntry,
+} from './entry.js';
 import {
   readSessionRetentionWorkForEntries,
   readSessionRetentionWorkForPairs,
@@ -30,12 +39,20 @@ export type LifecycleReactorOptions = {
     get(name: string): ProviderDefinition | undefined;
   };
   readonly runtime: ArtifactCleanupRuntime;
+  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly commitEvents: CommitEventsFn;
   readonly log?: (message: string) => void;
 };
 
 function relevantSessionId(event: AppendedEvent): string | null {
-  if (event.type !== 'job.terminal.recorded' && event.type !== 'session.claim.released') {
+  if (
+    event.type !== 'job.terminal.recorded' &&
+    event.type !== 'session.claim.released' &&
+    event.type !== 'session.continuation_lease.claimed' &&
+    event.type !== 'session.continuation_lease.cleared' &&
+    event.type !== 'session.continuation_lease.expired' &&
+    !isRetentionSkippedOrCancelled(event)
+  ) {
     return null;
   }
 
@@ -50,6 +67,22 @@ function relevantSessionId(event: AppendedEvent): string | null {
   return null;
 }
 
+function isContinuationLeaseEvent(event: AppendedEvent): boolean {
+  return (
+    event.type === 'session.continuation_lease.recorded' ||
+    event.type === 'session.continuation_lease.claimed' ||
+    event.type === 'session.continuation_lease.cleared' ||
+    event.type === 'session.continuation_lease.expired'
+  );
+}
+
+function isRetentionSkippedOrCancelled(event: AppendedEvent): boolean {
+  if (event.type !== 'session.retention.discard.completed') {
+    return false;
+  }
+  return (event.body as { outcome?: unknown }).outcome === 'skipped_protected';
+}
+
 export class LifecycleReactor {
   private readonly pendingBySession = new Map<string, Set<string>>();
   private readonly inFlightPairs = new Set<string>();
@@ -62,6 +95,7 @@ export class LifecycleReactor {
    */
   private readonly attemptFloorBySession = new Map<string, number>();
   private drainPromise: Promise<void> | null = null;
+  private continuationLeaseTimer: TimerHandle | null = null;
 
   private readonly options: LifecycleReactorOptions;
   constructor(options: LifecycleReactorOptions) {
@@ -70,22 +104,48 @@ export class LifecycleReactor {
 
   readonly observe: PostCommitObserver = (appended) => {
     const sessionIds = new Set<string>();
+    let sawContinuationLeaseEvent = false;
     for (const event of appended) {
+      if (isContinuationLeaseEvent(event)) {
+        sawContinuationLeaseEvent = true;
+      }
       const sessionId = relevantSessionId(event);
       if (sessionId !== null) {
         sessionIds.add(sessionId);
       }
     }
 
-    this.enqueueWork(readSessionRetentionWorkForSessionIds(this.options.db(), [...sessionIds]));
+    if (sawContinuationLeaseEvent) {
+      this.rescheduleContinuationLeaseTimer();
+    }
+    this.enqueueWork(
+      readSessionRetentionWorkForSessionIds(this.options.db(), [...sessionIds], {
+        nowMs: this.options.time.now(),
+      }),
+    );
     this.scheduleDrain();
   };
 
   async scanStartup(): Promise<void> {
     const db = this.options.db();
-    this.enqueueWork(readSessionRetentionWorkForEntries(db, listProjectionSessionEntries(db)));
+    const expiredSessionIds = this.expireOverdueContinuationLeases();
+    this.rescheduleContinuationLeaseTimer();
+    this.enqueueWork(
+      readSessionRetentionWorkForSessionIds(db, expiredSessionIds, {
+        nowMs: this.options.time.now(),
+      }),
+    );
+    this.enqueueWork(
+      readSessionRetentionWorkForEntries(db, listProjectionSessionEntries(db), {
+        nowMs: this.options.time.now(),
+      }),
+    );
     this.scheduleDrain();
     await this.waitForIdle();
+  }
+
+  dispose(): void {
+    this.clearContinuationLeaseTimer();
   }
 
   async waitForIdle(): Promise<void> {
@@ -122,8 +182,13 @@ export class LifecycleReactor {
   }
 
   async enforceRetention(work: SessionRetentionWork): Promise<void> {
-    const { entry, jobId, sessionId } = work;
+    const { jobId, sessionId } = work;
     if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
+      return;
+    }
+
+    const entry = this.readRetentionEntryForRequest(sessionId);
+    if (entry === null) {
       return;
     }
 
@@ -163,6 +228,12 @@ export class LifecycleReactor {
       return;
     }
 
+    const preDeleteEntry = this.readFreshSessionEntry(sessionId);
+    if (preDeleteEntry === null || this.hasRetentionProtection(preDeleteEntry)) {
+      this.appendCompleted(sessionId, attempt, recordedHandles, 'skipped_protected');
+      return;
+    }
+
     if (provider.artifacts.kind === 'none') {
       this.appendCompleted(sessionId, attempt, recordedHandles, 'provider_declares_none');
       return;
@@ -185,6 +256,31 @@ export class LifecycleReactor {
         this.readTerminalCauseRef(sessionId, jobId),
       );
     }
+  }
+
+  private readFreshSessionEntry(sessionId: string): SessionEntry | null {
+    return readProjectionSessionEntriesById(this.options.db(), [sessionId]).get(sessionId) ?? null;
+  }
+
+  private readRetentionEntryForRequest(sessionId: string): SessionEntry | null {
+    const entry = this.readFreshSessionEntry(sessionId);
+    if (entry === null) {
+      return null;
+    }
+    if (
+      entry.activeJobId !== undefined ||
+      isProtectiveContinuationLease(entry.continuationLease, this.options.time.now()) ||
+      hasUnterminalRetentionDiscardRequest(entry)
+    ) {
+      return null;
+    }
+    return entry;
+  }
+
+  private hasRetentionProtection(entry: SessionEntry): boolean {
+    return (
+      entry.activeJobId !== undefined || isProtectiveContinuationLease(entry.continuationLease, this.options.time.now())
+    );
   }
 
   private readTerminalCauseRef(sessionId: string, jobId: string): CauseRef | undefined {
@@ -277,7 +373,9 @@ export class LifecycleReactor {
       if (pairs.length === 0) {
         return;
       }
-      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), pairs);
+      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), pairs, {
+        nowMs: this.options.time.now(),
+      });
 
       for (const pair of pairs) {
         const key = sessionRetentionWorkKey(pair.sessionId, pair.jobId);
@@ -302,6 +400,106 @@ export class LifecycleReactor {
         }
       }
     }
+  }
+
+  private pendingContinuationLeaseEntries(): Array<SessionEntry & { continuationLease: PendingContinuationLease }> {
+    return listProjectionSessionEntries(this.options.db()).filter(
+      (entry): entry is SessionEntry & { continuationLease: PendingContinuationLease } =>
+        entry.continuationLease?.status === 'pending',
+    );
+  }
+
+  private expireOverdueContinuationLeases(): string[] {
+    const nowMs = this.options.time.now();
+    const expiredSessionIds: string[] = [];
+    for (const entry of this.pendingContinuationLeaseEntries()) {
+      if (Date.parse(entry.continuationLease.expiresAt) > nowMs) {
+        continue;
+      }
+      if (this.appendContinuationLeaseExpired(entry, nowMs)) {
+        expiredSessionIds.push(entry.sessionId);
+      }
+    }
+    return expiredSessionIds;
+  }
+
+  private appendContinuationLeaseExpired(
+    entry: SessionEntry & { continuationLease: PendingContinuationLease },
+    nowMs: number,
+  ): boolean {
+    const expiredAt = new Date(nowMs).toISOString();
+    const lease: ExpiredContinuationLease = {
+      staleJobId: entry.continuationLease.staleJobId,
+      reason: entry.continuationLease.reason,
+      expiresAt: entry.continuationLease.expiresAt,
+      recordedAt: entry.continuationLease.recordedAt,
+      status: 'expired',
+      expiredAt,
+    };
+    const nextEntry: SessionEntry = {
+      ...entry,
+      continuationLease: lease,
+      lastUsedAt: expiredAt,
+      version: entry.version + 1,
+    };
+
+    try {
+      this.options.commitEvents((c) => {
+        c.append(sessionContinuationLeaseExpiredEvent(nextEntry, lease));
+        return undefined;
+      });
+      return true;
+    } catch (error: unknown) {
+      this.log(`Continuation lease expiry append failed for session ${entry.sessionId}: ${errorMessage(error)}`);
+      return false;
+    }
+  }
+
+  private clearContinuationLeaseTimer(): void {
+    if (this.continuationLeaseTimer === null) {
+      return;
+    }
+    this.options.time.clearTimeout(this.continuationLeaseTimer);
+    this.continuationLeaseTimer = null;
+  }
+
+  private rescheduleContinuationLeaseTimer(): void {
+    this.clearContinuationLeaseTimer();
+
+    const nowMs = this.options.time.now();
+    let earliestExpiresAt: number | null = null;
+    for (const entry of this.pendingContinuationLeaseEntries()) {
+      const expiresAt = Date.parse(entry.continuationLease.expiresAt);
+      if (expiresAt <= nowMs) {
+        earliestExpiresAt = nowMs;
+        break;
+      }
+      if (earliestExpiresAt === null || expiresAt < earliestExpiresAt) {
+        earliestExpiresAt = expiresAt;
+      }
+    }
+
+    if (earliestExpiresAt === null) {
+      return;
+    }
+
+    this.continuationLeaseTimer = this.options.time.setTimeout(
+      () => {
+        this.continuationLeaseTimer = null;
+        const expiredSessionIds = this.expireOverdueContinuationLeases();
+        this.rescheduleContinuationLeaseTimer();
+        if (expiredSessionIds.length > 0) {
+          this.enqueueWork(
+            readSessionRetentionWorkForSessionIds(this.options.db(), expiredSessionIds, {
+              nowMs: this.options.time.now(),
+            }),
+          );
+          this.scheduleDrain();
+        }
+      },
+      Math.max(0, earliestExpiresAt - nowMs),
+    );
+    this.continuationLeaseTimer.unref?.();
   }
 
   private appendCompleted(

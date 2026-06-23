@@ -10,6 +10,15 @@ import {
 } from '../../../infra/json-rpc.js';
 import { isRecord } from '../../../infra/json.js';
 import type { EffortLevel } from '../../contract.js';
+import {
+  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION as PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
+  turnFailureDiagnosticPhaseSchema as providerTurnFailureDiagnosticPhaseSchema,
+  turnFailureDiagnosticReasonSchema as providerTurnFailureDiagnosticReasonSchema,
+  turnFailureDiagnosticSchema as providerTurnFailureDiagnosticSchema,
+  type TurnFailureDiagnostic as ProviderTurnFailureDiagnostic,
+  type TurnFailureDiagnosticPhase as ProviderTurnFailureDiagnosticPhase,
+  type TurnFailureDiagnosticReason as ProviderTurnFailureDiagnosticReason,
+} from '../../turn-failure-diagnostic.js';
 import { permissionModeSchema, type ClaudeBootstrapSignature } from '../request-prep.js';
 
 export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
@@ -124,13 +133,24 @@ export interface TurnCompletedParams {
   errors?: string[];
 }
 
+export const TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION = PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION;
+
+export const turnFailureDiagnosticReasonSchema = providerTurnFailureDiagnosticReasonSchema;
+export type TurnFailureDiagnosticReason = ProviderTurnFailureDiagnosticReason;
+
+export const turnFailureDiagnosticPhaseSchema = providerTurnFailureDiagnosticPhaseSchema;
+export type TurnFailureDiagnosticPhase = ProviderTurnFailureDiagnosticPhase;
+
+export const turnFailureDiagnosticSchema = providerTurnFailureDiagnosticSchema;
+export type TurnFailureDiagnostic = ProviderTurnFailureDiagnostic;
+
 export interface TurnFailedParams {
   brokerSessionKey: string;
   brokerTurnId: string | null;
   message: string;
   sessionId: string | null;
   conversationRef: string | null;
-  stderr?: string;
+  diagnostic: TurnFailureDiagnostic;
 }
 
 export interface HostStatsParams {

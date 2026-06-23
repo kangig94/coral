@@ -42,7 +42,13 @@ export function hasTerminalRetentionDiscardOutcome(db: ReadonlyDatabase, session
          FROM events
         WHERE stream_kind = 'session'
           AND stream_id = ?
-          AND type IN ('session.retention.discard.completed', 'session.retention.discard.failed')
+          AND (
+            type = 'session.retention.discard.failed'
+            OR (
+              type = 'session.retention.discard.completed'
+              AND COALESCE(json_extract(CAST(body AS TEXT), '$.outcome'), '') != 'skipped_protected'
+            )
+          )
         LIMIT 1`,
     )
     .get(sessionId) as { seq: number } | undefined;

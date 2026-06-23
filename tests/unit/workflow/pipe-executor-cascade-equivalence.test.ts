@@ -75,6 +75,9 @@ function createExecutionService(): WorkflowExecutionPort & {
       return running(`job-${launches}`, `session-${launches}`);
     }),
     resume: vi.fn(async () => running('job-resumed', 'session-resumed')),
+    recordContinuationLease: vi.fn(async () => {}),
+    claimContinuationLease: vi.fn(async () => true),
+    clearContinuationLease: vi.fn(async () => true),
     abort: vi.fn(() => ({ aborted: [], notFound: [] })),
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
     waitStream: vi.fn((req: WaitRequest) => {

@@ -58,6 +58,7 @@ type RunShutdownSequenceContext = {
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
+  disposeLifecycleReactor: () => void;
   hooks: { onShutdown(mode: ShutdownMode): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;
@@ -128,6 +129,7 @@ export async function runShutdownSequence({
   storeServicesRef,
   terminateAllFn,
   handoffQuiescePorts,
+  disposeLifecycleReactor,
   hooks,
   discussStores,
   log,
@@ -218,6 +220,7 @@ export async function runShutdownSequence({
   for (const store of discussStores.values()) {
     store.dispose();
   }
+  disposeLifecycleReactor();
 
   // Socket release is the last step before lifecycle stop / process exit.
   // No async work may run between this resolution and `onStopped()`; that

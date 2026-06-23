@@ -1,5 +1,5 @@
 import type { ProviderSpec, ProviderRequest } from '../../providers/contract.js';
-import type { SessionEntry } from '../../sessions/entry.js';
+import { hasUnterminalRetentionDiscardRequest, type SessionEntry } from '../../sessions/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
@@ -249,6 +249,12 @@ export class JobLaunchService {
     }
     if (session.activeJobId !== undefined) {
       return rejectLaunch('session_busy', busyMessage);
+    }
+    if (hasUnterminalRetentionDiscardRequest(session)) {
+      return rejectLaunch(
+        'retention_discard_in_flight',
+        `Session ${input.sessionId} has a retention discard request in flight. Start a new session instead.`,
+      );
     }
     const expectedVersion = session.version;
     const pool = input.pool ?? 'default';

@@ -6,6 +6,10 @@ import {
   sessionArtifactHandleRecordedBodySchema,
   sessionClaimReleasedBodySchema,
   sessionClaimedBodySchema,
+  sessionContinuationLeaseClaimedBodySchema,
+  sessionContinuationLeaseClearedBodySchema,
+  sessionContinuationLeaseExpiredBodySchema,
+  sessionContinuationLeaseRecordedBodySchema,
   sessionContinuityCheckpointedBodySchema,
   sessionInterruptedBodySchema,
   sessionOpenedBodySchema,
@@ -20,6 +24,10 @@ import {
 import {
   reduceSessionAdapterUnparseable,
   reduceSessionArtifactHandleRecorded,
+  reduceSessionContinuationLeaseClaimed,
+  reduceSessionContinuationLeaseCleared,
+  reduceSessionContinuationLeaseExpired,
+  reduceSessionContinuationLeaseRecorded,
   reduceSessionContinuityCheckpointed,
   reduceSessionInterrupted,
   reduceSessionClaimReleased,
@@ -305,6 +313,26 @@ export const sessionsRegistry: DomainEventRegistry = {
       type: 'session.claim.released',
       schema: sessionClaimReleasedBodySchema,
       reducer: reduceSessionClaimReleased,
+    }),
+    defineDomainEvent({
+      type: 'session.continuation_lease.recorded',
+      schema: sessionContinuationLeaseRecordedBodySchema,
+      reducer: reduceSessionContinuationLeaseRecorded,
+    }),
+    defineDomainEvent({
+      type: 'session.continuation_lease.claimed',
+      schema: sessionContinuationLeaseClaimedBodySchema,
+      reducer: reduceSessionContinuationLeaseClaimed,
+    }),
+    defineDomainEvent({
+      type: 'session.continuation_lease.cleared',
+      schema: sessionContinuationLeaseClearedBodySchema,
+      reducer: reduceSessionContinuationLeaseCleared,
+    }),
+    defineDomainEvent({
+      type: 'session.continuation_lease.expired',
+      schema: sessionContinuationLeaseExpiredBodySchema,
+      reducer: reduceSessionContinuationLeaseExpired,
     }),
     defineDomainEvent({
       type: 'session.retention.discard.requested',

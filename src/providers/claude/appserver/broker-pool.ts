@@ -227,10 +227,24 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     this.emitNotification(routed);
     if (notification.method === 'turn/completed' || notification.method === 'turn/failed') {
       this.emitHostStats();
-      if (entry.controller.canEvictReachableIdleController()) {
-        void this.removeController(brokerSessionKey).catch(() => {});
-      }
+      this.evictIdleControllerAfterTerminalTurn(brokerSessionKey, entry);
     }
+  }
+
+  private evictIdleControllerAfterTerminalTurn(brokerSessionKey: string, entry: ControllerEntry): void {
+    if (!entry.controller.canEvictReachableIdleController()) {
+      return;
+    }
+
+    // Defer one tick so terminal notification subscribers can issue an immediate
+    // follow-up against the still-reachable controller before idle eviction runs.
+    setImmediate(() => {
+      const currentEntry = this.controllers.get(brokerSessionKey);
+      if (currentEntry !== entry || !currentEntry.controller.canEvictReachableIdleController()) {
+        return;
+      }
+      void this.removeController(brokerSessionKey).catch(() => {});
+    });
   }
 
   private releaseHeldNotificationsAfterEnsure(brokerSessionKey: string, entry: ControllerEntry): void {

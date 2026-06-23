@@ -119,6 +119,9 @@ function buildHarness(opts: {
     } as never,
     terminateAllFn: () => {},
     handoffQuiescePorts: () => [],
+    disposeLifecycleReactor: () => {
+      callLog.push('lifecycleReactor.dispose');
+    },
     hooks: {
       onShutdown: async () => {
         // Default: hangs forever. Tests override per case.
@@ -348,5 +351,21 @@ describe('runShutdownSequence drain budget', () => {
     const sawHooksTimeout = harness.logLines.some((l) => l.includes('hooks.onShutdown: exceeded drain budget'));
     expect(sawHooksTimeout).toBe(false);
     expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('disposes the lifecycle reactor before releasing the IPC socket', async () => {
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      harness.callLog.push('closeIpcServerFn:start');
+    };
+
+    await runShutdownSequence(harness.ctx);
+
+    expect(harness.callLog).toContain('lifecycleReactor.dispose');
+    expect(harness.callLog.indexOf('lifecycleReactor.dispose')).toBeLessThan(
+      harness.callLog.indexOf('closeIpcServerFn:start'),
+    );
   });
 });

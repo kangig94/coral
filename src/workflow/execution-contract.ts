@@ -9,7 +9,12 @@ import type { LaunchReadiness } from '../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
-import type { RetentionPolicy } from '../sessions/entry.js';
+import type {
+  ClaimContinuationLeaseInput,
+  ClearContinuationLeaseInput,
+  RecordContinuationLeaseInput,
+  RetentionPolicy,
+} from '../sessions/entry.js';
 
 export type StepDetail = {
   stepIndex: number;
@@ -81,6 +86,9 @@ export interface WorkflowExecutionPort {
     code?: string;
     message?: string;
   }>;
+  recordContinuationLease(input: RecordContinuationLeaseInput): Promise<void>;
+  claimContinuationLease(input: ClaimContinuationLeaseInput): Promise<boolean>;
+  clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
