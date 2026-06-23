@@ -535,6 +535,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     db: getQueryDb,
     providers: providerRegistry,
     runtime,
+    time: runtime.time,
     commitEvents: coordinatorCommit,
   });
 
@@ -598,6 +599,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     eventBus,
     runtime,
     discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
+    disposeLifecycleReactor: () => lifecycleReactor.dispose(),
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },

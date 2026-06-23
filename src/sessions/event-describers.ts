@@ -4,12 +4,16 @@
 
 import { typedDescriber, type EventDescriber, type EventDescriberMap } from '../causality/render.js';
 import { assertNever } from '../infra/error-format.js';
-import { ensureSentence } from '../infra/text.js';
+import { ensureSentence, truncate } from '../infra/text.js';
 import {
   sessionAdapterUnparseableBodySchema,
   sessionArtifactHandleRecordedBodySchema,
   sessionClaimReleasedBodySchema,
   sessionClaimedBodySchema,
+  sessionContinuationLeaseClaimedBodySchema,
+  sessionContinuationLeaseClearedBodySchema,
+  sessionContinuationLeaseExpiredBodySchema,
+  sessionContinuationLeaseRecordedBodySchema,
   sessionContinuityCheckpointedBodySchema,
   sessionInterruptedBodySchema,
   sessionOpenedBodySchema,
@@ -18,7 +22,11 @@ import {
   sessionRetentionDiscardFailedBodySchema,
   sessionRetentionDiscardRequestedBodySchema,
 } from './event-bodies.js';
-import { continuitySentenceFragment, type SessionContinuityState } from './fault.js';
+import {
+  continuitySentenceFragment,
+  type SessionContinuityState,
+  type SessionProviderFailureDiagnostic,
+} from './fault.js';
 
 // sessions/fault.ts is the canonical authority with exhaustive-switch +
 // assertNever. Runtime-injected values are rendered as diagnostics instead of
@@ -43,6 +51,22 @@ function describeSessionUnavailable(provider: string, reason: string): string {
   }
 }
 
+function describeProviderFailureDiagnostic(diagnostic: SessionProviderFailureDiagnostic | undefined): string {
+  if (diagnostic === undefined) {
+    return '';
+  }
+
+  const childOutputTail =
+    diagnostic.childOutputTail.length === 0
+      ? ''
+      : ` childOutputTail=${JSON.stringify(truncate(diagnostic.childOutputTail, 120))};`;
+  const transcriptTail =
+    diagnostic.transcriptTail.length === 0
+      ? ''
+      : ` transcriptTail=${JSON.stringify(truncate(diagnostic.transcriptTail, 120))};`;
+  return ` Diagnostic v${diagnostic.schemaVersion}: reason=${diagnostic.reason}; phase=${diagnostic.phase}; idleMs=${diagnostic.idleMs}; attempts=${diagnostic.attempts}; sessionId=${diagnostic.sessionId ?? 'null'}; conversationRef=${diagnostic.conversationRef ?? 'null'};${childOutputTail}${transcriptTail}`;
+}
+
 const opened = typedDescriber(sessionOpenedBodySchema, () => 'Session opened.');
 const continuityCheckpointed = typedDescriber(
   sessionContinuityCheckpointedBodySchema,
@@ -56,6 +80,22 @@ const claimed = typedDescriber(sessionClaimedBodySchema, (body) => `Session clai
 const claimReleased = typedDescriber(
   sessionClaimReleasedBodySchema,
   (body) => `Session claim released by job ${body.jobId}.`,
+);
+const continuationLeaseRecorded = typedDescriber(
+  sessionContinuationLeaseRecordedBodySchema,
+  (body) => `Session continuation lease recorded for stale job ${body.lease.staleJobId}.`,
+);
+const continuationLeaseClaimed = typedDescriber(
+  sessionContinuationLeaseClaimedBodySchema,
+  (body) => `Session continuation lease claimed by resumed job ${body.lease.resumedJobId}.`,
+);
+const continuationLeaseCleared = typedDescriber(
+  sessionContinuationLeaseClearedBodySchema,
+  (body) => `Session continuation lease cleared with ${body.lease.outcome}.`,
+);
+const continuationLeaseExpired = typedDescriber(
+  sessionContinuationLeaseExpiredBodySchema,
+  (body) => `Session continuation lease expired for stale job ${body.lease.staleJobId}.`,
 );
 const retentionDiscardRequested = typedDescriber(
   sessionRetentionDiscardRequestedBodySchema,
@@ -83,11 +123,12 @@ const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
 });
 
 const providerFailed = typedDescriber(sessionProviderFailedBodySchema, (body) => {
+  const diagnostic = describeProviderFailureDiagnostic(body.diagnostic);
   switch (body.reason) {
     case 'session_unavailable':
-      return describeSessionUnavailable(body.provider, body.message);
+      return `${describeSessionUnavailable(body.provider, body.message)}${diagnostic}`;
     case 'request_failed':
-      return `${body.provider} turn failed: ${ensureSentence(body.message)}`;
+      return `${body.provider} turn failed: ${ensureSentence(body.message)}${diagnostic}`;
     default:
       return assertNever(body.reason);
   }
@@ -104,6 +145,10 @@ export const sessionsEventDescribers: EventDescriberMap = new Map<string, EventD
   ['session:session.artifact.handle.recorded', artifactHandleRecorded],
   ['session:session.claimed', claimed],
   ['session:session.claim.released', claimReleased],
+  ['session:session.continuation_lease.recorded', continuationLeaseRecorded],
+  ['session:session.continuation_lease.claimed', continuationLeaseClaimed],
+  ['session:session.continuation_lease.cleared', continuationLeaseCleared],
+  ['session:session.continuation_lease.expired', continuationLeaseExpired],
   ['session:session.retention.discard.requested', retentionDiscardRequested],
   ['session:session.retention.discard.completed', retentionDiscardCompleted],
   ['session:session.retention.discard.failed', retentionDiscardFailed],

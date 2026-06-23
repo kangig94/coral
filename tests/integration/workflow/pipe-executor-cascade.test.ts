@@ -236,6 +236,7 @@ describe('pipe executor coral cascade invariant', () => {
         db: () => db,
         providers: providerRegistry,
         runtime,
+        time: runtime.time,
         commitEvents: coordinatorCommit,
       });
       reactorRef.current = reactor;

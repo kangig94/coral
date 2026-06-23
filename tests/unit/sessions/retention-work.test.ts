@@ -120,6 +120,28 @@ function discardOutcomeInputs(sessionId: string, outcome: 'completed' | 'failed'
   ];
 }
 
+function continuationLeaseRecordedInput(entry: SessionEntry, expiresAt: string): CoralEventInput {
+  const lease = {
+    status: 'pending' as const,
+    staleJobId: 'job-stale',
+    reason: 'stale_recovery' as const,
+    expiresAt,
+    recordedAt: NOW.toISOString(),
+  };
+  const nextEntry: SessionEntry = {
+    ...entry,
+    continuationLease: lease,
+    version: entry.version + 1,
+  };
+  return {
+    type: 'session.continuation_lease.recorded',
+    stream: { kind: 'session', id: entry.sessionId },
+    refs: { sessionId: entry.sessionId, jobId: 'job-stale' },
+    bodyVersion: 1,
+    body: { entry: nextEntry, sessionId: entry.sessionId, lease },
+  };
+}
+
 /** Open a retained session, release `jobIds` claims, and record their terminals. */
 function seedRetainedSession(h: Harness, sessionId: string, jobIds: readonly string[]): SessionEntry {
   const entry = sessionEntry(sessionId);
@@ -218,6 +240,57 @@ describe('sessions retention-work', () => {
         h.commit([openedInput(entry), jobTerminalInput('job-1', 'session-unreleased')]);
 
         expect(readSessionRetentionWorkForSessionIds(h.db, ['session-unreleased'])).toEqual([]);
+      } finally {
+        h.close();
+      }
+    });
+
+    it('should exclude sessions with active jobs, protective leases, or in-flight discard requests', () => {
+      const h = newHarness();
+      try {
+        const active = sessionEntry('session-active');
+        const activeWithJob = { ...active, activeJobId: 'job-active' };
+        h.commit([
+          openedInput(activeWithJob),
+          claimReleasedInput(activeWithJob, 'job-active'),
+          jobTerminalInput('job-active', 'session-active'),
+        ]);
+
+        const leased = seedRetainedSession(h, 'session-leased', ['job-1']);
+        h.commit([continuationLeaseRecordedInput(leased, new Date(NOW.getTime() + 60_000).toISOString())]);
+
+        seedRetainedSession(h, 'session-requested', ['job-r']);
+        h.commit([
+          {
+            type: 'session.retention.discard.requested',
+            stream: { kind: 'session', id: 'session-requested' },
+            refs: { sessionId: 'session-requested' },
+            bodyVersion: 1,
+            body: { sessionId: 'session-requested', attempt: 1, handles: [] },
+          },
+        ]);
+
+        expect(
+          readSessionRetentionWorkForSessionIds(h.db, ['session-active', 'session-leased', 'session-requested'], {
+            nowMs: NOW.getTime(),
+          }),
+        ).toEqual([]);
+      } finally {
+        h.close();
+      }
+    });
+
+    it('should include sessions after a pending continuation lease expires', () => {
+      const h = newHarness();
+      try {
+        const leased = seedRetainedSession(h, 'session-expired-lease', ['job-1']);
+        h.commit([continuationLeaseRecordedInput(leased, new Date(NOW.getTime() + 60_000).toISOString())]);
+
+        expect(
+          readSessionRetentionWorkForSessionIds(h.db, ['session-expired-lease'], {
+            nowMs: NOW.getTime() + 60_001,
+          }).map((item) => item.sessionId),
+        ).toEqual(['session-expired-lease']);
       } finally {
         h.close();
       }

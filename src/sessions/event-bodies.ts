@@ -9,7 +9,14 @@ import { z } from 'zod';
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
 import { continuitySnapshotSchema } from './continuity.js';
-import { retentionDiscardCompletedOutcomeSchema, sessionEntrySchema } from './entry.js';
+import {
+  claimedContinuationLeaseSchema,
+  clearedContinuationLeaseSchema,
+  expiredContinuationLeaseSchema,
+  pendingContinuationLeaseSchema,
+  retentionDiscardCompletedOutcomeSchema,
+  sessionEntrySchema,
+} from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
   sessionInterruptedFaultSchema,
@@ -70,6 +77,38 @@ export const sessionClaimReleasedBodySchema = z
   })
   .strict();
 
+export const sessionContinuationLeaseRecordedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    sessionId: z.string().min(1),
+    lease: pendingContinuationLeaseSchema,
+  })
+  .strict();
+
+export const sessionContinuationLeaseClaimedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    sessionId: z.string().min(1),
+    lease: claimedContinuationLeaseSchema,
+  })
+  .strict();
+
+export const sessionContinuationLeaseClearedBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    sessionId: z.string().min(1),
+    lease: clearedContinuationLeaseSchema,
+  })
+  .strict();
+
+export const sessionContinuationLeaseExpiredBodySchema = z
+  .object({
+    entry: sessionEntrySchema,
+    sessionId: z.string().min(1),
+    lease: expiredContinuationLeaseSchema,
+  })
+  .strict();
+
 const retentionDiscardHandlesSchema = z.array(z.string()).readonly();
 const retentionDiscardAttemptSchema = z.number().int().nonnegative();
 
@@ -104,8 +143,14 @@ export type SessionOpenedBody = z.infer<typeof sessionOpenedBodySchema>;
 export type SessionContinuityCheckpointedBody = z.infer<typeof sessionContinuityCheckpointedBodySchema>;
 export type SessionArtifactHandleRecordedBody = z.infer<typeof sessionArtifactHandleRecordedBodySchema>;
 export type SessionInterruptedBody = z.infer<typeof sessionInterruptedBodySchema>;
+export type SessionProviderFailedBody = z.infer<typeof sessionProviderFailedBodySchema>;
+export type SessionAdapterUnparseableBody = z.infer<typeof sessionAdapterUnparseableBodySchema>;
 export type SessionClaimedBody = z.infer<typeof sessionClaimedBodySchema>;
 export type SessionClaimReleasedBody = z.infer<typeof sessionClaimReleasedBodySchema>;
+export type SessionContinuationLeaseRecordedBody = z.infer<typeof sessionContinuationLeaseRecordedBodySchema>;
+export type SessionContinuationLeaseClaimedBody = z.infer<typeof sessionContinuationLeaseClaimedBodySchema>;
+export type SessionContinuationLeaseClearedBody = z.infer<typeof sessionContinuationLeaseClearedBodySchema>;
+export type SessionContinuationLeaseExpiredBody = z.infer<typeof sessionContinuationLeaseExpiredBodySchema>;
 export type SessionRetentionDiscardRequestedBody = z.infer<typeof sessionRetentionDiscardRequestedBodySchema>;
 export type SessionRetentionDiscardCompletedBody = z.infer<typeof sessionRetentionDiscardCompletedBodySchema>;
 export type SessionRetentionDiscardFailedBody = z.infer<typeof sessionRetentionDiscardFailedBodySchema>;

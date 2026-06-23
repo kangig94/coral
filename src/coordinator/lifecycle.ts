@@ -363,6 +363,7 @@ export type LifecycleDeps = {
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
+  readonly disposeLifecycleReactor?: () => void;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
   readonly createCurateAssistant: CurateAssistantFactory;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
@@ -745,6 +746,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
+    disposeLifecycleReactor = () => {},
     hooks,
     closeServerFn,
     closeIpcServerFn,
@@ -807,6 +809,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         storeServicesRef,
         terminateAllFn,
         handoffQuiescePorts: deps.handoffQuiescePorts,
+        disposeLifecycleReactor,
         hooks,
         discussStores,
         log,

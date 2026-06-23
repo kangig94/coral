@@ -168,6 +168,9 @@ function createHarness(options: {
       running(String(input.jobId ?? 'relaunched-atom-1'), `session-${String(input.jobId ?? 'relaunched-atom-1')}`),
     ),
     resume: vi.fn(async () => running('job-resumed', 'session-resumed')),
+    recordContinuationLease: vi.fn(async () => {}),
+    claimContinuationLease: vi.fn(async () => true),
+    clearContinuationLease: vi.fn(async () => true),
     abort: vi.fn(() => ({ aborted: [], notFound: [] })),
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
     waitStream: vi.fn((req: WaitStreamRequest) => {

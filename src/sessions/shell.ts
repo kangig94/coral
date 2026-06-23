@@ -14,8 +14,20 @@ import { composeReducers } from '../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { legacyProviderArtifactIdentity, providerArtifactIdentityKey } from '../providers/artifact-identity.js';
 import {
+  claimContinuationLeaseInputSchema,
+  clearContinuationLeaseInputSchema,
+  type ClaimedContinuationLease,
+  type ClearedContinuationLease,
+  type ClaimContinuationLeaseInput,
+  type ClearContinuationLeaseInput,
+  hasUnterminalRetentionDiscardRequest,
+  isProtectiveContinuationLease,
+  type PendingContinuationLease,
   type ProviderArtifactHandle,
+  recordContinuationLeaseInputSchema,
+  type RecordContinuationLeaseInput,
   sessionControllerFromProfile,
+  type SessionContinuationLease,
   sessionEntrySchema,
   type SessionEntry,
 } from './entry.js';
@@ -29,11 +41,21 @@ import type {
   SessionArtifactHandleRecordedBody,
   SessionClaimedBody,
   SessionClaimReleasedBody,
+  SessionContinuationLeaseClaimedBody,
+  SessionContinuationLeaseClearedBody,
+  SessionContinuationLeaseExpiredBody,
+  SessionContinuationLeaseRecordedBody,
   SessionContinuityCheckpointedBody,
   SessionOpenedBody,
 } from './event-bodies.js';
+import {
+  sessionContinuationLeaseClaimedEvent,
+  sessionContinuationLeaseClearedEvent,
+  sessionContinuationLeaseRecordedEvent,
+} from './continuation-lease-events.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
 import { readContinuityRef, type ContinuitySnapshot, type ProviderContinuityBlob } from './continuity.js';
+import { normalizeSessionEntry as normalizeEntry } from './entry-normalization.js';
 import { listProjectionSessionEntries, readProjectionSession } from './projections.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
@@ -43,7 +65,11 @@ type SessionStoreEventBody =
   | SessionContinuityCheckpointedBody
   | SessionArtifactHandleRecordedBody
   | SessionClaimedBody
-  | SessionClaimReleasedBody;
+  | SessionClaimReleasedBody
+  | SessionContinuationLeaseRecordedBody
+  | SessionContinuationLeaseClaimedBody
+  | SessionContinuationLeaseClearedBody
+  | SessionContinuationLeaseExpiredBody;
 
 export type SessionManagerOptions = {
   db: Database;
@@ -65,31 +91,6 @@ function isValidEntry(value: unknown): value is SessionEntry {
   if (!parsed.success) return false;
   if (!providerIdentPattern.test(parsed.data.provider)) return false;
   return true;
-}
-
-function normalizeEntry(entry: SessionEntry): SessionEntry {
-  const {
-    activeJobId,
-    conversationRef,
-    model,
-    agentName,
-    instruction,
-    bypassPermissions,
-    systemPrompt,
-    controllerProfile,
-    ...required
-  } = entry;
-  return {
-    ...required,
-    ...(activeJobId !== undefined ? { activeJobId } : {}),
-    ...(conversationRef !== undefined ? { conversationRef } : {}),
-    ...(model !== undefined ? { model } : {}),
-    ...(agentName !== undefined ? { agentName } : {}),
-    ...(instruction !== undefined ? { instruction } : {}),
-    ...(bypassPermissions !== undefined ? { bypassPermissions } : {}),
-    ...(systemPrompt !== undefined ? { systemPrompt } : {}),
-    ...(controllerProfile !== undefined ? { controllerProfile } : {}),
-  };
 }
 
 function withoutConversationRef(entry: SessionEntry): SessionEntry {
@@ -194,6 +195,68 @@ function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEve
       entry: normalizedEntry,
       jobId,
     },
+  };
+}
+
+function claimLease(
+  lease: SessionContinuationLease | undefined,
+  input: ClaimContinuationLeaseInput,
+  now: string,
+): ClaimedContinuationLease | null {
+  if (lease === undefined) {
+    return null;
+  }
+  if (
+    lease.status === 'claimed' &&
+    lease.staleJobId === input.staleJobId &&
+    lease.resumedJobId === input.resumedJobId
+  ) {
+    return lease;
+  }
+  if (lease.status !== 'pending' || lease.staleJobId !== input.staleJobId) {
+    return null;
+  }
+  if (!isProtectiveContinuationLease(lease, Date.parse(now))) {
+    return null;
+  }
+  return {
+    ...lease,
+    status: 'claimed',
+    resumedJobId: input.resumedJobId,
+    claimedAt: now,
+  };
+}
+
+function clearLease(
+  lease: SessionContinuationLease | undefined,
+  input: ClearContinuationLeaseInput,
+  now: string,
+): ClearedContinuationLease | null {
+  if (lease === undefined || lease.status === 'cleared' || lease.status === 'expired') {
+    return null;
+  }
+  if (lease.status === 'pending' && lease.staleJobId !== input.jobId) {
+    return null;
+  }
+  if (lease.status === 'claimed' && lease.staleJobId !== input.jobId && lease.resumedJobId !== input.jobId) {
+    return null;
+  }
+
+  return {
+    staleJobId: lease.staleJobId,
+    reason: lease.reason,
+    expiresAt: lease.expiresAt,
+    recordedAt: lease.recordedAt,
+    status: 'cleared',
+    ...(lease.status === 'claimed'
+      ? {
+          resumedJobId: lease.resumedJobId,
+          claimedAt: lease.claimedAt,
+        }
+      : {}),
+    clearedAt: now,
+    clearedByJobId: input.jobId,
+    outcome: input.outcome,
   };
 }
 
@@ -302,6 +365,71 @@ export class SessionManager {
 
   private bumpVersion(entry: SessionEntry): number {
     return (entry.version ?? 0) + 1;
+  }
+
+  recordContinuationLease(input: RecordContinuationLeaseInput): void {
+    const parsed = recordContinuationLeaseInputSchema.parse(input);
+    const entry = this.readEntry(parsed.sessionId, { forceFresh: true });
+    if (!entry) {
+      throw new Error(`Cannot record continuation lease for unknown session ${parsed.sessionId}.`);
+    }
+
+    const now = nowIsoString(this.time);
+    const lease: PendingContinuationLease = {
+      status: 'pending',
+      staleJobId: parsed.jobId,
+      reason: parsed.reason,
+      expiresAt: parsed.expiresAt,
+      recordedAt: now,
+    };
+    const nextEntry: SessionEntry = {
+      ...entry,
+      continuationLease: lease,
+      lastUsedAt: now,
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionContinuationLeaseRecordedEvent(nextEntry, lease));
+  }
+
+  async claimContinuationLease(input: ClaimContinuationLeaseInput): Promise<boolean> {
+    const parsed = claimContinuationLeaseInputSchema.parse(input);
+    const entry = this.readEntry(parsed.sessionId, { forceFresh: true });
+    if (!entry) return false;
+
+    const now = nowIsoString(this.time);
+    const lease = claimLease(entry.continuationLease, parsed, now);
+    if (lease === null) return false;
+    if (entry.continuationLease?.status === 'claimed' && entry.continuationLease.resumedJobId === parsed.resumedJobId) {
+      return true;
+    }
+
+    const nextEntry: SessionEntry = {
+      ...entry,
+      continuationLease: lease,
+      lastUsedAt: now,
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionContinuationLeaseClaimedEvent(nextEntry, lease));
+    return true;
+  }
+
+  async clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean> {
+    const parsed = clearContinuationLeaseInputSchema.parse(input);
+    const entry = this.readEntry(parsed.sessionId, { forceFresh: true });
+    if (!entry) return false;
+
+    const now = nowIsoString(this.time);
+    const lease = clearLease(entry.continuationLease, parsed, now);
+    if (lease === null) return false;
+
+    const nextEntry: SessionEntry = {
+      ...entry,
+      continuationLease: lease,
+      lastUsedAt: now,
+      version: this.bumpVersion(entry),
+    };
+    this.appendEntryEvent(nextEntry, sessionContinuationLeaseClearedEvent(nextEntry, lease));
+    return true;
   }
 
   open(options: SessionAllocateOptions): SessionEntry {
@@ -431,14 +559,39 @@ export class SessionManager {
   async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
     const entry = this.readEntry(sessionId, { forceFresh: true });
     if (!entry || entry.activeJobId) return false;
+    if (hasUnterminalRetentionDiscardRequest(entry)) return false;
     if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
+    const now = nowIsoString(this.time);
+    const lease =
+      entry.continuationLease?.status === 'pending'
+        ? claimLease(
+            entry.continuationLease,
+            {
+              sessionId,
+              staleJobId: entry.continuationLease.staleJobId,
+              resumedJobId: jobId,
+            },
+            now,
+          )
+        : null;
     const nextEntry: SessionEntry = {
       ...entry,
       activeJobId: jobId,
-      lastUsedAt: nowIsoString(this.time),
+      ...(lease === null ? {} : { continuationLease: lease }),
+      lastUsedAt: now,
       version: this.bumpVersion(entry),
     };
-    this.appendEntryEvent(nextEntry, sessionClaimedEvent(nextEntry, jobId));
+    const claimedEvent = sessionClaimedEvent(nextEntry, jobId);
+    if (lease === null) {
+      this.appendEntryEvent(nextEntry, claimedEvent);
+      return true;
+    }
+    this.commitEvents((c) => {
+      c.append(claimedEvent);
+      c.append(sessionContinuationLeaseClaimedEvent(nextEntry, lease));
+      return undefined;
+    });
+    this.populateCache(sessionId, nextEntry);
     return true;
   }
 
@@ -480,8 +633,20 @@ export class SessionManager {
       }
     })();
 
+    const releasedBase = withoutActiveJobId(checkpointEntry);
+    const now = nowIsoString(this.time);
+    const clearedLease =
+      checkpointEntry.continuationLease?.status === 'claimed' &&
+      checkpointEntry.continuationLease.resumedJobId === expectedActiveJobId
+        ? clearLease(
+            checkpointEntry.continuationLease,
+            { sessionId, jobId: expectedActiveJobId, outcome: 'resumed_released' },
+            now,
+          )
+        : null;
     const releaseEntry: SessionEntry = {
-      ...withoutActiveJobId(checkpointEntry),
+      ...releasedBase,
+      ...(clearedLease === null ? {} : { continuationLease: clearedLease }),
       version: this.bumpVersion(checkpointEntry),
     };
     const checkpointEvent = sessionCheckpointedEvent(checkpointEntry, snapshotFromEntry(checkpointEntry));
@@ -490,6 +655,9 @@ export class SessionManager {
     this.commitEvents((c) => {
       c.append(checkpointEvent);
       c.append(claimReleasedEvent);
+      if (clearedLease !== null) {
+        c.append(sessionContinuationLeaseClearedEvent(releaseEntry, clearedLease));
+      }
       return undefined;
     });
     this.populateCache(sessionId, releaseEntry);
@@ -580,12 +748,32 @@ export class SessionManager {
     if (entry.activeJobId !== expectedActiveJobId) return false;
     if (entry.version !== expectedVersion) return false;
 
+    const now = nowIsoString(this.time);
+    const clearedLease =
+      entry.continuationLease?.status === 'claimed' && entry.continuationLease.resumedJobId === expectedActiveJobId
+        ? clearLease(
+            entry.continuationLease,
+            { sessionId, jobId: expectedActiveJobId, outcome: 'resumed_released' },
+            now,
+          )
+        : null;
     const nextEntry: SessionEntry = {
       ...withoutActiveJobId(entry),
-      lastUsedAt: nowIsoString(this.time),
+      ...(clearedLease === null ? {} : { continuationLease: clearedLease }),
+      lastUsedAt: now,
       version: this.bumpVersion(entry),
     };
-    this.appendEntryEvent(nextEntry, sessionClaimReleasedEvent(nextEntry, expectedActiveJobId));
+    const claimReleasedEvent = sessionClaimReleasedEvent(nextEntry, expectedActiveJobId);
+    if (clearedLease === null) {
+      this.appendEntryEvent(nextEntry, claimReleasedEvent);
+    } else {
+      this.commitEvents((c) => {
+        c.append(claimReleasedEvent);
+        c.append(sessionContinuationLeaseClearedEvent(nextEntry, clearedLease));
+        return undefined;
+      });
+      this.populateCache(sessionId, nextEntry);
+    }
     this.releaseEmitter({ sessionId, jobId: expectedActiveJobId });
     return true;
   }
@@ -609,13 +797,37 @@ export class SessionManager {
   claimForJobSync(sessionId: string, jobId: string): boolean {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
+    const now = nowIsoString(this.time);
+    const lease =
+      entry.continuationLease?.status === 'pending'
+        ? claimLease(
+            entry.continuationLease,
+            {
+              sessionId,
+              staleJobId: entry.continuationLease.staleJobId,
+              resumedJobId: jobId,
+            },
+            now,
+          )
+        : null;
     const nextEntry: SessionEntry = {
       ...entry,
       activeJobId: jobId,
-      lastUsedAt: nowIsoString(this.time),
+      ...(lease === null ? {} : { continuationLease: lease }),
+      lastUsedAt: now,
       version: this.bumpVersion(entry),
     };
-    this.appendEntryEvent(nextEntry, sessionClaimedEvent(nextEntry, jobId));
+    const claimedEvent = sessionClaimedEvent(nextEntry, jobId);
+    if (lease === null) {
+      this.appendEntryEvent(nextEntry, claimedEvent);
+      return true;
+    }
+    this.commitEvents((c) => {
+      c.append(claimedEvent);
+      c.append(sessionContinuationLeaseClaimedEvent(nextEntry, lease));
+      return undefined;
+    });
+    this.populateCache(sessionId, nextEntry);
     return true;
   }
 
@@ -623,12 +835,28 @@ export class SessionManager {
   releaseJob(sessionId: string, jobId: string): void {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId !== jobId) return;
+    const now = nowIsoString(this.time);
+    const clearedLease =
+      entry.continuationLease?.status === 'claimed' && entry.continuationLease.resumedJobId === jobId
+        ? clearLease(entry.continuationLease, { sessionId, jobId, outcome: 'resumed_released' }, now)
+        : null;
     const nextEntry: SessionEntry = {
       ...withoutActiveJobId(entry),
-      lastUsedAt: nowIsoString(this.time),
+      ...(clearedLease === null ? {} : { continuationLease: clearedLease }),
+      lastUsedAt: now,
       version: this.bumpVersion(entry),
     };
-    this.appendEntryEvent(nextEntry, sessionClaimReleasedEvent(nextEntry, jobId));
+    const claimReleasedEvent = sessionClaimReleasedEvent(nextEntry, jobId);
+    if (clearedLease === null) {
+      this.appendEntryEvent(nextEntry, claimReleasedEvent);
+    } else {
+      this.commitEvents((c) => {
+        c.append(claimReleasedEvent);
+        c.append(sessionContinuationLeaseClearedEvent(nextEntry, clearedLease));
+        return undefined;
+      });
+      this.populateCache(sessionId, nextEntry);
+    }
     this.releaseEmitter({ sessionId, jobId });
   }
 

@@ -677,6 +677,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
+    disposeLifecycleReactor: options.disposeLifecycleReactor ?? (() => {}),
     handoffQuiescePorts: () =>
       services
         .listExecutionServices()

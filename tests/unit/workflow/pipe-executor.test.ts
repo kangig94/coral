@@ -78,6 +78,9 @@ async function* emit(events: WaitStreamEvent[]): AsyncGenerator<WaitStreamEvent>
 type MockExecutionService = WorkflowExecutionPort & {
   coralDispatch: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
+  recordContinuationLease: ReturnType<typeof vi.fn>;
+  claimContinuationLease: ReturnType<typeof vi.fn>;
+  clearContinuationLease: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
   waitStream: ReturnType<typeof vi.fn>;
@@ -88,6 +91,9 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
   return {
     coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
     resume: vi.fn(async () => running('job-resumed', 'session-1')),
+    recordContinuationLease: vi.fn(async () => {}),
+    claimContinuationLease: vi.fn(async () => true),
+    clearContinuationLease: vi.fn(async () => true),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     awaitLaunch: vi.fn(async () => 'ready'),
     waitStream: vi.fn((_req: WaitRequest) => emit([])),
@@ -348,14 +354,31 @@ describe('workflow pipe executor', () => {
         },
       );
 
+      expect(executionSvc.recordContinuationLease).toHaveBeenCalledWith({
+        sessionId: 'session-codex',
+        jobId: 'job-codex',
+        reason: 'stale_recovery',
+        expiresAt: expect.any(String),
+      });
       expect(executionSvc.abort).toHaveBeenCalledWith(['job-codex']);
       expect(executionSvc.waitForJobTerminal).toHaveBeenCalledWith('job-codex', 30_000);
       expect(executionSvc.resume).toHaveBeenCalledTimes(1);
+      expect(executionSvc.recordContinuationLease.mock.invocationCallOrder[0]).toBeLessThan(
+        executionSvc.abort.mock.invocationCallOrder[0],
+      );
       expect(executionSvc.abort.mock.invocationCallOrder[0]).toBeLessThan(
         executionSvc.waitForJobTerminal.mock.invocationCallOrder[0],
       );
       expect(executionSvc.waitForJobTerminal.mock.invocationCallOrder[0]).toBeLessThan(
         executionSvc.resume.mock.invocationCallOrder[0],
+      );
+      expect(executionSvc.claimContinuationLease).toHaveBeenCalledWith({
+        sessionId: 'session-codex',
+        staleJobId: 'job-codex',
+        resumedJobId: 'job-codex-resumed',
+      });
+      expect(executionSvc.resume.mock.invocationCallOrder[0]).toBeLessThan(
+        executionSvc.claimContinuationLease.mock.invocationCallOrder[0],
       );
       expect(executionSvc.resume).toHaveBeenCalledWith(
         'codex',
@@ -413,6 +436,40 @@ describe('workflow pipe executor', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it('does not abort stale jobs when continuation lease recording fails', async () => {
+    const executionSvc = createExecutionService({
+      recordContinuationLease: vi.fn(async () => {
+        throw new Error('journal append failed');
+      }),
+      waitStream: vi.fn((req: WaitRequest) => emit([stillWaiting([...req.jobIds])])),
+    });
+
+    await expect(
+      waitForAtoms([launchedAtom()], executionSvc, ctx, {
+        staleTimeoutMs: 1,
+        staleCheckIntervalMs: 1,
+        staleAbortTimeoutMs: 30_000,
+        drainDeadlineMs: 15_000,
+        onProgress: vi.fn(),
+        recoverStaleAtom,
+        time: workflowTime,
+      }),
+    ).rejects.toMatchObject({
+      message: "Step 0, atom 'architect' stale recovery lease failed: journal append failed",
+      aborted: false,
+      stepDetails: [],
+    });
+
+    expect(executionSvc.recordContinuationLease).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      jobId: 'job-1',
+      reason: 'stale_recovery',
+      expiresAt: expect.any(String),
+    });
+    expect(executionSvc.abort).not.toHaveBeenCalled();
+    expect(executionSvc.resume).not.toHaveBeenCalled();
   });
 
   it('success path returns outputs from all launched atoms', async () => {

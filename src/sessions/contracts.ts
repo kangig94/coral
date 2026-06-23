@@ -2,7 +2,14 @@ import type { ProviderContinuityBlob, ContinuitySnapshot } from './continuity.js
 import type { SessionContinuityMutation } from './continuity-mutation.js';
 import type { ProviderInstruction } from '../providers/contract.js';
 import type { ProviderArtifactIdentity } from '../providers/artifact-identity.js';
-import type { RetentionPolicy, SessionControllerProfile, SessionEntry } from './entry.js';
+import type {
+  ClaimContinuationLeaseInput,
+  ClearContinuationLeaseInput,
+  RecordContinuationLeaseInput,
+  RetentionPolicy,
+  SessionControllerProfile,
+  SessionEntry,
+} from './entry.js';
 
 export type SessionAllocateOptions = {
   provider: string;
@@ -67,6 +74,9 @@ export interface SessionExecutionPort extends SessionClaimAtomicPort {
   get(provider: string, sessionId: string): SessionEntry | null;
   list(provider: string): SessionEntry[];
   releaseJob(sessionId: string, jobId: string): void;
+  recordContinuationLease(input: RecordContinuationLeaseInput): void;
+  claimContinuationLease(input: ClaimContinuationLeaseInput): Promise<boolean>;
+  clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
 }
 
 export interface SessionWorkflowPort extends SessionClaimAtomicPort {

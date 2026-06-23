@@ -14,6 +14,10 @@ import type {
   SessionArtifactHandleRecordedBody,
   SessionClaimReleasedBody,
   SessionClaimedBody,
+  SessionContinuationLeaseClaimedBody,
+  SessionContinuationLeaseClearedBody,
+  SessionContinuationLeaseExpiredBody,
+  SessionContinuationLeaseRecordedBody,
   SessionContinuityCheckpointedBody,
   SessionRetentionDiscardCompletedBody,
   SessionRetentionDiscardFailedBody,
@@ -133,6 +137,19 @@ function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry:
   });
 }
 
+function assertEventSessionIdMatchesStream(event: { stream: { id: string } }, sessionId: string): void {
+  if (event.stream.id === sessionId) {
+    return;
+  }
+
+  throw new CoralSetupError({
+    code: 'projection_sessions_body_stream_mismatch',
+    userMessage: `Session event body ${sessionId} does not match stream ${event.stream.id}.`,
+    remediation: 'Append session events with stream.id equal to body.sessionId.',
+    context: { streamId: event.stream.id, bodySessionId: sessionId },
+  });
+}
+
 function upsertProjectionSession(
   db: Database,
   event: { stream: { id: string }; seq: number },
@@ -213,6 +230,34 @@ export const reduceSessionClaimReleased: Reducer<SessionClaimReleasedBody> = (db
   });
 };
 
+function upsertContinuationLease(
+  db: Database,
+  event: { stream: { id: string }; seq: number },
+  sessionId: string,
+  entry: SessionEntry,
+): void {
+  assertEventSessionIdMatchesStream(event, sessionId);
+  upsertProjectionSession(db, event, {
+    entry,
+  });
+}
+
+export const reduceSessionContinuationLeaseRecorded: Reducer<SessionContinuationLeaseRecordedBody> = (db, event) => {
+  upsertContinuationLease(db, event, event.body.sessionId, event.body.entry);
+};
+
+export const reduceSessionContinuationLeaseClaimed: Reducer<SessionContinuationLeaseClaimedBody> = (db, event) => {
+  upsertContinuationLease(db, event, event.body.sessionId, event.body.entry);
+};
+
+export const reduceSessionContinuationLeaseCleared: Reducer<SessionContinuationLeaseClearedBody> = (db, event) => {
+  upsertContinuationLease(db, event, event.body.sessionId, event.body.entry);
+};
+
+export const reduceSessionContinuationLeaseExpired: Reducer<SessionContinuationLeaseExpiredBody> = (db, event) => {
+  upsertContinuationLease(db, event, event.body.sessionId, event.body.entry);
+};
+
 function upsertRetentionDiscardAttempt(
   db: Database,
   event: { stream: { id: string }; seq: number },
@@ -230,6 +275,7 @@ function upsertRetentionDiscardAttempt(
       retentionDiscard: {
         attempts: [...attempts, attempt].sort((left, right) => left.attempt - right.attempt),
       },
+      version: previous.entry.version + 1,
     },
   });
 }

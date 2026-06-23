@@ -12,6 +12,7 @@ import {
 import type { SessionContinuityMutation } from '../sessions/continuity-mutation.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from './artifact-identity.js';
+import { sessionProviderFailureDiagnosticSchema } from '../sessions/fault.js';
 import type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
@@ -177,6 +178,7 @@ export const providerFailureCauseSchema = z.discriminatedUnion('type', [
           provider: z.string(),
           reason: z.enum(['session_unavailable', 'request_failed']),
           message: z.string(),
+          diagnostic: sessionProviderFailureDiagnosticSchema.optional(),
         })
         .strict(),
     })

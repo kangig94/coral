@@ -168,6 +168,14 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           this.runWithInvocationScope(requestCtx, () =>
             this.launchService.resume(providerName, input as JobResumeRequest, requestCtx),
           ),
+        recordContinuationLease: (input) =>
+          this.runWithInvocationScope(ctx, async () => {
+            this.sessionManager.recordContinuationLease(input);
+          }),
+        claimContinuationLease: (input) =>
+          this.runWithInvocationScope(ctx, () => this.sessionManager.claimContinuationLease(input)),
+        clearContinuationLease: (input) =>
+          this.runWithInvocationScope(ctx, () => this.sessionManager.clearContinuationLease(input)),
         abort: (jobIds) => this.abortService.abort(jobIds),
         awaitLaunch: (jobId, timeoutMs) => this.waitService.awaitLaunch(jobId, timeoutMs),
         waitStream: (req) => this.waitService.waitStream(req),
