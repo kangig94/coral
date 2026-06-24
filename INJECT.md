@@ -83,10 +83,12 @@ Emotional discipline matters. Frustration, fatigue, and the urge to finish are r
 Recognize them as inputs that degrade judgment, not reasons to cut corners.
 The correct response to "I'm almost done and something broke" is not speed — it is stillness.
 
-<!-- KB_ONLY:BEGIN -->
-# Knowledge Base
+# Tools
 
 CLI: `{{CORAL_CLI}}`
+
+<!-- KB_ONLY:BEGIN -->
+# Knowledge Base
 
 ## Search
 Source code and official docs (via WebFetch) are the source of truth — always start there.
