@@ -156,15 +156,7 @@ export async function appendRuntimeEvents(
       return snapshot;
     } catch (error: unknown) {
       if (error instanceof DiscussStaleWriteError) {
-        const seqBefore = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
         syncLiveSnapshot(ctx, sessionId);
-        const seqAfter = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
-        if (seqBefore !== undefined && seqAfter === seqBefore) {
-          backendLog.warn(
-            `appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`,
-          );
-          return null;
-        }
         continue;
       }
       throw error;

@@ -10,7 +10,7 @@ import {
 } from '#src/discuss/shell/live-registry.js';
 import { abortDiscussSession } from '#src/discuss/shell/operations.js';
 import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
-import { readSessionEvents } from '#src/discuss/shell/persistence.js';
+import { appendRuntimeEvents, readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import {
   attachPersistedSession,
@@ -338,6 +338,74 @@ describe('DiscussContext lifecycle boundaries', () => {
     expect(events.at(-1)?.kind).toBe('session.synthesized');
     expect(harness.store.load('stale-retry-session')?.runtime.controlPhase).toBe('idle');
     expect(harness.context.sessions.get('stale-retry-session')?.snapshot.runtime.controlPhase).toBe('idle');
+  });
+
+  it('runtime append retries when live snapshot already advanced before stale handling', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'runtime-stale-race-session',
+      recover: false,
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const session = harness.context.sessions.get('runtime-stale-race-session');
+    if (!session) {
+      throw new Error('Expected attached runtime-stale-race-session');
+    }
+
+    const originalAppend = harness.store.append.bind(harness.store);
+    let injectedConcurrentAppend = false;
+    vi.spyOn(harness.store, 'append').mockImplementation(async (sessionId, expectedSeq, events) => {
+      if (!injectedConcurrentAppend) {
+        injectedConcurrentAppend = true;
+        const current = harness.store.load(sessionId);
+        if (!current) {
+          throw new Error(`Session not found: ${sessionId}`);
+        }
+        const concurrent = await originalAppend(sessionId, current.lastAppliedSeq, [
+          makeEvent(
+            sessionId,
+            harness.projectRoot,
+            current.state.topic,
+            current.lastAppliedSeq + 1,
+            'bid.submitted',
+            '2026-03-10T00:03:10.000Z',
+            {
+              agent: 'alpha',
+              score: 42,
+              thought: 'Concurrent bid.',
+            },
+          ),
+        ]);
+        session.snapshot = concurrent;
+      }
+      return originalAppend(sessionId, expectedSeq, events);
+    });
+
+    await appendRuntimeEvents(harness.context, 'runtime-stale-race-session', (current) => [
+      makeEvent(
+        current.sessionId,
+        harness.projectRoot,
+        current.state.topic,
+        current.lastAppliedSeq + 1,
+        'agent.run.bound',
+        '2026-03-10T00:03:11.000Z',
+        {
+          agent: 'alpha',
+          executionSessionId: 'provider-session-1',
+        },
+      ),
+    ]);
+
+    const events = readSessionEvents(harness.context, 'runtime-stale-race-session');
+    expect(events.map((event) => event.kind)).toEqual([
+      'session.created',
+      'bidding.opened',
+      'bid.submitted',
+      'agent.run.bound',
+    ]);
+    expect(harness.store.load('runtime-stale-race-session')?.lastAppliedSeq).toBe(4);
+    expect(session.snapshot.lastAppliedSeq).toBe(4);
   });
 
   it('user abort durably appends an abort marker for ended synthesize-window sessions and recovery skips them', async () => {
