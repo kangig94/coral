@@ -116,6 +116,20 @@ describe('discuss event body schemas', () => {
     ).toBe(false);
   });
 
+  it('accepts forced bid-round winners in the persisted event schema', () => {
+    const event = toJournalInput(
+      makeEvent('session-1', '/tmp/project', 'Topic', 5, 'bid.round.closed', NOW, {
+        allBids: { alpha: 10, beta: 20 },
+        effectiveBids: { alpha: 10, beta: 20 },
+        thoughts: { alpha: 'low', beta: 'still useful' },
+        outcome: { winner: 'beta', speaker_type: 'forced' },
+        stateMutations: { cold_start: false },
+      }),
+    );
+
+    expect(discussEventBodySchemas['bid.round.closed'].safeParse(event.body).success).toBe(true);
+  });
+
   it('rejects non-finite persisted config numbers', () => {
     expect(
       sessionCreatedConfigSchema.safeParse({

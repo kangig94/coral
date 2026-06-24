@@ -18,6 +18,7 @@ import type {
 export const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
 export const DEFAULT_QUOTA_PER_EPOCH = 3;
+const MIN_FORCED_BID_QUOTA_REMAINING = 2;
 
 export function resolveAgentName(agents: Record<string, AgentState>, name: string): string | null {
   if (agents[name]) return name;
@@ -307,6 +308,15 @@ export function decideBidRoundClose(
           ],
         };
       }
+    }
+
+    const forcedPool = createBidPool((name) => state.agents[name].quota_remaining >= MIN_FORCED_BID_QUOTA_REMAINING);
+    if (forcedPool.length > 0) {
+      const [winner] = forcedPool[0];
+      return {
+        ok: true,
+        value: [makeBidRoundClosedEvent({ winner, speaker_type: 'forced' as const }, { cold_start: false })],
+      };
     }
 
     return {

@@ -26,10 +26,16 @@ async function finalizeSynthesizedSession(
   // data dir. Best-effort export of the journal's discuss stream — a write
   // failure must never break the discussion (the authoritative record lives
   // in the journal).
+  let exportedRecord = false;
   try {
     writeDiscussRecord(ctx.runtime, snapshot);
+    exportedRecord = true;
   } catch (error) {
     backendLog.warn(`Discuss record export failed for ${sessionId}: ${errorMessage(error)}`);
+  }
+  if (!exportedRecord) {
+    detachSession(ctx, sessionId);
+    return;
   }
   // The discussion is fully synthesized. Participant (and facilitator) provider
   // sessions were retained across turns for multi-turn resume and handoff

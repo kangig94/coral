@@ -41,7 +41,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
-import { ConsumerDriver, FreshnessTimeout } from './consumer-driver/index.js';
+import { ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
@@ -304,23 +304,14 @@ export async function repairProjectionArtifactLagOnBoot(
     reason: 'projection-artifact-lag',
     consumers: targetConsumerIds,
   });
-  try {
-    await Promise.all(
-      forced.consumers.map((consumerId) =>
-        driver.waitFreshUntil('corpus', { snapshot, atLeastGeneration: forced.generation }, consumerId, timeoutMs),
-      ),
+  void timeoutMs;
+  if (forced.consumers.length > 0) {
+    backendLog.warn(
+      `[kb] Projection artifact repair scheduled during boot for ${forced.consumers.join(', ')}; ` +
+        'KB will serve stale or degraded retrieval until background reconcile catches up.',
     );
-  } catch (error: unknown) {
-    if (isOramaOnlyRepairTarget(targetConsumerIds) && error instanceof FreshnessTimeout) {
-      backendLog.warn(
-        `[kb] Orama projection artifact repair timed out during boot; ` +
-          'KB will start with stale or uninitialized FTS while background reconcile continues.',
-      );
-      return { allowStaleFts: true };
-    }
-    throw error;
   }
-  return { allowStaleFts: false };
+  return { allowStaleFts: isOramaOnlyRepairTarget(targetConsumerIds) };
 }
 
 export function createCoordinatorServer(options: CoordinatorServerOptions = {}): CoordinatorServerController {
@@ -572,24 +563,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       onModelFetchStart: textProjectionHealth.beginModelFetch,
       onModelFetchEnd: textProjectionHealth.endModelFetch,
     });
-    // Boot step 4: repair unchanged-snapshot projection artifacts before
-    // readiness waits.
-    const projectionArtifactRepair = await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
+    // Boot step 4: schedule repair for unchanged-snapshot projection artifacts
+    // without extending the kernel boot path.
+    await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
     signal.throwIfAborted();
     // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
     const corpusSnapshot = built.kb.getCorpusStateSnapshot();
     driver.notifyCorpus(corpusSnapshot);
-    const ftsConsumerId = built.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
-      .consumer.id;
-    if (projectionArtifactRepair.allowStaleFts) {
-      backendLog.warn('[kb] Skipping boot FTS freshness wait after stale Orama projection repair timeout.');
-    } else {
-      await driver.waitFreshUntil('corpus', corpusSnapshot, ftsConsumerId, bootFreshnessTimeoutMs);
-    }
+    backendLog.warn('[kb] Boot scheduled FTS freshness replay; serving stale/degraded retrieval until it catches up.');
     signal.throwIfAborted();
     if (built.curateScheduler) {
-      // Boot step 6: start background curation only after the read
-      // projections are aligned.
+      // Boot step 6: start background curation after consumer replay has been
+      // scheduled; read projections may still catch up asynchronously.
       await built.curateScheduler.start();
     }
   };

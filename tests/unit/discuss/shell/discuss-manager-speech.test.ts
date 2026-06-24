@@ -110,6 +110,161 @@ describe('Discuss speech collection', () => {
     expect(getWatchState(harness.context, 'discuss-1').events.at(-1)?.ts).toEqual(expect.any(Number));
   });
 
+  it('retries an empty speech once and persists only the accepted content', async () => {
+    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const waitStreamOnce = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: '   ',
+        continuity: null,
+      })
+      .mockResolvedValueOnce({
+        content: '  Final speech.  ',
+        continuity: null,
+      });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
+    await persistSession(harness, {
+      sessionId: 'discuss-empty-retry',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 70, thought: 'beta' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, beta: 70 },
+            effectiveBids: { alpha: 80, beta: 70 },
+            thoughts: { alpha: 'alpha', beta: 'beta' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+      ],
+    });
+
+    await discussSpeechFlow.collectSpeech(harness.context, 'discuss-empty-retry', 'alpha', harness.ctx);
+
+    const snapshot = harness.store.load('discuss-empty-retry');
+    const finishedOutcomes = harness.store
+      .readSessionEvents('discuss-empty-retry')
+      .filter((event) => event.kind === 'agent.job.finished')
+      .map((event) => event.payload.outcome);
+    expect(start).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledWith(
+      'codex',
+      expect.objectContaining({
+        sessionId: 'exec-alpha',
+        pool: 'discuss',
+      }),
+      harness.ctx,
+    );
+    expect(snapshot?.state.status).toBe('bidding');
+    expect(snapshot?.state.transcript.at(-1)).toMatchObject({
+      type: 'speech',
+      agent: 'alpha',
+      content: 'Final speech.',
+    });
+    expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
+    expect(snapshot?.runtime.agentRuns.alpha.currentJobId).toBeUndefined();
+    expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
+    expect(finishedOutcomes).toEqual(['retryable_parse_error', 'completed']);
+  });
+
+  it('times out the speaking turn after repeated empty speech responses', async () => {
+    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const waitStreamOnce = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: '',
+        continuity: null,
+      })
+      .mockResolvedValueOnce({
+        content: '   ',
+        continuity: null,
+      });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
+    await persistSession(harness, {
+      sessionId: 'discuss-empty-timeout',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'bid.submitted',
+          '2026-03-10T00:01:00.000Z',
+          { agent: 'alpha', score: 80, thought: 'alpha' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'bid.submitted',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'beta', score: 70, thought: 'beta' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'bid.round.closed',
+          '2026-03-10T00:01:02.000Z',
+          {
+            allBids: { alpha: 80, beta: 70 },
+            effectiveBids: { alpha: 80, beta: 70 },
+            thoughts: { alpha: 'alpha', beta: 'beta' },
+            outcome: { winner: 'alpha', speaker_type: 'quota' as const },
+            stateMutations: { cold_start: false },
+          },
+        ),
+      ],
+    });
+
+    await discussSpeechFlow.collectSpeech(harness.context, 'discuss-empty-timeout', 'alpha', harness.ctx);
+
+    const snapshot = harness.store.load('discuss-empty-timeout');
+    expect(start).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledOnce();
+    expect(snapshot?.state.status).toBe('bidding');
+    expect(snapshot?.state.transcript.at(-1)).toMatchObject({
+      type: 'speech',
+      agent: 'alpha',
+    });
+    const timeoutEntry = snapshot?.state.transcript.at(-1);
+    expect(timeoutEntry?.type === 'speech' ? timeoutEntry.content : '').toContain(
+      'timed out without delivering a speech',
+    );
+    expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
+    expect(snapshot?.runtime.agentRuns.alpha.currentJobId).toBeUndefined();
+    expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('retryable_parse_error');
+  });
+
   it('passes prior speech only to listeners during the next bid collection', async () => {
     const start = vi
       .fn()

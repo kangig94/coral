@@ -9,6 +9,10 @@ const CAMEL_BOUNDARY_PATTERN = /([\p{Ll}\p{Nd}])([\p{Lu}])/gu;
 const LETTER_NUMBER_BOUNDARY_PATTERN = /([\p{L}])([\p{N}])/gu;
 const NUMBER_LETTER_BOUNDARY_PATTERN = /([\p{N}])([\p{L}])/gu;
 
+export const ORAMA_BODY_SURFACE_TERM_LIMIT = 2_048;
+export const ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT = 4_096;
+export const ORAMA_BODY_NGRAM_TERM_LIMIT = 4_096;
+
 export const ORAMA_SEARCH_FIELDS = ['slug', 'title', 'body', 'tags', 'principles'] as const;
 export type OramaSearchField = (typeof ORAMA_SEARCH_FIELDS)[number];
 export type OramaSearchChannel = 'morph' | 'surface' | 'ngram';
@@ -128,15 +132,23 @@ function foldLatinDiacritics(raw: string): string {
   return folded;
 }
 
+function pushUniqueTerm(term: string, seen: Set<string>, unique: string[], maxTerms?: number): boolean {
+  if (maxTerms !== undefined && unique.length >= maxTerms) {
+    return true;
+  }
+  if (!term || seen.has(term)) {
+    return false;
+  }
+  seen.add(term);
+  unique.push(term);
+  return maxTerms !== undefined && unique.length >= maxTerms;
+}
+
 function uniqueTerms(terms: Iterable<string>): string[] {
   const seen = new Set<string>();
   const unique: string[] = [];
   for (const term of terms) {
-    if (!term || seen.has(term)) {
-      continue;
-    }
-    seen.add(term);
-    unique.push(term);
+    pushUniqueTerm(term, seen, unique);
   }
   return unique;
 }
@@ -160,60 +172,76 @@ function splitCompoundTerm(raw: string): string[] {
     .filter(isUsefulExpandedSurfaceTerm);
 }
 
-export function surfaceSearchTerms(raw: string): string[] {
+export function surfaceSearchTerms(raw: string, options: { maxTerms?: number } = {}): string[] {
   const terms: string[] = [];
+  const seen = new Set<string>();
   for (const match of raw.matchAll(SEARCH_TERM_PATTERN)) {
     const compact = normalizeSurfaceTerm(match[0]);
-    if (!compact) {
-      continue;
+    if (pushUniqueTerm(compact, seen, terms, options.maxTerms)) {
+      return terms;
     }
-    terms.push(compact);
     for (const part of splitCompoundTerm(match[0])) {
-      terms.push(part);
+      if (pushUniqueTerm(part, seen, terms, options.maxTerms)) {
+        return terms;
+      }
     }
   }
-  return uniqueTerms(terms);
+  return terms;
 }
 
 function hangulCompact(raw: string): string {
   return raw.replace(HANGUL_ONLY_PATTERN, '');
 }
 
-function characterNgrams(raw: string, min: number, max: number): string[] {
+function takeCodePoints(raw: string, limit: number | undefined): string {
+  if (limit === undefined) {
+    return raw;
+  }
+  return [...raw].slice(0, limit).join('');
+}
+
+function* characterNgrams(raw: string, min: number, max: number): Iterable<string> {
   const chars = [...raw];
-  const terms: string[] = [];
   for (let size = min; size <= max; size += 1) {
     if (chars.length < size) {
       continue;
     }
     for (let index = 0; index <= chars.length - size; index += 1) {
-      terms.push(chars.slice(index, index + size).join(''));
+      yield chars.slice(index, index + size).join('');
     }
   }
-  return terms;
 }
 
-export function ngramSearchTerms(raw: string): string[] {
+export function ngramSearchTerms(
+  raw: string,
+  options: { maxTerms?: number; maxSourceChars?: number; surfaceTermLimit?: number } = {},
+): string[] {
   const terms: string[] = [];
-  // Append n-grams without spread: `terms.push(...characterNgrams(...))` over a
-  // long body yields an array large enough to overflow V8's call argument limit
-  // (~125k), throwing "Maximum call stack size exceeded" during KB index build.
-  for (const term of surfaceSearchTerms(raw)) {
+  const seen = new Set<string>();
+  const append = (term: string): boolean => pushUniqueTerm(term, seen, terms, options.maxTerms);
+  // Generate n-grams lazily so long bodies cannot allocate the full n-gram set
+  // before the caller's term cap has a chance to stop indexing.
+  for (const term of surfaceSearchTerms(raw, { maxTerms: options.surfaceTermLimit })) {
     if (HANGUL_CHAR_PATTERN.test(term)) {
-      for (const ngram of characterNgrams(hangulCompact(term), 2, 3)) {
-        terms.push(ngram);
+      const compactTerm = takeCodePoints(hangulCompact(term), options.maxSourceChars);
+      for (const ngram of characterNgrams(compactTerm, 2, 3)) {
+        if (append(ngram)) {
+          return terms;
+        }
       }
     }
   }
 
-  const compactHangul = hangulCompact(raw);
+  const compactHangul = takeCodePoints(hangulCompact(raw), options.maxSourceChars);
   if (compactHangul.length >= 2) {
     for (const ngram of characterNgrams(compactHangul, 2, 3)) {
-      terms.push(ngram);
+      if (append(ngram)) {
+        return terms;
+      }
     }
   }
 
-  return uniqueTerms(terms);
+  return terms;
 }
 
 function fieldText(raw: string | readonly string[]): string {
@@ -236,12 +264,18 @@ export function buildOramaSearchChannelFields(
   return {
     slugSurface: termsText(surfaceSearchTerms(slug)),
     titleSurface: termsText(surfaceSearchTerms(title)),
-    bodySurface: termsText(surfaceSearchTerms(body)),
+    bodySurface: termsText(surfaceSearchTerms(body, { maxTerms: ORAMA_BODY_SURFACE_TERM_LIMIT })),
     tagsSurface: termsText(surfaceSearchTerms(tags)),
     principlesSurface: termsText(surfaceSearchTerms(principles)),
     slugNgram: termsText(ngramSearchTerms(slug)),
     titleNgram: termsText(ngramSearchTerms(title)),
-    bodyNgram: termsText(ngramSearchTerms(body)),
+    bodyNgram: termsText(
+      ngramSearchTerms(body, {
+        maxTerms: ORAMA_BODY_NGRAM_TERM_LIMIT,
+        maxSourceChars: ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT,
+        surfaceTermLimit: ORAMA_BODY_SURFACE_TERM_LIMIT,
+      }),
+    ),
     tagsNgram: termsText(ngramSearchTerms(tags)),
     principlesNgram: termsText(ngramSearchTerms(principles)),
   };

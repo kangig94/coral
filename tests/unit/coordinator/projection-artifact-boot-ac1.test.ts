@@ -1,11 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
-import {
-  FreshnessTimeout,
-  type ConsumerDriver,
-  type ForcedCorpusFreshnessTarget,
-} from '#src/coordinator/consumer-driver/index.js';
+import { type ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { repairProjectionArtifactLagOnBoot } from '#src/coordinator/index.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/backend.js';
 import type { EngineArtifactDescriptor } from '#src/kb/corpus/artifact-port.js';
@@ -50,19 +46,17 @@ function kbWithDescriptor(descriptor: EngineArtifactDescriptor): KbRuntime {
   } as unknown as KbRuntime;
 }
 
-function driverThatTimesOut(consumerIds: readonly string[]): ConsumerDriver {
+function driverForRepair(consumerIds: readonly string[]): ConsumerDriver {
   return {
     forceCorpusApply: vi.fn(() => ({ generation: 11, consumers: consumerIds })),
-    waitFreshUntil: vi.fn(async (_authority, target, consumerId, timeoutMs) => {
-      throw new FreshnessTimeout(consumerId, target as ForcedCorpusFreshnessTarget, timeoutMs ?? 0);
-    }),
+    waitFreshUntil: vi.fn(),
   } as unknown as ConsumerDriver;
 }
 
 describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
-  it('keeps boot availability for an Orama-only FreshnessTimeout and leaves the forced apply started', async () => {
+  it('keeps boot availability for an Orama-only projection lag and leaves the forced apply running', async () => {
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const driver = driverThatTimesOut([ORAMA_BASE_CONSUMER_ID]);
+    const driver = driverForRepair([ORAMA_BASE_CONSUMER_ID]);
 
     const result = await repairProjectionArtifactLagOnBoot(
       kbWithDescriptor(descriptorFor([ORAMA_BASE_CONSUMER_ID])),
@@ -75,30 +69,31 @@ describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
       reason: 'projection-artifact-lag',
       consumers: [ORAMA_BASE_CONSUMER_ID],
     });
-    expect(driver.waitFreshUntil).toHaveBeenCalledWith(
-      'corpus',
-      { snapshot: SNAPSHOT, atLeastGeneration: 11 },
-      ORAMA_BASE_CONSUMER_ID,
-      25,
-    );
+    expect(driver.waitFreshUntil).not.toHaveBeenCalled();
   });
 
-  it('does not swallow non-Orama FreshnessTimeout failures', async () => {
+  it('does not wait for non-Orama projection repair during boot', async () => {
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
-    const driver = driverThatTimesOut(['vector-base']);
+    const driver = driverForRepair(['vector-base']);
 
     await expect(
       repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(['vector-base'])), driver, 25),
-    ).rejects.toBeInstanceOf(FreshnessTimeout);
+    ).resolves.toEqual({ allowStaleFts: false });
+    expect(driver.forceCorpusApply).toHaveBeenCalledWith(SNAPSHOT, {
+      reason: 'projection-artifact-lag',
+      consumers: ['vector-base'],
+    });
+    expect(driver.waitFreshUntil).not.toHaveBeenCalled();
   });
 
-  it('does not swallow mixed Orama and non-Orama FreshnessTimeout failures', async () => {
+  it('does not wait for mixed projection repair during boot', async () => {
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const targets = [ORAMA_BASE_CONSUMER_ID, 'vector-base'];
-    const driver = driverThatTimesOut(targets);
+    const driver = driverForRepair(targets);
 
     await expect(
       repairProjectionArtifactLagOnBoot(kbWithDescriptor(descriptorFor(targets)), driver, 25),
-    ).rejects.toBeInstanceOf(FreshnessTimeout);
+    ).resolves.toEqual({ allowStaleFts: false });
+    expect(driver.waitFreshUntil).not.toHaveBeenCalled();
   });
 });

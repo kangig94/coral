@@ -16,6 +16,8 @@ import {
 import { createNeedleStore, isNeedleAddonCompatible, type NeedleStore } from './store.js';
 
 type NeedleArtifactFiles = Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync'>;
+type NeedleArtifactRuntime = Pick<KbEngineRuntime, 'runtimeDir'> & Partial<Pick<KbEngineRuntime, 'time'>>;
+const NEEDLE_NATIVE_VALIDATION_TIMEOUT_MS = 30_000;
 
 export type NeedleSnapshotManifest = {
   readonly snapshot: EngineArtifactProjectedSnapshot;
@@ -48,14 +50,10 @@ export function isNeedleSnapshotManifest(value: unknown): value is NeedleSnapsho
 }
 
 export class NeedleArtifactPort implements EngineArtifactPort {
-  private readonly runtime: Pick<KbEngineRuntime, 'runtimeDir'>;
+  private readonly runtime: NeedleArtifactRuntime;
   private readonly files: NeedleArtifactFiles;
   private readonly options: NeedleArtifactPortOptions;
-  constructor(
-    runtime: Pick<KbEngineRuntime, 'runtimeDir'>,
-    files: NeedleArtifactFiles,
-    options: NeedleArtifactPortOptions,
-  ) {
+  constructor(runtime: NeedleArtifactRuntime, files: NeedleArtifactFiles, options: NeedleArtifactPortOptions) {
     this.runtime = runtime;
     this.files = files;
     this.options = options;
@@ -164,6 +162,56 @@ export class NeedleArtifactPort implements EngineArtifactPort {
     | { readonly status: 'present'; readonly specId: string | null }
     | { readonly status: 'corrupt'; readonly diagnostic: string }
   > {
+    const operation = this.readNativeStateUnbounded(storePath);
+    const time = this.runtime.time;
+    if (!time) {
+      return operation;
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const timeout = time.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve({
+          status: 'corrupt',
+          diagnostic: `projection native store validation timed out after ${NEEDLE_NATIVE_VALIDATION_TIMEOUT_MS}ms`,
+        });
+      }, NEEDLE_NATIVE_VALIDATION_TIMEOUT_MS);
+      timeout.unref?.();
+
+      operation.then(
+        (nativeState) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          time.clearTimeout(timeout);
+          resolve(nativeState);
+        },
+        (error: unknown) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          time.clearTimeout(timeout);
+          resolve({
+            status: 'corrupt',
+            diagnostic: `projection native store is unreadable: ${errorMessage(error)}`,
+          });
+        },
+      );
+    });
+  }
+
+  private async readNativeStateUnbounded(
+    storePath: string,
+  ): Promise<
+    | { readonly status: 'present'; readonly specId: string | null }
+    | { readonly status: 'corrupt'; readonly diagnostic: string }
+  > {
     let store: NeedleStore | null = null;
     try {
       store =
@@ -191,7 +239,7 @@ export class NeedleArtifactPort implements EngineArtifactPort {
 }
 
 export function createNeedleArtifactPort(
-  runtime: Pick<KbEngineRuntime, 'runtimeDir'>,
+  runtime: NeedleArtifactRuntime,
   files: NeedleArtifactFiles,
   options: NeedleArtifactPortOptions,
 ): NeedleArtifactPort {

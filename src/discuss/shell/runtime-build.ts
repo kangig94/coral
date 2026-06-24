@@ -33,6 +33,7 @@ export const PURPOSE_SPEECH: DiscussAgentJobPurpose = 'speech';
 export const PURPOSE_EPOCH_EVALUATION: DiscussAgentJobPurpose = 'epoch_evaluation';
 export const PURPOSE_FOLLOW_UP: DiscussAgentJobPurpose = 'follow_up';
 export const PURPOSE_SYNTHESIS: DiscussAgentJobPurpose = 'synthesis';
+const DISCUSS_LAUNCH_TIMEOUT_MS = 30_000;
 
 export type AttemptSuccess = {
   ok: true;
@@ -90,6 +91,39 @@ type FacilitatorRun = {
 
 function isRetryableAttemptOutcome(outcome: DiscussAgentJobOutcome | undefined): boolean {
   return outcome !== undefined && RETRYABLE_ATTEMPT_OUTCOMES.has(outcome);
+}
+
+function withDiscussLaunchTimeout<T>(ctx: DiscussContext, launch: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timeout = ctx.runtime.time.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error(`${label} timed out after ${DISCUSS_LAUNCH_TIMEOUT_MS}ms before returning a job id`));
+    }, DISCUSS_LAUNCH_TIMEOUT_MS);
+    timeout.unref?.();
+
+    launch.then(
+      (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        ctx.runtime.time.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        ctx.runtime.time.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }
 
 export function isAttemptSuccess(result: AttemptResult): result is AttemptSuccess {
@@ -341,34 +375,36 @@ export async function executeAgentAttempt(
   const executionSessionId = activeRun.executionSessionId;
   const launch = await (async () => {
     try {
-      return executionSessionId === undefined
-        ? await ctx.service.start(
-            provider,
-            {
-              prompt,
-              model,
-              pool: 'discuss',
-              cwd,
-              bypassPermissions: true,
-              instruction: {
-                channel: 'system',
-                content: instruction,
+      const pendingLaunch =
+        executionSessionId === undefined
+          ? ctx.service.start(
+              provider,
+              {
+                prompt,
+                model,
+                pool: 'discuss',
+                cwd,
+                bypassPermissions: true,
+                instruction: {
+                  channel: 'system',
+                  content: instruction,
+                },
               },
-            },
-            invocationCtx,
-          )
-        : await ctx.service.resume(
-            provider,
-            {
-              sessionId: executionSessionId,
-              prompt: `${instruction}\n\n---\n\n${prompt}`,
-              model,
-              pool: 'discuss',
-              cwd,
-              bypassPermissions: true,
-            },
-            invocationCtx,
-          );
+              invocationCtx,
+            )
+          : ctx.service.resume(
+              provider,
+              {
+                sessionId: executionSessionId,
+                prompt: `${instruction}\n\n---\n\n${prompt}`,
+                model,
+                pool: 'discuss',
+                cwd,
+                bypassPermissions: true,
+              },
+              invocationCtx,
+            );
+      return await withDiscussLaunchTimeout(ctx, pendingLaunch, `${provider} discuss launch`);
     } catch (error: unknown) {
       return {
         status: 'rejected' as const,

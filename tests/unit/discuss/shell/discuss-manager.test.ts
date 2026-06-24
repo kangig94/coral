@@ -187,6 +187,41 @@ describe('Discuss executor and operations', () => {
     harness.cleanup();
   });
 
+  it('fails provider launch when start never returns a job id', async () => {
+    const start = vi.fn(
+      () =>
+        new Promise<never>(() => {
+          // Deliberately unresolved to exercise the discuss launch timeout.
+        }),
+    );
+    const harness = createDiscussHarness(createExecutionServiceStub({ start }));
+    await persistSession(harness, { sessionId: 'discuss-launch-timeout', recover: true });
+
+    const turn = runPlainTurn(harness.context, {
+      agentName: 'alpha',
+      sessionId: 'discuss-launch-timeout',
+      provider: 'codex',
+      model: 'gpt-5',
+      prompt: 'Bid now',
+      instruction: 'System turn contract',
+      cwd: '/repo',
+      invocationCtx: harness.ctx,
+      purpose: PURPOSE_BID,
+    }).catch((error: unknown) => error);
+
+    await advanceDiscussRuntime(harness, 30_000);
+    const error = await turn;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('codex discuss launch timed out after 30000ms');
+    const agentRun = harness.store.load('discuss-launch-timeout')?.runtime.agentRuns.alpha;
+    expect(agentRun?.currentJobId).toBeUndefined();
+    expect(agentRun?.currentAttempt).toBeUndefined();
+    expect(agentRun?.lastAttemptOutcome).toBeUndefined();
+
+    harness.cleanup();
+  });
+
   it('resumes existing runs with the persisted execution session id', async () => {
     const resume = vi.fn().mockResolvedValue({
       status: 'running',
