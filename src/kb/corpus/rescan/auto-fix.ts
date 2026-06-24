@@ -21,7 +21,7 @@ import {
 } from '../../entry-types.js';
 import { stripMdExt } from '../../paths.js';
 import type { GitSyncController } from '../../curate/git-sync.js';
-import { deleteCurateRetryEntry, upsertCurateRetryEntry } from '../../curate/retry.js';
+import { deleteCurateRetryEntry, readCurateRetryQueue, upsertCurateRetryEntry } from '../../curate/retry.js';
 import { writeFileAtomic } from '../file-atomic.js';
 import { commitIndexUpdate, recordContentAndMetadataMutation, recordMetadataMutation } from '../index-mutations.js';
 import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
@@ -50,7 +50,7 @@ const ENTRYSEQ_LEADING_ZERO_PATTERN = /(^|\r?\n)(\s*entrySeq:\s*)(0[0-9]+)(\s*(?
 const LENIENT_FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)(?:\r?\n---(?:\r?\n|$)|$)/;
 const LENIENT_ENTRYSEQ_PATTERN = /(?:^|\r?\n)\s*entrySeq:\s*(?:['"])?(\d+)(?:['"])?\s*(?:#.*)?(?=\r?\n|$)/;
 
-type RepairAction = 'fixed' | 'enqueued' | 'skipped';
+type RepairAction = 'fixed' | 'enqueued' | 'already-queued' | 'skipped';
 
 export interface RepairResult {
   locus: DetectedIncident['locus'];
@@ -129,6 +129,10 @@ export async function applyDetectedIncidentFixesLocked(
   incidents: readonly DetectedIncident[],
 ): Promise<RepairResult[]> {
   const results: RepairResult[] = [];
+  // Snapshot the existing retry queue once so a rebuild can tell a freshly-recorded
+  // incident apart from an unchanged one already queued — the latter is re-detected
+  // on every rescan and must not re-log as 'enqueued'.
+  const existingByEntryId = new Map(readCurateRetryQueue(curateDb(kb)).map((row) => [String(row.entryId), row] as const));
 
   for (const incident of incidents) {
     let result: RepairResult;
@@ -141,6 +145,7 @@ export async function applyDetectedIncidentFixesLocked(
         continue;
       }
 
+      const existing = existingByEntryId.get(incident.entryId);
       const classification = resolveRepairClassification(incident);
       if (classification === 'auto-fixable') {
         const outcome = applyAutoFixLocked(kb, mutation, incident);
@@ -148,15 +153,13 @@ export async function applyDetectedIncidentFixesLocked(
           gitSync.scheduleDeferredCommit();
           result = createRepairResult(incident, 'fixed', nowIsoString(kb.time));
         } else if (outcome.kind === 'manual') {
-          const enqueued = enqueueManualRepairLocked(kb, incident);
-          result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
+          result = createRepairResult(incident, enqueueManualRepairLocked(kb, incident, existing), nowIsoString(kb.time));
         } else {
           result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
         }
       } else {
         // 'needs-manual' — the only other variant; registry is exhaustive.
-        const enqueued = enqueueManualRepairLocked(kb, incident);
-        result = createRepairResult(incident, enqueued ? 'enqueued' : 'skipped', nowIsoString(kb.time));
+        result = createRepairResult(incident, enqueueManualRepairLocked(kb, incident, existing), nowIsoString(kb.time));
       }
     } catch (error: unknown) {
       backendLog.warn(
@@ -189,6 +192,13 @@ function createRepairResult(incident: DetectedIncident, action: RepairAction, ti
 }
 
 function logRepairResult(result: RepairResult): void {
+  // An unchanged incident already in the queue is re-detected on every rescan;
+  // re-logging it each time is pure noise (the persisted queue still holds it,
+  // and `kb diagnose` surfaces it). Stay silent until it is newly (re)recorded.
+  if (result.action === 'already-queued') {
+    return;
+  }
+
   const message = JSON.stringify(result);
   if (result.action === 'skipped') {
     backendLog.warn(message);
@@ -432,10 +442,14 @@ function captureRepairTargetManifestDeltas(target: MarkdownRepairTarget, content
   }
 }
 
-function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): boolean {
+function enqueueManualRepairLocked(
+  kb: KbRuntime,
+  incident: DetectedIncident,
+  existing: { observedContentHash?: string; canonicalIncident?: string } | undefined,
+): RepairAction {
   const entryId = parseKbEntryId(incident.entryId);
   if (entryId === null) {
-    return false;
+    return 'skipped';
   }
 
   const target = resolveMarkdownRepairTarget(kb, incident.entryId);
@@ -443,6 +457,17 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
   // observedContentHash lets the rescan drift gate skip re-detection until the file content changes;
   // typed-incident enqueues record it so a re-running rebuild does not re-fire the same incident.
   const observedContentHash = content === null ? undefined : createHash('sha256').update(content, 'utf8').digest('hex');
+
+  // Same incident already queued over identical content: nothing changed, so leave
+  // the row untouched and report it as already-queued instead of re-enqueuing.
+  if (
+    existing !== undefined &&
+    observedContentHash !== undefined &&
+    existing.observedContentHash === observedContentHash &&
+    existing.canonicalIncident === incident.canonical
+  ) {
+    return 'already-queued';
+  }
 
   const now = nowIsoString(kb.time);
   upsertCurateRetryEntry(curateDb(kb), {
@@ -458,7 +483,7 @@ function enqueueManualRepairLocked(kb: KbRuntime, incident: DetectedIncident): b
     retryNotBefore: now,
     retryCount: 0,
   });
-  return true;
+  return 'enqueued';
 }
 
 function resolveMarkdownRepairTarget(kb: KbRuntime, entryId: string): MarkdownRepairTarget | null {

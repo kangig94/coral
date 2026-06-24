@@ -119,7 +119,7 @@ export const bidRoundClosedOutcomeSchema = z.union([
   z
     .object({
       winner: z.string(),
-      speaker_type: z.enum(['quota', 'fallback', 'cold_start']),
+      speaker_type: z.enum(['quota', 'fallback', 'cold_start', 'forced']),
     })
     .strict(),
   z

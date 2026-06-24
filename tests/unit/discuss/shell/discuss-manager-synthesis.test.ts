@@ -123,6 +123,52 @@ describe('Discuss synthesis', () => {
     expect(discarded).toEqual(expect.arrayContaining(['alpha-session', 'beta-session']));
   });
 
+  it('retains bound agent session logs when completed-discussion export fails', async () => {
+    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
+    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-r', session: 'alpha-session' });
+    const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'Final synthesis.', continuity: null });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
+    const discardSessionArtifacts = vi.fn().mockResolvedValue(undefined);
+    harness.context.discardSessionArtifacts = discardSessionArtifacts;
+    vi.spyOn(harness.runtime.storage, 'writeAtomicSync').mockReturnValue(false);
+    await persistSession(harness, {
+      sessionId: 'discuss-export-failure',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'agent.run.bound',
+          '2026-03-10T00:00:58.000Z',
+          { agent: 'alpha', executionSessionId: 'alpha-session' },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
+      ],
+    });
+
+    await handleSynthesis(harness.context, 'discuss-export-failure', harness.ctx);
+
+    const snapshot = harness.store.load('discuss-export-failure');
+    expect(snapshot?.runtime.controlPhase).toBe('idle');
+    expect(snapshot?.state.transcript.at(-1)).toMatchObject({
+      type: 'session_event',
+      event: 'synthesis',
+      detail: 'Final synthesis.',
+    });
+    expect(discardSessionArtifacts).not.toHaveBeenCalled();
+    expect(getSession(harness.context, 'discuss-export-failure')).toBeUndefined();
+  });
+
   it('after recovery attach, resumeLoop resumes synthesis for ended sessions that have not been synthesized yet', async () => {
     const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({

@@ -33,9 +33,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
   throw new Error('waitFor timed out');
 }
 
-// Match the orama projection's id so the bundled fallback's registration matches.
-const MOCK_BASE_CONSUMER_ID = 'orama-base';
-
 const tempRoots: string[] = [];
 const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
   snapshotId: '',
@@ -145,7 +142,7 @@ afterEach(() => {
 });
 
 describe('coordinator startup ordering', () => {
-  it('waitFreshUntil resolves before jobsReconcile.runStartup is called', async () => {
+  it('journal waitFreshUntil resolves before jobsReconcile.runStartup is called', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -193,36 +190,17 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      // Era III (KB) is fire-and-forget; wait for the final corpus
-      // `waitFreshUntil` call from `runBootSequence` to land before
-      // assertions.
-      await waitFor(() => waitFreshUntil.mock.calls.length >= 6);
-      expect(waitFreshUntil).toHaveBeenCalledTimes(6);
-      // Under the 3-era boot, journal `waitFreshUntil` (Era II) runs BEFORE
-      // KB Era III's corpus calls. Reorder expectations accordingly.
+      // Era III (KB) schedules corpus replay without a boot freshness wait, so
+      // startup waits only for the Journal consumers in Era II.
+      await waitFor(() => waitFreshUntil.mock.calls.length >= 4);
+      expect(waitFreshUntil).toHaveBeenCalledTimes(4);
       expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'journal', expect.any(Number), 'jobs', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'sessions', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'discuss', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        5,
-        'corpus',
-        { snapshot: expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), atLeastGeneration: expect.any(Number) },
-        MOCK_BASE_CONSUMER_ID,
-        expect.any(Number),
-      );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        6,
-        'corpus',
-        expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
-        MOCK_BASE_CONSUMER_ID,
-        expect.any(Number),
-      );
       expect(runStartup).toHaveBeenCalledTimes(1);
       // Three-era boot: journal `waitFreshUntil` (Era II) resolves BEFORE
-      // `jobsReconcile.runStartup`. Corpus `waitFreshUntil` (Era III) runs
-      // AFTER it. So the FIRST few `waitFreshUntil:resolved` precede
-      // jobsReconcile; the last (Era III corpus) follows it.
+      // `jobsReconcile.runStartup`; KB corpus replay no longer waits in boot.
       const firstWaitResolved = order.indexOf('waitFreshUntil:resolved');
       expect(firstWaitResolved).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('jobsReconcile.runStartup')).toBeGreaterThan(firstWaitResolved);
@@ -318,8 +296,8 @@ describe('coordinator startup ordering', () => {
     try {
       await coordinator.start();
       order.push("setLifecycle('running')");
-      // Wait for Era III KB boot to finish before asserting full ordering.
-      await waitFor(() => waitFreshUntil.mock.calls.length >= 6);
+      // Wait for Era II Journal recovery waits before asserting full ordering.
+      await waitFor(() => waitFreshUntil.mock.calls.length >= 4);
 
       const waitFreshOrder = [
         order.indexOf('waitFreshUntil:jobs'),
@@ -329,27 +307,11 @@ describe('coordinator startup ordering', () => {
       ];
 
       expect(coordinator.getLifecycle()).toBe('running');
-      expect(waitFreshUntil).toHaveBeenCalledTimes(6);
-      // Three-era boot: journal cursors (Era II) precede KB corpus
-      // freshness waits (Era III).
+      expect(waitFreshUntil).toHaveBeenCalledTimes(4);
       expect(waitFreshUntil).toHaveBeenNthCalledWith(1, 'journal', expect.any(Number), 'jobs', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(2, 'journal', expect.any(Number), 'sessions', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(3, 'journal', expect.any(Number), 'discuss', expect.any(Number));
       expect(waitFreshUntil).toHaveBeenNthCalledWith(4, 'journal', expect.any(Number), 'workflow', expect.any(Number));
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        5,
-        'corpus',
-        { snapshot: expect.objectContaining(EMPTY_CORPUS_SNAPSHOT), atLeastGeneration: expect.any(Number) },
-        MOCK_BASE_CONSUMER_ID,
-        expect.any(Number),
-      );
-      expect(waitFreshUntil).toHaveBeenNthCalledWith(
-        6,
-        'corpus',
-        expect.objectContaining(EMPTY_CORPUS_SNAPSHOT),
-        MOCK_BASE_CONSUMER_ID,
-        expect.any(Number),
-      );
       // Era I (listen + register cursors) precedes Era II (waitFresh):
       expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));

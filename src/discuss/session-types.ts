@@ -1,10 +1,10 @@
 type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
 
-export const speakerTypes = ['quota', 'fallback', 'cold_start'] as const;
+export const speakerTypes = ['quota', 'fallback', 'cold_start', 'forced'] as const;
 export type SpeakerType = (typeof speakerTypes)[number];
 
-export const transcriptResolveTypes = ['normal', 'fallback', 'cold_start', 'no_winner'] as const;
+export const transcriptResolveTypes = ['normal', 'fallback', 'cold_start', 'forced', 'no_winner'] as const;
 export type TranscriptResolveType = (typeof transcriptResolveTypes)[number];
 
 export const participationTypes = ['required', 'observer'] as const;

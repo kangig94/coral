@@ -194,6 +194,10 @@ describe('discuss reducer', () => {
       state: {
         ...snapshot.state,
         cold_start: false,
+        agents: {
+          alpha: { ...snapshot.state.agents.alpha, quota_remaining: 1 },
+          beta: { ...snapshot.state.agents.beta, quota_remaining: 1 },
+        },
       },
     };
 
@@ -241,6 +245,88 @@ describe('discuss reducer', () => {
     expect(ended.state.end_reason_content).toBe('All participants bid below the threshold. Ending discussion.');
     expect(ended.runtime.controlPhase).toBe('synthesize');
     expect(ended.lastAppliedSeq).toBe(snapshot.lastAppliedSeq + 2);
+  });
+
+  it('replays a forced low-bid winner as a speaking turn and decrements quota after speech', () => {
+    const input = makeInput([
+      { name: 'alpha', persona: 'Alpha', participation: 'required' },
+      { name: 'beta', persona: 'Beta', participation: 'required' },
+    ]);
+    let snapshot = createSnapshot(input);
+    snapshot = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        cold_start: false,
+      },
+    };
+
+    snapshot = replay(
+      snapshot,
+      unwrap(
+        decideBid(
+          snapshot.state,
+          'alpha',
+          10,
+          'Low urgency.',
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+          nextSeq(snapshot),
+          NOW,
+        ),
+      ),
+    );
+    snapshot = replay(
+      snapshot,
+      unwrap(
+        decideBid(
+          snapshot.state,
+          'beta',
+          20,
+          'Below threshold, but I can keep the discussion moving.',
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+          nextSeq(snapshot),
+          NOW,
+        ),
+      ),
+    );
+
+    const closed = replay(
+      snapshot,
+      unwrap(
+        decideBidRoundClose(
+          snapshot.state,
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+          nextSeq(snapshot),
+          NOW,
+        ),
+      ),
+    );
+
+    expect(closed.state.status).toBe('speaking');
+    expect(closed.state.current_speaker).toBe('beta');
+    expect(closed.state.speaker_type).toBe('forced');
+    expect(closed.state.transcript.at(-1)).toMatchObject({
+      type: 'bids',
+      winner: 'beta',
+      resolve_type: 'forced',
+    });
+
+    const afterSpeech = replay(
+      closed,
+      unwrap(
+        decideSpeech(
+          closed.state,
+          'beta',
+          'I will keep the discussion moving despite low urgency.',
+          { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
+          nextSeq(closed),
+          NOW,
+        ),
+      ),
+    );
+
+    expect(afterSpeech.state.status).toBe('bidding');
+    expect(afterSpeech.state.agents.beta.quota_remaining).toBe(2);
   });
 
   it('replays a forced end reason as end content when explicit content is omitted', () => {

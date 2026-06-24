@@ -197,10 +197,52 @@ export function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
   };
 }
 
+export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
+
+function runPreflightWithTimeout(provider: ProviderSpec, runtime: PreflightRuntime): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (!provider.preflight) {
+      resolve();
+      return;
+    }
+
+    let settled = false;
+    const timeout = runtime.time.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(new Error(`${provider.name} preflight timed out after ${PROVIDER_PREFLIGHT_TIMEOUT_MS}ms`));
+    }, PROVIDER_PREFLIGHT_TIMEOUT_MS);
+    timeout.unref?.();
+
+    Promise.resolve()
+      .then(() => provider.preflight?.(runtime))
+      .then(
+        () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          runtime.time.clearTimeout(timeout);
+          resolve();
+        },
+        (error: unknown) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          runtime.time.clearTimeout(timeout);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        },
+      );
+  });
+}
+
 export async function runProviderPreflight(provider: ProviderSpec, runtime: PreflightRuntime): Promise<string | null> {
   if (!provider.preflight) return null;
   try {
-    await provider.preflight(runtime);
+    await runPreflightWithTimeout(provider, runtime);
     return null;
   } catch (error: unknown) {
     return errorMessage(error);

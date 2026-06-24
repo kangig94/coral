@@ -249,8 +249,8 @@ describe('state-machine deciders', () => {
         ...snapshot.state,
         cold_start: false,
         agents: {
-          alpha: { ...snapshot.state.agents.alpha, participation: 'required' },
-          beta: { ...snapshot.state.agents.beta, participation: 'required' },
+          alpha: { ...snapshot.state.agents.alpha, participation: 'required', quota_remaining: 1 },
+          beta: { ...snapshot.state.agents.beta, participation: 'required', quota_remaining: 1 },
         },
         pending_bidders: ['alpha', 'beta'],
       },
@@ -300,6 +300,63 @@ describe('state-machine deciders', () => {
           event.ts === NOW,
       ),
     ).toBe(true);
+  });
+
+  it('forces the highest low bidder when enough quota remains', () => {
+    let snapshot = createBiddingSnapshot();
+    snapshot = {
+      ...snapshot,
+      state: {
+        ...snapshot.state,
+        cold_start: false,
+        agents: {
+          alpha: { ...snapshot.state.agents.alpha, participation: 'required', quota_remaining: 3 },
+          beta: { ...snapshot.state.agents.beta, participation: 'required', quota_remaining: 3 },
+        },
+        pending_bidders: ['alpha', 'beta'],
+      },
+    };
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'alpha',
+        10,
+        'Low urgency.',
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
+    snapshot = appendDecision(
+      snapshot,
+      decideBid(
+        snapshot.state,
+        'beta',
+        20,
+        'Still below threshold, but more urgent.',
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
+
+    const events = unwrap(
+      decideBidRoundClose(
+        snapshot.state,
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: snapshot.state.topic },
+        nextSeq(snapshot),
+        NOW,
+      ),
+    );
+
+    expect(events.map((event) => event.kind)).toEqual(['bid.round.closed']);
+    expect(events[0]).toMatchObject({
+      payload: {
+        outcome: { winner: 'beta', speaker_type: 'forced' },
+        stateMutations: { cold_start: false },
+      },
+    });
   });
 
   it('returns an empty batch when decideEnd is called on an already-ended state', () => {

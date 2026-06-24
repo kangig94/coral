@@ -14,6 +14,7 @@ export const SPEECH_TIMEOUT_MS = 5 * 60 * 1000;
 export const EPOCH_EVAL_TIMEOUT_MS = 5 * 60 * 1000;
 export const CONVERGENCE_THRESHOLD = 7;
 export const MAX_BID_ATTEMPTS = 3;
+export const MAX_SPEECH_ATTEMPTS = 2;
 export const MAX_FOLLOW_UP_ATTEMPTS = 3;
 const MUST_ANSWER_SEPARATOR = '\u0000';
 
@@ -122,6 +123,17 @@ export function buildFollowUpRetryPrompt(basePrompt: string, rawResponse: string
     'Your previous response could not be accepted.',
     `Failure: ${failure}`,
     'Return only the answer text. Do not use markdown or code fences.',
+    'Previous response:',
+    rawResponse,
+  ].join('\n\n');
+}
+
+export function buildSpeechRetryPrompt(basePrompt: string, rawResponse: string, failure: string): string {
+  return [
+    basePrompt,
+    'Your previous response could not be accepted.',
+    `Failure: ${failure}`,
+    'Return only the speech text. Do not use markdown or code fences.',
     'Previous response:',
     rawResponse,
   ].join('\n\n');

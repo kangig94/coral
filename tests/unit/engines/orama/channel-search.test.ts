@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 
 import { fuzzyDocumentScore, OramaSearchPort } from '#src/engines/orama/backend.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
-import { surfaceSearchTerms } from '#src/engines/orama/search-channels.js';
+import {
+  ORAMA_BODY_NGRAM_TERM_LIMIT,
+  ORAMA_BODY_SURFACE_TERM_LIMIT,
+  surfaceSearchTerms,
+} from '#src/engines/orama/search-channels.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { KbProjectionArtifactFilePort } from '#src/kb/contract.js';
 
@@ -96,5 +100,25 @@ describe('Orama channel search', () => {
     const result = await port.search('retrievel 정책', 5, 'all');
 
     expect(result.hits).toEqual([]);
+  });
+
+  it('caps body surface and ngram channel fields while leaving morph body intact', () => {
+    const longHangulBody = Array.from(
+      { length: ORAMA_BODY_SURFACE_TERM_LIMIT + 200 },
+      (_, index) => `검색${index}`,
+    ).join(' ');
+    const singleTokenBody = Array.from({ length: 5_000 }, (_, index) =>
+      String.fromCodePoint(0xac00 + (index % 11_172)),
+    ).join('');
+    const doc = note('large-korean-body', '대형 한국어 본문', longHangulBody);
+    const singleTokenDoc = note('single-token-korean-body', '단일 한국어 본문', singleTokenBody);
+
+    expect(doc.body).toBe(longHangulBody);
+    expect(doc.bodySurface.split(/\s+/u).filter(Boolean)).toHaveLength(ORAMA_BODY_SURFACE_TERM_LIMIT);
+    expect(doc.bodyNgram.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(ORAMA_BODY_NGRAM_TERM_LIMIT);
+    expect(singleTokenDoc.body).toBe(singleTokenBody);
+    expect(singleTokenDoc.bodyNgram.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(
+      ORAMA_BODY_NGRAM_TERM_LIMIT,
+    );
   });
 });
