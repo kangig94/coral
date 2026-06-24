@@ -120,7 +120,7 @@ function withDiscussLaunchTimeout<T>(ctx: DiscussContext, launch: Promise<T>, la
         }
         settled = true;
         ctx.runtime.time.clearTimeout(timeout);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       },
     );
   });
