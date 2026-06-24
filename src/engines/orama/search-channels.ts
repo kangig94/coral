@@ -167,7 +167,9 @@ export function surfaceSearchTerms(raw: string): string[] {
       continue;
     }
     terms.push(compact);
-    terms.push(...splitCompoundTerm(match[0]));
+    for (const part of splitCompoundTerm(match[0])) {
+      terms.push(part);
+    }
   }
   return uniqueTerms(terms);
 }
@@ -192,15 +194,22 @@ function characterNgrams(raw: string, min: number, max: number): string[] {
 
 export function ngramSearchTerms(raw: string): string[] {
   const terms: string[] = [];
+  // Append n-grams without spread: `terms.push(...characterNgrams(...))` over a
+  // long body yields an array large enough to overflow V8's call argument limit
+  // (~125k), throwing "Maximum call stack size exceeded" during KB index build.
   for (const term of surfaceSearchTerms(raw)) {
     if (HANGUL_CHAR_PATTERN.test(term)) {
-      terms.push(...characterNgrams(hangulCompact(term), 2, 3));
+      for (const ngram of characterNgrams(hangulCompact(term), 2, 3)) {
+        terms.push(ngram);
+      }
     }
   }
 
   const compactHangul = hangulCompact(raw);
   if (compactHangul.length >= 2) {
-    terms.push(...characterNgrams(compactHangul, 2, 3));
+    for (const ngram of characterNgrams(compactHangul, 2, 3)) {
+      terms.push(ngram);
+    }
   }
 
   return uniqueTerms(terms);
