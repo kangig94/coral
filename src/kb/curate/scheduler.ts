@@ -7,10 +7,17 @@ import { buildEntityConsolidationDelta, buildMetadataTargets } from './classific
 import { runCommunitySubphase } from './community/index.js';
 import { createGitSyncController } from './git-sync.js';
 import { commitMetadataTargets } from './metadata-commit.js';
-import { clearCurateRetryState, clearCurateRetryStateLocked, recordCurateFailure } from './operations.js';
+import { clearCurateClaimRetryState, clearCurateClaimRetryStateLocked, recordCurateFailure } from './operations.js';
 import { runPrincipleDiscovery } from './principles.js';
 import { claimCurateRun, hasPendingEntriesBeyondCursor, runClassificationBatches } from './runner.js';
-import { drainTouchJournal, truncateTouchJournal } from './touch-journal.js';
+import {
+  drainTouchJournalBatch,
+  markTouchJournalWikiApplied,
+  resolveTouchJournalWorkState,
+  truncateTouchJournal,
+  type TouchJournalWorkItem,
+  type TouchJournalWorkState,
+} from './touch-journal.js';
 import {
   INVARIANT,
   isClaimStale,
@@ -41,14 +48,35 @@ const CURATE_SCHEDULE_DEBOUNCE_MS = 60 * 1000;
 const COMMUNITY_BATCH_BACKOFF_TICK_CAP = 64;
 
 export async function runTouchDrainSubphase(kb: KbRuntime): Promise<boolean> {
-  const affectedWikis = drainTouchJournal(kb.runtimeDir, kb.readIndexOrEmpty(), { storage: kb.storagePort });
+  const batch = drainTouchJournalBatch(kb.runtimeDir, kb.readIndexOrEmpty(), { storage: kb.storagePort });
 
-  for (const [slug, targets] of affectedWikis) {
-    await bubbleUpWikiKnowledge(kb, slug, targets);
+  for (const work of batch.pending) {
+    const state = resolveTouchJournalWorkState(kb.readIndexOrEmpty(), work);
+    if (state === 'applied' || state === 'obsolete') {
+      markTouchJournalWikiApplied(kb.runtimeDir, batch, work, { storage: kb.storagePort });
+      continue;
+    }
+    assertTouchJournalWorkPending(work, state);
+
+    await bubbleUpWikiKnowledge(kb, work.slug, work.targets);
+
+    const afterState = resolveTouchJournalWorkState(kb.readIndexOrEmpty(), work);
+    if (afterState !== 'applied' && afterState !== 'obsolete') {
+      throw new Error(`touch-journal: ${work.slug} did not reach expected Knowledge order after drain`);
+    }
+    markTouchJournalWikiApplied(kb.runtimeDir, batch, work, { storage: kb.storagePort });
   }
 
   truncateTouchJournal(kb.runtimeDir, { storage: kb.storagePort });
-  return affectedWikis.size > 0;
+  return batch.workItems.length > 0;
+}
+
+function assertTouchJournalWorkPending(work: TouchJournalWorkItem, state: TouchJournalWorkState): void {
+  if (state !== 'pending') {
+    throw new Error(
+      `touch-journal: ${work.slug} Knowledge order changed while a touch batch was pending; refusing to replay non-idempotent swaps`,
+    );
+  }
 }
 
 class CurateRunError extends Error {
@@ -260,7 +288,7 @@ export function createCurateScheduler({
           graphDelta: buildEntityConsolidationDelta(validatedAssignments),
         });
         gitSync.gitAutoCommit(`curate: classify ${claim.entries.length} entries (tags + principles)`);
-        await clearCurateRetryState(kb);
+        await clearCurateClaimRetryState(kb);
         lastCompletedThrough = claim.through;
       } catch (error: unknown) {
         throw new CurateRunError(claim.through, error);
@@ -276,7 +304,7 @@ export function createCurateScheduler({
         ) {
           return;
         }
-        clearCurateRetryStateLocked(kb, state);
+        clearCurateClaimRetryStateLocked(kb, state);
       });
       return null;
     }
@@ -350,7 +378,7 @@ export function createCurateScheduler({
       } catch (error: unknown) {
         if (stopped && runController.signal.aborted) {
           try {
-            await clearCurateRetryState(kb);
+            await clearCurateClaimRetryState(kb);
           } catch (stateError: unknown) {
             backendLog.error('kb_curate: failed to clear stop state', stateError);
           }

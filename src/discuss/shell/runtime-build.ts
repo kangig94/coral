@@ -1,5 +1,6 @@
 import {
   makeEvent,
+  type DiscussDomainEvent,
   type DiscussAgentJobOutcome,
   type DiscussAgentJobPurpose,
   type PersistedDiscussAgentRun,
@@ -9,6 +10,7 @@ import {
 import { nowIsoString } from '../../infra/time.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
@@ -195,35 +197,54 @@ function facilitatorRun(snapshot: PersistedDiscussSnapshot): FacilitatorRun | nu
   return null;
 }
 
+async function appendRequiredRuntimeEvents(
+  ctx: DiscussContext,
+  sessionId: string,
+  description: string,
+  buildEvents: (snapshot: PersistedDiscussSnapshot) => DiscussDomainEvent[],
+): Promise<void> {
+  const persisted = await appendRuntimeEvents(ctx, sessionId, buildEvents);
+  if (persisted === null) {
+    throw new Error(`Failed to persist ${description} for discuss session ${sessionId}.`);
+  }
+}
+
 export async function recordJobFinished(ctx: DiscussContext, params: RecordJobFinishedParams): Promise<void> {
   const { sessionId, agentName, purpose, jobId, attempt, outcome } = params;
 
-  await appendRuntimeEvents(ctx, sessionId, (current) => {
-    const run = current.runtime.agentRuns[agentName];
-    if (!run || run.currentJobPurpose !== purpose || run.currentAttempt !== attempt) {
-      return [];
-    }
-    if (run.currentJobId !== jobId) {
-      return [];
-    }
+  try {
+    const persisted = await appendRuntimeEvents(ctx, sessionId, (current) => {
+      const run = current.runtime.agentRuns[agentName];
+      if (!run || run.currentJobPurpose !== purpose || run.currentAttempt !== attempt) {
+        return [];
+      }
+      if (run.currentJobId !== jobId) {
+        return [];
+      }
 
-    return [
-      makeEvent(
-        current.sessionId,
-        ctx.projectRoot,
-        current.state.topic,
-        current.lastAppliedSeq + 1,
-        'agent.job.finished',
-        nowIsoString(ctx.runtime.time),
-        {
-          agent: agentName,
-          jobId,
-          outcome,
-          attempt,
-        },
-      ),
-    ];
-  });
+      return [
+        makeEvent(
+          current.sessionId,
+          ctx.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'agent.job.finished',
+          nowIsoString(ctx.runtime.time),
+          {
+            agent: agentName,
+            jobId,
+            outcome,
+            attempt,
+          },
+        ),
+      ];
+    });
+    if (persisted === null) {
+      backendLog.warn(`Discuss job finish persistence failed for ${sessionId}/${jobId}`);
+    }
+  } catch (error: unknown) {
+    backendLog.warn(`Discuss job finish persistence failed for ${sessionId}/${jobId}: ${errorMessage(error)}`);
+  }
 }
 
 export async function executeAgentAttempt(
@@ -318,35 +339,45 @@ export async function executeAgentAttempt(
   }
 
   const executionSessionId = activeRun.executionSessionId;
-  const launch =
-    executionSessionId === undefined
-      ? await ctx.service.start(
-          provider,
-          {
-            prompt,
-            model,
-            pool: 'discuss',
-            cwd,
-            bypassPermissions: true,
-            instruction: {
-              channel: 'system',
-              content: instruction,
+  const launch = await (async () => {
+    try {
+      return executionSessionId === undefined
+        ? await ctx.service.start(
+            provider,
+            {
+              prompt,
+              model,
+              pool: 'discuss',
+              cwd,
+              bypassPermissions: true,
+              instruction: {
+                channel: 'system',
+                content: instruction,
+              },
             },
-          },
-          invocationCtx,
-        )
-      : await ctx.service.resume(
-          provider,
-          {
-            sessionId: executionSessionId,
-            prompt: `${instruction}\n\n---\n\n${prompt}`,
-            model,
-            pool: 'discuss',
-            cwd,
-            bypassPermissions: true,
-          },
-          invocationCtx,
-        );
+            invocationCtx,
+          )
+        : await ctx.service.resume(
+            provider,
+            {
+              sessionId: executionSessionId,
+              prompt: `${instruction}\n\n---\n\n${prompt}`,
+              model,
+              pool: 'discuss',
+              cwd,
+              bypassPermissions: true,
+            },
+            invocationCtx,
+          );
+    } catch (error: unknown) {
+      return {
+        status: 'rejected' as const,
+        phase: 'preflight' as const,
+        code: 'launch_failed',
+        message: errorMessage(error),
+      };
+    }
+  })();
 
   if (launch.status === 'rejected') {
     return {
@@ -356,56 +387,65 @@ export async function executeAgentAttempt(
     };
   }
 
-  if (executionSessionId === undefined) {
-    await appendRuntimeEvents(ctx, sessionId, (current) => {
+  try {
+    if (executionSessionId === undefined) {
+      await appendRequiredRuntimeEvents(ctx, sessionId, 'agent run binding', (current) => {
+        const latestRun = current.runtime.agentRuns[agentName];
+        if (latestRun?.executionSessionId === launch.session) {
+          return [];
+        }
+        return [
+          makeEvent(
+            current.sessionId,
+            ctx.projectRoot,
+            current.state.topic,
+            current.lastAppliedSeq + 1,
+            'agent.run.bound',
+            nowIsoString(ctx.runtime.time),
+            {
+              agent: agentName,
+              executionSessionId: launch.session,
+            },
+          ),
+        ];
+      });
+    }
+
+    await appendRequiredRuntimeEvents(ctx, sessionId, 'agent job start', (current) => {
       const latestRun = current.runtime.agentRuns[agentName];
-      if (latestRun?.executionSessionId === launch.session) {
+      if (
+        latestRun?.currentJobId === launch.job &&
+        latestRun.currentJobPurpose === purpose &&
+        latestRun.currentAttempt === attempt
+      ) {
         return [];
       }
+
       return [
         makeEvent(
           current.sessionId,
           ctx.projectRoot,
           current.state.topic,
           current.lastAppliedSeq + 1,
-          'agent.run.bound',
+          'agent.job.started',
           nowIsoString(ctx.runtime.time),
           {
             agent: agentName,
-            executionSessionId: launch.session,
+            jobId: launch.job,
+            purpose,
+            attempt,
           },
         ),
       ];
     });
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      attempt,
+      consumedAttempt: true,
+      message: errorMessage(error),
+    };
   }
-
-  await appendRuntimeEvents(ctx, sessionId, (current) => {
-    const latestRun = current.runtime.agentRuns[agentName];
-    if (
-      latestRun?.currentJobId === launch.job &&
-      latestRun.currentJobPurpose === purpose &&
-      latestRun.currentAttempt === attempt
-    ) {
-      return [];
-    }
-
-    return [
-      makeEvent(
-        current.sessionId,
-        ctx.projectRoot,
-        current.state.topic,
-        current.lastAppliedSeq + 1,
-        'agent.job.started',
-        nowIsoString(ctx.runtime.time),
-        {
-          agent: agentName,
-          jobId: launch.job,
-          purpose,
-          attempt,
-        },
-      ),
-    ];
-  });
 
   try {
     const result = await ctx.service.waitStreamOnce(launch.job, timeoutMs);

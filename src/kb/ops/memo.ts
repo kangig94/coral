@@ -12,8 +12,8 @@ import type {
   KbMemoPurgeResult,
 } from '../entry-types.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { memoDir } from '../paths.js';
-import { compareLocale } from '../validation.js';
+import { memoDir, memoPathFromContext } from '../paths.js';
+import { assertNoteSlug, compareLocale } from '../validation.js';
 
 export type MemoStorage = Pick<
   StoragePort,
@@ -45,10 +45,10 @@ export function writeMemo(
   input: KbMemoInput,
   time: Pick<TimePort, 'now'>,
 ): { filename: string; path: string } {
-  const dir = memoDir(projectDataDir);
   const timestamp = generateTimestamp(time);
-  const filename = `${timestamp}-${input.topic}.md`;
-  const path = join(dir, filename);
+  const topic = assertNoteSlug(input.topic, 'memo topic');
+  const filename = `${timestamp}-${topic}.md`;
+  const path = memoPathFromContext(projectDataDir, filename);
 
   const frontmatter = serializeMemoFrontmatter({ source, owner: input.owner });
   const body = `${frontmatter}\n\n${input.content.trim()}\n`;

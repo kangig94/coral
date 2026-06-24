@@ -52,7 +52,7 @@ Codex-backed agent launches use the provider route, not a protocol-specific tran
 ```bash
 coral-cli codex architect -i "<prompt>" --work-dir "<path>" -d
 coral-cli codex critic -i "<prompt>" --work-dir "<path>" -d
-coral-cli wait --jobs "<job-id list>" --embed
+coral-cli wait jobs <job-id...> --embed
 ```
 
 Behavior:
@@ -93,7 +93,7 @@ Create `agents/<name>.md` and invoke it through the Codex provider surface:
 
 ```bash
 coral-cli codex <name> -i "<prompt>" --work-dir "<path>" -d
-coral-cli wait --jobs "<job>" --embed
+coral-cli wait jobs <job> --embed
 ```
 
 ### Prompt design guidance

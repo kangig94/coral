@@ -92,6 +92,45 @@ describe('Discuss context registry', () => {
     harnessOne.cleanup();
     harnessTwo.cleanup();
   });
+
+  it('treats ended sessions awaiting synthesis as running work', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'synthesis-window',
+      recover: false,
+      buildTail: (current) => [
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
+      ],
+    });
+    attachPersistedSession(harness, snapshot);
+
+    expect(hasRunningSessions(harness.registry)).toBe(true);
+
+    harness.cleanup();
+  });
+
+  it('does not let a watch subscriber exception break committed session events', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, { sessionId: 'subscriber-throws', recover: true });
+    const session = getSession(harness.context, 'subscriber-throws');
+    session?.watchSubscribers.add(() => {
+      throw new Error('subscriber failed');
+    });
+
+    await expect(abortDiscussSession(harness.context, 'subscriber-throws')).resolves.toBeUndefined();
+    expect(harness.store.load('subscriber-throws')?.state.status).toBe('ended');
+    expect(getSession(harness.context, 'subscriber-throws')).toBeUndefined();
+
+    harness.cleanup();
+  });
 });
 
 describe('Discuss executor and operations', () => {
@@ -242,7 +281,12 @@ describe('Discuss executor and operations', () => {
   });
 
   it('passes configured quota_per_epoch into session creation', async () => {
-    const harness = createDiscussHarness();
+    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const waitStreamOnce = vi.fn().mockResolvedValue({
+      content: '{"score": 61, "thought": "alpha"}',
+      continuity: null,
+    });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     const config = { quota_per_epoch: 5 } as Parameters<typeof startDiscussSession>[4] & {
       quota_per_epoch: number;
     };
@@ -253,7 +297,7 @@ describe('Discuss executor and operations', () => {
       'discuss-quota',
       DEFAULT_TOPIC,
       [
-        { name: 'alpha', persona: '# Alpha', participation: 'observer' },
+        { name: 'alpha', persona: '# Alpha', participation: 'required' },
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       config,

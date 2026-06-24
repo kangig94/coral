@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ExecResult, RuntimeExecOptions } from '#src/runtime/ports.js';
 import {
   createClaudeDetectorForTest,
@@ -445,5 +445,33 @@ describe('detectClaudeCli', () => {
       }),
     );
     expect(port.calls).toHaveLength(1);
+  });
+});
+
+describe('detectClaudeCli exported cache', () => {
+  it('does not reuse an unavailable result across different process/env ports', async () => {
+    vi.resetModules();
+    const { detectClaudeCli } = await import('#src/providers/cli-detection.js');
+    const missingPort = buildExecPort({
+      '--version': () => ({
+        stdout: '',
+        stderr: '',
+        status: null,
+        error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+      }),
+    });
+    const availablePort = buildExecPort({
+      '--version': () => ok('2.1.63 (Claude Code)\n'),
+      'auth status --json': () => ok('{"authenticated":true}\n'),
+    });
+    const missingEnv = { get: () => undefined };
+    const availableEnv = { get: () => undefined };
+
+    expect(await detectClaudeCli(missingPort, missingEnv)).toMatchObject({ available: false });
+    expect(await detectClaudeCli(availablePort, availableEnv)).toEqual({
+      available: true,
+      version: '2.1.63 (Claude Code)',
+      authState: 'authenticated',
+    });
   });
 });

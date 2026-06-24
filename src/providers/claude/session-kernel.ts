@@ -8,10 +8,7 @@ import type {
   ProviderTerminalEventBody,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
-import {
-  sessionProviderFailureDiagnosticSchema,
-  type SessionProviderFailureDiagnostic,
-} from '../../sessions/fault.js';
+import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../sessions/fault.js';
 import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -119,12 +116,14 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       emitClaudeArtifactHandleOnce(state, runtime, emit);
 
       if (runtime.signal.aborted) {
+        await closeBrokerSessionBeforeTurn(lease, state);
         emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
         return;
       }
 
       state.turnRequested = true;
       const startParams = mapTurnStartParams(state.prepared.prompt, state.brokerSessionKey, runtime.ids);
+      state.brokerTurnId = startParams.brokerTurnId;
       const startResult = await brokerRpc<Record<string, unknown>>(lease, 'turn/start', startParams);
       state.brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
@@ -133,6 +132,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 
       const outcome = await waitForClaudeOutcome(state, lease, runtime.signal);
       if (outcome.kind === 'aborted') {
+        await interruptBrokerTurnOnAbort(lease, state);
         state.brokerTurnId = undefined;
         checkpointBrokerContinuity(runtime, state);
       }
@@ -272,13 +272,11 @@ function applyNotification(
 
   const isTurnEvent =
     message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
-  if (
-    isTurnEvent &&
-    state.brokerTurnId !== undefined &&
-    typeof params.brokerTurnId === 'string' &&
-    params.brokerTurnId !== state.brokerTurnId
-  ) {
-    return;
+  if (isTurnEvent) {
+    const messageBrokerTurnId = readString(params.brokerTurnId);
+    if (messageBrokerTurnId === undefined || messageBrokerTurnId !== state.brokerTurnId) {
+      return;
+    }
   }
 
   const updatedConversationRef = readTurnConversationRef(params);
@@ -370,11 +368,7 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
   return buildFailedTerminal('', state.prepared.model, nowMs - state.startedAt, outcome.message, outcome.diagnostic);
 }
 
-function buildAbortedTerminal(
-  model: string | undefined,
-  startedAt: number,
-  nowMs: number,
-): ProviderTerminalEventBody {
+function buildAbortedTerminal(model: string | undefined, startedAt: number, nowMs: number): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
@@ -450,6 +444,24 @@ async function waitForClaudeOutcome(
   } finally {
     removeAbortListener();
   }
+}
+
+async function closeBrokerSessionBeforeTurn(lease: ProviderServerLease, state: ClaudeTurnState): Promise<void> {
+  if (state.turnRequested || state.brokerSessionKey === undefined) {
+    return;
+  }
+
+  await brokerRpc(lease, 'session/close', { brokerSessionKey: state.brokerSessionKey }).catch(() => {});
+}
+
+async function interruptBrokerTurnOnAbort(lease: ProviderServerLease, state: ClaudeTurnState): Promise<void> {
+  if (state.brokerSessionKey === undefined || state.brokerTurnId === undefined) {
+    return;
+  }
+
+  await brokerRpc(lease, 'turn/interrupt', mapInterruptParams(state.brokerSessionKey, state.brokerTurnId)).catch(
+    () => {},
+  );
 }
 
 function readErrors(value: unknown): string[] {

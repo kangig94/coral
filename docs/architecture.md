@@ -155,7 +155,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 ### Wait / follow
 
 1. Detached launches print `Job <job> <launchState> (session <session>)`
-2. `coral-cli wait --jobs "<ids>" [--embed]` opens the `jobs.wait` IPC subscription
+2. `coral-cli wait jobs <id...> [--embed]` opens the `jobs.wait` IPC subscription
 3. The local IPC stream and the remote `POST /jobs/wait` HTTP gateway both read the same coordinator-owned wait surface, which uses the same job truth as startup recovery and steady-state launch orchestration
 4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
 

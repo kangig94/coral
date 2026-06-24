@@ -158,4 +158,74 @@ describe('Discuss synthesis', () => {
     });
     expect(getSession(harness.context, 'discuss-1')).toBeUndefined();
   });
+
+  it('finalizes with a fallback synthesis when no facilitator agent is available', async () => {
+    const harness = createDiscussHarness();
+    await persistSession(harness, {
+      sessionId: 'expelled-required-discuss',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'participants.expelled',
+          '2026-03-10T00:00:59.000Z',
+          { agents: ['alpha', 'beta'], isRespawn: false },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'no_participants', endReasonContent: 'No eligible agents remaining. Ending discussion.' },
+        ),
+      ],
+    });
+
+    await handleSynthesis(harness.context, 'expelled-required-discuss', harness.ctx);
+
+    const snapshot = harness.store.load('expelled-required-discuss');
+    expect(snapshot?.runtime.controlPhase).toBe('idle');
+    expect(snapshot?.state.transcript.at(-1)).toMatchObject({
+      type: 'session_event',
+      event: 'synthesis',
+    });
+    const synthesis = snapshot?.state.transcript.at(-1);
+    expect(synthesis?.type === 'session_event' ? synthesis.detail : '').toContain(
+      'Automatic final synthesis could not be generated.',
+    );
+    expect(getSession(harness.context, 'expelled-required-discuss')).toBeUndefined();
+  });
+
+  it('finalizes with a fallback synthesis when the synthesis provider fails', async () => {
+    const start = vi.fn().mockRejectedValue(new Error('claude dispatch failed'));
+    const harness = createDiscussHarness(createExecutionServiceStub({ start }));
+    await persistSession(harness, {
+      sessionId: 'provider-failure-discuss',
+      recover: true,
+      buildTail: (snapshot) => [
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 1,
+          'session.ended',
+          '2026-03-10T00:01:00.000Z',
+          { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
+        ),
+      ],
+    });
+
+    await handleSynthesis(harness.context, 'provider-failure-discuss', harness.ctx);
+
+    const snapshot = harness.store.load('provider-failure-discuss');
+    const synthesis = snapshot?.state.transcript.at(-1);
+    expect(snapshot?.runtime.controlPhase).toBe('idle');
+    expect(synthesis?.type === 'session_event' ? synthesis.detail : '').toContain('claude dispatch failed');
+    expect(getSession(harness.context, 'provider-failure-discuss')).toBeUndefined();
+  });
 });

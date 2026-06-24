@@ -174,10 +174,10 @@ function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptF
   };
 }
 
-function assistantLine(text: string, stopReason?: string): string {
+function assistantLine(text: string, stopReason?: string, sessionId = TEST_SESSION_ID): string {
   return JSON.stringify({
     type: 'assistant',
-    session_id: TEST_SESSION_ID,
+    session_id: sessionId,
     message: {
       role: 'assistant',
       model: TEST_MODEL,
@@ -207,7 +207,9 @@ type ControllerTurnNotification = Extract<
   { method: 'turn/progress' | 'turn/completed' | 'turn/failed' }
 >;
 
-function isControllerTurnNotification(notification: ControllerNotification): notification is ControllerTurnNotification {
+function isControllerTurnNotification(
+  notification: ControllerNotification,
+): notification is ControllerTurnNotification {
   return notification.method.startsWith('turn/');
 }
 
@@ -233,10 +235,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
 
     expect(terminated).toBe(false);
     expect(harness.children).toHaveLength(1);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([
-      'original sent prompt',
-      'original sent prompt',
-    ]);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['original sent prompt', 'original sent prompt']);
     expect(harness.startedTurns).toEqual(['turn-1']);
   });
 
@@ -258,9 +257,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
       resume: true,
     });
     expect(harness.children[0]?.killSignals).toEqual(['SIGTERM']);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([
-      'registered prompt must not duplicate',
-    ]);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['registered prompt must not duplicate']);
     const continuation = unwrapPaste(harness.children[1]?.writes[0] ?? '');
     expect(continuation).toContain('unanswered user message');
     expect(continuation).not.toContain('registered prompt must not duplicate');
@@ -273,15 +270,16 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const completed = harness.notifications.find(isControllerTurnCompleted);
     expect(completed?.params.brokerTurnId).toBe('turn-1');
     expect(completed?.params.result).toBe('recovered answer');
-    expect(turnNotifications(harness.notifications).every((notification) => {
-      return notification.params.brokerTurnId === 'turn-1';
-    })).toBe(true);
+    expect(
+      turnNotifications(harness.notifications).every((notification) => {
+        return notification.params.brokerTurnId === 'turn-1';
+      }),
+    ).toBe(true);
   });
 
   it('fires registered idle recovery within the assistant-start budget', async () => {
     const prompt = 'registered prompt then silence';
-    const assistantStartBudgetMs =
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
+    const assistantStartBudgetMs = DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
     const fixture = createTranscriptFixture();
     try {
       const harness = createControllerHarness();
@@ -316,9 +314,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
       const recoveredTurn = activeTurn(harness.internals);
       expect(recoveredTurn.replacementAttempts).toBe(1);
       expect(recoveredTurn.continuationPhase).toBe('registered');
-      expect(
-        harness.notifications.some((notification) => notification.method === 'turn/failed'),
-      ).toBe(false);
+      expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
     } finally {
       fixture.cleanup();
     }
@@ -348,9 +344,11 @@ describe('Claude phase-specific turn-stall recovery', () => {
     expect(continuation).toContain('partial assistant response');
     expect(continuation).not.toContain(originalPrompt);
     expect(harness.startedTurns).toEqual(['turn-1']);
-    expect(turnNotifications(harness.notifications).every((notification) => {
-      return notification.params.brokerTurnId === 'turn-1';
-    })).toBe(true);
+    expect(
+      turnNotifications(harness.notifications).every((notification) => {
+        return notification.params.brokerTurnId === 'turn-1';
+      }),
+    ).toBe(true);
   });
 
   it('completes an ending turn from parsed transcript fields after the finalization grace', async () => {
@@ -375,6 +373,33 @@ describe('Claude phase-specific turn-stall recovery', () => {
           brokerTurnId: 'turn-1',
           result: 'parsed final answer',
           durationMs: 123,
+        }),
+      }),
+    );
+  });
+
+  it('does not let a late assistant row after end_turn overwrite the completed result', async () => {
+    const otherSessionId = '00000000-0000-4000-8000-000000000202';
+    const harness = await startController('ending prompt');
+    processLine(harness.internals, userPromptLine('ending prompt'));
+    processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
+    processLine(harness.internals, assistantLine('late overwrite', undefined, otherSessionId));
+    const turn = activeTurn(harness.internals);
+    expect(turn.phase).toBe('ending');
+
+    const terminated = await harness.internals.recoverStalledTurn(
+      turn,
+      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    );
+
+    expect(terminated).toBe(true);
+    expect(harness.notifications).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/completed',
+        params: expect.objectContaining({
+          brokerTurnId: 'turn-1',
+          conversationRef: TEST_SESSION_ID,
+          result: 'parsed final answer',
         }),
       }),
     );
@@ -496,6 +521,57 @@ describe('Claude phase-specific turn-stall recovery', () => {
     await expect(pool.sessionProbe({ brokerSessionKey: ensured.brokerSessionKey })).resolves.toMatchObject({
       status: 'available',
       activeTurnId: 'turn-1',
+    });
+  });
+
+  it('evicts a generated controller after a terminal turn queued during initial notification hold', async () => {
+    const children: FakeClaudeChild[] = [];
+    const ids = ['broker-queued-terminal', TEST_SESSION_ID];
+    const pool = new BrokerSessionPool({
+      spawnChild: () => {
+        const child = new FakeClaudeChild();
+        children.push(child);
+        return child;
+      },
+      ids: {
+        uuid: () => ids.shift() ?? TEST_SESSION_ID,
+      },
+      onTurnStarted: () => {},
+      stderrLimit: 1_024,
+    });
+    pools.push(pool);
+
+    const ensured = await pool.sessionEnsure({
+      cwd: '/workspace',
+      systemPromptHash: 'sha256:test',
+      permissionMode: 'default',
+    });
+    await pool.turnStart({
+      brokerSessionKey: ensured.brokerSessionKey,
+      brokerTurnId: 'turn-1',
+      prompt: 'queued terminal prompt',
+    });
+
+    const internals = (
+      pool as unknown as {
+        controllers: Map<string, { controller: SingleSessionController }>;
+      }
+    ).controllers.get(ensured.brokerSessionKey)?.controller as unknown as ControllerInternals;
+
+    processLine(internals, userPromptLine('queued terminal prompt'));
+    processLine(internals, assistantLine('queued terminal result', 'end_turn'));
+    processLine(internals, durationLine(25));
+    const turn = activeTurn(internals);
+
+    await internals.recoverStalledTurn(
+      turn,
+      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    );
+    await waitImmediate();
+    await waitImmediate();
+
+    await expect(pool.sessionProbe({ brokerSessionKey: ensured.brokerSessionKey })).resolves.toMatchObject({
+      status: 'missing',
     });
   });
 });

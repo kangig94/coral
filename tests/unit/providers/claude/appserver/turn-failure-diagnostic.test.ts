@@ -13,9 +13,7 @@ import {
   sessionProviderFailureDiagnosticPhaseSchema,
   sessionProviderFailureDiagnosticReasonSchema,
 } from '#src/sessions/fault.js';
-import type {
-  ControllerNotification,
-} from '#src/providers/claude/appserver/session-contract.js';
+import type { ControllerNotification } from '#src/providers/claude/appserver/session-contract.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000501';

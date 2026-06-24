@@ -1,6 +1,8 @@
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '../../events.js';
 import { decideBid, decideEnd, decideExpel } from '../../state-machine.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import { errorMessage } from '../../../infra/error-format.js';
 import { buildBidPrompt, buildFirstTurnInstruction } from '../prompts.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
@@ -246,6 +248,24 @@ async function collectBidOutcome(
   }
 }
 
+async function collectBidOutcomeSafely(
+  ctx: DiscussContext,
+  sessionId: string,
+  snapshot: PersistedDiscussSnapshot,
+  agentName: string,
+  invocationCtx: InvocationContext,
+): Promise<BidOutcome> {
+  try {
+    return await collectBidOutcome(ctx, sessionId, snapshot, agentName, invocationCtx);
+  } catch (error: unknown) {
+    backendLog.warn(`Discuss bid collection failed for ${sessionId}/${agentName}: ${errorMessage(error)}`);
+    return failedBidOutcome(agentName, {
+      executionFailure: true,
+      shouldExpel: snapshot.state.agents[agentName]?.participation === 'required',
+    });
+  }
+}
+
 export async function collectBids(
   ctx: DiscussContext,
   sessionId: string,
@@ -268,7 +288,7 @@ export async function collectBids(
   }
 
   const outcomes = await Promise.all(
-    bidders.map((agentName) => collectBidOutcome(ctx, sessionId, snapshot, agentName, invocationCtx)),
+    bidders.map((agentName) => collectBidOutcomeSafely(ctx, sessionId, snapshot, agentName, invocationCtx)),
   );
 
   const committed = await commitDecision(ctx, sessionId, (current) => ({

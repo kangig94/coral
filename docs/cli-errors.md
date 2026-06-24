@@ -109,7 +109,7 @@ Retry only on retry-later failures:
 set -o pipefail
 
 stderr_file="$(mktemp)"
-if coral-cli wait --jobs "$JOB_ID" 2>"$stderr_file"; then
+if coral-cli wait jobs "$JOB_ID" 2>"$stderr_file"; then
   rm -f "$stderr_file"
   exit 0
 fi

@@ -119,7 +119,7 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     // --delegate: dispatch to the other host
     launch = Bash(`coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
-    terminal = Bash(`coral-cli wait --jobs "${job}" --embed`)
+    terminal = Bash(`coral-cli wait jobs ${job} --embed`)
     output = Read(<path from the terminal's `Result path:` line>)
     ```
 

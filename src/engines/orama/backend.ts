@@ -59,6 +59,7 @@ import type { Runtime } from '../../runtime/ports.js';
 export const ORAMA_BASE_CONSUMER_ID = 'orama-base';
 const FTS_INDEX_UNINITIALIZED_WARNING = 'fts_index_uninitialized';
 const FTS_INDEX_STALE_TIER_WARNING = 'fts_index_stale_tier';
+const FUZZY_BODY_TOKEN_SCAN_LIMIT = 512;
 
 export type OramaReconcileReason = 'stale-tier' | 'incompatible' | 'terminal-analyzer-failure';
 
@@ -222,9 +223,24 @@ function fieldSurfaceProperty(field: OramaSearchField): keyof KbOramaDocument {
   return 'bodySurface';
 }
 
-function fieldTokens(document: KbOramaDocument, field: OramaSearchField): string[] {
+function splitFieldTokens(value: string, limit?: number): string[] {
+  if (limit === undefined) {
+    return value.split(/\s+/u).filter(Boolean);
+  }
+
+  const tokens: string[] = [];
+  for (const match of value.matchAll(/\S+/gu)) {
+    tokens.push(match[0]);
+    if (tokens.length >= limit) {
+      break;
+    }
+  }
+  return tokens;
+}
+
+function fieldTokens(document: KbOramaDocument, field: OramaSearchField, limit?: number): string[] {
   const value = document[fieldSurfaceProperty(field)];
-  return typeof value === 'string' ? value.split(/\s+/u).filter(Boolean) : [];
+  return typeof value === 'string' ? splitFieldTokens(value, limit) : [];
 }
 
 function fieldTokenSet(document: KbOramaDocument, field: OramaSearchField): Set<string> {
@@ -442,10 +458,10 @@ function isEditDistanceAtMostOne(left: string, right: string): boolean {
   return true;
 }
 
-function fuzzyDocumentScore(document: KbOramaDocument, terms: readonly string[]): number {
+export function fuzzyDocumentScore(document: KbOramaDocument, terms: readonly string[]): number {
   let score = 0;
   for (const field of ORAMA_SEARCH_FIELDS) {
-    const tokens = fieldTokens(document, field);
+    const tokens = fieldTokens(document, field, field === 'body' ? FUZZY_BODY_TOKEN_SCAN_LIMIT : undefined);
     const fieldWeight = field === 'body' ? ORAMA_FIELD_PRIORITY[field] * 0.4 : ORAMA_FIELD_PRIORITY[field];
     for (const term of terms) {
       if (tokens.some((token) => isEditDistanceAtMostOne(term, token))) {

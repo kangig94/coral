@@ -56,6 +56,28 @@ function appendDecision(
 }
 
 describe('state-machine deciders', () => {
+  it('rejects session creation without a required agent', () => {
+    const result = decideSessionCreate(
+      {
+        topic: 'Should the city pedestrianize the downtown core?',
+        agents: [
+          { name: 'alpha', persona: 'Alpha', participation: 'observer' },
+          { name: 'beta', persona: 'Beta', participation: 'observer' },
+        ],
+        min_bid_delay_ms: 0,
+      },
+      { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'Should the city pedestrianize the downtown core?' },
+      1,
+      NOW,
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'required_agent_missing',
+      detail: { hint: 'At least one required agent is needed to run a discussion.' },
+    });
+  });
+
   it('allows an observer with a submitted bid to win cold start', () => {
     let snapshot = createBiddingSnapshot();
     snapshot = appendDecision(

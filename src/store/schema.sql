@@ -151,7 +151,6 @@ CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   consecutive_community_batch_failures INTEGER NOT NULL DEFAULT 0,
   claim_lane_disabled_at     TEXT,
   community_batch_lane_disabled_at TEXT,
-  community_topology_hash    TEXT,
   community_summary_topology_hash TEXT,
   initialized                INTEGER NOT NULL DEFAULT 0 CHECK (initialized IN (0, 1))
 );
@@ -162,11 +161,6 @@ CREATE TABLE IF NOT EXISTS kb_curate_active_claim (
   through_entry_id           TEXT NOT NULL,
   through_entry_kind         TEXT NOT NULL,
   started_at                 TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS kb_curate_community_summary_input_fingerprints (
-  community_slug             TEXT PRIMARY KEY,
-  fingerprint                TEXT NOT NULL
 );
 
 -- Curate retry queue.
@@ -249,11 +243,10 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
   consecutive_community_batch_failures,
   claim_lane_disabled_at,
   community_batch_lane_disabled_at,
-  community_topology_hash,
   community_summary_topology_hash,
   initialized
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, 0);
+  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 0);
 
 CREATE TABLE IF NOT EXISTS expansion_manifest_catalog (
   id            TEXT PRIMARY KEY,

@@ -59,8 +59,8 @@ Two hooks run after compaction:
 
 `post-compact.mjs` now describes recovery in CLI terms:
 
-- pending jobs: `coral-cli wait --jobs "<job-id list>"`
-- terminal jobs without inline artifacts: `coral-cli wait --jobs "<job>" --embed`
+- pending jobs: `coral-cli wait jobs <job-id...>`
+- terminal jobs without inline artifacts: `coral-cli wait jobs <job> --embed`
 - missing or unreadable job state: do not rerun `wait` unless a verified artifact path exists
 
 Implementation notes:

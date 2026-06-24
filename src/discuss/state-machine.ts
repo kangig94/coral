@@ -132,6 +132,13 @@ export function decideSessionCreate(
     >,
   } = opts;
   const quotaPerEpoch = opts.quotaPerEpoch ?? DEFAULT_QUOTA_PER_EPOCH;
+  if (!input.agents.some((agent) => agent.participation !== 'observer')) {
+    return {
+      ok: false,
+      error: 'required_agent_missing',
+      detail: { hint: 'At least one required agent is needed to run a discussion.' },
+    };
+  }
   return {
     ok: true,
     value: [

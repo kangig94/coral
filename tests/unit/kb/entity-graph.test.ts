@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
+import { parseEntityMetaMap } from '#src/kb/corpus/index-store.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -97,6 +98,14 @@ describe('entity-graph', () => {
     expect(warnSpy.mock.calls[2]?.[0]).toContain('graph and community-derived features are disabled');
 
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('rejects reserved entityMeta keys from parsed graph files', () => {
+    const value = JSON.parse(
+      '{"__proto__":{"type":"concept","description":"Prototype-shaped entity."},"safe":{"type":"concept","description":"Safe entity."}}',
+    );
+
+    expect(() => parseEntityMetaMap(value)).toThrow('Invalid KB entity graph');
   });
 
   it('writes graphs atomically through a tmp file and updates the live index copy', async () => {

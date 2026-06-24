@@ -33,6 +33,45 @@ type ChildCommunitySummary = {
   summary: string;
 };
 
+function childSlugs(community: Pick<SummaryCommunity, 'children'>): string[] {
+  return [...(community.children ?? [])].map(communitySlugFromReference).sort(compareLocale);
+}
+
+function assertAcyclicCommunityHierarchy(communitiesBySlug: ReadonlyMap<string, SummaryCommunity>): void {
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const path: string[] = [];
+
+  const visit = (slug: string): void => {
+    if (visited.has(slug)) {
+      return;
+    }
+    if (visiting.has(slug)) {
+      const cycleStart = path.indexOf(slug);
+      const cycle = [...path.slice(cycleStart < 0 ? 0 : cycleStart), slug];
+      throw new Error(`Cyclic community hierarchy: ${cycle.join(' -> ')}`);
+    }
+
+    const community = communitiesBySlug.get(slug);
+    if (community === undefined) {
+      return;
+    }
+
+    visiting.add(slug);
+    path.push(slug);
+    for (const childSlug of childSlugs(community)) {
+      visit(childSlug);
+    }
+    path.pop();
+    visiting.delete(slug);
+    visited.add(slug);
+  };
+
+  for (const slug of [...communitiesBySlug.keys()].sort(compareLocale)) {
+    visit(slug);
+  }
+}
+
 function trimSummaryExcerpt(body: string, maxChars: number): string {
   const normalized = body.trim().replace(/\s+/g, ' ');
   if (normalized.length <= maxChars) {
@@ -165,19 +204,14 @@ function childCommunitiesForCommunity(
   community: Pick<SummaryCommunity, 'children'>,
   communitiesBySlug: ReadonlyMap<string, SummaryCommunity>,
 ): ChildCommunitySummary[] {
-  const childReferences = [...(community.children ?? [])].sort((left, right) =>
-    compareLocale(communitySlugFromReference(left), communitySlugFromReference(right)),
-  );
-
   const children: ChildCommunitySummary[] = [];
-  for (const reference of childReferences) {
-    const slug = communitySlugFromReference(reference);
+  for (const slug of childSlugs(community)) {
     const child = communitiesBySlug.get(slug);
     if (child === undefined) {
-      throw new Error(`Missing child community ${reference} while computing parent summary dependencies.`);
+      throw new Error(`Missing child community ${slug} while computing parent summary dependencies.`);
     }
     if (child.summary === undefined) {
-      throw new Error(`Missing child summary for ${reference} while computing parent summary dependencies.`);
+      throw new Error(`Missing child summary for ${slug} while computing parent summary dependencies.`);
     }
 
     children.push({
@@ -215,6 +249,7 @@ export function computeCommunitySummaryInputFingerprintForCommunity(
   kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
 ): string {
+  assertAcyclicCommunityHierarchy(communitiesBySlug);
   if (community.children === undefined || community.children.length === 0) {
     return computeTextFingerprint(
       leafSummaryFingerprintPayload(community, index, selectRepresentativeDocuments(kb, index, community.members)),
@@ -239,6 +274,7 @@ export function buildCommunitySummaryInput(
   kb: Pick<KbRuntime, 'notePath' | 'sourcePath' | 'storagePort'>,
   index: KbIndex,
 ): { kind: 'leaf' | 'parent'; input: string } {
+  assertAcyclicCommunityHierarchy(communitiesBySlug);
   if (community.children === undefined || community.children.length === 0) {
     return {
       kind: 'leaf',
@@ -264,6 +300,7 @@ export function computeCommunitySummaryInputFingerprints(
   for (const community of communities) {
     communitiesBySlug.set(community.slug, community);
   }
+  assertAcyclicCommunityHierarchy(communitiesBySlug);
   const orderedCommunities = [...communities].sort((left, right) => {
     if (left.level !== right.level) {
       return left.level - right.level;

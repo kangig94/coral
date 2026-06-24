@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { advanceTurnPhase, SingleSessionController, type TurnPhase } from '#src/providers/claude/appserver/controller.js';
+import {
+  advanceTurnPhase,
+  SingleSessionController,
+  type TurnPhase,
+} from '#src/providers/claude/appserver/controller.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
@@ -18,6 +22,7 @@ type ControllerInternals = {
   activeTurn: ActiveTurnForTest | null;
   processTranscriptLine(turn: ActiveTurnForTest, line: string, lineStartOffset: number): void;
   readTranscriptAppend(turn: ActiveTurnForTest): void;
+  resolveTranscriptPath(): string | null;
 };
 
 type StartedController = {
@@ -93,10 +98,10 @@ function userToolResultLine(): string {
   });
 }
 
-function assistantLine(options: { stopReason?: string } = {}): string {
+function assistantLine(options: { sessionId?: string; stopReason?: string } = {}): string {
   return JSON.stringify({
     type: 'assistant',
-    session_id: TEST_SESSION_ID,
+    session_id: options.sessionId ?? TEST_SESSION_ID,
     message: {
       role: 'assistant',
       model: TEST_MODEL,
@@ -106,33 +111,42 @@ function assistantLine(options: { stopReason?: string } = {}): string {
   });
 }
 
-function systemLine(): string {
+function systemLine(options: { sessionId?: string } = {}): string {
   return JSON.stringify({
     type: 'system',
     subtype: 'turn_duration',
-    session_id: TEST_SESSION_ID,
+    session_id: options.sessionId ?? TEST_SESSION_ID,
     durationMs: 25,
   });
 }
 
 type TranscriptFixture = {
   transcriptPath: string;
+  pathFor: (conversationRef: string, projectName?: string) => string;
   cleanup: () => void;
 };
 
-function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptFixture {
+function createTranscriptFixture(
+  conversationRef = TEST_SESSION_ID,
+  extraConversationRefs: string[] = [],
+): TranscriptFixture {
   const previousHome = process.env.HOME;
   const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   const home = mkdtempSync(join(tmpdir(), 'coral-claude-home-'));
   const projectDir = join(home, '.claude', 'projects', 'workspace');
   mkdirSync(projectDir, { recursive: true });
-  const transcriptPath = join(projectDir, `${conversationRef}.jsonl`);
-  writeFileSync(transcriptPath, '');
+  const pathFor = (ref: string, projectName = 'workspace'): string =>
+    join(home, '.claude', 'projects', projectName, `${ref}.jsonl`);
+  const transcriptPath = pathFor(conversationRef);
+  for (const ref of [conversationRef, ...extraConversationRefs]) {
+    writeFileSync(pathFor(ref), '');
+  }
   process.env.HOME = home;
   delete process.env.CLAUDE_CONFIG_DIR;
 
   return {
     transcriptPath,
+    pathFor,
     cleanup: (): void => {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -202,6 +216,38 @@ describe('Claude turn phase state machine', () => {
 
       processLine(internals, systemLine());
       expect(activeTurn(internals).phase).toBe('sent');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not keep reading a cached transcript after the session id changes', async () => {
+    const nextSessionId = '00000000-0000-4000-8000-000000000002';
+    const fixture = createTranscriptFixture(TEST_SESSION_ID, [nextSessionId]);
+    try {
+      const { internals } = await startController();
+      const turn = activeTurn(internals);
+
+      expect(internals.resolveTranscriptPath()).toBe(fixture.transcriptPath);
+      processLine(internals, systemLine({ sessionId: nextSessionId }));
+      appendFileSync(fixture.pathFor(nextSessionId), `${assistantLine({ sessionId: nextSessionId })}\n`);
+      internals.readTranscriptAppend(turn);
+
+      expect(activeTurn(internals).phase).toBe('responding');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not arbitrarily select a transcript when the conversation ref is ambiguous across projects', async () => {
+    const fixture = createTranscriptFixture();
+    const duplicatePath = fixture.pathFor(TEST_SESSION_ID, 'other-workspace');
+    mkdirSync(join(duplicatePath, '..'), { recursive: true });
+    writeFileSync(duplicatePath, '');
+    try {
+      const { internals } = await startController();
+
+      expect(internals.resolveTranscriptPath()).toBeNull();
     } finally {
       fixture.cleanup();
     }

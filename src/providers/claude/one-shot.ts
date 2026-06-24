@@ -5,7 +5,12 @@ import { AbortError } from '../../runtime/abort.js';
 import type { IdPort, Runtime } from '../../runtime/ports.js';
 import type { EffortLevel, ProviderServerLease, ProviderServerSpec } from '../contract.js';
 import { deleteClaudeJsonlArtifactsForConversation, resolveClaudeProjectsRoot } from './artifacts.js';
-import type { SessionCloseResult, SessionEnsureResult, TurnStartResult } from './appserver/protocol.js';
+import {
+  brokerNotificationMethods,
+  type SessionCloseResult,
+  type SessionEnsureResult,
+  type TurnStartResult,
+} from './appserver/protocol.js';
 import { buildClaudeBootstrapSignature, buildClaudeProviderServerSpec } from './request-mapping.js';
 import type { PermissionMode } from './request-prep.js';
 
@@ -73,7 +78,11 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
       ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.effort === undefined ? {} : { effort: request.effort }),
     });
-    state.brokerSessionKey = ensureResult.brokerSessionKey;
+    const brokerSessionKey = readString(ensureResult.brokerSessionKey);
+    if (brokerSessionKey === undefined) {
+      throw new Error('Claude one-shot broker session key missing from session/ensure response.');
+    }
+    state.brokerSessionKey = brokerSessionKey;
     updateConversationRef(state, ensureResult);
 
     throwIfRequestAborted(request.signal, 'claude_one_shot_turn_start');
@@ -85,7 +94,7 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
       brokerTurnId: requestedTurnId,
       prompt: request.prompt,
     });
-    state.brokerTurnId = startResult.brokerTurnId;
+    state.brokerTurnId = readString(startResult.brokerTurnId) ?? requestedTurnId;
     updateConversationRef(state, startResult);
 
     const outcome = await waitForOneShotOutcome(state, lease, request.signal);
@@ -135,11 +144,19 @@ function applyOneShotNotification(
   }
 
   const brokerTurnId = readString(params.brokerTurnId);
+  const { sessionUpdated, turnProgress, turnCompleted, turnFailed } = brokerNotificationMethods;
+  const isTurnEvent =
+    message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
+  if (isTurnEvent && (state.brokerTurnId === undefined || brokerTurnId !== state.brokerTurnId)) {
+    return;
+  }
+
   updateConversationRef(state, params);
-  if (message.method === 'turn/completed') {
-    if (state.brokerTurnId === undefined || brokerTurnId !== state.brokerTurnId) {
-      return;
-    }
+  if (message.method === sessionUpdated || message.method === turnProgress) {
+    return;
+  }
+
+  if (message.method === turnCompleted) {
     resolveTerminalOnce(state, {
       kind: 'completed',
       turn: {
@@ -151,10 +168,7 @@ function applyOneShotNotification(
     return;
   }
 
-  if (message.method === 'turn/failed') {
-    if (state.brokerTurnId === undefined || brokerTurnId !== state.brokerTurnId) {
-      return;
-    }
+  if (message.method === turnFailed) {
     resolveTerminalOnce(state, {
       kind: 'failed',
       message: buildTurnFailedMessage(params),

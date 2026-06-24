@@ -130,8 +130,8 @@ vi.mock('#src/cli/dispatch.js', async () => {
       kbMemoDelete: mockState.kbMemoDelete,
       kbMemoPurge: mockState.kbMemoPurge,
       kbReindex: mockState.kbReindex,
-      subscribe: async () => {
-        const iterator = await mockState.streamWait();
+      subscribe: async (method: string, request: unknown) => {
+        const iterator = await mockState.streamWait(method, request);
         return {
           close: vi.fn().mockResolvedValue(undefined),
           [Symbol.asyncIterator]: () => iterator[Symbol.asyncIterator](),
@@ -1401,12 +1401,54 @@ describe('cli main routing', () => {
       yield terminalEvent;
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1']);
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1']);
 
+    expect(mockState.streamWait).toHaveBeenCalledWith(
+      'jobs.wait',
+      expect.objectContaining({
+        jobIds: ['job-1'],
+      }),
+    );
     expect(stdout).toBe(
       `${formatWaitProgress(progressEvent)}\n${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 2 }), false)}\n`,
     );
     expect(stderr).toBe('');
+  });
+
+  it('routes wait jobs with multiple positional job ids', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+
+    const waitingEvent = {
+      type: 'waiting' as const,
+      waitingJobIds: ['job-1', 'job-2'],
+    };
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield waitingEvent;
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', 'job-2']);
+
+    expect(mockState.streamWait).toHaveBeenCalledWith(
+      'jobs.wait',
+      expect.objectContaining({
+        jobIds: ['job-1', 'job-2'],
+      }),
+    );
+    expect(stdout).toContain('Run coral-cli wait jobs job-1 job-2 again to continue waiting.');
+    expect(stderr).toBe('');
+  });
+
+  it('does not support the legacy wait --jobs form', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    program.exitOverride();
+
+    await expect(program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1'])).rejects.toThrow(
+      /unknown option/u,
+    );
+
+    expect(mockState.streamWait).not.toHaveBeenCalled();
   });
 
   it('renders wait failed terminal cause chains from the store', async () => {
@@ -1439,7 +1481,7 @@ describe('cli main routing', () => {
         yield terminalEvent;
       });
 
-      await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1']);
+      await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1']);
 
       expect(stdout).toContain(
         'Job job-1 failed: Failed: Workflow failed. Caused by: Workflow lifecycle fault (unknown): workflow failure.',
@@ -1463,7 +1505,7 @@ describe('cli main routing', () => {
     }
   });
 
-  it('keeps Result path in wait --embed output when preview content is present', async () => {
+  it('keeps Result path in wait jobs --embed output when preview content is present', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1479,14 +1521,14 @@ describe('cli main routing', () => {
       yield terminalEvent;
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1', '--embed']);
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', '--embed']);
 
     expect(stdout).toBe(`${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 1 }), true)}\n`);
     expect(stdout).toContain('Result path: /tmp/result.md');
     expect(stderr).toBe('');
   });
 
-  it('keeps Result path in wait --embed output when preview falls back to empty-result text', async () => {
+  it('keeps Result path in wait jobs --embed output when preview falls back to empty-result text', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -1502,7 +1544,7 @@ describe('cli main routing', () => {
       yield terminalEvent;
     });
 
-    await program.parseAsync(['node', 'coral-cli', 'wait', '--jobs', 'job-1', '--embed']);
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', '--embed']);
 
     expect(stdout).toBe(`${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 1 }), true)}\n`);
     expect(stdout).toContain('Result path: /tmp/result.md');

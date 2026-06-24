@@ -225,6 +225,33 @@ describe('execution discuss tools', () => {
     harness.cleanup();
   });
 
+  it('discuss_start rejects observer-only sessions', async () => {
+    const harness = createDiscussHarness();
+    const registry = createDiscussContextRegistry();
+    const stores = new Map([[harness.projectRoot, harness]]);
+
+    const result = await callDiscussTool(
+      {
+        name: 'discuss_start',
+        args: {
+          topic: DEFAULT_TOPIC,
+          agents: [
+            { name: 'alpha', persona: '# Alpha', participation: 'observer' },
+            { name: 'beta', persona: '# Beta', participation: 'observer' },
+          ],
+        },
+        context: harness.ctx,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
+    const error = parseToolError(result);
+
+    expect(error).toMatchObject({ error: 'invalid_request' });
+    expect(String(error.message)).toContain('At least one required agent');
+
+    harness.cleanup();
+  });
+
   it('discuss_abort appends a terminal state and detaches the live session', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();

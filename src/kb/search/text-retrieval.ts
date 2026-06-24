@@ -41,6 +41,7 @@ const BUILTIN_TEXT_ROLE_DESCRIPTOR = {
   supportsScopes: ['notes', 'sources', 'communities', 'wiki', 'all'],
   requires: [KB_FTS_CAPABILITY],
 } as const satisfies RetrievalRole['descriptor'];
+const FTS_INDEX_STALE_TIER_WARNING = 'fts_index_stale_tier';
 
 export type ResolvedKbSearchEntry = {
   entryId: KbEntryId;
@@ -234,7 +235,7 @@ function isFtsBindingMissing(error: unknown): boolean {
 
 function isFtsUnavailable(fts: FtsRetrieval): boolean {
   const warnings = fts.warnings();
-  return warnings.includes('fts_index_uninitialized') || warnings.includes('fts_index_stale');
+  return warnings.includes('fts_index_uninitialized') || warnings.includes(FTS_INDEX_STALE_TIER_WARNING);
 }
 
 function degradedTextRoleSearchResult(): RoleSearchResult {

@@ -69,9 +69,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
-    communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     claimLaneDisabledAt: null,
@@ -1502,6 +1500,79 @@ describe('curate', () => {
       expect(readCurateState(curateDb(runtime)).processedThrough).toEqual(cursor('coral-alpha', 4));
     });
 
+    it('does not publish prepared metadata writes when a later target fails validation', async () => {
+      const updatedAt = '2026-03-21T00:00:00.000Z';
+      const alphaPath = writeNote('coral-alpha', {
+        title: 'Alpha',
+        tags: ['coral'],
+        updatedAt,
+        entrySeq: 4,
+        body: 'Alpha body.',
+      });
+      const zetaPath = join(runtime.notesDir(), 'coral-zeta.md');
+      writeFileSync(
+        zetaPath,
+        [
+          '---',
+          'tags: [coral',
+          'principles: []',
+          'source:',
+          '  - kangig94/coral',
+          `createdAt: ${DEFAULT_CREATED_AT}`,
+          `updatedAt: ${updatedAt}`,
+          'entrySeq: 5',
+          '---',
+          '# Zeta',
+          '',
+          'Malformed frontmatter.',
+        ].join('\n'),
+        'utf-8',
+      );
+      runtime.writeIndex({
+        entries: createIndexEntries({
+          'coral-alpha': createIndexNote({
+            title: 'Alpha',
+            tags: ['coral'],
+            updatedAt,
+            entrySeq: 4,
+          }),
+        }),
+        principles: {},
+        entityMeta: {},
+        relationships: [],
+      });
+      const originalAlphaRaw = readFileSync(alphaPath, 'utf-8');
+      const originalIndex = runtime.readIndex();
+      const originalState = readCurateState(curateDb(runtime));
+
+      await expect(
+        internals.commitMetadataTargets([
+          {
+            kind: 'note',
+            entryId: noteEntryId('coral-alpha'),
+            slug: 'coral-alpha',
+            entrySeq: 4,
+            cursor: cursor('coral-alpha', 4),
+            claimTimeUpdatedAt: updatedAt,
+            addTags: ['kb'],
+          },
+          {
+            kind: 'note',
+            entryId: noteEntryId('coral-zeta'),
+            slug: 'coral-zeta',
+            entrySeq: 5,
+            cursor: cursor('coral-zeta', 5),
+            claimTimeUpdatedAt: updatedAt,
+            addTags: ['kb'],
+          },
+        ]),
+      ).rejects.toThrow(/YAML parse error/);
+
+      expect(readFileSync(alphaPath, 'utf-8')).toBe(originalAlphaRaw);
+      expect(runtime.readIndex()).toEqual(originalIndex);
+      expect(readCurateState(curateDb(runtime))).toEqual(originalState);
+    });
+
     it('skips stale notes, advances past missing notes, and only commits safe writes', async () => {
       writeNote('coral-stale', {
         title: 'Stale',
@@ -2791,12 +2862,10 @@ describe('curate', () => {
 
       const state = readCurateState(curateDb(runtime));
       expect(state).toMatchObject({
-        communityTopologyHash: undefined,
         consecutiveClaimFailures: 3,
         consecutiveCommunityBatchFailures: 0,
       });
       expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
-      expect(state.communitySummaryInputFingerprints).toBeUndefined();
 
       // Topology materialized docs without summaries; stale communities await the agent.
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
@@ -3049,19 +3118,6 @@ describe('curate', () => {
       );
       expect(generatedFrontmatter.every((frontmatter) => frontmatter.summaryInputFingerprint === undefined)).toBe(true);
 
-      // A stale DB fingerprint does not affect the topology phase (it only gates the agent).
-      const legacyDb = curateDb(runtime);
-      for (const entry of communityFiles) {
-        legacyDb
-          .prepare(
-            `INSERT OR REPLACE INTO kb_curate_community_summary_input_fingerprints (
-               community_slug,
-               fingerprint
-             ) VALUES (?, ?)`,
-          )
-          .run(entry.replace(/\.md$/, ''), 'stale-local-fingerprint');
-      }
-
       // Re-run with changed input: topology still writes docs, no LLM call.
       writeNote('coral-peer-community', {
         title: 'Peer Community',
@@ -3136,9 +3192,7 @@ describe('curate', () => {
         ? readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'))
         : [];
 
-      expect(stateAfterFailure.communityTopologyHash).toBeUndefined();
       expect(stateAfterFailure.communitySummaryTopologyHash).toBeUndefined();
-      expect(stateAfterFailure.communitySummaryInputFingerprints).toBeUndefined();
       // The throw must skip the success-path state write: the seeded failure
       // counter survives unchanged (not reset to 0).
       expect(stateAfterFailure.consecutiveCommunityBatchFailures).toBe(4);

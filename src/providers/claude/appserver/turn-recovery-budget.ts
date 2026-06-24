@@ -53,13 +53,10 @@ export const DEFAULT_TURN_RECOVERY_BUDGET = {
 } as const satisfies TurnRecoveryBudget;
 
 export function totalNoProgressRecoveryWindowMs(budget: TurnRecoveryBudget): number {
-  const registrationWindowMs =
-    (budget.registration.promptResends + 1) * budget.registration.promptAckMs;
+  const registrationWindowMs = (budget.registration.promptResends + 1) * budget.registration.promptAckMs;
   const respawnWindowMs =
     budget.replacement.respawnAttempts *
-    (budget.replacement.replacementShutdownMs +
-      budget.replacement.childReadyMs +
-      budget.replacement.continuationAckMs);
+    (budget.replacement.replacementShutdownMs + budget.replacement.childReadyMs + budget.replacement.continuationAckMs);
 
   return (
     registrationWindowMs +
@@ -71,8 +68,5 @@ export function totalNoProgressRecoveryWindowMs(budget: TurnRecoveryBudget): num
 }
 
 export function budgetUpperBoundMs(budget: TurnRecoveryBudget): number {
-  return Math.max(
-    totalNoProgressRecoveryWindowMs(budget),
-    budget['hard-cap'].hardCapMs,
-  );
+  return Math.max(totalNoProgressRecoveryWindowMs(budget), budget['hard-cap'].hardCapMs);
 }

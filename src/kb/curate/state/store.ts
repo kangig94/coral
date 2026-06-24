@@ -161,10 +161,6 @@ function writeActiveClaim(db: Database, activeClaim: CurateState['activeClaim'])
   ).run(throughSeq, throughEntryId, throughEntryKind, activeClaim.startedAt);
 }
 
-function clearCommunitySummaryInputFingerprints(db: Database): void {
-  prepareCached<[]>(db, `DELETE FROM kb_curate_community_summary_input_fingerprints`).run();
-}
-
 export function readCurateState(db: ReadHandle): CurateState {
   const scheduler = readCurateSchedulerState(db);
   return normalizeCurateStateRepairFrontier(db, {
@@ -177,9 +173,7 @@ export function readCurateState(db: ReadHandle): CurateState {
     retryNotBefore: scheduler.retryNotBefore,
     activeClaim: readActiveClaim(db),
     pendingDiscoveries: readCurateDiscoveryBacklog(db),
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: scheduler.communitySummaryTopologyHash,
-    communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: scheduler.consecutiveClaimFailures,
     consecutiveCommunityBatchFailures: scheduler.consecutiveCommunityBatchFailures,
     claimLaneDisabledAt: scheduler.claimLaneDisabledAt,
@@ -202,12 +196,10 @@ export function writeCurateState(db: Database, state: CurateState): void {
       consecutiveCommunityBatchFailures: normalized.consecutiveCommunityBatchFailures,
       claimLaneDisabledAt: normalized.claimLaneDisabledAt,
       communityBatchLaneDisabledAt: normalized.communityBatchLaneDisabledAt,
-      communityTopologyHash: undefined,
       communitySummaryTopologyHash: normalized.communitySummaryTopologyHash,
       initialized: normalized.initialized,
     });
     syncCurateDiscoveryBacklog(db, normalized.pendingDiscoveries);
     writeActiveClaim(db, normalized.activeClaim);
-    clearCommunitySummaryInputFingerprints(db);
   });
 }

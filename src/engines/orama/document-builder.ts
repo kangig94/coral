@@ -417,10 +417,16 @@ function tokenizeScriptRuns(
   for (const run of raw.matchAll(TOKEN_SCRIPT_RUN_PATTERN)) {
     const value = run[0];
     if (HANGUL_SCRIPT_PATTERN.test(value) && analyzer !== null) {
-      tokens.push(...tokenizeKiwiHangulRun(value, analyzer, normalizationCache, withCache));
+      // Append without spread to avoid a call-stack overflow on very long runs
+      // (see search-channels.ts ngram note).
+      for (const token of tokenizeKiwiHangulRun(value, analyzer, normalizationCache, withCache)) {
+        tokens.push(token);
+      }
       continue;
     }
-    tokens.push(...tokenizeIntlWords(value, normalizationCache, withCache));
+    for (const token of tokenizeIntlWords(value, normalizationCache, withCache)) {
+      tokens.push(token);
+    }
   }
 
   return uniqueTokens(tokens);

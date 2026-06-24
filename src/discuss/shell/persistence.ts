@@ -2,6 +2,7 @@ import { buildDiscussWatchState, buildWatchEvents, DiscussWatchReadError, type W
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type { Result } from '../session-types.js';
 import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 import { DiscussStaleWriteError } from './session-store.js';
 import { type DiscussContext } from './types.js';
 import { ABORT_REASON, DiscussManagerError } from './errors.js';
@@ -76,7 +77,11 @@ export function afterCommit(
   session.watchBuffer.events.push(...watchEvents);
   for (const event of watchEvents) {
     for (const subscriber of session.watchSubscribers) {
-      subscriber(event);
+      try {
+        subscriber(event);
+      } catch (error: unknown) {
+        backendLog.warn(`Discuss watch subscriber failed for ${sessionId}: ${errorMessage(error)}`);
+      }
     }
   }
 
@@ -156,15 +161,7 @@ export async function appendRuntimeEvents(
       return snapshot;
     } catch (error: unknown) {
       if (error instanceof DiscussStaleWriteError) {
-        const seqBefore = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
         syncLiveSnapshot(ctx, sessionId);
-        const seqAfter = ctx.sessions.get(sessionId)?.snapshot.lastAppliedSeq;
-        if (seqBefore !== undefined && seqAfter === seqBefore) {
-          backendLog.warn(
-            `appendRuntimeEvents: stale write for ${sessionId} not recoverable (seq stuck at ${seqBefore})`,
-          );
-          return null;
-        }
         continue;
       }
       throw error;

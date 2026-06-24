@@ -81,40 +81,37 @@ function asSessionProviderFailedEvent(input: ResolvableCoralEventInput<unknown, 
 }
 
 describe('terminal materializer turn failure diagnostics', () => {
-  it.each(DIAGNOSTIC_CASES)(
-    'preserves %s/%s through session fault materialization and describers',
-    (reason, phase) => {
-      const recorder = createContextRecorder();
-      const expectedDiagnostic = diagnostic(reason, phase);
+  it.each(DIAGNOSTIC_CASES)('preserves %s/%s through session fault materialization and describers', (reason, phase) => {
+    const recorder = createContextRecorder();
+    const expectedDiagnostic = diagnostic(reason, phase);
 
-      const outcome = materializeProviderFailureCauseInCommit(
-        recorder.c,
-        providerRequestFailed({
-          provider: 'claude',
-          message: `${reason} provider failure`,
-          diagnostic: expectedDiagnostic,
-        }),
-        OPTIONS,
-      );
+    const outcome = materializeProviderFailureCauseInCommit(
+      recorder.c,
+      providerRequestFailed({
+        provider: 'claude',
+        message: `${reason} provider failure`,
+        diagnostic: expectedDiagnostic,
+      }),
+      OPTIONS,
+    );
 
-      expect(outcome).toEqual({
-        kind: 'failed',
-        causeRef: recorder.appended[0]?.token,
-      });
-      expect(recorder.appended[0]?.input.type).toBe('session.provider_failed');
+    expect(outcome).toEqual({
+      kind: 'failed',
+      causeRef: recorder.appended[0]?.token,
+    });
+    expect(recorder.appended[0]?.input.type).toBe('session.provider_failed');
 
-      const body = sessionProviderFailedBodySchema.parse(recorder.appended[0]?.input.body);
-      expect(body.diagnostic?.reason).toBe(reason);
-      expect(body.diagnostic?.phase).toBe(phase);
-      expect(body.diagnostic).toEqual(expectedDiagnostic);
+    const body = sessionProviderFailedBodySchema.parse(recorder.appended[0]?.input.body);
+    expect(body.diagnostic?.reason).toBe(reason);
+    expect(body.diagnostic?.phase).toBe(phase);
+    expect(body.diagnostic).toEqual(expectedDiagnostic);
 
-      const describer = sessionsEventDescribers.get('session:session.provider_failed');
-      expect(describer).toBeDefined();
-      const description = describer?.(asSessionProviderFailedEvent(recorder.appended[0].input));
-      expect(description).toContain(`reason=${reason}`);
-      expect(description).toContain(`phase=${phase}`);
-      expect(description).toContain(`child output for ${reason}`);
-      expect(description).toContain(`transcript output for ${phase}`);
-    },
-  );
+    const describer = sessionsEventDescribers.get('session:session.provider_failed');
+    expect(describer).toBeDefined();
+    const description = describer?.(asSessionProviderFailedEvent(recorder.appended[0].input));
+    expect(description).toContain(`reason=${reason}`);
+    expect(description).toContain(`phase=${phase}`);
+    expect(description).toContain(`child output for ${reason}`);
+    expect(description).toContain(`transcript output for ${phase}`);
+  });
 });

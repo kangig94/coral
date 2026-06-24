@@ -13,6 +13,7 @@ import {
 import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
 import { createSearchRequest, runRetrieval } from '#src/kb/ops/search-runner.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
+import { createBuiltinTextRole } from '#src/kb/search/text-retrieval.js';
 import type {
   RetrievalDiagnostic,
   RetrievalHit,
@@ -96,7 +97,10 @@ function indexFor(slug = 'fallback-text'): KbIndex {
   };
 }
 
-function runtimeWith(roles: readonly { readonly role: RetrievalRole; readonly criticality?: 'core' }[]): KbRuntime {
+function runtimeWith(
+  roles: readonly { readonly role: RetrievalRole; readonly criticality?: 'core' }[],
+  ftsWarnings: readonly string[] = [],
+): KbRuntime {
   const roleRegistry = createRoleRegistry();
   for (const item of roles) {
     roleRegistry.registerBuiltin(
@@ -113,7 +117,7 @@ function runtimeWith(roles: readonly { readonly role: RetrievalRole; readonly cr
       return text.trim().toLowerCase().split(/\s+/u).filter(Boolean);
     },
     warnings() {
-      return [];
+      return ftsWarnings;
     },
   };
   const backedFts: Backed<FtsRetrieval> = {
@@ -297,5 +301,25 @@ describe('search runner role failure isolation', () => {
       retrievalDiagnostics: [diagnostic],
     });
     expect(text.search).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats stale tokenizer-tier FTS indexes as degraded text search', async () => {
+    const rt = runtimeWith([], ['fts_index_stale_tier']);
+    rt.roleRegistry.registerBuiltin(createBuiltinTextRole(rt), { criticality: 'core' });
+
+    const response = await runRetrieval(rt, createSearchRequest('fallback', 5, 'all', 'text'));
+
+    expect(response).toMatchObject({
+      mode: 'text',
+      results: [],
+      retrievalDiagnostics: [
+        {
+          roleId: 'text',
+          code: 'binding_missing',
+          recoverable: true,
+          publicText: 'kb_search_degraded_until_coordinator_rebuild',
+        },
+      ],
+    });
   });
 });
