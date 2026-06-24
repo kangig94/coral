@@ -19,12 +19,8 @@ describe('turn recovery budget', () => {
   it('keeps the default no-progress recovery window below workflow stale recovery', () => {
     expect(totalNoProgressRecoveryWindowMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(316_500);
     expect(budgetUpperBoundMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(600_000);
-    expect(totalNoProgressRecoveryWindowMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(
-      DEFAULT_STALE_TIMEOUT_MS,
-    );
-    expect(budgetUpperBoundMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(
-      DEFAULT_STALE_TIMEOUT_MS,
-    );
+    expect(totalNoProgressRecoveryWindowMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
+    expect(budgetUpperBoundMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
     expect(isBelowWorkflowStaleTimeout(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(true);
   });
 

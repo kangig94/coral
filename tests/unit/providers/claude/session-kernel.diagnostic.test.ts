@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { bindAppServerLease, getAppServerNotificationHandler } from '#src/providers/app-server.js';
-import type { ProviderEventBody, ProviderRequest, ProviderRuntime, ProviderServerLease } from '#src/providers/contract.js';
+import type {
+  ProviderEventBody,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderServerLease,
+} from '#src/providers/contract.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { brokerNotificationMethods, type TurnFailureDiagnostic } from '#src/providers/claude/appserver/protocol.js';
 import { claudeSessionKernel } from '#src/providers/claude/session-kernel.js';

@@ -172,9 +172,7 @@ export async function recoverStaleAtom(
       // Resume admission has already launched a live replacement job. Treat a
       // late claim miss as non-fatal so workflow ownership follows that job
       // instead of orphaning it behind the stale job's protective lease.
-      options.onProgress(
-        formatAtomProgress(atom, 'resumed; continuation lease claim was already unavailable'),
-      );
+      options.onProgress(formatAtomProgress(atom, 'resumed; continuation lease claim was already unavailable'));
     }
 
     const launchState = await executionSvc.awaitLaunch(resumed.job, BOOTSTRAP_TIMEOUT_MS);

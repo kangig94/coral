@@ -3,7 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { advanceTurnPhase, SingleSessionController, type TurnPhase } from '#src/providers/claude/appserver/controller.js';
+import {
+  advanceTurnPhase,
+  SingleSessionController,
+  type TurnPhase,
+} from '#src/providers/claude/appserver/controller.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';

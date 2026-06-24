@@ -207,7 +207,9 @@ type ControllerTurnNotification = Extract<
   { method: 'turn/progress' | 'turn/completed' | 'turn/failed' }
 >;
 
-function isControllerTurnNotification(notification: ControllerNotification): notification is ControllerTurnNotification {
+function isControllerTurnNotification(
+  notification: ControllerNotification,
+): notification is ControllerTurnNotification {
   return notification.method.startsWith('turn/');
 }
 
@@ -233,10 +235,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
 
     expect(terminated).toBe(false);
     expect(harness.children).toHaveLength(1);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([
-      'original sent prompt',
-      'original sent prompt',
-    ]);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['original sent prompt', 'original sent prompt']);
     expect(harness.startedTurns).toEqual(['turn-1']);
   });
 
@@ -258,9 +257,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
       resume: true,
     });
     expect(harness.children[0]?.killSignals).toEqual(['SIGTERM']);
-    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([
-      'registered prompt must not duplicate',
-    ]);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['registered prompt must not duplicate']);
     const continuation = unwrapPaste(harness.children[1]?.writes[0] ?? '');
     expect(continuation).toContain('unanswered user message');
     expect(continuation).not.toContain('registered prompt must not duplicate');
@@ -273,15 +270,16 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const completed = harness.notifications.find(isControllerTurnCompleted);
     expect(completed?.params.brokerTurnId).toBe('turn-1');
     expect(completed?.params.result).toBe('recovered answer');
-    expect(turnNotifications(harness.notifications).every((notification) => {
-      return notification.params.brokerTurnId === 'turn-1';
-    })).toBe(true);
+    expect(
+      turnNotifications(harness.notifications).every((notification) => {
+        return notification.params.brokerTurnId === 'turn-1';
+      }),
+    ).toBe(true);
   });
 
   it('fires registered idle recovery within the assistant-start budget', async () => {
     const prompt = 'registered prompt then silence';
-    const assistantStartBudgetMs =
-      DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
+    const assistantStartBudgetMs = DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
     const fixture = createTranscriptFixture();
     try {
       const harness = createControllerHarness();
@@ -316,9 +314,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
       const recoveredTurn = activeTurn(harness.internals);
       expect(recoveredTurn.replacementAttempts).toBe(1);
       expect(recoveredTurn.continuationPhase).toBe('registered');
-      expect(
-        harness.notifications.some((notification) => notification.method === 'turn/failed'),
-      ).toBe(false);
+      expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
     } finally {
       fixture.cleanup();
     }
@@ -348,9 +344,11 @@ describe('Claude phase-specific turn-stall recovery', () => {
     expect(continuation).toContain('partial assistant response');
     expect(continuation).not.toContain(originalPrompt);
     expect(harness.startedTurns).toEqual(['turn-1']);
-    expect(turnNotifications(harness.notifications).every((notification) => {
-      return notification.params.brokerTurnId === 'turn-1';
-    })).toBe(true);
+    expect(
+      turnNotifications(harness.notifications).every((notification) => {
+        return notification.params.brokerTurnId === 'turn-1';
+      }),
+    ).toBe(true);
   });
 
   it('completes an ending turn from parsed transcript fields after the finalization grace', async () => {

@@ -30,9 +30,7 @@ export const sessionProviderFailureReasonSchema = z.enum(['session_unavailable',
 export type SessionProviderFailureReason = z.infer<typeof sessionProviderFailureReasonSchema>;
 
 export const sessionProviderFailureDiagnosticReasonSchema = turnFailureDiagnosticReasonSchema;
-export type SessionProviderFailureDiagnosticReason = z.infer<
-  typeof sessionProviderFailureDiagnosticReasonSchema
->;
+export type SessionProviderFailureDiagnosticReason = z.infer<typeof sessionProviderFailureDiagnosticReasonSchema>;
 
 export const sessionProviderFailureDiagnosticPhaseSchema = turnFailureDiagnosticPhaseSchema;
 export type SessionProviderFailureDiagnosticPhase = z.infer<typeof sessionProviderFailureDiagnosticPhaseSchema>;

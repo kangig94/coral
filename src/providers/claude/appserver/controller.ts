@@ -613,13 +613,12 @@ export class SingleSessionController {
     if (phase === 'registered') {
       return now - turn.phaseEnteredAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-start'].assistantStartIdleMs;
     }
-    return now - turn.lastSemanticProgressAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs;
+    return (
+      now - turn.lastSemanticProgressAt >= DEFAULT_TURN_RECOVERY_BUDGET['assistant-progress'].assistantProgressIdleMs
+    );
   }
 
-  private async recoverByRespawningChild(
-    turn: ActiveTurnState,
-    phase: 'registered' | 'responding',
-  ): Promise<boolean> {
+  private async recoverByRespawningChild(turn: ActiveTurnState, phase: 'registered' | 'responding'): Promise<boolean> {
     if (turn.replacementAttempts >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts) {
       this.failActiveTurn(
         turn,
@@ -667,15 +666,15 @@ export class SingleSessionController {
       }
       const message = this.errorMessage(error);
       if (turn.replacementAttempts >= DEFAULT_TURN_RECOVERY_BUDGET.replacement.respawnAttempts) {
-        this.failActiveTurn(turn, `Claude child respawn recovery failed after ${turn.replacementAttempts} attempts: ${message}`);
+        this.failActiveTurn(
+          turn,
+          `Claude child respawn recovery failed after ${turn.replacementAttempts} attempts: ${message}`,
+        );
         return true;
       }
       turn.continuationSentAt = Date.now();
       turn.continuationPhase = phase;
-      this.emitTurnProgress(
-        turn.brokerTurnId,
-        `Claude child respawn recovery attempt ${attempt} failed: ${message}`,
-      );
+      this.emitTurnProgress(turn.brokerTurnId, `Claude child respawn recovery attempt ${attempt} failed: ${message}`);
       return false;
     }
   }

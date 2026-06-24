@@ -8,10 +8,7 @@ import type {
   ProviderTerminalEventBody,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
-import {
-  sessionProviderFailureDiagnosticSchema,
-  type SessionProviderFailureDiagnostic,
-} from '../../sessions/fault.js';
+import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../sessions/fault.js';
 import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -370,11 +367,7 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
   return buildFailedTerminal('', state.prepared.model, nowMs - state.startedAt, outcome.message, outcome.diagnostic);
 }
 
-function buildAbortedTerminal(
-  model: string | undefined,
-  startedAt: number,
-  nowMs: number,
-): ProviderTerminalEventBody {
+function buildAbortedTerminal(model: string | undefined, startedAt: number, nowMs: number): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
