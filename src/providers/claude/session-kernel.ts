@@ -122,6 +122,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 
       state.turnRequested = true;
       const startParams = mapTurnStartParams(state.prepared.prompt, state.brokerSessionKey, runtime.ids);
+      state.brokerTurnId = startParams.brokerTurnId;
       const startResult = await brokerRpc<Record<string, unknown>>(lease, 'turn/start', startParams);
       state.brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
@@ -269,13 +270,11 @@ function applyNotification(
 
   const isTurnEvent =
     message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
-  if (
-    isTurnEvent &&
-    state.brokerTurnId !== undefined &&
-    typeof params.brokerTurnId === 'string' &&
-    params.brokerTurnId !== state.brokerTurnId
-  ) {
-    return;
+  if (isTurnEvent) {
+    const messageBrokerTurnId = readString(params.brokerTurnId);
+    if (messageBrokerTurnId === undefined || messageBrokerTurnId !== state.brokerTurnId) {
+      return;
+    }
   }
 
   const updatedConversationRef = readTurnConversationRef(params);

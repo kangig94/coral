@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
 
@@ -87,6 +87,7 @@ type ActiveTurnState = {
   phaseEnteredAt: number;
   lastSemanticProgressAt: number;
   promptTranscriptOffset: number;
+  transcriptPath: string | null;
   transcriptOffset: number;
   transcriptLineStartOffset: number;
   transcriptRemainder: string;
@@ -116,6 +117,10 @@ type ControllerTurnStartResult = Omit<TurnStartResult, 'brokerSessionKey'>;
 type ControllerSessionProbeParams = Omit<SessionProbeParams, 'brokerSessionKey'>;
 type ControllerTurnStartParams = Omit<TurnStartParams, 'brokerSessionKey'>;
 type ControllerTurnInterruptParams = Omit<TurnInterruptParams, 'brokerSessionKey'>;
+type TranscriptCursor = {
+  path: string | null;
+  offset: number;
+};
 
 type ChildBinding = {
   generation: number;
@@ -235,16 +240,17 @@ export class SingleSessionController {
     }
 
     const now = Date.now();
-    const transcriptOffset = await this.readTranscriptOffsetBeforeTurn();
+    const transcriptCursor = await this.readTranscriptCursorBeforeTurn();
     const turn: ActiveTurnState = {
       brokerTurnId: params.brokerTurnId,
       startedAt: now,
       phase: 'sent',
       phaseEnteredAt: now,
       lastSemanticProgressAt: now,
-      promptTranscriptOffset: transcriptOffset,
-      transcriptOffset,
-      transcriptLineStartOffset: transcriptOffset,
+      promptTranscriptOffset: transcriptCursor.offset,
+      transcriptPath: transcriptCursor.path,
+      transcriptOffset: transcriptCursor.offset,
+      transcriptLineStartOffset: transcriptCursor.offset,
       transcriptRemainder: '',
       transcriptRemainderBytes: 0,
       transcriptDecoder: new StringDecoder('utf8'),
@@ -508,16 +514,22 @@ export class SingleSessionController {
     return raceTimeout(closed, timeoutMs);
   }
 
-  private async readTranscriptOffsetBeforeTurn(): Promise<number> {
+  private async readTranscriptCursorBeforeTurn(): Promise<TranscriptCursor> {
     const startedAt = Date.now();
     const waitForExistingTranscript = this.resumeExistingConversation;
     while (true) {
       const path = this.resolveTranscriptPath();
       if (path !== null) {
-        return safeFileSize(path);
+        return {
+          path,
+          offset: safeFileSize(path),
+        };
       }
       if (!waitForExistingTranscript || Date.now() - startedAt >= RESUME_TRANSCRIPT_WAIT_MS) {
-        return 0;
+        return {
+          path: null,
+          offset: 0,
+        };
       }
       await delay(TRANSCRIPT_POLL_MS);
     }
@@ -752,6 +764,9 @@ export class SingleSessionController {
     if (path === null) {
       return;
     }
+    if (turn.transcriptPath !== path) {
+      this.resetTurnTranscriptCursor(turn, path);
+    }
 
     const read = readFileSlice(path, turn.transcriptOffset);
     if (read === null) {
@@ -766,6 +781,16 @@ export class SingleSessionController {
     if (text.length > 0) {
       this.consumeTranscriptText(turn, text);
     }
+  }
+
+  private resetTurnTranscriptCursor(turn: ActiveTurnState, path: string): void {
+    turn.transcriptPath = path;
+    turn.promptTranscriptOffset = 0;
+    turn.transcriptOffset = 0;
+    turn.transcriptLineStartOffset = 0;
+    turn.transcriptRemainder = '';
+    turn.transcriptRemainderBytes = 0;
+    turn.transcriptDecoder = new StringDecoder('utf8');
   }
 
   private consumeTranscriptText(turn: ActiveTurnState, text: string): void {
@@ -1157,25 +1182,36 @@ export class SingleSessionController {
     if (conversationRef === null) {
       return null;
     }
-    if (this.transcriptPath !== null && existsSync(this.transcriptPath)) {
+    const expectedFilename = `${conversationRef}.jsonl`;
+    if (
+      this.transcriptPath !== null &&
+      basename(this.transcriptPath) === expectedFilename &&
+      existsSync(this.transcriptPath)
+    ) {
       return this.transcriptPath;
     }
+    this.transcriptPath = null;
 
     // The daemon preserves CLAUDE_CONFIG_DIR and forwards it to spawned `claude`
     // children, so their session logs land under the same config dir we read here.
     const projectsRoot = join(resolveClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR, homedir()), 'projects');
     try {
+      let match: string | null = null;
       const projectEntries = readdirSync(projectsRoot, { withFileTypes: true });
       for (const entry of projectEntries) {
         if (!entry.isDirectory()) {
           continue;
         }
-        const candidate = join(projectsRoot, entry.name, `${conversationRef}.jsonl`);
+        const candidate = join(projectsRoot, entry.name, expectedFilename);
         if (existsSync(candidate)) {
-          this.transcriptPath = candidate;
-          return candidate;
+          if (match !== null) {
+            return null;
+          }
+          match = candidate;
         }
       }
+      this.transcriptPath = match;
+      return match;
     } catch {
       return null;
     }

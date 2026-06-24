@@ -185,9 +185,23 @@ export const CLAUDE_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
   parseAuthOutput: parseClaudeAuthStatus,
 });
 
-let claudeDetector: ReturnType<typeof createCliDetector> | null = null;
+const claudeDetectorsByPort = new WeakMap<
+  CliDetectorProcessPort,
+  WeakMap<CliDetectorEnvPort, ReturnType<typeof createCliDetector>>
+>();
 
 export function detectClaudeCli(processPort: CliDetectorProcessPort, envPort: CliDetectorEnvPort): Promise<CliInfo> {
-  claudeDetector ??= createCliDetector(processPort, envPort, CLAUDE_DETECTOR_CONFIG);
-  return claudeDetector.detect();
+  let detectorsByEnv = claudeDetectorsByPort.get(processPort);
+  if (detectorsByEnv === undefined) {
+    detectorsByEnv = new WeakMap();
+    claudeDetectorsByPort.set(processPort, detectorsByEnv);
+  }
+
+  let detector = detectorsByEnv.get(envPort);
+  if (detector === undefined) {
+    detector = createCliDetector(processPort, envPort, CLAUDE_DETECTOR_CONFIG);
+    detectorsByEnv.set(envPort, detector);
+  }
+
+  return detector.detect();
 }

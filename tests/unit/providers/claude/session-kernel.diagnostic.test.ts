@@ -10,6 +10,7 @@ import type {
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { brokerNotificationMethods, type TurnFailureDiagnostic } from '#src/providers/claude/appserver/protocol.js';
 import { claudeSessionKernel } from '#src/providers/claude/session-kernel.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 type MockLease = ProviderServerLease & {
   readonly rpcMock: ReturnType<typeof vi.fn>;
@@ -112,6 +113,105 @@ function terminalEvent(events: readonly ProviderEventBody[]): Extract<ProviderEv
 }
 
 describe('Claude session-kernel turn failure diagnostics', () => {
+  it('ignores completed notifications for a different broker turn before turn/start returns', async () => {
+    const startGate = createDeferred<Record<string, unknown>>();
+    const rpcMock = vi.fn();
+    const lease: MockLease = {
+      ...makeLease(),
+      rpcMock,
+      rpc: (async (method: string, params: Record<string, unknown>) => {
+        rpcMock(method, params);
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: 'broker-claude-diagnostic',
+            bootstrapSignature: BOOTSTRAP_SIGNATURE,
+            sessionId: 'claude-session-diagnostic',
+            conversationRef: 'claude-session-diagnostic',
+          };
+        }
+        if (method === 'turn/start') {
+          return startGate.promise;
+        }
+        throw new Error(`Unexpected Claude diagnostic RPC: ${method}`);
+      }) as ProviderServerLease['rpc'],
+    };
+    const runtime = makeRuntime();
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+
+      await vi.waitFor(() => {
+        expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+      });
+
+      getAppServerNotificationHandler(runtime)?.({
+        method: brokerNotificationMethods.turnCompleted,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'stale-turn',
+          result: 'stale result',
+        },
+      });
+
+      startGate.resolve({
+        brokerTurnId: 'test-uuid',
+        sessionId: 'claude-session-diagnostic',
+        conversationRef: 'claude-session-diagnostic',
+      });
+
+      getAppServerNotificationHandler(runtime)?.({
+        method: brokerNotificationMethods.turnCompleted,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'test-uuid',
+          result: 'real result',
+        },
+      });
+
+      const terminal = terminalEvent(await eventsPromise);
+      expect(terminal.terminal.content).toBe('real result');
+    } finally {
+      clearLease();
+    }
+  });
+
+  it('ignores turn terminal notifications without a broker turn id', async () => {
+    const lease = makeLease();
+    const runtime = makeRuntime();
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+
+      await vi.waitFor(() => {
+        expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+      });
+
+      getAppServerNotificationHandler(runtime)?.({
+        method: brokerNotificationMethods.turnCompleted,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          result: 'missing turn id result',
+        },
+      });
+
+      getAppServerNotificationHandler(runtime)?.({
+        method: brokerNotificationMethods.turnCompleted,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          result: 'valid result',
+        },
+      });
+
+      const terminal = terminalEvent(await eventsPromise);
+      expect(terminal.terminal.content).toBe('valid result');
+    } finally {
+      clearLease();
+    }
+  });
+
   it('materializes a broker turn diagnostic into the provider failure cause', async () => {
     const lease = makeLease();
     const runtime = makeRuntime();
