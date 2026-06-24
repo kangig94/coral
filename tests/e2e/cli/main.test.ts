@@ -63,9 +63,8 @@ describe('cli main — help and structure', () => {
   it('shows wait subcommand help', () => {
     const { stdout, status } = runCli(['wait', '--help']);
     expect(status).toBe(0);
-    expect(stdout).toContain('--jobs');
-    expect(stdout).toContain('--cursor');
-    expect(stdout).toContain('--embed');
+    expect(stdout).toContain('jobs [options] <jobIds...>');
+    expect(stdout).not.toContain('--jobs');
   });
 
   it('shows discuss subcommand help', () => {
@@ -115,9 +114,16 @@ describe('cli main — output format', () => {
   });
 });
 
-describe('cli main — wait --jobs validation', () => {
-  it('exits 2 and emits error when --jobs is empty', () => {
-    const { stderr, status } = runCli(['wait', '--jobs', '']);
+describe('cli main — wait jobs validation', () => {
+  it('shows positional wait jobs help', () => {
+    const { stdout, status } = runCli(['wait', 'jobs', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('Usage: coral-cli wait jobs');
+    expect(stdout).toContain('<jobIds...>');
+  });
+
+  it('exits 2 and emits error when job ids are empty', () => {
+    const { stderr, status } = runCli(['wait', 'jobs', '']);
     expect(status).toBe(2);
     expect(stderr).toContain('job');
   });

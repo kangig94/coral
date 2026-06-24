@@ -264,7 +264,7 @@ describe('cli-resolve.mjs', () => {
     const result = runHook(CLI_RESOLVE_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
-      tool_input: { command: 'coral-cli wait --jobs jb-1' },
+      tool_input: { command: 'coral-cli wait jobs jb-1' },
     });
 
     const output = expectCliResolveOutput(result);
@@ -396,7 +396,7 @@ describe('cli-resolve.mjs', () => {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: {
-        command: `node "${cliBundle}" wait --jobs jb-1 --embed > /tmp/out.txt 2>&1`,
+        command: `node "${cliBundle}" wait jobs jb-1 --embed > /tmp/out.txt 2>&1`,
       },
     });
 
@@ -411,7 +411,7 @@ describe('cli-resolve.mjs', () => {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
       tool_input: {
-        command: `node "${cliBundle}" wait --jobs jb-1 > /tmp/out.jsonl 2>&1; echo "exit=$?"`,
+        command: `node "${cliBundle}" wait jobs jb-1 > /tmp/out.jsonl 2>&1; echo "exit=$?"`,
       },
     });
 

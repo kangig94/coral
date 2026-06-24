@@ -933,12 +933,14 @@ describe('cli format', () => {
 
     it('formats waiting output with pending jobs', () => {
       expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4')).toBe(
-        'Still waiting; jobs: job-1, job-2 (cursor: cursor-4)',
+        'Still waiting; jobs: job-1, job-2. Run coral-cli wait jobs job-1 job-2 again to continue waiting. (cursor: cursor-4)',
       );
     });
 
     it('formats waiting output without pending jobs', () => {
-      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe('Still waiting; jobs: none');
+      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: [] }, null)).toBe(
+        'Still waiting; jobs: none. Run coral-cli wait jobs <job_id> again to continue waiting.',
+      );
     });
 
     it('renders TTY wait lines with carriage return and padding', () => {

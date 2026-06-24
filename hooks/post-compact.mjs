@@ -79,9 +79,9 @@ await failOpen(async () => {
   ];
 
   if (liveJobs.length > 0) {
-    const jobIds = liveJobs.map((job) => job.jobId).join(',');
+    const jobIds = liveJobs.map((job) => job.jobId).join(' ');
     lines.push('Jobs were still active before compaction.');
-    lines.push(`Run: ${bridge} wait --jobs "${jobIds}"`);
+    lines.push(`Run: ${bridge} wait jobs ${jobIds}`);
     lines.push('');
   }
 
@@ -92,7 +92,7 @@ await failOpen(async () => {
     }
     lines.push('');
     lines.push('For inline preview, rerun one job with:');
-    lines.push(`- ${bridge} wait --jobs "<job-id>" --embed`);
+    lines.push(`- ${bridge} wait jobs <job-id> --embed`);
   }
 
   console.log(JSON.stringify({

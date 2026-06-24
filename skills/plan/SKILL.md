@@ -133,7 +133,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
-    `coral-cli wait --jobs "<job>"` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there.
+    `coral-cli wait jobs <job>` → the terminal output prints `Result path: <path>`; read that artifact for the full workflow result and locate the resolver's synthesis section there.
 
     **4b. Post-Round Processing**
 

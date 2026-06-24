@@ -4,7 +4,7 @@ export type CommandClass = 'read' | 'mutate' | 'subscribe';
 
 export type StaticCommandPath =
   | 'jobs'
-  | 'wait'
+  | 'wait jobs'
   | 'abort'
   | 'workflow'
   | 'expansion list'
@@ -50,7 +50,7 @@ export type StaticCommandPath =
 
 export const commandClassMap = {
   jobs: 'read',
-  wait: 'subscribe',
+  'wait jobs': 'subscribe',
   abort: 'mutate',
   workflow: 'mutate',
   'expansion list': 'read',
@@ -100,6 +100,7 @@ export const commandContainerPaths = new Set<string>([
   'discuss',
   'expansion',
   'kb',
+  'wait',
   'kb source',
   'kb community',
   'kb wiki',

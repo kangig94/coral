@@ -29,7 +29,7 @@ export function parseIntegerFlag(flagName: string, value: string): number {
 
 export function parseJobIds(raw: string): string[] {
   const jobIds: string[] = [];
-  for (const entry of raw.split(',')) {
+  for (const entry of raw.split(/[,\s]+/u)) {
     const trimmed = entry.trim();
     if (trimmed.length > 0) {
       jobIds.push(trimmed);

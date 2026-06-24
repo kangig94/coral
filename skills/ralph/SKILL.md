@@ -170,7 +170,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
           go into one delegated call; independent ACs get separate parallel calls.
        `coral-cli <other-host> -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d`
        Collect all job IDs from the detached launch lines.
-    2. `coral-cli wait --jobs "<job-id list>" --embed` → each terminal block always prints `Result path: <path>`; read that path for the full artifact and use inline preview text only as a convenience.
+    2. `coral-cli wait jobs <job-id...> --embed` → each terminal block always prints `Result path: <path>`; read that path for the full artifact and use inline preview text only as a convenience.
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
     4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.
@@ -198,7 +198,7 @@ Strip flags before passing the prompt to execution. Preserve original flags in t
        ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
        ⛔ Do not promote KB notes. Implementation only.
        1. `coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d`
-          → `coral-cli wait --jobs "<job>" --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
+          → `coral-cli wait jobs <job> --embed` → the terminal output always includes `Result path: <path>`; read that path for the full artifact and treat inline preview text as optional convenience.
        2. Verify changes yourself: read changed files, compare against AC.
        3. If AC not met → re-run delegation. If met → report completion.
        ```

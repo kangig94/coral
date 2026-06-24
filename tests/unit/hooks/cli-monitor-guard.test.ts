@@ -42,7 +42,7 @@ describe('cli-monitor-guard.mjs', () => {
     const result = runHook(CLI_MONITOR_GUARD_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
-      tool_input: { command: 'coral-cli wait --jobs jb-1' },
+      tool_input: { command: 'coral-cli wait jobs jb-1' },
     });
 
     expect(result.status).toBe(0);
@@ -53,7 +53,7 @@ describe('cli-monitor-guard.mjs', () => {
     const result = runHook(CLI_MONITOR_GUARD_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Monitor',
-      tool_input: { command: 'coral-cli wait --jobs jb-1' },
+      tool_input: { command: 'coral-cli wait jobs jb-1' },
     });
 
     const out = parseDenyOutput(result.stdout);
@@ -65,7 +65,7 @@ describe('cli-monitor-guard.mjs', () => {
     const result = runHook(CLI_MONITOR_GUARD_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Monitor',
-      tool_input: { command: `node "${cliBundle}" wait --jobs jb-1 --embed` },
+      tool_input: { command: `node "${cliBundle}" wait jobs jb-1 --embed` },
     });
 
     expect(parseDenyOutput(result.stdout)?.decision).toBe('deny');
@@ -75,7 +75,7 @@ describe('cli-monitor-guard.mjs', () => {
     const result = runHook(CLI_MONITOR_GUARD_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Monitor',
-      tool_input: { command: 'echo start && coral-cli wait --jobs jb-1' },
+      tool_input: { command: 'echo start && coral-cli wait jobs jb-1' },
     });
 
     expect(parseDenyOutput(result.stdout)?.decision).toBe('deny');
