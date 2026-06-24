@@ -496,4 +496,55 @@ describe('Claude phase-specific turn-stall recovery', () => {
       activeTurnId: 'turn-1',
     });
   });
+
+  it('evicts a generated controller after a terminal turn queued during initial notification hold', async () => {
+    const children: FakeClaudeChild[] = [];
+    const ids = ['broker-queued-terminal', TEST_SESSION_ID];
+    const pool = new BrokerSessionPool({
+      spawnChild: () => {
+        const child = new FakeClaudeChild();
+        children.push(child);
+        return child;
+      },
+      ids: {
+        uuid: () => ids.shift() ?? TEST_SESSION_ID,
+      },
+      onTurnStarted: () => {},
+      stderrLimit: 1_024,
+    });
+    pools.push(pool);
+
+    const ensured = await pool.sessionEnsure({
+      cwd: '/workspace',
+      systemPromptHash: 'sha256:test',
+      permissionMode: 'default',
+    });
+    await pool.turnStart({
+      brokerSessionKey: ensured.brokerSessionKey,
+      brokerTurnId: 'turn-1',
+      prompt: 'queued terminal prompt',
+    });
+
+    const internals = (
+      pool as unknown as {
+        controllers: Map<string, { controller: SingleSessionController }>;
+      }
+    ).controllers.get(ensured.brokerSessionKey)?.controller as unknown as ControllerInternals;
+
+    processLine(internals, userPromptLine('queued terminal prompt'));
+    processLine(internals, assistantLine('queued terminal result', 'end_turn'));
+    processLine(internals, durationLine(25));
+    const turn = activeTurn(internals);
+
+    await internals.recoverStalledTurn(
+      turn,
+      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    );
+    await waitImmediate();
+    await waitImmediate();
+
+    await expect(pool.sessionProbe({ brokerSessionKey: ensured.brokerSessionKey })).resolves.toMatchObject({
+      status: 'missing',
+    });
+  });
 });

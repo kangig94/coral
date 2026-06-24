@@ -5,7 +5,12 @@ import { AbortError } from '../../runtime/abort.js';
 import type { IdPort, Runtime } from '../../runtime/ports.js';
 import type { EffortLevel, ProviderServerLease, ProviderServerSpec } from '../contract.js';
 import { deleteClaudeJsonlArtifactsForConversation, resolveClaudeProjectsRoot } from './artifacts.js';
-import type { SessionCloseResult, SessionEnsureResult, TurnStartResult } from './appserver/protocol.js';
+import {
+  brokerNotificationMethods,
+  type SessionCloseResult,
+  type SessionEnsureResult,
+  type TurnStartResult,
+} from './appserver/protocol.js';
 import { buildClaudeBootstrapSignature, buildClaudeProviderServerSpec } from './request-mapping.js';
 import type { PermissionMode } from './request-prep.js';
 
@@ -135,11 +140,19 @@ function applyOneShotNotification(
   }
 
   const brokerTurnId = readString(params.brokerTurnId);
+  const { sessionUpdated, turnProgress, turnCompleted, turnFailed } = brokerNotificationMethods;
+  const isTurnEvent =
+    message.method === turnProgress || message.method === turnCompleted || message.method === turnFailed;
+  if (isTurnEvent && (state.brokerTurnId === undefined || brokerTurnId !== state.brokerTurnId)) {
+    return;
+  }
+
   updateConversationRef(state, params);
-  if (message.method === 'turn/completed') {
-    if (state.brokerTurnId === undefined || brokerTurnId !== state.brokerTurnId) {
-      return;
-    }
+  if (message.method === sessionUpdated || message.method === turnProgress) {
+    return;
+  }
+
+  if (message.method === turnCompleted) {
     resolveTerminalOnce(state, {
       kind: 'completed',
       turn: {
@@ -151,10 +164,7 @@ function applyOneShotNotification(
     return;
   }
 
-  if (message.method === 'turn/failed') {
-    if (state.brokerTurnId === undefined || brokerTurnId !== state.brokerTurnId) {
-      return;
-    }
+  if (message.method === turnFailed) {
     resolveTerminalOnce(state, {
       kind: 'failed',
       message: buildTurnFailedMessage(params),

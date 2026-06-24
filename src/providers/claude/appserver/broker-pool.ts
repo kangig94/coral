@@ -224,11 +224,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
       return;
     }
 
-    this.emitNotification(routed);
-    if (notification.method === 'turn/completed' || notification.method === 'turn/failed') {
-      this.emitHostStats();
-      this.evictIdleControllerAfterTerminalTurn(brokerSessionKey, entry);
-    }
+    this.dispatchControllerNotification(brokerSessionKey, entry, routed);
   }
 
   private evictIdleControllerAfterTerminalTurn(brokerSessionKey: string, entry: ControllerEntry): void {
@@ -258,9 +254,21 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
       const queued = currentEntry.pendingNotifications;
       currentEntry.pendingNotifications = [];
       for (const notification of queued) {
-        this.emitNotification(notification);
+        this.dispatchControllerNotification(brokerSessionKey, currentEntry, notification);
       }
     });
+  }
+
+  private dispatchControllerNotification(
+    brokerSessionKey: string,
+    entry: ControllerEntry,
+    notification: ClaudeBrokerNotification,
+  ): void {
+    this.emitNotification(notification);
+    if (notification.method === 'turn/completed' || notification.method === 'turn/failed') {
+      this.emitHostStats();
+      this.evictIdleControllerAfterTerminalTurn(brokerSessionKey, entry);
+    }
   }
 
   private async removeController(brokerSessionKey: string): Promise<boolean> {

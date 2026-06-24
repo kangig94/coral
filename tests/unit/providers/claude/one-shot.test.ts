@@ -265,4 +265,123 @@ describe('runClaudeOneShotTurn', () => {
     await expect(turn).resolves.toBe('right result');
     expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
   });
+
+  it('does not let a stale turn notification change the transient JSONL cleanup target', async () => {
+    const home = '/home/user';
+    const projectsRoot = join(home, '.claude', 'projects');
+    const projectDir = join(projectsRoot, '-workspace-kb');
+    const jsonlPath = join(projectDir, 'conversation-1.jsonl');
+    const staleJsonlPath = join(projectDir, 'stale-conversation.jsonl');
+    const turnStarted = createDeferred<void>();
+    const broker = { notify: null as BrokerNotificationHandler | null };
+
+    const unlinkSync = vi.fn();
+    const storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'> = {
+      existsSync: (path) =>
+        path === projectsRoot || path === projectDir || path === jsonlPath || path === staleJsonlPath,
+      readdirSync: ((path: string) => {
+        if (path === projectsRoot) {
+          return [dirent('-workspace-kb', 'dir')];
+        }
+        if (path === projectDir) {
+          return [dirent('conversation-1.jsonl', 'file'), dirent('stale-conversation.jsonl', 'file')];
+        }
+        return [];
+      }) as unknown as StoragePort['readdirSync'],
+      unlinkSync,
+    };
+
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-1',
+          bootstrapSignature: {
+            cwd: params.cwd,
+            systemPromptHash: params.systemPromptHash,
+            permissionMode: params.permissionMode,
+          },
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+          activeTurnId: null,
+          initialized: true,
+        };
+      }
+
+      if (method === 'turn/start') {
+        turnStarted.resolve();
+        return {
+          brokerSessionKey: params.brokerSessionKey,
+          brokerTurnId: params.brokerTurnId,
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+        };
+      }
+
+      if (method === 'session/close') {
+        return {
+          brokerSessionKey: params.brokerSessionKey,
+          closed: true,
+        };
+      }
+
+      throw new Error(`unexpected RPC ${method}`);
+    });
+    const lease: ProviderServerLease = {
+      rpc: rpc as ProviderServerLease['rpc'],
+      subscribe(handler) {
+        broker.notify = handler;
+        return () => {};
+      },
+      release: vi.fn(),
+      closed: new Promise(() => {}),
+    };
+
+    const turn = runClaudeOneShotTurn(
+      {
+        storage,
+        env: { claudeConfigDir: () => `${home}/.claude` },
+        ids: {
+          uuid: () => 'turn-1',
+          sha256: (value) => `hash:${value}`,
+        },
+        acquireServer: vi.fn(async () => lease),
+      },
+      {
+        cwd: '/workspace/kb',
+        prompt: 'Classify this note.',
+      },
+    );
+
+    await turnStarted.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    const notify = broker.notify;
+    if (notify === null) {
+      throw new Error('expected broker subscription');
+    }
+    notify({
+      method: 'turn/completed',
+      params: {
+        brokerSessionKey: 'broker-1',
+        brokerTurnId: 'stale-turn',
+        sessionId: 'stale-conversation',
+        conversationRef: 'stale-conversation',
+        result: 'stale result',
+        isError: false,
+      },
+    });
+    notify({
+      method: 'turn/completed',
+      params: {
+        brokerSessionKey: 'broker-1',
+        brokerTurnId: 'turn-1',
+        result: 'right result',
+        isError: false,
+      },
+    });
+
+    await expect(turn).resolves.toBe('right result');
+    expect(unlinkSync).toHaveBeenCalledTimes(1);
+    expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
+  });
 });
