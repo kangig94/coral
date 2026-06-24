@@ -73,9 +73,9 @@ function makeLease(): MockLease {
   };
 }
 
-function makeRuntime(): ProviderRuntime {
+function makeRuntime(controller = new AbortController()): ProviderRuntime {
   return {
-    signal: new AbortController().signal,
+    signal: controller.signal,
     runCli: async () => {
       throw new Error('runCli should not be used by the Claude appserver kernel.');
     },
@@ -113,6 +113,103 @@ function terminalEvent(events: readonly ProviderEventBody[]): Extract<ProviderEv
 }
 
 describe('Claude session-kernel turn failure diagnostics', () => {
+  it('closes an ensured broker session when aborted before turn/start', async () => {
+    const controller = new AbortController();
+    const rpcMock = vi.fn(async (method: string) => {
+      if (method === 'session/ensure') {
+        controller.abort();
+        return {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          bootstrapSignature: BOOTSTRAP_SIGNATURE,
+          sessionId: 'claude-session-diagnostic',
+          conversationRef: 'claude-session-diagnostic',
+        };
+      }
+      if (method === 'session/close') {
+        return {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          closed: true,
+        };
+      }
+      throw new Error(`Unexpected Claude diagnostic RPC: ${method}`);
+    });
+    const lease: MockLease = {
+      ...makeLease(),
+      rpc: rpcMock as unknown as ProviderServerLease['rpc'],
+      rpcMock,
+    };
+    const runtime = makeRuntime(controller);
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const events = await collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+      const terminal = terminalEvent(events);
+
+      expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
+      expect(rpcMock.mock.calls.map(([method]) => method)).toEqual(['session/ensure', 'session/close']);
+    } finally {
+      clearLease();
+    }
+  });
+
+  it('interrupts the broker turn when aborted while turn/start is in flight', async () => {
+    const controller = new AbortController();
+    const startGate = createDeferred<Record<string, unknown>>();
+    const rpcMock = vi.fn();
+    const lease: MockLease = {
+      ...makeLease(),
+      rpcMock,
+      rpc: (async (method: string, params: Record<string, unknown>) => {
+        rpcMock(method, params);
+        if (method === 'session/ensure') {
+          return {
+            brokerSessionKey: 'broker-claude-diagnostic',
+            bootstrapSignature: BOOTSTRAP_SIGNATURE,
+            sessionId: 'claude-session-diagnostic',
+            conversationRef: 'claude-session-diagnostic',
+          };
+        }
+        if (method === 'turn/start') {
+          return startGate.promise;
+        }
+        if (method === 'turn/interrupt') {
+          return {
+            brokerTurnId: params.brokerTurnId,
+            interrupted: true,
+          };
+        }
+        throw new Error(`Unexpected Claude diagnostic RPC: ${method}`);
+      }) as ProviderServerLease['rpc'],
+    };
+    const runtime = makeRuntime(controller);
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+
+      await vi.waitFor(() => {
+        expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+      });
+      controller.abort();
+      startGate.resolve({
+        brokerTurnId: 'test-uuid',
+        sessionId: 'claude-session-diagnostic',
+        conversationRef: 'claude-session-diagnostic',
+      });
+
+      const terminal = terminalEvent(await eventsPromise);
+
+      expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
+      expect(rpcMock.mock.calls.map(([method]) => method)).toEqual(['session/ensure', 'turn/start', 'turn/interrupt']);
+      expect(rpcMock).toHaveBeenCalledWith('turn/interrupt', {
+        brokerSessionKey: 'broker-claude-diagnostic',
+        brokerTurnId: 'test-uuid',
+      });
+    } finally {
+      clearLease();
+    }
+  });
+
   it('ignores completed notifications for a different broker turn before turn/start returns', async () => {
     const startGate = createDeferred<Record<string, unknown>>();
     const rpcMock = vi.fn();

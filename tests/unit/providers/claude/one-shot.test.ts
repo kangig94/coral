@@ -384,4 +384,161 @@ describe('runClaudeOneShotTurn', () => {
     expect(unlinkSync).toHaveBeenCalledTimes(1);
     expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
   });
+
+  it('keeps the requested turn id when turn/start omits it from the response', async () => {
+    const home = '/home/user';
+    const projectsRoot = join(home, '.claude', 'projects');
+    const projectDir = join(projectsRoot, '-workspace-kb');
+    const jsonlPath = join(projectDir, 'conversation-1.jsonl');
+    const turnStarted = createDeferred<void>();
+    const brokerClosed = createDeferred<Error | void>();
+    const broker = { notify: null as BrokerNotificationHandler | null };
+
+    const unlinkSync = vi.fn();
+    const storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'> = {
+      existsSync: (path) => path === projectsRoot || path === projectDir || path === jsonlPath,
+      readdirSync: ((path: string) => {
+        if (path === projectsRoot) {
+          return [dirent('-workspace-kb', 'dir')];
+        }
+        if (path === projectDir) {
+          return [dirent('conversation-1.jsonl', 'file')];
+        }
+        return [];
+      }) as unknown as StoragePort['readdirSync'],
+      unlinkSync,
+    };
+
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-1',
+          bootstrapSignature: {
+            cwd: params.cwd,
+            systemPromptHash: params.systemPromptHash,
+            permissionMode: params.permissionMode,
+          },
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+          activeTurnId: null,
+          initialized: true,
+        };
+      }
+
+      if (method === 'turn/start') {
+        turnStarted.resolve();
+        return {
+          brokerSessionKey: params.brokerSessionKey,
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+        };
+      }
+
+      if (method === 'session/close') {
+        return {
+          brokerSessionKey: params.brokerSessionKey,
+          closed: true,
+        };
+      }
+
+      throw new Error(`unexpected RPC ${method}`);
+    });
+    const lease: ProviderServerLease = {
+      rpc: rpc as ProviderServerLease['rpc'],
+      subscribe(handler) {
+        broker.notify = handler;
+        return () => {};
+      },
+      release: vi.fn(),
+      closed: brokerClosed.promise,
+    };
+
+    const turn = runClaudeOneShotTurn(
+      {
+        storage,
+        env: { claudeConfigDir: () => `${home}/.claude` },
+        ids: {
+          uuid: () => 'turn-1',
+          sha256: (value) => `hash:${value}`,
+        },
+        acquireServer: vi.fn(async () => lease),
+      },
+      {
+        cwd: '/workspace/kb',
+        prompt: 'Classify this note.',
+      },
+    );
+
+    await turnStarted.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    const notify = broker.notify;
+    if (notify === null) {
+      throw new Error('expected broker subscription');
+    }
+    notify({
+      method: 'turn/completed',
+      params: {
+        brokerSessionKey: 'broker-1',
+        brokerTurnId: 'turn-1',
+        result: 'right result',
+        isError: false,
+      },
+    });
+    brokerClosed.resolve(new Error('broker closed after ignored completion'));
+
+    await expect(turn).resolves.toBe('right result');
+    expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
+  });
+
+  it('fails before turn/start when session/ensure omits the broker session key', async () => {
+    const storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'> = {
+      existsSync: () => false,
+      readdirSync: (() => []) as unknown as StoragePort['readdirSync'],
+      unlinkSync: vi.fn(),
+    };
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'session/ensure') {
+        return {
+          bootstrapSignature: {
+            cwd: params.cwd,
+            systemPromptHash: params.systemPromptHash,
+            permissionMode: params.permissionMode,
+          },
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+          activeTurnId: null,
+          initialized: true,
+        };
+      }
+      throw new Error(`unexpected RPC ${method}`);
+    });
+    const release = vi.fn();
+    const lease: ProviderServerLease = {
+      rpc: rpc as ProviderServerLease['rpc'],
+      subscribe: () => () => {},
+      release,
+      closed: new Promise(() => {}),
+    };
+
+    await expect(
+      runClaudeOneShotTurn(
+        {
+          storage,
+          env: { claudeConfigDir: () => '/home/user/.claude' },
+          ids: {
+            uuid: () => 'turn-1',
+            sha256: (value) => `hash:${value}`,
+          },
+          acquireServer: vi.fn(async () => lease),
+        },
+        {
+          cwd: '/workspace/kb',
+          prompt: 'Classify this note.',
+        },
+      ),
+    ).rejects.toThrow('broker session key missing');
+    expect(rpc.mock.calls.map(([method]) => method)).toEqual(['session/ensure']);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
 });

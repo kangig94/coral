@@ -174,10 +174,10 @@ function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptF
   };
 }
 
-function assistantLine(text: string, stopReason?: string): string {
+function assistantLine(text: string, stopReason?: string, sessionId = TEST_SESSION_ID): string {
   return JSON.stringify({
     type: 'assistant',
-    session_id: TEST_SESSION_ID,
+    session_id: sessionId,
     message: {
       role: 'assistant',
       model: TEST_MODEL,
@@ -373,6 +373,33 @@ describe('Claude phase-specific turn-stall recovery', () => {
           brokerTurnId: 'turn-1',
           result: 'parsed final answer',
           durationMs: 123,
+        }),
+      }),
+    );
+  });
+
+  it('does not let a late assistant row after end_turn overwrite the completed result', async () => {
+    const otherSessionId = '00000000-0000-4000-8000-000000000202';
+    const harness = await startController('ending prompt');
+    processLine(harness.internals, userPromptLine('ending prompt'));
+    processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
+    processLine(harness.internals, assistantLine('late overwrite', undefined, otherSessionId));
+    const turn = activeTurn(harness.internals);
+    expect(turn.phase).toBe('ending');
+
+    const terminated = await harness.internals.recoverStalledTurn(
+      turn,
+      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    );
+
+    expect(terminated).toBe(true);
+    expect(harness.notifications).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/completed',
+        params: expect.objectContaining({
+          brokerTurnId: 'turn-1',
+          conversationRef: TEST_SESSION_ID,
+          result: 'parsed final answer',
         }),
       }),
     );

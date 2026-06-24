@@ -202,6 +202,39 @@ describe('SingleSessionController PTY lifecycle', () => {
     await controller.shutdown();
   });
 
+  it('interrupts the child when turn/start fails after sending the prompt', async () => {
+    const child = new FakeClaudeChild();
+    const controller = new SingleSessionController({
+      spawnChild: () => child,
+      ids: { uuid: () => TEST_SESSION_ID },
+      onTurnStarted: () => {
+        throw new Error('turn registry unavailable');
+      },
+      ...FAST_TIMING,
+    });
+
+    try {
+      await controller.sessionEnsure({
+        cwd: '/workspace',
+        systemPromptHash: 'sha256:test',
+        permissionMode: 'default',
+      });
+
+      await expect(
+        controller.turnStart({
+          brokerTurnId: 'turn-1',
+          prompt: 'hello',
+        }),
+      ).rejects.toThrow('turn registry unavailable');
+
+      expect(child.writes).toContain('\x1b[200~hello\x1b[201~\r');
+      expect(child.writes).toContain('\x03');
+      expect(controller.hasActiveTurn()).toBe(false);
+    } finally {
+      await controller.shutdown();
+    }
+  });
+
   it('re-sends a dropped prompt and fails fast when Claude never registers the turn', async () => {
     const child = new FakeClaudeChild();
     const notifications: ControllerNotification[] = [];

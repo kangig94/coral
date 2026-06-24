@@ -78,7 +78,11 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
       ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.effort === undefined ? {} : { effort: request.effort }),
     });
-    state.brokerSessionKey = ensureResult.brokerSessionKey;
+    const brokerSessionKey = readString(ensureResult.brokerSessionKey);
+    if (brokerSessionKey === undefined) {
+      throw new Error('Claude one-shot broker session key missing from session/ensure response.');
+    }
+    state.brokerSessionKey = brokerSessionKey;
     updateConversationRef(state, ensureResult);
 
     throwIfRequestAborted(request.signal, 'claude_one_shot_turn_start');
@@ -90,7 +94,7 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
       brokerTurnId: requestedTurnId,
       prompt: request.prompt,
     });
-    state.brokerTurnId = startResult.brokerTurnId;
+    state.brokerTurnId = readString(startResult.brokerTurnId) ?? requestedTurnId;
     updateConversationRef(state, startResult);
 
     const outcome = await waitForOneShotOutcome(state, lease, request.signal);

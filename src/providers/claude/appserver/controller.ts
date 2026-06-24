@@ -300,6 +300,13 @@ export class SingleSessionController {
       };
     } catch (error) {
       if (this.activeTurn === turn) {
+        if (turn.userMessageSent) {
+          try {
+            this.issueInterrupt(turn);
+          } catch {
+            // The original turn/start failure remains the caller-visible error.
+          }
+        }
         this.transitionTurnPhase(turn, 'terminal');
         this.activeTurn = null;
       }
@@ -895,11 +902,11 @@ export class SingleSessionController {
       return;
     }
 
-    this.maybeUpdateSessionId(sessionId);
     if (row.type === 'assistant') {
-      this.handleAssistantTranscriptRow(turn, row);
+      this.handleAssistantTranscriptRow(turn, row, sessionId);
       return;
     }
+    this.maybeUpdateSessionId(sessionId);
     if (row.type === 'system') {
       this.handleSystemTranscriptRow(turn, row);
     }
@@ -943,7 +950,16 @@ export class SingleSessionController {
     return hashPromptText(text) === turn.promptTextHash;
   }
 
-  private handleAssistantTranscriptRow(turn: ActiveTurnState, row: Record<string, unknown>): void {
+  private handleAssistantTranscriptRow(
+    turn: ActiveTurnState,
+    row: Record<string, unknown>,
+    sessionId: string | null,
+  ): void {
+    if (turn.phase === 'ending' || turn.phase === 'terminal') {
+      return;
+    }
+
+    this.maybeUpdateSessionId(sessionId);
     const message = isRecord(row.message) ? row.message : null;
     if (message === null) {
       return;

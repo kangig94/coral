@@ -116,6 +116,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       emitClaudeArtifactHandleOnce(state, runtime, emit);
 
       if (runtime.signal.aborted) {
+        await closeBrokerSessionBeforeTurn(lease, state);
         emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
         return;
       }
@@ -131,6 +132,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 
       const outcome = await waitForClaudeOutcome(state, lease, runtime.signal);
       if (outcome.kind === 'aborted') {
+        await interruptBrokerTurnOnAbort(lease, state);
         state.brokerTurnId = undefined;
         checkpointBrokerContinuity(runtime, state);
       }
@@ -442,6 +444,24 @@ async function waitForClaudeOutcome(
   } finally {
     removeAbortListener();
   }
+}
+
+async function closeBrokerSessionBeforeTurn(lease: ProviderServerLease, state: ClaudeTurnState): Promise<void> {
+  if (state.turnRequested || state.brokerSessionKey === undefined) {
+    return;
+  }
+
+  await brokerRpc(lease, 'session/close', { brokerSessionKey: state.brokerSessionKey }).catch(() => {});
+}
+
+async function interruptBrokerTurnOnAbort(lease: ProviderServerLease, state: ClaudeTurnState): Promise<void> {
+  if (state.brokerSessionKey === undefined || state.brokerTurnId === undefined) {
+    return;
+  }
+
+  await brokerRpc(lease, 'turn/interrupt', mapInterruptParams(state.brokerSessionKey, state.brokerTurnId)).catch(
+    () => {},
+  );
 }
 
 function readErrors(value: unknown): string[] {
