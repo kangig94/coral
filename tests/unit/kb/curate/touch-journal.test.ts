@@ -8,7 +8,11 @@ import { noteEntryId, wikiEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import {
   appendTouchEvent,
   drainTouchJournal,
+  drainTouchJournalBatch,
+  markTouchJournalWikiApplied,
+  resolveTouchJournalWorkState,
   touchJournalPath,
+  touchJournalProgressPath,
   touchJournalTombstonePath,
   truncateTouchJournal,
 } from '#src/kb/curate/touch-journal.js';
@@ -118,10 +122,44 @@ describe('touch-journal', () => {
 
     truncateTouchJournal(runtimeDir, { storage: realStorage });
     expect(existsSync(touchJournalTombstonePath(runtimeDir))).toBe(false);
+    expect(existsSync(touchJournalProgressPath(runtimeDir))).toBe(false);
 
     // Idempotent — second call does not throw.
     truncateTouchJournal(runtimeDir, { storage: realStorage });
     expect(existsSync(touchJournalTombstonePath(runtimeDir))).toBe(false);
+    expect(existsSync(touchJournalProgressPath(runtimeDir))).toBe(false);
+  });
+
+  it('records per-wiki completion and skips completed work on retry', () => {
+    const targetA = noteEntryId('alpha');
+    const targetB = noteEntryId('beta');
+    appendTouchEvent(runtimeDir, targetA, 'evt-1', { storage: realStorage, now: STATIC_NOW });
+    appendTouchEvent(runtimeDir, targetB, 'evt-2', { storage: realStorage, now: STATIC_NOW });
+
+    const index = indexWithWikis({ 'wiki-one': ['root', 'alpha'], 'wiki-two': ['root', 'beta'] });
+    const batch = drainTouchJournalBatch(runtimeDir, index, { storage: realStorage });
+
+    expect(batch.pending.map((work) => work.slug)).toEqual(['wiki-one', 'wiki-two']);
+    markTouchJournalWikiApplied(runtimeDir, batch, batch.pending[0], { storage: realStorage });
+
+    const retry = drainTouchJournalBatch(runtimeDir, index, { storage: realStorage });
+    expect(retry.pending.map((work) => work.slug)).toEqual(['wiki-two']);
+  });
+
+  it('auto-completes work when the expected post-drain order is already present', () => {
+    const target = noteEntryId('gamma');
+    appendTouchEvent(runtimeDir, target, 'evt-1', { storage: realStorage, now: STATIC_NOW });
+
+    const beforeIndex = indexWithWikis({ 'wiki-one': ['alpha', 'beta', 'gamma'] });
+    const batch = drainTouchJournalBatch(runtimeDir, beforeIndex, { storage: realStorage });
+    const work = batch.pending[0];
+    expect(resolveTouchJournalWorkState(beforeIndex, work)).toBe('pending');
+
+    const afterIndex = indexWithWikis({ 'wiki-one': ['alpha', 'gamma', 'beta'] });
+    const retry = drainTouchJournalBatch(runtimeDir, afterIndex, { storage: realStorage });
+
+    expect(resolveTouchJournalWorkState(afterIndex, work)).toBe('applied');
+    expect(retry.pending).toEqual([]);
   });
 
   it('orphan segment recovery: drains wiki-touches.orphan.*.jsonl files into the dedupe map and deletes them', () => {
@@ -146,6 +184,49 @@ describe('touch-journal', () => {
     expect([...result.keys()].sort()).toEqual(['wiki-one', 'wiki-two']);
     expect(existsSync(orphanA)).toBe(false);
     expect(existsSync(orphanB)).toBe(false);
+  });
+
+  it('keeps orphan-only work durable through progress after orphan cleanup', () => {
+    const target = noteEntryId('alpha');
+    const orphanPath = join(runtimeDir, 'wiki-touches.orphan.evt-1.jsonl');
+    writeFileSync(
+      orphanPath,
+      `${JSON.stringify({ eventId: 'evt-1', wiki_target: target, ts: '2026-05-04T00:00:00.000Z' })}\n`,
+      'utf-8',
+    );
+
+    const index = indexWithWikis({ 'wiki-one': ['root', 'alpha'] });
+    const result = drainTouchJournal(runtimeDir, index, { storage: realStorage });
+    expect(result.get('wiki-one')).toEqual([target]);
+    expect(existsSync(orphanPath)).toBe(false);
+
+    const retry = drainTouchJournal(runtimeDir, index, { storage: realStorage });
+    expect(retry.get('wiki-one')).toEqual([target]);
+  });
+
+  it('does not rotate a new canonical journal while previous progress is still cleaning up', () => {
+    const targetA = noteEntryId('alpha');
+    const orphanPath = join(runtimeDir, 'wiki-touches.orphan.evt-1.jsonl');
+    writeFileSync(
+      orphanPath,
+      `${JSON.stringify({ eventId: 'evt-1', wiki_target: targetA, ts: '2026-05-04T00:00:00.000Z' })}\n`,
+      'utf-8',
+    );
+
+    const index = indexWithWikis({ 'wiki-one': ['root', 'alpha'], 'wiki-two': ['root', 'beta'] });
+    const batch = drainTouchJournalBatch(runtimeDir, index, { storage: realStorage });
+    markTouchJournalWikiApplied(runtimeDir, batch, batch.pending[0], { storage: realStorage });
+
+    const targetB = noteEntryId('beta');
+    appendTouchEvent(runtimeDir, targetB, 'evt-2', { storage: realStorage, now: STATIC_NOW });
+
+    const cleanupRetry = drainTouchJournalBatch(runtimeDir, index, { storage: realStorage });
+    expect(cleanupRetry.pending).toEqual([]);
+    expect(existsSync(touchJournalPath(runtimeDir))).toBe(true);
+
+    truncateTouchJournal(runtimeDir, { storage: realStorage });
+    const nextBatch = drainTouchJournal(runtimeDir, index, { storage: realStorage });
+    expect(nextBatch.get('wiki-two')).toEqual([targetB]);
   });
 
   it('orphan segment dedupes against tombstone events using shared eventId', () => {
@@ -187,6 +268,7 @@ describe('touch-journal', () => {
       rmSync: memory.rmSync.bind(memory),
       readdirSync: memory.readdirSync.bind(memory),
       statSync: memory.statSync.bind(memory),
+      writeAtomicSync: memory.writeAtomicSync.bind(memory),
       readFileSync: ((path: string, encoding: 'utf-8'): string => {
         const result = memory.readFileSync(path, encoding);
         if (path === tombstonePath && readCalls === 0) {
