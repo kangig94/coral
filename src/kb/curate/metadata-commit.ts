@@ -1,6 +1,7 @@
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
 import { captureNoteManifestDeltas, captureSourceManifestDeltas } from '../corpus/manifest-authority.js';
+import type { ManifestAuthorityDelta } from '../corpus/manifest-types.js';
 import {
   extractBody,
   extractTitle,
@@ -61,6 +62,13 @@ type LiveMetadataDecision = {
   shouldWrite: boolean;
   nextTags: string[];
   nextPrinciples: string[];
+};
+
+type PendingMetadataWrite = {
+  path: string;
+  previousRaw: string;
+  nextRaw: string;
+  manifestDeltas: readonly ManifestAuthorityDelta[];
 };
 
 function snapshotEntityGraph(currentIndex: {
@@ -260,28 +268,7 @@ export async function commitMetadataTargetsLocked(
   }
   let processedThrough = normalizedState.processedThrough;
   let cursorCanAdvance = true;
-  let wroteMarkdown = false;
-  let failure: unknown = null;
-
-  if (graphChanged) {
-    try {
-      mutation.writeEntityGraph(desiredGraph);
-      const graphSyncedIndex = kb.readIndex();
-      if (graphSyncedIndex?.structuralKey !== undefined) {
-        nextIndex.structuralKey = { ...graphSyncedIndex.structuralKey };
-      } else {
-        delete nextIndex.structuralKey;
-      }
-    } catch (error: unknown) {
-      failure ??= error;
-    }
-  }
-  if (failure !== null) {
-    if (failure instanceof Error) {
-      throw failure;
-    }
-    throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
-  }
+  const pendingWrites: PendingMetadataWrite[] = [];
 
   for (const target of sortedTargets) {
     const cursor = cursorFromTarget(target);
@@ -338,9 +325,12 @@ export async function commitMetadataTargetsLocked(
       };
       const nextRaw = replaceFrontmatter(raw, nextFrontmatter);
 
-      writeFileAtomic(kb, notePath, nextRaw);
-      mutation.queueManifestAuthorityDelta(captureNoteManifestDeltas(target.slug, nextRaw));
-      wroteMarkdown = true;
+      pendingWrites.push({
+        path: notePath,
+        previousRaw: raw,
+        nextRaw,
+        manifestDeltas: captureNoteManifestDeltas(target.slug, nextRaw),
+      });
 
       const existingIndexEntry = nextIndex.entries[noteEntryId(target.slug)];
       const existingIndexNote =
@@ -410,9 +400,12 @@ export async function commitMetadataTargetsLocked(
     };
     const nextRaw = replaceSourceFrontmatter(raw, nextFrontmatter);
 
-    writeFileAtomic(kb, sourcePath, nextRaw);
-    mutation.queueManifestAuthorityDelta(captureSourceManifestDeltas(target.slug, nextRaw));
-    wroteMarkdown = true;
+    pendingWrites.push({
+      path: sourcePath,
+      previousRaw: raw,
+      nextRaw,
+      manifestDeltas: captureSourceManifestDeltas(target.slug, nextRaw),
+    });
 
     const existingIndexEntry = nextIndex.entries[sourceEntryId(target.slug)];
     const existingIndexSource =
@@ -439,20 +432,62 @@ export async function commitMetadataTargetsLocked(
     activeClaim: null,
   });
 
-  if (wroteMarkdown || graphChanged) {
-    recordMetadataMutation(kb, CURATE_STALE_REASON);
-    try {
-      kb.writeIndex(nextIndex);
-    } catch (error: unknown) {
-      failure ??= error;
-    }
-  }
+  if (pendingWrites.length > 0 || graphChanged) {
+    const publishedWrites: PendingMetadataWrite[] = [];
+    const graphPath = kb.entityGraphPath();
+    let previousGraphRaw: string | null = null;
+    let indexMayNeedRollback = false;
 
-  if (failure !== null) {
-    if (failure instanceof Error) {
-      throw failure;
+    try {
+      if (graphChanged) {
+        try {
+          previousGraphRaw = kb.storagePort.readFileSync(graphPath, 'utf-8');
+        } catch (error: unknown) {
+          if (!isNoEntryError(error)) {
+            throw error;
+          }
+        }
+
+        indexMayNeedRollback = true;
+        mutation.writeEntityGraph(desiredGraph);
+        const graphSyncedIndex = kb.readIndex();
+        if (graphSyncedIndex?.structuralKey !== undefined) {
+          nextIndex.structuralKey = { ...graphSyncedIndex.structuralKey };
+        } else {
+          delete nextIndex.structuralKey;
+        }
+      }
+
+      for (const pendingWrite of pendingWrites) {
+        writeFileAtomic(kb, pendingWrite.path, pendingWrite.nextRaw);
+        publishedWrites.push(pendingWrite);
+        mutation.queueManifestAuthorityDelta(pendingWrite.manifestDeltas);
+      }
+
+      recordMetadataMutation(kb, CURATE_STALE_REASON);
+      indexMayNeedRollback = true;
+      kb.writeIndex(nextIndex);
+      writeCurateState(curateDb(kb), nextState);
+    } catch (error: unknown) {
+      for (const publishedWrite of [...publishedWrites].reverse()) {
+        writeFileAtomic(kb, publishedWrite.path, publishedWrite.previousRaw);
+      }
+      if (graphChanged) {
+        if (previousGraphRaw === null) {
+          kb.storagePort.rmSync(graphPath, { force: true });
+        } else {
+          writeFileAtomic(kb, graphPath, previousGraphRaw);
+        }
+      }
+      if (indexMayNeedRollback) {
+        kb.writeIndex(currentIndex);
+      }
+      if (error instanceof Error) {
+        throw error;
+      }
+      throw new Error(typeof error === 'string' ? error : 'Unknown error', { cause: error });
     }
-    throw new Error(typeof failure === 'string' ? failure : 'Unknown error');
+    return nextState;
   }
 
   writeCurateState(curateDb(kb), nextState);
