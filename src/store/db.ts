@@ -135,7 +135,6 @@ const CORAL_LEGACY_TABLES = [
   'expansion_state',
   'kb_curate_scheduler',
   'kb_curate_active_claim',
-  'kb_curate_community_summary_input_fingerprints',
   'kb_curate_retry_queue',
   'kb_curate_conflict_quarantine',
   'kb_curate_discovery_backlog',

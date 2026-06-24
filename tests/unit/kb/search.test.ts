@@ -744,11 +744,7 @@ describe('kb search', () => {
     await applyOramaProjection(kb);
     writeCurateState(curateDb(kb), {
       ...readCurateState(curateDb(kb)),
-      communityTopologyHash: 'stale-topology',
       communitySummaryTopologyHash: 'stale-topology',
-      communitySummaryInputFingerprints: {
-        'graph-rag': 'stale-fingerprint',
-      },
     });
 
     const allScope = await searchKb(kb, 'shared retrieval patterns', 5, 'all');

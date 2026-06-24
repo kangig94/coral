@@ -69,9 +69,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
-    communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     claimLaneDisabledAt: null,
@@ -2791,12 +2789,10 @@ describe('curate', () => {
 
       const state = readCurateState(curateDb(runtime));
       expect(state).toMatchObject({
-        communityTopologyHash: undefined,
         consecutiveClaimFailures: 3,
         consecutiveCommunityBatchFailures: 0,
       });
       expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
-      expect(state.communitySummaryInputFingerprints).toBeUndefined();
 
       // Topology materialized docs without summaries; stale communities await the agent.
       const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
@@ -3049,19 +3045,6 @@ describe('curate', () => {
       );
       expect(generatedFrontmatter.every((frontmatter) => frontmatter.summaryInputFingerprint === undefined)).toBe(true);
 
-      // A stale DB fingerprint does not affect the topology phase (it only gates the agent).
-      const legacyDb = curateDb(runtime);
-      for (const entry of communityFiles) {
-        legacyDb
-          .prepare(
-            `INSERT OR REPLACE INTO kb_curate_community_summary_input_fingerprints (
-               community_slug,
-               fingerprint
-             ) VALUES (?, ?)`,
-          )
-          .run(entry.replace(/\.md$/, ''), 'stale-local-fingerprint');
-      }
-
       // Re-run with changed input: topology still writes docs, no LLM call.
       writeNote('coral-peer-community', {
         title: 'Peer Community',
@@ -3136,9 +3119,7 @@ describe('curate', () => {
         ? readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'))
         : [];
 
-      expect(stateAfterFailure.communityTopologyHash).toBeUndefined();
       expect(stateAfterFailure.communitySummaryTopologyHash).toBeUndefined();
-      expect(stateAfterFailure.communitySummaryInputFingerprints).toBeUndefined();
       // The throw must skip the success-path state write: the seeded failure
       // counter survives unchanged (not reset to 0).
       expect(stateAfterFailure.consecutiveCommunityBatchFailures).toBe(4);

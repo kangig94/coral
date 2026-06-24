@@ -117,7 +117,6 @@ describe('store schema idempotency', () => {
         'consecutive_community_batch_failures',
         'claim_lane_disabled_at',
         'community_batch_lane_disabled_at',
-        'community_topology_hash',
         'community_summary_topology_hash',
         'initialized',
       ]);
@@ -125,7 +124,7 @@ describe('store schema idempotency', () => {
       expect(
         db
           .prepare(
-            'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_topology_hash, community_summary_topology_hash, initialized FROM kb_curate_scheduler',
+            'SELECT id, processed_through_seq, processed_through_entry_id, processed_through_entry_kind, discovery_high_seq, discovery_offset, last_run_day, last_attempted_through_seq, last_attempted_through_entry_id, last_attempted_through_entry_kind, retry_not_before, consecutive_claim_failures, consecutive_community_batch_failures, community_summary_topology_hash, initialized FROM kb_curate_scheduler',
           )
           .get(),
       ).toEqual({
@@ -142,7 +141,6 @@ describe('store schema idempotency', () => {
         retry_not_before: null,
         consecutive_claim_failures: 0,
         consecutive_community_batch_failures: 0,
-        community_topology_hash: null,
         community_summary_topology_hash: null,
         initialized: 0,
       });
@@ -155,12 +153,6 @@ describe('store schema idempotency', () => {
         'started_at',
       ]);
       expect(rowCount(db, 'kb_curate_active_claim')).toEqual({ count: 0 });
-
-      expect(tableColumns(db, 'kb_curate_community_summary_input_fingerprints')).toEqual([
-        'community_slug',
-        'fingerprint',
-      ]);
-      expect(rowCount(db, 'kb_curate_community_summary_input_fingerprints')).toEqual({ count: 0 });
 
       expect(tableColumns(db, 'kb_curate_retry_queue')).toEqual([
         'entry_id',

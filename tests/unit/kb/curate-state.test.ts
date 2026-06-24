@@ -8,6 +8,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
 import {
   applyAddPendingDiscovery,
+  applyClearCurateClaimRetryState,
   applyClearCurateRetryState,
   applyRecordCurateFailure,
   applyRecordDiscoveryAttempt,
@@ -35,7 +36,7 @@ import {
 } from '#src/kb/curate/state/bootstrap.js';
 import { readCurateDiscoveryBacklog } from '#src/kb/curate/discovery-backlog.js';
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
-import { writeCurateSchedulerState, readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
+import { readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import { cloneKbIndex } from '#src/kb/corpus/index-records.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
@@ -83,9 +84,7 @@ function createCurateState(overrides: Partial<CurateState> = {}): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
-    communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     claimLaneDisabledAt: null,
@@ -272,11 +271,7 @@ describe('curate state', () => {
           createdAt: '2026-03-25T11:58:00.000Z',
         },
       ],
-      communityTopologyHash: 'graph-hash',
       communitySummaryTopologyHash: 'graph-hash',
-      communitySummaryInputFingerprints: {
-        'graph-rag': 'members-hash',
-      },
       consecutiveClaimFailures: 2,
       consecutiveCommunityBatchFailures: 3,
       initialized: true,
@@ -302,7 +297,6 @@ describe('curate state', () => {
       consecutiveCommunityBatchFailures: 3,
       claimLaneDisabledAt: null,
       communityBatchLaneDisabledAt: null,
-      communityTopologyHash: undefined,
       communitySummaryTopologyHash: 'graph-hash',
       initialized: true,
     });
@@ -315,46 +309,7 @@ describe('curate state', () => {
       },
     ]);
 
-    expect(readCurateState(curateDb(runtime))).toEqual({
-      ...persisted,
-      communityTopologyHash: undefined,
-      communitySummaryInputFingerprints: undefined,
-    });
-  });
-
-  it('does not surface legacy community fingerprint rows or topology hashes from local state', () => {
-    writeCurateSchedulerState(curateDb(runtime), {
-      processedThrough: cursor('coral-prior', 8),
-      discoveryHighSeq: 0,
-      discoveryOffset: 0,
-      lastRunDay: null,
-      lastAttemptedThrough: null,
-      retryNotBefore: null,
-      consecutiveClaimFailures: 0,
-      consecutiveCommunityBatchFailures: 0,
-      claimLaneDisabledAt: null,
-      communityBatchLaneDisabledAt: null,
-      communityTopologyHash: 'legacy-topology',
-      communitySummaryTopologyHash: undefined,
-      initialized: true,
-    });
-    curateDb(runtime)
-      .prepare(
-        `INSERT INTO kb_curate_community_summary_input_fingerprints (
-           community_slug,
-           fingerprint
-         ) VALUES (?, ?)`,
-      )
-      .run('graph-rag', 'legacy-fingerprint');
-
-    expect(readCurateState(curateDb(runtime))).toEqual(
-      createCurateState({
-        processedThrough: cursor('coral-prior', 8),
-        communityTopologyHash: undefined,
-        communitySummaryInputFingerprints: undefined,
-        initialized: true,
-      }),
-    );
+    expect(readCurateState(curateDb(runtime))).toEqual(persisted);
   });
 
   it('writes curate state through SQL tables and round-trips through readCurateState', () => {
@@ -385,7 +340,6 @@ describe('curate state', () => {
       consecutiveCommunityBatchFailures: 0,
       claimLaneDisabledAt: null,
       communityBatchLaneDisabledAt: null,
-      communityTopologyHash: undefined,
       communitySummaryTopologyHash: undefined,
       initialized: true,
     });
@@ -436,7 +390,6 @@ describe('curate state', () => {
       discoveryOffset: 3,
       activeClaim: baseline.activeClaim,
       pendingDiscoveries: baseline.pendingDiscoveries,
-      communitySummaryInputFingerprints: undefined,
       initialized: true,
     });
     expectPendingRepairEntries(readCurateRetryQueue(curateDb(runtime)), [
@@ -594,6 +547,13 @@ describe('curate state', () => {
       activeClaim: null,
       consecutiveClaimFailures: 0,
       consecutiveCommunityBatchFailures: 0,
+    });
+    expect(applyClearCurateClaimRetryState(retryState)).toEqual({
+      ...retryState,
+      retryNotBefore: null,
+      activeClaim: null,
+      consecutiveClaimFailures: 0,
+      claimLaneDisabledAt: null,
     });
     expect(applyRecordDiscoveryAttempt(createCurateState(), 61, 5)).toEqual(
       createCurateState({

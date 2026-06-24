@@ -7,6 +7,7 @@ type SnippetAnchor = {
 };
 
 const SNIPPET_WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'word' });
+const TOKEN_ANCHOR_SCAN_LIMIT = 256 * 1024;
 const WORD_SCRIPT_RUN_PATTERN =
   /[\p{Script=Latin}\p{Mark}\p{Number}_'-]+|[\p{Script=Hangul}\p{Mark}\p{Number}_'-]+|[\p{Script=Han}\p{Mark}\p{Number}_'-]+|[\p{Script=Hiragana}\p{Mark}\p{Number}_'-]+|[\p{Script=Katakana}\p{Mark}\p{Number}_'-]+|[\p{Letter}\p{Mark}\p{Number}_'-]+/gu;
 
@@ -149,20 +150,14 @@ async function findTokenAnchor(
   queryTokens: readonly string[],
   fts: FtsRetrieval,
 ): Promise<SnippetAnchor | null> {
-  const candidates = [...snippetTokenCandidates(content)];
-  const tokenizedCandidates = await tokenizeMany(
-    fts,
-    candidates.map((candidate) => content.slice(candidate.index, candidate.index + candidate.length)),
-  );
-
-  for (let index = 0; index < candidates.length; index += 1) {
-    const candidate = candidates[index];
-    const valueTokens = tokenizedCandidates[index] ?? [];
+  const scanContent = content.length > TOKEN_ANCHOR_SCAN_LIMIT ? content.slice(0, TOKEN_ANCHOR_SCAN_LIMIT) : content;
+  for (const candidate of snippetTokenCandidates(scanContent)) {
+    const valueTokens = await fts.tokenize(scanContent.slice(candidate.index, candidate.index + candidate.length));
     if (!hasTokenOverlap(queryTokens, valueTokens)) {
       continue;
     }
 
-    return candidate ?? null;
+    return candidate;
   }
 
   return null;

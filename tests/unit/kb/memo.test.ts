@@ -91,6 +91,47 @@ Second line
     expect(listMemos(memoStorage, projectRoot)).toEqual({ memos: [] });
   });
 
+  it('rejects memo topics that would escape the memo directory', async () => {
+    const { writeMemo } = await loadMemoModules();
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+
+    expect(() =>
+      writeMemo(
+        { storagePort: memoStorage, ids: realRuntime.ids },
+        projectRoot,
+        'local/project',
+        {
+          topic: '../../../../evil',
+          content: 'escaped',
+          owner: 'owner-a',
+        },
+        realRuntime.time,
+      ),
+    ).toThrow(/memo topic/i);
+    expect(existsSync(join(mockState.tmpHome, 'evil.md'))).toBe(false);
+  });
+
+  it('rejects NUL and control-like memo topics before reaching the filesystem', async () => {
+    const { writeMemo } = await loadMemoModules();
+    const projectRoot = join(mockState.tmpHome, 'project');
+    mkdirSync(projectRoot, { recursive: true });
+
+    expect(() =>
+      writeMemo(
+        { storagePort: memoStorage, ids: realRuntime.ids },
+        projectRoot,
+        'local/project',
+        {
+          topic: `bad${String.fromCharCode(0)}topic`,
+          content: 'bad',
+          owner: 'owner-a',
+        },
+        realRuntime.time,
+      ),
+    ).toThrow(/memo topic/i);
+  });
+
   it('returns an empty delete result when the memo directory does not exist', async () => {
     const { deleteMemos } = await loadMemoModules();
     const projectRoot = join(mockState.tmpHome, 'fresh-project');

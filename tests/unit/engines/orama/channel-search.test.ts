@@ -1,8 +1,9 @@
 import { insertMultiple } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
-import { OramaSearchPort } from '#src/engines/orama/backend.js';
+import { fuzzyDocumentScore, OramaSearchPort } from '#src/engines/orama/backend.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
+import { surfaceSearchTerms } from '#src/engines/orama/search-channels.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { KbProjectionArtifactFilePort } from '#src/kb/contract.js';
 
@@ -40,6 +41,14 @@ async function createSearchPort(documents: readonly KbOramaDocument[]): Promise<
 }
 
 describe('Orama channel search', () => {
+  it('folds decomposed Latin diacritics without splitting surface terms', () => {
+    const terms = surfaceSearchTerms('re\u0301\u0323sume\u0301');
+
+    expect(terms).toContain('resume');
+    expect(terms).not.toContain('re');
+    expect(terms).not.toContain('sume');
+  });
+
   it('expands camel-case compound queries and prefers metadata identity over body-only matches', async () => {
     const port = await createSearchPort([
       note('graph-rag', 'Graph RAG', 'A short note about retrieval.'),
@@ -70,6 +79,15 @@ describe('Orama channel search', () => {
     const result = await port.search('retrievel', 5, 'all');
 
     expect(result.hits[0]?.documentId).toBe('note:retrieval-pipeline');
+  });
+
+  it('caps fuzzy fallback scoring for body-only terms', () => {
+    const manyUniqueFillers = Array.from({ length: 700 }, (_, index) => `filler${index}`).join(' ');
+    const earlyMatch = note('early-body-match', 'Unrelated', `retrieval ${manyUniqueFillers}`);
+    const lateMatch = note('late-body-match', 'Unrelated', `${manyUniqueFillers} retrieval`);
+
+    expect(fuzzyDocumentScore(earlyMatch, ['retrievel'])).toBeGreaterThan(0);
+    expect(fuzzyDocumentScore(lateMatch, ['retrievel'])).toBe(0);
   });
 
   it('does not fuzzy-match only the Latin part of a mixed-script query', async () => {

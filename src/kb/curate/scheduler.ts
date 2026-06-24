@@ -7,7 +7,7 @@ import { buildEntityConsolidationDelta, buildMetadataTargets } from './classific
 import { runCommunitySubphase } from './community/index.js';
 import { createGitSyncController } from './git-sync.js';
 import { commitMetadataTargets } from './metadata-commit.js';
-import { clearCurateRetryState, clearCurateRetryStateLocked, recordCurateFailure } from './operations.js';
+import { clearCurateClaimRetryState, clearCurateClaimRetryStateLocked, recordCurateFailure } from './operations.js';
 import { runPrincipleDiscovery } from './principles.js';
 import { claimCurateRun, hasPendingEntriesBeyondCursor, runClassificationBatches } from './runner.js';
 import { drainTouchJournal, truncateTouchJournal } from './touch-journal.js';
@@ -260,7 +260,7 @@ export function createCurateScheduler({
           graphDelta: buildEntityConsolidationDelta(validatedAssignments),
         });
         gitSync.gitAutoCommit(`curate: classify ${claim.entries.length} entries (tags + principles)`);
-        await clearCurateRetryState(kb);
+        await clearCurateClaimRetryState(kb);
         lastCompletedThrough = claim.through;
       } catch (error: unknown) {
         throw new CurateRunError(claim.through, error);
@@ -276,7 +276,7 @@ export function createCurateScheduler({
         ) {
           return;
         }
-        clearCurateRetryStateLocked(kb, state);
+        clearCurateClaimRetryStateLocked(kb, state);
       });
       return null;
     }
@@ -350,7 +350,7 @@ export function createCurateScheduler({
       } catch (error: unknown) {
         if (stopped && runController.signal.aborted) {
           try {
-            await clearCurateRetryState(kb);
+            await clearCurateClaimRetryState(kb);
           } catch (stateError: unknown) {
             backendLog.error('kb_curate: failed to clear stop state', stateError);
           }

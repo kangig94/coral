@@ -43,6 +43,7 @@ export const INDEX_FILE = 'index.json';
 export const INDEX_STATE_FILE = 'index-state.json';
 const ENTITY_TYPE_SET = new Set<string>(ENTITY_TYPES);
 const RELATIONSHIP_TYPE_SET = new Set<string>(RELATIONSHIP_TYPES);
+const RESERVED_ENTITY_META_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export function emptyIndex(): KbIndex {
   return {
@@ -108,6 +109,14 @@ export function parseRelationshipType(value: unknown, errorMessageText = 'Invali
   return value as RelationshipType;
 }
 
+function parseEntityMetaKey(value: string, errorMessageText: string): string {
+  const key = assertNonEmptyText(value, 'entityMeta key');
+  if (RESERVED_ENTITY_META_KEYS.has(key)) {
+    throw new Error(errorMessageText);
+  }
+  return key;
+}
+
 export function parseEntityMetaMap(
   value: unknown,
   errorMessageText = 'Invalid KB entity graph',
@@ -123,7 +132,7 @@ export function parseEntityMetaMap(
     }
 
     const aliases = rawMeta.aliases;
-    entityMeta[assertNonEmptyText(entityName, 'entityMeta key')] = {
+    entityMeta[parseEntityMetaKey(entityName, errorMessageText)] = {
       type: parseEntityType(rawMeta.type, errorMessageText),
       description: assertNonEmptyText(rawMeta.description, 'entity description'),
       ...(aliases === undefined

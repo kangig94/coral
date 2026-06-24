@@ -1,5 +1,6 @@
 import type { KbRuntime } from '../contract.js';
 import {
+  applyClearCurateClaimRetryState,
   applyClearCurateRetryState,
   applyRecordCurateFailure,
   normalizeCurateStateRepairFrontier,
@@ -60,10 +61,21 @@ export function clearCurateRetryStateLocked(kb: KbRuntime, state: CurateState): 
   return persistCurateState(kb, state, applyClearCurateRetryState(state));
 }
 
+export function clearCurateClaimRetryStateLocked(kb: KbRuntime, state: CurateState): CurateState {
+  return persistCurateState(kb, state, applyClearCurateClaimRetryState(state));
+}
+
 export async function clearCurateRetryState(kb: KbRuntime): Promise<void> {
   await kb.withMutationLock(() => {
     const state = readCurateState(curateDb(kb));
     clearCurateRetryStateLocked(kb, state);
+  });
+}
+
+export async function clearCurateClaimRetryState(kb: KbRuntime): Promise<void> {
+  await kb.withMutationLock(() => {
+    const state = readCurateState(curateDb(kb));
+    clearCurateClaimRetryStateLocked(kb, state);
   });
 }
 

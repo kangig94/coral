@@ -1,5 +1,6 @@
-const SEARCH_TERM_PATTERN = /[\p{Letter}\p{Number}][\p{Letter}\p{Number}_'-]*/gu;
+const SEARCH_TERM_PATTERN = /[\p{Letter}\p{Number}][\p{Letter}\p{Number}\p{Mark}_'-]*/gu;
 const LATIN_SCRIPT_PATTERN = /\p{Script=Latin}/u;
+const COMBINING_MARK_PATTERN = /\p{M}/u;
 const COMBINING_MARKS_PATTERN = /\p{M}/gu;
 const HANGUL_CHAR_PATTERN = /\p{Script=Hangul}/u;
 const HANGUL_ONLY_PATTERN = /[^\p{Script=Hangul}]+/gu;
@@ -108,7 +109,7 @@ function foldLatinDiacritics(raw: string): string {
       continue;
     }
 
-    if (latinRun && COMBINING_MARKS_PATTERN.test(char)) {
+    if (latinRun && COMBINING_MARK_PATTERN.test(char)) {
       latinRun += char;
       continue;
     }

@@ -84,9 +84,7 @@ export async function performRescan(
     const currentState = readCurateState(curateDb(kb));
     writeCurateState(curateDb(kb), {
       ...currentState,
-      communityTopologyHash: topologyRefresh.topologyHash,
       communitySummaryTopologyHash: topologyRefresh.topologyHash,
-      communitySummaryInputFingerprints: topologyRefresh.nextSummaryInputFingerprints,
     });
   }
 

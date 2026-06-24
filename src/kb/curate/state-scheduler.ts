@@ -24,7 +24,6 @@ export type CurateSchedulerState = {
   consecutiveCommunityBatchFailures: number;
   claimLaneDisabledAt: string | null;
   communityBatchLaneDisabledAt: string | null;
-  communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
   initialized: boolean;
 };
@@ -45,7 +44,6 @@ const schedulerRowSchema = z.object({
   consecutive_community_batch_failures: z.number().int().nonnegative(),
   claim_lane_disabled_at: z.string().nullable(),
   community_batch_lane_disabled_at: z.string().nullable(),
-  community_topology_hash: z.string().nullable(),
   community_summary_topology_hash: z.string().nullable(),
   initialized: z.union([z.literal(0), z.literal(1)]),
 });
@@ -62,7 +60,6 @@ function defaultCurateSchedulerState(): CurateSchedulerState {
     consecutiveCommunityBatchFailures: 0,
     claimLaneDisabledAt: null,
     communityBatchLaneDisabledAt: null,
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
     initialized: false,
   };
@@ -121,7 +118,6 @@ function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): Curat
     consecutiveCommunityBatchFailures: parsed.consecutive_community_batch_failures,
     claimLaneDisabledAt: parsed.claim_lane_disabled_at,
     communityBatchLaneDisabledAt: parsed.community_batch_lane_disabled_at,
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: parsed.community_summary_topology_hash ?? undefined,
     initialized: parsed.initialized === 1,
   };
@@ -146,7 +142,6 @@ export function readCurateSchedulerState(db: Database | ReadonlyDatabase): Curat
        consecutive_community_batch_failures,
        claim_lane_disabled_at,
        community_batch_lane_disabled_at,
-       community_topology_hash,
        community_summary_topology_hash,
        initialized
      FROM kb_curate_scheduler
@@ -184,7 +179,6 @@ export function writeCurateSchedulerState(db: Database, state: CurateSchedulerSt
       string | null,
       string | null,
       string | null,
-      string | null,
       0 | 1,
     ]
   >(
@@ -204,7 +198,6 @@ export function writeCurateSchedulerState(db: Database, state: CurateSchedulerSt
             consecutive_community_batch_failures = ?,
             claim_lane_disabled_at = ?,
             community_batch_lane_disabled_at = ?,
-            community_topology_hash = ?,
             community_summary_topology_hash = ?,
             initialized = ?
       WHERE id = 1`,
@@ -223,7 +216,6 @@ export function writeCurateSchedulerState(db: Database, state: CurateSchedulerSt
     state.consecutiveCommunityBatchFailures,
     state.claimLaneDisabledAt,
     state.communityBatchLaneDisabledAt,
-    null,
     state.communitySummaryTopologyHash ?? null,
     state.initialized ? 1 : 0,
   );

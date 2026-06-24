@@ -14,6 +14,7 @@ export {
   DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
   DEFAULT_CURATE_TRANSIENT_RETRY_MS,
   INVARIANT,
+  applyClearCurateClaimRetryState,
   applyAddPendingDiscovery,
   applyClearCurateRetryState,
   applyRecordCurateFailure,

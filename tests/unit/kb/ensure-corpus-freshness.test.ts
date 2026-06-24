@@ -62,6 +62,12 @@ function emptyCounts(): rescanModule.RescanCounts {
 const tempRoots: string[] = [];
 const openDatabases: Array<{ close(): void }> = [];
 
+async function waitForGateInvocation(gate: RescanGate): Promise<void> {
+  for (let attempt = 0; attempt < 20 && gate.callCount() === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 function makeRuntime(): KbRuntime {
   const root = mkdtempSync(join(tmpdir(), 'coral-ensure-fresh-'));
   tempRoots.push(root);
@@ -209,28 +215,29 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     expect(readinessResolved).toBe(true);
   });
 
-  it('threads the caller signal into performRescan via withMutationLock composition', async () => {
-    // AC9 / Phase 6: ensureCorpusFreshness({ signal }) must reach performRescan
-    // through runRebuildOnce + withMutationLock so `'scan'` / `'repair'`
-    // checkpoints can honor user aborts.
+  it('keeps a shared rebuild alive when one waiting caller aborts', async () => {
     const gate = installGatedRescan();
     const kb = makeRuntime();
 
     const controller = new AbortController();
-    await kb.ensureCorpusFreshness({ wait: false, signal: controller.signal });
-    await Promise.resolve();
-    await Promise.resolve();
+    const abortedWait = kb.ensureCorpusFreshness({ wait: true, signal: controller.signal });
+    let secondResolved = false;
+    const secondWait = kb.ensureCorpusFreshness({ wait: true }).then(() => {
+      secondResolved = true;
+    });
+    await waitForGateInvocation(gate);
 
     expect(gate.callCount()).toBe(1);
     const [received] = gate.receivedSignals();
-    // The signal handed to performRescan is the composed (caller + deadline)
-    // mutation-lock signal — not the literal caller signal — but it must
-    // become aborted as soon as the caller aborts.
     expect(received).toBeDefined();
     expect(received?.aborted).toBe(false);
     controller.abort('test_user_abort');
-    expect(received?.aborted).toBe(true);
+    expect(received?.aborted).toBe(false);
+    await expect(abortedWait).rejects.toThrow(/aborted/i);
+    expect(secondResolved).toBe(false);
 
     gate.release();
+    await secondWait;
+    expect(secondResolved).toBe(true);
   });
 });

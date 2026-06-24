@@ -24,7 +24,6 @@ export interface KbCurateSchedulerRow {
   consecutive_community_batch_failures: number;
   claim_lane_disabled_at: string | null;
   community_batch_lane_disabled_at: string | null;
-  community_topology_hash: string | null;
   community_summary_topology_hash: string | null;
   initialized: number;
 }
@@ -35,11 +34,6 @@ export interface KbCurateActiveClaimRow {
   through_entry_id: string;
   through_entry_kind: string;
   started_at: string;
-}
-
-export interface KbCurateCommunitySummaryInputFingerprintRow {
-  community_slug: string;
-  fingerprint: string;
 }
 
 export interface KbCurateRetryQueueRow {

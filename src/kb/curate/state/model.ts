@@ -123,9 +123,7 @@ export type CurateState = {
     startedAt: string;
   } | null;
   pendingDiscoveries: PendingDiscovery[];
-  communityTopologyHash?: string;
   communitySummaryTopologyHash?: string;
-  communitySummaryInputFingerprints?: Record<string, string>;
   consecutiveClaimFailures: number;
   consecutiveCommunityBatchFailures: number;
   /** ISO-8601 stamp when the claim lane first crossed `INVARIANT.MAX_CONSECUTIVE_FAILURES`; `null` while healthy. Cleared by `applyClearCurateRetryState`. */
@@ -167,9 +165,7 @@ export function defaultCurateState(): CurateState {
     retryNotBefore: null,
     activeClaim: null,
     pendingDiscoveries: [],
-    communityTopologyHash: undefined,
     communitySummaryTopologyHash: undefined,
-    communitySummaryInputFingerprints: undefined,
     consecutiveClaimFailures: 0,
     consecutiveCommunityBatchFailures: 0,
     claimLaneDisabledAt: null,
@@ -344,6 +340,25 @@ export function applyClearCurateRetryState(state: CurateState): CurateState | nu
     consecutiveCommunityBatchFailures: 0,
     claimLaneDisabledAt: null,
     communityBatchLaneDisabledAt: null,
+  };
+}
+
+export function applyClearCurateClaimRetryState(state: CurateState): CurateState | null {
+  if (
+    state.activeClaim === null &&
+    state.retryNotBefore === null &&
+    state.consecutiveClaimFailures === 0 &&
+    state.claimLaneDisabledAt === null
+  ) {
+    return null;
+  }
+
+  return {
+    ...state,
+    retryNotBefore: null,
+    activeClaim: null,
+    consecutiveClaimFailures: 0,
+    claimLaneDisabledAt: null,
   };
 }
 
