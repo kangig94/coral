@@ -1,6 +1,7 @@
 import { makeEvent, type FollowUpQueueItem } from '../../events.js';
 import { decideEnd, decideEpochSummary } from '../../state-machine.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
+import { errorMessage } from '../../../infra/error-format.js';
 import {
   FOLLOW_UP_TURN_INSTRUCTION,
   DEFAULT_DISCUSS_PROVIDER,
@@ -58,61 +59,65 @@ async function collectFollowUpAnswer(
   const basePrompt = buildFollowUpPrompt(snapshot.state, item.agent, item.question);
   let prompt = basePrompt;
 
-  while (true) {
-    const attempt = await executeAgentAttempt(ctx, {
-      agentName: item.agent,
-      sessionId,
-      provider: run.provider,
-      model: normalizeModel(run.model),
-      prompt,
-      instruction: FOLLOW_UP_TURN_INSTRUCTION,
-      cwd: ctx.projectRoot,
-      invocationCtx,
-      purpose: PURPOSE_FOLLOW_UP,
-      timeoutMs: SPEECH_TIMEOUT_MS,
-    });
+  try {
+    while (true) {
+      const attempt = await executeAgentAttempt(ctx, {
+        agentName: item.agent,
+        sessionId,
+        provider: run.provider,
+        model: normalizeModel(run.model),
+        prompt,
+        instruction: FOLLOW_UP_TURN_INSTRUCTION,
+        cwd: ctx.projectRoot,
+        invocationCtx,
+        purpose: PURPOSE_FOLLOW_UP,
+        timeoutMs: SPEECH_TIMEOUT_MS,
+      });
 
-    if (!isAttemptSuccess(attempt)) {
-      return attempt.message;
-    }
+      if (!isAttemptSuccess(attempt)) {
+        return attempt.message;
+      }
 
-    if (!(attempt.continuity?.resumable ?? true)) {
+      if (!(attempt.continuity?.resumable ?? true)) {
+        await recordJobFinished(ctx, {
+          sessionId,
+          agentName: item.agent,
+          purpose: PURPOSE_FOLLOW_UP,
+          jobId: attempt.jobId,
+          attempt: attempt.attempt,
+          outcome: 'non_resumable',
+        });
+        return '';
+      }
+
+      const answer = normalizeFollowUpAnswer(attempt.content);
+      if (answer.length > 0) {
+        await recordJobFinished(ctx, {
+          sessionId,
+          agentName: item.agent,
+          purpose: PURPOSE_FOLLOW_UP,
+          jobId: attempt.jobId,
+          attempt: attempt.attempt,
+          outcome: 'completed',
+        });
+        return answer;
+      }
+
       await recordJobFinished(ctx, {
         sessionId,
         agentName: item.agent,
         purpose: PURPOSE_FOLLOW_UP,
         jobId: attempt.jobId,
         attempt: attempt.attempt,
-        outcome: 'non_resumable',
+        outcome: 'retryable_parse_error',
       });
-      return '';
+      if (attempt.attempt >= MAX_FOLLOW_UP_ATTEMPTS) {
+        return '';
+      }
+      prompt = buildFollowUpRetryPrompt(basePrompt, attempt.content, 'Empty answer');
     }
-
-    const answer = normalizeFollowUpAnswer(attempt.content);
-    if (answer.length > 0) {
-      await recordJobFinished(ctx, {
-        sessionId,
-        agentName: item.agent,
-        purpose: PURPOSE_FOLLOW_UP,
-        jobId: attempt.jobId,
-        attempt: attempt.attempt,
-        outcome: 'completed',
-      });
-      return answer;
-    }
-
-    await recordJobFinished(ctx, {
-      sessionId,
-      agentName: item.agent,
-      purpose: PURPOSE_FOLLOW_UP,
-      jobId: attempt.jobId,
-      attempt: attempt.attempt,
-      outcome: 'retryable_parse_error',
-    });
-    if (attempt.attempt >= MAX_FOLLOW_UP_ATTEMPTS) {
-      return '';
-    }
-    prompt = buildFollowUpRetryPrompt(basePrompt, attempt.content, 'Empty answer');
+  } catch (error: unknown) {
+    return errorMessage(error);
   }
 }
 

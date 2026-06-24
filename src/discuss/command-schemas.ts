@@ -29,9 +29,16 @@ export const AgentInputSchema = z.object({
   model: z.string().optional(),
 });
 
+const DiscussAgentsSchema = z
+  .array(AgentInputSchema)
+  .min(2)
+  .refine((agents) => agents.some((agent) => (agent.participation ?? 'required') === 'required'), {
+    message: 'At least one required agent is needed to run a discussion.',
+  });
+
 export const discussStartSchema = z.object({
   topic: z.string().min(1),
-  agents: z.array(AgentInputSchema).min(2),
+  agents: DiscussAgentsSchema,
   config: z
     .object({
       min_bid_delay_ms: z.number().int().min(0).optional(),

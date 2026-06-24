@@ -106,7 +106,10 @@ function createExecutionServiceStub(overrides: Partial<ExecutionService> = {}): 
 }
 
 function manualAgents(): AgentConfig[] {
-  return [{ name: 'alpha', persona: '# Alpha', participation: 'observer' }];
+  return [
+    { name: 'bot', persona: '# Bot', provider: 'codex' },
+    { name: 'alpha', persona: '# Alpha', participation: 'observer' },
+  ];
 }
 
 function manualInputAgents(): DiscussCreateInput['agents'] {
@@ -192,6 +195,15 @@ describe('runtime-sealed discuss behavior', () => {
   it('starts, appends, loads, lists, replays watch history, and reads events through SimulationRuntime storage', async () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const harness = createHarness();
+    vi.mocked(harness.service.start).mockResolvedValueOnce({
+      status: 'running',
+      job: 'job-bot-bid',
+      session: 'exec-bot',
+    });
+    vi.mocked(harness.service.waitStreamOnce).mockResolvedValueOnce({
+      content: '{"score": 12, "thought": "Let the manual observer lead."}',
+      continuity: null,
+    });
 
     const session = await startDiscussSession(
       harness.context,
@@ -260,10 +272,16 @@ describe('runtime-sealed discuss behavior', () => {
     expect(events.map((event) => event.kind)).toEqual([
       'session.created',
       'bidding.opened',
+      'agent.run.bound',
+      'agent.job.started',
+      'agent.job.finished',
+      'bid.submitted',
       'bid.submitted',
       'bid.round.closed',
     ]);
-    expect(events.find((event) => event.kind === 'bid.submitted')?.ts).toBe(submittedAt);
+    expect(events.find((event) => event.kind === 'bid.submitted' && event.payload.agent === 'alpha')?.ts).toBe(
+      submittedAt,
+    );
   });
 
   it('replays invalid persisted watch timestamps deterministically without host Date.now', async () => {
@@ -461,6 +479,15 @@ describe('runtime-sealed discuss behavior', () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const epochMs = Date.parse('2044-05-06T07:08:09.000Z');
     const harness = createHarness({ epochMs });
+    vi.mocked(harness.service.start).mockResolvedValueOnce({
+      status: 'running',
+      job: 'job-bot-bid',
+      session: 'exec-bot',
+    });
+    vi.mocked(harness.service.waitStreamOnce).mockResolvedValueOnce({
+      content: '{"score": 12, "thought": "Let the manual observer lead."}',
+      continuity: null,
+    });
 
     await startDiscussSession(
       harness.context,
@@ -482,7 +509,9 @@ describe('runtime-sealed discuss behavior', () => {
 
     const events = readSessionEvents(harness.context, 'virtual-time-session');
     expect(events[0]?.ts).toBe('2044-05-06T07:08:09.000Z');
-    expect(events.find((event) => event.kind === 'bid.submitted')?.ts).toBe('2044-05-06T07:08:10.234Z');
+    expect(events.find((event) => event.kind === 'bid.submitted' && event.payload.agent === 'alpha')?.ts).toBe(
+      '2044-05-06T07:08:10.234Z',
+    );
   });
 
   it('renders persisted transcript timestamps in stable UTC under varied TZ settings', () => {

@@ -135,7 +135,7 @@ export function listAttachedSessions(registry: DiscussContextRegistry): Attached
 export function hasRunningSessions(registry: DiscussContextRegistry): boolean {
   for (const context of registry.contexts.values()) {
     for (const session of context.sessions.values()) {
-      if (!session.controller.signal.aborted && session.snapshot.state.status !== 'ended') {
+      if (!session.controller.signal.aborted && !session.abortEnded && isWithinLiveSessionBoundary(session.snapshot)) {
         return true;
       }
     }
