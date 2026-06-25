@@ -3,7 +3,7 @@ import { Worker } from 'node:worker_threads';
 
 import type { RawData } from '@orama/orama';
 
-import type { OramaEntryManifest } from './artifact-port.js';
+import type { OramaEntryManifest, OramaProjectionMetadata, OramaProjectionMetadataBase } from './artifact-port.js';
 
 export const ORAMA_SNAPSHOT_SERIALIZE_WORKER_TIMEOUT_MS = 60_000;
 
@@ -11,6 +11,12 @@ export type SerializedOramaSnapshotArtifact = {
   readonly artifactRaw: string;
   readonly artifactDigest: string;
   readonly entryManifest: OramaEntryManifest;
+};
+
+export type SerializedOramaProjectionArtifact = {
+  readonly artifactRaw: string;
+  readonly metadataRaw: string;
+  readonly metadata: OramaProjectionMetadata;
 };
 
 export type SerializeOramaSnapshotArtifactOptions = {
@@ -21,7 +27,9 @@ type WorkerSuccessMessage = {
   readonly ok: true;
   readonly artifactRaw: string;
   readonly artifactDigest: string;
-  readonly entryManifest: OramaEntryManifest;
+  readonly entryManifest?: OramaEntryManifest;
+  readonly metadataRaw?: string;
+  readonly metadata?: OramaProjectionMetadata;
 };
 
 type WorkerFailureMessage = {
@@ -100,7 +108,13 @@ try {
   const artifactRaw = \`\${JSON.stringify(artifact, null, 2)}\\n\`;
   const artifactDigest = createHash('sha256').update(artifactRaw).digest('hex');
   const entryManifest = createOramaEntryManifestFromArtifact(artifact);
-  parentPort.postMessage({ ok: true, artifactRaw, artifactDigest, entryManifest });
+  if (workerData.metadataBase !== undefined) {
+    const metadata = { ...workerData.metadataBase, artifactDigest, entryManifest };
+    const metadataRaw = \`\${JSON.stringify(metadata, null, 2)}\\n\`;
+    parentPort.postMessage({ ok: true, artifactRaw, artifactDigest, metadataRaw, metadata });
+  } else {
+    parentPort.postMessage({ ok: true, artifactRaw, artifactDigest, entryManifest });
+  }
 } catch (error) {
   parentPort.postMessage({
     ok: false,
@@ -121,15 +135,15 @@ function workerErrorFromMessage(message: WorkerFailureMessage): Error {
   return error;
 }
 
-export async function serializeOramaSnapshotArtifactInWorker(
+async function runOramaSnapshotSerializeWorker(
   snapshot: RawData,
-  options: SerializeOramaSnapshotArtifactOptions = {},
-): Promise<SerializedOramaSnapshotArtifact> {
+  options: SerializeOramaSnapshotArtifactOptions & { metadataBase?: OramaProjectionMetadataBase } = {},
+): Promise<WorkerSuccessMessage> {
   const timeoutMs = options.timeoutMs ?? ORAMA_SNAPSHOT_SERIALIZE_WORKER_TIMEOUT_MS;
-  return await new Promise<SerializedOramaSnapshotArtifact>((resolve, reject) => {
+  return await new Promise<WorkerSuccessMessage>((resolve, reject) => {
     const worker = new Worker(ORAMA_SNAPSHOT_SERIALIZE_WORKER_SOURCE, {
       eval: true,
-      workerData: { snapshot },
+      workerData: { snapshot, metadataBase: options.metadataBase },
     });
     let settled = false;
 
@@ -153,11 +167,7 @@ export async function serializeOramaSnapshotArtifactInWorker(
       finish(() => {
         void worker.terminate();
         if (message.ok) {
-          resolve({
-            artifactRaw: message.artifactRaw,
-            artifactDigest: message.artifactDigest,
-            entryManifest: message.entryManifest,
-          });
+          resolve(message);
           return;
         }
         reject(workerErrorFromMessage(message));
@@ -171,11 +181,46 @@ export async function serializeOramaSnapshotArtifactInWorker(
     });
 
     worker.once('exit', (code) => {
-      if (!settled && code !== 0) {
+      if (!settled) {
         finish(() => {
-          reject(new Error(`Orama snapshot serialization worker exited with code ${code}`));
+          const message =
+            code === 0
+              ? 'Orama snapshot serialization worker exited before returning a response'
+              : `Orama snapshot serialization worker exited with code ${code}`;
+          reject(new Error(message));
         });
       }
     });
   });
+}
+
+export async function serializeOramaSnapshotArtifactInWorker(
+  snapshot: RawData,
+  options: SerializeOramaSnapshotArtifactOptions = {},
+): Promise<SerializedOramaSnapshotArtifact> {
+  const message = await runOramaSnapshotSerializeWorker(snapshot, options);
+  if (message.entryManifest === undefined) {
+    throw new Error('Orama snapshot serialization worker returned no entry manifest');
+  }
+  return {
+    artifactRaw: message.artifactRaw,
+    artifactDigest: message.artifactDigest,
+    entryManifest: message.entryManifest,
+  };
+}
+
+export async function serializeOramaProjectionArtifactInWorker(
+  snapshot: RawData,
+  metadataBase: OramaProjectionMetadataBase,
+  options: SerializeOramaSnapshotArtifactOptions = {},
+): Promise<SerializedOramaProjectionArtifact> {
+  const message = await runOramaSnapshotSerializeWorker(snapshot, { ...options, metadataBase });
+  if (message.metadata === undefined || message.metadataRaw === undefined) {
+    throw new Error('Orama snapshot serialization worker returned no projection metadata');
+  }
+  return {
+    artifactRaw: message.artifactRaw,
+    metadataRaw: message.metadataRaw,
+    metadata: message.metadata,
+  };
 }

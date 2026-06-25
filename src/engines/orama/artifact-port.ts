@@ -115,6 +115,8 @@ export type OramaProjectionMetadata = EngineArtifactProjectedSnapshot & {
   readonly entryManifest: OramaEntryManifest;
 };
 
+export type OramaProjectionMetadataBase = Omit<OramaProjectionMetadata, 'artifactDigest' | 'entryManifest'>;
+
 export type OramaProjectionTokenizerTier = 'intl' | 'kiwi' | 'unknown';
 export type OramaProjectionMismatchClassification = 'match' | 'tier-only-upgrade' | 'incompatible';
 
@@ -282,12 +284,10 @@ export function classifyProjectionMismatch(
   return 'incompatible';
 }
 
-export function createOramaProjectionMetadata(
+export function createOramaProjectionMetadataBase(
   snapshot: KbCorpusSnapshot,
-  artifactDigest: string,
-  entryManifest: OramaEntryManifest,
   identityInput: OramaProjectionIdentityInput = {},
-): OramaProjectionMetadata {
+): OramaProjectionMetadataBase {
   const normalizedIdentity = normalizeProjectionIdentityInput(identityInput);
   return {
     snapshotId: snapshot.snapshotId,
@@ -303,6 +303,17 @@ export function createOramaProjectionMetadata(
     icuVersion: normalizedIdentity.icuVersion,
     tokenizerIdentity: normalizedIdentity.tokenizerIdentity,
     declaredAnalyzers: normalizedIdentity.declaredAnalyzers,
+  };
+}
+
+export function createOramaProjectionMetadata(
+  snapshot: KbCorpusSnapshot,
+  artifactDigest: string,
+  entryManifest: OramaEntryManifest,
+  identityInput: OramaProjectionIdentityInput = {},
+): OramaProjectionMetadata {
+  return {
+    ...createOramaProjectionMetadataBase(snapshot, identityInput),
     artifactDigest,
     entryManifest,
   };

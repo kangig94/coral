@@ -9,6 +9,7 @@ import {
   computeOramaArtifactDigest,
   createOramaEntryManifestFromArtifact,
   createOramaProjectionMetadata,
+  createOramaProjectionMetadataBase,
   oramaProjectionTokenizerTier,
   readOramaProjectionArtifact,
   readOramaProjectionMetadata,
@@ -18,7 +19,7 @@ import {
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb, type OramaTokenizerAnalyzer } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
-import { serializeOramaSnapshotArtifactInWorker } from './snapshot-worker.js';
+import { serializeOramaProjectionArtifactInWorker } from './snapshot-worker.js';
 
 export const ORAMA_SNAPSHOT_SAVE_WARN_MS = 250;
 
@@ -152,16 +153,13 @@ export class OramaSnapshotStore {
       return this.persistSavedSnapshot(projected, snapshot, identityInput);
     }
 
-    const artifact = await serializeOramaSnapshotArtifactInWorker(snapshot);
-    const metadata = createOramaProjectionMetadata(
-      projected,
-      artifact.artifactDigest,
-      artifact.entryManifest,
-      identityInput,
+    const artifact = await serializeOramaProjectionArtifactInWorker(
+      snapshot,
+      createOramaProjectionMetadataBase(projected, identityInput),
     );
     this.ports.files.writeTextAtomic(oramaIndexPath(this.runtimeDir), artifact.artifactRaw);
-    this.ports.files.writeJsonAtomic(oramaIndexMetadataPath(this.runtimeDir), metadata);
-    return metadata;
+    this.ports.files.writeTextAtomic(oramaIndexMetadataPath(this.runtimeDir), artifact.metadataRaw);
+    return artifact.metadata;
   }
 
   private saveSnapshotWithTiming(db: KbOramaDb): RawData {
