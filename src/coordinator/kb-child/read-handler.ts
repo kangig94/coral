@@ -37,6 +37,7 @@ type KbChildReadHandlerState = {
 
 export type KbChildReadService = {
   read(request: KbChildKbReadRequest): Promise<KbToolResult>;
+  warmup(): Promise<KbChildKbReadHealth>;
   health(): KbChildKbReadHealth;
 };
 
@@ -311,14 +312,26 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
       return failed(error);
     }
   };
+  const health = (): KbChildKbReadHealth => ({
+    phase,
+    ...(initializedAt === undefined ? {} : { initializedAt }),
+    ...(lastError === undefined ? {} : { lastError }),
+  });
+  const warmup = async (): Promise<KbChildKbReadHealth> => {
+    try {
+      const { queryContext } = createContext(state);
+      createDefaultKbReadPaths(queryContext);
+      markReady();
+    } catch (error: unknown) {
+      markFailure(error);
+    }
+    return health();
+  };
 
   return {
     read,
-    health: () => ({
-      phase,
-      ...(initializedAt === undefined ? {} : { initializedAt }),
-      ...(lastError === undefined ? {} : { lastError }),
-    }),
+    warmup,
+    health,
   };
 }
 

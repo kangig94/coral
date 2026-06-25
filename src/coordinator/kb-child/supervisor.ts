@@ -7,6 +7,7 @@ import {
   KB_CHILD_REQUEST_MESSAGE,
   encodeKbChildMessage,
   isKbChildHealthResult,
+  isKbChildKbReadHealth,
   isKbChildKbReadResult,
   isKbChildReadyMessage,
   isKbChildResponseMessage,
@@ -48,6 +49,7 @@ export interface KbChildSupervisor {
   read(): KbChildHealthSnapshot;
   start(): Promise<KbChildHealthSnapshot>;
   probe(): Promise<KbChildHealthSnapshot>;
+  warmup(): Promise<KbChildHealthSnapshot>;
   readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
@@ -92,6 +94,7 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
     read: () => ({ ...snapshot }),
     start: async () => ({ ...snapshot }),
     probe: async () => ({ ...snapshot }),
+    warmup: async () => ({ ...snapshot }),
     readKb: async () => ({
       ok: false,
       code: 'kb_unavailable',
@@ -275,6 +278,26 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     });
     probeOperation = tracked;
     return tracked;
+  };
+
+  const warmupNow = async (): Promise<KbChildHealthSnapshot> => {
+    try {
+      const response = await sendRequest('kb.warmup');
+      if (!response.ok) {
+        setFailure(`warmup failed: ${response.error.message}`);
+        return read();
+      }
+      if (!isKbChildKbReadHealth(response.result)) {
+        setFailure('warmup returned malformed KB read health');
+        return read();
+      }
+      lastHeartbeatAt = runtime.time.now();
+      kbReadHealth = response.result;
+      return read();
+    } catch (error: unknown) {
+      lastError = `warmup failed: ${errorMessage(error)}`;
+      return read();
+    }
   };
 
   const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
@@ -497,6 +520,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     read,
     start: () => runExclusive(startNow),
     probe: probeExclusive,
+    warmup: () => runExclusive(warmupNow),
     readKb: readKbNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>

@@ -66,6 +66,14 @@ describe('KB child read handler', () => {
     expect(service.health()).toEqual({ phase: 'ready', initializedAt: 1234 });
   });
 
+  it('warms the child read runtime without running a read request', async () => {
+    const runtime = new SimulationRuntime();
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime, now: () => 1234 });
+
+    await expect(service.warmup()).resolves.toEqual({ phase: 'ready', initializedAt: 1234 });
+    expect(service.health()).toEqual({ phase: 'ready', initializedAt: 1234 });
+  });
+
   it('reports child read runtime failures as KB tool errors and health diagnostics', async () => {
     const runtime = new SimulationRuntime();
     writeNote(runtime, 'alpha-note');

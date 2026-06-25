@@ -73,6 +73,14 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
               },
         });
         return;
+      case 'kb.warmup':
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: await kbRead.warmup(),
+        });
+        return;
     }
   };
   let lineBuffer = '';

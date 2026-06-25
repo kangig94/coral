@@ -856,12 +856,16 @@ describe('execution backend server', () => {
         currentHealth = probedHealth;
         return currentHealth;
       }),
+      warmup: vi.fn(async () => currentHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       stop: vi.fn(async () => currentHealth),
       restart: vi.fn(async () => currentHealth),
       dispose: vi.fn(async () => undefined),
     };
     const backend = await startBackendServer({ kbChildSupervisor });
+    await vi.waitFor(() => {
+      expect(kbChildSupervisor.warmup).toHaveBeenCalledTimes(1);
+    });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -895,6 +899,7 @@ describe('execution backend server', () => {
       read: vi.fn(() => childHealth),
       start: vi.fn(async () => childHealth),
       probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
@@ -930,6 +935,7 @@ describe('execution backend server', () => {
       read: vi.fn(() => childHealth),
       start: vi.fn(async () => childHealth),
       probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
       readKb,
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
@@ -4734,6 +4740,7 @@ describe('execution backend server', () => {
       read: vi.fn(() => childHealth),
       start: vi.fn(async () => childHealth),
       probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),

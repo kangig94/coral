@@ -2,7 +2,7 @@ export const KB_CHILD_READY_MESSAGE = 'coral.kb_child.ready';
 export const KB_CHILD_REQUEST_MESSAGE = 'coral.kb_child.request';
 export const KB_CHILD_RESPONSE_MESSAGE = 'coral.kb_child.response';
 
-export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read';
+export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read' | 'kb.warmup';
 
 export const KB_CHILD_KB_READ_METHODS = [
   'readSearch',
@@ -112,7 +112,10 @@ export function isKbChildRequestMessage(value: unknown): value is KbChildRequest
     record.type === KB_CHILD_REQUEST_MESSAGE &&
     typeof record.id === 'string' &&
     record.id.length > 0 &&
-    (record.method === 'health' || record.method === 'shutdown' || record.method === 'kb.read')
+    (record.method === 'health' ||
+      record.method === 'shutdown' ||
+      record.method === 'kb.read' ||
+      record.method === 'kb.warmup')
   );
 }
 

@@ -237,6 +237,34 @@ describe('KB child supervisor', () => {
     });
   });
 
+  it('warms the child read runtime over the control protocol', async () => {
+    const child = new FakeChildProcess(158);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const warmup = supervisor.warmup();
+    await flushMicrotasks();
+    const request = latestRequest(child);
+    expect(request.method).toBe('kb.warmup');
+    writeResponse(child, request.id, { phase: 'ready', initializedAt: 1_000_200 });
+
+    await expect(warmup).resolves.toMatchObject({
+      phase: 'online',
+      kbRead: { phase: 'ready', initializedAt: 1_000_200 },
+      pendingRequests: 0,
+    });
+  });
+
   it('times out an unanswered child health probe and clears the pending request', async () => {
     const child = new FakeChildProcess(161);
     const { runtime, time } = createRuntime([child]);

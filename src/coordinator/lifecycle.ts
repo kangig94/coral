@@ -657,9 +657,19 @@ async function runLifecycleStartup({
 
     runtimeState.setLifecycle('running');
     state.started = true;
-    void kbChildSupervisor?.start().catch((error: unknown) => {
-      backendLog.warn(`KB child supervisor start failed: ${formatError(error)}`);
-    });
+    void kbChildSupervisor
+      ?.start()
+      .then((health) => {
+        if (health.phase !== 'online') {
+          return;
+        }
+        void kbChildSupervisor.warmup().catch((error: unknown) => {
+          backendLog.warn(`KB child supervisor warmup failed: ${formatError(error)}`);
+        });
+      })
+      .catch((error: unknown) => {
+        backendLog.warn(`KB child supervisor start failed: ${formatError(error)}`);
+      });
 
     idleTimer.startWatching(
       () => {
