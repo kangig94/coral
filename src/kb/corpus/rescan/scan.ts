@@ -2,6 +2,7 @@ import { basename } from 'node:path';
 import yaml from 'yaml';
 import { isRecord } from '../../../infra/json.js';
 import { isNoEntryError } from '../../../infra/fs-errors.js';
+import type { EnvPort } from '../../../infra/port-types.js';
 import {
   extractTitle,
   parseCommunityFrontmatter,
@@ -25,6 +26,51 @@ import {
 import { stripMdExt } from '../../paths.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../../validation.js';
 import type { CorpusMarkdownKind, CorpusStorage } from './storage.js';
+
+export const CORPUS_SCAN_MAX_FILES_ENV = 'CORAL_KB_CORPUS_SCAN_MAX_FILES';
+export const CORPUS_SCAN_MAX_FILE_BYTES_ENV = 'CORAL_KB_CORPUS_SCAN_MAX_FILE_BYTES';
+export const CORPUS_SCAN_MAX_TOTAL_BYTES_ENV = 'CORAL_KB_CORPUS_SCAN_MAX_TOTAL_BYTES';
+export const CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV = 'CORAL_KB_CORPUS_SCAN_FRONTMATTER_MAX_BYTES';
+export const CORPUS_SCAN_MAX_FILES = 50_000;
+export const CORPUS_SCAN_MAX_FILE_BYTES = 128 * 1024 * 1024;
+export const CORPUS_SCAN_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
+export const CORPUS_SCAN_FRONTMATTER_MAX_BYTES = 256 * 1024;
+
+type CorpusScanLimits = {
+  readonly maxFiles: number;
+  readonly maxFileBytes: number;
+  readonly maxTotalBytes: number;
+  readonly frontmatterMaxBytes: number;
+};
+
+export class CorpusScanLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CorpusScanLimitError';
+  }
+}
+
+function readPositiveIntegerEnv(envPort: Pick<EnvPort, 'get'> | undefined, key: string, fallback: number): number {
+  const raw = envPort?.get(key);
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = Number(raw.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function resolveCorpusScanLimits(envPort: Pick<EnvPort, 'get'> | undefined): CorpusScanLimits {
+  return {
+    maxFiles: readPositiveIntegerEnv(envPort, CORPUS_SCAN_MAX_FILES_ENV, CORPUS_SCAN_MAX_FILES),
+    maxFileBytes: readPositiveIntegerEnv(envPort, CORPUS_SCAN_MAX_FILE_BYTES_ENV, CORPUS_SCAN_MAX_FILE_BYTES),
+    maxTotalBytes: readPositiveIntegerEnv(envPort, CORPUS_SCAN_MAX_TOTAL_BYTES_ENV, CORPUS_SCAN_MAX_TOTAL_BYTES),
+    frontmatterMaxBytes: readPositiveIntegerEnv(
+      envPort,
+      CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV,
+      CORPUS_SCAN_FRONTMATTER_MAX_BYTES,
+    ),
+  };
+}
 
 export type PrincipleEntryId = `principle:${string}`;
 export type CorpusActiveEntryId = KbEntryId | PrincipleEntryId;
@@ -81,9 +127,10 @@ export function createCorpusMarkdownFileScan(input: {
   path: string;
   content: string;
   slug?: string;
+  frontmatterMaxBytes?: number;
 }): CorpusMarkdownFileScan {
   const slug = input.slug ?? stripMdExt(basename(input.path));
-  const frontmatter = scanFrontmatter(input.kind, input.content);
+  const frontmatter = scanFrontmatter(input.kind, input.content, input.frontmatterMaxBytes);
   const { title, titleError } = scanTitle(input.kind, input.content);
 
   return {
@@ -156,29 +203,56 @@ export function buildCorpusScanView(kb: {
   markdownRoot: string;
   corpusStorage: CorpusStorage;
   entityGraphPath(): string;
+  envPort?: Pick<EnvPort, 'get'>;
 }): CorpusScanView {
+  const limits = resolveCorpusScanLimits(kb.envPort);
   const markdownFiles: CorpusMarkdownFileScan[] = [];
+  let totalBytes = 0;
   for (const handle of kb.corpusStorage.scan(kb.markdownRoot)) {
+    if (markdownFiles.length >= limits.maxFiles) {
+      throw new CorpusScanLimitError(
+        `KB corpus scan exceeds maximum markdown file count (${markdownFiles.length + 1} files > ${limits.maxFiles} files). Increase ${CORPUS_SCAN_MAX_FILES_ENV} to allow a larger corpus.`,
+      );
+    }
+    const sizeBytes = handle.sizeBytes();
+    if (sizeBytes > limits.maxFileBytes) {
+      throw new CorpusScanLimitError(
+        `KB corpus scan file ${handle.path} exceeds maximum size (${sizeBytes} bytes > ${limits.maxFileBytes} bytes). Increase ${CORPUS_SCAN_MAX_FILE_BYTES_ENV} to allow larger markdown files.`,
+      );
+    }
+    totalBytes += sizeBytes;
+    if (totalBytes > limits.maxTotalBytes) {
+      throw new CorpusScanLimitError(
+        `KB corpus scan exceeds maximum total markdown size (${totalBytes} bytes > ${limits.maxTotalBytes} bytes). Increase ${CORPUS_SCAN_MAX_TOTAL_BYTES_ENV} to allow a larger corpus.`,
+      );
+    }
     markdownFiles.push(
       createCorpusMarkdownFileScan({
         kind: handle.kind,
         path: handle.path,
         content: handle.read(),
+        frontmatterMaxBytes: limits.frontmatterMaxBytes,
       }),
     );
   }
   return createCorpusScanView({
     markdownFiles,
-    entityGraph: readEntityGraphScan(kb),
+    entityGraph: readEntityGraphScan(kb, limits),
   });
 }
 
 function readEntityGraphScan(kb: {
   corpusStorage: CorpusStorage;
   entityGraphPath(): string;
-}): CorpusEntityGraphScan | null {
+}, limits: CorpusScanLimits): CorpusEntityGraphScan | null {
   const path = kb.entityGraphPath();
   try {
+    const sizeBytes = kb.corpusStorage.statSync(path).size;
+    if (sizeBytes > limits.maxFileBytes) {
+      throw new CorpusScanLimitError(
+        `KB corpus entity graph ${path} exceeds maximum size (${sizeBytes} bytes > ${limits.maxFileBytes} bytes). Increase ${CORPUS_SCAN_MAX_FILE_BYTES_ENV} to allow a larger entity graph.`,
+      );
+    }
     const content = kb.corpusStorage.readFileSync(path, 'utf-8');
     return createCorpusEntityGraphScan({ content, path });
   } catch (error: unknown) {
@@ -192,7 +266,11 @@ function readEntityGraphScan(kb: {
 const FRONTMATTER_OPEN_PATTERN = /^---\r?\n/;
 const FRONTMATTER_BLOCK_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
-function scanFrontmatter(kind: CorpusMarkdownKind, content: string): CorpusFrontmatterView {
+function scanFrontmatter(
+  kind: CorpusMarkdownKind,
+  content: string,
+  frontmatterMaxBytes = CORPUS_SCAN_FRONTMATTER_MAX_BYTES,
+): CorpusFrontmatterView {
   if (!FRONTMATTER_OPEN_PATTERN.test(content)) {
     return {
       status: 'absent',
@@ -219,6 +297,20 @@ function scanFrontmatter(kind: CorpusMarkdownKind, content: string): CorpusFront
   }
 
   const rawBlock = match[1] ?? '';
+  const rawBlockBytes = Buffer.byteLength(rawBlock, 'utf-8');
+  if (rawBlockBytes > frontmatterMaxBytes) {
+    return {
+      status: 'error',
+      rawBlock,
+      record: null,
+      typed: null,
+      typedError: null,
+      error: new CorpusScanLimitError(
+        `Frontmatter block exceeds maximum scan size (${rawBlockBytes} bytes > ${frontmatterMaxBytes} bytes). Increase ${CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV} to allow larger frontmatter blocks.`,
+      ),
+      bodyOffset: match[0].length,
+    };
+  }
 
   try {
     const parsed = yaml.parse(rawBlock) as unknown;

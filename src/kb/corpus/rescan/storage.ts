@@ -12,6 +12,7 @@ export type CorpusMarkdownKind = 'note' | 'source' | 'community' | 'principle' |
 export interface CorpusFileHandle {
   readonly path: string;
   readonly kind: CorpusMarkdownKind;
+  sizeBytes(): number;
   read(): string;
   mtimeNs(): bigint;
 }
@@ -48,6 +49,7 @@ export function createCorpusStorage(infraStorage: StoragePort): CorpusStorage {
           yield {
             path: filePath,
             kind,
+            sizeBytes: () => infraStorage.statSync(filePath).size,
             read: () => infraStorage.readFileSync(filePath, 'utf-8'),
             mtimeNs: () => infraStorage.statSync(filePath, { bigint: true }).mtimeNs,
           };
