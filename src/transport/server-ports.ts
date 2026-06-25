@@ -12,6 +12,7 @@ export interface AdminControlPort {
   beginRequest(): void;
   endRequest(): void;
   requestDrain(reason: string): void;
+  restartKbChild?(reason: string): Promise<TransportKbChildHealthSnapshot>;
 }
 
 /**
@@ -44,6 +45,33 @@ export type TransportSubsystemStatus =
     };
 
 export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
+
+export type TransportKbChildPhase =
+  | 'disabled'
+  | 'starting'
+  | 'online'
+  | 'restarting'
+  | 'stopping'
+  | 'stopped'
+  | 'failed';
+
+export type TransportKbChildHealthSnapshot = {
+  enabled: boolean;
+  phase: TransportKbChildPhase;
+  generation: number;
+  pid: number | null;
+  startedAt: number | null;
+  readyAt: number | null;
+  entrypoint?: string;
+  reason?: string;
+  lastExit?: {
+    code: number | null;
+    signal: string | null;
+    at: number;
+    uptimeMs: number | null;
+  };
+  lastError?: string;
+};
 
 export type HealthSnapshot = {
   /**
@@ -96,6 +124,7 @@ export type HealthSnapshot = {
   };
   env: Record<string, string>;
   subsystems: TransportSubsystemStatus[];
+  kbChild?: TransportKbChildHealthSnapshot;
   /**
    * Health diagnostics. Omitted entirely when nothing is wrong so the green
    * path stays compact and operators can grep for these keys to find

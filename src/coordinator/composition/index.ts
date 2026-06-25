@@ -103,6 +103,7 @@ import { KbSourceImportService, parseKbSourceImportRequest } from '../services/k
 import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
+import { createDisabledKbChildSupervisor } from '../kb-child/supervisor.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 
@@ -179,6 +180,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
+  const kbChildSupervisor =
+    options.kbChildSupervisor ?? createDisabledKbChildSupervisor('not configured for this coordinator core');
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
   // Local indirection: callers in non-health/handoff paths use this to get
@@ -564,6 +567,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         world.idleTimer.endRequest();
       },
       requestDrain: control.requestDrain,
+      restartKbChild: (reason) => kbChildSupervisor.restart(reason),
     },
     health: {
       read: () => {
@@ -631,6 +635,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           textProjectionState: options.getTextProjectionState?.() ?? 'idle',
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           subsystems,
+          kbChild: kbChildSupervisor.read(),
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
         };
@@ -725,6 +730,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
+    kbChildSupervisor,
     disposeLifecycleReactor: options.disposeLifecycleReactor ?? (() => {}),
     handoffQuiescePorts: () =>
       services

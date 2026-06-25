@@ -143,6 +143,43 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(withResources)).toBe(true);
   });
 
+  it('accepts KB child supervisor health', () => {
+    const withKbChild: BackendHealth = {
+      ...HEALTHY_BASE,
+      kbChild: {
+        enabled: true,
+        phase: 'online',
+        generation: 2,
+        pid: 12345,
+        startedAt: 1_700_000_000_010,
+        readyAt: 1_700_000_000_050,
+        entrypoint: '/plugin/bridge/coral-backend.cjs',
+        lastExit: {
+          code: 0,
+          signal: null,
+          at: 1_700_000_000_000,
+          uptimeMs: 500,
+        },
+      },
+    };
+    expect(isBackendHealth(withKbChild)).toBe(true);
+  });
+
+  it('rejects malformed KB child supervisor health', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      kbChild: {
+        enabled: true,
+        phase: 'online',
+        generation: '2',
+        pid: 12345,
+        startedAt: 1_700_000_000_010,
+        readyAt: 1_700_000_000_050,
+      },
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
   it('rejects malformed resource counters', () => {
     const malformed = {
       ...HEALTHY_BASE,

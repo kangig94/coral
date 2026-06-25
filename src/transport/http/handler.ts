@@ -323,11 +323,12 @@ type ProjectedTransportLocalRoute = TransportLocalRoute & {
   handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL) => Promise<void>;
 };
 
-const [healthPath, shutdownPath, eventsStreamPath] = transportOperationalCarveouts;
+const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
 
 export const transportLocalRoutes: readonly TransportLocalRoute[] = [
   { method: 'GET', path: healthPath },
   { method: 'POST', path: shutdownPath },
+  { method: 'POST', path: kbRestartPath },
   { method: 'GET', path: eventsStreamPath },
 ];
 
@@ -749,6 +750,32 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       requiresRunningLifecycle: true,
       handle: async (req, res) => {
         req.resume();
+        if (!deps.admin.restartKbChild) {
+          sendJson(res, 501, { code: 'not_implemented', message: 'KB child supervisor is not available' });
+          return;
+        }
+        writeAuditEvent(
+          'admin_kb_child_restart_requested',
+          {
+            transport: 'http',
+            reason: 'admin',
+            method: req.method,
+            path: kbRestartPath,
+            instanceId: deps.identity.instanceId,
+            remoteAddress: req.socket.remoteAddress,
+          },
+          'warn',
+        );
+        const kbChild = await deps.admin.restartKbChild('http-admin');
+        sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbChild });
+      },
+    },
+    {
+      ...transportLocalRoutes[3],
+      pattern: compilePathPattern(transportLocalRoutes[3].path),
+      requiresRunningLifecycle: true,
+      handle: async (req, res) => {
+        req.resume();
         await handleEventStream(req, res, deps);
       },
     },
@@ -816,7 +843,7 @@ export function createHttpHandler(
 
     const parsedUrl = new URL(req.url, 'http://localhost');
     const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
-    const requiresShutdownToken = localMatch?.route.path === shutdownPath;
+    const requiresShutdownToken = localMatch?.route.path === shutdownPath || localMatch?.route.path === kbRestartPath;
     const authHeader = requiresShutdownToken
       ? req.headers['x-coral-shutdown-token']
       : req.headers['x-coral-backend-token'];

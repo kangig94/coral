@@ -17,7 +17,12 @@ describe('rpc catalog source of truth', () => {
   });
 
   it('keeps the fixed transport-local operational carveout list explicit', () => {
-    expect(transportOperationalCarveouts).toEqual(['/health', '/admin/shutdown', '/events/stream']);
+    expect(transportOperationalCarveouts).toEqual([
+      '/health',
+      '/admin/shutdown',
+      '/admin/kb/restart',
+      '/events/stream',
+    ]);
   });
 
   it('projects the coordinator HTTP dispatch table via rpcCatalog.map(spec => httpAdapter(spec, rpcPorts))', () => {
@@ -69,6 +74,7 @@ describe('rpc catalog source of truth', () => {
     expect(transportLocalRoutes).toEqual([
       { method: 'GET', path: '/health' },
       { method: 'POST', path: '/admin/shutdown' },
+      { method: 'POST', path: '/admin/kb/restart' },
       { method: 'GET', path: '/events/stream' },
     ]);
     expect(transportLocalRoutes.map((route) => route.path)).toEqual([...transportOperationalCarveouts]);

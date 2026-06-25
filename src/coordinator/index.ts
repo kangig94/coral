@@ -75,6 +75,7 @@ import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
+import { createDefaultKbChildSupervisor, createDisabledKbChildSupervisor } from './kb-child/supervisor.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -368,6 +369,26 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
+  const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
+  const kbChildSupervisor = (() => {
+    if (coreOptions.kbChildSupervisor) {
+      return coreOptions.kbChildSupervisor;
+    }
+    if (!kbEnabled) {
+      return createDisabledKbChildSupervisor(`disabled by ${CORAL_KB_ENABLE_ENV}=0`);
+    }
+    if (explicitPluginRoot === undefined) {
+      return createDisabledKbChildSupervisor('pluginRoot not provided');
+    }
+    return createDefaultKbChildSupervisor({
+      runtime,
+      pluginRoot: explicitPluginRoot,
+      ...(coreOptions.bootSnapshot?.instanceId === undefined
+        ? {}
+        : { instanceId: coreOptions.bootSnapshot.instanceId }),
+      log: (message) => backendLog.warn(message),
+    });
+  })();
 
   const getStoreServices = (): CoordinatorStoreServices => {
     const services = core?.storeServicesRef.tryGet() ?? null;
@@ -603,6 +624,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     getTextProjectionState: textProjectionHealth.read,
+    kbChildSupervisor,
     createKbSubsystemFn: (ctx) => {
       // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
       // corpus/curate wiring below. KB stays off until a daemon restart.

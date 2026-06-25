@@ -84,6 +84,7 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { MAX_EVENT_STREAM_CONNECTIONS } from '#src/coordinator/composition/index.js';
+import type { KbChildHealthSnapshot, KbChildSupervisor } from '#src/coordinator/kb-child/supervisor.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -4566,6 +4567,62 @@ describe('execution backend server', () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+    expect(backend.controller.getLifecycle()).toBe('running');
+  });
+
+  it('restarts the KB child supervisor through the shutdown-token admin route', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 2,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const response = await fetch(`${backend.baseUrl}/admin/kb/restart`, {
+        method: 'POST',
+        headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        status: 'ok',
+        instanceId: 'execution-backend-instance-1',
+        kbChild: childHealth,
+      });
+      expect(kbChildSupervisor.restart).toHaveBeenCalledWith('http-admin');
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_kb_child_restart_requested"'),
+        ),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects /admin/kb/restart when only the general backend token is provided', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/admin/kb/restart`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': backend.token },
     });

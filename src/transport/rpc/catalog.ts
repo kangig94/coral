@@ -67,7 +67,12 @@ export interface RpcMethodSpec<Req, _Res> {
   };
 }
 
-export const transportOperationalCarveouts = ['/health', '/admin/shutdown', '/events/stream'] as const;
+export const transportOperationalCarveouts = [
+  '/health',
+  '/admin/shutdown',
+  '/admin/kb/restart',
+  '/events/stream',
+] as const;
 
 export const rpcCatalog = [
   {

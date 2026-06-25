@@ -35,6 +35,33 @@ export type TransportSubsystemStatus =
 
 export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
 
+export type TransportKbChildPhase =
+  | 'disabled'
+  | 'starting'
+  | 'online'
+  | 'restarting'
+  | 'stopping'
+  | 'stopped'
+  | 'failed';
+
+export type TransportKbChildHealthSnapshot = {
+  enabled: boolean;
+  phase: TransportKbChildPhase;
+  generation: number;
+  pid: number | null;
+  startedAt: number | null;
+  readyAt: number | null;
+  entrypoint?: string;
+  reason?: string;
+  lastExit?: {
+    code: number | null;
+    signal: string | null;
+    at: number;
+    uptimeMs: number | null;
+  };
+  lastError?: string;
+};
+
 export interface BackendHealth {
   /**
    * Legacy strict-enum status field kept so older CLIs that validate
@@ -66,6 +93,7 @@ export interface BackendHealth {
     fdCount?: number;
   };
   subsystems: TransportSubsystemStatus[];
+  kbChild?: TransportKbChildHealthSnapshot;
   diagnostics?: {
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
     consumerStuck?: Array<{
@@ -171,6 +199,46 @@ function isTextProjectionState(value: unknown): value is TextProjectionHealthSta
   return value === 'idle' || value === 'fetching' || value === 'reindexing';
 }
 
+function isKbChildPhase(value: unknown): value is TransportKbChildPhase {
+  return (
+    value === 'disabled' ||
+    value === 'starting' ||
+    value === 'online' ||
+    value === 'restarting' ||
+    value === 'stopping' ||
+    value === 'stopped' ||
+    value === 'failed'
+  );
+}
+
+function isKbChildExit(value: unknown): value is NonNullable<TransportKbChildHealthSnapshot['lastExit']> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    (value.code === null || Number.isInteger(value.code)) &&
+    (value.signal === null || typeof value.signal === 'string') &&
+    Number.isFinite(value.at) &&
+    (value.uptimeMs === null || Number.isFinite(value.uptimeMs))
+  );
+}
+
+function isKbChildHealth(value: unknown): value is TransportKbChildHealthSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.enabled === 'boolean' &&
+    isKbChildPhase(value.phase) &&
+    Number.isInteger(value.generation) &&
+    (value.pid === null || Number.isInteger(value.pid)) &&
+    (value.startedAt === null || Number.isFinite(value.startedAt)) &&
+    (value.readyAt === null || Number.isFinite(value.readyAt)) &&
+    (value.entrypoint === undefined || typeof value.entrypoint === 'string') &&
+    (value.reason === undefined || typeof value.reason === 'string') &&
+    (value.lastExit === undefined || isKbChildExit(value.lastExit)) &&
+    (value.lastError === undefined || typeof value.lastError === 'string')
+  );
+}
+
 function isKernel(value: unknown): value is BackendHealth['kernel'] {
   if (!isRecord(value)) {
     return false;
@@ -236,6 +304,7 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     (value.resources === undefined || isResources(value.resources)) &&
     Array.isArray(value.subsystems) &&
     value.subsystems.every(isSubsystemStatus) &&
+    (value.kbChild === undefined || isKbChildHealth(value.kbChild)) &&
     (value.diagnostics === undefined || isDiagnostics(value.diagnostics))
   );
 }

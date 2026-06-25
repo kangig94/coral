@@ -10,6 +10,7 @@ import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
 import type { SubsystemRegistry } from './subsystems/registry.js';
+import type { KbChildSupervisor } from './kb-child/supervisor.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -56,6 +57,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
+  kbChildSupervisor?: KbChildSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
@@ -124,6 +126,7 @@ export async function runShutdownSequence({
   namespace,
   markJobsAsErrorFn,
   providerHostManager,
+  kbChildSupervisor,
   storeServicesRef,
   terminateAllFn,
   handoffQuiescePorts,
@@ -155,6 +158,18 @@ export async function runShutdownSequence({
   teardownRecoveryCoordinator();
   state.ownershipCheckerTeardown?.();
   state.ownershipCheckerTeardown = null;
+
+  if (kbChildSupervisor !== undefined) {
+    await withBudget(
+      'kb child shutdown',
+      async (signal) => {
+        await kbChildSupervisor.dispose(reason, { signal });
+      },
+      remainingDrain,
+      runtime.time,
+      log,
+    );
+  }
 
   if (mode === 'hard') {
     if (storeServicesRef.tryGet() !== null) {
@@ -223,7 +238,13 @@ export async function runShutdownSequence({
       log,
     );
   }
-  await withBudget('hooks.onShutdown', async (signal) => hooks.onShutdown(mode, signal), remainingDrain, runtime.time, log);
+  await withBudget(
+    'hooks.onShutdown',
+    async (signal) => hooks.onShutdown(mode, signal),
+    remainingDrain,
+    runtime.time,
+    log,
+  );
   for (const store of discussStores.values()) {
     store.dispose();
   }

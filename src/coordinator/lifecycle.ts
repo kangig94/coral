@@ -47,6 +47,7 @@ import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import type { KbChildSupervisor } from './kb-child/supervisor.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -371,6 +372,7 @@ export type LifecycleDeps = {
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
+  readonly kbChildSupervisor?: KbChildSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void;
   readonly createKbSubsystemFn: CreateKbSubsystemFn;
@@ -427,6 +429,7 @@ async function runLifecycleStartup({
     createStoreServicesFromDbFn,
     launchCoordinator,
     providerHostManager,
+    kbChildSupervisor,
     providerRegistry,
     server,
     getRecoveryService,
@@ -654,6 +657,9 @@ async function runLifecycleStartup({
 
     runtimeState.setLifecycle('running');
     state.started = true;
+    void kbChildSupervisor?.start().catch((error: unknown) => {
+      backendLog.warn(`KB child supervisor start failed: ${formatError(error)}`);
+    });
 
     idleTimer.startWatching(
       () => {
@@ -768,6 +774,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
+    kbChildSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
     closeServerFn,
@@ -828,6 +835,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         namespace,
         markJobsAsErrorFn,
         providerHostManager,
+        kbChildSupervisor,
         storeServicesRef,
         terminateAllFn,
         handoffQuiescePorts: deps.handoffQuiescePorts,

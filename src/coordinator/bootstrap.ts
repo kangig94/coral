@@ -4,6 +4,7 @@ declare const __PLUGIN_ROOT__: string | undefined;
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
 import { createCoordinatorServer } from './index.js';
+import { runKbChildMain } from './kb-child/child-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
@@ -75,6 +76,10 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
+
+  if (process.env.CORAL_KB_CHILD === '1' || process.argv.includes('--kb-child')) {
+    return runKbChildMain();
+  }
 
   if (process.argv.includes('--smoke-open-store')) {
     return handleSmokeOpenStore(process.argv);
