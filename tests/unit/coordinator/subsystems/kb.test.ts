@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { KB_ID } from '#src/coordinator/subsystems/contract.js';
-import { createKbSubsystem, type CreateKbSubsystemDeps } from '#src/coordinator/subsystems/kb.js';
+import { createKbSubsystem, runKbBootStep, type CreateKbSubsystemDeps } from '#src/coordinator/subsystems/kb.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 
 const { buildKbRuntimeMock } = vi.hoisted(() => ({ buildKbRuntimeMock: vi.fn() }));
@@ -133,6 +133,63 @@ describe('createKbSubsystem (AC2)', () => {
     });
     expect(sub.status.phase === 'offline' ? sub.status.lastLogLine : undefined).toContain(
       '[subsystem:kb] init attempt 4/4 failed: final attempt failed',
+    );
+    expect(sub.status.phase === 'offline' ? sub.status.diagnostic : undefined).toMatchObject({
+      attempts: 4,
+      retry: 'restart-daemon',
+    });
+  });
+
+  it('records the failed boot step and capped error stack after retry exhaustion', async () => {
+    const runBootSequence = vi.fn(async () =>
+      runKbBootStep('I2 corpus freshness rescan', async () => {
+        throw new Error('frontmatter parse failed');
+      }),
+    );
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    buildKbRuntimeMock.mockResolvedValueOnce(fakeRuntime());
+    const sub = createKbSubsystem(fakeDeps({ runBootSequence, time: { sleep } }));
+
+    await sub.init(new AbortController().signal);
+
+    expect(runBootSequence).toHaveBeenCalledTimes(4);
+    expect(sub.status).toMatchObject({
+      id: KB_ID,
+      phase: 'offline',
+      reason: 'frontmatter parse failed',
+      diagnostic: {
+        attempts: 4,
+        failedStep: 'I2 corpus freshness rescan',
+        retry: 'restart-daemon',
+      },
+    });
+    expect(sub.status.phase === 'offline' ? sub.status.diagnostic?.lastErrorStack : undefined).toContain(
+      'frontmatter parse failed',
+    );
+  });
+
+  it('transitions offline when runtime setup fails before the retry loop', async () => {
+    const build = vi.fn(async () => {
+      throw new Error('capability catalog init failed');
+    });
+    const runBootSequence = vi.fn().mockResolvedValue(undefined);
+    const sub = createKbSubsystem(fakeDeps({ build, runBootSequence }));
+
+    await sub.init(new AbortController().signal);
+
+    expect(runBootSequence).not.toHaveBeenCalled();
+    expect(sub.status).toMatchObject({
+      id: KB_ID,
+      phase: 'offline',
+      reason: 'capability catalog init failed',
+      diagnostic: {
+        attempts: 0,
+        failedStep: 'setup runtime build',
+        retry: 'restart-daemon',
+      },
+    });
+    expect(sub.status.phase === 'offline' ? sub.status.lastLogLine : undefined).toContain(
+      '[subsystem:kb] setup failed before retry loop',
     );
   });
 

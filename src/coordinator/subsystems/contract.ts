@@ -7,11 +7,18 @@ export type DegradedReason = {
   lastError: string;
 };
 
+export type OfflineDiagnostic = {
+  attempts?: number;
+  failedStep?: string;
+  retry?: 'restart-daemon' | 'none';
+  lastErrorStack?: string;
+};
+
 export type SubsystemStatus =
   | { id: SubsystemId; phase: 'initializing'; attempt: number }
   | { id: SubsystemId; phase: 'online' }
   | { id: SubsystemId; phase: 'degraded'; reason: DegradedReason }
-  | { id: SubsystemId; phase: 'offline'; reason: string; lastLogLine?: string };
+  | { id: SubsystemId; phase: 'offline'; reason: string; lastLogLine?: string; diagnostic?: OfflineDiagnostic };
 
 export interface Subsystem<R = unknown> {
   readonly id: SubsystemId;

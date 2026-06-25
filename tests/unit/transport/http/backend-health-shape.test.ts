@@ -65,6 +65,26 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(offline)).toBe(true);
   });
 
+  it('accepts an offline subsystem diagnostic with boot failure context', () => {
+    const offline: BackendHealth = {
+      ...HEALTHY_BASE,
+      subsystems: [
+        {
+          id: 'kb',
+          phase: 'offline',
+          reason: 'frontmatter parse failed',
+          diagnostic: {
+            attempts: 4,
+            failedStep: 'I2 corpus freshness rescan',
+            retry: 'restart-daemon',
+            lastErrorStack: 'Error: frontmatter parse failed',
+          },
+        },
+      ],
+    };
+    expect(isBackendHealth(offline)).toBe(true);
+  });
+
   it('accepts a blocked-mutation diagnostic carrying full context', () => {
     const blocked: BackendHealth = {
       ...HEALTHY_BASE,
@@ -171,6 +191,36 @@ describe('/health typed shape (AC10a)', () => {
 
   it('rejects a degraded subsystem missing the reason object', () => {
     const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'degraded' }] };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects a malformed offline subsystem diagnostic', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      subsystems: [
+        {
+          id: 'kb',
+          phase: 'offline',
+          reason: 'init failed',
+          diagnostic: { attempts: '4', retry: 'later' },
+        },
+      ],
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects a negative offline subsystem diagnostic attempt count', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      subsystems: [
+        {
+          id: 'kb',
+          phase: 'offline',
+          reason: 'init failed',
+          diagnostic: { attempts: -1, retry: 'restart-daemon' },
+        },
+      ],
+    };
     expect(isBackendHealth(malformed)).toBe(false);
   });
 

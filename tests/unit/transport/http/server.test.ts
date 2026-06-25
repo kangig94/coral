@@ -1323,6 +1323,15 @@ describe('execution backend server', () => {
           curateScheduler: kbSubsystem.curateScheduler,
         }) satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime,
     });
+    await vi.waitFor(async () => {
+      const healthResponse = await fetch(`${backend.baseUrl}/health`, {
+        headers: {
+          'X-Coral-Backend-Token': backend.token,
+        },
+      });
+      const health = (await healthResponse.json()) as { subsystems?: Array<{ id: string; phase: string }> };
+      expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('online');
+    });
     ensureCorpusFreshness.mockRejectedValue(new Error('mock KB runtime unavailable'));
 
     const response = await fetch(`${backend.baseUrl}/kb/entries?q=test`, {

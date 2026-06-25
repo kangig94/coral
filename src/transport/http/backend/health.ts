@@ -20,7 +20,18 @@ export type TransportSubsystemStatus =
       phase: 'degraded';
       reason: { kind: 'curate-publish'; consecutiveFailures: number; lastError: string };
     }
-  | { id: string; phase: 'offline'; reason: string; lastLogLine?: string };
+  | {
+      id: string;
+      phase: 'offline';
+      reason: string;
+      lastLogLine?: string;
+      diagnostic?: {
+        attempts?: number;
+        failedStep?: string;
+        retry?: 'restart-daemon' | 'none';
+        lastErrorStack?: string;
+      };
+    };
 
 export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
 
@@ -113,6 +124,27 @@ function isDegradedReason(
   );
 }
 
+function isOfflineDiagnostic(
+  value: unknown,
+): value is Extract<TransportSubsystemStatus, { phase: 'offline' }>['diagnostic'] {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.attempts !== undefined) {
+    const attempts = value.attempts;
+    if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 0) {
+      return false;
+    }
+  }
+  if (value.failedStep !== undefined && typeof value.failedStep !== 'string') {
+    return false;
+  }
+  if (value.retry !== undefined && value.retry !== 'restart-daemon' && value.retry !== 'none') {
+    return false;
+  }
+  return value.lastErrorStack === undefined || typeof value.lastErrorStack === 'string';
+}
+
 function isSubsystemStatus(value: unknown): value is TransportSubsystemStatus {
   if (!isRecord(value) || typeof value.id !== 'string') {
     return false;
@@ -126,7 +158,9 @@ function isSubsystemStatus(value: unknown): value is TransportSubsystemStatus {
       return isDegradedReason(value.reason);
     case 'offline':
       return (
-        typeof value.reason === 'string' && (value.lastLogLine === undefined || typeof value.lastLogLine === 'string')
+        typeof value.reason === 'string' &&
+        (value.lastLogLine === undefined || typeof value.lastLogLine === 'string') &&
+        (value.diagnostic === undefined || isOfflineDiagnostic(value.diagnostic))
       );
     default:
       return false;

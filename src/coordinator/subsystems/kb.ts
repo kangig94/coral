@@ -5,7 +5,7 @@ import type { TimePort } from '../../infra/port-types.js';
 import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import { createKbSubsystem as buildKbRuntime } from '../../kb/subsystem.js';
 import type { CurateSchedulerHealthBridge } from '../live/curate-scheduler.js';
-import type { Subsystem, SubsystemStatus } from './contract.js';
+import type { OfflineDiagnostic, Subsystem, SubsystemStatus } from './contract.js';
 import { KB_ID, SubsystemUnavailableError } from './contract.js';
 
 /**
@@ -61,6 +61,56 @@ export function disabledKbSubsystem(): Subsystem<KnowledgeBaseRuntime> {
 
 const RETRY_BACKOFFS_MS = [1_000, 4_000, 16_000] as const;
 const MAX_ATTEMPTS = RETRY_BACKOFFS_MS.length + 1;
+const MAX_OFFLINE_STACK_CHARS = 4_096;
+
+export class KbBootStepError extends Error {
+  public readonly failedStep: string;
+  public override readonly cause: unknown;
+
+  constructor(failedStep: string, cause: unknown) {
+    super(errorMessage(cause));
+    this.name = 'KbBootStepError';
+    this.failedStep = failedStep;
+    this.cause = cause;
+  }
+}
+
+export async function runKbBootStep<T>(failedStep: string, fn: () => Promise<T> | T): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof KbBootStepError) {
+      throw error;
+    }
+    throw new KbBootStepError(failedStep, error);
+  }
+}
+
+function buildOfflineDiagnostic(error: unknown, attempts: number): OfflineDiagnostic {
+  const diagnostic: OfflineDiagnostic = {
+    attempts,
+    retry: 'restart-daemon',
+  };
+  if (error instanceof KbBootStepError) {
+    diagnostic.failedStep = error.failedStep;
+  }
+  const stack = stackFor(error);
+  if (stack !== undefined) {
+    diagnostic.lastErrorStack =
+      stack.length > MAX_OFFLINE_STACK_CHARS ? stack.slice(0, MAX_OFFLINE_STACK_CHARS) : stack;
+  }
+  return diagnostic;
+}
+
+function stackFor(error: unknown): string | undefined {
+  if (error instanceof KbBootStepError) {
+    return stackFor(error.cause) ?? error.stack;
+  }
+  if (error instanceof Error && typeof error.stack === 'string' && error.stack.length > 0) {
+    return error.stack;
+  }
+  return undefined;
+}
 
 export function createKbSubsystem(deps: CreateKbSubsystemDeps): Subsystem<KnowledgeBaseRuntime> {
   let status: SubsystemStatus = { id: KB_ID, phase: 'initializing', attempt: 0 };
@@ -97,23 +147,47 @@ export function createKbSubsystem(deps: CreateKbSubsystemDeps): Subsystem<Knowle
       // capability registry; a second catalog init throws
       // `capability_name_occupied`.
       const buildFn = deps.build ?? buildKbRuntime;
-      const built = await buildFn({
-        db: deps.db,
-        paths: deps.paths,
-        version: deps.version,
-        curateAssistant: deps.curateAssistant,
-        processPort: deps.processPort,
-        storagePort: deps.storagePort,
-        envPort: deps.envPort,
-        timePort: deps.timePort,
-        idsPort: deps.idsPort,
-        ...(deps.persistCorpusState === undefined ? {} : { persistCorpusState: deps.persistCorpusState }),
-        ...(deps.notifyCorpusMutation === undefined ? {} : { notifyCorpusMutation: deps.notifyCorpusMutation }),
-        ...(deps.onCorpusPublishFailure === undefined ? {} : { onCorpusPublishFailure: deps.onCorpusPublishFailure }),
-        ...(deps.onCorpusPublishSuccess === undefined ? {} : { onCorpusPublishSuccess: deps.onCorpusPublishSuccess }),
-      });
-      runtime = built;
-      deps.prepareRuntime?.(built);
+      let built: KnowledgeBaseRuntime;
+      try {
+        built = await runKbBootStep('setup runtime build', () =>
+          buildFn({
+            db: deps.db,
+            paths: deps.paths,
+            version: deps.version,
+            curateAssistant: deps.curateAssistant,
+            processPort: deps.processPort,
+            storagePort: deps.storagePort,
+            envPort: deps.envPort,
+            timePort: deps.timePort,
+            idsPort: deps.idsPort,
+            ...(deps.persistCorpusState === undefined ? {} : { persistCorpusState: deps.persistCorpusState }),
+            ...(deps.notifyCorpusMutation === undefined ? {} : { notifyCorpusMutation: deps.notifyCorpusMutation }),
+            ...(deps.onCorpusPublishFailure === undefined
+              ? {}
+              : { onCorpusPublishFailure: deps.onCorpusPublishFailure }),
+            ...(deps.onCorpusPublishSuccess === undefined
+              ? {}
+              : { onCorpusPublishSuccess: deps.onCorpusPublishSuccess }),
+          }),
+        );
+        runtime = built;
+        await runKbBootStep('setup runtime prepare', () => deps.prepareRuntime?.(built));
+      } catch (error) {
+        if (signal.aborted) {
+          transition({ id: KB_ID, phase: 'offline', reason: 'shutdown' });
+          return;
+        }
+        backendLog.error('[subsystem:kb] setup failed before retry loop — offline until restart', error);
+        const lastLogLine = backendLog.lastLineFor('subsystem:kb');
+        transition({
+          id: KB_ID,
+          phase: 'offline',
+          reason: errorMessage(error),
+          diagnostic: buildOfflineDiagnostic(error, 0),
+          ...(lastLogLine === undefined ? {} : { lastLogLine }),
+        });
+        return;
+      }
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (signal.aborted) {
@@ -138,6 +212,7 @@ export function createKbSubsystem(deps: CreateKbSubsystemDeps): Subsystem<Knowle
               id: KB_ID,
               phase: 'offline',
               reason: errorMessage(error),
+              diagnostic: buildOfflineDiagnostic(error, MAX_ATTEMPTS),
               ...(lastLogLine === undefined ? {} : { lastLogLine }),
             });
             backendLog.error('[subsystem:kb] init exhausted retries — offline until restart', error);

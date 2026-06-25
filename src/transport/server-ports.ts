@@ -30,7 +30,18 @@ export type TransportSubsystemStatus =
       phase: 'degraded';
       reason: { kind: 'curate-publish'; consecutiveFailures: number; lastError: string };
     }
-  | { id: string; phase: 'offline'; reason: string; lastLogLine?: string };
+  | {
+      id: string;
+      phase: 'offline';
+      reason: string;
+      lastLogLine?: string;
+      diagnostic?: {
+        attempts?: number;
+        failedStep?: string;
+        retry?: 'restart-daemon' | 'none';
+        lastErrorStack?: string;
+      };
+    };
 
 export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
 

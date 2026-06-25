@@ -74,11 +74,31 @@ function formatSubsystemLines(subsystem: Subsystem): string[] {
       if (subsystem.lastLogLine) {
         lines.push(`    last log: ${subsystem.lastLogLine}`);
       }
+      if (subsystem.diagnostic?.failedStep) {
+        lines.push(`    failed step: ${subsystem.diagnostic.failedStep}`);
+      }
+      if (typeof subsystem.diagnostic?.attempts === 'number') {
+        lines.push(`    attempts: ${subsystem.diagnostic.attempts}`);
+      }
+      if (subsystem.diagnostic?.retry) {
+        lines.push(`    retry: ${formatOfflineRetry(subsystem.diagnostic.retry)}`);
+      }
       lines.push('    hint: coral-cli backend shutdown');
       return lines;
     }
     default:
       return assertNever(subsystem);
+  }
+}
+
+function formatOfflineRetry(retry: 'restart-daemon' | 'none'): string {
+  switch (retry) {
+    case 'restart-daemon':
+      return 'daemon restart required';
+    case 'none':
+      return 'not retryable';
+    default:
+      return assertNever(retry);
   }
 }
 

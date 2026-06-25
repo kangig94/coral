@@ -384,6 +384,12 @@ describe('cli format', () => {
               phase: 'offline' as const,
               reason: 'binding_empty after 3 attempts',
               lastLogLine: '[subsystem:kb] catalog scan failed',
+              diagnostic: {
+                attempts: 4,
+                failedStep: 'I2 corpus freshness rescan',
+                retry: 'restart-daemon' as const,
+                lastErrorStack: 'Error: binding_empty after 3 attempts',
+              },
             },
           ],
         },
@@ -393,6 +399,10 @@ describe('cli format', () => {
       expect(output).toContain('  kb: offline');
       expect(output).toContain('    reason: binding_empty after 3 attempts');
       expect(output).toContain('    last log: [subsystem:kb] catalog scan failed');
+      expect(output).toContain('    failed step: I2 corpus freshness rescan');
+      expect(output).toContain('    attempts: 4');
+      expect(output).toContain('    retry: daemon restart required');
+      expect(output).not.toContain('lastErrorStack');
       expect(output).toContain('    hint: coral-cli backend shutdown');
     });
 

@@ -20,7 +20,7 @@ import { createRunCommunitySummaryJob } from './services/kb/community-summary.js
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { CreateKbSubsystemOptions } from '../kb/subsystem.js';
-import { createKbSubsystem, disabledKbSubsystem } from './subsystems/kb.js';
+import { createKbSubsystem, disabledKbSubsystem, runKbBootStep } from './subsystems/kb.js';
 import { KB_ID } from './subsystems/contract.js';
 import { isErrorEnvelope } from './subsystems/registry.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
@@ -545,19 +545,21 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     signal.throwIfAborted();
     // Boot step 0 (I0): finish or roll back any in-flight promote-to-wiki
     // before any corpus snapshot can be published.
-    await runPromoteRecovery(built.kb);
+    await runKbBootStep('I0 promote recovery', () => runPromoteRecovery(built.kb));
     signal.throwIfAborted();
     // Boot step 1: replay any corpus publication that committed state
     // before a prior notify failure.
-    await built.kb.retryPendingCorpusPublication();
+    await runKbBootStep('I1 pending corpus publication retry', () => built.kb.retryPendingCorpusPublication());
     signal.throwIfAborted();
     // Boot step 2: absorb external Corpus edits before replaying consumers.
-    await built.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal });
+    await runKbBootStep('I2 corpus freshness rescan', () =>
+      built.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal }),
+    );
     signal.throwIfAborted();
     const driver = getConsumerDriver();
     // Boot step 3: replay installed-tier rows + apply bundled fallback to
     // fill empty bindings.
-    await getExpansionLifecycleService().recoverOnBoot();
+    await runKbBootStep('I3 expansion recover on boot', () => getExpansionLifecycleService().recoverOnBoot());
     signal.throwIfAborted();
     // Korean analyzer artifacts are intentionally fetched out-of-band:
     // boot/search stays on the Intl baseline while the model downloads, then
@@ -573,17 +575,21 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     // Boot step 4: schedule repair for unchanged-snapshot projection artifacts
     // without extending the kernel boot path.
-    await repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs);
+    await runKbBootStep('I4 projection artifact lag repair', () =>
+      repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs),
+    );
     signal.throwIfAborted();
     // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
-    const corpusSnapshot = built.kb.getCorpusStateSnapshot();
-    driver.notifyCorpus(corpusSnapshot);
+    await runKbBootStep('I5 corpus consumer replay', () => {
+      const corpusSnapshot = built.kb.getCorpusStateSnapshot();
+      driver.notifyCorpus(corpusSnapshot);
+    });
     backendLog.warn('[kb] Boot scheduled FTS freshness replay; serving stale/degraded retrieval until it catches up.');
     signal.throwIfAborted();
     if (built.curateScheduler) {
       // Boot step 6: start background curation after consumer replay has been
       // scheduled; read projections may still catch up asynchronously.
-      await built.curateScheduler.start();
+      await runKbBootStep('I6 curate scheduler start', () => built.curateScheduler.start());
     }
   };
   core = createCoordinatorCore({
