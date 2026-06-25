@@ -11,20 +11,93 @@ import {
 import { createKbChildReadService } from './read-handler.js';
 import { errorMessage } from '../../infra/error-format.js';
 
-type KbChildMainOptions = {
+const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
+
+type IntervalHandle = ReturnType<typeof setInterval>;
+
+export type KbChildMainOptions = {
   pluginRoot?: string;
+  parentPid?: number | null;
 };
 
 function writeControlMessage(message: KbChildControlMessage): void {
   process.stdout.write(encodeKbChildMessage(message));
 }
 
+export function resolveKbChildParentPid(value: string | undefined, selfPid = process.pid): number | null {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || !/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const pid = Number(trimmed);
+  if (!Number.isInteger(pid) || pid <= 0 || pid === selfPid) {
+    return null;
+  }
+  return pid;
+}
+
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as { code?: unknown }).code === 'EPERM';
+  }
+}
+
+export type KbChildParentWatchdogOptions = {
+  parentPid: number | null | undefined;
+  intervalMs?: number;
+  isAlive?: (pid: number) => boolean;
+  getCurrentParentPid?: () => number;
+  setIntervalFn?: (fn: () => void, ms: number) => IntervalHandle;
+  clearIntervalFn?: (handle: IntervalHandle) => void;
+  onParentExit: () => void;
+};
+
+export function startKbChildParentWatchdog(options: KbChildParentWatchdogOptions): IntervalHandle | null {
+  const parentPid = options.parentPid;
+  if (parentPid === null || parentPid === undefined || !Number.isInteger(parentPid) || parentPid <= 0) {
+    return null;
+  }
+  const intervalMs =
+    options.intervalMs !== undefined && Number.isFinite(options.intervalMs) && options.intervalMs > 0
+      ? options.intervalMs
+      : DEFAULT_PARENT_WATCHDOG_INTERVAL_MS;
+  const isAlive = options.isAlive ?? isProcessAlive;
+  const getCurrentParentPid = options.getCurrentParentPid ?? (() => process.ppid);
+  const setIntervalFn = options.setIntervalFn ?? setInterval;
+  const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
+  let handle: IntervalHandle | null = null;
+  let stopped = false;
+  const stopForParentExit = (): void => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    if (handle !== null) {
+      clearIntervalFn(handle);
+    }
+    handle = null;
+    options.onParentExit();
+  };
+  handle = setIntervalFn(() => {
+    if (getCurrentParentPid() !== parentPid || !isAlive(parentPid)) {
+      stopForParentExit();
+    }
+  }, intervalMs);
+  (handle as { unref?: () => void }).unref?.();
+  return handle;
+}
+
 export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
   const kbRead = createKbChildReadService({ pluginRoot });
+  const parentPid = options.parentPid ?? resolveKbChildParentPid(process.env.CORAL_KB_CHILD_PARENT_PID);
   let resolveShutdown!: (code: number) => void;
   let settled = false;
+  let parentWatchdog: IntervalHandle | null = null;
   const shutdown = new Promise<number>((resolve) => {
     resolveShutdown = resolve;
   });
@@ -34,9 +107,17 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
     }
     settled = true;
     clearInterval(keepalive);
+    if (parentWatchdog !== null) {
+      clearInterval(parentWatchdog);
+    }
+    parentWatchdog = null;
     resolveShutdown(code);
   };
   const keepalive = setInterval(() => undefined, 60_000);
+  parentWatchdog = startKbChildParentWatchdog({
+    parentPid,
+    onParentExit: () => stop(0),
+  });
 
   const health = (): KbChildHealthResult => ({
     status: 'ready',
