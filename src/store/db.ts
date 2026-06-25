@@ -1,5 +1,5 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import { backendLog } from '../infra/backend-log.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
@@ -404,18 +404,54 @@ function assertResetAuthority(
   }
 }
 
-function warnBackendStoreReset(classification: StoreSchemaClassification): void {
+function warnBackendStoreReset(classification: StoreSchemaClassification, quarantineDir: string | undefined): void {
   backendLog.warn(
     `Backend store schema mismatch (stored marker ${classification.storedVersion}, expected ${EXPECTED_SCHEMA_MARKER}); ` +
-      'resetting backend store. In-flight job, discuss, and workflow state will be ' +
+      'resetting backend store. ' +
+      (quarantineDir === undefined ? '' : `Previous store files were quarantined at ${quarantineDir}. `) +
+      'In-flight job, discuss, and workflow state will be ' +
       'lost (KB markdown corpus is unaffected).',
   );
 }
 
-function unlinkStoreFiles(storage: StoragePort, files: StoreFileSet): void {
-  storage.rmSync(files.dbFile, { force: true });
-  storage.rmSync(files.walFile, { force: true });
-  storage.rmSync(files.shmFile, { force: true });
+function quarantineStoreFiles(
+  storage: StoragePort,
+  files: StoreFileSet,
+  classification: StoreSchemaClassification,
+  identity: { nowMs: number; pid: number },
+): string | undefined {
+  const candidates = [
+    { source: files.dbFile, name: basename(files.dbFile) },
+    { source: files.walFile, name: basename(files.walFile) },
+    { source: files.shmFile, name: basename(files.shmFile) },
+  ].filter((entry) => storage.existsSync(entry.source));
+
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const stamp = new Date(identity.nowMs).toISOString().replace(/[:.]/g, '-');
+  const quarantineDir = join(
+    files.dbDir,
+    'store-reset-quarantine',
+    `${stamp}-pid-${identity.pid}-stored-${classification.storedVersion}-expected-${EXPECTED_SCHEMA_MARKER}`,
+  );
+
+  try {
+    storage.mkdirSync(quarantineDir, { recursive: true });
+    for (const entry of candidates) {
+      storage.renameSync(entry.source, join(quarantineDir, entry.name));
+    }
+  } catch (error: unknown) {
+    throw documentedCoralSetupError({
+      code: 'store_reset_quarantine_failed',
+      quarantineDir,
+      dbFile: files.dbFile,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return quarantineDir;
 }
 
 function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'>): StoreSchemaClassification {
@@ -434,7 +470,7 @@ function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'
 }
 
 export function openOrResetBackendStoreDb(
-  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'paths' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   options: OpenOrResetBackendStoreOptions = {},
 ): Database {
@@ -464,8 +500,11 @@ export function openOrResetBackendStoreDb(
 
     const classification = classifyStoreFile(files.dbFile, runtime.storage);
     if (classification.kind === 'legacy' || classification.kind === 'mismatch') {
-      warnBackendStoreReset(classification);
-      unlinkStoreFiles(runtime.storage, files);
+      const quarantineDir = quarantineStoreFiles(runtime.storage, files, classification, {
+        nowMs: runtime.time.now(),
+        pid: runtime.env.pid(),
+      });
+      warnBackendStoreReset(classification, quarantineDir);
     }
 
     return openStoreDatabase({

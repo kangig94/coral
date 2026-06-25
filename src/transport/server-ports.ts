@@ -1,4 +1,5 @@
 import type { ServerResponse } from 'node:http';
+import type { TimePort } from '../infra/port-types.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
@@ -74,6 +75,14 @@ export type HealthSnapshot = {
   queueDepth: number;
   inflightRequests: number;
   textProjectionState: TextProjectionHealthState;
+  resources?: {
+    rssBytes: number;
+    heapUsedBytes: number;
+    eventLoopLagMs: number;
+    ipcOpenSockets: number;
+    eventStreamResponses: number;
+    fdCount?: number;
+  };
   env: Record<string, string>;
   subsystems: TransportSubsystemStatus[];
   /**
@@ -153,6 +162,7 @@ export type HandlerIdentity = {
 
 export interface HttpHandlerPorts extends RpcPorts {
   readonly identity: HandlerIdentity;
+  readonly time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
   readonly admin: AdminControlPort;
   readonly health: HealthSnapshotPort;

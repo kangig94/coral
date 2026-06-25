@@ -2694,6 +2694,31 @@ describe('execution backend server', () => {
       }
     });
 
+    it('returns a typed 413 response for oversized request bodies before closing the connection', async () => {
+      const started = await startMockedRouteServer();
+
+      try {
+        const response = await fetch(`${started.baseUrl}/discuss/persona-sets`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: 'x'.repeat(10 * 1024 * 1024 + 1),
+        });
+
+        expect(response.status).toBe(413);
+        expect(response.headers.get('connection')).toBe('close');
+        expect(await response.json()).toEqual({
+          code: 'request_body_too_large',
+          message: 'Request body too large',
+        });
+        expect(started.discussTools.handleDiscussSeed).not.toHaveBeenCalled();
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it.each(['/discuss/sessions', '/kb/notes'])(
       'rejects malformed direct bodies for %s before invoking route handlers',
       async (path) => {

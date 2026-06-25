@@ -10,11 +10,13 @@
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import {
   knownDiscussSources,
   loadDiscussDetail,
@@ -109,6 +111,47 @@ const EVENT_STREAM_CAPACITY_RESPONSE = {
   message: 'Too many event stream connections',
 };
 
+let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
+
+function readEventLoopLagMs(): number {
+  if (eventLoopDelayMonitor === null) {
+    eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
+    eventLoopDelayMonitor.enable();
+    return 0;
+  }
+
+  const meanNs = eventLoopDelayMonitor.mean;
+  if (!Number.isFinite(meanNs)) {
+    return 0;
+  }
+  return Math.max(0, Math.round(meanNs / 1_000_000));
+}
+
+function readFdCount(storage: Pick<StoragePort, 'readdirSync'>): number | undefined {
+  try {
+    return storage.readdirSync('/proc/self/fd').length;
+  } catch {
+    return undefined;
+  }
+}
+
+function readResourceSnapshot(
+  storage: Pick<StoragePort, 'readdirSync'>,
+  ipcOpenSockets: number,
+  eventStreamResponses: number,
+): NonNullable<HealthSnapshot['resources']> {
+  const memory = process.memoryUsage();
+  const fdCount = readFdCount(storage);
+  return {
+    rssBytes: memory.rss,
+    heapUsedBytes: memory.heapUsed,
+    eventLoopLagMs: readEventLoopLagMs(),
+    ipcOpenSockets,
+    eventStreamResponses,
+    ...(fdCount === undefined ? {} : { fdCount }),
+  };
+}
+
 function createRefBackedExpansionRpc(storeServicesRef: StoreServicesRef): ExpansionRequestPort {
   const getExpansionRpc = (): ExpansionRequestPort => {
     const lifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
@@ -169,6 +212,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const runtimeState = createRuntimeState(world.now(), subsystems);
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
+  let readIpcOpenSockets = () => 0;
   const services = createExecutionServices({
     world,
     runtime,
@@ -506,6 +550,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
+    time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
     admin: {
       getLifecycleState: () => runtimeState.getLifecycle(),
@@ -584,6 +629,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
           textProjectionState: options.getTextProjectionState?.() ?? 'idle',
+          resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           subsystems,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
@@ -640,6 +686,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
   const ipcServer = createIpcServer(httpHandlerDeps);
+  readIpcOpenSockets = () => ipcServer.sockets.size;
 
   const server = defaults.createServerFn((req, res) => {
     void handleRequest(req, res).catch((error) => {

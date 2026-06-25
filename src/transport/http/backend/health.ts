@@ -46,6 +46,14 @@ export interface BackendHealth {
   inflightRequests: number;
   queueDepth: number;
   textProjectionState: TextProjectionHealthState;
+  resources?: {
+    rssBytes: number;
+    heapUsedBytes: number;
+    eventLoopLagMs: number;
+    ipcOpenSockets: number;
+    eventStreamResponses: number;
+    fdCount?: number;
+  };
   subsystems: TransportSubsystemStatus[];
   diagnostics?: {
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
@@ -158,6 +166,22 @@ function isDiagnostics(value: unknown): value is NonNullable<BackendHealth['diag
   return true;
 }
 
+function isResources(value: unknown): value is NonNullable<BackendHealth['resources']> {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    !Number.isFinite(value.rssBytes) ||
+    !Number.isFinite(value.heapUsedBytes) ||
+    !Number.isFinite(value.eventLoopLagMs) ||
+    !Number.isInteger(value.ipcOpenSockets) ||
+    !Number.isInteger(value.eventStreamResponses)
+  ) {
+    return false;
+  }
+  return value.fdCount === undefined || Number.isInteger(value.fdCount);
+}
+
 export function isBackendHealth(value: unknown): value is BackendHealth {
   return (
     isRecord(value) &&
@@ -175,6 +199,7 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     Number.isInteger(value.inflightRequests) &&
     Number.isInteger(value.queueDepth) &&
     isTextProjectionState(value.textProjectionState) &&
+    (value.resources === undefined || isResources(value.resources)) &&
     Array.isArray(value.subsystems) &&
     value.subsystems.every(isSubsystemStatus) &&
     (value.diagnostics === undefined || isDiagnostics(value.diagnostics))

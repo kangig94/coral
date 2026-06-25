@@ -8,6 +8,7 @@ import {
   HandoffEscalationError,
   type HandoffOptions,
   type HandoffSignalLedger,
+  type HandoffSignalPolicy,
 } from '#src/coordinator/handoff.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -53,6 +54,7 @@ function buildHarness(opts?: {
   readDiscovery?: HandoffOptions['readVerifiedIncumbentFromDiscovery'];
   signalLedger?: HandoffSignalLedger;
   signalCooldownMs?: number;
+  signalPolicy?: HandoffSignalPolicy;
 }) {
   const time = new VirtualTime();
   const killCalls: KillCall[] = [];
@@ -91,6 +93,7 @@ function buildHarness(opts?: {
     readVerifiedIncumbentFromDiscovery: readDiscovery,
     ...(opts?.signalLedger === undefined ? {} : { signalLedger: opts.signalLedger }),
     ...(opts?.signalCooldownMs === undefined ? {} : { signalCooldownMs: opts.signalCooldownMs }),
+    ...(opts?.signalPolicy === undefined ? {} : { signalPolicy: opts.signalPolicy }),
     totalBudgetMs: opts?.totalBudgetMs ?? 30_000,
   };
 
@@ -161,16 +164,18 @@ describe('bindWithHandoff', () => {
       processStartedAt: 1_000_000,
       source: 'health',
     };
-    mockedShutdown.mockResolvedValue(shutdownResult({
-      health: {
-        bundleHash: 'old',
-        flavor: 'prod',
-        namespace: 'ns',
-        pid: 4242,
-        processStartedAt: 1_000_000,
-      } as IncumbentHealth,
-      verifiedIdentity,
-    }));
+    mockedShutdown.mockResolvedValue(
+      shutdownResult({
+        health: {
+          bundleHash: 'old',
+          flavor: 'prod',
+          namespace: 'ns',
+          pid: 4242,
+          processStartedAt: 1_000_000,
+        } as IncumbentHealth,
+        verifiedIdentity,
+      }),
+    );
     const promise = bindWithHandoff(options);
     // Poll cycles: each iteration sleeps `SOCKET_BIND_POLL_MS` (200).
     for (let i = 0; i < 5; i += 1) {
@@ -367,6 +372,67 @@ describe('bindWithHandoff', () => {
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
     expect(String((outcome as Error).message)).toContain('Manual repair required');
     expect(killCalls).toEqual([]);
+  });
+
+  it('manual signal policy refuses process signals after graceful handoff fails', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 1357,
+      processStartedAt: 901,
+      source: 'health',
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      signalPolicy: 'manual',
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        shutdownToken: 'shutdown-token',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe.mockReturnValue(verifiedIdentity.processStartedAt);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toContain('CORAL_HANDOFF_SIGNAL_POLICY=manual');
+    expect(killCalls).toEqual([]);
+  });
+
+  it('term-only signal policy sends SIGTERM but refuses SIGKILL', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 8642,
+      processStartedAt: 902,
+      source: 'health',
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      signalPolicy: 'term-only',
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        shutdownToken: 'shutdown-token',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe.mockReturnValue(verifiedIdentity.processStartedAt);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < (SIGTERM_GRACE_MS + 2_000) / 200; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toContain('term-only forbids SIGKILL');
+    expect(killCalls.filter((c) => c.signal === 'SIGTERM')).toHaveLength(1);
+    expect(killCalls.filter((c) => c.signal === 'SIGKILL')).toHaveLength(0);
   });
 
   it('discovery fallback: when health has no pid, reads coordinator.json via injected probe', async () => {

@@ -1,5 +1,14 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -246,6 +255,30 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readUserVersion(dbPath)).not.toBe(1);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
     expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
+  it('quarantines mismatched store files before creating the replacement store', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-mismatch-quarantine-');
+    const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
+    writeFileSync(`${dbPath}-wal`, 'dummy wal', 'utf-8');
+    writeFileSync(`${dbPath}-shm`, 'dummy shm', 'utf-8');
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    const quarantineRoot = join(dbDir, 'store-reset-quarantine');
+    const quarantineEntries = readdirSync(quarantineRoot);
+    expect(quarantineEntries).toHaveLength(1);
+    const quarantineDir = join(quarantineRoot, quarantineEntries[0]!);
+    expect(readFileSync(join(quarantineDir, 'store.db-wal'), 'utf-8')).toBe('dummy wal');
+    expect(existsSync(join(quarantineDir, 'store.db-shm'))).toBe(true);
+    rmSync(join(quarantineDir, 'store.db-wal'), { force: true });
+    rmSync(join(quarantineDir, 'store.db-shm'), { force: true });
+    expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
   it('logs the live-work-loss warning for mismatched stores', () => {

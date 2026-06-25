@@ -14,6 +14,8 @@ import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';
 import { subscribeAll } from './sse-subscribe.js';
+import type { TimePort } from '../../infra/port-types.js';
+import { createRealTimePort } from '../../infra/time.js';
 
 // ---------------------------------------------------------------------------
 // HTTP utilities
@@ -31,9 +33,23 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
 }
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+export const HTTP_MAX_CONCURRENT_BODY_READS = 32;
+export const HTTP_BODY_READ_TIMEOUT_MS = 15_000;
 const INVALID_JSON_RESPONSE = {
   code: 'invalid_request',
   message: 'Invalid JSON body',
+};
+const BODY_TOO_LARGE_RESPONSE = {
+  code: 'request_body_too_large',
+  message: 'Request body too large',
+};
+const BODY_READ_TIMEOUT_RESPONSE = {
+  code: 'request_body_timeout',
+  message: 'Request body timed out',
+};
+const BODY_READ_CAPACITY_RESPONSE = {
+  code: 'too_many_request_bodies',
+  message: 'Too many concurrent request bodies',
 };
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
 const eventStreamQuerySchema = z
@@ -60,44 +76,118 @@ function tokensEqual(a: string, b: string): boolean {
   return timingSafeEqual(aBuf, bBuf);
 }
 
-export function readJsonBody(req: IncomingMessage): Promise<unknown> {
+class HttpBodyReadError extends Error {
+  readonly statusCode: number;
+  readonly body: unknown;
+  readonly closeConnection: boolean;
+
+  constructor(
+    statusCode: number,
+    body: { code: string; message: string },
+    options: { closeConnection?: boolean } = {},
+  ) {
+    super(body.message);
+    this.name = 'HttpBodyReadError';
+    this.statusCode = statusCode;
+    this.body = body;
+    this.closeConnection = options.closeConnection === true;
+  }
+}
+
+export type ReadJsonBodyOptions = {
+  maxBytes?: number;
+  timeoutMs?: number;
+  timers?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+};
+
+const DEFAULT_BODY_READ_TIMERS: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = createRealTimePort();
+
+let activeBodyReads = 0;
+
+function tryAcquireBodyRead(): (() => void) | null {
+  if (activeBodyReads >= HTTP_MAX_CONCURRENT_BODY_READS) {
+    return null;
+  }
+  activeBodyReads += 1;
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    activeBodyReads -= 1;
+  };
+}
+
+export function readJsonBody(req: IncomingMessage, options: ReadJsonBodyOptions = {}): Promise<unknown> {
+  const acquiredBodyRead = tryAcquireBodyRead();
+  if (acquiredBodyRead === null) {
+    req.resume();
+    return Promise.reject(new HttpBodyReadError(503, BODY_READ_CAPACITY_RESPONSE, { closeConnection: true }));
+  }
+  const releaseBodyRead = acquiredBodyRead;
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    const maxBytes = options.maxBytes ?? MAX_BODY_SIZE;
+    const timeoutMs = options.timeoutMs ?? HTTP_BODY_READ_TIMEOUT_MS;
+    const timers = options.timers ?? DEFAULT_BODY_READ_TIMERS;
     let totalSize = 0;
     let settled = false;
+    const timeout = timers.setTimeout(() => {
+      fail(new HttpBodyReadError(408, BODY_READ_TIMEOUT_RESPONSE, { closeConnection: true }), true);
+    }, timeoutMs);
+    timeout.unref?.();
+
+    function cleanup() {
+      timers.clearTimeout(timeout);
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      releaseBodyRead();
+    }
+
+    function fail(error: Error, pauseRequest = false) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (pauseRequest) {
+        req.pause();
+      }
+      reject(error);
+    }
+
+    function succeed(value: unknown) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
 
     function onData(chunk: Buffer | string) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalSize += buf.length;
-      if (totalSize > MAX_BODY_SIZE) {
-        settled = true;
-        req.removeListener('data', onData);
-        req.removeListener('end', onEnd);
-        req.removeListener('error', onError);
-        req.destroy();
-        reject(new Error('Request body too large'));
+      if (totalSize > maxBytes) {
+        fail(new HttpBodyReadError(413, BODY_TOO_LARGE_RESPONSE, { closeConnection: true }), true);
         return;
       }
       chunks.push(buf);
     }
 
     function onError(err: Error) {
-      if (settled) return;
-      settled = true;
-      reject(err);
+      fail(err);
     }
 
     function onEnd() {
       if (settled) return;
-      settled = true;
       if (chunks.length === 0) {
-        resolve({});
+        succeed({});
         return;
       }
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+        succeed(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
       } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
+        fail(error instanceof Error ? error : new Error(String(error)));
       }
     }
 
@@ -167,6 +257,24 @@ function parseEventStreamRequest(url: string): { projectRoot?: string; filterJob
 
 function sendInvalidJson(res: ServerResponse): void {
   sendJson(res, 400, INVALID_JSON_RESPONSE);
+}
+
+function sendBodyReadFailure(req: IncomingMessage, res: ServerResponse, error: unknown): void {
+  if (error instanceof HttpBodyReadError) {
+    if (error.closeConnection) {
+      if (!res.headersSent) {
+        res.setHeader('Connection', 'close');
+      }
+      runOnResponseDone(res, () => {
+        if (!req.destroyed) {
+          req.destroy();
+        }
+      });
+    }
+    sendJson(res, error.statusCode, error.body);
+    return;
+  }
+  sendInvalidJson(res);
 }
 
 function sendValidationFailure(res: ServerResponse, error: ZodError): void {
@@ -278,6 +386,7 @@ async function parseCatalogRequest(
   res: ServerResponse,
   parsedUrl: URL,
   pathParams: Record<string, string>,
+  timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> | undefined,
 ): Promise<unknown | typeof REQUEST_PARSE_FAILED> {
   let candidate: unknown;
 
@@ -286,9 +395,9 @@ async function parseCatalogRequest(
     candidate = combineRouteInput(spec.http.method, Object.fromEntries(parsedUrl.searchParams), pathParams);
   } else {
     try {
-      candidate = combineRouteInput(spec.http.method, await readJsonBody(req), pathParams);
-    } catch {
-      sendInvalidJson(res);
+      candidate = combineRouteInput(spec.http.method, await readJsonBody(req, { timers }), pathParams);
+    } catch (error: unknown) {
+      sendBodyReadFailure(req, res, error);
       return REQUEST_PARSE_FAILED;
     }
   }
@@ -468,7 +577,7 @@ export function httpAdapter(
     ...route,
     pattern: compilePathPattern(route.path),
     handle: async (req, res, parsedUrl, pathParams) => {
-      const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams);
+      const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams, rpcPorts.time);
       if (parsed === REQUEST_PARSE_FAILED) {
         return;
       }
@@ -690,7 +799,9 @@ export function createHttpHandler(
     const parsedUrl = new URL(req.url, 'http://localhost');
     const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
     const requiresShutdownToken = localMatch?.route.path === shutdownPath;
-    const authHeader = requiresShutdownToken ? req.headers['x-coral-shutdown-token'] : req.headers['x-coral-backend-token'];
+    const authHeader = requiresShutdownToken
+      ? req.headers['x-coral-shutdown-token']
+      : req.headers['x-coral-backend-token'];
     const expectedToken = requiresShutdownToken ? identity.shutdownToken : identity.token;
     if (typeof authHeader !== 'string' || !tokensEqual(authHeader, expectedToken)) {
       req.resume();

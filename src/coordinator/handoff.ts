@@ -24,6 +24,7 @@ const SOCKET_BIND_POLL_MS = 200;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
 const DEFAULT_SIGNAL_COOLDOWN_MS = 60_000;
 const SIGNAL_LEDGER_FILE = 'handoff-signal.json';
+export const HANDOFF_SIGNAL_POLICY_ENV = 'CORAL_HANDOFF_SIGNAL_POLICY';
 
 /**
  * Raised when the contender exhausts the bounded escalation window without
@@ -53,6 +54,7 @@ export class BackendAlreadyRunningError extends Error {
 }
 
 export type HandoffBindResult = { kind: 'bound' } | { kind: 'incumbent'; reason: string };
+export type HandoffSignalPolicy = 'term-kill' | 'term-only' | 'manual';
 
 export interface HandoffOptions {
   socketPath: string;
@@ -72,6 +74,7 @@ export interface HandoffOptions {
   }) => IncumbentIdentity | null;
   signalLedger?: HandoffSignalLedger;
   signalCooldownMs?: number;
+  signalPolicy?: HandoffSignalPolicy;
   totalBudgetMs: number;
 }
 
@@ -239,6 +242,28 @@ function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal
   });
 }
 
+function readEnvSignalPolicy(env: Runtime['env']): HandoffSignalPolicy | undefined {
+  const getter = (env as { get?: (key: string) => string | undefined }).get;
+  const raw = getter?.call(env, HANDOFF_SIGNAL_POLICY_ENV)?.trim().toLowerCase();
+  if (raw === undefined || raw.length === 0) {
+    return undefined;
+  }
+  if (raw === 'term-kill' || raw === 'default' || raw === 'signal') {
+    return 'term-kill';
+  }
+  if (raw === 'term-only' || raw === 'sigterm-only') {
+    return 'term-only';
+  }
+  if (raw === 'manual' || raw === 'none' || raw === 'off') {
+    return 'manual';
+  }
+  return undefined;
+}
+
+function resolveSignalPolicy(opts: HandoffOptions): HandoffSignalPolicy {
+  return opts.signalPolicy ?? readEnvSignalPolicy(opts.runtime.env) ?? 'term-kill';
+}
+
 type SignalVerificationResult = 'matched' | 'gone';
 
 function verifySignalTarget(
@@ -272,6 +297,7 @@ function verifySignalTarget(
 export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredViaHandoff: boolean }> {
   const deadline = opts.runtime.time.now() + opts.totalBudgetMs;
   const platform = opts.runtime.env.platform() as NodeJS.Platform;
+  const signalPolicy = resolveSignalPolicy(opts);
   let sawIncumbent = false;
   let incumbent: IncumbentIdentity | null = null;
   let lastHealth: IncumbentHealth | null = null;
@@ -323,6 +349,11 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
       }
       if (sigtermAt === null) {
         incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
+        if (signalPolicy === 'manual') {
+          throw new HandoffEscalationError(
+            `Manual repair required: refusing handoff signal for pid=${incumbent.pid} because ${HANDOFF_SIGNAL_POLICY_ENV}=manual`,
+          );
+        }
         if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
           incumbent = null;
@@ -341,6 +372,11 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         sigtermAt = opts.runtime.time.now();
         backendLog.warn(`Incumbent did not exit within ${opts.totalBudgetMs}ms; sent SIGTERM to pid=${incumbent.pid}`);
       } else if (sigkillAt === null && opts.runtime.time.now() - sigtermAt >= SIGTERM_GRACE_MS) {
+        if (signalPolicy === 'term-only') {
+          throw new HandoffEscalationError(
+            `Manual repair required: incumbent pid=${incumbent.pid} remained bound after SIGTERM and ${HANDOFF_SIGNAL_POLICY_ENV}=term-only forbids SIGKILL`,
+          );
+        }
         incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
         if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGKILL; retrying bind`);

@@ -108,6 +108,35 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, textProjectionState: 'reindexing' })).toBe(true);
   });
 
+  it('accepts resource counters for daemon liveness diagnostics', () => {
+    const withResources: BackendHealth = {
+      ...HEALTHY_BASE,
+      resources: {
+        rssBytes: 1024,
+        heapUsedBytes: 512,
+        eventLoopLagMs: 3,
+        ipcOpenSockets: 2,
+        eventStreamResponses: 1,
+        fdCount: 20,
+      },
+    };
+    expect(isBackendHealth(withResources)).toBe(true);
+  });
+
+  it('rejects malformed resource counters', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      resources: {
+        rssBytes: '1024',
+        heapUsedBytes: 512,
+        eventLoopLagMs: 3,
+        ipcOpenSockets: 2,
+        eventStreamResponses: 1,
+      },
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
   it('rejects a `mutationBlocked` shape missing required diagnostic fields', () => {
     const malformed = {
       ...HEALTHY_BASE,
