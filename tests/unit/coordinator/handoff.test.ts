@@ -3,7 +3,12 @@
 // transport-side IPC helper; no real sockets, no real signals.
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { bindWithHandoff, HandoffEscalationError, type HandoffOptions } from '#src/coordinator/handoff.js';
+import {
+  bindWithHandoff,
+  HandoffEscalationError,
+  type HandoffOptions,
+  type HandoffSignalLedger,
+} from '#src/coordinator/handoff.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -46,6 +51,8 @@ function buildHarness(opts?: {
   isAlive?: (pid: number) => boolean;
   killThrows?: boolean;
   readDiscovery?: HandoffOptions['readVerifiedIncumbentFromDiscovery'];
+  signalLedger?: HandoffSignalLedger;
+  signalCooldownMs?: number;
 }) {
   const time = new VirtualTime();
   const killCalls: KillCall[] = [];
@@ -82,6 +89,8 @@ function buildHarness(opts?: {
     bindAttempt,
     runtime,
     readVerifiedIncumbentFromDiscovery: readDiscovery,
+    ...(opts?.signalLedger === undefined ? {} : { signalLedger: opts.signalLedger }),
+    ...(opts?.signalCooldownMs === undefined ? {} : { signalCooldownMs: opts.signalCooldownMs }),
     totalBudgetMs: opts?.totalBudgetMs ?? 30_000,
   };
 
@@ -176,15 +185,21 @@ describe('bindWithHandoff', () => {
   });
 
   it('SIGTERM/SIGKILL escalation: matched pid, then kill', async () => {
-    const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
-      totalBudgetMs: 1_000,
-    });
     const verifiedIdentity: IncumbentIdentity = {
       pid: 7777,
       processStartedAt: 555_000,
       source: 'health',
     };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 1_000,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'incumbent-a',
+        token: 'token-a',
+      }),
+    });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
     mockedProbe.mockReturnValue(555_000); // matched
 
@@ -210,16 +225,17 @@ describe('bindWithHandoff', () => {
 
   it('process gone before signal → retries bind without signaling', async () => {
     let alive = true;
-    const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
-      isAlive: () => alive,
-      totalBudgetMs: 500,
-    });
     const verifiedIdentity: IncumbentIdentity = {
       pid: 99999,
       processStartedAt: 999_000,
       source: 'health',
     };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
+      isAlive: () => alive,
+      totalBudgetMs: 500,
+      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery' }),
+    });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
     mockedProbe.mockImplementation(() => {
       // Simulate process gone right at SIGTERM revalidation: probe returns null.
@@ -240,16 +256,17 @@ describe('bindWithHandoff', () => {
   });
 
   it('alive-but-mismatched start time before SIGTERM → HandoffEscalationError, no signal sent', async () => {
-    const { options, time, killCalls } = buildHarness({
-      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
-      totalBudgetMs: 500,
-      isAlive: () => true,
-    });
     const verifiedIdentity: IncumbentIdentity = {
       pid: 1234,
       processStartedAt: 500,
       source: 'health',
     };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      isAlive: () => true,
+      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery' }),
+    });
     mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
     // Probe returns DIFFERENT start time → mismatch → HandoffEscalationError.
     mockedProbe.mockReturnValue(999); // mismatch
@@ -261,6 +278,77 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(killCalls).toEqual([]);
+  });
+
+  it('refuses to signal when fresh discovery identity is unavailable', async () => {
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      readDiscovery: () => null,
+    });
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 4321,
+      processStartedAt: 700,
+      source: 'health',
+    };
+    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedProbe.mockReturnValue(700);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toContain('fresh coordinator discovery was unavailable');
+    expect(killCalls).toEqual([]);
+  });
+
+  it('rate-limits repeated SIGTERM for the same incumbent', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 2468,
+      processStartedAt: 900,
+      source: 'health',
+    };
+    let lastSignaledAtMs = 0;
+    const signalLedger: HandoffSignalLedger = {
+      read: () => ({
+        version: 1,
+        socketPath: '/tmp/coral.sock',
+        pid: verifiedIdentity.pid,
+        processStartedAt: verifiedIdentity.processStartedAt,
+        instanceId: 'same-incumbent',
+        signal: 'SIGTERM',
+        signaledAtMs: lastSignaledAtMs,
+      }),
+      write: vi.fn(),
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      signalLedger,
+      signalCooldownMs: 10_000,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        instanceId: 'same-incumbent',
+        token: 'same-token',
+      }),
+    });
+    lastSignaledAtMs = time.now();
+    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedProbe.mockReturnValue(verifiedIdentity.processStartedAt);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toContain('Manual repair required');
     expect(killCalls).toEqual([]);
   });
 

@@ -19,6 +19,8 @@ export type IncumbentIdentity = {
   pid: number;
   processStartedAt: number;
   source: 'health' | 'discovery';
+  instanceId?: string;
+  token?: string;
 };
 
 export type DesiredIncumbentIdentity = {
@@ -39,6 +41,7 @@ export type IncumbentHealth = {
   status?: 'starting' | 'ok' | 'draining';
   pid?: number;
   processStartedAt?: number;
+  instanceId?: string;
 };
 
 /**
@@ -131,7 +134,14 @@ export async function requestIncumbentShutdown(opts: {
 
   const verifiedIdentity: IncumbentIdentity | null =
     health && typeof health.pid === 'number' && typeof health.processStartedAt === 'number'
-      ? { pid: health.pid, processStartedAt: health.processStartedAt, source: 'health' }
+      ? {
+          pid: health.pid,
+          processStartedAt: health.processStartedAt,
+          source: 'health',
+          ...(typeof health.instanceId === 'string' && health.instanceId.length > 0
+            ? { instanceId: health.instanceId }
+            : {}),
+        }
       : null;
 
   return { health, verifiedIdentity };

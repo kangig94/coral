@@ -32,7 +32,12 @@ import {
 } from './shutdown.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
-import { bindWithHandoff, BackendAlreadyRunningError, HandoffEscalationError } from './handoff.js';
+import {
+  bindWithHandoff,
+  BackendAlreadyRunningError,
+  createFileHandoffSignalLedger,
+  HandoffEscalationError,
+} from './handoff.js';
 import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
@@ -505,8 +510,14 @@ async function runLifecycleStartup({
             pid: info.pid,
             processStartedAt: info.processStartedAt,
             source: 'discovery',
+            instanceId: info.instanceId,
+            token: info.token,
           };
         },
+        signalLedger: createFileHandoffSignalLedger({
+          storage: runtime.storage,
+          runDir: runtime.paths.coral.coordinator.runDir,
+        }),
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
       socketAuthorityAcquired = true;

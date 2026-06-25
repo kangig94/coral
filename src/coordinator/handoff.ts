@@ -6,10 +6,13 @@
 // All time/process/env access flows through `runtime` ports per the Single
 // Runtime World rule.
 
+import { join } from 'node:path';
+
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import type { Runtime } from '../runtime/ports.js';
+import type { StoragePort } from '../infra/port-types.js';
 import {
   requestIncumbentShutdown,
   type DesiredIncumbentIdentity,
@@ -19,6 +22,8 @@ import {
 
 const SOCKET_BIND_POLL_MS = 200;
 const SHUTDOWN_RPC_TIMEOUT_MS = 1_000;
+const DEFAULT_SIGNAL_COOLDOWN_MS = 60_000;
+const SIGNAL_LEDGER_FILE = 'handoff-signal.json';
 
 /**
  * Raised when the contender exhausts the bounded escalation window without
@@ -65,7 +70,165 @@ export interface HandoffOptions {
     desired: DesiredIncumbentIdentity;
     lastHealth: IncumbentHealth | null;
   }) => IncumbentIdentity | null;
+  signalLedger?: HandoffSignalLedger;
+  signalCooldownMs?: number;
   totalBudgetMs: number;
+}
+
+type HandoffSignal = 'SIGTERM' | 'SIGKILL';
+
+export type HandoffSignalRecord = {
+  version: 1;
+  socketPath: string;
+  pid: number;
+  processStartedAt: number;
+  instanceId?: string;
+  signal: HandoffSignal;
+  signaledAtMs: number;
+};
+
+export interface HandoffSignalLedger {
+  read(): HandoffSignalRecord | null;
+  write(record: HandoffSignalRecord): void;
+}
+
+type HandoffSignalLedgerStorage = Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'writeAtomicSync'>;
+
+export function createFileHandoffSignalLedger(options: {
+  storage: HandoffSignalLedgerStorage;
+  runDir: string;
+}): HandoffSignalLedger {
+  const path = join(options.runDir, SIGNAL_LEDGER_FILE);
+  return {
+    read: () => {
+      try {
+        const parsed = JSON.parse(options.storage.readFileSync(path, 'utf-8')) as unknown;
+        return isHandoffSignalRecord(parsed) ? parsed : null;
+      } catch {
+        return null;
+      }
+    },
+    write: (record) => {
+      try {
+        options.storage.mkdirSync(options.runDir, { recursive: true });
+        options.storage.writeAtomicSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf-8', mode: 0o600 });
+      } catch {
+        // Audit/cooldown is best-effort. A write failure must not leave a
+        // verified incumbent permanently unreplaceable.
+      }
+    },
+  };
+}
+
+function isHandoffSignalRecord(value: unknown): value is HandoffSignalRecord {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    typeof record.socketPath === 'string' &&
+    Number.isInteger(record.pid) &&
+    Number.isInteger(record.processStartedAt) &&
+    (record.instanceId === undefined || typeof record.instanceId === 'string') &&
+    (record.signal === 'SIGTERM' || record.signal === 'SIGKILL') &&
+    Number.isFinite(record.signaledAtMs)
+  );
+}
+
+function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boolean {
+  if (left.pid !== right.pid || left.processStartedAt !== right.processStartedAt) {
+    return false;
+  }
+  if (left.instanceId !== undefined && left.instanceId !== right.instanceId) {
+    return false;
+  }
+  if (left.token !== undefined && left.token !== right.token) {
+    return false;
+  }
+  return true;
+}
+
+function mergeVerifiedDiscovery(
+  current: IncumbentIdentity | null,
+  fresh: IncumbentIdentity | null,
+): IncumbentIdentity | null {
+  if (fresh === null) {
+    return current;
+  }
+  if (current !== null && !sameIncumbent(current, fresh)) {
+    throw new HandoffEscalationError(
+      `Refusing to signal incumbent because discovery identity changed for pid=${current.pid}`,
+    );
+  }
+  return fresh;
+}
+
+function readFreshDiscovery(opts: HandoffOptions, lastHealth: IncumbentHealth | null): IncumbentIdentity | null {
+  return opts.readVerifiedIncumbentFromDiscovery({
+    socketPath: opts.socketPath,
+    desired: opts.desired,
+    lastHealth,
+  });
+}
+
+function refreshIncumbentForSignal(
+  opts: HandoffOptions,
+  incumbent: IncumbentIdentity,
+  lastHealth: IncumbentHealth | null,
+): IncumbentIdentity {
+  const fresh = readFreshDiscovery(opts, lastHealth);
+  if (fresh === null) {
+    throw new HandoffEscalationError(
+      `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery was unavailable`,
+    );
+  }
+  if (!sameIncumbent(incumbent, fresh)) {
+    throw new HandoffEscalationError(
+      `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery changed`,
+    );
+  }
+  return fresh;
+}
+
+function isSameSignalTarget(record: HandoffSignalRecord, socketPath: string, incumbent: IncumbentIdentity): boolean {
+  return (
+    record.socketPath === socketPath &&
+    record.pid === incumbent.pid &&
+    record.processStartedAt === incumbent.processStartedAt &&
+    (record.instanceId === undefined || record.instanceId === incumbent.instanceId)
+  );
+}
+
+function assertSignalCooldown(opts: HandoffOptions, incumbent: IncumbentIdentity, signal: HandoffSignal): void {
+  const ledger = opts.signalLedger;
+  if (ledger === undefined) {
+    return;
+  }
+  const last = ledger.read();
+  if (last === null || !isSameSignalTarget(last, opts.socketPath, incumbent)) {
+    return;
+  }
+  const cooldownMs = opts.signalCooldownMs ?? DEFAULT_SIGNAL_COOLDOWN_MS;
+  const ageMs = opts.runtime.time.now() - last.signaledAtMs;
+  if (ageMs >= cooldownMs) {
+    return;
+  }
+  throw new HandoffEscalationError(
+    `Manual repair required: refusing repeated handoff ${signal} for pid=${incumbent.pid}; last ${last.signal} was ${ageMs}ms ago`,
+  );
+}
+
+function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal: HandoffSignal): void {
+  opts.signalLedger?.write({
+    version: 1,
+    socketPath: opts.socketPath,
+    pid: incumbent.pid,
+    processStartedAt: incumbent.processStartedAt,
+    ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
+    signal,
+    signaledAtMs: opts.runtime.time.now(),
+  });
 }
 
 type SignalVerificationResult = 'matched' | 'gone';
@@ -129,11 +292,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         backendLog.info(`Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`);
       }
     }
-    incumbent ??= opts.readVerifiedIncumbentFromDiscovery({
-      socketPath: opts.socketPath,
-      desired: opts.desired,
-      lastHealth,
-    });
+    incumbent = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
 
     remaining = deadline - opts.runtime.time.now();
     if (remaining <= 0) {
@@ -141,6 +300,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         throw new HandoffEscalationError('Incumbent socket remained bound, but no verified pid was available');
       }
       if (sigtermAt === null) {
+        incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
         if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGTERM; retrying bind`);
           incumbent = null;
@@ -149,14 +309,17 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
           continue;
         }
+        assertSignalCooldown(opts, incumbent, 'SIGTERM');
         try {
           opts.runtime.process.kill(incumbent.pid, 'SIGTERM');
         } catch {
           // best-effort; if signal fails the incumbent may already be gone
         }
+        recordSignal(opts, incumbent, 'SIGTERM');
         sigtermAt = opts.runtime.time.now();
         backendLog.warn(`Incumbent did not exit within ${opts.totalBudgetMs}ms; sent SIGTERM to pid=${incumbent.pid}`);
       } else if (sigkillAt === null && opts.runtime.time.now() - sigtermAt >= SIGTERM_GRACE_MS) {
+        incumbent = refreshIncumbentForSignal(opts, incumbent, lastHealth);
         if (verifySignalTarget(incumbent, opts.runtime.process, platform) === 'gone') {
           backendLog.info(`Incumbent pid=${incumbent.pid} exited before SIGKILL; retrying bind`);
           incumbent = null;
@@ -170,6 +333,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         } catch {
           // best-effort
         }
+        recordSignal(opts, incumbent, 'SIGKILL');
         sigkillAt = opts.runtime.time.now();
         backendLog.error(`Incumbent did not exit after SIGTERM grace; sent SIGKILL to pid=${incumbent.pid}`);
       } else if (sigkillAt !== null && opts.runtime.time.now() - sigkillAt >= SIGKILL_GRACE_MS) {
