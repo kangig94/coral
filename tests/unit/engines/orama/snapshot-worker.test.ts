@@ -106,4 +106,30 @@ describe('Orama snapshot artifact worker', () => {
       entryManifest: {},
     });
   });
+
+  it('yields once before the synchronous Orama save during async persistence', async () => {
+    const root = tempRoot();
+    const files = filesPort();
+    const store = new OramaSnapshotStore({ files }, root);
+    const { db } = await createOramaDb();
+    const snapshot = {
+      snapshotId: 'snapshot-yield',
+      contentSeq: 1,
+      metadataSeq: 2,
+      contentManifestHash: 'content-hash',
+      metadataManifestHash: 'metadata-hash',
+    };
+    let immediateObserved = false;
+    const immediate = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        immediateObserved = true;
+        resolve();
+      });
+    });
+
+    await store.persistAsync(snapshot, db, { tokenizerIdentity: 'intl-baseline' });
+
+    expect(immediateObserved).toBe(true);
+    await immediate;
+  });
 });

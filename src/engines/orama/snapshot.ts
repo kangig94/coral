@@ -1,5 +1,8 @@
+import { setImmediate as waitImmediate } from 'node:timers/promises';
+
 import { load, save, type RawData } from '@orama/orama';
 
+import { backendLog } from '../../infra/backend-log.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbCorpusSnapshot, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import {
@@ -16,6 +19,8 @@ import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb, type OramaTokenizerAnalyzer } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { serializeOramaSnapshotArtifactInWorker } from './snapshot-worker.js';
+
+export const ORAMA_SNAPSHOT_SAVE_WARN_MS = 250;
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;
@@ -132,7 +137,7 @@ export class OramaSnapshotStore {
     db: KbOramaDb,
     identityInput: OramaProjectionIdentityInput = {},
   ): OramaProjectionMetadata {
-    const snapshot = save(db) as unknown as RawData;
+    const snapshot = this.saveSnapshotWithTiming(db);
     return this.persistSavedSnapshot(projected, snapshot, identityInput);
   }
 
@@ -141,7 +146,8 @@ export class OramaSnapshotStore {
     db: KbOramaDb,
     identityInput: OramaProjectionIdentityInput = {},
   ): Promise<OramaProjectionMetadata> {
-    const snapshot = save(db) as unknown as RawData;
+    await waitImmediate();
+    const snapshot = this.saveSnapshotWithTiming(db);
     if (this.ports.files.writeTextAtomic === undefined) {
       return this.persistSavedSnapshot(projected, snapshot, identityInput);
     }
@@ -156,6 +162,16 @@ export class OramaSnapshotStore {
     this.ports.files.writeTextAtomic(oramaIndexPath(this.runtimeDir), artifact.artifactRaw);
     this.ports.files.writeJsonAtomic(oramaIndexMetadataPath(this.runtimeDir), metadata);
     return metadata;
+  }
+
+  private saveSnapshotWithTiming(db: KbOramaDb): RawData {
+    const startedAt = Date.now();
+    const snapshot = save(db) as unknown as RawData;
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= ORAMA_SNAPSHOT_SAVE_WARN_MS) {
+      backendLog.warn(`[orama] snapshot save took ${elapsedMs}ms on the daemon thread`);
+    }
+    return snapshot;
   }
 
   private persistSavedSnapshot(
