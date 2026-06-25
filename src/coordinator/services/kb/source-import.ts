@@ -3,6 +3,7 @@ import {
   deriveSourceImportReadPolicy,
   prepareSourceImport,
   resolveSourceImportFile,
+  sourceImportAdminLimitExceededHint,
   type ResolvedSourceImportFile,
 } from '../../../kb/ops/source-import.js';
 import { persistPreparedSource } from '../../../kb/ops/source-store.js';
@@ -27,6 +28,7 @@ export type KbSourceImportRequest = {
 type KbSourceImportResolvedRequest = KbSourceImportRequest & {
   sourceFile: ResolvedSourceImportFile;
   fileSizeLimitBytes: number | null;
+  limitExceededHint?: string;
 };
 
 export type KbSourceImportCompleted = {
@@ -135,6 +137,7 @@ export class KbSourceImportService {
       ...request,
       sourceFile: resolvedFile,
       fileSizeLimitBytes: policy.maxBytes,
+      ...(policy.kind === 'unrestricted' ? { limitExceededHint: sourceImportAdminLimitExceededHint() } : {}),
     };
     const jobCtx = this.jobContext(resolvedRequest, ctx);
     if (request.async) {
@@ -180,6 +183,10 @@ export class KbSourceImportService {
     kbSubsystem: KnowledgeBaseRuntime,
   ): Promise<{ data: KbSourceImportCompleted; terminalContent: string }> {
     throwIfAborted(job.signal, 'convert');
+    const sourceImportOptions =
+      request.limitExceededHint === undefined
+        ? { signal: job.signal }
+        : { signal: job.signal, limitExceededHint: request.limitExceededHint };
     const prepared = await prepareSourceImport(
       request.sourceFile,
       request.slug,
@@ -187,7 +194,7 @@ export class KbSourceImportService {
       (line) => job.recorder.appendMessage(line),
       kbSubsystem.kb.runtimeDir,
       this.deps.runtime,
-      { signal: job.signal },
+      sourceImportOptions,
     );
     throwIfAborted(job.signal, 'persist');
     const persisted = await persistPreparedSource(kbSubsystem.kb, prepared.stagedPath, prepared.slug, {

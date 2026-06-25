@@ -111,13 +111,16 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
 // SSE / streaming helpers
 // ---------------------------------------------------------------------------
 
-export function writeSseEvent(res: ServerResponse, event: string, data: unknown, cursorId?: string): void {
-  if (res.writableEnded) return;
-  if (cursorId) {
-    res.write(`event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`);
-    return;
+export function writeSseEvent(res: ServerResponse, event: string, data: unknown, cursorId?: string): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  const payload = cursorId
+    ? `event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`
+    : `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const accepted = res.write(payload);
+  if (!accepted && !res.destroyed) {
+    res.destroy(new Error('SSE client backpressure exceeded'));
   }
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  return accepted;
 }
 
 function runOnResponseDone(res: ServerResponse, fn: () => void): void {
@@ -391,23 +394,31 @@ async function handleJobsWaitSubscription(
       const event = next.value as WaitStreamEvent;
       if (event.type === 'progress') {
         currentCursor.afterSeq = event.seq;
-        writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
+        if (!writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor))) {
+          break;
+        }
         continue;
       }
 
       if (event.type === 'terminal') {
         currentCursor.afterSeq = event.seq;
-        writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor));
+        if (!writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor))) {
+          break;
+        }
         continue;
       }
 
       if (event.type === 'queued') {
         // No cursor update: queued events are synthetic and not Journal events.
-        writeSseEvent(res, 'queued', event);
+        if (!writeSseEvent(res, 'queued', event)) {
+          break;
+        }
         continue;
       }
 
-      writeSseEvent(res, 'waiting', event);
+      if (!writeSseEvent(res, 'waiting', event)) {
+        break;
+      }
     }
   } catch (error) {
     if (!closed && !controller.signal.aborted) {
@@ -522,7 +533,10 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
-  writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() });
+  if (!writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() })) {
+    deps.events.removeResponse(res);
+    return;
+  }
 
   let closed = false;
   const matchesJobScope = (jobId: string, eventProjectRoot?: string): boolean => {

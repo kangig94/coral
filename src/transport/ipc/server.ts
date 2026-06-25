@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import { dirname } from 'node:path';
+import * as timers from 'node:timers';
 import type { ZodError } from 'zod';
 import type { HttpHandlerPorts } from '../server-ports.js';
 import { formatZodError } from '../validation.js';
@@ -27,6 +28,17 @@ const INVALID_JSON_RESPONSE = {
 const BACKEND_SHUTTING_DOWN_RESPONSE = {
   code: 'backend_shutting_down',
   message: 'Backend shutting down',
+};
+export const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
+export const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
+export const IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES = 32 * 1024 * 1024;
+export const IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS = 5_000;
+
+export type IpcServerOptions = {
+  readonly maxOpenSockets?: number;
+  readonly firstFrameTimeoutMs?: number;
+  readonly maxAggregatePendingFrameBytes?: number;
+  readonly writeDrainTimeoutMs?: number;
 };
 
 export type IpcListener = {
@@ -95,8 +107,62 @@ function invalidRequestResponse(id: JsonRpcRequestEnvelope['id'] | null): JsonRp
   };
 }
 
-function writeEnvelope(socket: Socket, envelope: JsonRpcEnvelope): void {
-  socket.write(`${encode(envelope)}\n`);
+function waitForSocketDrain(socket: Socket, timeoutMs: number): Promise<boolean> {
+  if (socket.destroyed || socket.writableEnded) {
+    return Promise.resolve(false);
+  }
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const timeout = timers.setTimeout(() => finish(false), timeoutMs);
+    timeout.unref?.();
+
+    const finish = (drained: boolean) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      timers.clearTimeout(timeout);
+      socket.off('drain', onDrain);
+      socket.off('close', onClose);
+      socket.off('error', onError);
+      resolve(drained);
+    };
+    const onDrain = () => finish(true);
+    const onClose = () => finish(false);
+    const onError = () => finish(false);
+
+    socket.once('drain', onDrain);
+    socket.once('close', onClose);
+    socket.once('error', onError);
+  });
+}
+
+async function writeEnvelope(
+  socket: Socket,
+  envelope: JsonRpcEnvelope,
+  options: { drainTimeoutMs?: number } = {},
+): Promise<boolean> {
+  if (socket.destroyed || socket.writableEnded) {
+    return false;
+  }
+
+  let accepted: boolean;
+  try {
+    accepted = socket.write(`${encode(envelope)}\n`);
+  } catch {
+    return false;
+  }
+
+  if (accepted) {
+    return true;
+  }
+
+  const drained = await waitForSocketDrain(socket, options.drainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS);
+  if (!drained && !socket.destroyed) {
+    socket.destroy();
+  }
+  return drained;
 }
 
 export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: HttpHandlerPorts): IpcDispatchEntry {
@@ -260,6 +326,7 @@ async function streamSubscription(
   entry: IpcDispatchEntry,
   invocation: Extract<CatalogRequestExecution, { kind: 'subscription' }>,
   controller: AbortController,
+  options: { writeDrainTimeoutMs: number },
 ): Promise<void> {
   const iterator = invocation.notifications[Symbol.asyncIterator]();
   let released = false;
@@ -274,11 +341,20 @@ async function streamSubscription(
   };
   socket.once('close', releaseSubscription);
 
-  writeEnvelope(socket, {
-    kind: 'response',
-    id: request.id,
-    result: { status: 'subscribed', method: entry.method },
-  });
+  if (
+    !(await writeEnvelope(
+      socket,
+      {
+        kind: 'response',
+        id: request.id,
+        result: { status: 'subscribed', method: entry.method },
+      },
+      { drainTimeoutMs: options.writeDrainTimeoutMs },
+    ))
+  ) {
+    releaseSubscription();
+    return;
+  }
 
   try {
     while (true) {
@@ -287,11 +363,18 @@ async function streamSubscription(
         break;
       }
 
-      writeEnvelope(socket, {
-        kind: 'notification',
-        method: entry.method,
-        params: next.value,
-      });
+      const wrote = await writeEnvelope(
+        socket,
+        {
+          kind: 'notification',
+          method: entry.method,
+          params: next.value,
+        },
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      if (!wrote) {
+        break;
+      }
     }
   } finally {
     releaseSubscription();
@@ -308,25 +391,36 @@ async function dispatchFrame(
   onShutdownRequest: ((reason: string) => void) | null,
   startRequest: () => void,
   finishRequest: () => void,
+  options: { writeDrainTimeoutMs: number },
 ): Promise<void> {
   let envelope: JsonRpcEnvelope;
   try {
     envelope = decode(frame);
   } catch (error: unknown) {
-    writeEnvelope(socket, transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }));
+    await writeEnvelope(socket, transportErrorResponse(INVALID_JSON_RESPONSE.message, { cause: String(error) }), {
+      drainTimeoutMs: options.writeDrainTimeoutMs,
+    });
     socket.end();
     return;
   }
 
   if (envelope.kind !== 'request') {
-    writeEnvelope(socket, invalidRequestResponse('id' in envelope ? envelope.id : null));
+    await writeEnvelope(socket, invalidRequestResponse('id' in envelope ? envelope.id : null), {
+      drainTimeoutMs: options.writeDrainTimeoutMs,
+    });
     socket.end();
     return;
   }
 
   const request = envelope;
   if (request.method === 'transport.health') {
-    writeEnvelope(socket, { kind: 'response', id: request.id, result: rpcPorts.health.read() });
+    await writeEnvelope(
+      socket,
+      { kind: 'response', id: request.id, result: rpcPorts.health.read() },
+      {
+        drainTimeoutMs: options.writeDrainTimeoutMs,
+      },
+    );
     socket.end();
     return;
   }
@@ -339,11 +433,15 @@ async function dispatchFrame(
     // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
     // directly. No-op when lifecycle is already running (drain handles it).
     onShutdownRequest?.('replaced');
-    writeEnvelope(socket, {
-      kind: 'response',
-      id: request.id,
-      result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
-    });
+    await writeEnvelope(
+      socket,
+      {
+        kind: 'response',
+        id: request.id,
+        result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
+      },
+      { drainTimeoutMs: options.writeDrainTimeoutMs },
+    );
     socket.end();
     return;
   }
@@ -351,25 +449,31 @@ async function dispatchFrame(
   const lifecycleState =
     rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
   if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
-    writeEnvelope(socket, {
-      kind: 'response',
-      id: request.id,
-      result: BACKEND_SHUTTING_DOWN_RESPONSE,
-    });
+    await writeEnvelope(
+      socket,
+      {
+        kind: 'response',
+        id: request.id,
+        result: BACKEND_SHUTTING_DOWN_RESPONSE,
+      },
+      { drainTimeoutMs: options.writeDrainTimeoutMs },
+    );
     socket.end();
     return;
   }
 
   const entry = dispatchMap.get(request.method);
   if (!entry) {
-    writeEnvelope(socket, methodNotFoundResponse(request.id));
+    await writeEnvelope(socket, methodNotFoundResponse(request.id), { drainTimeoutMs: options.writeDrainTimeoutMs });
     socket.end();
     return;
   }
 
   const parsed = entry.spec.requestSchema.safeParse(request.params ?? {});
   if (!parsed.success) {
-    writeEnvelope(socket, validationErrorResponse(request.id, parsed.error));
+    await writeEnvelope(socket, validationErrorResponse(request.id, parsed.error), {
+      drainTimeoutMs: options.writeDrainTimeoutMs,
+    });
     socket.end();
     return;
   }
@@ -389,16 +493,22 @@ async function dispatchFrame(
       if (typeof invocation.statusCode === 'number' && invocation.statusCode >= 400) {
         const body = invocation.body as { code?: unknown; message?: unknown };
         const message = typeof body.message === 'string' ? body.message : 'request failed';
-        writeEnvelope(socket, requestErrorResponse(request.id, message, invocation.body));
+        await writeEnvelope(socket, requestErrorResponse(request.id, message, invocation.body), {
+          drainTimeoutMs: options.writeDrainTimeoutMs,
+        });
         socket.end();
         return;
       }
-      writeEnvelope(socket, { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope);
+      await writeEnvelope(
+        socket,
+        { kind: 'response', id: request.id, result: invocation.body } as JsonRpcResponseEnvelope,
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
       socket.end();
       return;
     }
 
-    await streamSubscription(socket, request, entry, invocation, subscriptionController);
+    await streamSubscription(socket, request, entry, invocation, subscriptionController, options);
   } catch (error: unknown) {
     if (subscriptionController?.signal.aborted || socket.destroyed) {
       return;
@@ -406,7 +516,9 @@ async function dispatchFrame(
     rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
     if (!socket.destroyed && !socket.writableEnded) {
       const response = buildTransportErrorResponse(error);
-      writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data));
+      await writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data), {
+        drainTimeoutMs: options.writeDrainTimeoutMs,
+      });
       socket.end();
     }
   } finally {
@@ -414,19 +526,53 @@ async function dispatchFrame(
   }
 }
 
-export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
+export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOptions = {}): IpcListener {
   const dispatchTable = buildCoordinatorIpcDispatchTable(rpcPorts);
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
   const sockets = new Set<Socket>();
+  const maxOpenSockets = options.maxOpenSockets ?? IPC_DEFAULT_MAX_OPEN_SOCKETS;
+  const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS;
+  const maxAggregatePendingFrameBytes =
+    options.maxAggregatePendingFrameBytes ?? IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES;
+  const writeDrainTimeoutMs = options.writeDrainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS;
+  let aggregatePendingFrameBytes = 0;
   // Mutable holder so the per-connection `dispatchFrame` closure reads the
   // current callback via `listener.onShutdownRequest`. Composition writes to
   // it after wiring the lifecycle controller.
   const listenerRef: { current: IpcListener | null } = { current: null };
 
   const server = createServer((socket) => {
+    if (sockets.size >= maxOpenSockets) {
+      rpcPorts.identity.log(`IPC connection cap exceeded (${sockets.size} >= ${maxOpenSockets}); destroying socket\n`);
+      void writeEnvelope(
+        socket,
+        transportErrorResponse('Too many IPC connections', {
+          code: 'too_many_ipc_connections',
+          maxOpenSockets,
+        }),
+        { drainTimeoutMs: writeDrainTimeoutMs },
+      ).finally(() => socket.destroy());
+      return;
+    }
+
     sockets.add(socket);
     const framer = createLineFramer();
     let inflightRequest = false;
+    let pendingFrameBytes = 0;
+    const firstFrameTimer = timers.setTimeout(() => {
+      rpcPorts.identity.log(`IPC socket did not send a complete frame within ${firstFrameTimeoutMs}ms; destroying\n`);
+      socket.destroy();
+    }, firstFrameTimeoutMs);
+    firstFrameTimer.unref?.();
+
+    const updatePendingFrameBytes = (nextBytes: number) => {
+      aggregatePendingFrameBytes += nextBytes - pendingFrameBytes;
+      pendingFrameBytes = nextBytes;
+    };
+
+    const releasePendingFrameBytes = () => {
+      updatePendingFrameBytes(0);
+    };
 
     const finishRequest = () => {
       if (!inflightRequest) {
@@ -437,6 +583,8 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
     };
 
     socket.once('close', () => {
+      timers.clearTimeout(firstFrameTimer);
+      releasePendingFrameBytes();
       finishRequest();
       sockets.delete(socket);
     });
@@ -450,30 +598,49 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
       let frames: string[];
       try {
         frames = framer.push(chunk);
+        updatePendingFrameBytes(framer.pendingBytes());
       } catch (error: unknown) {
         if (error instanceof FrameTooLargeError) {
+          updatePendingFrameBytes(error.observedBytes);
           rpcPorts.identity.log(
             `IPC frame too large (${error.observedBytes} > ${error.maxFrameBytes}); destroying socket\n`,
           );
           if (!socket.destroyed) {
-            writeEnvelope(
+            void writeEnvelope(
               socket,
               transportErrorResponse('Request frame too large', {
                 code: error.code,
                 maxFrameBytes: error.maxFrameBytes,
                 observedBytes: error.observedBytes,
               }),
-            );
-            socket.destroy();
+              { drainTimeoutMs: writeDrainTimeoutMs },
+            ).finally(() => socket.destroy());
           }
           return;
         }
         throw error;
       }
+      if (aggregatePendingFrameBytes > maxAggregatePendingFrameBytes) {
+        rpcPorts.identity.log(
+          `IPC pending frame budget exceeded (${aggregatePendingFrameBytes} > ${maxAggregatePendingFrameBytes}); destroying socket\n`,
+        );
+        void writeEnvelope(
+          socket,
+          transportErrorResponse('Too many pending IPC frame bytes', {
+            code: 'ipc_pending_frame_budget_exceeded',
+            maxAggregatePendingFrameBytes,
+            observedBytes: aggregatePendingFrameBytes,
+          }),
+          { drainTimeoutMs: writeDrainTimeoutMs },
+        ).finally(() => socket.destroy());
+        return;
+      }
       for (const frame of frames) {
         if (frame.trim().length === 0) {
           continue;
         }
+        timers.clearTimeout(firstFrameTimer);
+        releasePendingFrameBytes();
         socket.off('data', onData);
         void dispatchFrame(
           frame,
@@ -486,6 +653,7 @@ export function createIpcServer(rpcPorts: HttpHandlerPorts): IpcListener {
             inflightRequest = true;
           },
           finishRequest,
+          { writeDrainTimeoutMs },
         );
         return;
       }

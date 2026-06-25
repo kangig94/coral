@@ -7,8 +7,10 @@ describe('createLineFramer', () => {
     const framer = createLineFramer();
 
     expect(framer.push('first\nsec')).toEqual(['first']);
+    expect(framer.pendingBytes()).toBe(3);
     expect(framer.flush()).toBe('sec');
     expect(framer.push(Buffer.from('ond\nthird\nfour'))).toEqual(['second', 'third']);
+    expect(framer.pendingBytes()).toBe(4);
     expect(framer.flush()).toBe('four');
   });
 

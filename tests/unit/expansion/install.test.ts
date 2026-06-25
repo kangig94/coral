@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as DownloadModule from '#src/runtime/download.js';
+import { NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES } from '#src/engines/needle/install.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
@@ -135,6 +136,7 @@ describe('installExpansion', () => {
     expect(mockState.downloadBuffer).toHaveBeenCalledWith(
       runtime,
       'https://github.com/kangig94/coral-needle/releases/download/v0.2.0/coral-needle-v0.2.0-linux-arm64.tar.gz',
+      { maxBytes: NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES },
     );
     expect(
       JSON.parse(

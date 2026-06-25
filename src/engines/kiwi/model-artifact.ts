@@ -292,7 +292,7 @@ async function installDownloadedModel(
   opts: KiwiModelInstallOptions,
 ): Promise<KiwiModelArtifactInstallResult> {
   logInstallEvent(opts, 'expansion.install.download', `Downloading ${KIWI_MODEL_URL}`);
-  const archive = await downloadBuffer(runtime, KIWI_MODEL_URL);
+  const archive = await downloadBuffer(runtime, KIWI_MODEL_URL, { maxBytes: KIWI_MODEL_ARCHIVE_SIZE_BYTES });
   const digest = sha256Hex(archive);
   if (digest !== KIWI_MODEL_SHA256) {
     throw new Error(`Kiwi model archive digest mismatch: expected ${KIWI_MODEL_SHA256}, got ${digest}`);

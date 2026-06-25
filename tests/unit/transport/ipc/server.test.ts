@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
@@ -12,6 +13,64 @@ function makeSocketPath(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-ipc-server-test-'));
   tempDirs.push(root);
   return join(root, 'coordinator.sock');
+}
+
+async function withTestTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 1_000): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function waitForCondition(condition: () => boolean, label: string): Promise<void> {
+  await withTestTimeout(
+    new Promise<void>((resolve) => {
+      const poll = () => {
+        if (condition()) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, 5);
+      };
+      poll();
+    }),
+    label,
+  );
+}
+
+async function connectRawIpcSocket(socketPath: string): Promise<Socket> {
+  const socket = createConnection(socketPath);
+  return await withTestTimeout(
+    new Promise<Socket>((resolve, reject) => {
+      const onConnect = () => {
+        socket.off('error', onError);
+        socket.on('error', () => undefined);
+        resolve(socket);
+      };
+      const onError = (error: Error) => {
+        socket.off('connect', onConnect);
+        reject(error);
+      };
+      socket.once('connect', onConnect);
+      socket.once('error', onError);
+    }),
+    'raw IPC socket connect',
+  );
+}
+
+function hasLogLine(ports: HttpHandlerPorts, text: string): boolean {
+  return vi
+    .mocked(ports.identity.log)
+    .mock.calls.some(([line]) => typeof line === 'string' && line.includes(text));
 }
 
 function createPorts(): HttpHandlerPorts {
@@ -194,6 +253,63 @@ describe('ipc server', () => {
       });
       expect(requestDrain).toHaveBeenCalledWith('replaced');
     } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('rejects IPC connections above the configured socket cap', async () => {
+    const ports = createPorts();
+    const listener = createIpcServer(ports, {
+      firstFrameTimeoutMs: 60_000,
+      maxOpenSockets: 1,
+      writeDrainTimeoutMs: 10,
+    });
+    const socketPath = makeSocketPath();
+    let first: Socket | null = null;
+    let second: Socket | null = null;
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      first = await connectRawIpcSocket(socketPath);
+      await waitForCondition(() => listener.sockets.size === 1, 'first IPC socket tracked');
+      second = await connectRawIpcSocket(socketPath);
+      await waitForCondition(() => hasLogLine(ports, 'IPC connection cap exceeded'), 'IPC connection cap log');
+
+      expect(listener.sockets.size).toBe(1);
+      expect(hasLogLine(ports, 'IPC connection cap exceeded')).toBe(true);
+    } finally {
+      first?.destroy();
+      second?.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('destroys sockets that exceed the aggregate pending frame budget', async () => {
+    const ports = createPorts();
+    const listener = createIpcServer(ports, {
+      firstFrameTimeoutMs: 60_000,
+      maxAggregatePendingFrameBytes: 8,
+      writeDrainTimeoutMs: 10,
+    });
+    const socketPath = makeSocketPath();
+    let first: Socket | null = null;
+    let second: Socket | null = null;
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      first = await connectRawIpcSocket(socketPath);
+      second = await connectRawIpcSocket(socketPath);
+      await waitForCondition(() => listener.sockets.size === 2, 'two IPC sockets tracked');
+
+      first.write('aaaaa');
+      second.write('bbbbb');
+      await waitForCondition(() => listener.sockets.size === 1, 'over-budget IPC socket removed');
+
+      expect(listener.sockets.size).toBe(1);
+      expect(hasLogLine(ports, 'IPC pending frame budget exceeded')).toBe(true);
+    } finally {
+      first?.destroy();
+      second?.destroy();
       await closeIpcServer(listener);
     }
   });

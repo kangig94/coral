@@ -24,6 +24,7 @@ const NEEDLE_ARCH_MAP: Record<string, string> = {
 };
 const NEEDLE_INSTALL_LOCK_TIMEOUT_MS = 250;
 const NEEDLE_GITHUB_REPO = 'kangig94/coral-needle';
+export const NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 const NEEDLE_POST_INSTALL = ['register_expansion'] as const;
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
 
@@ -249,7 +250,10 @@ async function installNeedlePrebuild(ctx: NeedleInstallContext): Promise<Buffer>
   const assetName = `coral-needle-${releaseTag}-${needlePlatformKey(ctx.runtime.env.platform(), ctx.runtime.env.arch())}.tar.gz`;
   const url = `https://github.com/${NEEDLE_GITHUB_REPO}/releases/download/${releaseTag}/${assetName}`;
   logInstallEvent(ctx, 'expansion.install.download', `Downloading ${url}`);
-  return extractTarEntry(await downloadBuffer(ctx.runtime, url), NEEDLE_ADDON_FILENAME);
+  return extractTarEntry(
+    await downloadBuffer(ctx.runtime, url, { maxBytes: NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES }),
+    NEEDLE_ADDON_FILENAME,
+  );
 }
 
 export const needleInstaller: EngineInstaller = {

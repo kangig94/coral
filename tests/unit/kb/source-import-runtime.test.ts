@@ -4,13 +4,17 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV,
   ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT,
   PdfMarkerConverter,
+  SOURCE_IMPORT_COMMAND_TIMEOUT_MS,
+  SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES,
   USER_SOURCE_IMPORT_MAX_BYTES,
   deriveSourceImportReadPolicy,
   prepareSourceImport,
   resolveAdminSourceImportCap,
   resolveSourceImportFile,
+  sourceImportAdminLimitExceededHint,
   type SourceImportReadPolicy,
   type SourceImportRuntime,
 } from '#src/kb/ops/source-import.js';
@@ -95,6 +99,8 @@ describe('source import runtime isolation', () => {
     expect(resolveAdminSourceImportCap(envWith('0'))).toBeNull();
     expect(resolveAdminSourceImportCap(envWith('unlimited'))).toBeNull();
     expect(resolveAdminSourceImportCap(envWith('abc'))).toBe(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT);
+    expect(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT).toBe(USER_SOURCE_IMPORT_MAX_BYTES);
+    expect(SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES).toBe(USER_SOURCE_IMPORT_MAX_BYTES);
 
     expect(deriveSourceImportReadPolicy('user', '/project', envWith('4096'))).toEqual({
       kind: 'sandboxed',
@@ -168,7 +174,7 @@ describe('source import runtime isolation', () => {
     ).toThrow(/exceeds maximum source import size/);
     expect(() =>
       resolveSourceImportFile('/outside/too-big.md', adminPolicy, coherentSizeStorage(adminReadableSize + 2)),
-    ).toThrow(/exceeds maximum source import size/);
+    ).toThrow(new RegExp(`exceeds maximum source import size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes>`));
   });
 
   it('skips byte comparison for admin-unlimited imports but still rejects non-files', () => {
@@ -222,6 +228,23 @@ describe('source import runtime isolation', () => {
     expect(readFileSync(prepared.stagedPath, 'utf8')).toContain('# In Scope\n\nBody');
   });
 
+  it('rejects converted markdown output above the import byte cap with an admin override hint', async () => {
+    const root = tempRoot('coral-source-import-output-cap-');
+    const input = join(root, 'paper.md');
+    const runtimeRoot = join(root, 'runtime');
+    const runtime = fakeRuntime();
+    const policy = deriveSourceImportReadPolicy('admin', root, envWith('16'));
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, '# A\n', 'utf8');
+    const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
+
+    await expect(
+      prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {
+        limitExceededHint: sourceImportAdminLimitExceededHint(),
+      }),
+    ).rejects.toThrow(new RegExp(`markdown output exceeds maximum size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes>`));
+  });
+
   it('stages HTML imports through async storage reads', async () => {
     const root = tempRoot('coral-source-import-html-');
     const input = join(root, 'paper.html');
@@ -258,14 +281,16 @@ describe('source import runtime isolation', () => {
     const runtimeRoot = join(root, 'runtime');
     const input = join(root, 'paper.pdf');
     const { storage, readFile } = storageWithReadSpy();
+    const markerExecOptions: Array<{ timeout?: number; maxBuffer?: number }> = [];
     const runtime = fakeRuntime({
       storage,
       process: {
-        exec: async (command, args) => {
+        exec: async (command, args, options) => {
           if (command === 'which' && args[0] === 'marker_single') {
             return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
           }
           if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
             const outputDirFlagIndex = args.indexOf('--output_dir');
             const outputDir = args[outputDirFlagIndex + 1];
             mkdirSync(outputDir, { recursive: true });
@@ -287,6 +312,12 @@ describe('source import runtime isolation', () => {
     });
 
     expect(result).toEqual({ title: 'PDF Import', markdown: 'Marker body' });
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        maxBuffer: 20 * 1024 * 1024,
+        timeout: SOURCE_IMPORT_COMMAND_TIMEOUT_MS,
+      }),
+    ]);
     expect(readFile).toHaveBeenCalledWith(
       join(runtimeRoot, 'source-import-pdf', 'marker-fixed-source-import-id', 'output.md'),
       'utf-8',

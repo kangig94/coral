@@ -6,6 +6,9 @@ import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engin
 import {
   ORAMA_BODY_NGRAM_TERM_LIMIT,
   ORAMA_BODY_SURFACE_TERM_LIMIT,
+  ORAMA_QUERY_NGRAM_TERM_LIMIT,
+  ORAMA_QUERY_SOURCE_CHAR_LIMIT,
+  analyzeOramaSearchQuery,
   surfaceSearchTerms,
 } from '#src/engines/orama/search-channels.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
@@ -147,5 +150,20 @@ describe('Orama channel search', () => {
     expect(singleTokenDoc.bodyNgram.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(
       ORAMA_BODY_NGRAM_TERM_LIMIT,
     );
+  });
+
+  it('caps ngram analysis for large search queries before tokenization', () => {
+    const query = Array.from({ length: ORAMA_QUERY_SOURCE_CHAR_LIMIT + 20 }, (_, index) =>
+      String.fromCodePoint(0xac00 + index),
+    ).join('');
+    const outsideCapBigram = Array.from(query)
+      .slice(ORAMA_QUERY_SOURCE_CHAR_LIMIT, ORAMA_QUERY_SOURCE_CHAR_LIMIT + 2)
+      .join('');
+
+    const analysis = analyzeOramaSearchQuery(query, []);
+
+    expect(analysis.ngram.length).toBeLessThanOrEqual(ORAMA_QUERY_NGRAM_TERM_LIMIT);
+    expect(analysis.ngram).not.toContain(outsideCapBigram);
+    expect(analysis.surface.join('')).not.toContain(outsideCapBigram);
   });
 });

@@ -16,8 +16,10 @@ const HTML_H1_PATTERN = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i;
 const HTML_BODY_PATTERN = /<body\b[^>]*>([\s\S]*?)<\/body>/i;
 
 export const USER_SOURCE_IMPORT_MAX_BYTES = 128 * 1024 * 1024;
-export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = 1024 * 1024 * 1024;
-const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
+export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = USER_SOURCE_IMPORT_MAX_BYTES;
+export const SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES = 128 * 1024 * 1024;
+export const SOURCE_IMPORT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+export const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
 
 const HTML_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -54,10 +56,13 @@ export type SourceImportContext = {
   runtime: SourceImportRuntime;
   runtimeRoot: string;
   fileSizeLimitBytes: number | null;
+  limitExceededHint?: string;
 };
 
 export type SourceImportOptions = {
   signal?: AbortSignal;
+  maxMarkdownOutputBytes?: number | null;
+  limitExceededHint?: string;
 };
 
 export type SourceImportReadPolicy =
@@ -138,6 +143,7 @@ async function runCommand(
     env: commandEnv(ctx.runtime),
     inheritEnv: false,
     maxBuffer: 20 * 1024 * 1024,
+    timeout: SOURCE_IMPORT_COMMAND_TIMEOUT_MS,
   });
   if (result.status === 0) {
     return;
@@ -181,6 +187,10 @@ export function hasParentPathSegment(filePath: string): boolean {
   return filePath.split(/[\\/]+/u).some((segment) => segment === '..');
 }
 
+export function sourceImportAdminLimitExceededHint(): string {
+  return `Set ${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes> to allow larger admin source imports, or set ${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=unlimited to disable the cap.`;
+}
+
 export function resolveAdminSourceImportCap(env: Pick<EnvPort, 'get'>): number | null {
   const raw = env.get(ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV);
   if (raw === undefined) {
@@ -215,13 +225,15 @@ function assertSourceImportFileSize(
   storage: SourceImportRuntime['storage'],
   limitBytes: number | null,
   label: string,
+  limitExceededHint?: string,
 ): void {
   const stat = storage.statSync(filePath);
   if (!stat.isFile()) {
     throw new Error(`${label} must be a file`);
   }
   if (limitBytes !== null && stat.size > limitBytes) {
-    throw new Error(`${label} exceeds maximum source import size (${stat.size} bytes > ${limitBytes} bytes)`);
+    const message = `${label} exceeds maximum source import size (${stat.size} bytes > ${limitBytes} bytes)`;
+    throw new Error(limitExceededHint === undefined ? message : `${message}. ${limitExceededHint}`);
   }
 }
 
@@ -230,7 +242,7 @@ async function readUtf8FileWithinSourceImportLimit(
   ctx: SourceImportContext,
   label: string,
 ): Promise<string> {
-  assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, label);
+  assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, label, ctx.limitExceededHint);
   return await ctx.runtime.storage.readFile(filePath, 'utf-8');
 }
 
@@ -256,7 +268,13 @@ export function resolveSourceImportFile(
   const candidate = isAbsolute(filePath) ? filePath : resolve(policy.resolveBase, filePath);
   const canonicalCandidate = storage.realpathSync(candidate);
 
-  assertSourceImportFileSize(canonicalCandidate, storage, policy.maxBytes, 'KB source import file path');
+  assertSourceImportFileSize(
+    canonicalCandidate,
+    storage,
+    policy.maxBytes,
+    'KB source import file path',
+    sourceImportAdminLimitExceededHint(),
+  );
   return { path: canonicalCandidate };
 }
 
@@ -464,6 +482,31 @@ function renderSourceMarkdown(meta: KbSourceFrontmatter, body: string): string {
   return `${frontmatter}${heading}\n\n${normalizedBody}\n`;
 }
 
+function resolveSourceImportMarkdownOutputMaxBytes(
+  fileSizeLimitBytes: number | null,
+  options: SourceImportOptions,
+): number | null {
+  if (options.maxMarkdownOutputBytes !== undefined) {
+    return options.maxMarkdownOutputBytes;
+  }
+  return fileSizeLimitBytes;
+}
+
+function assertSourceImportMarkdownOutputSize(
+  markdown: string,
+  maxBytes: number | null,
+  limitExceededHint?: string,
+): void {
+  if (maxBytes === null) {
+    return;
+  }
+  const observedBytes = Buffer.byteLength(markdown, 'utf-8');
+  if (observedBytes > maxBytes) {
+    const message = `KB source import markdown output exceeds maximum size (${observedBytes} bytes > ${maxBytes} bytes)`;
+    throw new Error(limitExceededHint === undefined ? message : `${message}. ${limitExceededHint}`);
+  }
+}
+
 export async function prepareSourceImport(
   sourceFile: ResolvedSourceImportFile,
   slug: string | undefined,
@@ -484,7 +527,10 @@ export async function prepareSourceImport(
   const signal = options.signal;
   const sourceFilePath = sourceFile.path;
   const ext = extname(sourceFilePath).toLowerCase();
-  const ctx: SourceImportContext = { runtime, runtimeRoot, fileSizeLimitBytes };
+  const ctx: SourceImportContext =
+    options.limitExceededHint === undefined
+      ? { runtime, runtimeRoot, fileSizeLimitBytes }
+      : { runtime, runtimeRoot, fileSizeLimitBytes, limitExceededHint: options.limitExceededHint };
   const converter = resolveConverter(ext);
 
   if (signal !== undefined) throwIfAborted(signal, 'convert');
@@ -505,11 +551,13 @@ export async function prepareSourceImport(
 
   if (signal !== undefined) throwIfAborted(signal, 'persist');
   log('Staging converted markdown for backend import');
-  const stagedPath = stagePreparedSourceMarkdown(
-    sourceImportStageDir(runtimeRoot),
-    renderSourceMarkdown(meta, converted.markdown),
-    runtime,
+  const renderedMarkdown = renderSourceMarkdown(meta, converted.markdown);
+  assertSourceImportMarkdownOutputSize(
+    renderedMarkdown,
+    resolveSourceImportMarkdownOutputMaxBytes(fileSizeLimitBytes, options),
+    options.limitExceededHint,
   );
+  const stagedPath = stagePreparedSourceMarkdown(sourceImportStageDir(runtimeRoot), renderedMarkdown, runtime);
 
   return {
     stagedPath,

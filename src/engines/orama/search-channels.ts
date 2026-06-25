@@ -16,6 +16,9 @@ export const ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT = 2_048;
 export const ORAMA_BODY_NGRAM_LEADING_TEXT_CHAR_LIMIT = 1_024;
 export const ORAMA_BODY_NGRAM_HEADING_LIMIT = 64;
 export const ORAMA_BODY_NGRAM_TERM_LIMIT = 1_024;
+export const ORAMA_QUERY_SOURCE_CHAR_LIMIT = 256;
+export const ORAMA_QUERY_SURFACE_TERM_LIMIT = 64;
+export const ORAMA_QUERY_NGRAM_TERM_LIMIT = 512;
 
 export const ORAMA_SEARCH_FIELDS = ['slug', 'title', 'body', 'tags', 'principles'] as const;
 export type OramaSearchField = (typeof ORAMA_SEARCH_FIELDS)[number];
@@ -201,7 +204,20 @@ function takeCodePoints(raw: string, limit: number | undefined): string {
   if (limit === undefined) {
     return raw;
   }
-  return [...raw].slice(0, limit).join('');
+  if (limit <= 0) {
+    return '';
+  }
+
+  let end = 0;
+  let taken = 0;
+  for (const char of raw) {
+    if (taken >= limit) {
+      break;
+    }
+    end += char.length;
+    taken += 1;
+  }
+  return taken < limit ? raw : raw.slice(0, end);
 }
 
 function* characterNgrams(raw: string, min: number, max: number): Iterable<string> {
@@ -258,7 +274,7 @@ function appendNgramSearchTerms(
 }
 
 function takeSegmentWithinBudget(raw: string, budget: number): string {
-  return [...raw].slice(0, budget).join('');
+  return takeCodePoints(raw, budget);
 }
 
 function pushSegmentWithinBudget(segments: string[], raw: string, remaining: number): number {
@@ -392,9 +408,14 @@ export function buildOramaSearchChannelFields(
 }
 
 export function analyzeOramaSearchQuery(raw: string, morphTerms: readonly string[]): OramaSearchQueryAnalysis {
-  const surface = surfaceSearchTerms(raw);
-  const ngram = ngramSearchTerms(raw);
-  const normalizedRaw = normalizeSurfaceTerm(raw).replace(WORD_BOUNDARY_PATTERN, ' ').trim();
+  const boundedRaw = takeCodePoints(raw, ORAMA_QUERY_SOURCE_CHAR_LIMIT);
+  const surface = surfaceSearchTerms(boundedRaw, { maxTerms: ORAMA_QUERY_SURFACE_TERM_LIMIT });
+  const ngram = ngramSearchTerms(boundedRaw, {
+    maxTerms: ORAMA_QUERY_NGRAM_TERM_LIMIT,
+    maxSourceChars: ORAMA_QUERY_SOURCE_CHAR_LIMIT,
+    surfaceTermLimit: ORAMA_QUERY_SURFACE_TERM_LIMIT,
+  });
+  const normalizedRaw = normalizeSurfaceTerm(boundedRaw).replace(WORD_BOUNDARY_PATTERN, ' ').trim();
   const phrases = uniqueTerms([normalizedRaw, surface.join(' '), surface.join('')]);
   const fuzzyCandidates = uniqueTerms([...morphTerms, ...surface]);
   const fuzzy =
