@@ -36,7 +36,7 @@ export const CORPUS_SCAN_MAX_FILE_BYTES = 128 * 1024 * 1024;
 export const CORPUS_SCAN_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
 export const CORPUS_SCAN_FRONTMATTER_MAX_BYTES = 256 * 1024;
 
-type CorpusScanLimits = {
+export type CorpusScanLimits = {
   readonly maxFiles: number;
   readonly maxFileBytes: number;
   readonly maxTotalBytes: number;
@@ -59,7 +59,7 @@ function readPositiveIntegerEnv(envPort: Pick<EnvPort, 'get'> | undefined, key: 
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function resolveCorpusScanLimits(envPort: Pick<EnvPort, 'get'> | undefined): CorpusScanLimits {
+export function resolveCorpusScanLimits(envPort: Pick<EnvPort, 'get'> | undefined): CorpusScanLimits {
   return {
     maxFiles: readPositiveIntegerEnv(envPort, CORPUS_SCAN_MAX_FILES_ENV, CORPUS_SCAN_MAX_FILES),
     maxFileBytes: readPositiveIntegerEnv(envPort, CORPUS_SCAN_MAX_FILE_BYTES_ENV, CORPUS_SCAN_MAX_FILE_BYTES),
@@ -121,6 +121,22 @@ export interface CorpusScanView {
   activeEntryIds: ReadonlySet<KbEntryId>;
   principleSlugs: ReadonlySet<string>;
 }
+
+export type CorpusMarkdownFileScanInput = {
+  readonly kind: CorpusMarkdownKind;
+  readonly path: string;
+  readonly content: string;
+};
+
+export type CorpusEntityGraphScanInput = {
+  readonly path: string;
+  readonly content: string;
+};
+
+export type CorpusScanViewInput = {
+  readonly markdownFiles: readonly CorpusMarkdownFileScanInput[];
+  readonly entityGraph: CorpusEntityGraphScanInput | null;
+};
 
 export function createCorpusMarkdownFileScan(input: {
   kind: CorpusMarkdownKind;
@@ -199,6 +215,26 @@ export function createCorpusScanView(input: {
   };
 }
 
+export function createCorpusScanViewFromInput(input: CorpusScanViewInput, limits: CorpusScanLimits): CorpusScanView {
+  return createCorpusScanView({
+    markdownFiles: input.markdownFiles.map((file) =>
+      createCorpusMarkdownFileScan({
+        kind: file.kind,
+        path: file.path,
+        content: file.content,
+        frontmatterMaxBytes: limits.frontmatterMaxBytes,
+      }),
+    ),
+    entityGraph:
+      input.entityGraph === null
+        ? null
+        : createCorpusEntityGraphScan({
+            path: input.entityGraph.path,
+            content: input.entityGraph.content,
+          }),
+  });
+}
+
 export function buildCorpusScanView(kb: {
   markdownRoot: string;
   corpusStorage: CorpusStorage;
@@ -206,12 +242,12 @@ export function buildCorpusScanView(kb: {
   envPort?: Pick<EnvPort, 'get'>;
 }): CorpusScanView {
   const limits = resolveCorpusScanLimits(kb.envPort);
-  const markdownFiles: CorpusMarkdownFileScan[] = [];
+  const inputFiles: CorpusMarkdownFileScanInput[] = [];
   let totalBytes = 0;
   for (const handle of kb.corpusStorage.scan(kb.markdownRoot)) {
-    if (markdownFiles.length >= limits.maxFiles) {
+    if (inputFiles.length >= limits.maxFiles) {
       throw new CorpusScanLimitError(
-        `KB corpus scan exceeds maximum markdown file count (${markdownFiles.length + 1} files > ${limits.maxFiles} files). Increase ${CORPUS_SCAN_MAX_FILES_ENV} to allow a larger corpus.`,
+        `KB corpus scan exceeds maximum markdown file count (${inputFiles.length + 1} files > ${limits.maxFiles} files). Increase ${CORPUS_SCAN_MAX_FILES_ENV} to allow a larger corpus.`,
       );
     }
     const sizeBytes = handle.sizeBytes();
@@ -226,25 +262,25 @@ export function buildCorpusScanView(kb: {
         `KB corpus scan exceeds maximum total markdown size (${totalBytes} bytes > ${limits.maxTotalBytes} bytes). Increase ${CORPUS_SCAN_MAX_TOTAL_BYTES_ENV} to allow a larger corpus.`,
       );
     }
-    markdownFiles.push(
-      createCorpusMarkdownFileScan({
-        kind: handle.kind,
-        path: handle.path,
-        content: handle.read(),
-        frontmatterMaxBytes: limits.frontmatterMaxBytes,
-      }),
-    );
+    inputFiles.push({
+      kind: handle.kind,
+      path: handle.path,
+      content: handle.read(),
+    });
   }
-  return createCorpusScanView({
-    markdownFiles,
-    entityGraph: readEntityGraphScan(kb, limits),
-  });
+  return createCorpusScanViewFromInput(
+    {
+      markdownFiles: inputFiles,
+      entityGraph: readEntityGraphScanInput(kb, limits),
+    },
+    limits,
+  );
 }
 
-function readEntityGraphScan(kb: {
+function readEntityGraphScanInput(kb: {
   corpusStorage: CorpusStorage;
   entityGraphPath(): string;
-}, limits: CorpusScanLimits): CorpusEntityGraphScan | null {
+}, limits: CorpusScanLimits): CorpusEntityGraphScanInput | null {
   const path = kb.entityGraphPath();
   try {
     const sizeBytes = kb.corpusStorage.statSync(path).size;
@@ -253,8 +289,10 @@ function readEntityGraphScan(kb: {
         `KB corpus entity graph ${path} exceeds maximum size (${sizeBytes} bytes > ${limits.maxFileBytes} bytes). Increase ${CORPUS_SCAN_MAX_FILE_BYTES_ENV} to allow a larger entity graph.`,
       );
     }
-    const content = kb.corpusStorage.readFileSync(path, 'utf-8');
-    return createCorpusEntityGraphScan({ content, path });
+    return {
+      path,
+      content: kb.corpusStorage.readFileSync(path, 'utf-8'),
+    };
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return null;

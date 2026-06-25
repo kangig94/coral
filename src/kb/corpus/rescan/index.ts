@@ -15,7 +15,7 @@ import {
   loadWikis,
   projectIncidents,
 } from './projections.js';
-import { buildCorpusScanView } from './scan.js';
+import { buildCorpusScanViewInWorker } from './scan-worker.js';
 import { buildCorpusSurface } from '../surface.js';
 import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
 import type { ReindexResult } from '../../entry-types.js';
@@ -46,8 +46,9 @@ export type RescanCounts = Pick<
  * `signal` is the composed mutation-lock callback signal (caller signal + internal
  * deadline). Honored at named checkpoints — `'scan'` before the corpus scan and
  * `'repair'` before incident auto-fix — so a user `coral-cli abort` lands at a
- * deterministic boundary instead of mid-scan. Mid-`buildCorpusScanView` interruption
- * is intentionally out of scope (spec §6.4 / Phase 6 risk row).
+ * deterministic boundary instead of mid-scan. The corpus scan runs in a worker so
+ * aborting the signal can terminate file traversal/read work without keeping the
+ * daemon event loop stuck on synchronous filesystem calls.
  */
 export async function performRescan(
   kb: KbRuntime,
@@ -60,7 +61,7 @@ export async function performRescan(
     throwIfAborted(signal, 'scan');
   }
 
-  const initialScan = buildCorpusScanView(kb);
+  const initialScan = await buildCorpusScanViewInWorker(kb, { signal });
   const notes = loadNotes(initialScan);
   const sources = loadSources(initialScan);
   const initialWikis = loadWikis(initialScan);
@@ -71,7 +72,7 @@ export async function performRescan(
   // so the projected index reflects the regenerated communities.
   const topologyIndex = buildKbIndex(initialScan, notes, sources, [], initialWikis, principles);
   const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
-  const finalScan = buildCorpusScanView(kb);
+  const finalScan = await buildCorpusScanViewInWorker(kb, { signal });
   const finalSurface = buildCorpusSurface(finalScan);
   const communities = loadCommunities(finalScan);
   const wikis = loadWikis(finalScan);
