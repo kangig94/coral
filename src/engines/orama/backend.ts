@@ -1,3 +1,5 @@
+import { setImmediate as waitImmediate } from 'node:timers/promises';
+
 import { insert, insertMultiple, remove, search as oramaSearch } from '@orama/orama';
 
 import { backendLog } from '../../infra/backend-log.js';
@@ -60,6 +62,7 @@ export const ORAMA_BASE_CONSUMER_ID = 'orama-base';
 const FTS_INDEX_UNINITIALIZED_WARNING = 'fts_index_uninitialized';
 const FTS_INDEX_STALE_TIER_WARNING = 'fts_index_stale_tier';
 const FUZZY_BODY_TOKEN_SCAN_LIMIT = 512;
+export const ORAMA_FULL_INSTALL_INSERT_BATCH_SIZE = 500;
 
 export type OramaReconcileReason = 'stale-tier' | 'incompatible' | 'terminal-analyzer-failure';
 
@@ -67,6 +70,27 @@ export interface PreparedOramaProjection {
   db: KbOramaDb;
   tokenizer: KbOramaTokenizer;
   documents: KbOramaDocument[];
+}
+
+export async function insertOramaDocumentsCooperatively(
+  db: KbOramaDb,
+  documents: readonly KbOramaDocument[],
+  options: { batchSize?: number } = {},
+): Promise<void> {
+  if (documents.length === 0) {
+    return;
+  }
+  const batchSize =
+    Number.isSafeInteger(options.batchSize) && options.batchSize !== undefined && options.batchSize > 0
+      ? options.batchSize
+      : ORAMA_FULL_INSTALL_INSERT_BATCH_SIZE;
+
+  for (let index = 0; index < documents.length; index += batchSize) {
+    await insertMultiple(db, [...documents.slice(index, index + batchSize)]);
+    if (index + batchSize < documents.length) {
+      await waitImmediate();
+    }
+  }
 }
 
 type CurrentOramaDocumentMap = ReadonlyMap<string, KbOramaDocument>;
@@ -1066,7 +1090,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     preparedProjection: PreparedOramaProjection,
   ): Promise<void> {
     if (preparedProjection.documents.length > 0) {
-      await insertMultiple(preparedProjection.db, preparedProjection.documents);
+      await insertOramaDocumentsCooperatively(preparedProjection.db, preparedProjection.documents);
     }
     const identityInput = this.projectionIdentityInput();
     if (await this.shouldSkipStaleProjectionWrite(snapshot, ORAMA_PROJECTION_IDENTITY_HASH(identityInput))) {
