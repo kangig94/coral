@@ -14,6 +14,7 @@ import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '#src/infra/process-constants
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, type IncumbentHealth, type IncumbentIdentity } from '#src/transport/ipc/handoff.js';
+import { backendLog } from '#src/infra/backend-log.js';
 
 // We mock `requestIncumbentShutdown` so the handoff state machine sees
 // scripted health/verifiedIdentity outcomes without spinning real IPC.
@@ -245,6 +246,48 @@ describe('bindWithHandoff', () => {
     expect(sigterms[0].pid).toBe(7777);
   });
 
+  it('audits handoff signals without logging coordinator tokens', async () => {
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+    try {
+      const verifiedIdentity: IncumbentIdentity = {
+        pid: 7654,
+        processStartedAt: 444_000,
+        source: 'health',
+      };
+      const { options, time } = buildHarness({
+        bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+        totalBudgetMs: 500,
+        readDiscovery: () => ({
+          ...verifiedIdentity,
+          source: 'discovery',
+          instanceId: 'audit-incumbent',
+          token: 'secret-admin-token',
+          shutdownToken: 'secret-shutdown-token',
+        }),
+      });
+      mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+      mockedProbe.mockReturnValue(verifiedIdentity.processStartedAt);
+
+      const promise = bindWithHandoff(options).catch((e: Error) => e);
+      for (let i = 0; i < 80; i += 1) {
+        await flush();
+        time.tick(200);
+      }
+      await promise;
+
+      const messages = [...warnSpy.mock.calls, ...errorSpy.mock.calls].map((call) => String(call[0] ?? ''));
+      const auditMessages = messages.filter((message) => message.includes('handoff.audit'));
+      expect(auditMessages.length).toBeGreaterThan(0);
+      expect(auditMessages.some((message) => message.includes('"instanceId":"audit-incumbent"'))).toBe(true);
+      expect(auditMessages.join('\n')).not.toContain('secret-admin-token');
+      expect(auditMessages.join('\n')).not.toContain('secret-shutdown-token');
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('process gone before signal → retries bind without signaling', async () => {
     let alive = true;
     const verifiedIdentity: IncumbentIdentity = {
@@ -405,6 +448,35 @@ describe('bindWithHandoff', () => {
     expect(killCalls).toEqual([]);
   });
 
+  it('refuses to signal when fresh discovery lacks signal capability fields', async () => {
+    const verifiedIdentity: IncumbentIdentity = {
+      pid: 9753,
+      processStartedAt: 903,
+      source: 'health',
+    };
+    const { options, time, killCalls } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      totalBudgetMs: 500,
+      readDiscovery: () => ({
+        ...verifiedIdentity,
+        source: 'discovery',
+        shutdownToken: 'shutdown-token',
+      }),
+    });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
+    mockedProbe.mockReturnValue(verifiedIdentity.processStartedAt);
+
+    const promise = bindWithHandoff(options).catch((e: Error) => e);
+    for (let i = 0; i < 30; i += 1) {
+      await flush();
+      time.tick(200);
+    }
+    const outcome = await promise;
+    expect(outcome).toBeInstanceOf(HandoffEscalationError);
+    expect(String((outcome as Error).message)).toContain('verified coordinator discovery lacked instanceId, token');
+    expect(killCalls).toEqual([]);
+  });
+
   it('term-only signal policy sends SIGTERM but refuses SIGKILL', async () => {
     const verifiedIdentity: IncumbentIdentity = {
       pid: 8642,
@@ -418,6 +490,8 @@ describe('bindWithHandoff', () => {
       readDiscovery: () => ({
         ...verifiedIdentity,
         source: 'discovery',
+        instanceId: 'term-only-incumbent',
+        token: 'token',
         shutdownToken: 'shutdown-token',
       }),
     });
@@ -441,6 +515,8 @@ describe('bindWithHandoff', () => {
       pid: 8888,
       processStartedAt: 1_111_000,
       source: 'discovery',
+      instanceId: 'discovery-incumbent',
+      token: 'token',
       shutdownToken: 'shutdown-token',
     };
     const { options, time, killCalls } = buildHarness({

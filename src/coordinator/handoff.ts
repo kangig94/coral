@@ -79,6 +79,7 @@ export interface HandoffOptions {
 }
 
 type HandoffSignal = 'SIGTERM' | 'SIGKILL';
+type HandoffSignalResult = 'sent' | 'send_failed';
 
 export type HandoffSignalRecord = {
   version: 1;
@@ -194,12 +195,31 @@ function refreshIncumbentForSignal(
       `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery changed`,
     );
   }
-  if (fresh.shutdownToken === undefined) {
-    throw new HandoffEscalationError(
-      `Manual shutdown required: refusing to signal pid=${incumbent.pid} because verified shutdown capability was unavailable`,
-    );
-  }
   return fresh;
+}
+
+function missingSignalCapabilityFields(incumbent: IncumbentIdentity): string[] {
+  const missing: string[] = [];
+  if (incumbent.instanceId === undefined || incumbent.instanceId.length === 0) {
+    missing.push('instanceId');
+  }
+  if (incumbent.token === undefined || incumbent.token.length === 0) {
+    missing.push('token');
+  }
+  if (incumbent.shutdownToken === undefined || incumbent.shutdownToken.length === 0) {
+    missing.push('shutdownToken');
+  }
+  return missing;
+}
+
+function assertSignalCapability(incumbent: IncumbentIdentity): void {
+  const missing = missingSignalCapabilityFields(incumbent);
+  if (missing.length === 0) {
+    return;
+  }
+  throw new HandoffEscalationError(
+    `Manual repair required: refusing to signal pid=${incumbent.pid} because verified coordinator discovery lacked ${missing.join(', ')}`,
+  );
 }
 
 function isSameSignalTarget(record: HandoffSignalRecord, socketPath: string, incumbent: IncumbentIdentity): boolean {
@@ -240,6 +260,67 @@ function recordSignal(opts: HandoffOptions, incumbent: IncumbentIdentity, signal
     signal,
     signaledAtMs: opts.runtime.time.now(),
   });
+}
+
+function signalErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function contenderPid(env: Runtime['env']): number | undefined {
+  try {
+    const pid = (env as { pid?: () => number }).pid?.();
+    return Number.isInteger(pid) ? pid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function logHandoffSignalAudit(
+  opts: HandoffOptions,
+  incumbent: IncumbentIdentity,
+  signal: HandoffSignal,
+  result: HandoffSignalResult,
+  error?: unknown,
+): void {
+  const currentContenderPid = contenderPid(opts.runtime.env);
+  const payload = {
+    event: 'handoff_signal',
+    signal,
+    result,
+    socketPath: opts.socketPath,
+    desired: opts.desired,
+    target: {
+      pid: incumbent.pid,
+      processStartedAt: incumbent.processStartedAt,
+      ...(incumbent.instanceId === undefined ? {} : { instanceId: incumbent.instanceId }),
+    },
+    ...(currentContenderPid === undefined ? {} : { contenderPid: currentContenderPid }),
+    signaledAtMs: opts.runtime.time.now(),
+    ...(error === undefined ? {} : { error: signalErrorMessage(error) }),
+  };
+  const message = `handoff.audit ${JSON.stringify(payload)}`;
+  if (signal === 'SIGKILL' || result === 'send_failed') {
+    backendLog.error(message);
+    return;
+  }
+  backendLog.warn(message);
+}
+
+function signalIncumbent(
+  opts: HandoffOptions,
+  incumbent: IncumbentIdentity,
+  signal: HandoffSignal,
+): HandoffSignalResult {
+  let result: HandoffSignalResult = 'sent';
+  let signalError: unknown;
+  try {
+    opts.runtime.process.kill(incumbent.pid, signal);
+  } catch (error: unknown) {
+    result = 'send_failed';
+    signalError = error;
+  }
+  logHandoffSignalAudit(opts, incumbent, signal, result, signalError);
+  return result;
 }
 
 function readEnvSignalPolicy(env: Runtime['env']): HandoffSignalPolicy | undefined {
@@ -362,15 +443,16 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
           continue;
         }
+        assertSignalCapability(incumbent);
         assertSignalCooldown(opts, incumbent, 'SIGTERM');
-        try {
-          opts.runtime.process.kill(incumbent.pid, 'SIGTERM');
-        } catch {
-          // best-effort; if signal fails the incumbent may already be gone
-        }
+        const sigtermResult = signalIncumbent(opts, incumbent, 'SIGTERM');
         recordSignal(opts, incumbent, 'SIGTERM');
         sigtermAt = opts.runtime.time.now();
-        backendLog.warn(`Incumbent did not exit within ${opts.totalBudgetMs}ms; sent SIGTERM to pid=${incumbent.pid}`);
+        backendLog.warn(
+          `Incumbent did not exit within ${opts.totalBudgetMs}ms; ${
+            sigtermResult === 'sent' ? 'sent' : 'attempted'
+          } SIGTERM to pid=${incumbent.pid}`,
+        );
       } else if (sigkillAt === null && opts.runtime.time.now() - sigtermAt >= SIGTERM_GRACE_MS) {
         if (signalPolicy === 'term-only') {
           throw new HandoffEscalationError(
@@ -386,14 +468,15 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
           continue;
         }
-        try {
-          opts.runtime.process.kill(incumbent.pid, 'SIGKILL');
-        } catch {
-          // best-effort
-        }
+        assertSignalCapability(incumbent);
+        const sigkillResult = signalIncumbent(opts, incumbent, 'SIGKILL');
         recordSignal(opts, incumbent, 'SIGKILL');
         sigkillAt = opts.runtime.time.now();
-        backendLog.error(`Incumbent did not exit after SIGTERM grace; sent SIGKILL to pid=${incumbent.pid}`);
+        backendLog.error(
+          `Incumbent did not exit after SIGTERM grace; ${
+            sigkillResult === 'sent' ? 'sent' : 'attempted'
+          } SIGKILL to pid=${incumbent.pid}`,
+        );
       } else if (sigkillAt !== null && opts.runtime.time.now() - sigkillAt >= SIGKILL_GRACE_MS) {
         throw new HandoffEscalationError(
           `Incumbent socket remained bound after SIGKILL grace for pid=${incumbent.pid}`,

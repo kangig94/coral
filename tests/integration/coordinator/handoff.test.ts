@@ -126,6 +126,8 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
           pid: 12345,
           processStartedAt: 999_999,
           source: 'discovery',
+          instanceId: 'incumbent',
+          token: 'token',
           shutdownToken: 'shutdown-token',
         }),
         totalBudgetMs: 5_000,

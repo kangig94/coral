@@ -130,6 +130,8 @@ describe('pre-PR running incumbent (R6)', () => {
         pid: 9999,
         processStartedAt: 1_111_111,
         source: 'discovery',
+        instanceId: 'incumbent',
+        token: 'token',
         shutdownToken: 'shutdown-token',
       }),
       totalBudgetMs: 5_000,
