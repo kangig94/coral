@@ -534,6 +534,11 @@ describe('execution backend server', () => {
       } catch {
         /* best effort */
       }
+      try {
+        await controller.waitForShutdown();
+      } catch {
+        /* best effort */
+      }
     }
     controller = null;
     for (const jobId of createdJobIds) {

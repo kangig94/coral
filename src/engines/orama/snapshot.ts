@@ -15,6 +15,7 @@ import {
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb, type OramaTokenizerAnalyzer } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
+import { serializeOramaSnapshotArtifactInWorker } from './snapshot-worker.js';
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;
@@ -24,7 +25,8 @@ export interface KbCachedOramaIndex {
 }
 
 export type OramaSnapshotPorts = {
-  files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'>;
+  files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'> &
+    Partial<Pick<KbProjectionArtifactFilePort, 'writeTextAtomic'>>;
 };
 
 export type OramaSnapshotLoadOptions = {
@@ -131,6 +133,36 @@ export class OramaSnapshotStore {
     identityInput: OramaProjectionIdentityInput = {},
   ): OramaProjectionMetadata {
     const snapshot = save(db) as unknown as RawData;
+    return this.persistSavedSnapshot(projected, snapshot, identityInput);
+  }
+
+  async persistAsync(
+    projected: KbCorpusSnapshot,
+    db: KbOramaDb,
+    identityInput: OramaProjectionIdentityInput = {},
+  ): Promise<OramaProjectionMetadata> {
+    const snapshot = save(db) as unknown as RawData;
+    if (this.ports.files.writeTextAtomic === undefined) {
+      return this.persistSavedSnapshot(projected, snapshot, identityInput);
+    }
+
+    const artifact = await serializeOramaSnapshotArtifactInWorker(snapshot);
+    const metadata = createOramaProjectionMetadata(
+      projected,
+      artifact.artifactDigest,
+      artifact.entryManifest,
+      identityInput,
+    );
+    this.ports.files.writeTextAtomic(oramaIndexPath(this.runtimeDir), artifact.artifactRaw);
+    this.ports.files.writeJsonAtomic(oramaIndexMetadataPath(this.runtimeDir), metadata);
+    return metadata;
+  }
+
+  private persistSavedSnapshot(
+    projected: KbCorpusSnapshot,
+    snapshot: RawData,
+    identityInput: OramaProjectionIdentityInput,
+  ): OramaProjectionMetadata {
     const artifactPath = oramaIndexPath(this.runtimeDir);
     this.ports.files.writeJsonAtomic(artifactPath, snapshot);
     const artifactRaw = this.ports.files.readFileSync(artifactPath, 'utf-8');

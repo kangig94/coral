@@ -7,6 +7,7 @@ import { sha256Hex } from '../../infra/hash.js';
 import { isRecord } from '../../infra/json.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { extractTarGzEntriesInWorker } from '../../infra/archive-extraction-worker.js';
 import {
   KIWI_INSTALL_ONLY_ID,
   KIWI_MODEL_ARCHIVE_SIZE_BYTES,
@@ -25,6 +26,8 @@ const KIWI_INSTALL_LOCK_TIMEOUT_MS = 250;
 const TAR_BLOCK_SIZE = 512;
 const TAR_FILE_TYPES = new Set(['0', '']);
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
+export const KIWI_MODEL_TAR_MAX_BYTES = 512 * 1024 * 1024;
+const KIWI_MODEL_EXTRACTION_WORKER_TIMEOUT_MS = 60_000;
 
 export type KiwiModelArtifactManifest = {
   readonly packageId: typeof KIWI_INSTALL_ONLY_ID;
@@ -202,8 +205,42 @@ function tarFieldToNumber(buffer: Buffer): number {
   return raw === '' ? 0 : Number.parseInt(raw, 8);
 }
 
-function extractKiwiModelFiles(archiveBuffer: Buffer): ReadonlyMap<KiwiModelFileName, Buffer> {
-  const tarBuffer = gunzipSync(archiveBuffer);
+function gunzipKiwiModelTar(archiveBuffer: Buffer, maxTarBytes: number): Buffer {
+  try {
+    return gunzipSync(archiveBuffer, { maxOutputLength: maxTarBytes });
+  } catch (error: unknown) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new Error(`Kiwi model archive exceeds maximum decompressed size (${maxTarBytes} bytes)`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+
+function readTarEntrySize(header: Buffer, fullName: string): number {
+  const size = tarFieldToNumber(header.subarray(124, 136));
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error(`Kiwi model archive entry has invalid size: ${fullName || '<unnamed>'}`);
+  }
+  return size;
+}
+
+function tarEntryNextOffset(dataOffset: number, size: number, tarLength: number, fullName: string): number {
+  const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
+  const dataEnd = dataOffset + size;
+  const nextOffset = dataOffset + paddedSize;
+  if (dataEnd > tarLength || nextOffset > tarLength) {
+    throw new Error(`Kiwi model archive entry exceeds archive bounds: ${fullName || '<unnamed>'}`);
+  }
+  return nextOffset;
+}
+
+export function extractKiwiModelFiles(
+  archiveBuffer: Buffer,
+  maxTarBytes = KIWI_MODEL_TAR_MAX_BYTES,
+): ReadonlyMap<KiwiModelFileName, Buffer> {
+  const tarBuffer = gunzipKiwiModelTar(archiveBuffer, maxTarBytes);
   let offset = 0;
   const required = new Set<string>(KIWI_MODEL_FILES);
   const files = new Map<KiwiModelFileName, Buffer>();
@@ -217,9 +254,10 @@ function extractKiwiModelFiles(archiveBuffer: Buffer): ReadonlyMap<KiwiModelFile
     const name = tarFieldToString(header.subarray(0, 100));
     const prefix = tarFieldToString(header.subarray(345, 500));
     const fullName = prefix ? `${prefix}/${name}` : name;
-    const size = tarFieldToNumber(header.subarray(124, 136));
+    const size = readTarEntrySize(header, fullName);
     const typeFlag = header[156] === 0 ? '' : String.fromCharCode(header[156]);
     offset += TAR_BLOCK_SIZE;
+    const nextOffset = tarEntryNextOffset(offset, size, tarBuffer.length, fullName);
 
     const data = tarBuffer.subarray(offset, offset + size);
     if (TAR_FILE_TYPES.has(typeFlag) && fullName.startsWith(KIWI_MODEL_TAR_PREFIX)) {
@@ -229,7 +267,7 @@ function extractKiwiModelFiles(archiveBuffer: Buffer): ReadonlyMap<KiwiModelFile
       }
     }
 
-    offset += Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
+    offset = nextOffset;
   }
 
   const missing = KIWI_MODEL_FILES.filter((fileName) => !files.has(fileName));
@@ -237,6 +275,35 @@ function extractKiwiModelFiles(archiveBuffer: Buffer): ReadonlyMap<KiwiModelFile
     throw new Error(`Kiwi model archive is missing required files: ${missing.join(', ')}`);
   }
 
+  return files;
+}
+
+export async function extractKiwiModelFilesInWorker(
+  archiveBuffer: Buffer,
+  maxTarBytes = KIWI_MODEL_TAR_MAX_BYTES,
+): Promise<ReadonlyMap<KiwiModelFileName, Buffer>> {
+  const extracted = await extractTarGzEntriesInWorker(
+    {
+      archive: archiveBuffer,
+      archiveLabel: 'Kiwi model archive',
+      maxTarBytes,
+      entries: KIWI_MODEL_FILES.map((fileName) => ({
+        key: fileName,
+        exactPath: `${KIWI_MODEL_TAR_PREFIX}${fileName}`,
+      })),
+      missingMessage: `Kiwi model archive is missing required files: ${KIWI_MODEL_FILES.join(', ')}`,
+    },
+    { timeoutMs: KIWI_MODEL_EXTRACTION_WORKER_TIMEOUT_MS },
+  );
+
+  const files = new Map<KiwiModelFileName, Buffer>();
+  for (const fileName of KIWI_MODEL_FILES) {
+    const content = extracted.get(fileName);
+    if (content === undefined) {
+      throw new Error(`Kiwi model file ${fileName} was not extracted.`);
+    }
+    files.set(fileName, content);
+  }
   return files;
 }
 
@@ -298,7 +365,7 @@ async function installDownloadedModel(
     throw new Error(`Kiwi model archive digest mismatch: expected ${KIWI_MODEL_SHA256}, got ${digest}`);
   }
 
-  const modelFiles = extractKiwiModelFiles(archive);
+  const modelFiles = await extractKiwiModelFilesInWorker(archive);
   writeModelFilesAtomic(runtime, modelFiles);
   return {
     status: opts.update === true ? 'updated' : 'installed',

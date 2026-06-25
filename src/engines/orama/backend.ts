@@ -1073,7 +1073,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       this.searchPort.probeFreshness();
       return;
     }
-    const metadata = this.snapshotStore.persist(snapshot, preparedProjection.db, identityInput);
+    const metadata = await this.snapshotStore.persistAsync(snapshot, preparedProjection.db, identityInput);
     this.snapshotStore.install({
       db: preparedProjection.db,
       tokenizer: preparedProjection.tokenizer,
@@ -1123,7 +1123,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       this.searchPort.probeFreshness();
       return;
     }
-    const metadata = this.snapshotStore.persist(snapshot, loaded.db, identityInput);
+    const metadata = await this.snapshotStore.persistAsync(snapshot, loaded.db, identityInput);
     this.snapshotStore.install({
       db: loaded.db,
       tokenizer: loaded.tokenizer,

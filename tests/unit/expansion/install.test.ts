@@ -7,7 +7,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as DownloadModule from '#src/runtime/download.js';
-import { NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES } from '#src/engines/needle/install.js';
+import {
+  extractTarEntry,
+  extractTarEntryInWorker,
+  NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES,
+  NEEDLE_PREBUILD_TAR_MAX_BYTES,
+} from '#src/engines/needle/install.js';
+import { NEEDLE_ADDON_FILENAME } from '#src/engines/needle/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { enginePaths } from '#src/infra/path/engine.js';
@@ -95,7 +101,7 @@ function writeTarOctal(header: Buffer, value: number, offset: number, length: nu
 
 function createPrebuildArchive(content: Buffer): Buffer {
   const header = Buffer.alloc(512, 0);
-  writeTarString(header, 'coral-needle.node', 0, 100);
+  writeTarString(header, NEEDLE_ADDON_FILENAME, 0, 100);
   writeTarOctal(header, 0o644, 100, 8);
   writeTarOctal(header, 0, 108, 8);
   writeTarOctal(header, 0, 116, 8);
@@ -116,7 +122,62 @@ function createPrebuildArchive(content: Buffer): Buffer {
   return gzipSync(Buffer.concat([header, content, padding, Buffer.alloc(1024, 0)]));
 }
 
+function createMalformedPrebuildArchive(declaredSize: number): Buffer {
+  const header = Buffer.alloc(512, 0);
+  writeTarString(header, NEEDLE_ADDON_FILENAME, 0, 100);
+  writeTarOctal(header, 0o644, 100, 8);
+  writeTarOctal(header, 0, 108, 8);
+  writeTarOctal(header, 0, 116, 8);
+  writeTarOctal(header, declaredSize, 124, 12);
+  writeTarOctal(header, Math.floor(Date.now() / 1000), 136, 12);
+  header.fill(0x20, 148, 156);
+  header[156] = '0'.charCodeAt(0);
+  writeTarString(header, 'ustar', 257, 6);
+  writeTarString(header, '00', 263, 2);
+
+  let checksum = 0;
+  for (const byte of header) {
+    checksum += byte;
+  }
+  writeTarOctal(header, checksum, 148, 8);
+
+  return gzipSync(Buffer.concat([header, Buffer.alloc(1024, 0)]));
+}
+
 describe('installExpansion', () => {
+  it('keeps needle prebuild archive caps bounded', () => {
+    expect(NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES).toBe(64 * 1024 * 1024);
+    expect(NEEDLE_PREBUILD_TAR_MAX_BYTES).toBe(128 * 1024 * 1024);
+  });
+
+  it('rejects needle prebuild archives above the decompressed byte cap', () => {
+    const archive = gzipSync(Buffer.alloc(2048, 0));
+
+    expect(() => extractTarEntry(archive, NEEDLE_ADDON_FILENAME, 1024)).toThrow(
+      /Needle prebuild archive exceeds maximum decompressed size \(1024 bytes\)/,
+    );
+  });
+
+  it('rejects needle prebuild archives above the worker decompressed byte cap', async () => {
+    const archive = gzipSync(Buffer.alloc(2048, 0));
+
+    await expect(extractTarEntryInWorker(archive, NEEDLE_ADDON_FILENAME, 1024)).rejects.toThrow(
+      /Needle prebuild archive exceeds maximum decompressed size \(1024 bytes\)/,
+    );
+  });
+
+  it('rejects needle prebuild tar entries whose declared size exceeds the archive bounds', () => {
+    expect(() => extractTarEntry(createMalformedPrebuildArchive(4096), NEEDLE_ADDON_FILENAME)).toThrow(
+      /Needle prebuild archive entry exceeds archive bounds: coral-needle\.node/,
+    );
+  });
+
+  it('rejects needle prebuild tar entries whose declared size exceeds worker archive bounds', async () => {
+    await expect(extractTarEntryInWorker(createMalformedPrebuildArchive(4096), NEEDLE_ADDON_FILENAME)).rejects.toThrow(
+      /Needle prebuild archive entry exceeds archive bounds: coral-needle\.node/,
+    );
+  });
+
   it('installs needle into the expansion path and writes install metadata', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture, { platform: 'linux', arch: 'arm64' });

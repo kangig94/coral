@@ -16,6 +16,7 @@ import { acquireDirectoryLock, isDirectoryLockTimeoutError } from '#src/infra/fs
 import { readInstallMeta, writeInstallMeta } from './install-meta.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { extractTarGzEntriesInWorker } from '../../infra/archive-extraction-worker.js';
 import { NEEDLE_ADDON_FILENAME, needleAddonPath } from './paths.js';
 
 const NEEDLE_ARCH_MAP: Record<string, string> = {
@@ -25,8 +26,11 @@ const NEEDLE_ARCH_MAP: Record<string, string> = {
 const NEEDLE_INSTALL_LOCK_TIMEOUT_MS = 250;
 const NEEDLE_GITHUB_REPO = 'kangig94/coral-needle';
 export const NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
+export const NEEDLE_PREBUILD_TAR_MAX_BYTES = 128 * 1024 * 1024;
 const NEEDLE_POST_INSTALL = ['register_expansion'] as const;
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
+const TAR_BLOCK_SIZE = 512;
+const NEEDLE_PREBUILD_EXTRACTION_WORKER_TIMEOUT_MS = 30_000;
 
 type InstallMethod = 'prebuild' | 'source-build';
 type InstallError = {
@@ -159,25 +163,83 @@ function tarFieldToNumber(buffer: Buffer): number {
   return raw === '' ? 0 : Number.parseInt(raw, 8);
 }
 
-function extractTarEntry(archiveBuffer: Buffer, expectedName: string): Buffer {
-  const tarBuffer = gunzipSync(archiveBuffer);
+function gunzipNeedlePrebuildTar(archiveBuffer: Buffer, maxTarBytes: number): Buffer {
+  try {
+    return gunzipSync(archiveBuffer, { maxOutputLength: maxTarBytes });
+  } catch (error: unknown) {
+    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
+      throw new Error(`Needle prebuild archive exceeds maximum decompressed size (${maxTarBytes} bytes)`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+}
+
+function readTarEntrySize(header: Buffer, fullName: string): number {
+  const size = tarFieldToNumber(header.subarray(124, 136));
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error(`Needle prebuild archive entry has invalid size: ${fullName || '<unnamed>'}`);
+  }
+  return size;
+}
+
+function tarEntryNextOffset(dataOffset: number, size: number, tarLength: number, fullName: string): number {
+  const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
+  const dataEnd = dataOffset + size;
+  const nextOffset = dataOffset + paddedSize;
+  if (dataEnd > tarLength || nextOffset > tarLength) {
+    throw new Error(`Needle prebuild archive entry exceeds archive bounds: ${fullName || '<unnamed>'}`);
+  }
+  return nextOffset;
+}
+
+export function extractTarEntry(
+  archiveBuffer: Buffer,
+  expectedName: string,
+  maxTarBytes = NEEDLE_PREBUILD_TAR_MAX_BYTES,
+): Buffer {
+  const tarBuffer = gunzipNeedlePrebuildTar(archiveBuffer, maxTarBytes);
   let offset = 0;
-  while (offset + 512 <= tarBuffer.length) {
-    const header = tarBuffer.subarray(offset, offset + 512);
+  while (offset + TAR_BLOCK_SIZE <= tarBuffer.length) {
+    const header = tarBuffer.subarray(offset, offset + TAR_BLOCK_SIZE);
     if (header.every((byte) => byte === 0)) break;
     const name = tarFieldToString(header.subarray(0, 100));
     const prefix = tarFieldToString(header.subarray(345, 500));
     const fullName = prefix ? `${prefix}/${name}` : name;
-    const size = tarFieldToNumber(header.subarray(124, 136));
+    const size = readTarEntrySize(header, fullName);
     const typeFlag = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
-    offset += 512;
+    offset += TAR_BLOCK_SIZE;
+    const nextOffset = tarEntryNextOffset(offset, size, tarBuffer.length, fullName);
     const data = tarBuffer.subarray(offset, offset + size);
     if ((typeFlag === '0' || typeFlag === '') && (fullName === expectedName || fullName.endsWith(`/${expectedName}`))) {
       return Buffer.from(data);
     }
-    offset += Math.ceil(size / 512) * 512;
+    offset = nextOffset;
   }
   throw new Error(`${expectedName} was not found in the downloaded archive.`);
+}
+
+export async function extractTarEntryInWorker(
+  archiveBuffer: Buffer,
+  expectedName: string,
+  maxTarBytes = NEEDLE_PREBUILD_TAR_MAX_BYTES,
+): Promise<Buffer> {
+  const extracted = await extractTarGzEntriesInWorker(
+    {
+      archive: archiveBuffer,
+      archiveLabel: 'Needle prebuild archive',
+      maxTarBytes,
+      entries: [{ key: expectedName, suffix: expectedName }],
+      missingMessage: `${expectedName} was not found in the downloaded archive.`,
+    },
+    { timeoutMs: NEEDLE_PREBUILD_EXTRACTION_WORKER_TIMEOUT_MS },
+  );
+  const content = extracted.get(expectedName);
+  if (content === undefined) {
+    throw new Error(`${expectedName} was not found in the downloaded archive.`);
+  }
+  return content;
 }
 
 function writeAddonAtomic(ctx: NeedleInstallContext, dest: string, content: Buffer): void {
@@ -250,7 +312,7 @@ async function installNeedlePrebuild(ctx: NeedleInstallContext): Promise<Buffer>
   const assetName = `coral-needle-${releaseTag}-${needlePlatformKey(ctx.runtime.env.platform(), ctx.runtime.env.arch())}.tar.gz`;
   const url = `https://github.com/${NEEDLE_GITHUB_REPO}/releases/download/${releaseTag}/${assetName}`;
   logInstallEvent(ctx, 'expansion.install.download', `Downloading ${url}`);
-  return extractTarEntry(
+  return await extractTarEntryInWorker(
     await downloadBuffer(ctx.runtime, url, { maxBytes: NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES }),
     NEEDLE_ADDON_FILENAME,
   );

@@ -20,6 +20,22 @@ export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = USER_SOURCE_IMPORT_MAX_BYTE
 export const SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES = 128 * 1024 * 1024;
 export const SOURCE_IMPORT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 export const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
+export const SOURCE_IMPORT_MARKER_DEVICE_ENV = 'CORAL_KB_IMPORT_MARKER_DEVICE';
+export const SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV = 'CORAL_KB_IMPORT_MARKER_INSTALL_TIMEOUT_MS';
+export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS';
+export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS';
+export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS';
+export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS';
+export const SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
+export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS = 10 * 60 * 1000;
+export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS = 20 * 1000;
+export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS = 45 * 60 * 1000;
+export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS = 3 * 60 * 1000;
+export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS = 5 * 1000;
+export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS = 15 * 60 * 1000;
+export const SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS = 2_000;
+
+const BYTES_PER_MIB = 1024 * 1024;
 
 const HTML_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -88,7 +104,16 @@ export interface Converter {
   convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>;
 }
 
-function commandEnv(runtime: SourceImportRuntime): Record<string, string> {
+type MarkerDevice = 'auto' | 'cpu' | 'cuda' | 'mps';
+type MarkerTimeoutProfile = 'cpu' | 'cuda' | 'mps';
+
+type SourceImportCommandOptions = {
+  readonly timeoutMs?: number;
+  readonly envAdditions?: Record<string, string>;
+  readonly timeoutRemediation?: string;
+};
+
+function commandEnv(runtime: SourceImportRuntime, envAdditions: Record<string, string> = {}): Record<string, string> {
   const env = { ...runtime.env.fullSnapshot() };
   const homeDir = runtime.env.homedir();
   const localBinDir = homeDir === undefined ? undefined : join(homeDir, '.local', 'bin');
@@ -100,6 +125,192 @@ function commandEnv(runtime: SourceImportRuntime): Record<string, string> {
   return {
     ...env,
     PATH: pathEnv,
+    ...envAdditions,
+  };
+}
+
+function readPositiveIntegerEnv(
+  env: Readonly<Record<string, string>>,
+  key: string,
+  fallback: number,
+): number {
+  const raw = env[key];
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = Number(raw.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function configuredMarkerDevice(env: Readonly<Record<string, string>>): MarkerDevice {
+  const normalized = env[SOURCE_IMPORT_MARKER_DEVICE_ENV]?.trim().toLowerCase();
+  if (normalized === 'cpu' || normalized === 'cuda' || normalized === 'auto') {
+    return normalized;
+  }
+  if (normalized === 'mps' || normalized === 'metal') {
+    return 'mps';
+  }
+  return 'auto';
+}
+
+function cudaVisibleDevicesAllowsGpu(value: string | undefined): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return normalized.length > 0 && normalized !== '-1' && normalized !== 'none' && normalized !== 'void';
+}
+
+async function markerTimeoutProfile(
+  ctx: SourceImportContext,
+  env: Readonly<Record<string, string>>,
+  device: MarkerDevice,
+): Promise<MarkerTimeoutProfile> {
+  if (device === 'cpu' || device === 'cuda' || device === 'mps') {
+    return device;
+  }
+  const torchDevice = env.TORCH_DEVICE?.trim().toLowerCase();
+  if (torchDevice === 'cpu') {
+    return 'cpu';
+  }
+  if (torchDevice === 'cuda' || torchDevice?.startsWith('cuda:')) {
+    return 'cuda';
+  }
+  if (torchDevice === 'mps' || torchDevice === 'metal') {
+    return 'mps';
+  }
+  if (cudaVisibleDevicesAllowsGpu(env.CUDA_VISIBLE_DEVICES)) {
+    return 'cuda';
+  }
+  if (env.CUDA_VISIBLE_DEVICES === undefined && (await detectNvidiaGpu(ctx))) {
+    return 'cuda';
+  }
+  return (await detectAppleMetalGpu(ctx)) ? 'mps' : 'cpu';
+}
+
+function markerDeviceEnvAdditions(
+  env: Readonly<Record<string, string>>,
+  profile: MarkerTimeoutProfile,
+): Record<string, string> {
+  if (profile === 'cpu') {
+    return {
+      TORCH_DEVICE: 'cpu',
+      CUDA_VISIBLE_DEVICES: '',
+    };
+  }
+  if (profile === 'mps') {
+    return {
+      TORCH_DEVICE: 'mps',
+    };
+  }
+  return {
+    TORCH_DEVICE: 'cuda',
+    CUDA_VISIBLE_DEVICES: cudaVisibleDevicesAllowsGpu(env.CUDA_VISIBLE_DEVICES) ? env.CUDA_VISIBLE_DEVICES : '0',
+    PYTORCH_CUDA_ALLOC_CONF: env.PYTORCH_CUDA_ALLOC_CONF ?? 'expandable_segments:True',
+  };
+}
+
+function markerTimeoutMsForProfile(
+  env: Readonly<Record<string, string>>,
+  profile: MarkerTimeoutProfile,
+  fileSizeBytes: number,
+): number {
+  const sizeMiB = Math.max(1, Math.ceil(fileSizeBytes / BYTES_PER_MIB));
+  if (profile !== 'cpu') {
+    const perMiBMs = readPositiveIntegerEnv(
+      env,
+      SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS_ENV,
+      SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS,
+    );
+    const maxMs = readPositiveIntegerEnv(
+      env,
+      SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS_ENV,
+      SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS,
+    );
+    return Math.min(maxMs, SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS + sizeMiB * perMiBMs);
+  }
+
+  const perMiBMs = readPositiveIntegerEnv(
+    env,
+    SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS_ENV,
+    SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS,
+  );
+  const maxMs = readPositiveIntegerEnv(
+    env,
+    SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV,
+    SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS,
+  );
+  return Math.min(maxMs, SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS + sizeMiB * perMiBMs);
+}
+
+function formatDuration(ms: number): string {
+  const seconds = Math.ceil(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes === 0) {
+    return `${remainingSeconds}s`;
+  }
+  return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m${remainingSeconds}s`;
+}
+
+function markerTimeoutRemediation(profile: MarkerTimeoutProfile): string {
+  const timeoutMaxEnv =
+    profile === 'cpu' ? SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV : SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS_ENV;
+  return [
+    'For large or scanned PDFs, retry as an async import, split the file,',
+    `or increase ${timeoutMaxEnv}.`,
+    `Set ${SOURCE_IMPORT_MARKER_DEVICE_ENV}=cuda or ${SOURCE_IMPORT_MARKER_DEVICE_ENV}=mps before starting the Coral daemon to force GPU conversion when enough VRAM is available.`,
+  ].join(' ');
+}
+
+async function detectNvidiaGpu(ctx: SourceImportContext): Promise<boolean> {
+  try {
+    const result = await ctx.runtime.process.exec(
+      'nvidia-smi',
+      ['--query-gpu=index', '--format=csv,noheader,nounits'],
+      {
+        encoding: 'utf-8',
+        env: commandEnv(ctx.runtime),
+        inheritEnv: false,
+        maxBuffer: 1024 * 1024,
+        timeout: SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS,
+      },
+    );
+    return result.status === 0 && result.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function detectAppleMetalGpu(ctx: SourceImportContext): Promise<boolean> {
+  if (ctx.runtime.env.platform() !== 'darwin') {
+    return false;
+  }
+  try {
+    const result = await ctx.runtime.process.exec('sysctl', ['-n', 'hw.optional.arm64'], {
+      encoding: 'utf-8',
+      env: commandEnv(ctx.runtime),
+      inheritEnv: false,
+      maxBuffer: 1024 * 1024,
+      timeout: SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS,
+    });
+    return result.status === 0 && result.stdout.trim() === '1';
+  } catch {
+    return false;
+  }
+}
+
+async function resolveMarkerCommandOptions(
+  ctx: SourceImportContext,
+  fileSizeBytes: number,
+): Promise<Required<Pick<SourceImportCommandOptions, 'timeoutMs' | 'envAdditions' | 'timeoutRemediation'>>> {
+  const env = ctx.runtime.env.fullSnapshot();
+  const device = configuredMarkerDevice(env);
+  const profile = await markerTimeoutProfile(ctx, env, device);
+  return {
+    timeoutMs: markerTimeoutMsForProfile(env, profile, fileSizeBytes),
+    envAdditions: markerDeviceEnvAdditions(env, profile),
+    timeoutRemediation: markerTimeoutRemediation(profile),
   };
 }
 
@@ -137,16 +348,22 @@ async function runCommand(
   args: string[],
   displayName: string,
   ctx: SourceImportContext,
+  options: SourceImportCommandOptions = {},
 ): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? SOURCE_IMPORT_COMMAND_TIMEOUT_MS;
   const result = await ctx.runtime.process.exec(command, args, {
     encoding: 'utf-8',
-    env: commandEnv(ctx.runtime),
+    env: commandEnv(ctx.runtime, options.envAdditions),
     inheritEnv: false,
     maxBuffer: 20 * 1024 * 1024,
-    timeout: SOURCE_IMPORT_COMMAND_TIMEOUT_MS,
+    timeout: timeoutMs,
   });
   if (result.status === 0) {
     return;
+  }
+  if (result.status === null && result.error?.message.startsWith('timeout:')) {
+    const remediation = options.timeoutRemediation === undefined ? '' : ` ${options.timeoutRemediation}`;
+    throw new Error(`${displayName} timed out after ${formatDuration(timeoutMs)}.${remediation}`);
   }
 
   const outputLines: string[] = [];
@@ -226,7 +443,7 @@ function assertSourceImportFileSize(
   limitBytes: number | null,
   label: string,
   limitExceededHint?: string,
-): void {
+): number {
   const stat = storage.statSync(filePath);
   if (!stat.isFile()) {
     throw new Error(`${label} must be a file`);
@@ -235,6 +452,7 @@ function assertSourceImportFileSize(
     const message = `${label} exceeds maximum source import size (${stat.size} bytes > ${limitBytes} bytes)`;
     throw new Error(limitExceededHint === undefined ? message : `${message}. ${limitExceededHint}`);
   }
+  return stat.size;
 }
 
 async function readUtf8FileWithinSourceImportLimit(
@@ -663,11 +881,20 @@ export class PdfMarkerConverter implements Converter {
     }
 
     log('Installing Python 3.12 + Marker...');
+    const installEnv = ctx.runtime.env.fullSnapshot();
     await runCommand(
       uvCommand,
       ['tool', 'install', 'marker-pdf', '--python', '3.12'],
       'uv tool install marker-pdf',
       ctx,
+      {
+        timeoutMs: readPositiveIntegerEnv(
+          installEnv,
+          SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV,
+          SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS,
+        ),
+        timeoutRemediation: `Check network access and retry, or increase ${SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV}.`,
+      },
     );
 
     if (!(await commandExists('marker_single', ctx))) {
@@ -676,7 +903,12 @@ export class PdfMarkerConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
-    assertSourceImportFileSize(filePath, ctx.runtime.storage, ctx.fileSizeLimitBytes, 'KB source import PDF file');
+    const fileSizeBytes = assertSourceImportFileSize(
+      filePath,
+      ctx.runtime.storage,
+      ctx.fileSizeLimitBytes,
+      'KB source import PDF file',
+    );
     const markerCommand = await resolveCommandPath('marker_single', ctx);
     if (!markerCommand) {
       throw new Error('marker_single is not available');
@@ -685,7 +917,14 @@ export class PdfMarkerConverter implements Converter {
     const outputDir = createPdfOutputDir(ctx);
 
     try {
-      await runCommand(markerCommand, [filePath, '--output_dir', outputDir], 'marker_single', ctx);
+      const commandOptions = await resolveMarkerCommandOptions(ctx, fileSizeBytes);
+      await runCommand(
+        markerCommand,
+        [filePath, '--output_dir', outputDir, '--disable_tqdm'],
+        'marker_single',
+        ctx,
+        commandOptions,
+      );
       const markdownPath = findFirstMarkdownFile(outputDir, ctx.runtime.storage);
       if (!markdownPath) {
         throw new Error('marker_single did not produce a markdown file');
