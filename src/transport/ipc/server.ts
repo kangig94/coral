@@ -35,6 +35,14 @@ const SHUTDOWN_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
   message: 'Manual shutdown required: shutdown capability missing or invalid',
 };
+const KB_RESTART_UNAUTHORIZED_RESPONSE = {
+  code: 'shutdown_unauthorized',
+  message: 'Manual KB child restart requires shutdown capability',
+};
+const KB_RESTART_UNAVAILABLE_RESPONSE = {
+  code: 'not_implemented',
+  message: 'KB child supervisor is not available',
+};
 export const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
 export const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
 export const IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES = 32 * 1024 * 1024;
@@ -489,6 +497,73 @@ async function dispatchFrame(
 
   const lifecycleState =
     rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
+  if (request.method === 'transport.kb.restart') {
+    const shutdownToken = readShutdownToken(request.params);
+    if (shutdownToken === null || !tokensEqual(shutdownToken, rpcPorts.identity.shutdownToken)) {
+      await writeEnvelope(
+        socket,
+        requestErrorResponse(request.id, KB_RESTART_UNAUTHORIZED_RESPONSE.message, KB_RESTART_UNAUTHORIZED_RESPONSE),
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      socket.end();
+      return;
+    }
+    if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
+      await writeEnvelope(
+        socket,
+        {
+          kind: 'response',
+          id: request.id,
+          result: BACKEND_SHUTTING_DOWN_RESPONSE,
+        },
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      socket.end();
+      return;
+    }
+    if (!rpcPorts.admin.restartKbChild) {
+      await writeEnvelope(
+        socket,
+        requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      socket.end();
+      return;
+    }
+    writeAuditEvent(
+      'admin_kb_child_restart_requested',
+      {
+        transport: 'ipc',
+        reason: 'admin',
+        instanceId: rpcPorts.identity.instanceId,
+      },
+      'warn',
+    );
+    try {
+      const kbChild = await rpcPorts.admin.restartKbChild('ipc-admin');
+      await writeEnvelope(
+        socket,
+        {
+          kind: 'response',
+          id: request.id,
+          result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbChild },
+        },
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      socket.end();
+    } catch (error: unknown) {
+      rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
+      if (!socket.destroyed && !socket.writableEnded) {
+        const response = buildTransportErrorResponse(error);
+        await writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data), {
+          drainTimeoutMs: options.writeDrainTimeoutMs,
+        });
+        socket.end();
+      }
+    }
+    return;
+  }
+
   if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
     await writeEnvelope(
       socket,

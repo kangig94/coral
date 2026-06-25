@@ -283,6 +283,90 @@ describe('ipc server', () => {
     }
   });
 
+  it('restarts the KB child supervisor through the shutdown-token IPC method', async () => {
+    const childHealth = {
+      enabled: true as const,
+      phase: 'online' as const,
+      generation: 2,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const ports = createPorts();
+    ports.admin.restartKbChild = vi.fn(async () => childHealth);
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        requestIpcMethod(socketPath, 'transport.kb.restart', { shutdownToken: 'shutdown-token' }),
+      ).resolves.toEqual({
+        status: 'ok',
+        instanceId: 'test-instance',
+        kbChild: childHealth,
+      });
+      expect(ports.admin.restartKbChild).toHaveBeenCalledWith('ipc-admin');
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_kb_child_restart_requested"'),
+        ),
+      ).toBe(true);
+      expect(messages.some((message) => message.includes('"transport":"ipc"'))).toBe(true);
+    } finally {
+      await closeIpcServer(listener);
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects transport.kb.restart without the shutdown capability', async () => {
+    const ports = createPorts();
+    ports.admin.restartKbChild = vi.fn(async () => ({
+      enabled: true as const,
+      phase: 'online' as const,
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    }));
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(requestIpcMethod(socketPath, 'transport.kb.restart', {})).rejects.toThrow(
+        'Manual KB child restart requires shutdown capability',
+      );
+      expect(ports.admin.restartKbChild).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('returns a JSON-RPC error when transport.kb.restart fails', async () => {
+    const ports = createPorts();
+    ports.admin.restartKbChild = vi.fn(async () => {
+      throw new Error('restart failed');
+    });
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        requestIpcMethod(socketPath, 'transport.kb.restart', { shutdownToken: 'shutdown-token' }),
+      ).rejects.toThrow('Internal error');
+      expect(ports.admin.restartKbChild).toHaveBeenCalledWith('ipc-admin');
+      expect(hasLogLine(ports, 'IPC request error (transport.kb.restart): Error: restart failed')).toBe(true);
+    } finally {
+      await closeIpcServer(listener);
+      warnSpy.mockRestore();
+    }
+  });
+
   it('rejects IPC connections above the configured socket cap', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports, {
