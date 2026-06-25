@@ -918,7 +918,7 @@ describe('execution backend server', () => {
     expect(kbChildSupervisor.probe).not.toHaveBeenCalled();
   });
 
-  it('delegates read-only KB RPCs to the KB child when explicitly enabled', async () => {
+  it('delegates read-only KB RPCs to an enabled KB child by default', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -941,10 +941,7 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({
-      delegateKbReadsToChild: true,
-      kbChildSupervisor,
-    });
+    const backend = await startBackendServer({ kbChildSupervisor });
 
     const response = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -969,6 +966,41 @@ describe('execution backend server', () => {
     expect(readKb).toHaveBeenCalledTimes(3);
     expect(readKb).toHaveBeenNthCalledWith(2, { method: 'listStaleCommunities' });
     expect(readKb).toHaveBeenNthCalledWith(3, { method: 'readCommunitySummaryInput', slug: 'community-slug' });
+  });
+
+  it('keeps read-only KB RPCs in the parent when child delegation is disabled', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const readKb = vi.fn(async (request: unknown) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-child', request },
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({
+      delegateKbReadsToChild: false,
+      kbChildSupervisor,
+    });
+
+    await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(readKb).not.toHaveBeenCalled();
   });
 
   it('returns KB unavailable when read delegation is enabled without a child supervisor', async () => {

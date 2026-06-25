@@ -113,8 +113,14 @@ const EVENT_STREAM_CAPACITY_RESPONSE = {
   message: 'Too many event stream connections',
 };
 
-function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions): boolean {
-  return options.delegateKbReadsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '1';
+function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSupervisor: KbChildSupervisor): boolean {
+  if (options.delegateKbReadsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '0') {
+    return false;
+  }
+  if (options.delegateKbReadsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '1') {
+    return true;
+  }
+  return kbChildSupervisor.read().enabled;
 }
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -575,7 +581,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
-  const effectiveRpcPorts: RpcPorts = shouldDelegateKbReadsToChild(options)
+  const effectiveRpcPorts: RpcPorts = shouldDelegateKbReadsToChild(options, kbChildSupervisor)
     ? { ...rpcPorts, kb: createKbChildReadPort(rpcPorts.kb, kbChildSupervisor) }
     : rpcPorts;
 

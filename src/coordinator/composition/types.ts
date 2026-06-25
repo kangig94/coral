@@ -93,9 +93,10 @@ export type CoordinatorCoreOptions = {
   waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
   kbChildSupervisor?: KbChildSupervisor;
   /**
-   * Opt-in bridge for the staged KB child-daemon migration. When enabled, only
-   * read-only KB RPCs are delegated to the child; mutations/import/reindex stay
-   * in the parent until the child owns the full KB runtime.
+   * Staged KB child-daemon migration switch. Read-only KB RPCs delegate to an
+   * enabled child by default; set false (or CORAL_KB_CHILD_READS=0) to keep
+   * reads in the parent. Mutations/import/reindex stay in the parent until the
+   * child owns the full KB runtime.
    */
   delegateKbReadsToChild?: boolean;
   /**
