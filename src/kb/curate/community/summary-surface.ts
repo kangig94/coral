@@ -28,6 +28,10 @@ import {
 
 export type StaleCommunity = { slug: string; level: number };
 export type CommunitySummaryInput = { slug: string; level: number; kind: 'leaf' | 'parent'; input: string };
+export type CommunitySummaryReadRuntime = Pick<
+  KbRuntime,
+  'communitiesDir' | 'notePath' | 'sourcePath' | 'storagePort' | 'readIndexOrEmpty'
+>;
 
 function bySlug(generated: ExistingGeneratedCommunity[]): Map<string, ExistingGeneratedCommunity> {
   const map = new Map<string, ExistingGeneratedCommunity>();
@@ -43,7 +47,7 @@ function bySlug(generated: ExistingGeneratedCommunity[]): Map<string, ExistingGe
  * ascending) so a parent is only re-summarized after its children are fresh.
  * A converged corpus returns an empty list — the agent then has nothing to do.
  */
-export function listStaleCommunities(kb: KbRuntime): StaleCommunity[] {
+export function listStaleCommunities(kb: CommunitySummaryReadRuntime): StaleCommunity[] {
   const { generated } = loadExistingCommunityState(kb);
   const index = kb.readIndexOrEmpty();
   const communities = bySlug(generated);
@@ -68,7 +72,7 @@ export function listStaleCommunities(kb: KbRuntime): StaleCommunity[] {
 }
 
 /** The LLM input context for one community, or null when the slug is unknown. */
-export function readCommunitySummaryInput(kb: KbRuntime, slug: string): CommunitySummaryInput | null {
+export function readCommunitySummaryInput(kb: CommunitySummaryReadRuntime, slug: string): CommunitySummaryInput | null {
   const { generated } = loadExistingCommunityState(kb);
   const community = generated.find((entry) => entry.slug === slug);
   if (community === undefined) {

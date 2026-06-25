@@ -3,8 +3,20 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { isRecord } from '../../infra/json.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { createDefaultKbReadPaths, createKbQueryHost, type KbQueryRuntime } from '../../read-model/kb-query-runtime.js';
+import {
+  createDefaultKbReadPaths,
+  createKbQueryHost,
+  resolveQueryMarkdownRoot,
+  type KbQueryContext,
+  type KbQueryRuntime,
+} from '../../read-model/kb-query-runtime.js';
 import type { KbMemoListInput, KbPrinciplesInput, KbSearchInput } from '../../kb/entry-types.js';
+import { KbIndexStore } from '../../kb/corpus/index-store.js';
+import {
+  listStaleCommunities,
+  readCommunitySummaryInput,
+  type CommunitySummaryReadRuntime,
+} from '../../kb/curate/community/summary-surface.js';
 import {
   diagnoseKnowledgeBase,
   listKnowledgeBaseMemos,
@@ -14,6 +26,7 @@ import {
   searchKnowledgeBase,
 } from '../../kb/queries.js';
 import { readEntryByKind } from '../../kb/read.js';
+import { communitiesDir, kbRuntimeDir } from '../../kb/paths.js';
 import type { KbReadKind } from '../../kb/selector.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
@@ -108,10 +121,6 @@ function invalidRequestFromError(error: unknown): KbToolResult {
   return invalidRequest(errorMessage(error));
 }
 
-function unavailable(message: string, reason: string): KbToolResult {
-  return kbError('kb_unavailable', message, { reason });
-}
-
 function failed(error: unknown): KbToolResult {
   return kbError('kb_error', errorMessage(error), error instanceof Error ? { message: error.message } : error);
 }
@@ -151,6 +160,35 @@ function projectDataDir(runtime: KbQueryRuntime, ctx: KbChildReadContext | undef
     return invalidRequest('KB child read request requires project context.');
   }
   return runtime.paths.projectData(ctx.projectRoot);
+}
+
+function createCommunitySummaryRuntime(
+  runtime: KbQueryRuntime,
+  queryContext: KbQueryContext,
+): CommunitySummaryReadRuntime {
+  const markdownRoot = resolveQueryMarkdownRoot(queryContext);
+  const paths = createDefaultKbReadPaths(queryContext);
+  const indexStorage = runtime.storage;
+  const indexStore = new KbIndexStore({
+    runtimeDir: kbRuntimeDir(runtime.flavor, runtime.paths.configSlot),
+    storage: {
+      readFileSync: (path, encoding) => indexStorage.readFileSync(path, encoding),
+      // KbIndexStore normally quarantines corrupt artifacts by unlinking them.
+      // The child read daemon must not mutate parent-owned KB artifacts.
+      rmSync: () => undefined,
+      mkdirSync: () => undefined,
+      writeFileSync: () => undefined,
+      renameSync: () => undefined,
+    },
+    ids: runtime.ids,
+  });
+  return {
+    storagePort: runtime.storage,
+    communitiesDir: () => communitiesDir(markdownRoot),
+    notePath: paths.notePath,
+    sourcePath: paths.sourcePath,
+    readIndexOrEmpty: () => indexStore.readIndexOrEmpty(),
+  };
 }
 
 async function run(
@@ -300,12 +338,26 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
             const host = createKbQueryHost(queryContext);
             return listKnowledgeBasePrinciples(parsePrinciplesArgs(args), host);
           }, markFailure);
-        case 'listStaleCommunities':
-        case 'readCommunitySummaryInput':
-          return unavailable(
-            `KB child read method is not available yet: ${request.method}`,
-            'kb_child_read_not_supported',
+        case 'listStaleCommunities': {
+          const { runtime, queryContext } = createContext(state, ctx);
+          return kbSuccess(listStaleCommunities(createCommunitySummaryRuntime(runtime, queryContext)));
+        }
+        case 'readCommunitySummaryInput': {
+          const slug = getSlug(request);
+          if (typeof slug !== 'string') {
+            return slug;
+          }
+          const normalizedSlug = normalizeSlug('community', slug);
+          if (typeof normalizedSlug !== 'string') {
+            return normalizedSlug;
+          }
+          const { runtime, queryContext } = createContext(state, ctx);
+          const input = readCommunitySummaryInput(
+            createCommunitySummaryRuntime(runtime, queryContext),
+            normalizedSlug,
           );
+          return input === null ? notFound('community', normalizedSlug) : kbSuccess(input);
+        }
       }
     } catch (error: unknown) {
       markFailure(error);

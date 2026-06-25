@@ -2,7 +2,8 @@ import { dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKbChildReadHandler, createKbChildReadService } from '#src/coordinator/kb-child/read-handler.js';
-import { memoDir, notePathFromName } from '#src/kb/paths.js';
+import { INDEX_FILE } from '#src/kb/corpus/index-store.js';
+import { communityPathFromName, kbRuntimeDir, memoDir, notePathFromName } from '#src/kb/paths.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function writeNote(runtime: SimulationRuntime, slug: string): void {
@@ -32,6 +33,25 @@ function writeMemo(runtime: SimulationRuntime, projectRoot: string): void {
   runtime.storage.writeFileSync(
     join(dir, '20260101-000000-alpha.md'),
     ['---', 'source: alpha-note', 'owner: kang', '---', 'memo body for child handler', ''].join('\n'),
+  );
+}
+
+function writeCommunity(runtime: SimulationRuntime, slug: string): void {
+  const path = communityPathFromName(slug, runtime.paths.coral.corpus.kbRoot);
+  runtime.storage.mkdirSync(dirname(path), { recursive: true });
+  runtime.storage.writeFileSync(
+    path,
+    [
+      '---',
+      'createdAt: 2026-01-01T00:00:00.000Z',
+      'updatedAt: 2026-01-01T00:00:00.000Z',
+      'level: 0',
+      '---',
+      '# Alpha Community',
+      '',
+      '## Members',
+      '',
+    ].join('\n'),
   );
 }
 
@@ -133,14 +153,32 @@ describe('KB child read handler', () => {
     });
   });
 
-  it('reports full-runtime-only read methods as unavailable', async () => {
+  it('reads community summary surfaces from the child read runtime', async () => {
     const runtime = new SimulationRuntime();
+    writeCommunity(runtime, 'alpha-community');
+    const indexPath = join(kbRuntimeDir(runtime.flavor), INDEX_FILE);
+    runtime.storage.mkdirSync(dirname(indexPath), { recursive: true });
+    runtime.storage.writeFileSync(indexPath, '{not-json');
     const read = createKbChildReadHandler({ pluginRoot: '/plugin', runtime });
 
-    await expect(read({ method: 'listStaleCommunities' })).resolves.toMatchObject({
+    await expect(read({ method: 'listStaleCommunities' })).resolves.toEqual({
+      ok: true,
+      data: [{ slug: 'alpha-community', level: 0 }],
+    });
+    expect(runtime.storage.existsSync(indexPath)).toBe(true);
+
+    await expect(read({ method: 'readCommunitySummaryInput', slug: 'alpha-community' })).resolves.toMatchObject({
+      ok: true,
+      data: {
+        slug: 'alpha-community',
+        level: 0,
+        kind: 'leaf',
+      },
+    });
+
+    await expect(read({ method: 'readCommunitySummaryInput', slug: 'missing-community' })).resolves.toMatchObject({
       ok: false,
-      code: 'kb_unavailable',
-      detail: { reason: 'kb_child_read_not_supported' },
+      code: 'not_found',
     });
   });
 });

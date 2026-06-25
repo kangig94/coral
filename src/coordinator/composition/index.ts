@@ -173,6 +173,8 @@ function createKbChildReadPort(localKb: RpcPorts['kb'], kbChildSupervisor: KbChi
     listWikis: () => kbChildSupervisor.readKb({ method: 'listWikis' }),
     listMemos: (args, ctx) => kbChildSupervisor.readKb({ method: 'listMemos', args, ctx }),
     listPrinciples: (args) => kbChildSupervisor.readKb({ method: 'listPrinciples', args }),
+    listStaleCommunities: () => kbChildSupervisor.readKb({ method: 'listStaleCommunities' }),
+    readCommunitySummaryInput: (slug) => kbChildSupervisor.readKb({ method: 'readCommunitySummaryInput', slug }),
   };
 }
 
