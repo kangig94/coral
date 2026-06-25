@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -133,6 +134,10 @@ function createMismatchStore(dbPath: string, marker = 1): void {
   }
 }
 
+function sha256(data: Buffer | string): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
 function createCorruptStore(dbPath: string): void {
   mkdirSync(dirname(dbPath), { recursive: true });
   writeFileSync(dbPath, 'not a sqlite database', 'utf-8');
@@ -262,6 +267,7 @@ describe('openOrResetBackendStoreDb', () => {
     const dbDir = makeTempRoot('coral-store-mismatch-quarantine-');
     const dbPath = join(dbDir, 'store.db');
     createMismatchStore(dbPath);
+    const originalDbBytes = readFileSync(dbPath);
     writeFileSync(`${dbPath}-wal`, 'dummy wal', 'utf-8');
     writeFileSync(`${dbPath}-shm`, 'dummy shm', 'utf-8');
 
@@ -274,6 +280,49 @@ describe('openOrResetBackendStoreDb', () => {
     const quarantineDir = join(quarantineRoot, quarantineEntries[0]);
     expect(readFileSync(join(quarantineDir, 'store.db-wal'), 'utf-8')).toBe('dummy wal');
     expect(existsSync(join(quarantineDir, 'store.db-shm'))).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(quarantineDir, 'reset-manifest.json'), 'utf-8')) as {
+      schemaVersion?: unknown;
+      reason?: unknown;
+      userVersion?: unknown;
+      storedVersion?: unknown;
+      expectedVersion?: unknown;
+      dbFile?: unknown;
+      quarantineDir?: unknown;
+      files?: Array<{
+        name?: unknown;
+        source?: unknown;
+        quarantinedPath?: unknown;
+        sizeBytes?: unknown;
+        sha256?: unknown;
+      }>;
+    };
+    expect(manifest).toMatchObject({
+      schemaVersion: 1,
+      reason: 'mismatch',
+      userVersion: 1,
+      storedVersion: 1,
+      dbFile: dbPath,
+      quarantineDir,
+    });
+    expect(typeof manifest.expectedVersion).toBe('number');
+    expect(manifest.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'store.db',
+          source: dbPath,
+          quarantinedPath: join(quarantineDir, 'store.db'),
+          sizeBytes: originalDbBytes.length,
+          sha256: sha256(originalDbBytes),
+        }),
+        expect.objectContaining({
+          name: 'store.db-wal',
+          source: `${dbPath}-wal`,
+          quarantinedPath: join(quarantineDir, 'store.db-wal'),
+          sizeBytes: 'dummy wal'.length,
+          sha256: sha256('dummy wal'),
+        }),
+      ]),
+    );
     rmSync(join(quarantineDir, 'store.db-wal'), { force: true });
     rmSync(join(quarantineDir, 'store.db-shm'), { force: true });
     expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);

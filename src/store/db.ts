@@ -1,4 +1,5 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { backendLog } from '../infra/backend-log.js';
@@ -308,6 +309,30 @@ type StoreFileSet = {
   readonly shmFile: string;
 };
 
+type StoreResetQuarantineFile = {
+  readonly name: string;
+  readonly source: string;
+  readonly quarantinedPath: string;
+  readonly sizeBytes: number;
+  readonly mtimeMs: number;
+  readonly sha256: string;
+};
+
+type StoreResetQuarantineManifest = {
+  readonly schemaVersion: 1;
+  readonly resetAt: string;
+  readonly pid: number;
+  readonly reason: StoreSchemaClassification['kind'];
+  readonly userVersion: number;
+  readonly storedVersion: number;
+  readonly expectedVersion: number;
+  readonly dbFile: string;
+  readonly quarantineDir: string;
+  readonly files: StoreResetQuarantineFile[];
+};
+
+const STORE_RESET_QUARANTINE_MANIFEST = 'reset-manifest.json';
+
 function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): string {
   if (options.path === ':memory:') {
     return ':memory:';
@@ -414,6 +439,52 @@ function warnBackendStoreReset(classification: StoreSchemaClassification, quaran
   );
 }
 
+function fileDigestSha256(storage: StoragePort, path: string): string {
+  const fd = storage.openSync(path, 'r');
+  try {
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    while (true) {
+      const bytesRead = storage.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return hash.digest('hex');
+  } finally {
+    storage.closeSync(fd);
+  }
+}
+
+function describeQuarantineFile(
+  storage: StoragePort,
+  source: string,
+  name: string,
+  quarantinedPath: string,
+): StoreResetQuarantineFile {
+  const stat = storage.statSync(source);
+  return {
+    name,
+    source,
+    quarantinedPath,
+    sizeBytes: stat.size,
+    mtimeMs: stat.mtimeMs,
+    sha256: fileDigestSha256(storage, source),
+  };
+}
+
+function writeStoreResetManifest(
+  storage: StoragePort,
+  manifestPath: string,
+  manifest: StoreResetQuarantineManifest,
+): void {
+  storage.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+}
+
 function quarantineStoreFiles(
   storage: StoragePort,
   files: StoreFileSet,
@@ -430,7 +501,8 @@ function quarantineStoreFiles(
     return undefined;
   }
 
-  const stamp = new Date(identity.nowMs).toISOString().replace(/[:.]/g, '-');
+  const resetAt = new Date(identity.nowMs).toISOString();
+  const stamp = resetAt.replace(/[:.]/g, '-');
   const quarantineDir = join(
     files.dbDir,
     'store-reset-quarantine',
@@ -438,10 +510,25 @@ function quarantineStoreFiles(
   );
 
   try {
+    const manifestFiles = candidates.map((entry) =>
+      describeQuarantineFile(storage, entry.source, entry.name, join(quarantineDir, entry.name)),
+    );
     storage.mkdirSync(quarantineDir, { recursive: true });
     for (const entry of candidates) {
       storage.renameSync(entry.source, join(quarantineDir, entry.name));
     }
+    writeStoreResetManifest(storage, join(quarantineDir, STORE_RESET_QUARANTINE_MANIFEST), {
+      schemaVersion: 1,
+      resetAt,
+      pid: identity.pid,
+      reason: classification.kind,
+      userVersion: classification.userVersion,
+      storedVersion: classification.storedVersion,
+      expectedVersion: EXPECTED_SCHEMA_MARKER,
+      dbFile: files.dbFile,
+      quarantineDir,
+      files: manifestFiles,
+    });
   } catch (error: unknown) {
     throw documentedCoralSetupError({
       code: 'store_reset_quarantine_failed',

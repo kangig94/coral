@@ -5,7 +5,7 @@ import {
   createStoreServicesRef,
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
-import { createLifecycle, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
+import { createLifecycle, STARTUP_STORE_BUSY_TIMEOUT_MS, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
 import { KB_ID } from '#src/coordinator/subsystems/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
@@ -314,6 +314,20 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
     expect(mockState.events.indexOf('storeDb:openOrReset')).toBeLessThan(
       mockState.events.indexOf('storeServices:create'),
+    );
+  });
+
+  it('opens the startup store with a short busy timeout', async () => {
+    const { deps } = makeLifecycleDeps();
+    const lifecycle = createLifecycle(deps);
+    const storeDb = await import('#src/store/db.js');
+
+    await lifecycle.start();
+
+    expect(storeDb.openOrResetBackendStoreDb).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
     );
   });
 

@@ -50,6 +50,8 @@ import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
+export const STARTUP_STORE_BUSY_TIMEOUT_MS = 750;
+
 export type CoordinatorServerInfo = {
   port: number;
   host: string;
@@ -535,7 +537,11 @@ async function runLifecycleStartup({
       { acquiredViaHandoff: socketAuthorityAcquired },
       { bundleHash, namespace },
     );
-    const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, { bundleHash, namespace });
+    const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
+      bundleHash,
+      namespace,
+      busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+    });
     let storeServices: CoordinatorStoreServices;
     try {
       storeServices = createStoreServicesFromDbFn(storeDb);
