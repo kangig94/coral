@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { KB_CHILD_KB_READ_METHODS } from '#src/coordinator/kb-child/protocol.js';
 import { rpcCatalog, transportOperationalCarveouts } from '#src/transport/rpc/catalog.js';
 import {
   buildCoordinatorHttpDispatchTable,
@@ -78,5 +79,28 @@ describe('rpc catalog source of truth', () => {
       { method: 'GET', path: '/events/stream' },
     ]);
     expect(transportLocalRoutes.map((route) => route.path)).toEqual([...transportOperationalCarveouts]);
+  });
+
+  it('keeps KB child read protocol methods aligned with read-only KB RPC catalog entries', () => {
+    const kbChildReadRpcByMethod = {
+      readSearch: 'kb.entries.search',
+      diagnose: 'kb.diagnose',
+      readNote: 'kb.note.read',
+      readSource: 'kb.source.read',
+      readCommunity: 'kb.community.read',
+      listStaleCommunities: 'kb.community.list-stale',
+      readCommunitySummaryInput: 'kb.community.summary-input',
+      readWiki: 'kb.wiki.read',
+      readMemo: 'kb.memo.read',
+      readPrinciple: 'kb.principle.read',
+      listSources: 'kb.source.list',
+      listWikis: 'kb.wiki.list',
+      listMemos: 'kb.memo.list',
+      listPrinciples: 'kb.principles.list',
+    } as const;
+    const catalogNames = new Set(rpcCatalog.map((spec) => spec.name));
+
+    expect([...KB_CHILD_KB_READ_METHODS].sort()).toEqual(Object.keys(kbChildReadRpcByMethod).sort());
+    expect(Object.values(kbChildReadRpcByMethod).every((name) => catalogNames.has(name))).toBe(true);
   });
 });

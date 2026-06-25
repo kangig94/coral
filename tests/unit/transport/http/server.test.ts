@@ -927,9 +927,9 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const readKb = vi.fn(async (request: unknown) => ({
+    const readKb = vi.fn<KbChildSupervisor['readKb']>(async (_request) => ({
       ok: true as const,
-      data: { servedBy: 'kb-child', request },
+      data: { servedBy: 'kb-child' },
     }));
     const kbChildSupervisor: KbChildSupervisor = {
       read: vi.fn(() => childHealth),
@@ -942,30 +942,64 @@ describe('execution backend server', () => {
       dispose: vi.fn(async () => undefined),
     };
     const backend = await startBackendServer({ kbChildSupervisor });
+    const projectRoot = '/workspace/project-a';
+    const projectRootQuery = encodeURIComponent(projectRoot);
+    const getJson = async (path: string): Promise<unknown> => {
+      const response = await fetch(`${backend.baseUrl}${path}`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
 
-    const response = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
+      expect(response.status).toBe(200);
+      return await response.json();
+    };
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
+    await expect(getJson('/kb/entries?q=alpha')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/diagnose')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/notes/alpha-note')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/sources')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/sources/alpha-source')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/wikis')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/wikis/alpha-wiki')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/communities/alpha-community')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/communities-stale')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/communities/alpha-community/summary-input')).resolves.toEqual({
       servedBy: 'kb-child',
-      request: { method: 'readSearch', args: { query: 'alpha' } },
     });
-    expect(readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
+    await expect(getJson(`/kb/memos?projectRoot=${projectRootQuery}&owner=kang`)).resolves.toEqual({
+      servedBy: 'kb-child',
+    });
+    await expect(getJson(`/kb/memos/alpha-memo?projectRoot=${projectRootQuery}`)).resolves.toEqual({
+      servedBy: 'kb-child',
+    });
+    await expect(getJson('/kb/principles?q=alpha&top_k=2&verbose=1')).resolves.toEqual({
+      servedBy: 'kb-child',
+    });
+    await expect(getJson('/kb/principles/alpha-principle')).resolves.toEqual({ servedBy: 'kb-child' });
 
-    const staleResponse = await fetch(`${backend.baseUrl}/kb/communities-stale`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
-    const summaryInputResponse = await fetch(`${backend.baseUrl}/kb/communities/community-slug/summary-input`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
-
-    expect(staleResponse.status).toBe(200);
-    expect(summaryInputResponse.status).toBe(200);
-    expect(readKb).toHaveBeenCalledTimes(3);
-    expect(readKb).toHaveBeenNthCalledWith(2, { method: 'listStaleCommunities' });
-    expect(readKb).toHaveBeenNthCalledWith(3, { method: 'readCommunitySummaryInput', slug: 'community-slug' });
+    expect(readKb.mock.calls.map(([request]) => request)).toEqual([
+      { method: 'readSearch', args: { query: 'alpha' } },
+      { method: 'diagnose' },
+      { method: 'readNote', slug: 'alpha-note' },
+      { method: 'listSources' },
+      { method: 'readSource', slug: 'alpha-source' },
+      { method: 'listWikis' },
+      { method: 'readWiki', slug: 'alpha-wiki' },
+      { method: 'readCommunity', slug: 'alpha-community' },
+      { method: 'listStaleCommunities' },
+      { method: 'readCommunitySummaryInput', slug: 'alpha-community' },
+      {
+        method: 'listMemos',
+        args: { owner: 'kang' },
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      },
+      {
+        method: 'readMemo',
+        slug: 'alpha-memo',
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      },
+      { method: 'listPrinciples', args: { query: 'alpha', top_k: 2, verbose: true } },
+      { method: 'readPrinciple', slug: 'alpha-principle' },
+    ]);
   });
 
   it('keeps read-only KB RPCs in the parent when child delegation is disabled', async () => {
@@ -1001,6 +1035,75 @@ describe('execution backend server', () => {
     });
 
     expect(readKb).not.toHaveBeenCalled();
+  });
+
+  it('honors CORAL_KB_CHILD_READS=0 as a read delegation kill switch', async () => {
+    const previous = process.env.CORAL_KB_CHILD_READS;
+    process.env.CORAL_KB_CHILD_READS = '0';
+    try {
+      const childHealth: KbChildHealthSnapshot = {
+        enabled: true,
+        phase: 'online',
+        generation: 1,
+        pid: 12345,
+        startedAt: 10,
+        readyAt: 20,
+      };
+      const readKb = vi.fn(async (request: unknown) => ({
+        ok: true as const,
+        data: { servedBy: 'kb-child', request },
+      }));
+      const kbChildSupervisor: KbChildSupervisor = {
+        read: vi.fn(() => childHealth),
+        start: vi.fn(async () => childHealth),
+        probe: vi.fn(async () => childHealth),
+        warmup: vi.fn(async () => childHealth),
+        readKb,
+        stop: vi.fn(async () => childHealth),
+        restart: vi.fn(async () => childHealth),
+        dispose: vi.fn(async () => undefined),
+      };
+      const backend = await startBackendServer({
+        kbChildSupervisor,
+        runtime: createRealRuntime('prod'),
+      });
+
+      await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+
+      expect(readKb).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CORAL_KB_CHILD_READS;
+      } else {
+        process.env.CORAL_KB_CHILD_READS = previous;
+      }
+    }
+  });
+
+  it('honors CORAL_KB_CHILD_READS=1 as a read delegation force switch', async () => {
+    const previous = process.env.CORAL_KB_CHILD_READS;
+    process.env.CORAL_KB_CHILD_READS = '1';
+    try {
+      const backend = await startBackendServer({ runtime: createRealRuntime('prod') });
+
+      const response = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: 'kb_unavailable',
+        detail: { reason: 'kb_child_disabled' },
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CORAL_KB_CHILD_READS;
+      } else {
+        process.env.CORAL_KB_CHILD_READS = previous;
+      }
+    }
   });
 
   it('returns KB unavailable when read delegation is enabled without a child supervisor', async () => {
