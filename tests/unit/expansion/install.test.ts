@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as DownloadModule from '#src/runtime/download.js';
 import {
-  extractTarEntry,
   extractTarEntryInWorker,
   NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES,
   NEEDLE_PREBUILD_TAR_MAX_BYTES,
@@ -150,25 +149,11 @@ describe('installExpansion', () => {
     expect(NEEDLE_PREBUILD_TAR_MAX_BYTES).toBe(128 * 1024 * 1024);
   });
 
-  it('rejects needle prebuild archives above the decompressed byte cap', () => {
-    const archive = gzipSync(Buffer.alloc(2048, 0));
-
-    expect(() => extractTarEntry(archive, NEEDLE_ADDON_FILENAME, 1024)).toThrow(
-      /Needle prebuild archive exceeds maximum decompressed size \(1024 bytes\)/,
-    );
-  });
-
   it('rejects needle prebuild archives above the worker decompressed byte cap', async () => {
     const archive = gzipSync(Buffer.alloc(2048, 0));
 
     await expect(extractTarEntryInWorker(archive, NEEDLE_ADDON_FILENAME, 1024)).rejects.toThrow(
       /Needle prebuild archive exceeds maximum decompressed size \(1024 bytes\)/,
-    );
-  });
-
-  it('rejects needle prebuild tar entries whose declared size exceeds the archive bounds', () => {
-    expect(() => extractTarEntry(createMalformedPrebuildArchive(4096), NEEDLE_ADDON_FILENAME)).toThrow(
-      /Needle prebuild archive entry exceeds archive bounds: coral-needle\.node/,
     );
   });
 

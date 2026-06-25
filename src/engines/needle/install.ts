@@ -1,7 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { gunzipSync } from 'node:zlib';
 
 import type {
   EngineInstallLoggerEvent,
@@ -29,7 +28,6 @@ export const NEEDLE_PREBUILD_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 export const NEEDLE_PREBUILD_TAR_MAX_BYTES = 128 * 1024 * 1024;
 const NEEDLE_POST_INSTALL = ['register_expansion'] as const;
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
-const TAR_BLOCK_SIZE = 512;
 const NEEDLE_PREBUILD_EXTRACTION_WORKER_TIMEOUT_MS = 30_000;
 
 type InstallMethod = 'prebuild' | 'source-build';
@@ -152,72 +150,6 @@ async function withInstallLock<T>(ctx: NeedleInstallContext, run: () => Promise<
 
 function needlePlatformKey(platformName: string, archName: string): string {
   return `${platformName}-${NEEDLE_ARCH_MAP[archName] ?? archName}`;
-}
-
-function tarFieldToString(buffer: Buffer): string {
-  return buffer.toString('utf-8').replace(/\0.*$/, '').trim();
-}
-
-function tarFieldToNumber(buffer: Buffer): number {
-  const raw = tarFieldToString(buffer);
-  return raw === '' ? 0 : Number.parseInt(raw, 8);
-}
-
-function gunzipNeedlePrebuildTar(archiveBuffer: Buffer, maxTarBytes: number): Buffer {
-  try {
-    return gunzipSync(archiveBuffer, { maxOutputLength: maxTarBytes });
-  } catch (error: unknown) {
-    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') {
-      throw new Error(`Needle prebuild archive exceeds maximum decompressed size (${maxTarBytes} bytes)`, {
-        cause: error,
-      });
-    }
-    throw error;
-  }
-}
-
-function readTarEntrySize(header: Buffer, fullName: string): number {
-  const size = tarFieldToNumber(header.subarray(124, 136));
-  if (!Number.isSafeInteger(size) || size < 0) {
-    throw new Error(`Needle prebuild archive entry has invalid size: ${fullName || '<unnamed>'}`);
-  }
-  return size;
-}
-
-function tarEntryNextOffset(dataOffset: number, size: number, tarLength: number, fullName: string): number {
-  const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-  const dataEnd = dataOffset + size;
-  const nextOffset = dataOffset + paddedSize;
-  if (dataEnd > tarLength || nextOffset > tarLength) {
-    throw new Error(`Needle prebuild archive entry exceeds archive bounds: ${fullName || '<unnamed>'}`);
-  }
-  return nextOffset;
-}
-
-export function extractTarEntry(
-  archiveBuffer: Buffer,
-  expectedName: string,
-  maxTarBytes = NEEDLE_PREBUILD_TAR_MAX_BYTES,
-): Buffer {
-  const tarBuffer = gunzipNeedlePrebuildTar(archiveBuffer, maxTarBytes);
-  let offset = 0;
-  while (offset + TAR_BLOCK_SIZE <= tarBuffer.length) {
-    const header = tarBuffer.subarray(offset, offset + TAR_BLOCK_SIZE);
-    if (header.every((byte) => byte === 0)) break;
-    const name = tarFieldToString(header.subarray(0, 100));
-    const prefix = tarFieldToString(header.subarray(345, 500));
-    const fullName = prefix ? `${prefix}/${name}` : name;
-    const size = readTarEntrySize(header, fullName);
-    const typeFlag = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
-    offset += TAR_BLOCK_SIZE;
-    const nextOffset = tarEntryNextOffset(offset, size, tarBuffer.length, fullName);
-    const data = tarBuffer.subarray(offset, offset + size);
-    if ((typeFlag === '0' || typeFlag === '') && (fullName === expectedName || fullName.endsWith(`/${expectedName}`))) {
-      return Buffer.from(data);
-    }
-    offset = nextOffset;
-  }
-  throw new Error(`${expectedName} was not found in the downloaded archive.`);
 }
 
 export async function extractTarEntryInWorker(

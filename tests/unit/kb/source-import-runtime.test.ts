@@ -7,6 +7,11 @@ import {
   ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV,
   ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT,
   PdfMarkerConverter,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV,
   SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS,
   SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV,
   SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS,
@@ -22,10 +27,12 @@ import {
   prepareSourceImport,
   resolveAdminSourceImportCap,
   resolveSourceImportFile,
+  sourceImportConversionTimeoutMs,
   sourceImportAdminLimitExceededHint,
   type SourceImportReadPolicy,
   type SourceImportRuntime,
 } from '#src/kb/ops/source-import.js';
+import { convertSourceInWorker } from '#src/kb/ops/source-conversion-worker.js';
 import { kbSourceImportSchema } from '#src/kb/tool-contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -290,6 +297,66 @@ describe('source import runtime isolation', () => {
     expect(staged).toContain('# HTML Import');
     expect(staged).toContain('Body & details');
     expect(readFile).toHaveBeenCalledWith(input, 'utf-8');
+  });
+
+  it('scales source conversion worker timeouts by input size with env overrides', () => {
+    expect(sourceImportConversionTimeoutMs({}, 1)).toBe(
+      SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS + SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+    );
+    expect(sourceImportConversionTimeoutMs({}, 5 * 1024 * 1024)).toBe(
+      SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS + 5 * SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+    );
+    expect(sourceImportConversionTimeoutMs({}, 1024 * 1024 * 1024)).toBe(SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS);
+    expect(
+      sourceImportConversionTimeoutMs(
+        {
+          [SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV]: '1000',
+          [SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV]: '130000',
+        },
+        20 * 1024 * 1024,
+      ),
+    ).toBe(130000);
+  });
+
+  it('rejects HTML converter worker output above the markdown byte cap', async () => {
+    const root = tempRoot('coral-source-import-html-worker-cap-');
+    const input = join(root, 'paper.html');
+    const runtimeRoot = join(root, 'runtime');
+    const runtime = fakeRuntime();
+    const policy = deriveSourceImportReadPolicy('admin', root, envWith('0'));
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(
+      input,
+      '<html><head><title>HTML Import</title></head><body><h1>HTML Import</h1><p>Body body body body body body body body body body</p></body></html>',
+      'utf8',
+    );
+    const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
+
+    await expect(
+      prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {
+        maxMarkdownOutputBytes: 16,
+        limitExceededHint: sourceImportAdminLimitExceededHint(),
+      }),
+    ).rejects.toThrow(
+      new RegExp(`HTML converter output exceeds maximum markdown output size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}`),
+    );
+  });
+
+  it('aborts source conversion workers before launch', async () => {
+    const controller = new AbortController();
+    controller.abort('user_abort');
+
+    await expect(
+      convertSourceInWorker(
+        { kind: 'html', html: '<title>Ignored</title><p>Body</p>', outputMaxBytes: USER_SOURCE_IMPORT_MAX_BYTES },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AbortError',
+      code: 'aborted',
+      stage: 'convert',
+      reason: 'user_abort',
+    });
   });
 
   it('parses marker output through async storage reads with a CPU-conservative timeout by default', async () => {

@@ -9,18 +9,18 @@ import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../corpus/frontma
 import { assertWithin, sourceImportStageDir } from '../paths.js';
 import type { KbSourceFrontmatter } from '../entry-types.js';
 import { assertNonEmptyText, assertSourceSlug } from '../validation.js';
+import { convertSourceInWorker } from './source-conversion-worker.js';
 
 const LEADING_ATX_H1 = /^#(?!#)\s+(.+?)\s*#*\s*(?:\r?\n+|$)/;
 const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/;
-const HTML_TITLE_PATTERN = /<title\b[^>]*>([\s\S]*?)<\/title>/i;
-const HTML_H1_PATTERN = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i;
-const HTML_BODY_PATTERN = /<body\b[^>]*>([\s\S]*?)<\/body>/i;
 
 export const USER_SOURCE_IMPORT_MAX_BYTES = 128 * 1024 * 1024;
 export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = USER_SOURCE_IMPORT_MAX_BYTES;
 export const SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES = 128 * 1024 * 1024;
 export const SOURCE_IMPORT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 export const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
+export const SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS';
+export const SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_CONVERSION_TIMEOUT_MAX_MS';
 export const SOURCE_IMPORT_MARKER_DEVICE_ENV = 'CORAL_KB_IMPORT_MARKER_DEVICE';
 export const SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV = 'CORAL_KB_IMPORT_MARKER_INSTALL_TIMEOUT_MS';
 export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS';
@@ -35,17 +35,11 @@ export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS = 3 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS = 5 * 1000;
 export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS = 15 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS = 2_000;
+export const SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS = 2 * 60 * 1000;
+export const SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS = 10 * 1000;
+export const SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS = 30 * 60 * 1000;
 
 const BYTES_PER_MIB = 1024 * 1024;
-
-const HTML_ENTITIES: Record<string, string> = {
-  amp: '&',
-  apos: "'",
-  gt: '>',
-  lt: '<',
-  nbsp: ' ',
-  quot: '"',
-};
 
 export type ConversionResult = {
   markdown: string;
@@ -73,7 +67,9 @@ export type SourceImportContext = {
   runtime: SourceImportRuntime;
   runtimeRoot: string;
   fileSizeLimitBytes: number | null;
+  conversionOutputMaxBytes?: number | null;
   limitExceededHint?: string;
+  signal?: AbortSignal;
 };
 
 export type SourceImportOptions = {
@@ -87,16 +83,6 @@ export type SourceImportReadPolicy =
   | { kind: 'unrestricted'; resolveBase: string; maxBytes: number | null };
 
 export type ResolvedSourceImportFile = { path: string };
-
-type TurndownServiceLike = {
-  turndown(input: string): string;
-};
-
-type TurndownConstructor = new (options?: Record<string, unknown>) => TurndownServiceLike;
-
-type MammothLike = {
-  convertToHtml(input: { path: string }): Promise<{ value: string }>;
-};
 
 // CLI-only source import converters. Keep npm conversion dependencies isolated here.
 export interface Converter {
@@ -573,65 +559,6 @@ function splitLeadingMarkdownTitle(markdown: string): { title?: string; body: st
   return { body: trimmed.trim() };
 }
 
-function decodeHtmlEntity(entity: string): string {
-  const normalized = entity.toLowerCase();
-  if (normalized.startsWith('#x')) {
-    const codePoint = Number.parseInt(normalized.slice(2), 16);
-    if (!Number.isInteger(codePoint)) {
-      return `&${entity};`;
-    }
-    try {
-      return String.fromCodePoint(codePoint);
-    } catch {
-      return `&${entity};`;
-    }
-  }
-
-  if (normalized.startsWith('#')) {
-    const codePoint = Number.parseInt(normalized.slice(1), 10);
-    if (!Number.isInteger(codePoint)) {
-      return `&${entity};`;
-    }
-    try {
-      return String.fromCodePoint(codePoint);
-    } catch {
-      return `&${entity};`;
-    }
-  }
-
-  return HTML_ENTITIES[normalized] ?? `&${entity};`;
-}
-
-function htmlFragmentToText(fragment: string): string | undefined {
-  const withoutComments = fragment.replace(/<!--[\s\S]*?-->/g, ' ');
-  const withoutTags = withoutComments.replace(/<[^>]+>/g, ' ');
-  const decoded = withoutTags.replace(/&(#(?:x[0-9a-f]+|\d+)|[a-z]+);/gi, (_, entity: string) =>
-    decodeHtmlEntity(entity),
-  );
-  const normalized = decoded.replace(/\s+/g, ' ').trim();
-  return normalized || undefined;
-}
-
-function extractHtmlTitle(html: string): string | undefined {
-  const titleMatch = html.match(HTML_TITLE_PATTERN)?.[1];
-  const titleText = titleMatch ? htmlFragmentToText(titleMatch) : undefined;
-  if (titleText) {
-    return normalizeTitle(titleText);
-  }
-
-  return extractFirstHtmlH1(html);
-}
-
-function extractFirstHtmlH1(html: string): string | undefined {
-  const h1Match = html.match(HTML_H1_PATTERN)?.[1];
-  const h1Text = h1Match ? htmlFragmentToText(h1Match) : undefined;
-  return h1Text ? normalizeTitle(h1Text) : undefined;
-}
-
-function extractHtmlBody(html: string): string {
-  return html.match(HTML_BODY_PATTERN)?.[1] ?? html;
-}
-
 function missingPackages(packageNames: string[]): string[] {
   const missing: string[] = [];
   for (const packageName of packageNames) {
@@ -656,33 +583,6 @@ function assertPackagesInstalled(packageNames: string[], log?: (msg: string) => 
   }
 
   throw new Error(`Missing npm dependencies: ${missing.join(', ')}`);
-}
-
-async function loadTurndownService(): Promise<TurndownConstructor> {
-  assertPackagesInstalled(['turndown']);
-  const loaded = (await import('turndown')) as { default?: unknown };
-  const candidate = (loaded.default ?? loaded) as TurndownConstructor;
-  if (typeof candidate !== 'function') {
-    throw new Error('turndown did not export a constructor');
-  }
-  return candidate;
-}
-
-async function loadMammoth(): Promise<MammothLike> {
-  assertPackagesInstalled(['mammoth']);
-  const loaded = (await import('mammoth')) as { default?: unknown; convertToHtml?: unknown };
-  const candidate = (loaded.default ?? loaded) as Partial<MammothLike>;
-  if (typeof candidate.convertToHtml !== 'function') {
-    throw new Error('mammoth did not export convertToHtml');
-  }
-  return candidate as MammothLike;
-}
-
-async function htmlToMarkdownBody(html: string): Promise<string> {
-  const TurndownService = await loadTurndownService();
-  const turndown = new TurndownService({ headingStyle: 'atx' });
-  const markdown = turndown.turndown(extractHtmlBody(html));
-  return splitLeadingMarkdownTitle(markdown).body;
 }
 
 function inferSourceType(ext: string): KbSourceFrontmatter['type'] {
@@ -732,6 +632,35 @@ function assertSourceImportMarkdownOutputSize(
   }
 }
 
+function sourceImportConversionOutputMaxBytes(ctx: SourceImportContext): number | null {
+  return ctx.conversionOutputMaxBytes === undefined ? ctx.fileSizeLimitBytes : ctx.conversionOutputMaxBytes;
+}
+
+export function sourceImportConversionTimeoutMs(env: Readonly<Record<string, string>>, fileSizeBytes: number): number {
+  const sizeMiB = Math.max(1, Math.ceil(fileSizeBytes / BYTES_PER_MIB));
+  const perMiBMs = readPositiveIntegerEnv(
+    env,
+    SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV,
+    SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+  );
+  const maxMs = readPositiveIntegerEnv(
+    env,
+    SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV,
+    SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS,
+  );
+  return Math.min(maxMs, SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS + sizeMiB * perMiBMs);
+}
+
+function sourceImportConversionWorkerOptions(
+  ctx: SourceImportContext,
+  fileSizeBytes: number,
+): Parameters<typeof convertSourceInWorker>[1] {
+  return {
+    timeoutMs: sourceImportConversionTimeoutMs(ctx.runtime.env.fullSnapshot(), fileSizeBytes),
+    ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
+  };
+}
+
 export async function prepareSourceImport(
   sourceFile: ResolvedSourceImportFile,
   slug: string | undefined,
@@ -752,10 +681,15 @@ export async function prepareSourceImport(
   const signal = options.signal;
   const sourceFilePath = sourceFile.path;
   const ext = extname(sourceFilePath).toLowerCase();
-  const ctx: SourceImportContext =
-    options.limitExceededHint === undefined
-      ? { runtime, runtimeRoot, fileSizeLimitBytes }
-      : { runtime, runtimeRoot, fileSizeLimitBytes, limitExceededHint: options.limitExceededHint };
+  const markdownOutputMaxBytes = resolveSourceImportMarkdownOutputMaxBytes(fileSizeLimitBytes, options);
+  const ctx: SourceImportContext = {
+    runtime,
+    runtimeRoot,
+    fileSizeLimitBytes,
+    conversionOutputMaxBytes: markdownOutputMaxBytes,
+    ...(options.limitExceededHint === undefined ? {} : { limitExceededHint: options.limitExceededHint }),
+    ...(signal === undefined ? {} : { signal }),
+  };
   const converter = resolveConverter(ext);
 
   if (signal !== undefined) throwIfAborted(signal, 'convert');
@@ -777,11 +711,7 @@ export async function prepareSourceImport(
   if (signal !== undefined) throwIfAborted(signal, 'persist');
   log('Staging converted markdown for backend import');
   const renderedMarkdown = renderSourceMarkdown(meta, converted.markdown);
-  assertSourceImportMarkdownOutputSize(
-    renderedMarkdown,
-    resolveSourceImportMarkdownOutputMaxBytes(fileSizeLimitBytes, options),
-    options.limitExceededHint,
-  );
+  assertSourceImportMarkdownOutputSize(renderedMarkdown, markdownOutputMaxBytes, options.limitExceededHint);
   const stagedPath = stagePreparedSourceMarkdown(sourceImportStageDir(runtimeRoot), renderedMarkdown, runtime);
 
   return {
@@ -824,18 +754,16 @@ export class HtmlTurndownConverter implements Converter {
   }
 
   async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
-    const html = normalizeTextInput(
-      await readUtf8FileWithinSourceImportLimit(filePath, ctx, 'KB source import HTML file'),
+    const html = await readUtf8FileWithinSourceImportLimit(filePath, ctx, 'KB source import HTML file');
+    return await convertSourceInWorker(
+      {
+        kind: 'html',
+        html,
+        outputMaxBytes: sourceImportConversionOutputMaxBytes(ctx),
+        ...(ctx.limitExceededHint === undefined ? {} : { limitExceededHint: ctx.limitExceededHint }),
+      },
+      sourceImportConversionWorkerOptions(ctx, Buffer.byteLength(html, 'utf-8')),
     );
-    const title = extractHtmlTitle(html);
-    if (!title) {
-      throw new Error('HTML import requires a <title> or first <h1>');
-    }
-
-    return {
-      markdown: await htmlToMarkdownBody(html),
-      title,
-    };
   }
 }
 
@@ -848,20 +776,23 @@ export class DocxMammothConverter implements Converter {
     assertPackagesInstalled(['mammoth', 'turndown'], log);
   }
 
-  async convert(filePath: string, _ctx: SourceImportContext): Promise<ConversionResult> {
-    assertSourceImportFileSize(filePath, _ctx.runtime.storage, _ctx.fileSizeLimitBytes, 'KB source import DOCX file');
-    const mammoth = await loadMammoth();
-    const result = await mammoth.convertToHtml({ path: filePath });
-    const html = normalizeTextInput(result.value);
-    const title = extractFirstHtmlH1(html);
-    if (!title) {
-      throw new Error('DOCX import requires the first Heading 1 to provide a title');
-    }
-
-    return {
-      markdown: await htmlToMarkdownBody(html),
-      title,
-    };
+  async convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult> {
+    const fileSizeBytes = assertSourceImportFileSize(
+      filePath,
+      ctx.runtime.storage,
+      ctx.fileSizeLimitBytes,
+      'KB source import DOCX file',
+      ctx.limitExceededHint,
+    );
+    return await convertSourceInWorker(
+      {
+        kind: 'docx',
+        filePath,
+        outputMaxBytes: sourceImportConversionOutputMaxBytes(ctx),
+        ...(ctx.limitExceededHint === undefined ? {} : { limitExceededHint: ctx.limitExceededHint }),
+      },
+      sourceImportConversionWorkerOptions(ctx, fileSizeBytes),
+    );
   }
 }
 
