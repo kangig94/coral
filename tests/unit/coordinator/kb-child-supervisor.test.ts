@@ -237,6 +237,229 @@ describe('KB child supervisor', () => {
     });
   });
 
+  it('restarts once and retries read-only KB requests after the child exits', async () => {
+    const first = new FakeChildProcess(171);
+    const second = new FakeChildProcess(172);
+    const { runtime, spawnCalls } = createRuntime([first, second]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(first);
+    await start;
+
+    (first.stderr as unknown as PassThrough).write('first child failed\n');
+    first.emitClose(1, null);
+    await flushMicrotasks();
+    expect(supervisor.read()).toMatchObject({
+      phase: 'failed',
+      generation: 1,
+      lastError: 'first child failed',
+    });
+
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    await flushMicrotasks();
+    expect(spawnCalls).toHaveLength(2);
+
+    writeReady(second);
+    await flushMicrotasks(12);
+    const request = latestRequest(second);
+    expect(request.method).toBe('kb.read');
+    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    writeResponse(second, request.id, {
+      ok: true,
+      data: { slug: 'alpha-note', source: 'recovered-child' },
+    });
+
+    await expect(read).resolves.toEqual({
+      ok: true,
+      data: { slug: 'alpha-note', source: 'recovered-child' },
+    });
+    expect(supervisor.read()).toMatchObject({ phase: 'online', generation: 2, pid: 172, pendingRequests: 0 });
+  });
+
+  it('waits for an in-flight start before retrying read-only KB requests', async () => {
+    const child = new FakeChildProcess(173);
+    const { runtime, spawnCalls } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    await flushMicrotasks();
+    expect(spawnCalls).toHaveLength(1);
+
+    writeReady(child);
+    await start;
+    await flushMicrotasks(12);
+
+    const request = latestRequest(child);
+    expect(request.method).toBe('kb.read');
+    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    writeResponse(child, request.id, {
+      ok: true,
+      data: { slug: 'alpha-note', source: 'started-child' },
+    });
+
+    await expect(read).resolves.toEqual({
+      ok: true,
+      data: { slug: 'alpha-note', source: 'started-child' },
+    });
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('restarts and retries read-only KB requests after a request timeout', async () => {
+    const first = new FakeChildProcess(174);
+    const second = new FakeChildProcess(175);
+    const { runtime, spawnCalls, time } = createRuntime([first, second]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      requestTimeoutMs: 25,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(first);
+    await start;
+
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    await flushMicrotasks();
+    const firstRequest = latestRequest(first);
+    expect(firstRequest.method).toBe('kb.read');
+
+    time.tick(25);
+    await flushMicrotasks(12);
+    expect(first.stdin.destroyed).toBe(true);
+    expect(first.stdin.chunks.join('')).toContain('"method":"shutdown"');
+    expect(first.stdin.chunks.join('')).toContain('"reason":"read request recovery"');
+
+    first.emitClose(0, null);
+    await flushMicrotasks(12);
+    expect(spawnCalls).toHaveLength(2);
+
+    writeReady(second);
+    await flushMicrotasks(12);
+    const secondRequest = latestRequest(second);
+    expect(secondRequest.method).toBe('kb.read');
+    expect(secondRequest.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    writeResponse(second, secondRequest.id, {
+      ok: true,
+      data: { slug: 'alpha-note', source: 'timeout-recovered-child' },
+    });
+
+    await expect(read).resolves.toEqual({
+      ok: true,
+      data: { slug: 'alpha-note', source: 'timeout-recovered-child' },
+    });
+    expect(supervisor.read()).toMatchObject({ phase: 'online', generation: 2, pid: 175, pendingRequests: 0 });
+  });
+
+  it('does not restart read-only KB requests after dispose is requested', async () => {
+    const first = new FakeChildProcess(176);
+    const second = new FakeChildProcess(177);
+    const { runtime, spawnCalls } = createRuntime([first, second]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(first);
+    await start;
+
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    await flushMicrotasks();
+    expect(latestRequest(first).method).toBe('kb.read');
+
+    const dispose = supervisor.dispose('shutdown');
+    await flushMicrotasks();
+    expect(first.stdin.destroyed).toBe(true);
+
+    first.emitClose(0, null);
+    await flushMicrotasks(12);
+
+    await expect(read).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_unavailable',
+      detail: { reason: 'kb_child_unavailable' },
+    });
+    await dispose;
+    expect(spawnCalls).toHaveLength(1);
+    expect(supervisor.read()).toMatchObject({ phase: 'stopped', generation: 1, pendingRequests: 0 });
+  });
+
+  it('keeps read recovery disabled when dispose is queued behind a restart', async () => {
+    const first = new FakeChildProcess(178);
+    const second = new FakeChildProcess(179);
+    const third = new FakeChildProcess(180);
+    const { runtime, spawnCalls } = createRuntime([first, second, third]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(first);
+    await start;
+
+    const probe = supervisor.probe();
+    await flushMicrotasks();
+    const probeRequest = latestRequest(first);
+    expect(probeRequest.method).toBe('health');
+
+    const restart = supervisor.restart('operator');
+    const dispose = supervisor.dispose('shutdown');
+    await flushMicrotasks();
+    expect(spawnCalls).toHaveLength(1);
+
+    writeResponse(first, probeRequest.id, {
+      status: 'ready',
+      pid: 178,
+      startedAt: 1_000_000,
+      uptimeMs: 10,
+    });
+    await probe;
+    await flushMicrotasks(12);
+    expect(first.stdin.chunks.join('')).toContain('"reason":"operator"');
+
+    first.emitClose(0, null);
+    await flushMicrotasks(12);
+    expect(spawnCalls).toHaveLength(2);
+    writeReady(second);
+    await restart;
+    await flushMicrotasks(12);
+    expect(second.stdin.chunks.join('')).toContain('"reason":"shutdown"');
+
+    second.emitClose(0, null);
+    await dispose;
+
+    await expect(supervisor.readKb({ method: 'readNote', slug: 'alpha-note' })).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_unavailable',
+    });
+    expect(spawnCalls).toHaveLength(2);
+  });
+
   it('warms the child read runtime over the control protocol', async () => {
     const child = new FakeChildProcess(158);
     const { runtime } = createRuntime([child]);

@@ -169,6 +169,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   let lastHeartbeatLatencyMs: number | undefined;
   let childUptimeMs: number | undefined;
   let kbReadHealth: KbChildKbReadHealth | undefined;
+  let readRecoveryEnabled = true;
 
   const read = (): KbChildHealthSnapshot => ({
     enabled: true,
@@ -300,31 +301,77 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     }
   };
 
-  const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
-    try {
-      const response = await sendRequest('kb.read', request);
-      if (!response.ok) {
-        return {
-          ok: false,
-          code: 'kb_child_protocol_error',
-          message: response.error.message,
-        };
+  const recoverForRead = async (
+    failedGeneration: number,
+    failedPhase: KbChildPhase,
+    reason: string,
+  ): Promise<KbChildHealthSnapshot> =>
+    runExclusive(async () => {
+      if (!readRecoveryEnabled) {
+        return read();
       }
-      if (!isKbChildKbReadResult(response.result)) {
-        return {
-          ok: false,
-          code: 'kb_child_protocol_error',
-          message: 'KB child returned malformed read result.',
-        };
+      if (phase === 'online' && child !== null && (generation !== failedGeneration || failedPhase !== 'online')) {
+        return read();
       }
-      return response.result;
-    } catch (error: unknown) {
+      if (child !== null) {
+        phase = 'restarting';
+        await stopNow(reason);
+        if (child !== null) {
+          return read();
+        }
+      }
+      return startNow();
+    });
+
+  const readKbUnavailable = (message: string): KbChildKbReadResult => ({
+    ok: false,
+    code: 'kb_unavailable',
+    message,
+    detail: { reason: 'kb_child_unavailable' },
+  });
+
+  const sendKbReadRequest = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
+    const response = await sendRequest('kb.read', request);
+    if (!response.ok) {
       return {
         ok: false,
-        code: 'kb_unavailable',
-        message: `KB child read request failed: ${errorMessage(error)}`,
-        detail: { reason: 'kb_child_unavailable' },
+        code: 'kb_child_protocol_error',
+        message: response.error.message,
       };
+    }
+    if (!isKbChildKbReadResult(response.result)) {
+      return {
+        ok: false,
+        code: 'kb_child_protocol_error',
+        message: 'KB child returned malformed read result.',
+      };
+    }
+    return response.result;
+  };
+
+  const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
+    if (!readRecoveryEnabled) {
+      return readKbUnavailable('KB child read request skipped: supervisor is disposing.');
+    }
+    const failedGeneration = generation;
+    const failedPhase = phase;
+    try {
+      return await sendKbReadRequest(request);
+    } catch (error: unknown) {
+      const initialError = errorMessage(error);
+      const recovered = await recoverForRead(failedGeneration, failedPhase, 'read request recovery');
+      if (recovered.phase !== 'online') {
+        return readKbUnavailable(
+          `KB child read request failed: ${initialError}; recovery ended in ${recovered.phase}.`,
+        );
+      }
+      try {
+        return await sendKbReadRequest(request);
+      } catch (retryError: unknown) {
+        return readKbUnavailable(
+          `KB child read request failed after recovery: ${errorMessage(retryError)}; initial failure: ${initialError}`,
+        );
+      }
     }
   };
 
@@ -518,13 +565,18 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
 
   return {
     read,
-    start: () => runExclusive(startNow),
+    start: () =>
+      runExclusive(async () => {
+        readRecoveryEnabled = true;
+        return startNow();
+      }),
     probe: probeExclusive,
     warmup: () => runExclusive(warmupNow),
     readKb: readKbNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {
+        readRecoveryEnabled = true;
         phase = 'restarting';
         await stopNow(reason);
         if (child !== null) {
@@ -533,7 +585,11 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
         return startNow();
       }),
     dispose: async (reason = 'dispose', disposeOptions) => {
-      await runExclusive(() => stopNow(reason, disposeOptions?.signal));
+      readRecoveryEnabled = false;
+      await runExclusive(() => {
+        readRecoveryEnabled = false;
+        return stopNow(reason, disposeOptions?.signal);
+      });
     },
   };
 }
