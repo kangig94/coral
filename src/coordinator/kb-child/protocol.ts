@@ -34,6 +34,12 @@ export type KbChildKbReadResult =
   | { ok: true; data: unknown }
   | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
 
+export type KbChildKbReadHealth = {
+  phase: 'not_initialized' | 'ready' | 'failed';
+  initializedAt?: number;
+  lastError?: string;
+};
+
 export type KbChildReadyMessage = {
   type: typeof KB_CHILD_READY_MESSAGE;
   pid: number;
@@ -69,6 +75,7 @@ export type KbChildHealthResult = {
   pid: number;
   startedAt: number;
   uptimeMs: number;
+  kbRead?: KbChildKbReadHealth;
 };
 
 export function encodeKbChildMessage(message: KbChildControlMessage): string {
@@ -135,7 +142,20 @@ export function isKbChildHealthResult(value: unknown): value is KbChildHealthRes
     record.status === 'ready' &&
     isPositiveInteger(record.pid) &&
     isNonNegativeFiniteNumber(record.startedAt) &&
-    isNonNegativeFiniteNumber(record.uptimeMs)
+    isNonNegativeFiniteNumber(record.uptimeMs) &&
+    (record.kbRead === undefined || isKbChildKbReadHealth(record.kbRead))
+  );
+}
+
+export function isKbChildKbReadHealth(value: unknown): value is KbChildKbReadHealth {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    (record.phase === 'not_initialized' || record.phase === 'ready' || record.phase === 'failed') &&
+    (record.initializedAt === undefined || isNonNegativeFiniteNumber(record.initializedAt)) &&
+    (record.lastError === undefined || typeof record.lastError === 'string')
   );
 }
 

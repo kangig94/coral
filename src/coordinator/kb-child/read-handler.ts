@@ -17,11 +17,12 @@ import { readEntryByKind } from '../../kb/read.js';
 import type { KbReadKind } from '../../kb/selector.js';
 import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
-import type { KbChildKbReadRequest } from './protocol.js';
+import type { KbChildKbReadHealth, KbChildKbReadRequest } from './protocol.js';
 
 type KbChildReadHandlerOptions = {
   pluginRoot: string;
   runtime?: KbQueryRuntime;
+  now?: () => number;
 };
 
 type KbChildReadContext = {
@@ -31,6 +32,12 @@ type KbChildReadContext = {
 type KbChildReadHandlerState = {
   pluginRoot: string;
   getRuntime(): KbQueryRuntime;
+  markFailure(error: unknown): void;
+};
+
+export type KbChildReadService = {
+  read(request: KbChildKbReadRequest): Promise<KbToolResult>;
+  health(): KbChildKbReadHealth;
 };
 
 function createRuntime(pluginRoot: string): Runtime {
@@ -145,10 +152,14 @@ function projectDataDir(runtime: KbQueryRuntime, ctx: KbChildReadContext | undef
   return runtime.paths.projectData(ctx.projectRoot);
 }
 
-async function run(action: () => Promise<unknown> | unknown): Promise<KbToolResult> {
+async function run(
+  action: () => Promise<unknown> | unknown,
+  onError?: (error: unknown) => void,
+): Promise<KbToolResult> {
   try {
     return kbSuccess(await action());
   } catch (error: unknown) {
+    onError?.(error);
     return failed(error);
   }
 }
@@ -170,13 +181,12 @@ function readTyped(
   if (kind === 'memo' && ctx === undefined) {
     return Promise.resolve(invalidRequest('KB child read request requires project context.'));
   }
-  const { runtime, queryContext } = createContext(state, ctx);
-  const projectDir = kind === 'memo' ? projectDataDir(runtime, ctx) : undefined;
-  if (typeof projectDir !== 'string' && projectDir !== undefined) {
-    return Promise.resolve(projectDir);
-  }
-
   try {
+    const { runtime, queryContext } = createContext(state, ctx);
+    const projectDir = kind === 'memo' ? projectDataDir(runtime, ctx) : undefined;
+    if (typeof projectDir !== 'string' && projectDir !== undefined) {
+      return Promise.resolve(projectDir);
+    }
     const entry = readEntryByKind(kind, normalizedSlug, {
       storage: runtime.storage,
       paths: createDefaultKbReadPaths(queryContext),
@@ -184,82 +194,134 @@ function readTyped(
     });
     return Promise.resolve(entry === null ? notFound(kind, normalizedSlug) : kbSuccess(entry));
   } catch (error: unknown) {
+    state.markFailure(error);
     return Promise.resolve(failed(error));
   }
 }
 
-export function createKbChildReadHandler(options: KbChildReadHandlerOptions) {
+export function createKbChildReadService(options: KbChildReadHandlerOptions): KbChildReadService {
   let runtime = options.runtime;
+  const now = options.now ?? Date.now;
+  let phase: KbChildKbReadHealth['phase'] = 'not_initialized';
+  let initializedAt: number | undefined;
+  let lastError: string | undefined;
+  const markReady = (): void => {
+    phase = 'ready';
+    initializedAt ??= now();
+    lastError = undefined;
+  };
+  const markFailure = (error: unknown): void => {
+    phase = 'failed';
+    lastError = errorMessage(error);
+  };
   const state: KbChildReadHandlerState = {
     pluginRoot: options.pluginRoot,
+    markFailure,
     getRuntime() {
-      runtime ??= createRuntime(options.pluginRoot);
+      if (runtime !== undefined) {
+        markReady();
+        return runtime;
+      }
+      try {
+        runtime = createRuntime(options.pluginRoot);
+        markReady();
+      } catch (error: unknown) {
+        markFailure(error);
+        throw error;
+      }
       return runtime;
     },
   };
 
-  return async (request: KbChildKbReadRequest): Promise<KbToolResult> => {
-    const args = parseRecord(request.args);
-    const ctx = parseContext(request.ctx);
+  const read = async (request: KbChildKbReadRequest): Promise<KbToolResult> => {
+    try {
+      const args = parseRecord(request.args);
+      const ctx = parseContext(request.ctx);
 
-    switch (request.method) {
-      case 'readSearch': {
-        const parsed = parseSearchArgs(args);
-        if ('ok' in parsed) {
-          return parsed;
+      switch (request.method) {
+        case 'readSearch': {
+          const parsed = parseSearchArgs(args);
+          if ('ok' in parsed) {
+            return parsed;
+          }
+          return run(() => {
+            const { queryContext } = createContext(state, ctx);
+            const host = createKbQueryHost(queryContext);
+            return searchKnowledgeBase(parsed, host);
+          }, markFailure);
         }
-        const { queryContext } = createContext(state, ctx);
-        const host = createKbQueryHost(queryContext);
-        return run(() => searchKnowledgeBase(parsed, host));
-      }
-      case 'diagnose': {
-        const { queryContext } = createContext(state, ctx);
-        const host = createKbQueryHost(queryContext);
-        return run(() => diagnoseKnowledgeBase(host));
-      }
-      case 'readNote':
-        return readTyped(state, 'note', request);
-      case 'readSource':
-        return readTyped(state, 'source', request);
-      case 'readCommunity':
-        return readTyped(state, 'community', request);
-      case 'readWiki':
-        return readTyped(state, 'wiki', request);
-      case 'readMemo':
-        return readTyped(state, 'memo', request);
-      case 'readPrinciple':
-        return readTyped(state, 'principle', request);
-      case 'listSources': {
-        const { queryContext } = createContext(state, ctx);
-        const host = createKbQueryHost(queryContext);
-        return run(() => listKnowledgeBaseSources(host));
-      }
-      case 'listWikis': {
-        const { queryContext } = createContext(state, ctx);
-        const host = createKbQueryHost(queryContext);
-        return run(() => listKnowledgeBaseWikis(host));
-      }
-      case 'listMemos': {
-        if (ctx === undefined) {
-          return invalidRequest('KB child read request requires project context.');
+        case 'diagnose':
+          return run(() => {
+            const { queryContext } = createContext(state, ctx);
+            const host = createKbQueryHost(queryContext);
+            return diagnoseKnowledgeBase(host);
+          }, markFailure);
+        case 'readNote':
+          return readTyped(state, 'note', request);
+        case 'readSource':
+          return readTyped(state, 'source', request);
+        case 'readCommunity':
+          return readTyped(state, 'community', request);
+        case 'readWiki':
+          return readTyped(state, 'wiki', request);
+        case 'readMemo':
+          return readTyped(state, 'memo', request);
+        case 'readPrinciple':
+          return readTyped(state, 'principle', request);
+        case 'listSources':
+          return run(() => {
+            const { queryContext } = createContext(state, ctx);
+            const host = createKbQueryHost(queryContext);
+            return listKnowledgeBaseSources(host);
+          }, markFailure);
+        case 'listWikis':
+          return run(() => {
+            const { queryContext } = createContext(state, ctx);
+            const host = createKbQueryHost(queryContext);
+            return listKnowledgeBaseWikis(host);
+          }, markFailure);
+        case 'listMemos': {
+          if (ctx === undefined) {
+            return invalidRequest('KB child read request requires project context.');
+          }
+          return run(() => {
+            const { runtime } = createContext(state, ctx);
+            return listKnowledgeBaseMemos(
+              runtime.storage,
+              runtime.paths.projectData(ctx.projectRoot),
+              parseMemoListArgs(args),
+            );
+          }, markFailure);
         }
-        const { runtime } = createContext(state, ctx);
-        const dir = projectDataDir(runtime, ctx);
-        return typeof dir === 'string'
-          ? run(() => listKnowledgeBaseMemos(runtime.storage, dir, parseMemoListArgs(args)))
-          : dir;
+        case 'listPrinciples':
+          return run(() => {
+            const { queryContext } = createContext(state, ctx);
+            const host = createKbQueryHost(queryContext);
+            return listKnowledgeBasePrinciples(parsePrinciplesArgs(args), host);
+          }, markFailure);
+        case 'listStaleCommunities':
+        case 'readCommunitySummaryInput':
+          return unavailable(
+            `KB child read method is not available yet: ${request.method}`,
+            'kb_child_read_not_supported',
+          );
       }
-      case 'listPrinciples': {
-        const { queryContext } = createContext(state, ctx);
-        const host = createKbQueryHost(queryContext);
-        return run(() => listKnowledgeBasePrinciples(parsePrinciplesArgs(args), host));
-      }
-      case 'listStaleCommunities':
-      case 'readCommunitySummaryInput':
-        return unavailable(
-          `KB child read method is not available yet: ${request.method}`,
-          'kb_child_read_not_supported',
-        );
+    } catch (error: unknown) {
+      markFailure(error);
+      return failed(error);
     }
   };
+
+  return {
+    read,
+    health: () => ({
+      phase,
+      ...(initializedAt === undefined ? {} : { initializedAt }),
+      ...(lastError === undefined ? {} : { lastError }),
+    }),
+  };
+}
+
+export function createKbChildReadHandler(options: KbChildReadHandlerOptions) {
+  return createKbChildReadService(options).read;
 }

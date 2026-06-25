@@ -68,6 +68,11 @@ export type TransportKbChildHealthSnapshot = {
   lastHeartbeatAt?: number;
   lastHeartbeatLatencyMs?: number;
   childUptimeMs?: number;
+  kbRead?: {
+    phase: 'not_initialized' | 'ready' | 'failed';
+    initializedAt?: number;
+    lastError?: string;
+  };
   reason?: string;
   lastExit?: {
     code: number | null;

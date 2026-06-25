@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { createKbChildReadHandler } from '#src/coordinator/kb-child/read-handler.js';
+import { createKbChildReadHandler, createKbChildReadService } from '#src/coordinator/kb-child/read-handler.js';
 import { memoDir, notePathFromName } from '#src/kb/paths.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -51,6 +51,40 @@ describe('KB child read handler', () => {
         title: 'Alpha Note',
         content: 'Body from the child read handler.',
       },
+    });
+  });
+
+  it('reports child read runtime health after first successful runtime use', async () => {
+    const runtime = new SimulationRuntime();
+    writeNote(runtime, 'alpha-note');
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime, now: () => 1234 });
+
+    expect(service.health()).toEqual({ phase: 'not_initialized' });
+
+    await expect(service.read({ method: 'readNote', slug: 'alpha-note' })).resolves.toMatchObject({ ok: true });
+
+    expect(service.health()).toEqual({ phase: 'ready', initializedAt: 1234 });
+  });
+
+  it('reports child read runtime failures as KB tool errors and health diagnostics', async () => {
+    const runtime = new SimulationRuntime();
+    writeNote(runtime, 'alpha-note');
+    vi.spyOn(runtime.storage, 'existsSync').mockImplementation(() => {
+      throw new Error('storage unavailable');
+    });
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime, now: () => 1234 });
+
+    const result = await service.read({ method: 'readNote', slug: 'alpha-note' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'kb_error',
+      message: 'storage unavailable',
+    });
+    expect(service.health()).toEqual({
+      phase: 'failed',
+      initializedAt: 1234,
+      lastError: 'storage unavailable',
     });
   });
 

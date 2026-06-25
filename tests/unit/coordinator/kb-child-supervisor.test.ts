@@ -160,6 +160,7 @@ describe('KB child supervisor', () => {
       pid: 151,
       startedAt: 1_000_000,
       uptimeMs: 250,
+      kbRead: { phase: 'ready', initializedAt: 1_000_100 },
     });
 
     await expect(probe).resolves.toMatchObject({
@@ -167,6 +168,7 @@ describe('KB child supervisor', () => {
       lastHeartbeatAt: 1_000_000,
       lastHeartbeatLatencyMs: 0,
       childUptimeMs: 250,
+      kbRead: { phase: 'ready', initializedAt: 1_000_100 },
       pendingRequests: 0,
     });
   });

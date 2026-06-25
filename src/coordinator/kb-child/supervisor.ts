@@ -10,6 +10,7 @@ import {
   isKbChildKbReadResult,
   isKbChildReadyMessage,
   isKbChildResponseMessage,
+  type KbChildKbReadHealth,
   type KbChildKbReadRequest,
   type KbChildKbReadResult,
   type KbChildRequestMethod,
@@ -37,6 +38,7 @@ export type KbChildHealthSnapshot = {
   lastHeartbeatAt?: number;
   lastHeartbeatLatencyMs?: number;
   childUptimeMs?: number;
+  kbRead?: KbChildKbReadHealth;
   reason?: string;
   lastExit?: KbChildExit;
   lastError?: string;
@@ -163,6 +165,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   let lastHeartbeatAt: number | undefined;
   let lastHeartbeatLatencyMs: number | undefined;
   let childUptimeMs: number | undefined;
+  let kbReadHealth: KbChildKbReadHealth | undefined;
 
   const read = (): KbChildHealthSnapshot => ({
     enabled: true,
@@ -176,6 +179,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     ...(lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt }),
     ...(lastHeartbeatLatencyMs === undefined ? {} : { lastHeartbeatLatencyMs }),
     ...(childUptimeMs === undefined ? {} : { childUptimeMs }),
+    ...(kbReadHealth === undefined ? {} : { kbRead: kbReadHealth }),
     ...(lastExit === undefined ? {} : { lastExit }),
     ...(lastError === undefined ? {} : { lastError }),
   });
@@ -250,6 +254,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
       lastHeartbeatAt = runtime.time.now();
       lastError = undefined;
       childUptimeMs = response.result.uptimeMs;
+      kbReadHealth = response.result.kbRead;
       pid = response.result.pid;
       return read();
     } catch (error: unknown) {
@@ -314,6 +319,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     lastHeartbeatAt = undefined;
     lastHeartbeatLatencyMs = undefined;
     childUptimeMs = undefined;
+    kbReadHealth = undefined;
 
     let spawned: ChildProcessLike | null = null;
     try {

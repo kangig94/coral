@@ -158,6 +158,10 @@ describe('/health typed shape (AC10a)', () => {
         lastHeartbeatAt: 1_700_000_000_060,
         lastHeartbeatLatencyMs: 3,
         childUptimeMs: 50,
+        kbRead: {
+          phase: 'ready',
+          initializedAt: 1_700_000_000_055,
+        },
         lastExit: {
           code: 0,
           signal: null,

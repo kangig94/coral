@@ -8,7 +8,7 @@ import {
   type KbChildControlMessage,
   type KbChildRequestMessage,
 } from './protocol.js';
-import { createKbChildReadHandler } from './read-handler.js';
+import { createKbChildReadService } from './read-handler.js';
 import { errorMessage } from '../../infra/error-format.js';
 
 type KbChildMainOptions = {
@@ -22,7 +22,7 @@ function writeControlMessage(message: KbChildControlMessage): void {
 export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
-  const readKb = createKbChildReadHandler({ pluginRoot });
+  const kbRead = createKbChildReadService({ pluginRoot });
   let resolveShutdown!: (code: number) => void;
   let settled = false;
   const shutdown = new Promise<number>((resolve) => {
@@ -43,6 +43,7 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
     pid: process.pid,
     startedAt,
     uptimeMs: Math.max(0, Date.now() - startedAt),
+    kbRead: kbRead.health(),
   });
   const handleRequest = async (request: KbChildRequestMessage): Promise<void> => {
     switch (request.method) {
@@ -64,7 +65,7 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
           id: request.id,
           ok: true,
           result: isKbChildKbReadRequest(request.params)
-            ? await readKb(request.params)
+            ? await kbRead.read(request.params)
             : {
                 ok: false,
                 code: 'invalid_request',
