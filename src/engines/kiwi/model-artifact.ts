@@ -1,4 +1,7 @@
+import { existsSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import * as timers from 'node:timers';
+import { Worker } from 'node:worker_threads';
 import { gunzipSync } from 'node:zlib';
 
 import { downloadBuffer } from '#src/runtime/download.js';
@@ -28,6 +31,76 @@ const TAR_FILE_TYPES = new Set(['0', '']);
 const INSTALL_PATH_UNWRITABLE_CODES = new Set(['EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
 export const KIWI_MODEL_TAR_MAX_BYTES = 512 * 1024 * 1024;
 const KIWI_MODEL_EXTRACTION_WORKER_TIMEOUT_MS = 60_000;
+const KIWI_MODEL_WRITE_WORKER_TIMEOUT_MS = 60_000;
+
+const KIWI_MODEL_WRITE_WORKER_SOURCE = `
+const { parentPort, workerData } = require('node:worker_threads');
+const { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+
+function errorCode(error) {
+  return error !== null && typeof error === 'object' && 'code' in error ? String(error.code) : undefined;
+}
+
+function renameExistingTarget(targetDir, backupDir) {
+  try {
+    renameSync(targetDir, backupDir);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function restoreBackup(targetDir, backupDir) {
+  if (!existsSync(targetDir) && existsSync(backupDir)) {
+    renameSync(backupDir, targetDir);
+  }
+}
+
+function writeModelFiles() {
+  const targetDir = workerData.targetDir;
+  const backupDir = workerData.backupDir;
+  const stagingDir = workerData.stagingDir;
+  mkdirSync(workerData.parentDir, { recursive: true });
+  rmSync(stagingDir, { recursive: true, force: true });
+  rmSync(backupDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+
+  let targetBackedUp = false;
+  try {
+    for (const file of workerData.files) {
+      writeFileSync(join(stagingDir, file.name), Buffer.from(file.data));
+    }
+    writeFileSync(join(stagingDir, 'manifest.json'), JSON.stringify(workerData.manifest, null, 2) + '\\n', {
+      encoding: 'utf-8',
+    });
+    targetBackedUp = renameExistingTarget(targetDir, backupDir);
+    renameSync(stagingDir, targetDir);
+    rmSync(backupDir, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(stagingDir, { recursive: true, force: true });
+    if (targetBackedUp) {
+      restoreBackup(targetDir, backupDir);
+    }
+    throw error;
+  }
+}
+
+try {
+  writeModelFiles();
+  parentPort.postMessage({ ok: true });
+} catch (error) {
+  parentPort.postMessage({
+    ok: false,
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+    code: errorCode(error),
+  });
+}
+`;
 
 export type KiwiModelArtifactManifest = {
   readonly packageId: typeof KIWI_INSTALL_ONLY_ID;
@@ -69,6 +142,33 @@ type KiwiModelInstallOptions = {
   readonly lockTimeoutMs?: number;
   readonly logger?: (event: { readonly kind: string; readonly message: string }) => void;
 };
+
+type KiwiModelWriteWorkerFile = {
+  readonly name: KiwiModelFileName;
+  readonly data: ArrayBuffer;
+};
+
+type KiwiModelWriteWorkerRequest = {
+  readonly targetDir: string;
+  readonly parentDir: string;
+  readonly stagingDir: string;
+  readonly backupDir: string;
+  readonly manifest: KiwiModelArtifactManifest;
+  readonly files: readonly KiwiModelWriteWorkerFile[];
+};
+
+type KiwiModelWriteWorkerSuccess = {
+  readonly ok: true;
+};
+
+type KiwiModelWriteWorkerFailure = {
+  readonly ok: false;
+  readonly message: string;
+  readonly stack?: string;
+  readonly code?: string;
+};
+
+type KiwiModelWriteWorkerReply = KiwiModelWriteWorkerSuccess | KiwiModelWriteWorkerFailure;
 
 function logInstallEvent(opts: KiwiModelInstallOptions, kind: string, message: string): void {
   opts.logger?.({ kind, message });
@@ -321,37 +421,151 @@ function createManifest(now: number): KiwiModelArtifactManifest {
   };
 }
 
-function writeModelFilesAtomic(
-  runtime: Runtime,
-  modelFiles: ReadonlyMap<KiwiModelFileName, Buffer>,
-): KiwiModelArtifactManifest {
-  const targetDir = kiwiModelDir(runtime);
-  const parentDir = dirname(targetDir);
-  const stagingDir = join(parentDir, `.cong-base-${runtime.env.pid()}-${Date.now()}.part`);
-  runtime.storage.mkdirSync(parentDir, { recursive: true });
-  runtime.storage.rmSync(stagingDir, { recursive: true, force: true });
-  runtime.storage.mkdirSync(stagingDir, { recursive: true });
+function isKiwiModelWriteWorkerReply(value: unknown): value is KiwiModelWriteWorkerReply {
+  if (typeof value !== 'object' || value === null || !('ok' in value)) {
+    return false;
+  }
+  const reply = value as { ok?: unknown; message?: unknown };
+  return reply.ok === true || (reply.ok === false && typeof reply.message === 'string');
+}
 
-  try {
-    for (const fileName of KIWI_MODEL_FILES) {
-      const content = modelFiles.get(fileName);
-      if (content === undefined) {
-        throw new Error(`Kiwi model file ${fileName} was not extracted.`);
-      }
-      runtime.storage.writeFileSync(join(stagingDir, fileName), content);
+function kiwiModelWriteWorkerFailureToError(reply: KiwiModelWriteWorkerFailure): Error {
+  const error = new Error(reply.message) as NodeJS.ErrnoException;
+  if (reply.stack !== undefined) {
+    error.stack = reply.stack;
+  }
+  if (reply.code !== undefined) {
+    error.code = reply.code;
+  }
+  return error;
+}
+
+function arrayBufferForWorker(buffer: Buffer): ArrayBuffer {
+  const copy = new Uint8Array(buffer.byteLength);
+  copy.set(buffer);
+  return copy.buffer;
+}
+
+function prepareKiwiModelWriteWorkerFiles(
+  modelFiles: ReadonlyMap<KiwiModelFileName, Buffer>,
+): {
+  readonly files: readonly KiwiModelWriteWorkerFile[];
+  readonly transferList: ArrayBuffer[];
+} {
+  const files: KiwiModelWriteWorkerFile[] = [];
+  const transferList: ArrayBuffer[] = [];
+  for (const fileName of KIWI_MODEL_FILES) {
+    const content = modelFiles.get(fileName);
+    if (content === undefined) {
+      throw new Error(`Kiwi model file ${fileName} was not extracted.`);
+    }
+    const data = arrayBufferForWorker(content);
+    files.push({ name: fileName, data });
+    transferList.push(data);
+  }
+  return { files, transferList };
+}
+
+function restoreKiwiModelBackup(targetDir: string, backupDir: string): void {
+  if (!existsSync(targetDir) && existsSync(backupDir)) {
+    renameSync(backupDir, targetDir);
+  }
+}
+
+function cleanupKiwiModelWriteFailure(request: KiwiModelWriteWorkerRequest): void {
+  rmSync(request.stagingDir, { recursive: true, force: true });
+  restoreKiwiModelBackup(request.targetDir, request.backupDir);
+  if (existsSync(request.targetDir)) {
+    rmSync(request.backupDir, { recursive: true, force: true });
+  }
+}
+
+async function runKiwiModelWriteWorker(
+  request: KiwiModelWriteWorkerRequest,
+  transferList: ArrayBuffer[],
+  timeoutMs = KIWI_MODEL_WRITE_WORKER_TIMEOUT_MS,
+): Promise<void> {
+  const worker = new Worker(KIWI_MODEL_WRITE_WORKER_SOURCE, {
+    eval: true,
+    transferList,
+    workerData: request,
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timeout = timers.setTimeout(() => {
+      settleAfterTerminate(reject, new Error(`Kiwi model file install worker timed out after ${timeoutMs}ms`), true);
+    }, timeoutMs);
+
+    function cleanup(): void {
+      timers.clearTimeout(timeout);
+      worker.removeAllListeners('message');
+      worker.removeAllListeners('error');
+      worker.removeAllListeners('exit');
     }
 
-    const manifest = createManifest(runtime.time.now());
-    runtime.storage.writeFileSync(join(stagingDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', {
-      encoding: 'utf-8',
+    function settleAfterTerminate<T>(done: (value: T) => void, value: T, cleanupArtifacts: boolean): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      void worker
+        .terminate()
+        .catch(() => undefined)
+        .then(() => {
+          let finalValue = value;
+          try {
+            if (cleanupArtifacts) {
+              cleanupKiwiModelWriteFailure(request);
+            }
+          } catch (cleanupError: unknown) {
+            finalValue = cleanupError as T;
+          }
+          done(finalValue);
+        });
+    }
+
+    worker.once('message', (message: unknown) => {
+      if (!isKiwiModelWriteWorkerReply(message)) {
+        settleAfterTerminate(reject, new Error('Kiwi model file install worker returned an invalid response'), true);
+        return;
+      }
+      if (!message.ok) {
+        settleAfterTerminate(reject, kiwiModelWriteWorkerFailureToError(message), true);
+        return;
+      }
+      settleAfterTerminate(resolve, undefined, false);
     });
-    runtime.storage.rmSync(targetDir, { recursive: true, force: true });
-    runtime.storage.renameSync(stagingDir, targetDir);
-    return manifest;
-  } catch (error: unknown) {
-    runtime.storage.rmSync(stagingDir, { recursive: true, force: true });
-    throw error;
-  }
+
+    worker.once('error', (error) => {
+      settleAfterTerminate(reject, error, true);
+    });
+
+    worker.once('exit', (code) => {
+      const message =
+        code === 0
+          ? 'Kiwi model file install worker exited before returning a response'
+          : `Kiwi model file install worker exited with code ${code}`;
+      settleAfterTerminate(reject, new Error(message), true);
+    });
+  });
+}
+
+export async function writeKiwiModelFilesAtomicInWorker(
+  runtime: Pick<Runtime, 'env' | 'ids' | 'paths' | 'time'>,
+  modelFiles: ReadonlyMap<KiwiModelFileName, Buffer>,
+): Promise<KiwiModelArtifactManifest> {
+  const targetDir = kiwiModelDir(runtime);
+  const parentDir = dirname(targetDir);
+  const installToken = `${runtime.env.pid()}-${runtime.ids.uuid()}`;
+  const stagingDir = join(parentDir, `.cong-base-${installToken}.part`);
+  const backupDir = join(parentDir, `.cong-base-${installToken}.previous`);
+  const manifest = createManifest(runtime.time.now());
+  const { files, transferList } = prepareKiwiModelWriteWorkerFiles(modelFiles);
+
+  await runKiwiModelWriteWorker({ targetDir, parentDir, stagingDir, backupDir, manifest, files }, transferList);
+  return manifest;
 }
 
 async function installDownloadedModel(
@@ -365,8 +579,10 @@ async function installDownloadedModel(
     throw new Error(`Kiwi model archive digest mismatch: expected ${KIWI_MODEL_SHA256}, got ${digest}`);
   }
 
+  logInstallEvent(opts, 'expansion.install.extract', 'Extracting Kiwi model files');
   const modelFiles = await extractKiwiModelFilesInWorker(archive);
-  writeModelFilesAtomic(runtime, modelFiles);
+  logInstallEvent(opts, 'expansion.install.write', 'Installing Kiwi model files');
+  await writeKiwiModelFilesAtomicInWorker(runtime, modelFiles);
   return {
     status: opts.update === true ? 'updated' : 'installed',
     method: 'github-release',
