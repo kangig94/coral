@@ -62,6 +62,7 @@ export const ORAMA_BASE_CONSUMER_ID = 'orama-base';
 const FTS_INDEX_UNINITIALIZED_WARNING = 'fts_index_uninitialized';
 const FTS_INDEX_STALE_TIER_WARNING = 'fts_index_stale_tier';
 const FUZZY_BODY_TOKEN_SCAN_LIMIT = 512;
+export const ORAMA_FUZZY_DOCUMENT_SCAN_LIMIT = 2_000;
 export const ORAMA_FULL_INSTALL_INSERT_BATCH_SIZE = 500;
 
 export type OramaReconcileReason = 'stale-tier' | 'incompatible' | 'terminal-analyzer-failure';
@@ -115,6 +116,11 @@ type OramaCandidateAccumulator = {
 type OramaRankedCandidate = {
   readonly document: KbOramaDocument;
   readonly score: number;
+};
+
+export type OramaFuzzyDocumentScan = {
+  readonly documents: readonly KbOramaDocument[];
+  readonly truncated: boolean;
 };
 
 type OramaDocumentStoreDb = KbOramaDb & {
@@ -446,9 +452,27 @@ function isKbOramaDocument(document: unknown): document is KbOramaDocument {
   );
 }
 
-function allOramaDocuments(db: KbOramaDb): KbOramaDocument[] {
+export function collectOramaDocumentsForFuzzyScan(
+  db: KbOramaDb,
+  limit = ORAMA_FUZZY_DOCUMENT_SCAN_LIMIT,
+): OramaFuzzyDocumentScan {
   const storeDb = db as OramaDocumentStoreDb;
-  return Object.values(storeDb.documentsStore.getAll(storeDb.data.docs)).filter(isKbOramaDocument);
+  const documents: KbOramaDocument[] = [];
+  const storedDocuments = storeDb.documentsStore.getAll(storeDb.data.docs) as Record<string, unknown>;
+  for (const key in storedDocuments) {
+    if (!Object.prototype.hasOwnProperty.call(storedDocuments, key)) {
+      continue;
+    }
+    const document = storedDocuments[key];
+    if (!isKbOramaDocument(document)) {
+      continue;
+    }
+    if (documents.length >= limit) {
+      return { documents, truncated: true };
+    }
+    documents.push(document);
+  }
+  return { documents, truncated: false };
 }
 
 function isEditDistanceAtMostOne(left: string, right: string): boolean {
@@ -516,7 +540,12 @@ function collectFuzzyOramaSearchCandidates(
     return { candidates: new Map(), exhausted: true };
   }
 
-  const matches = allOramaDocuments(db)
+  const fuzzyScan = collectOramaDocumentsForFuzzyScan(db);
+  if (fuzzyScan.truncated) {
+    return { candidates: new Map(), exhausted: false };
+  }
+
+  const matches = fuzzyScan.documents
     .filter((document) => scopeAllowsKind(scope, document.kind))
     .map((document) => ({ document, rawScore: fuzzyDocumentScore(document, analysis.fuzzy) }))
     .filter((match) => match.rawScore > 0)

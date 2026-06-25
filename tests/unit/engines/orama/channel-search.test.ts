@@ -1,7 +1,7 @@
 import { insertMultiple } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
-import { fuzzyDocumentScore, OramaSearchPort } from '#src/engines/orama/backend.js';
+import { collectOramaDocumentsForFuzzyScan, fuzzyDocumentScore, OramaSearchPort } from '#src/engines/orama/backend.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
 import {
   ORAMA_BODY_NGRAM_TERM_LIMIT,
@@ -108,6 +108,19 @@ describe('Orama channel search', () => {
 
     expect(fuzzyDocumentScore(earlyMatch, ['retrievel'])).toBeGreaterThan(0);
     expect(fuzzyDocumentScore(lateMatch, ['retrievel'])).toBe(0);
+  });
+
+  it('bounds fuzzy fallback document scans before scoring', async () => {
+    const created = await createOramaDb();
+    await insertMultiple(created.db, [
+      note('fuzzy-scan-one', 'Fuzzy Scan One', 'retrieval alpha'),
+      note('fuzzy-scan-two', 'Fuzzy Scan Two', 'retrieval beta'),
+    ]);
+
+    const scan = collectOramaDocumentsForFuzzyScan(created.db, 1);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.documents).toHaveLength(1);
   });
 
   it('does not fuzzy-match only the Latin part of a mixed-script query', async () => {
