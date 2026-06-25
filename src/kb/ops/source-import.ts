@@ -1,4 +1,5 @@
 import { basename, delimiter, extname, isAbsolute, join, resolve } from 'node:path';
+import { writeAuditEvent } from '../../infra/audit-log.js';
 import { nowIsoString } from '../../infra/time.js';
 import { throwIfAborted } from '../../runtime/abort.js';
 import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
@@ -129,11 +130,7 @@ function commandEnv(runtime: SourceImportRuntime, envAdditions: Record<string, s
   };
 }
 
-function readPositiveIntegerEnv(
-  env: Readonly<Record<string, string>>,
-  key: string,
-  fallback: number,
-): number {
+function readPositiveIntegerEnv(env: Readonly<Record<string, string>>, key: string, fallback: number): number {
   const raw = env[key];
   if (raw === undefined) {
     return fallback;
@@ -363,6 +360,16 @@ async function runCommand(
   }
   if (result.status === null && result.error?.message.startsWith('timeout:')) {
     const remediation = options.timeoutRemediation === undefined ? '' : ` ${options.timeoutRemediation}`;
+    writeAuditEvent(
+      'source_import_command_timeout',
+      {
+        displayName,
+        command: basename(command),
+        timeoutMs,
+        argCount: args.length,
+      },
+      'warn',
+    );
     throw new Error(`${displayName} timed out after ${formatDuration(timeoutMs)}.${remediation}`);
   }
 

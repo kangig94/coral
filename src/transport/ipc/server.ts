@@ -17,6 +17,7 @@ import {
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
 import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
+import { writeAuditEvent } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -450,23 +451,29 @@ async function dispatchFrame(
     if (shutdownToken === null || !tokensEqual(shutdownToken, rpcPorts.identity.shutdownToken)) {
       await writeEnvelope(
         socket,
-        requestErrorResponse(
-          request.id,
-          SHUTDOWN_UNAUTHORIZED_RESPONSE.message,
-          SHUTDOWN_UNAUTHORIZED_RESPONSE,
-        ),
+        requestErrorResponse(request.id, SHUTDOWN_UNAUTHORIZED_RESPONSE.message, SHUTDOWN_UNAUTHORIZED_RESPONSE),
         { drainTimeoutMs: options.writeDrainTimeoutMs },
       );
       socket.end();
       return;
     }
-    rpcPorts.admin.requestDrain('replaced');
+    const reason = 'replaced';
+    writeAuditEvent(
+      'admin_shutdown_requested',
+      {
+        transport: 'ipc',
+        reason,
+        instanceId: rpcPorts.identity.instanceId,
+      },
+      'warn',
+    );
+    rpcPorts.admin.requestDrain(reason);
     // `requestDrain` only flips the drain flag and notifies the idle timer;
     // the idle timer is not installed until lifecycle reaches 'running'.
     // To unblock contenders during a still-`starting` incumbent, lifecycle
     // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
     // directly. No-op when lifecycle is already running (drain handles it).
-    onShutdownRequest?.('replaced');
+    onShutdownRequest?.(reason);
     await writeEnvelope(
       socket,
       {

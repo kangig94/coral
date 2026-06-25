@@ -277,7 +277,9 @@ describe('bindWithHandoff', () => {
       await promise;
 
       const messages = [...warnSpy.mock.calls, ...errorSpy.mock.calls].map((call) => String(call[0] ?? ''));
-      const auditMessages = messages.filter((message) => message.includes('handoff.audit'));
+      const auditMessages = messages.filter(
+        (message) => message.startsWith('audit ') && message.includes('"event":"handoff_signal"'),
+      );
       expect(auditMessages.length).toBeGreaterThan(0);
       expect(auditMessages.some((message) => message.includes('"instanceId":"audit-incumbent"'))).toBe(true);
       expect(auditMessages.join('\n')).not.toContain('secret-admin-token');

@@ -18,6 +18,7 @@ const COORDINATOR_FILE_SET = new Set(COORDINATOR_FILES);
 const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE_PATHS, ALL_PRODUCTION_FILE_PATHS);
 
 const EXPECTED_COORDINATOR_FILES = new Set([
+  'src/coordinator/bootstrap-diagnostics.ts',
   'src/coordinator/bootstrap.ts',
   'src/coordinator/composition/job-control.ts',
   'src/coordinator/composition/store-services-ref.ts',

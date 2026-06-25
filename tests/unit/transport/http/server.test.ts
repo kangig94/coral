@@ -35,6 +35,7 @@ import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from '#src/jobs/paths.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { resolveProjectSource } from '#src/infra/project-source.js';
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
@@ -4530,22 +4531,35 @@ describe('execution backend server', () => {
   it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
     const pluginRoot = createProjectRoot('plugin-root');
     const backend = await startBackendServer({ pluginRoot });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
-      method: 'POST',
-      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
-    });
+    try {
+      const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+        method: 'POST',
+        headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+      });
 
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body.status).toBe('draining');
-    expect(typeof body.instanceId).toBe('string');
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.status).toBe('draining');
+      expect(typeof body.instanceId).toBe('string');
 
-    // Backend is idle (no active jobs in test), so drain fires promptly
-    await backend.controller.waitForShutdown();
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
+        ),
+      ).toBe(true);
+      expect(messages.some((message) => message.includes('"transport":"http"'))).toBe(true);
 
-    expect(backend.controller.getLifecycle()).toBe('stopped');
-    expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+      // Backend is idle (no active jobs in test), so drain fires promptly
+      await backend.controller.waitForShutdown();
+
+      expect(backend.controller.getLifecycle()).toBe('stopped');
+      expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('rejects /admin/shutdown when only the general backend token is provided', async () => {

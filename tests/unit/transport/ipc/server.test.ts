@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { backendLog } from '#src/infra/backend-log.js';
 
 const tempDirs: string[] = [];
 
@@ -68,9 +69,7 @@ async function connectRawIpcSocket(socketPath: string): Promise<Socket> {
 }
 
 function hasLogLine(ports: HttpHandlerPorts, text: string): boolean {
-  return vi
-    .mocked(ports.identity.log)
-    .mock.calls.some(([line]) => typeof line === 'string' && line.includes(text));
+  return vi.mocked(ports.identity.log).mock.calls.some(([line]) => typeof line === 'string' && line.includes(text));
 }
 
 function createPorts(): HttpHandlerPorts {
@@ -241,6 +240,7 @@ describe('ipc server', () => {
     const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
     const listener = createIpcServer(ports);
     const socketPath = makeSocketPath();
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     await listenIpcServer(listener, socketPath);
     try {
@@ -248,13 +248,23 @@ describe('ipc server', () => {
         status: 'ok',
         instanceId: 'test-instance',
       });
-      await expect(requestIpcMethod(socketPath, 'transport.shutdown', { shutdownToken: 'shutdown-token' })).resolves.toEqual({
+      await expect(
+        requestIpcMethod(socketPath, 'transport.shutdown', { shutdownToken: 'shutdown-token' }),
+      ).resolves.toEqual({
         status: 'draining',
         instanceId: 'test-instance',
       });
       expect(requestDrain).toHaveBeenCalledWith('replaced');
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
+        ),
+      ).toBe(true);
+      expect(messages.some((message) => message.includes('"transport":"ipc"'))).toBe(true);
     } finally {
       await closeIpcServer(listener);
+      warnSpy.mockRestore();
     }
   });
 
@@ -266,9 +276,7 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow(
-        'Manual shutdown required',
-      );
+      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow('Manual shutdown required');
       expect(requestDrain).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);

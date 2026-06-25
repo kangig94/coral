@@ -7,6 +7,7 @@ import {
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../jobs/wait.js';
+import { writeAuditEvent } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
 import { executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
@@ -725,7 +726,20 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       requiresRunningLifecycle: false,
       handle: async (req, res) => {
         req.resume();
-        deps.admin.requestDrain('replaced');
+        const reason = 'replaced';
+        writeAuditEvent(
+          'admin_shutdown_requested',
+          {
+            transport: 'http',
+            reason,
+            method: req.method,
+            path: shutdownPath,
+            instanceId: deps.identity.instanceId,
+            remoteAddress: req.socket.remoteAddress,
+          },
+          'warn',
+        );
+        deps.admin.requestDrain(reason);
         sendJson(res, 200, { status: 'draining', instanceId: deps.identity.instanceId });
       },
     },

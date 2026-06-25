@@ -96,6 +96,11 @@ type StartupErrorSentinel = {
   readonly attemptId: string;
   readonly pid: number;
   readonly startedAt: number;
+  readonly recordedAt?: number;
+  readonly phase?: string;
+  readonly state?: string;
+  readonly exitCode?: number;
+  readonly diagnosticFile?: string;
   readonly socketPath: string;
   readonly bundleHash: string;
   readonly flavor: 'prod' | 'dev';

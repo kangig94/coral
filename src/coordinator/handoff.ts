@@ -8,6 +8,7 @@
 
 import { join } from 'node:path';
 
+import { writeAuditEvent } from '../infra/audit-log.js';
 import { probeProcessStartedAtSeconds } from '../infra/node-process.js';
 import { backendLog } from '../infra/backend-log.js';
 import { SIGKILL_GRACE_MS, SIGTERM_GRACE_MS } from '../infra/process-constants.js';
@@ -284,7 +285,6 @@ function logHandoffSignalAudit(
 ): void {
   const currentContenderPid = contenderPid(opts.runtime.env);
   const payload = {
-    event: 'handoff_signal',
     signal,
     result,
     socketPath: opts.socketPath,
@@ -298,12 +298,7 @@ function logHandoffSignalAudit(
     signaledAtMs: opts.runtime.time.now(),
     ...(error === undefined ? {} : { error: signalErrorMessage(error) }),
   };
-  const message = `handoff.audit ${JSON.stringify(payload)}`;
-  if (signal === 'SIGKILL' || result === 'send_failed') {
-    backendLog.error(message);
-    return;
-  }
-  backendLog.warn(message);
+  writeAuditEvent('handoff_signal', payload, signal === 'SIGKILL' || result === 'send_failed' ? 'error' : 'warn');
 }
 
 function signalIncumbent(

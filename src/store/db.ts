@@ -2,6 +2,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { StoragePort } from '../infra/port-types.js';
@@ -529,6 +530,22 @@ function quarantineStoreFiles(
       quarantineDir,
       files: manifestFiles,
     });
+    writeAuditEvent(
+      'store_reset_quarantine',
+      {
+        resetAt,
+        pid: identity.pid,
+        reason: classification.kind,
+        userVersion: classification.userVersion,
+        storedVersion: classification.storedVersion,
+        expectedVersion: EXPECTED_SCHEMA_MARKER,
+        dbFile: files.dbFile,
+        quarantineDir,
+        fileCount: manifestFiles.length,
+        files: manifestFiles,
+      },
+      'warn',
+    );
   } catch (error: unknown) {
     throw documentedCoralSetupError({
       code: 'store_reset_quarantine_failed',

@@ -230,8 +230,11 @@ describe('openOrResetBackendStoreDb', () => {
 
     expect(readUserVersion(dbPath)).not.toBe(0);
     expect(legacySchemaVersionRow(dbPath)).toBeNull();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0][0])).toContain('will be lost');
+    const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+    expect(messages.some((message) => message.includes('will be lost'))).toBe(true);
+    expect(
+      messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
+    ).toBe(true);
   });
 
   it('leaves an already-current store in place without warning', () => {
@@ -339,9 +342,13 @@ describe('openOrResetBackendStoreDb', () => {
     const db = openReset(runtime, dbPath);
     db.close();
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0][0])).toContain('resetting backend store');
-    expect(String(warnSpy.mock.calls[0][0])).toContain('will be lost');
+    const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+    expect(
+      messages.some((message) => message.includes('resetting backend store') && message.includes('will be lost')),
+    ).toBe(true);
+    expect(
+      messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
+    ).toBe(true);
   });
 
   it('cleans up stale WAL and SHM siblings during mismatch reset', () => {
