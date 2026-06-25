@@ -12,6 +12,7 @@ export interface AdminControlPort {
   beginRequest(): void;
   endRequest(): void;
   requestDrain(reason: string): void;
+  probeKbChild?(): Promise<TransportKbChildHealthSnapshot>;
   restartKbChild?(reason: string): Promise<TransportKbChildHealthSnapshot>;
 }
 
@@ -63,6 +64,10 @@ export type TransportKbChildHealthSnapshot = {
   startedAt: number | null;
   readyAt: number | null;
   entrypoint?: string;
+  pendingRequests?: number;
+  lastHeartbeatAt?: number;
+  lastHeartbeatLatencyMs?: number;
+  childUptimeMs?: number;
   reason?: string;
   lastExit?: {
     code: number | null;

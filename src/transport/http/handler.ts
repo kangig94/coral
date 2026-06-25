@@ -52,6 +52,7 @@ const BODY_READ_CAPACITY_RESPONSE = {
   code: 'too_many_request_bodies',
   message: 'Too many concurrent request bodies',
 };
+const KB_CHILD_HEALTH_PROBE_TTL_MS = 5_000;
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
 const eventStreamQuerySchema = z
   .object({
@@ -62,6 +63,17 @@ const eventStreamQuerySchema = z
       .optional(),
   })
   .passthrough();
+
+function shouldProbeKbChildHealth(health: ReturnType<HttpHandlerPorts['health']['read']>, now: number): boolean {
+  const kbChild = health.kbChild;
+  if (kbChild?.enabled !== true || kbChild.phase !== 'online') {
+    return false;
+  }
+  if ((kbChild.pendingRequests ?? 0) > 0) {
+    return false;
+  }
+  return kbChild.lastHeartbeatAt === undefined || now - kbChild.lastHeartbeatAt >= KB_CHILD_HEALTH_PROBE_TTL_MS;
+}
 
 /**
  * Constant-time token comparison. Required for the network gateway because a
@@ -718,7 +730,16 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       pattern: compilePathPattern(transportLocalRoutes[0].path),
       requiresRunningLifecycle: false,
       handle: async (_req, res) => {
-        sendJson(res, 200, deps.health.read());
+        let health = deps.health.read();
+        if (shouldProbeKbChildHealth(health, deps.identity.now()) && deps.admin.probeKbChild) {
+          try {
+            await deps.admin.probeKbChild();
+            health = deps.health.read();
+          } catch {
+            // `/health` must stay available even if the child probe path itself fails.
+          }
+        }
+        sendJson(res, 200, health);
       },
     },
     {

@@ -1,7 +1,15 @@
-const READY_MESSAGE_TYPE = 'coral.kb_child.ready';
+import {
+  KB_CHILD_READY_MESSAGE,
+  KB_CHILD_RESPONSE_MESSAGE,
+  encodeKbChildMessage,
+  isKbChildRequestMessage,
+  type KbChildHealthResult,
+  type KbChildControlMessage,
+  type KbChildRequestMessage,
+} from './protocol.js';
 
-function writeControlMessage(message: unknown): void {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+function writeControlMessage(message: KbChildControlMessage): void {
+  process.stdout.write(encodeKbChildMessage(message));
 }
 
 export async function runKbChildMain(): Promise<number> {
@@ -21,10 +29,51 @@ export async function runKbChildMain(): Promise<number> {
   };
   const keepalive = setInterval(() => undefined, 60_000);
 
+  const health = (): KbChildHealthResult => ({
+    status: 'ready',
+    pid: process.pid,
+    startedAt,
+    uptimeMs: Math.max(0, Date.now() - startedAt),
+  });
+  const handleRequest = (request: KbChildRequestMessage): void => {
+    switch (request.method) {
+      case 'health':
+        writeControlMessage({ type: KB_CHILD_RESPONSE_MESSAGE, id: request.id, ok: true, result: health() });
+        return;
+      case 'shutdown':
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: { status: 'shutting_down' },
+        });
+        stop(0);
+        return;
+    }
+  };
+  let lineBuffer = '';
   process.stdin.setEncoding('utf-8');
   process.stdin.on('data', (chunk) => {
-    if (String(chunk).includes('shutdown')) {
-      stop(0);
+    lineBuffer += String(chunk);
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (isKbChildRequestMessage(parsed)) {
+          handleRequest(parsed);
+          continue;
+        }
+      } catch {
+        // Plain-text shutdown remains supported for direct smoke tests and old supervisors.
+      }
+      if (trimmed.includes('shutdown')) {
+        stop(0);
+      }
     }
   });
   process.stdin.on('end', () => stop(0));
@@ -32,7 +81,7 @@ export async function runKbChildMain(): Promise<number> {
   process.on('SIGINT', () => stop(0));
 
   writeControlMessage({
-    type: READY_MESSAGE_TYPE,
+    type: KB_CHILD_READY_MESSAGE,
     pid: process.pid,
     startedAt,
     readyAt: Date.now(),

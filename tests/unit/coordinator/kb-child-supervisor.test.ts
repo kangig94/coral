@@ -70,7 +70,29 @@ function createRuntime(children: FakeChildProcess[], time = new VirtualTime()) {
 
 function writeReady(child: FakeChildProcess, pid = child.pid): void {
   (child.stdout as unknown as PassThrough).write(
-    `${JSON.stringify({ type: 'coral.kb_child.ready', pid, readyAt: 1_000_123 })}\n`,
+    `${JSON.stringify({ type: 'coral.kb_child.ready', pid, startedAt: 1_000_000, readyAt: 1_000_123 })}\n`,
+  );
+}
+
+function latestRequest(child: FakeChildProcess): { id: string; method: string } {
+  const parsed = requestMessages(child).at(-1) ?? {};
+  if (typeof parsed.id !== 'string' || typeof parsed.method !== 'string') {
+    throw new Error('Expected a child request');
+  }
+  return { id: parsed.id, method: parsed.method };
+}
+
+function requestMessages(child: FakeChildProcess): Array<{ id?: unknown; method?: unknown }> {
+  return child.stdin.chunks
+    .join('')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { id?: unknown; method?: unknown });
+}
+
+function writeResponse(child: FakeChildProcess, id: string, result: unknown): void {
+  (child.stdout as unknown as PassThrough).write(
+    `${JSON.stringify({ type: 'coral.kb_child.response', id, ok: true, result })}\n`,
   );
 }
 
@@ -114,6 +136,105 @@ describe('KB child supervisor', () => {
     });
   });
 
+  it('probes the child over the JSONL control protocol and records heartbeat health', async () => {
+    const child = new FakeChildProcess(151);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const probe = supervisor.probe();
+    await flushMicrotasks();
+    const request = latestRequest(child);
+    expect(request.method).toBe('health');
+    writeResponse(child, request.id, {
+      status: 'ready',
+      pid: 151,
+      startedAt: 1_000_000,
+      uptimeMs: 250,
+    });
+
+    await expect(probe).resolves.toMatchObject({
+      phase: 'online',
+      lastHeartbeatAt: 1_000_000,
+      lastHeartbeatLatencyMs: 0,
+      childUptimeMs: 250,
+      pendingRequests: 0,
+    });
+  });
+
+  it('coalesces concurrent health probes into one child request', async () => {
+    const child = new FakeChildProcess(155);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const first = supervisor.probe();
+    const second = supervisor.probe();
+    await flushMicrotasks();
+    const requests = requestMessages(child);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.method).toBe('health');
+
+    writeResponse(child, String(requests[0]?.id), {
+      status: 'ready',
+      pid: 155,
+      startedAt: 1_000_000,
+      uptimeMs: 300,
+    });
+
+    await expect(first).resolves.toMatchObject({ phase: 'online', childUptimeMs: 300, pendingRequests: 0 });
+    await expect(second).resolves.toMatchObject({ phase: 'online', childUptimeMs: 300, pendingRequests: 0 });
+  });
+
+  it('times out an unanswered child health probe and clears the pending request', async () => {
+    const child = new FakeChildProcess(161);
+    const { runtime, time } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      requestTimeoutMs: 25,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const probe = supervisor.probe();
+    await flushMicrotasks();
+    expect(latestRequest(child).method).toBe('health');
+    expect(supervisor.read()).toMatchObject({ pendingRequests: 1 });
+
+    time.tick(25);
+    await flushMicrotasks();
+
+    await expect(probe).resolves.toMatchObject({
+      phase: 'online',
+      pendingRequests: 0,
+      lastError: 'health probe failed: KB child request timed out after 25ms',
+    });
+  });
+
   it('restarts by asking the current child to shut down before spawning the next generation', async () => {
     const first = new FakeChildProcess(201);
     const second = new FakeChildProcess(202);
@@ -133,7 +254,8 @@ describe('KB child supervisor', () => {
     const restart = supervisor.restart('test');
     await flushMicrotasks();
     expect(first.stdin.destroyed).toBe(true);
-    expect(first.stdin.chunks.join('')).toContain('shutdown test');
+    expect(first.stdin.chunks.join('')).toContain('"method":"shutdown"');
+    expect(first.stdin.chunks.join('')).toContain('"reason":"test"');
     expect(spawnCalls).toHaveLength(1);
 
     first.emitClose(0, null);

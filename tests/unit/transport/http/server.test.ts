@@ -832,6 +832,85 @@ describe('execution backend server', () => {
     expect(subsystems.find((s) => s.id === 'kb')?.phase).toBe('online');
   });
 
+  it('probes an online KB child before returning /health', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+      pendingRequests: 0,
+    };
+    const probedHealth: KbChildHealthSnapshot = {
+      ...childHealth,
+      lastHeartbeatAt: 30,
+      lastHeartbeatLatencyMs: 2,
+      childUptimeMs: 20,
+    };
+    let currentHealth = childHealth;
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => currentHealth),
+      start: vi.fn(async () => currentHealth),
+      probe: vi.fn(async () => {
+        currentHealth = probedHealth;
+        return currentHealth;
+      }),
+      stop: vi.fn(async () => currentHealth),
+      restart: vi.fn(async () => currentHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor });
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = (await response.json()) as { kbChild?: KbChildHealthSnapshot };
+
+    expect(response.status).toBe(200);
+    expect(kbChildSupervisor.probe).toHaveBeenCalledTimes(1);
+    expect(body.kbChild).toMatchObject({
+      phase: 'online',
+      lastHeartbeatAt: 30,
+      lastHeartbeatLatencyMs: 2,
+      childUptimeMs: 20,
+    });
+  });
+
+  it('does not probe an online KB child when recent heartbeat health is cached', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+      pendingRequests: 0,
+      lastHeartbeatAt: 1_000,
+      lastHeartbeatLatencyMs: 2,
+      childUptimeMs: 20,
+    };
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({
+      bootSnapshot: { now: () => 2_000 },
+      kbChildSupervisor,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(200);
+    expect(kbChildSupervisor.probe).not.toHaveBeenCalled();
+  });
+
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const backend = await startBackendServer({
@@ -4588,6 +4667,7 @@ describe('execution backend server', () => {
     const kbChildSupervisor: KbChildSupervisor = {
       read: vi.fn(() => childHealth),
       start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),

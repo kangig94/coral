@@ -154,6 +154,10 @@ describe('/health typed shape (AC10a)', () => {
         startedAt: 1_700_000_000_010,
         readyAt: 1_700_000_000_050,
         entrypoint: '/plugin/bridge/coral-backend.cjs',
+        pendingRequests: 0,
+        lastHeartbeatAt: 1_700_000_000_060,
+        lastHeartbeatLatencyMs: 3,
+        childUptimeMs: 50,
         lastExit: {
           code: 0,
           signal: null,

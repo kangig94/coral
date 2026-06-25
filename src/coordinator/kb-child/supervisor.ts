@@ -1,8 +1,17 @@
 import { basename, join } from 'node:path';
-import { formatError } from '../../infra/error-format.js';
+import { errorMessage, formatError } from '../../infra/error-format.js';
 import { appendBuffer, requirePipedHandles, safeKill } from '../live/process-supervision.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
+import {
+  KB_CHILD_REQUEST_MESSAGE,
+  encodeKbChildMessage,
+  isKbChildHealthResult,
+  isKbChildReadyMessage,
+  isKbChildResponseMessage,
+  type KbChildRequestMethod,
+  type KbChildResponseMessage,
+} from './protocol.js';
 
 export type KbChildPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
@@ -21,6 +30,10 @@ export type KbChildHealthSnapshot = {
   startedAt: number | null;
   readyAt: number | null;
   entrypoint?: string;
+  pendingRequests?: number;
+  lastHeartbeatAt?: number;
+  lastHeartbeatLatencyMs?: number;
+  childUptimeMs?: number;
   reason?: string;
   lastExit?: KbChildExit;
   lastError?: string;
@@ -29,6 +42,7 @@ export type KbChildHealthSnapshot = {
 export interface KbChildSupervisor {
   read(): KbChildHealthSnapshot;
   start(): Promise<KbChildHealthSnapshot>;
+  probe(): Promise<KbChildHealthSnapshot>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
@@ -42,12 +56,13 @@ type KbChildSupervisorOptions = {
   command?: string;
   startTimeoutMs?: number;
   stopTimeoutMs?: number;
+  requestTimeoutMs?: number;
   log?: (message: string) => void;
 };
 
-const READY_MESSAGE_TYPE = 'coral.kb_child.ready';
 const DEFAULT_START_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 
 export function resolveDefaultKbChildEntrypoint(pluginRoot: string, currentEntrypoint = process.argv[1]): string {
   if (typeof currentEntrypoint === 'string' && basename(currentEntrypoint) === 'coral-backend.cjs') {
@@ -70,22 +85,11 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
   return {
     read: () => ({ ...snapshot }),
     start: async () => ({ ...snapshot }),
+    probe: async () => ({ ...snapshot }),
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
     dispose: async () => undefined,
   };
-}
-
-function isReadyMessage(value: unknown): value is { type: typeof READY_MESSAGE_TYPE; pid?: number; readyAt?: number } {
-  if (value === null || typeof value !== 'object') {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  return (
-    record.type === READY_MESSAGE_TYPE &&
-    (record.pid === undefined || Number.isInteger(record.pid)) &&
-    (record.readyAt === undefined || Number.isFinite(record.readyAt))
-  );
 }
 
 function withAbortableTimeout(
@@ -117,12 +121,20 @@ function waitForClose(child: ChildProcessLike): Promise<void> {
   });
 }
 
+type PendingRequest = {
+  generation: number;
+  timeout: ReturnType<Runtime['time']['setTimeout']>;
+  resolve: (response: KbChildResponseMessage) => void;
+  reject: (error: Error) => void;
+};
+
 export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbChildSupervisor {
   const { runtime, pluginRoot } = options;
   const command = options.command ?? process.execPath;
   const entrypoint = options.entrypoint ?? resolveDefaultKbChildEntrypoint(pluginRoot);
   const startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
+  const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const log = options.log ?? (() => undefined);
 
   let phase: KbChildPhase = 'stopped';
@@ -134,7 +146,13 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   let lastExit: KbChildExit | undefined;
   let lastError: string | undefined;
   let operation: Promise<KbChildHealthSnapshot> | null = null;
+  let probeOperation: Promise<KbChildHealthSnapshot> | null = null;
   let stderrBuffer = '';
+  let nextRequestId = 1;
+  const pendingRequests = new Map<string, PendingRequest>();
+  let lastHeartbeatAt: number | undefined;
+  let lastHeartbeatLatencyMs: number | undefined;
+  let childUptimeMs: number | undefined;
 
   const read = (): KbChildHealthSnapshot => ({
     enabled: true,
@@ -144,6 +162,10 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     startedAt,
     readyAt,
     entrypoint,
+    pendingRequests: pendingRequests.size,
+    ...(lastHeartbeatAt === undefined ? {} : { lastHeartbeatAt }),
+    ...(lastHeartbeatLatencyMs === undefined ? {} : { lastHeartbeatLatencyMs }),
+    ...(childUptimeMs === undefined ? {} : { childUptimeMs }),
     ...(lastExit === undefined ? {} : { lastExit }),
     ...(lastError === undefined ? {} : { lastError }),
   });
@@ -166,6 +188,80 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     return wrapped;
   };
 
+  const rejectPendingRequests = (message: string, activeGeneration?: number): void => {
+    for (const [id, pending] of pendingRequests) {
+      if (activeGeneration !== undefined && pending.generation !== activeGeneration) {
+        continue;
+      }
+      runtime.time.clearTimeout(pending.timeout);
+      pending.reject(new Error(message));
+      pendingRequests.delete(id);
+    }
+  };
+
+  const sendRequest = async (method: KbChildRequestMethod, params?: unknown): Promise<KbChildResponseMessage> => {
+    const activeChild = child;
+    if (activeChild === null || activeChild.stdin === null || phase !== 'online') {
+      throw new Error('KB child is not online');
+    }
+
+    const id = `${generation}:${nextRequestId++}`;
+    const sentAt = runtime.time.now();
+    const response = await new Promise<KbChildResponseMessage>((resolve, reject) => {
+      const timeout = runtime.time.setTimeout(() => {
+        pendingRequests.delete(id);
+        reject(new Error(`KB child request timed out after ${requestTimeoutMs}ms`));
+      }, requestTimeoutMs);
+      timeout.unref?.();
+      pendingRequests.set(id, { generation, timeout, resolve, reject });
+      try {
+        activeChild.stdin?.write(encodeKbChildMessage({ type: KB_CHILD_REQUEST_MESSAGE, id, method, params }));
+      } catch (error: unknown) {
+        runtime.time.clearTimeout(timeout);
+        pendingRequests.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    lastHeartbeatLatencyMs = Math.max(0, runtime.time.now() - sentAt);
+    return response;
+  };
+
+  const probeNow = async (): Promise<KbChildHealthSnapshot> => {
+    try {
+      const response = await sendRequest('health');
+      if (!response.ok) {
+        setFailure(`health probe failed: ${response.error.message}`);
+        return read();
+      }
+      if (!isKbChildHealthResult(response.result)) {
+        setFailure('health probe returned malformed result');
+        return read();
+      }
+      lastHeartbeatAt = runtime.time.now();
+      lastError = undefined;
+      childUptimeMs = response.result.uptimeMs;
+      pid = response.result.pid;
+      return read();
+    } catch (error: unknown) {
+      lastError = `health probe failed: ${errorMessage(error)}`;
+      return read();
+    }
+  };
+
+  const probeExclusive = (): Promise<KbChildHealthSnapshot> => {
+    if (probeOperation !== null) {
+      return probeOperation;
+    }
+    const running = runExclusive(probeNow);
+    const tracked = running.finally(() => {
+      if (probeOperation === tracked) {
+        probeOperation = null;
+      }
+    });
+    probeOperation = tracked;
+    return tracked;
+  };
+
   const startNow = async (): Promise<KbChildHealthSnapshot> => {
     if (child !== null && (phase === 'starting' || phase === 'online')) {
       return read();
@@ -177,6 +273,9 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     readyAt = null;
     lastError = undefined;
     stderrBuffer = '';
+    lastHeartbeatAt = undefined;
+    lastHeartbeatLatencyMs = undefined;
+    childUptimeMs = undefined;
 
     let spawned: ChildProcessLike | null = null;
     try {
@@ -240,15 +339,24 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
           }
           try {
             const parsed = JSON.parse(line) as unknown;
-            if (isReadyMessage(parsed)) {
+            if (isKbChildReadyMessage(parsed)) {
               if (activeGeneration === generation && child === spawned) {
-                pid = parsed.pid ?? spawned.pid ?? null;
-                readyAt = parsed.readyAt ?? runtime.time.now();
+                pid = parsed.pid;
+                readyAt = parsed.readyAt;
                 phase = 'online';
               }
               runtime.time.clearTimeout(timeout);
               settle('ready');
               return;
+            }
+            if (isKbChildResponseMessage(parsed)) {
+              const pending = pendingRequests.get(parsed.id);
+              if (pending !== undefined) {
+                runtime.time.clearTimeout(pending.timeout);
+                pendingRequests.delete(parsed.id);
+                pending.resolve(parsed);
+              }
+              continue;
             }
           } catch {
             // Non-control stdout is ignored; stderr is retained for diagnostics.
@@ -278,6 +386,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
           child = null;
           pid = null;
           readyAt = null;
+          rejectPendingRequests('KB child exited', activeGeneration);
           if (phase === 'stopping') {
             phase = 'stopped';
           } else {
@@ -307,13 +416,22 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
       phase = 'stopped';
       pid = null;
       readyAt = null;
+      rejectPendingRequests('KB child stopped');
       return read();
     }
 
     phase = 'stopping';
     const closed = waitForClose(activeChild).then(() => 'closed' as const);
     try {
-      activeChild.stdin?.end(`shutdown ${reason}\n`);
+      activeChild.stdin?.write(
+        encodeKbChildMessage({
+          type: KB_CHILD_REQUEST_MESSAGE,
+          id: `${generation}:shutdown`,
+          method: 'shutdown',
+          params: { reason },
+        }),
+      );
+      activeChild.stdin?.end();
     } catch {
       safeKill(activeChild, 'SIGTERM');
     }
@@ -327,12 +445,14 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
       );
       safeKill(activeChild, 'SIGTERM');
     }
+    rejectPendingRequests('KB child stopped');
     return read();
   };
 
   return {
     read,
     start: () => runExclusive(startNow),
+    probe: probeExclusive,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {

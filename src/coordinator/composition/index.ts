@@ -567,6 +567,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         world.idleTimer.endRequest();
       },
       requestDrain: control.requestDrain,
+      probeKbChild: () => kbChildSupervisor.probe(),
       restartKbChild: (reason) => kbChildSupervisor.restart(reason),
     },
     health: {

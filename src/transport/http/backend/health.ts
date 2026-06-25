@@ -52,6 +52,10 @@ export type TransportKbChildHealthSnapshot = {
   startedAt: number | null;
   readyAt: number | null;
   entrypoint?: string;
+  pendingRequests?: number;
+  lastHeartbeatAt?: number;
+  lastHeartbeatLatencyMs?: number;
+  childUptimeMs?: number;
   reason?: string;
   lastExit?: {
     code: number | null;
@@ -199,6 +203,14 @@ function isTextProjectionState(value: unknown): value is TextProjectionHealthSta
   return value === 'idle' || value === 'fetching' || value === 'reindexing';
 }
 
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
 function isKbChildPhase(value: unknown): value is TransportKbChildPhase {
   return (
     value === 'disabled' ||
@@ -233,6 +245,10 @@ function isKbChildHealth(value: unknown): value is TransportKbChildHealthSnapsho
     (value.startedAt === null || Number.isFinite(value.startedAt)) &&
     (value.readyAt === null || Number.isFinite(value.readyAt)) &&
     (value.entrypoint === undefined || typeof value.entrypoint === 'string') &&
+    (value.pendingRequests === undefined || isNonNegativeInteger(value.pendingRequests)) &&
+    (value.lastHeartbeatAt === undefined || isNonNegativeFiniteNumber(value.lastHeartbeatAt)) &&
+    (value.lastHeartbeatLatencyMs === undefined || isNonNegativeFiniteNumber(value.lastHeartbeatLatencyMs)) &&
+    (value.childUptimeMs === undefined || isNonNegativeFiniteNumber(value.childUptimeMs)) &&
     (value.reason === undefined || typeof value.reason === 'string') &&
     (value.lastExit === undefined || isKbChildExit(value.lastExit)) &&
     (value.lastError === undefined || typeof value.lastError === 'string')
