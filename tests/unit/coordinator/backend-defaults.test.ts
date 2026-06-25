@@ -6,7 +6,12 @@ import { join } from 'node:path';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { resolveCoordinatorDefaults } from '#src/coordinator/composition/defaults.js';
+import {
+  HTTP_SERVER_HEADERS_TIMEOUT_MS,
+  HTTP_SERVER_KEEP_ALIVE_TIMEOUT_MS,
+  HTTP_SERVER_REQUEST_TIMEOUT_MS,
+  resolveCoordinatorDefaults,
+} from '#src/coordinator/composition/defaults.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -92,6 +97,15 @@ describe('resolveCoordinatorDefaults eager defaults', () => {
     expect(surface.acquireLockFn).toBeUndefined();
     expect(surface.removeLockIfOwnerFn).toBeUndefined();
     expect(surface.verifyBackendOwnershipFn).toBeUndefined();
+  });
+
+  it('sets explicit HTTP server timeout defaults', () => {
+    const { defaults } = createHarness();
+    const server = defaults.createServerFn(() => {});
+
+    expect(server.requestTimeout).toBe(HTTP_SERVER_REQUEST_TIMEOUT_MS);
+    expect(server.headersTimeout).toBe(HTTP_SERVER_HEADERS_TIMEOUT_MS);
+    expect(server.keepAliveTimeout).toBe(HTTP_SERVER_KEEP_ALIVE_TIMEOUT_MS);
   });
 
   it('writeBackendInfoFn persists discovery and removeBackendInfoIfOwnerFn clears it for the owner', () => {

@@ -1,6 +1,6 @@
 declare const __PLUGIN_ROOT__: string;
 
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -47,6 +47,19 @@ const defaultIdleKbSubsystem = (): Subsystem<KnowledgeBaseRuntime> => {
     dispose: async () => {},
   };
 };
+
+export const HTTP_SERVER_REQUEST_TIMEOUT_MS = 20_000;
+export const HTTP_SERVER_HEADERS_TIMEOUT_MS = 10_000;
+export const HTTP_SERVER_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+
+function applyHttpServerTimeouts(server: Server): Server {
+  server.requestTimeout = HTTP_SERVER_REQUEST_TIMEOUT_MS;
+  server.headersTimeout = HTTP_SERVER_HEADERS_TIMEOUT_MS;
+  server.keepAliveTimeout = HTTP_SERVER_KEEP_ALIVE_TIMEOUT_MS;
+  return server;
+}
+
+const createDefaultHttpServer: CreateServerFn = (handler) => applyHttpServerTimeouts(createServer(handler));
 
 type BackendEagerDefaults = {
   readonly resolvedPluginRoot: string;
@@ -124,7 +137,7 @@ export function resolveCoordinatorDefaults(
     options.createCurateAssistant ?? defaultIdleCurateAssistant;
   const registerBuiltInProvidersFn = options.registerBuiltInProvidersFn ?? (() => {});
   const recoverPersistedDiscussFn = options.recoverPersistedDiscussFn ?? discussRecovery.runStartup;
-  const createServerFn: CreateServerFn = options.createServerFn ?? createServer;
+  const createServerFn: CreateServerFn = options.createServerFn ?? createDefaultHttpServer;
   const createIdleTimer: NonNullable<CoordinatorCoreOptions['createIdleTimer']> =
     options.createIdleTimer ??
     (() =>
