@@ -47,6 +47,35 @@ export type { Authority, ForcedCorpusFreshnessTarget } from './state.js';
 export interface StuckConsumerStatus {
   readonly id: string;
   readonly elapsedSinceStopMs: number;
+  readonly authority: 'journal' | 'corpus';
+  readonly cursor?: number;
+  readonly snapshotId?: string | null;
+  readonly contentSeq?: number;
+  readonly metadataSeq?: number;
+}
+
+export interface ConsumerDriverDrainOptions {
+  readonly timeoutMs?: number;
+}
+
+export interface ConsumerDriverShutdownOptions {
+  readonly drainTimeoutMs?: number;
+}
+
+export class ConsumerDrainTimeout extends Error {
+  readonly stuckConsumers: readonly StuckConsumerStatus[];
+
+  constructor(timeoutMs: number, stuckConsumers: readonly StuckConsumerStatus[]) {
+    const rendered =
+      stuckConsumers.length === 0
+        ? 'none'
+        : stuckConsumers
+            .map((consumer) => `${consumer.id}:${consumer.authority}:${consumer.elapsedSinceStopMs}ms`)
+            .join(', ');
+    super(`ConsumerDriver drain timed out after ${timeoutMs}ms; stuck consumers: ${rendered}`);
+    this.name = 'ConsumerDrainTimeout';
+    this.stuckConsumers = stuckConsumers;
+  }
 }
 
 export interface ConsumerDriverOptions {
@@ -235,7 +264,8 @@ export class ConsumerDriver {
     });
   }
 
-  async drainAll(): Promise<void> {
+  async drainAll(options: ConsumerDriverDrainOptions = {}): Promise<void> {
+    const startedAt = this.now().getTime();
     while (true) {
       const pending: Promise<void>[] = [];
       for (const state of this.consumers.values()) {
@@ -248,15 +278,33 @@ export class ConsumerDriver {
         return;
       }
 
-      await Promise.allSettled(pending);
+      const timeoutMs = options.timeoutMs;
+      if (timeoutMs === undefined) {
+        await Promise.allSettled(pending);
+        continue;
+      }
+
+      const remainingMs = Math.max(0, startedAt + timeoutMs - this.now().getTime());
+      if (remainingMs === 0 || !(await this.waitForDrainBatch(pending, remainingMs))) {
+        throw new ConsumerDrainTimeout(timeoutMs, this.stuckConsumers());
+      }
     }
   }
 
-  async shutdown(): Promise<void> {
+  async shutdown(options: ConsumerDriverShutdownOptions = {}): Promise<void> {
     const states = [...this.consumers.values()];
-    await Promise.all(
-      states.map((state) => stopConsumer(state, new Error('ConsumerDriver shutting down'), this.stopDeps)),
+    const stopPromises = states.map((state) =>
+      stopConsumer(state, new Error('ConsumerDriver shutting down'), this.stopDeps),
     );
+    try {
+      if (options.drainTimeoutMs !== undefined) {
+        await this.drainAll({ timeoutMs: options.drainTimeoutMs });
+      }
+      await Promise.all(stopPromises);
+    } catch (error: unknown) {
+      void Promise.allSettled(stopPromises);
+      throw error;
+    }
     this.consumers.clear();
   }
 
@@ -267,7 +315,25 @@ export class ConsumerDriver {
       if (state.kind === 'stateless' || state.stopRequestedAt === null || state.inFlight === null) {
         continue;
       }
-      stuck.push({ id: state.reg.id, elapsedSinceStopMs: Math.max(0, now - state.stopRequestedAt) });
+      const elapsedSinceStopMs = Math.max(0, now - state.stopRequestedAt);
+      if (state.kind === 'journal') {
+        stuck.push({
+          id: state.reg.id,
+          authority: 'journal',
+          cursor: this.repository.readJournalCursor(state.reg.id),
+          elapsedSinceStopMs,
+        });
+        continue;
+      }
+      const cursor = this.repository.readCorpusCursor(state.reg.id);
+      stuck.push({
+        id: state.reg.id,
+        authority: 'corpus',
+        snapshotId: cursor.snapshotId === '' ? null : cursor.snapshotId,
+        contentSeq: cursor.contentSeq,
+        metadataSeq: cursor.metadataSeq,
+        elapsedSinceStopMs,
+      });
     }
     return stuck;
   }
@@ -318,5 +384,27 @@ export class ConsumerDriver {
       return state.inFlight !== null || state.pendingTarget !== null;
     }
     return state.inFlight !== null || state.pendingCorpusSnapshot !== null || state.pendingForcedCorpusApply !== null;
+  }
+
+  private async waitForDrainBatch(pending: readonly Promise<void>[], timeoutMs: number): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timeoutHandle = this.timers.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        resolve(false);
+      }, timeoutMs);
+
+      void Promise.allSettled(pending).then(() => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.timers.clearTimeout(timeoutHandle);
+        resolve(true);
+      });
+    });
   }
 }

@@ -181,6 +181,10 @@ describe('ConsumerDriver three-arm discriminator contract (Phase 7)', () => {
       expect(stuckIds).not.toContain('three-arm-stateless');
       const stuckEntry = stuck.find((entry) => entry.id === 'three-arm-stuck-apply');
       expect(stuckEntry?.elapsedSinceStopMs).toBeGreaterThanOrEqual(0);
+      expect(stuckEntry).toMatchObject({
+        authority: 'journal',
+        cursor: 0,
+      });
 
       // Drain to clean shutdown — release the stuck apply so the test exits
       // cleanly.

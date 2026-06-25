@@ -41,7 +41,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
-import { ConsumerDriver } from './consumer-driver/index.js';
+import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
 import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
@@ -171,7 +171,15 @@ export async function finalizeStoreServices(ref: StoreServicesRef): Promise<void
     return;
   }
 
-  await services.consumerDriver?.shutdown();
+  try {
+    await services.consumerDriver?.shutdown({ drainTimeoutMs: 5_000 });
+  } catch (error: unknown) {
+    if (error instanceof ConsumerDrainTimeout) {
+      backendLog.warn(`ConsumerDriver shutdown drain timed out: ${error.message}`);
+    } else {
+      throw error;
+    }
+  }
   services.storeDb.close();
   ref.clear();
 }

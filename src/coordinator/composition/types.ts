@@ -95,7 +95,7 @@ export type CoordinatorCoreOptions = {
    * `/health.diagnostics.consumerStuck`. Cursor-only and stateless
    * consumers never appear here (no inflight after stop).
    */
-  getConsumerStuck: () => Array<{ id: string; elapsedSinceStopMs: number }>;
+  getConsumerStuck: () => NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']>;
   /**
    * Reports the mutation lock state when a deadline has aborted a
    * mutation but `fn` has not yet settled. Wired against

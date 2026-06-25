@@ -14,7 +14,7 @@ import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
-import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/server-ports.js';
+import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
 import {
   knownDiscussSources,
   loadDiscussDetail,
@@ -543,12 +543,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         // transport types use `string` because the brand is enforced producer-side.
         const subsystems = runtimeState.subsystems.list().map((entry) => ({ ...entry, id: entry.id as string }));
 
-        const consumerStuck = storeServices === null ? [] : options.getConsumerStuck();
+        const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
+          storeServices === null ? [] : (options.getConsumerStuck() ?? []);
         const mutationBlockedSnapshot =
           storeServices === null ? { blocked: false as const } : options.getMutationBlocked();
         const diagnostics: {
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-          consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
+          consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
         } = {};
         if (mutationBlockedSnapshot.blocked) {
           diagnostics.mutationBlocked = {

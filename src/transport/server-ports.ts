@@ -83,7 +83,15 @@ export type HealthSnapshot = {
    */
   diagnostics?: {
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-    consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
+    consumerStuck?: Array<{
+      id: string;
+      elapsedSinceStopMs: number;
+      authority?: 'journal' | 'corpus';
+      cursor?: number;
+      snapshotId?: string | null;
+      contentSeq?: number;
+      metadataSeq?: number;
+    }>;
   };
 };
 

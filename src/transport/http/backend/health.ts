@@ -49,7 +49,15 @@ export interface BackendHealth {
   subsystems: TransportSubsystemStatus[];
   diagnostics?: {
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-    consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
+    consumerStuck?: Array<{
+      id: string;
+      elapsedSinceStopMs: number;
+      authority?: 'journal' | 'corpus';
+      cursor?: number;
+      snapshotId?: string | null;
+      contentSeq?: number;
+      metadataSeq?: number;
+    }>;
   };
 }
 
@@ -62,13 +70,28 @@ function isMutationBlocked(value: unknown): value is { owner: string; ageMs: num
   );
 }
 
-function isConsumerStuck(value: unknown): value is Array<{ id: string; elapsedSinceStopMs: number }> {
+function isConsumerStuck(value: unknown): value is NonNullable<BackendHealth['diagnostics']>['consumerStuck'] {
   if (!Array.isArray(value)) {
     return false;
   }
-  return value.every(
-    (entry) => isRecord(entry) && typeof entry.id === 'string' && Number.isFinite(entry.elapsedSinceStopMs),
-  );
+  return value.every((entry) => {
+    if (!isRecord(entry) || typeof entry.id !== 'string' || !Number.isFinite(entry.elapsedSinceStopMs)) {
+      return false;
+    }
+    if (entry.authority !== undefined && entry.authority !== 'journal' && entry.authority !== 'corpus') {
+      return false;
+    }
+    if (entry.cursor !== undefined && !Number.isFinite(entry.cursor)) {
+      return false;
+    }
+    if (entry.snapshotId !== undefined && entry.snapshotId !== null && typeof entry.snapshotId !== 'string') {
+      return false;
+    }
+    if (entry.contentSeq !== undefined && !Number.isFinite(entry.contentSeq)) {
+      return false;
+    }
+    return entry.metadataSeq === undefined || Number.isFinite(entry.metadataSeq);
+  });
 }
 
 function isDegradedReason(

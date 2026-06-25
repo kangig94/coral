@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDrainTimeout, ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { JournalApplyContext, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -146,6 +146,44 @@ describe('ConsumerDriver notify + drain + cursor', () => {
       expect(readCursorRow(db, reg.id).cursor).toBe(10);
     } finally {
       await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('times out shutdown drain when an apply consumer ignores abort', async () => {
+    const db = createDb();
+    const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: realConsumerDriverNow });
+    const applyStarted = createDeferred<void>();
+    const releaseApply = createDeferred<void>();
+    const reg = createRegistration('stuck-journal-consumer', async () => {
+      applyStarted.resolve();
+      await releaseApply.promise;
+    });
+
+    try {
+      driver.register(reg);
+      driver.notify('journal', 5);
+      await applyStarted.promise;
+
+      let thrown: unknown;
+      try {
+        await driver.shutdown({ drainTimeoutMs: 1 });
+      } catch (error: unknown) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(ConsumerDrainTimeout);
+      expect((thrown as ConsumerDrainTimeout).stuckConsumers).toEqual([
+        expect.objectContaining({
+          id: 'stuck-journal-consumer',
+          authority: 'journal',
+          cursor: 0,
+        }),
+      ]);
+
+      releaseApply.resolve();
+      await driver.shutdown();
+    } finally {
       db.close();
     }
   });
