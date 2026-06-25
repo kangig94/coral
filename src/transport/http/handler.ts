@@ -648,6 +648,24 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   }
 
   let closed = false;
+  let cleanup: (() => void) | null = null;
+  let resolveClosed: () => void = () => undefined;
+  const closedPromise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const onClose = () => {
+    if (closed) return;
+    closed = true;
+    deps.events.removeResponse(res);
+    res.off('close', onClose);
+    cleanup?.();
+    resolveClosed();
+  };
+  const writeOrClose = (event: string, payload: unknown): void => {
+    if (!writeSseEvent(res, event, payload)) {
+      onClose();
+    }
+  };
   const matchesJobScope = (jobId: string, eventProjectRoot?: string): boolean => {
     // Streams without projectRoot are intentionally suppressed; job events must be project-scoped.
     if (projectRoot === null) return false;
@@ -661,48 +679,34 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
 
   const onCreated: EventStreamHandlers['onJobCreated'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId, payload.projectRoot)) return;
-    writeSseEvent(res, 'job:created', payload);
+    writeOrClose('job:created', payload);
   };
   const onPhaseChanged: EventStreamHandlers['onPhaseChanged'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId)) return;
-    writeSseEvent(res, 'job:phase_changed', payload);
+    writeOrClose('job:phase_changed', payload);
   };
   const onProgress: EventStreamHandlers['onProgress'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId)) return;
-    writeSseEvent(res, 'job:progress', payload);
+    writeOrClose('job:progress', payload);
   };
   const onCompleted: EventStreamHandlers['onCompleted'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId)) return;
-    writeSseEvent(res, 'job:completed', payload);
+    writeOrClose('job:completed', payload);
   };
   const onDiscussUpdated: EventStreamHandlers['onDiscussUpdated'] = (payload) => {
     if (closed || !matchesDiscussScope(payload.projectRoot)) return;
-    writeSseEvent(res, 'discuss:updated', payload);
+    writeOrClose('discuss:updated', payload);
   };
-  const cleanup = subscribeAll(deps.events.bus, {
+  cleanup = subscribeAll(deps.events.bus, {
     'job:created': onCreated,
     'job:phase_changed': onPhaseChanged,
     'job:progress': onProgress,
     'job:completed': onCompleted,
     'discuss:updated': onDiscussUpdated,
   });
-
-  const onClose = () => {
-    if (closed) return;
-    closed = true;
-    deps.events.removeResponse(res);
-    res.off('close', onClose);
-    cleanup();
-  };
   res.once('close', onClose);
 
-  await new Promise<void>((resolve) => {
-    if (closed) {
-      resolve();
-      return;
-    }
-    res.once('close', resolve);
-  });
+  await closedPromise;
 }
 
 function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTable<ProjectedTransportLocalRoute> {

@@ -4,6 +4,7 @@ import {
   createServer,
   request as httpRequest,
   type IncomingMessage as ClientIncomingMessage,
+  ServerResponse,
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
@@ -1872,6 +1873,72 @@ describe('execution backend server', () => {
     }
 
     afterEach(() => {});
+
+    it('cleans up passive SSE subscriptions when an event write hits backpressure', async () => {
+      type TestServerResponseWrite = (this: ServerResponse, ...args: unknown[]) => boolean;
+      const originalWrite = ServerResponse.prototype.write as TestServerResponseWrite;
+      const writeSpy = vi.spyOn(ServerResponse.prototype, 'write').mockImplementation(function (
+        this: ServerResponse,
+        ...args: unknown[]
+      ) {
+        const chunk = args[0];
+        const text = Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk);
+        if (text.startsWith('event: job:progress')) {
+          return false;
+        }
+        return originalWrite.call(this, ...args);
+      } as TestServerResponseWrite);
+      const started = await startMockedRouteServer();
+      let stream: Awaited<ReturnType<typeof openHttpStream>> | null = null;
+
+      try {
+        stream = await openHttpStream(
+          `${started.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+          {
+            'X-Coral-Backend-Token': 'test-token',
+          },
+        );
+
+        await stream.waitForText((text) => text.includes('event: ready'));
+        expect(started.deps.streamResponses.size).toBe(1);
+
+        expect(
+          started.deps.events.bus.emit('job:progress', {
+            jobId: 'job-backpressure',
+            seq: 1,
+            message: 'slow client',
+          }),
+        ).toBe(true);
+
+        await new Promise<void>((resolve, reject) => {
+          const deadline = Date.now() + 1_000;
+          const poll = () => {
+            if (started.deps.streamResponses.size === 0) {
+              resolve();
+              return;
+            }
+            if (Date.now() > deadline) {
+              reject(new Error('Timed out waiting for SSE cleanup after backpressure'));
+              return;
+            }
+            setTimeout(poll, 5);
+          };
+          poll();
+        });
+        expect(
+          started.deps.events.bus.emit('job:progress', {
+            jobId: 'job-backpressure',
+            seq: 2,
+            message: 'should be unsubscribed',
+          }),
+        ).toBe(false);
+        expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('event: job:progress'));
+      } finally {
+        stream?.close();
+        await _closeHttpServer(started.server);
+        writeSpy.mockRestore();
+      }
+    });
 
     it('routes POST /discuss/persona-sets without requiring project context', async () => {
       const started = await startMockedRouteServer();
