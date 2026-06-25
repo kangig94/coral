@@ -63,6 +63,7 @@ export type VerifiedBackendInfo = {
   namespace: string;
   startedAt: number;
   token: string;
+  shutdownToken?: string;
   host: string;
   version: string;
   instanceId: string;
@@ -167,6 +168,8 @@ function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
     (record.host === undefined || (typeof record.host === 'string' && record.host.length > 0)) &&
     typeof record.token === 'string' &&
     record.token.length > 0 &&
+    (record.shutdownToken === undefined ||
+      (typeof record.shutdownToken === 'string' && record.shutdownToken.length > 0)) &&
     typeof record.version === 'string' &&
     record.version.length > 0 &&
     typeof record.bundleHash === 'string' &&
@@ -560,12 +563,22 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
   } else if (health && !isCompatibleHealth(health, desired)) {
     // Mismatched bundle/flavor/namespace — same shutdown path as daemon-side.
     try {
-      await requestIncumbentShutdown({
+      const info = readDiscoverySnapshot(paths);
+      const shutdownResult = await requestIncumbentShutdown({
         socketPath: paths.socketPath,
         desired: desiredIdentity,
+        shutdownToken: info?.shutdownToken,
         timeoutMs: HEALTH_TIMEOUT_MS,
         timePort: ipcTime,
       });
+      if (shutdownResult.shutdownUnauthorized) {
+        throw new BackendUnreachableError('Manual shutdown required: incumbent rejected shutdown capability.');
+      }
+      if (!shutdownResult.shutdownAttempted && info?.shutdownToken === undefined) {
+        throw new BackendUnreachableError(
+          'Manual shutdown required: refusing handoff because verified shutdown capability was unavailable.',
+        );
+      }
     } catch (error) {
       if (error instanceof IncumbentMatchesError) {
         // Health classified the incumbent as incompatible but the helper
@@ -577,6 +590,9 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
             ipcTime,
           );
         }
+      }
+      if (error instanceof BackendUnreachableError && error.message.startsWith('Manual shutdown required:')) {
+        throw error;
       }
       // ignore other errors: bounded escalation happens via socket-release wait
     }

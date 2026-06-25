@@ -55,6 +55,7 @@ export type CoordinatorServerInfo = {
   host: string;
   socketPath: string;
   token: string;
+  shutdownToken: string;
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
@@ -71,6 +72,7 @@ export interface CoordinatorIdentity {
   readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
   readonly token: string;
+  readonly shutdownToken: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
 }
@@ -512,6 +514,7 @@ async function runLifecycleStartup({
             source: 'discovery',
             instanceId: info.instanceId,
             token: info.token,
+            shutdownToken: info.shutdownToken,
           };
         },
         signalLedger: createFileHandoffSignalLedger({
@@ -577,6 +580,7 @@ async function runLifecycleStartup({
       host,
       socketPath,
       token: identity.token,
+      shutdownToken: identity.shutdownToken,
       version,
       bundleHash,
       flavor,
@@ -694,6 +698,7 @@ async function runLifecycleStartup({
       host,
       socketPath,
       token: identity.token,
+      shutdownToken: identity.shutdownToken,
       version,
       bundleHash,
       flavor,

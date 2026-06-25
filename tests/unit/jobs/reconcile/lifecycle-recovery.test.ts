@@ -439,6 +439,7 @@ function createLifecycleHarness(
       flavor: 'prod',
       instanceId: `lifecycle-${Math.random()}`,
       token: 'test-token',
+      shutdownToken: 'test-shutdown-token',
       now: () => 1,
       log: () => {},
     },

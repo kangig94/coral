@@ -7,6 +7,8 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
@@ -229,10 +231,28 @@ describe('incumbent handoff reset authority', () => {
   it('serves pre-service health/errors and waits for incumbent handoff before resetting the old store', async () => {
     const runtime = createRuntime();
     const token = 'test-token';
+    const shutdownToken = 'test-shutdown-token';
     const dbPath = runtime.paths.coral.store.dbFile;
     createMismatchStore(dbPath);
     const incumbentStore = new DatabaseSync(dbPath);
     let shutdownReceived = false;
+    const processStartedAt =
+      probeProcessStartedAtSeconds(process.pid, runtime.env.platform() as NodeJS.Platform) ?? 1;
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 1,
+        socketPath: runtime.paths.coral.coordinator.socketPath,
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+        namespace: 'ns',
+        startedAt: Date.now(),
+        token,
+        shutdownToken,
+        processStartedAt,
+      },
+      { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+    );
 
     const incumbent = await startScriptedIncumbent(runtime.paths.coral.coordinator.socketPath, async (request) => {
       if (request.method === 'transport.health') {
@@ -245,12 +265,13 @@ describe('incumbent handoff reset authority', () => {
             namespace: 'ns',
             status: 'ok',
             pid: process.pid,
-            processStartedAt: 1,
+            processStartedAt,
           } satisfies IncumbentHealth,
         };
       }
       if (request.method === 'transport.shutdown') {
         shutdownReceived = true;
+        expect(request.params).toEqual({ shutdownToken });
         return { kind: 'response', id: request.id, result: { status: 'draining' } };
       }
       return { kind: 'response', id: request.id, result: null };
@@ -265,6 +286,7 @@ describe('incumbent handoff reset authority', () => {
         flavor: 'prod',
         instanceId: 'replacement',
         token,
+        shutdownToken: 'replacement-shutdown-token',
         now: () => Date.now(),
         log: () => {},
       },

@@ -180,6 +180,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         flavor: 'prod',
         instanceId: 'test-instance',
         token: 'test-token',
+        shutdownToken: 'test-shutdown-token',
         now: () => 1_000,
         log: (message) => {
           mockState.events.push(`log:${message.trim()}`);

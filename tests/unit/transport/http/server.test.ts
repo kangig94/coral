@@ -727,6 +727,7 @@ describe('execution backend server', () => {
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
+        shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
         flavor: 'prod',
@@ -744,6 +745,7 @@ describe('execution backend server', () => {
       started,
       baseUrl: `http://127.0.0.1:${started.port}`,
       token: started.token,
+      shutdownToken: started.shutdownToken,
     };
   }
 
@@ -4430,7 +4432,7 @@ describe('execution backend server', () => {
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
 
     expect(response.status).toBe(200);
@@ -4443,6 +4445,19 @@ describe('execution backend server', () => {
 
     expect(backend.controller.getLifecycle()).toBe('stopped');
     expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+  });
+
+  it('rejects /admin/shutdown when only the general backend token is provided', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+    expect(backend.controller.getLifecycle()).toBe('running');
   });
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
@@ -4479,7 +4494,7 @@ describe('execution backend server', () => {
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
 
     expect(response.status).toBe(200);
@@ -4513,7 +4528,7 @@ describe('execution backend server', () => {
 
     await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -4535,14 +4550,14 @@ describe('execution backend server', () => {
 
     const first = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
     expect(first.status).toBe(200);
     expect(((await first.json()) as Record<string, unknown>).status).toBe('draining');
 
     const second = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
     expect(second.status).toBe(200);
     expect(((await second.json()) as Record<string, unknown>).status).toBe('draining');
@@ -4578,6 +4593,7 @@ describe('execution backend server', () => {
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Headers'))).toEqual([
       'content-type',
       'x-coral-backend-token',
+      'x-coral-shutdown-token',
     ]);
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Methods'))).toEqual([
       'delete',
@@ -4664,6 +4680,7 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'handoff-instance-1',
           token: 'test-token',
+          shutdownToken: 'test-shutdown-token',
           now: () => 1,
           log: () => {},
         },

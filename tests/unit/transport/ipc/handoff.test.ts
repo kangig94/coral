@@ -127,7 +127,45 @@ describe('requestIncumbentShutdown', () => {
       }
       if (request.method === 'transport.shutdown') {
         receivedShutdown = true;
+        expect(request.params).toEqual({ shutdownToken: 'shutdown-token' });
         return { kind: 'response', id: request.id, result: { status: 'draining' } };
+      }
+      return { kind: 'response', id: request.id, result: null };
+    });
+
+    const result = await requestIncumbentShutdown({
+      socketPath,
+      desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
+      shutdownToken: 'shutdown-token',
+      timeoutMs: 1_000,
+    });
+    expect(receivedShutdown).toBe(true);
+    expect(result.shutdownAttempted).toBe(true);
+    expect(result.shutdownUnauthorized).toBe(false);
+    expect(result.health?.bundleHash).toBe('old');
+    expect(result.verifiedIdentity).toEqual({ pid: 4242, processStartedAt: 9_999, source: 'health' });
+  });
+
+  it('skips transport.shutdown when no shutdown token is available', async () => {
+    const socketPath = makeSocketPath('no-token');
+    let receivedShutdown = false;
+    await startScriptedServer(socketPath, async (request) => {
+      if (request.method === 'transport.health') {
+        return {
+          kind: 'response',
+          id: request.id,
+          result: {
+            bundleHash: 'old',
+            flavor: 'prod',
+            namespace: 'ns',
+            status: 'ok',
+            pid: 4242,
+            processStartedAt: 9_999,
+          } satisfies IncumbentHealth,
+        };
+      }
+      if (request.method === 'transport.shutdown') {
+        receivedShutdown = true;
       }
       return { kind: 'response', id: request.id, result: null };
     });
@@ -137,8 +175,8 @@ describe('requestIncumbentShutdown', () => {
       desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
       timeoutMs: 1_000,
     });
-    expect(receivedShutdown).toBe(true);
-    expect(result.health?.bundleHash).toBe('old');
+    expect(receivedShutdown).toBe(false);
+    expect(result.shutdownAttempted).toBe(false);
     expect(result.verifiedIdentity).toEqual({ pid: 4242, processStartedAt: 9_999, source: 'health' });
   });
 

@@ -24,6 +24,7 @@ function createPorts(): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'test-token',
+      shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',

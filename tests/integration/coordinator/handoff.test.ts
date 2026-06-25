@@ -89,6 +89,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         };
       }
       if (req.method === 'transport.shutdown') {
+        expect(req.params).toEqual({ shutdownToken: 'shutdown-token' });
         // Schedule incumbent socket close — emulates incumbent entering drain.
         queueMicrotask(() => {
           incumbentServer?.close();
@@ -121,7 +122,12 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         bindAttempt: async () =>
           socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
         runtime,
-        readVerifiedIncumbentFromDiscovery: () => null,
+        readVerifiedIncumbentFromDiscovery: () => ({
+          pid: 12345,
+          processStartedAt: 999_999,
+          source: 'discovery',
+          shutdownToken: 'shutdown-token',
+        }),
         totalBudgetMs: 5_000,
       });
 

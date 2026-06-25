@@ -15,6 +15,7 @@ export interface CoordinatorDiscoveryRecord {
   namespace: string;
   startedAt: number;
   token: string;
+  shutdownToken?: string;
   host?: string;
   version?: string;
   instanceId?: string;
@@ -74,6 +75,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
   const namespace = nonEmptyString(record.namespace);
   const startedAt = positiveNumber(record.startedAt);
   const token = nonEmptyString(record.token);
+  const shutdownToken = optionalNonEmptyString(record.shutdownToken);
   const host = optionalNonEmptyString(record.host);
   const version = optionalNonEmptyString(record.version);
   const instanceId = optionalNonEmptyString(record.instanceId);
@@ -88,6 +90,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
     namespace === null ||
     startedAt === null ||
     token === null ||
+    shutdownToken === null ||
     host === null ||
     version === null ||
     instanceId === null ||
@@ -106,6 +109,7 @@ function normalizeDiscoveryRecord(value: unknown): CoordinatorDiscoveryRecord | 
     startedAt,
     token,
   };
+  if (shutdownToken !== undefined) normalized.shutdownToken = shutdownToken;
   if (host !== undefined) normalized.host = host;
   if (version !== undefined) normalized.version = version;
   if (instanceId !== undefined) normalized.instanceId = instanceId;

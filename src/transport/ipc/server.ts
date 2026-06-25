@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
 import { dirname } from 'node:path';
@@ -28,6 +29,10 @@ const INVALID_JSON_RESPONSE = {
 const BACKEND_SHUTTING_DOWN_RESPONSE = {
   code: 'backend_shutting_down',
   message: 'Backend shutting down',
+};
+const SHUTDOWN_UNAUTHORIZED_RESPONSE = {
+  code: 'shutdown_unauthorized',
+  message: 'Manual shutdown required: shutdown capability missing or invalid',
 };
 export const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
 export const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
@@ -105,6 +110,21 @@ function invalidRequestResponse(id: JsonRpcRequestEnvelope['id'] | null): JsonRp
     id,
     error: buildJsonRpcError(-32600, 'Invalid request'),
   };
+}
+
+function tokensEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a, 'utf-8');
+  const bBuf = Buffer.from(b, 'utf-8');
+  if (aBuf.length !== bBuf.length) return false;
+  return timingSafeEqual(aBuf, bBuf);
+}
+
+function readShutdownToken(params: unknown): string | null {
+  if (params === null || typeof params !== 'object') {
+    return null;
+  }
+  const token = (params as Record<string, unknown>).shutdownToken;
+  return typeof token === 'string' && token.length > 0 ? token : null;
 }
 
 function waitForSocketDrain(socket: Socket, timeoutMs: number): Promise<boolean> {
@@ -426,6 +446,20 @@ async function dispatchFrame(
   }
 
   if (request.method === 'transport.shutdown') {
+    const shutdownToken = readShutdownToken(request.params);
+    if (shutdownToken === null || !tokensEqual(shutdownToken, rpcPorts.identity.shutdownToken)) {
+      await writeEnvelope(
+        socket,
+        requestErrorResponse(
+          request.id,
+          SHUTDOWN_UNAUTHORIZED_RESPONSE.message,
+          SHUTDOWN_UNAUTHORIZED_RESPONSE,
+        ),
+        { drainTimeoutMs: options.writeDrainTimeoutMs },
+      );
+      socket.end();
+      return;
+    }
     rpcPorts.admin.requestDrain('replaced');
     // `requestDrain` only flips the drain flag and notifies the idle timer;
     // the idle timer is not installed until lifecycle reaches 'running'.

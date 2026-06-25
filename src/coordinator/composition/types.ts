@@ -38,6 +38,7 @@ export type CoordinatorBootSnapshot = {
   flavor?: 'prod' | 'dev';
   instanceId?: string;
   token?: string;
+  shutdownToken?: string;
   now?: () => number;
   log?: (message: string) => void;
   bindHost?: string;

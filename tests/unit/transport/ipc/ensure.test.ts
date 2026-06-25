@@ -19,7 +19,7 @@ import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 const mockState = vi.hoisted(() => ({
   spawn: vi.fn(() => ({ pid: 12_345, unref: vi.fn() })),
   health: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
-  shutdown: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
+  shutdown: vi.fn<(socketPath: string, params?: unknown, options?: unknown) => Promise<unknown>>(),
   bindSocket: vi.fn<() => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>>(),
   home: '',
   platform: process.platform,
@@ -43,7 +43,7 @@ vi.mock('#src/transport/ipc/client.js', () => ({
     socketPath,
     request: vi.fn(),
     health: (options?: unknown) => mockState.health(socketPath, options),
-    shutdown: (options?: unknown) => mockState.shutdown(socketPath, options),
+    shutdown: (params?: unknown, options?: unknown) => mockState.shutdown(socketPath, params, options),
   }),
 }));
 
@@ -85,6 +85,7 @@ function writeDiscovery(
     port: number;
     host: string;
     token: string;
+    shutdownToken: string | null;
     version: string;
     bundleHash: string;
     flavor: 'prod' | 'dev';
@@ -106,6 +107,7 @@ function writeDiscovery(
       host: overrides.host ?? '127.0.0.1',
       socketPath: overrides.socketPath ?? socketPath(root, flavor),
       token: overrides.token ?? 'test-token',
+      ...(overrides.shutdownToken === null ? {} : { shutdownToken: overrides.shutdownToken ?? 'test-shutdown-token' }),
       version: overrides.version ?? '0.5.2',
       bundleHash: overrides.bundleHash ?? 'test-hash',
       flavor,
@@ -345,6 +347,33 @@ describe('ipc ensure', () => {
     expect(ensured.instanceId).toBe('new-coordinator');
     expect(mockState.shutdown).toHaveBeenCalledTimes(1);
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails fast when mismatched incumbent has no verified shutdown capability', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4240,
+      token: 'old-token',
+      shutdownToken: null,
+      instanceId: 'old-coordinator',
+      bundleHash: 'old-hash',
+    });
+
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'old-hash',
+      flavor: 'prod',
+      instanceId: 'old-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensure } = await importEnsure();
+
+    await expect(ensure(root)).rejects.toThrow('Manual shutdown required');
+    expect(mockState.shutdown).not.toHaveBeenCalled();
+    expect(mockState.spawn).not.toHaveBeenCalled();
   });
 
   it('spawns fresh when health is unreachable and no coordinator is present', async () => {

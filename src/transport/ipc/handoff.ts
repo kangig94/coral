@@ -21,6 +21,7 @@ export type IncumbentIdentity = {
   source: 'health' | 'discovery';
   instanceId?: string;
   token?: string;
+  shutdownToken?: string;
 };
 
 export type DesiredIncumbentIdentity = {
@@ -85,6 +86,13 @@ function remainingBudget(deadlineMs: number, timePort: TimePort): number {
   return Math.max(0, deadlineMs - timePort.now());
 }
 
+function isShutdownUnauthorizedError(error: unknown): boolean {
+  if (!(error instanceof Error) || error.cause === null || typeof error.cause !== 'object') {
+    return false;
+  }
+  return (error.cause as Record<string, unknown>).code === 'shutdown_unauthorized';
+}
+
 /**
  * One round-trip with the incumbent over its IPC socket: read `transport.health`,
  * then if the incumbent is mismatched (or unreachable) request `transport.shutdown`.
@@ -102,13 +110,21 @@ function remainingBudget(deadlineMs: number, timePort: TimePort): number {
 export async function requestIncumbentShutdown(opts: {
   socketPath: string;
   desired: DesiredIncumbentIdentity;
+  shutdownToken?: string;
   timeoutMs: number;
   timePort?: TimePort;
-}): Promise<{ health: IncumbentHealth | null; verifiedIdentity: IncumbentIdentity | null }> {
+}): Promise<{
+  health: IncumbentHealth | null;
+  verifiedIdentity: IncumbentIdentity | null;
+  shutdownAttempted: boolean;
+  shutdownUnauthorized: boolean;
+}> {
   const timePort = opts.timePort ?? createRealTimePort();
   const client = createIpcClient(opts.socketPath, timePort);
   const deadlineMs = timePort.now() + opts.timeoutMs;
   let health: IncumbentHealth | null = null;
+  let shutdownAttempted = false;
+  let shutdownUnauthorized = false;
 
   if (remainingBudget(deadlineMs, timePort) > 0) {
     try {
@@ -124,10 +140,17 @@ export async function requestIncumbentShutdown(opts: {
     throw new IncumbentMatchesError(opts.desired);
   }
 
-  if (remainingBudget(deadlineMs, timePort) > 0) {
+  if (typeof opts.shutdownToken === 'string' && opts.shutdownToken.length > 0 && remainingBudget(deadlineMs, timePort) > 0) {
+    shutdownAttempted = true;
     try {
-      await client.shutdown<unknown>({ timeoutMs: remainingBudget(deadlineMs, timePort) });
-    } catch {
+      await client.shutdown<unknown>(
+        { shutdownToken: opts.shutdownToken },
+        { timeoutMs: remainingBudget(deadlineMs, timePort) },
+      );
+    } catch (error: unknown) {
+      if (isShutdownUnauthorizedError(error)) {
+        shutdownUnauthorized = true;
+      }
       // ignore; incumbent may already be draining or unresponsive
     }
   }
@@ -144,5 +167,5 @@ export async function requestIncumbentShutdown(opts: {
         }
       : null;
 
-  return { health, verifiedIdentity };
+  return { health, verifiedIdentity, shutdownAttempted, shutdownUnauthorized };
 }

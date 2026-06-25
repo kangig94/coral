@@ -101,6 +101,21 @@ const flush = async (rounds = 16): Promise<void> => {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 };
 
+function shutdownResult(overrides: {
+  health?: IncumbentHealth | null;
+  verifiedIdentity?: IncumbentIdentity | null;
+  shutdownAttempted?: boolean;
+  shutdownUnauthorized?: boolean;
+}) {
+  return {
+    health: null,
+    verifiedIdentity: null,
+    shutdownAttempted: true,
+    shutdownUnauthorized: false,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   mockedShutdown.mockReset();
   mockedProbe.mockReset();
@@ -146,7 +161,7 @@ describe('bindWithHandoff', () => {
       processStartedAt: 1_000_000,
       source: 'health',
     };
-    mockedShutdown.mockResolvedValue({
+    mockedShutdown.mockResolvedValue(shutdownResult({
       health: {
         bundleHash: 'old',
         flavor: 'prod',
@@ -155,7 +170,7 @@ describe('bindWithHandoff', () => {
         processStartedAt: 1_000_000,
       } as IncumbentHealth,
       verifiedIdentity,
-    });
+    }));
     const promise = bindWithHandoff(options);
     // Poll cycles: each iteration sleeps `SOCKET_BIND_POLL_MS` (200).
     for (let i = 0; i < 5; i += 1) {
@@ -173,7 +188,7 @@ describe('bindWithHandoff', () => {
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
     });
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: null });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
 
     const promise = bindWithHandoff(options);
     for (let i = 0; i < 30; i += 1) {
@@ -198,9 +213,10 @@ describe('bindWithHandoff', () => {
         source: 'discovery',
         instanceId: 'incumbent-a',
         token: 'token-a',
+        shutdownToken: 'shutdown-token-a',
       }),
     });
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     mockedProbe.mockReturnValue(555_000); // matched
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
@@ -234,9 +250,9 @@ describe('bindWithHandoff', () => {
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
       isAlive: () => alive,
       totalBudgetMs: 500,
-      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery' }),
+      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', shutdownToken: 'shutdown-token' }),
     });
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     mockedProbe.mockImplementation(() => {
       // Simulate process gone right at SIGTERM revalidation: probe returns null.
       return null;
@@ -265,9 +281,9 @@ describe('bindWithHandoff', () => {
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
       isAlive: () => true,
-      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery' }),
+      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', shutdownToken: 'shutdown-token' }),
     });
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     // Probe returns DIFFERENT start time → mismatch → HandoffEscalationError.
     mockedProbe.mockReturnValue(999); // mismatch
 
@@ -292,7 +308,7 @@ describe('bindWithHandoff', () => {
       processStartedAt: 700,
       source: 'health',
     };
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     mockedProbe.mockReturnValue(700);
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
@@ -335,10 +351,11 @@ describe('bindWithHandoff', () => {
         source: 'discovery',
         instanceId: 'same-incumbent',
         token: 'same-token',
+        shutdownToken: 'same-shutdown-token',
       }),
     });
     lastSignaledAtMs = time.now();
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     mockedProbe.mockReturnValue(verifiedIdentity.processStartedAt);
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
@@ -357,13 +374,14 @@ describe('bindWithHandoff', () => {
       pid: 8888,
       processStartedAt: 1_111_000,
       source: 'discovery',
+      shutdownToken: 'shutdown-token',
     };
     const { options, time, killCalls } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
       readDiscovery: () => verifiedFromDiscovery,
     });
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: null });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
     mockedProbe.mockReturnValue(1_111_000); // matched
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);
@@ -383,7 +401,7 @@ describe('bindWithHandoff', () => {
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 200,
     });
-    mockedShutdown.mockResolvedValue({ health: null, verifiedIdentity: null });
+    mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity: null }));
     const callsAtDeadline: number[] = [];
 
     const promise = bindWithHandoff(options).catch((e: Error) => e);

@@ -21,6 +21,10 @@ export type IpcRequestOptions = {
   time?: TimePort;
 };
 
+export type IpcShutdownParams = {
+  shutdownToken?: string;
+};
+
 export type IpcSubscriptionOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -40,7 +44,7 @@ export type IpcClient = {
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>>;
   health<TResult>(options?: IpcRequestOptions): Promise<TResult>;
-  shutdown<TResult>(options?: IpcRequestOptions): Promise<TResult>;
+  shutdown<TResult>(params?: IpcShutdownParams, options?: IpcRequestOptions): Promise<TResult>;
 };
 
 let nextRequestId = 1;
@@ -505,8 +509,8 @@ export function createIpcClient(socketPath: string, timePort: TimePort = createR
         ...options,
         time: options?.time ?? timePort,
       }),
-    shutdown: <TResult>(options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, 'transport.shutdown', undefined, {
+    shutdown: <TResult>(params?: IpcShutdownParams, options?: IpcRequestOptions) =>
+      requestIpcMethod<TResult>(socketPath, 'transport.shutdown', params ?? {}, {
         ...options,
         time: options?.time ?? timePort,
       }),

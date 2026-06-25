@@ -146,6 +146,9 @@ function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boole
   if (left.token !== undefined && left.token !== right.token) {
     return false;
   }
+  if (left.shutdownToken !== undefined && left.shutdownToken !== right.shutdownToken) {
+    return false;
+  }
   return true;
 }
 
@@ -186,6 +189,11 @@ function refreshIncumbentForSignal(
   if (!sameIncumbent(incumbent, fresh)) {
     throw new HandoffEscalationError(
       `Manual repair required: refusing to signal pid=${incumbent.pid} because fresh coordinator discovery changed`,
+    );
+  }
+  if (fresh.shutdownToken === undefined) {
+    throw new HandoffEscalationError(
+      `Manual shutdown required: refusing to signal pid=${incumbent.pid} because verified shutdown capability was unavailable`,
     );
   }
   return fresh;
@@ -279,9 +287,12 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
     sawIncumbent = true;
     let remaining = deadline - opts.runtime.time.now();
     if (remaining > 0) {
+      const shutdownIdentity = readFreshDiscovery(opts, lastHealth);
+      incumbent = mergeVerifiedDiscovery(incumbent, shutdownIdentity);
       const shutdownResult = await requestIncumbentShutdown({
         socketPath: opts.socketPath,
         desired: opts.desired,
+        shutdownToken: shutdownIdentity?.shutdownToken,
         timeoutMs: Math.min(SHUTDOWN_RPC_TIMEOUT_MS, remaining),
         timePort: opts.runtime.time,
       });
@@ -290,6 +301,17 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         incumbent = shutdownResult.verifiedIdentity;
         const incumbentBundleHash = shutdownResult.health?.bundleHash ?? 'unknown';
         backendLog.info(`Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`);
+      }
+      incumbent = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
+      if (shutdownResult.shutdownUnauthorized) {
+        throw new HandoffEscalationError(
+          `Manual shutdown required: incumbent pid=${incumbent?.pid ?? 'unknown'} rejected shutdown capability`,
+        );
+      }
+      if (!shutdownResult.shutdownAttempted && incumbent !== null && incumbent.shutdownToken === undefined) {
+        throw new HandoffEscalationError(
+          `Manual shutdown required: refusing handoff for pid=${incumbent.pid} because verified shutdown capability was unavailable`,
+        );
       }
     }
     incumbent = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));

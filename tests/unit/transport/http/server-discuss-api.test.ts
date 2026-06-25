@@ -242,6 +242,7 @@ describe('server discuss API', () => {
           port,
           host: '127.0.0.1',
           token: 'test-token',
+          shutdownToken: 'test-shutdown-token',
           socketPath: '',
           version: '9.9.9',
           bundleHash: 'test-hash',

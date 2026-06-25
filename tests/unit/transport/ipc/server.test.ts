@@ -80,6 +80,7 @@ function createPorts(): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'unused-for-ipc',
+      shutdownToken: 'shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -247,11 +248,28 @@ describe('ipc server', () => {
         status: 'ok',
         instanceId: 'test-instance',
       });
-      await expect(requestIpcMethod(socketPath, 'transport.shutdown')).resolves.toEqual({
+      await expect(requestIpcMethod(socketPath, 'transport.shutdown', { shutdownToken: 'shutdown-token' })).resolves.toEqual({
         status: 'draining',
         instanceId: 'test-instance',
       });
       expect(requestDrain).toHaveBeenCalledWith('replaced');
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('rejects transport.shutdown without the shutdown capability', async () => {
+    const ports = createPorts();
+    const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow(
+        'Manual shutdown required',
+      );
+      expect(requestDrain).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);
     }

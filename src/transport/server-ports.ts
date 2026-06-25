@@ -141,6 +141,7 @@ export interface EventStreamPort {
 export type HandlerIdentity = {
   pluginRoot: string;
   token: string;
+  shutdownToken: string;
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';

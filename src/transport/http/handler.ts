@@ -177,7 +177,7 @@ function sendValidationFailure(res: ServerResponse, error: ZodError): void {
 
 function setCorsHeaders(_req: IncomingMessage, res: ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, X-Coral-Shutdown-Token, Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
 }
 
@@ -681,13 +681,6 @@ export function createHttpHandler(
       return;
     }
 
-    const authHeader = req.headers['x-coral-backend-token'];
-    if (typeof authHeader !== 'string' || !tokensEqual(authHeader, identity.token)) {
-      req.resume();
-      sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
-      return;
-    }
-
     if (!req.url) {
       req.resume();
       sendJson(res, 404, { code: 'not_found', message: 'Not found' });
@@ -696,6 +689,14 @@ export function createHttpHandler(
 
     const parsedUrl = new URL(req.url, 'http://localhost');
     const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
+    const requiresShutdownToken = localMatch?.route.path === shutdownPath;
+    const authHeader = requiresShutdownToken ? req.headers['x-coral-shutdown-token'] : req.headers['x-coral-backend-token'];
+    const expectedToken = requiresShutdownToken ? identity.shutdownToken : identity.token;
+    if (typeof authHeader !== 'string' || !tokensEqual(authHeader, expectedToken)) {
+      req.resume();
+      sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
+      return;
+    }
 
     if (localMatch && !localMatch.route.requiresRunningLifecycle) {
       await localMatch.route.handle(req, res, parsedUrl);

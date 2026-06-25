@@ -90,6 +90,7 @@ describe('pre-PR running incumbent (R6)', () => {
       }
       if (req.method === 'transport.shutdown') {
         shutdownReceived = true;
+        expect(req.params).toEqual({ shutdownToken: 'shutdown-token' });
         // Schedule socket close on next tick — emulates daemon entering drain
         // and releasing the socket within budget.
         queueMicrotask(() => {
@@ -125,7 +126,12 @@ describe('pre-PR running incumbent (R6)', () => {
         return socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' };
       },
       runtime,
-      readVerifiedIncumbentFromDiscovery: () => null,
+      readVerifiedIncumbentFromDiscovery: () => ({
+        pid: 9999,
+        processStartedAt: 1_111_111,
+        source: 'discovery',
+        shutdownToken: 'shutdown-token',
+      }),
       totalBudgetMs: 5_000,
     });
 

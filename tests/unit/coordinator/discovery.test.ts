@@ -65,6 +65,7 @@ describe('coordinator discovery', () => {
         namespace: 'ns-a',
         startedAt: 1_713_456_789_000,
         token: 'token-a',
+        shutdownToken: 'shutdown-token-a',
         version: '1.2.3',
         instanceId: 'instance-a',
       },
@@ -80,6 +81,7 @@ describe('coordinator discovery', () => {
       namespace: 'ns-a',
       startedAt: 1_713_456_789_000,
       token: 'token-a',
+      shutdownToken: 'shutdown-token-a',
       version: '1.2.3',
       instanceId: 'instance-a',
     });

@@ -81,6 +81,7 @@ export function createCoordinatorWorld(
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
+  const shutdownToken = bootSnapshot.shutdownToken ?? runtime.ids.randomBytes(32).toString('hex');
   const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
   assertRemoteBindHostAllowed(bindHost, runtime.env.get(REMOTE_BIND_OPT_IN_ENV));
   const advertiseHost = bootSnapshot.advertiseHost ?? runtime.env.get('CORAL_BACKEND_ADVERTISE_HOST');
@@ -120,6 +121,7 @@ export function createCoordinatorWorld(
     flavor,
     instanceId,
     token,
+    shutdownToken,
     now,
     log,
   };
