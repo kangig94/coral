@@ -11,8 +11,9 @@ export interface BuildExecPromiseOptions {
   timeoutMs?: number;
   maxBuffer: number;
   encoding: 'utf-8';
+  killProcessGroup?: boolean;
   spawn: (options: RuntimeSpawnOptions) => ChildProcessLike;
-  kill: (pid: number, signal: NodeJS.Signals | 0) => void;
+  kill: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   setTimeout: (fn: () => void, ms: number) => TimerHandle;
   clearTimeout: (handle: TimerHandle | null) => void;
 }
@@ -56,8 +57,21 @@ function appendOutput(
 }
 
 export function buildExecPromise(options: BuildExecPromiseOptions): Promise<ExecResult> {
-  const { args, clearTimeout, command, cwd, encoding, env, inheritEnv, kill, maxBuffer, setTimeout, spawn, timeoutMs } =
-    options;
+  const {
+    args,
+    clearTimeout,
+    command,
+    cwd,
+    encoding,
+    env,
+    inheritEnv,
+    kill,
+    killProcessGroup = false,
+    maxBuffer,
+    setTimeout,
+    spawn,
+    timeoutMs,
+  } = options;
 
   return new Promise<ExecResult>((resolveResult) => {
     let stdout = '';
@@ -75,6 +89,7 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       cwd,
       env,
       inheritEnv,
+      ...(killProcessGroup ? { detached: true } : {}),
     });
 
     child.stdin?.end();
@@ -95,17 +110,27 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       resolveResult(result);
     };
 
+    const signalChild = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) {
+        return;
+      }
+      const groupSignaled = killProcessGroup ? kill(-child.pid, signal) : false;
+      if (!groupSignaled) {
+        kill(child.pid, signal);
+      }
+    };
+
     const scheduleKill = (reason: 'timeout' | 'maxBuffer'): void => {
       if (resolved || wrapperKilled !== null || child.pid === undefined) {
         return;
       }
       wrapperKilled = reason;
-      kill(child.pid, 'SIGTERM');
+      signalChild('SIGTERM');
       killTimer = setTimeout(() => {
         if (resolved || child.pid === undefined) {
           return;
         }
-        kill(child.pid, 'SIGKILL');
+        signalChild('SIGKILL');
       }, SIGTERM_GRACE_MS);
       killTimer.unref?.();
     };

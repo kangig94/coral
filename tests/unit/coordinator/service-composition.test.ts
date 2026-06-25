@@ -1762,7 +1762,7 @@ describe('ExecutionService', () => {
       });
 
       it('routes abort through runtime.process.kill', () => {
-        const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => {});
+        const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => true);
         const service = createService(ctx);
         const { progressStore, abortRegistry } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */

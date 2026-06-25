@@ -38,6 +38,7 @@ type ProcessExitOutcome = {
 
 type RegisteredProcess = {
   pid: number;
+  processGroupId: number | null;
   alive: boolean;
   closed: boolean;
   timers: Set<TimerHandle>;
@@ -206,7 +207,7 @@ export class MockProcessSpawner {
     const script = this.spawnScripts.shift() ?? {};
     const pid = script.pid ?? this.allocatePid();
     const child = new MockChildProcess(pid, (childPid, signal) => this.killChild(childPid, signal));
-    const record = this.registerProcess(pid, child, script.kills ?? [], null);
+    const record = this.registerProcess(pid, options.detached ? pid : null, child, script.kills ?? [], null);
     attachSpawnRecordingMetadata(child, {
       command: options.command,
       args: options.args,
@@ -294,29 +295,19 @@ export class MockProcessSpawner {
     return { ...script.result };
   }
 
-  kill(pid: number, signal: NodeJS.Signals | 0): void {
+  kill(pid: number, signal: NodeJS.Signals | 0): boolean {
     this.killCalls.push({ pid, signal });
+    const targets = this.resolveKillTargets(pid);
     if (signal === 0) {
-      return;
+      return targets.length > 0;
     }
-    const record = this.processes.get(pid);
-    if (!record || record.closed) {
-      return;
+    if (targets.length === 0) {
+      return false;
     }
-    const action = this.resolveKillAction(record.killActions, signal);
-    if (!action) {
-      record.complete({
-        exitCode: null,
-        signal,
-      });
-      return;
+    for (const record of targets) {
+      this.applyKill(record, signal);
     }
-    this.schedule(record, action.delayMs ?? 0, () => {
-      record.complete({
-        exitCode: action.exitCode ?? null,
-        signal: action.exitSignal ?? signal,
-      });
-    });
+    return true;
   }
 
   killChild(pid: number, signal?: NodeJS.Signals): boolean {
@@ -367,7 +358,7 @@ export class MockProcessSpawner {
 
     const exitDeferred = createDeferred<DurableProcessExit>();
     const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;
-    const record = this.registerProcess(pid, null, script.kills ?? [], exitDeferred, (outcome) => {
+    const record = this.registerProcess(pid, null, null, script.kills ?? [], exitDeferred, (outcome) => {
       const exitRecord: DurableProcessExit = {
         exitCode: outcome.exitCode ?? null,
         signal: outcome.signal ?? null,
@@ -445,6 +436,7 @@ export class MockProcessSpawner {
 
   private registerProcess(
     pid: number,
+    processGroupId: number | null,
     child: MockChildProcess | null,
     killActions: MockKillAction[],
     waitForExit: Deferred<DurableProcessExit> | null,
@@ -452,6 +444,7 @@ export class MockProcessSpawner {
   ): RegisteredProcess {
     const record: RegisteredProcess = {
       pid,
+      processGroupId,
       alive: true,
       closed: false,
       timers: new Set(),
@@ -492,6 +485,34 @@ export class MockProcessSpawner {
       killActions.find((entry) => entry.signal === 'default') ??
       null
     );
+  }
+
+  private resolveKillTargets(pid: number): RegisteredProcess[] {
+    if (pid < 0) {
+      const processGroupId = Math.abs(pid);
+      return [...this.processes.values()].filter(
+        (record) => record.processGroupId === processGroupId && !record.closed,
+      );
+    }
+    const record = this.processes.get(pid);
+    return record && !record.closed ? [record] : [];
+  }
+
+  private applyKill(record: RegisteredProcess, signal: NodeJS.Signals): void {
+    const action = this.resolveKillAction(record.killActions, signal);
+    if (!action) {
+      record.complete({
+        exitCode: null,
+        signal,
+      });
+      return;
+    }
+    this.schedule(record, action.delayMs ?? 0, () => {
+      record.complete({
+        exitCode: action.exitCode ?? null,
+        signal: action.exitSignal ?? signal,
+      });
+    });
   }
 }
 

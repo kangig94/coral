@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { MAX_BUFFER } from '#src/infra/process-constants.js';
+import { MAX_BUFFER, SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { createSimulationBackend } from '#tools/simulation/core/backend.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
@@ -339,6 +339,7 @@ describe('simulation runtime', () => {
       expect.objectContaining({
         command: 'fake-exec',
         args: ['--queued'],
+        detached: true,
       }),
     ]);
     expect(observed).toEqual([
@@ -392,7 +393,49 @@ describe('simulation runtime', () => {
       status: null,
       error: expect.any(Error),
     });
-    expect(runtime.spawner.killCalls).toEqual([{ pid: 20_000, signal: 'SIGTERM' }]);
+    expect(runtime.spawner.spawnCalls).toEqual([
+      expect.objectContaining({
+        command: 'fake-timeout',
+        args: ['--clock'],
+        detached: true,
+      }),
+    ]);
+    expect(runtime.spawner.killCalls).toEqual([{ pid: -20_000, signal: 'SIGTERM' }]);
+  });
+
+  it('escalates async exec process-group timeouts to SIGKILL when SIGTERM does not close the child', async () => {
+    const runtime = new SimulationRuntime();
+    runtime.spawner.enqueueSpawn({
+      close: null,
+      kills: [
+        { signal: 'SIGTERM', delayMs: SIGTERM_GRACE_MS + 10, exitSignal: 'SIGTERM' },
+        { signal: 'SIGKILL', delayMs: 0, exitSignal: 'SIGKILL' },
+      ],
+    });
+
+    const execPromise = runtime.process.exec('fake-stubborn-timeout', ['--clock'], { timeout: 5 });
+
+    await flushMicrotasks();
+    runtime.time.tick(5);
+    await flushMicrotasks();
+    expect(runtime.spawner.killCalls).toEqual([{ pid: -20_000, signal: 'SIGTERM' }]);
+
+    runtime.time.tick(SIGTERM_GRACE_MS);
+    await flushMicrotasks();
+    expect(runtime.spawner.killCalls).toEqual([
+      { pid: -20_000, signal: 'SIGTERM' },
+      { pid: -20_000, signal: 'SIGKILL' },
+    ]);
+
+    runtime.time.tick(1);
+    await flushMicrotasks();
+    await expect(execPromise).resolves.toMatchObject({
+      stdout: '',
+      stderr: '',
+      status: null,
+      error: expect.any(Error),
+    });
+    expect(pendingTimerCount(runtime.time)).toBe(0);
   });
 
   it('uses a queued execSync script API with deterministic command matching and recorded calls', () => {

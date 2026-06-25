@@ -49,6 +49,7 @@ export type RuntimeSpawnOptions = {
   envAdditions?: Record<string, string>;
   inheritEnv?: boolean;
   shell?: boolean;
+  detached?: boolean;
 };
 
 export type DurableLaunchOptions = {
@@ -94,7 +95,7 @@ export interface ProcessPort {
   exec(command: string, args: string[], options?: RuntimeExecOptions): Promise<ExecResult>;
   // Sync exec uses spawnSync semantics, including SIGTERM-only timeout handling.
   execSync(command: string, args: string[], options?: RuntimeExecOptions): ExecResult;
-  kill(pid: number, signal: NodeJS.Signals | 0): void;
+  kill(pid: number, signal: NodeJS.Signals | 0): boolean;
   isAlive(pid: number): boolean;
   durable: DurableExecutionTransport;
 }

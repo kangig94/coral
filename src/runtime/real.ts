@@ -298,6 +298,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: options.cwd,
         shell: options.shell,
+        detached: options.detached,
         env: spawnEnv,
       });
       return child as unknown as ChildProcessLike;
@@ -305,8 +306,10 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     kill: (pid, signal) => {
       try {
         process.kill(pid, signal);
+        return true;
       } catch {
         /* already dead */
+        return false;
       }
     },
     isAlive: (pid) => processIsAlive(pid),
@@ -325,6 +328,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       timeoutMs: execOptions.timeout,
       maxBuffer: execOptions.maxBuffer,
       encoding: execOptions.encoding ?? 'utf-8',
+      killProcessGroup: capturedEnv.platform !== 'win32',
       spawn: runtimeProcess.spawn,
       kill: runtimeProcess.kill,
       setTimeout: time.setTimeout,

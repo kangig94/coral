@@ -57,6 +57,7 @@ function buildEscalationHarness(opts: {
     process: {
       kill: (pid: number, signal: NodeJS.Signals | 0) => {
         killCalls.push({ pid, signal, at: time.now() - start });
+        return true;
       },
       isAlive,
     } as unknown as Runtime['process'],

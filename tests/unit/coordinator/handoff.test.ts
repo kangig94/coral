@@ -67,6 +67,7 @@ function buildHarness(opts?: {
         if (opts?.killThrows) {
           throw new Error('kill failed');
         }
+        return true;
       },
       isAlive: isAliveImpl,
     } as unknown as Runtime['process'],

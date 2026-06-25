@@ -271,7 +271,7 @@ describe('openOrResetBackendStoreDb', () => {
     const quarantineRoot = join(dbDir, 'store-reset-quarantine');
     const quarantineEntries = readdirSync(quarantineRoot);
     expect(quarantineEntries).toHaveLength(1);
-    const quarantineDir = join(quarantineRoot, quarantineEntries[0]!);
+    const quarantineDir = join(quarantineRoot, quarantineEntries[0]);
     expect(readFileSync(join(quarantineDir, 'store.db-wal'), 'utf-8')).toBe('dummy wal');
     expect(existsSync(join(quarantineDir, 'store.db-shm'))).toBe(true);
     rmSync(join(quarantineDir, 'store.db-wal'), { force: true });
