@@ -7,8 +7,11 @@ import {
   KB_CHILD_REQUEST_MESSAGE,
   encodeKbChildMessage,
   isKbChildHealthResult,
+  isKbChildKbReadResult,
   isKbChildReadyMessage,
   isKbChildResponseMessage,
+  type KbChildKbReadRequest,
+  type KbChildKbReadResult,
   type KbChildRequestMethod,
   type KbChildResponseMessage,
 } from './protocol.js';
@@ -43,6 +46,7 @@ export interface KbChildSupervisor {
   read(): KbChildHealthSnapshot;
   start(): Promise<KbChildHealthSnapshot>;
   probe(): Promise<KbChildHealthSnapshot>;
+  readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
@@ -86,6 +90,12 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
     read: () => ({ ...snapshot }),
     start: async () => ({ ...snapshot }),
     probe: async () => ({ ...snapshot }),
+    readKb: async () => ({
+      ok: false,
+      code: 'kb_unavailable',
+      message: `KB child supervisor is disabled: ${reason}`,
+      detail: { reason: 'kb_child_disabled' },
+    }),
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
     dispose: async () => undefined,
@@ -145,7 +155,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   let readyAt: number | null = null;
   let lastExit: KbChildExit | undefined;
   let lastError: string | undefined;
-  let operation: Promise<KbChildHealthSnapshot> | null = null;
+  let operation: Promise<unknown> | null = null;
   let probeOperation: Promise<KbChildHealthSnapshot> | null = null;
   let stderrBuffer = '';
   let nextRequestId = 1;
@@ -176,7 +186,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     log(`[kb-child] ${message}`);
   };
 
-  const runExclusive = (fn: () => Promise<KbChildHealthSnapshot>): Promise<KbChildHealthSnapshot> => {
+  const runExclusive = <T>(fn: () => Promise<T>): Promise<T> => {
     const previous = operation ?? Promise.resolve(read());
     const next = previous.catch(() => read()).then(fn);
     const wrapped = next.finally(() => {
@@ -260,6 +270,34 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     });
     probeOperation = tracked;
     return tracked;
+  };
+
+  const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
+    try {
+      const response = await sendRequest('kb.read', request);
+      if (!response.ok) {
+        return {
+          ok: false,
+          code: 'kb_child_protocol_error',
+          message: response.error.message,
+        };
+      }
+      if (!isKbChildKbReadResult(response.result)) {
+        return {
+          ok: false,
+          code: 'kb_child_protocol_error',
+          message: 'KB child returned malformed read result.',
+        };
+      }
+      return response.result;
+    } catch (error: unknown) {
+      return {
+        ok: false,
+        code: 'kb_unavailable',
+        message: `KB child read request failed: ${errorMessage(error)}`,
+        detail: { reason: 'kb_child_unavailable' },
+      };
+    }
   };
 
   const startNow = async (): Promise<KbChildHealthSnapshot> => {
@@ -453,6 +491,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     read,
     start: () => runExclusive(startNow),
     probe: probeExclusive,
+    readKb: readKbNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {

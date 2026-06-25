@@ -2,7 +2,37 @@ export const KB_CHILD_READY_MESSAGE = 'coral.kb_child.ready';
 export const KB_CHILD_REQUEST_MESSAGE = 'coral.kb_child.request';
 export const KB_CHILD_RESPONSE_MESSAGE = 'coral.kb_child.response';
 
-export type KbChildRequestMethod = 'health' | 'shutdown';
+export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read';
+
+export const KB_CHILD_KB_READ_METHODS = [
+  'readSearch',
+  'diagnose',
+  'readNote',
+  'readSource',
+  'readCommunity',
+  'listStaleCommunities',
+  'readCommunitySummaryInput',
+  'readWiki',
+  'readMemo',
+  'readPrinciple',
+  'listSources',
+  'listWikis',
+  'listMemos',
+  'listPrinciples',
+] as const;
+
+export type KbChildKbReadMethod = (typeof KB_CHILD_KB_READ_METHODS)[number];
+
+export type KbChildKbReadRequest = {
+  method: KbChildKbReadMethod;
+  args?: unknown;
+  slug?: string;
+  ctx?: unknown;
+};
+
+export type KbChildKbReadResult =
+  | { ok: true; data: unknown }
+  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
 
 export type KbChildReadyMessage = {
   type: typeof KB_CHILD_READY_MESSAGE;
@@ -75,7 +105,7 @@ export function isKbChildRequestMessage(value: unknown): value is KbChildRequest
     record.type === KB_CHILD_REQUEST_MESSAGE &&
     typeof record.id === 'string' &&
     record.id.length > 0 &&
-    (record.method === 'health' || record.method === 'shutdown')
+    (record.method === 'health' || record.method === 'shutdown' || record.method === 'kb.read')
   );
 }
 
@@ -107,4 +137,30 @@ export function isKbChildHealthResult(value: unknown): value is KbChildHealthRes
     isNonNegativeFiniteNumber(record.startedAt) &&
     isNonNegativeFiniteNumber(record.uptimeMs)
   );
+}
+
+export function isKbChildKbReadMethod(value: unknown): value is KbChildKbReadMethod {
+  return typeof value === 'string' && KB_CHILD_KB_READ_METHODS.includes(value as KbChildKbReadMethod);
+}
+
+export function isKbChildKbReadRequest(value: unknown): value is KbChildKbReadRequest {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return isKbChildKbReadMethod(record.method) && (record.slug === undefined || typeof record.slug === 'string');
+}
+
+export function isKbChildKbReadResult(value: unknown): value is KbChildKbReadResult {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.ok === true) {
+    return 'data' in record;
+  }
+  if (record.ok !== false || typeof record.code !== 'string' || typeof record.message !== 'string') {
+    return false;
+  }
+  return record.remediation === undefined || typeof record.remediation === 'string';
 }

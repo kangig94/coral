@@ -74,20 +74,20 @@ function writeReady(child: FakeChildProcess, pid = child.pid): void {
   );
 }
 
-function latestRequest(child: FakeChildProcess): { id: string; method: string } {
+function latestRequest(child: FakeChildProcess): { id: string; method: string; params?: unknown } {
   const parsed = requestMessages(child).at(-1) ?? {};
   if (typeof parsed.id !== 'string' || typeof parsed.method !== 'string') {
     throw new Error('Expected a child request');
   }
-  return { id: parsed.id, method: parsed.method };
+  return { id: parsed.id, method: parsed.method, params: parsed.params };
 }
 
-function requestMessages(child: FakeChildProcess): Array<{ id?: unknown; method?: unknown }> {
+function requestMessages(child: FakeChildProcess): Array<{ id?: unknown; method?: unknown; params?: unknown }> {
   return child.stdin.chunks
     .join('')
     .split('\n')
     .filter(Boolean)
-    .map((line) => JSON.parse(line) as { id?: unknown; method?: unknown });
+    .map((line) => JSON.parse(line) as { id?: unknown; method?: unknown; params?: unknown });
 }
 
 function writeResponse(child: FakeChildProcess, id: string, result: unknown): void {
@@ -202,6 +202,37 @@ describe('KB child supervisor', () => {
 
     await expect(first).resolves.toMatchObject({ phase: 'online', childUptimeMs: 300, pendingRequests: 0 });
     await expect(second).resolves.toMatchObject({ phase: 'online', childUptimeMs: 300, pendingRequests: 0 });
+  });
+
+  it('sends read-only KB requests over the child control protocol', async () => {
+    const child = new FakeChildProcess(157);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    await flushMicrotasks();
+    const request = latestRequest(child);
+    expect(request.method).toBe('kb.read');
+    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    writeResponse(child, request.id, {
+      ok: true,
+      data: { slug: 'alpha-note', source: 'child' },
+    });
+
+    await expect(read).resolves.toEqual({
+      ok: true,
+      data: { slug: 'alpha-note', source: 'child' },
+    });
   });
 
   it('times out an unanswered child health probe and clears the pending request', async () => {

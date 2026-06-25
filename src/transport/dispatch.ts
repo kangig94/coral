@@ -416,13 +416,13 @@ export async function executeCatalogRequest(
     }
 
     case 'kb.diagnose':
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.diagnose()));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.diagnose()));
 
     case 'kb.note.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readNote(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readNote(slug)));
     }
 
     case 'kb.note.create': {
@@ -462,7 +462,7 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readSource(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readSource(slug)));
     }
 
     case 'kb.source.create': {
@@ -501,7 +501,7 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readWiki(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readWiki(slug)));
     }
 
     case 'kb.wiki.create': {
@@ -587,17 +587,17 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readCommunity(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readCommunity(slug)));
     }
 
     case 'kb.community.list-stale':
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.listStaleCommunities()));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listStaleCommunities()));
 
     case 'kb.community.summary-input': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readCommunitySummaryInput(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readCommunitySummaryInput(slug)));
     }
 
     case 'kb.community.set-summary': {
@@ -618,7 +618,7 @@ export async function executeCatalogRequest(
       const parsed = request as { projectRoot: string; owner?: string };
       return unaryHttp(
         domainResultToHttp(
-          rpcPorts.kb.listMemos(
+          await rpcPorts.kb.listMemos(
             parsed.owner === undefined ? {} : { owner: parsed.owner },
             buildQueryContext(parsed, rpcPorts, authority),
           ),
@@ -630,7 +630,9 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string; projectRoot: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts, authority))));
+      return unaryHttp(
+        domainResultToHttp(await rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts, authority))),
+      );
     }
 
     case 'kb.memo.create': {
@@ -683,7 +685,7 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(rpcPorts.kb.readPrinciple(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readPrinciple(slug)));
     }
 
     case 'kb.reindex': {

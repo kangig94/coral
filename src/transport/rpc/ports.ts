@@ -56,21 +56,23 @@ export interface WorkflowRequestPort {
   execute(request: WorkflowPortInput, ctx: InvocationContext): Promise<WorkflowPortResult>;
 }
 
+type MaybePromise<T> = T | Promise<T>;
+
 export interface KbRequestPort {
   readSearch(args: Record<string, unknown>): Promise<KbToolResult>;
-  diagnose(): KbToolResult;
-  readNote(slug: string): KbToolResult;
-  readSource(slug: string): KbToolResult;
-  readCommunity(slug: string): KbToolResult;
-  listStaleCommunities(): KbToolResult;
-  readCommunitySummaryInput(slug: string): KbToolResult;
+  diagnose(): MaybePromise<KbToolResult>;
+  readNote(slug: string): MaybePromise<KbToolResult>;
+  readSource(slug: string): MaybePromise<KbToolResult>;
+  readCommunity(slug: string): MaybePromise<KbToolResult>;
+  listStaleCommunities(): MaybePromise<KbToolResult>;
+  readCommunitySummaryInput(slug: string): MaybePromise<KbToolResult>;
   setCommunitySummary(args: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
-  readWiki(slug: string): KbToolResult;
-  readMemo(slug: string, ctx: InvocationContext): KbToolResult;
-  readPrinciple(slug: string): KbToolResult;
+  readWiki(slug: string): MaybePromise<KbToolResult>;
+  readMemo(slug: string, ctx: InvocationContext): MaybePromise<KbToolResult>;
+  readPrinciple(slug: string): MaybePromise<KbToolResult>;
   listSources(): Promise<KbToolResult>;
   listWikis(): Promise<KbToolResult>;
-  listMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
+  listMemos(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
   listPrinciples(args: Record<string, unknown>): Promise<KbToolResult>;
   createNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   updateNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;

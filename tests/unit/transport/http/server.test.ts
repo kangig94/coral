@@ -856,6 +856,7 @@ describe('execution backend server', () => {
         currentHealth = probedHealth;
         return currentHealth;
       }),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       stop: vi.fn(async () => currentHealth),
       restart: vi.fn(async () => currentHealth),
       dispose: vi.fn(async () => undefined),
@@ -894,6 +895,7 @@ describe('execution backend server', () => {
       read: vi.fn(() => childHealth),
       start: vi.fn(async () => childHealth),
       probe: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
@@ -909,6 +911,61 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(kbChildSupervisor.probe).not.toHaveBeenCalled();
+  });
+
+  it('delegates read-only KB RPCs to the KB child when explicitly enabled', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const readKb = vi.fn(async (request: unknown) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-child', request },
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      readKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({
+      delegateKbReadsToChild: true,
+      kbChildSupervisor,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      servedBy: 'kb-child',
+      request: { method: 'readSearch', args: { query: 'alpha' } },
+    });
+    expect(readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
+  });
+
+  it('returns KB unavailable when read delegation is enabled without a child supervisor', async () => {
+    const backend = await startBackendServer({
+      delegateKbReadsToChild: true,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      code: 'kb_unavailable',
+      detail: { reason: 'kb_child_disabled' },
+    });
   });
 
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
@@ -4668,6 +4725,7 @@ describe('execution backend server', () => {
       read: vi.fn(() => childHealth),
       start: vi.fn(async () => childHealth),
       probe: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),

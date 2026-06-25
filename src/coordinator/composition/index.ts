@@ -103,14 +103,19 @@ import { KbSourceImportService, parseKbSourceImportRequest } from '../services/k
 import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { createDisabledKbChildSupervisor } from '../kb-child/supervisor.js';
+import { createDisabledKbChildSupervisor, type KbChildSupervisor } from '../kb-child/supervisor.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
+export const CORAL_KB_CHILD_READS_ENV = 'CORAL_KB_CHILD_READS';
 
 const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
   message: 'Too many event stream connections',
 };
+
+function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions): boolean {
+  return options.delegateKbReadsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '1';
+}
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
 
@@ -150,6 +155,26 @@ function readResourceSnapshot(
     ipcOpenSockets,
     eventStreamResponses,
     ...(fdCount === undefined ? {} : { fdCount }),
+  };
+}
+
+function createKbChildReadPort(localKb: RpcPorts['kb'], kbChildSupervisor: KbChildSupervisor): RpcPorts['kb'] {
+  return {
+    ...localKb,
+    readSearch: (args) => kbChildSupervisor.readKb({ method: 'readSearch', args }),
+    diagnose: () => kbChildSupervisor.readKb({ method: 'diagnose' }),
+    readNote: (slug) => kbChildSupervisor.readKb({ method: 'readNote', slug }),
+    readSource: (slug) => kbChildSupervisor.readKb({ method: 'readSource', slug }),
+    readCommunity: (slug) => kbChildSupervisor.readKb({ method: 'readCommunity', slug }),
+    listStaleCommunities: () => kbChildSupervisor.readKb({ method: 'listStaleCommunities' }),
+    readCommunitySummaryInput: (slug) => kbChildSupervisor.readKb({ method: 'readCommunitySummaryInput', slug }),
+    readWiki: (slug) => kbChildSupervisor.readKb({ method: 'readWiki', slug }),
+    readMemo: (slug, ctx) => kbChildSupervisor.readKb({ method: 'readMemo', slug, ctx }),
+    readPrinciple: (slug) => kbChildSupervisor.readKb({ method: 'readPrinciple', slug }),
+    listSources: () => kbChildSupervisor.readKb({ method: 'listSources' }),
+    listWikis: () => kbChildSupervisor.readKb({ method: 'listWikis' }),
+    listMemos: (args, ctx) => kbChildSupervisor.readKb({ method: 'listMemos', args, ctx }),
+    listPrinciples: (args) => kbChildSupervisor.readKb({ method: 'listPrinciples', args }),
   };
 }
 
@@ -550,6 +575,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
+  const effectiveRpcPorts: RpcPorts = shouldDelegateKbReadsToChild(options)
+    ? { ...rpcPorts, kb: createKbChildReadPort(rpcPorts.kb, kbChildSupervisor) }
+    : rpcPorts;
 
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
@@ -687,7 +715,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         cleanup();
       },
     },
-    ...rpcPorts,
+    ...effectiveRpcPorts,
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);

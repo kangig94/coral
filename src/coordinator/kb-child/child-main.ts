@@ -2,6 +2,7 @@ import {
   KB_CHILD_READY_MESSAGE,
   KB_CHILD_RESPONSE_MESSAGE,
   encodeKbChildMessage,
+  isKbChildKbReadRequest,
   isKbChildRequestMessage,
   type KbChildHealthResult,
   type KbChildControlMessage,
@@ -48,6 +49,25 @@ export async function runKbChildMain(): Promise<number> {
           result: { status: 'shutting_down' },
         });
         stop(0);
+        return;
+      case 'kb.read':
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: isKbChildKbReadRequest(request.params)
+            ? {
+                ok: false,
+                code: 'kb_unavailable',
+                message: 'KB child read handler is not installed yet.',
+                detail: { reason: 'kb_child_not_ready' },
+              }
+            : {
+                ok: false,
+                code: 'invalid_request',
+                message: 'Malformed KB child read request.',
+              },
+        });
         return;
     }
   };
