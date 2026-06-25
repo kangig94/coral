@@ -22,6 +22,7 @@ function runtimeWithExec(
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -60,6 +61,29 @@ describe('downloadBuffer', () => {
     await expect(downloadBuffer(runtime, 'https://example.invalid/archive.bin', { maxBytes: 8 })).rejects.toThrow(
       /12 bytes > 8 bytes/,
     );
+  });
+
+  it('times out when a fetch response body stalls after headers', async () => {
+    vi.useFakeTimers();
+    const runtime = runtimeWithExec(async () => ({ stdout: '', stderr: '', status: 1 }));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start() {},
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const download = downloadBuffer(runtime, 'https://example.invalid/archive.bin');
+    const assertion = expect(download).rejects.toThrow(/Download timed out after 120000ms/);
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    await assertion;
   });
 
   it('checks command downloads before reading the temporary file into memory', async () => {

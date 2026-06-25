@@ -26,14 +26,47 @@ function contentLengthBytes(response: Response): number | null {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
-async function readFetchBody(response: Response, url: string, maxBytes: number | undefined): Promise<Buffer> {
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('Download aborted');
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw abortReason(signal);
+  }
+}
+
+async function withAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  throwIfAborted(signal);
+  let removeAbortListener: (() => void) | undefined;
+  const abort = new Promise<never>((_, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+  });
+
+  try {
+    const result = await Promise.race([operation, abort]);
+    throwIfAborted(signal);
+    return result;
+  } finally {
+    removeAbortListener?.();
+  }
+}
+
+async function readFetchBody(
+  response: Response,
+  url: string,
+  maxBytes: number | undefined,
+  signal: AbortSignal,
+): Promise<Buffer> {
   const declaredBytes = contentLengthBytes(response);
   if (declaredBytes !== null) {
     assertDownloadSize(url, declaredBytes, maxBytes);
   }
 
   if (response.body === null) {
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = Buffer.from(await withAbort(response.arrayBuffer(), signal));
     assertDownloadSize(url, buffer.length, maxBytes);
     return buffer;
   }
@@ -43,8 +76,10 @@ async function readFetchBody(response: Response, url: string, maxBytes: number |
   let totalBytes = 0;
   try {
     while (true) {
-      const next = await reader.read();
+      throwIfAborted(signal);
+      const next = await withAbort(reader.read(), signal);
       if (next.done) {
+        throwIfAborted(signal);
         return Buffer.concat(chunks, totalBytes);
       }
       const chunk = Buffer.from(next.value);
@@ -56,6 +91,9 @@ async function readFetchBody(response: Response, url: string, maxBytes: number |
       chunks.push(chunk);
     }
   } finally {
+    if (signal.aborted) {
+      await reader.cancel(abortReason(signal)).catch(() => undefined);
+    }
     reader.releaseLock();
   }
 }
@@ -88,7 +126,7 @@ export async function downloadBuffer(
     if (!response.ok) {
       throw new Error(`HTTP ${response.status} when downloading ${url}`);
     }
-    return await readFetchBody(response, url, options.maxBytes);
+    return await readFetchBody(response, url, options.maxBytes, controller.signal);
   } catch (error: unknown) {
     if (controller.signal.aborted) {
       throw new Error(`Download timed out after ${COMMAND_TIMEOUT_MS}ms: ${url}`, { cause: error });
