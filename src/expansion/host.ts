@@ -2,6 +2,7 @@ import type { KbEngineRuntime, KbRuntime } from '../kb/contract.js';
 import type { RetrievalRole, RoleHandle, RoleRegistry } from '../kb/search/contract.js';
 import { normalizeRetrievalRoleDescriptor } from '../kb/search/role-registry.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
+import { throwIfAborted } from '../runtime/abort.js';
 import type { Disposable, Runtime } from '../runtime/ports.js';
 import type {
   ConsumerHandle,
@@ -241,13 +242,26 @@ export function createExpansionHost(deps: ExpansionHostDeps): ExpansionHost {
  * intentionally repeats those idempotent unregister calls before running the
  * decorated callbacks (LIFO via `decorateDispose`).
  */
-export async function disposeExpansionScope(scope: Disposable): Promise<void> {
+export async function disposeExpansionScope(scope: Disposable, options: { signal?: AbortSignal } = {}): Promise<void> {
+  const signal = options.signal;
+  if (signal !== undefined) {
+    throwIfAborted(signal, 'expansion_scope_dispose');
+  }
   for (const registration of registeredArtifactPorts(scope)) {
     registration.unregister();
   }
   for (const handle of registeredConsumerHandles(scope)) {
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'expansion_scope_consumer_stop');
+    }
     await handle.stop().catch(() => {});
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'expansion_scope_consumer_unregister');
+    }
     await handle.unregister().catch(() => {});
+  }
+  if (signal !== undefined) {
+    throwIfAborted(signal, 'expansion_scope_symbol_dispose');
   }
   scope[Symbol.dispose]();
 }

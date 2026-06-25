@@ -20,6 +20,7 @@ import { createScope } from '../../expansion/scope.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { KbCapabilityName, KbCapabilityStatus } from '../../kb/capability/contract.js';
 import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';
+import { AbortError, throwIfAborted } from '../../runtime/abort.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Disposable, Runtime } from '../../runtime/ports.js';
 import { validateManifestCompleteness } from '../../expansion/manifest-completeness.js';
@@ -72,6 +73,22 @@ export function createLifecycleBundledLoaders(
 }
 
 const LIFECYCLE_BUNDLED_LOADERS: Readonly<Record<string, Expansion>> = createLifecycleBundledLoaders();
+
+function waitForAbortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, stage: string): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  throwIfAborted(signal, stage);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(new AbortError({ stage, reason: signal.reason }));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
 
 export type KiwiArtifactBootHandle = {
   readonly started: boolean;
@@ -447,19 +464,28 @@ export class ExpansionLifecycleService {
     return removal === 'missing' ? { status: 'unknown' } : { status: 'removed' };
   }
 
-  private async runSerial<T>(name: string, work: () => Promise<T>): Promise<T> {
+  private async runSerial<T>(
+    name: string,
+    work: () => Promise<T>,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<T> {
     const previous = this.engineMutex.get(name) ?? Promise.resolve();
     // Tail tracks "this call's completion ignoring its outcome" so the next
     // chained caller waits for serialization regardless of whether `work`
     // resolved or threw.
-    const tail = previous.catch(() => {}).then(work);
+    const tail = previous.catch(() => {}).then(() => {
+      if (options.signal !== undefined) {
+        throwIfAborted(options.signal, 'expansion_serial_work');
+      }
+      return work();
+    });
     const tracked = tail.then(
       () => {},
       () => {},
     );
     this.engineMutex.set(name, tracked);
     try {
-      return await tail;
+      return await waitForAbortable(tail, options.signal, 'expansion_serial_wait');
     } finally {
       // Drop the slot only if no later caller chained behind us; an in-flight
       // successor will have replaced the value already.
@@ -658,7 +684,11 @@ export class ExpansionLifecycleService {
     return status.heldBy === undefined ? { bound: true } : { bound: true, heldBy: status.heldBy };
   }
 
-  async shutdownActiveExpansions(): Promise<void> {
+  async shutdownActiveExpansions(options: { signal?: AbortSignal } = {}): Promise<void> {
+    const signal = options.signal;
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'expansion_shutdown');
+    }
     // Snapshot every engine id we know about — including any with an
     // in-flight `engineMutex` slot. An equip mid-import has not yet
     // published its scope, so `this.scopes` alone would miss it; routing
@@ -677,7 +707,13 @@ export class ExpansionLifecycleService {
       engineIds.add(id);
     }
     for (const id of engineIds) {
+      if (signal !== undefined) {
+        throwIfAborted(signal, 'expansion_shutdown_engine');
+      }
       await this.runSerial(id, async () => {
+        if (signal !== undefined) {
+          throwIfAborted(signal, 'expansion_shutdown_engine_serial');
+        }
         const scopes = this.scopes.get(id);
         if (scopes === undefined || scopes.length === 0) {
           return;
@@ -685,9 +721,9 @@ export class ExpansionLifecycleService {
         this.scopes.delete(id);
         // LIFO disposal of chained scopes for this engine.
         for (let index = scopes.length - 1; index >= 0; index -= 1) {
-          await disposeExpansionScope(scopes[index]);
+          await disposeExpansionScope(scopes[index], signal === undefined ? {} : { signal });
         }
-      });
+      }, signal === undefined ? {} : { signal });
     }
   }
 

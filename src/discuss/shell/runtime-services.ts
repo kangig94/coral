@@ -58,7 +58,7 @@ export function createDiscussRuntime({
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readHelpersDeps: DiscussReadHelpersDeps;
   hooks: {
-    onShutdown(mode: 'handoff' | 'hard'): Promise<void>;
+    onShutdown(mode: 'handoff' | 'hard', signal: AbortSignal): Promise<void>;
     onIdleCheck(): boolean;
     onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
   };
@@ -164,10 +164,13 @@ export function createDiscussRuntime({
   };
 
   const hooks = {
-    onShutdown: async (mode: 'handoff' | 'hard') => {
+    onShutdown: async (mode: 'handoff' | 'hard', signal: AbortSignal) => {
       const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources(readHelpersDeps)] : [];
 
-      await clearAllDiscuss(world.discussRegistry, mode, discussRecovery.persistAbortEndForShutdown);
+      await clearAllDiscuss(world.discussRegistry, mode, (ctx, sessionId, session) =>
+        discussRecovery.persistAbortEndForShutdown(ctx, sessionId, session, { signal }),
+        { signal },
+      );
 
       if (mode !== 'hard') {
         return;
@@ -183,6 +186,7 @@ export function createDiscussRuntime({
             coralEnv: {},
             authority: 'admin',
           }),
+        { signal },
       );
       world.discussRegistry.contexts.clear();
     },

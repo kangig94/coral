@@ -12,6 +12,7 @@ import {
 } from '../events.js';
 import { buildWatchEvents } from '../watch.js';
 import { nowIsoString } from '../../infra/time.js';
+import { isAbortError, throwIfAborted } from '../../runtime/abort.js';
 import { isManualParticipant } from './runtime-build.js';
 import { attachSession } from './registry.js';
 import { appendRuntimeEvents, isAbortEnded, readSessionEvents } from './persistence.js';
@@ -80,7 +81,11 @@ export async function persistAbortEndForShutdown(
   ctx: DiscussContext,
   sessionId: string,
   _session: LiveDiscussSession,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
+  if (options.signal !== undefined) {
+    throwIfAborted(options.signal, 'discuss_shutdown_persist_live');
+  }
   await appendRuntimeEvents(ctx, sessionId, (current) => buildAbortEndEventsForShutdown(ctx, sessionId, current));
 }
 
@@ -88,8 +93,13 @@ export async function persistAbortEndForPersistedShutdownCandidates(
   sources: readonly string[],
   getDiscussStoreForSource: (source: string) => DiscussSessionStore,
   resolveContext: (snapshot: PersistedDiscussSnapshot) => DiscussContext,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
+  const signal = options.signal;
   for (const source of sources) {
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'discuss_shutdown_source');
+    }
     let store: DiscussSessionStore;
     try {
       store = getDiscussStoreForSource(source);
@@ -107,6 +117,9 @@ export async function persistAbortEndForPersistedShutdownCandidates(
     }
 
     for (const candidate of candidates) {
+      if (signal !== undefined) {
+        throwIfAborted(signal, 'discuss_shutdown_candidate');
+      }
       try {
         const snapshot = store.load(candidate.sessionId);
         if (!snapshot || !isWithinLiveSessionBoundary(snapshot)) {
@@ -122,7 +135,13 @@ export async function persistAbortEndForPersistedShutdownCandidates(
         await appendRuntimeEvents(ctx, candidate.sessionId, (current) =>
           buildAbortEndEventsForShutdown(ctx, candidate.sessionId, current),
         );
+        if (signal !== undefined) {
+          throwIfAborted(signal, 'discuss_shutdown_candidate_persist');
+        }
       } catch (error: unknown) {
+        if (isAbortError(error)) {
+          throw error;
+        }
         logShutdownPersistFailure(candidate.sessionId, error);
       }
     }

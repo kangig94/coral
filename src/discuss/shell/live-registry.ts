@@ -1,6 +1,7 @@
 import type { DiscussSessionStore } from './session-store.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
+import { isAbortError, throwIfAborted } from '../../runtime/abort.js';
 import type {
   DiscussContext,
   DiscussJobStatusReader,
@@ -148,15 +149,29 @@ export async function clearAllDiscuss(
   registry: DiscussContextRegistry,
   mode: 'handoff' | 'hard',
   persistAbortEnd: (ctx: DiscussContext, sessionId: string, session: LiveDiscussSession) => Promise<void>,
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
+  const signal = options.signal;
   for (const context of registry.contexts.values()) {
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'discuss_shutdown_context');
+    }
     for (const [sessionId, session] of context.sessions.entries()) {
+      if (signal !== undefined) {
+        throwIfAborted(signal, 'discuss_shutdown_session');
+      }
       if (mode === 'hard' && !session.abortEnded && isWithinLiveSessionBoundary(session.snapshot)) {
         try {
           await persistAbortEnd(context, sessionId, session);
         } catch (error: unknown) {
+          if (isAbortError(error)) {
+            throw error;
+          }
           const detail = errorMessage(error);
           backendLog.error(`Discuss shutdown persist failed for ${sessionId}: ${detail}`);
+        }
+        if (signal !== undefined) {
+          throwIfAborted(signal, 'discuss_shutdown_persist');
         }
       }
       if (!session.controller.signal.aborted) {

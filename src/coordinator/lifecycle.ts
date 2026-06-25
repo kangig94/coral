@@ -143,7 +143,7 @@ export type CurateAssistantFactory = (deps: {
 }) => CurateAssistantPort;
 
 export interface LifecycleHooks {
-  onShutdown(mode: ShutdownMode): Promise<void>;
+  onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
   onIdleCheck(): boolean;
   onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
 }
