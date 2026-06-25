@@ -23,6 +23,7 @@ import {
 } from '../validation.js';
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+export const FRONTMATTER_MAX_BYTES = 64 * 1024;
 
 /** Non-capturing frontmatter regex for stripping (no capture group, unlike FRONTMATTER_PATTERN). */
 export const FRONTMATTER_BLOCK = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n)?/;
@@ -45,7 +46,14 @@ function extractFrontmatterBlock(content: string): string {
   if (!match) {
     throw new Error('Missing YAML frontmatter');
   }
-  return match[1];
+  const rawBlock = match[1] ?? '';
+  const rawBlockBytes = Buffer.byteLength(rawBlock, 'utf-8');
+  if (rawBlockBytes > FRONTMATTER_MAX_BYTES) {
+    throw new Error(
+      `Frontmatter block exceeds maximum parse size (${rawBlockBytes} bytes > ${FRONTMATTER_MAX_BYTES} bytes)`,
+    );
+  }
+  return rawBlock;
 }
 
 function parseFrontmatterRecord(content: string): Record<string, unknown> {

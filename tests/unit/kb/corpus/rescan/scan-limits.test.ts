@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV,
+  CORPUS_SCAN_FRONTMATTER_MAX_BYTES,
   CORPUS_SCAN_MAX_FILE_BYTES_ENV,
   CorpusScanLimitError,
   buildCorpusScanView,
   createCorpusMarkdownFileScan,
 } from '#src/kb/corpus/rescan/scan.js';
+import { FRONTMATTER_MAX_BYTES, parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import type { CorpusFileHandle, CorpusStorage } from '#src/kb/corpus/rescan/storage.js';
 
 function noEntryError(path: string): NodeJS.ErrnoException {
@@ -45,6 +47,11 @@ function env(values: Record<string, string>): { get(key: string): string | undef
 }
 
 describe('corpus scan limits', () => {
+  it('keeps the default frontmatter parse and scan window at 64 KiB', () => {
+    expect(FRONTMATTER_MAX_BYTES).toBe(64 * 1024);
+    expect(CORPUS_SCAN_FRONTMATTER_MAX_BYTES).toBe(FRONTMATTER_MAX_BYTES);
+  });
+
   it('rejects oversized markdown files before reading content', () => {
     const read = vi.fn(() => {
       throw new Error('read should not be called');
@@ -84,7 +91,28 @@ describe('corpus scan limits', () => {
     });
 
     expect(file.frontmatter.status).toBe('error');
+    expect(file.frontmatter.rawBlock).toBeNull();
     expect(file.frontmatter.error).toBeInstanceOf(CorpusScanLimitError);
     expect((file.frontmatter.error as Error).message).toContain(CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV);
+  });
+
+  it('records oversized unterminated frontmatter as a scan limit error', () => {
+    const file = createCorpusMarkdownFileScan({
+      kind: 'note',
+      path: '/vault/notes/unterminated.md',
+      content: ['---', 'x'.repeat(8), '# Missing close', ''].join('\n'),
+      frontmatterMaxBytes: 4,
+    });
+
+    expect(file.frontmatter.status).toBe('error');
+    expect(file.frontmatter.rawBlock).toBeNull();
+    expect(file.frontmatter.error).toBeInstanceOf(CorpusScanLimitError);
+  });
+
+  it('rejects oversized frontmatter before direct YAML parsing', () => {
+    const largeKey = 'x'.repeat(FRONTMATTER_MAX_BYTES + 1);
+    const content = ['---', `${largeKey}: value`, '---', '# Limit Test', ''].join('\n');
+
+    expect(() => parseFrontmatter(content)).toThrow('Frontmatter block exceeds maximum parse size');
   });
 });

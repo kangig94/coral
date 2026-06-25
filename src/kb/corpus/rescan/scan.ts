@@ -5,6 +5,7 @@ import { isNoEntryError } from '../../../infra/fs-errors.js';
 import type { EnvPort } from '../../../infra/port-types.js';
 import {
   extractTitle,
+  FRONTMATTER_MAX_BYTES,
   parseCommunityFrontmatter,
   parseFrontmatter,
   parseSourceFrontmatter,
@@ -34,7 +35,7 @@ export const CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV = 'CORAL_KB_CORPUS_SCAN_FRONT
 export const CORPUS_SCAN_MAX_FILES = 50_000;
 export const CORPUS_SCAN_MAX_FILE_BYTES = 128 * 1024 * 1024;
 export const CORPUS_SCAN_MAX_TOTAL_BYTES = 512 * 1024 * 1024;
-export const CORPUS_SCAN_FRONTMATTER_MAX_BYTES = 256 * 1024;
+export const CORPUS_SCAN_FRONTMATTER_MAX_BYTES = FRONTMATTER_MAX_BYTES;
 
 export type CorpusScanLimits = {
   readonly maxFiles: number;
@@ -304,6 +305,12 @@ function readEntityGraphScanInput(kb: {
 const FRONTMATTER_OPEN_PATTERN = /^---\r?\n/;
 const FRONTMATTER_BLOCK_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
+function frontmatterScanLimitError(rawBlockBytes: number, frontmatterMaxBytes: number): CorpusScanLimitError {
+  return new CorpusScanLimitError(
+    `Frontmatter block exceeds maximum scan size (${rawBlockBytes} bytes > ${frontmatterMaxBytes} bytes). Increase ${CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV} to allow larger frontmatter blocks.`,
+  );
+}
+
 function scanFrontmatter(
   kind: CorpusMarkdownKind,
   content: string,
@@ -323,9 +330,22 @@ function scanFrontmatter(
 
   const match = content.match(FRONTMATTER_BLOCK_PATTERN);
   if (match === null) {
+    const rawBlock = content.replace(FRONTMATTER_OPEN_PATTERN, '');
+    const rawBlockBytes = Buffer.byteLength(rawBlock, 'utf-8');
+    if (rawBlockBytes > frontmatterMaxBytes) {
+      return {
+        status: 'error',
+        rawBlock: null,
+        record: null,
+        typed: null,
+        typedError: null,
+        error: frontmatterScanLimitError(rawBlockBytes, frontmatterMaxBytes),
+        bodyOffset: content.length,
+      };
+    }
     return {
       status: 'unterminated',
-      rawBlock: content.replace(FRONTMATTER_OPEN_PATTERN, ''),
+      rawBlock,
       record: null,
       typed: null,
       typedError: null,
@@ -339,13 +359,11 @@ function scanFrontmatter(
   if (rawBlockBytes > frontmatterMaxBytes) {
     return {
       status: 'error',
-      rawBlock,
+      rawBlock: null,
       record: null,
       typed: null,
       typedError: null,
-      error: new CorpusScanLimitError(
-        `Frontmatter block exceeds maximum scan size (${rawBlockBytes} bytes > ${frontmatterMaxBytes} bytes). Increase ${CORPUS_SCAN_FRONTMATTER_MAX_BYTES_ENV} to allow larger frontmatter blocks.`,
-      ),
+      error: frontmatterScanLimitError(rawBlockBytes, frontmatterMaxBytes),
       bodyOffset: match[0].length,
     };
   }

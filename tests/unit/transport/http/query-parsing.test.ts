@@ -5,8 +5,12 @@ import {
   discussEventsQuerySchema,
 } from '#src/transport/rpc/discuss.js';
 import {
+  KB_SEARCH_QUERY_MAX_CODE_POINTS,
+  KB_SLUG_MAX_BYTES,
+  KB_TEXT_FILTER_MAX_CODE_POINTS,
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
+  kbNoteReadRequestSchema,
   kbPrinciplesQuerySchema,
   kbSearchSchema,
   kbSearchQuerySchema,
@@ -130,6 +134,23 @@ describe('transport HTTP query parsing', () => {
         mode: 'auto',
       }),
     ).toThrow();
+  });
+
+  it('rejects oversized KB search queries and text filters before route handlers run', () => {
+    const oversizedSearchQuery = 'q'.repeat(KB_SEARCH_QUERY_MAX_CODE_POINTS + 1);
+    const oversizedFilter = 'f'.repeat(KB_TEXT_FILTER_MAX_CODE_POINTS + 1);
+    const oversizedSlug = 's'.repeat(KB_SLUG_MAX_BYTES + 1);
+
+    expect(kbSearchSchema.safeParse({ query: oversizedSearchQuery }).success).toBe(false);
+    expect(kbSearchQuerySchema.safeParse({ q: oversizedSearchQuery }).success).toBe(false);
+    expect(kbPrinciplesQuerySchema.safeParse({ q: oversizedSearchQuery }).success).toBe(false);
+    expect(kbMemoListQuerySchema.safeParse({ projectRoot: '/repo/project', owner: oversizedFilter }).success).toBe(
+      false,
+    );
+    expect(
+      kbMemoDeleteQuerySchema.safeParse({ projectRoot: '/repo/project', pattern: oversizedFilter }).success,
+    ).toBe(false);
+    expect(kbNoteReadRequestSchema.safeParse({ slug: oversizedSlug }).success).toBe(false);
   });
 
   it('enforces exactly one memo delete mode in the transport schema', () => {
