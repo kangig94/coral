@@ -8,10 +8,14 @@ const WORD_BOUNDARY_PATTERN = /[\s_-]+/g;
 const CAMEL_BOUNDARY_PATTERN = /([\p{Ll}\p{Nd}])([\p{Lu}])/gu;
 const LETTER_NUMBER_BOUNDARY_PATTERN = /([\p{L}])([\p{N}])/gu;
 const NUMBER_LETTER_BOUNDARY_PATTERN = /([\p{N}])([\p{L}])/gu;
+const MARKDOWN_ATX_HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
+const MARKDOWN_FENCE_PATTERN = /^\s{0,3}(?:```|~~~)/u;
 
 export const ORAMA_BODY_SURFACE_TERM_LIMIT = 2_048;
-export const ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT = 4_096;
-export const ORAMA_BODY_NGRAM_TERM_LIMIT = 4_096;
+export const ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT = 2_048;
+export const ORAMA_BODY_NGRAM_LEADING_TEXT_CHAR_LIMIT = 1_024;
+export const ORAMA_BODY_NGRAM_HEADING_LIMIT = 64;
+export const ORAMA_BODY_NGRAM_TERM_LIMIT = 1_024;
 
 export const ORAMA_SEARCH_FIELDS = ['slug', 'title', 'body', 'tags', 'principles'] as const;
 export type OramaSearchField = (typeof ORAMA_SEARCH_FIELDS)[number];
@@ -219,6 +223,15 @@ export function ngramSearchTerms(
   const terms: string[] = [];
   const seen = new Set<string>();
   const append = (term: string): boolean => pushUniqueTerm(term, seen, terms, options.maxTerms);
+  appendNgramSearchTerms(raw, append, options);
+  return terms;
+}
+
+function appendNgramSearchTerms(
+  raw: string,
+  append: (term: string) => boolean,
+  options: { maxSourceChars?: number; surfaceTermLimit?: number },
+): boolean {
   // Generate n-grams lazily so long bodies cannot allocate the full n-gram set
   // before the caller's term cap has a chance to stop indexing.
   for (const term of surfaceSearchTerms(raw, { maxTerms: options.surfaceTermLimit })) {
@@ -226,7 +239,7 @@ export function ngramSearchTerms(
       const compactTerm = takeCodePoints(hangulCompact(term), options.maxSourceChars);
       for (const ngram of characterNgrams(compactTerm, 2, 3)) {
         if (append(ngram)) {
-          return terms;
+          return true;
         }
       }
     }
@@ -236,8 +249,105 @@ export function ngramSearchTerms(
   if (compactHangul.length >= 2) {
     for (const ngram of characterNgrams(compactHangul, 2, 3)) {
       if (append(ngram)) {
-        return terms;
+        return true;
       }
+    }
+  }
+
+  return false;
+}
+
+function takeSegmentWithinBudget(raw: string, budget: number): string {
+  return [...raw].slice(0, budget).join('');
+}
+
+function pushSegmentWithinBudget(segments: string[], raw: string, remaining: number): number {
+  const segment = raw.trim();
+  if (!segment || remaining <= 0) {
+    return remaining;
+  }
+  const bounded = takeSegmentWithinBudget(segment, remaining).trim();
+  if (bounded) {
+    segments.push(bounded);
+  }
+  return Math.max(0, remaining - [...bounded].length);
+}
+
+export function bodyNgramSourceSegments(
+  raw: string,
+  options: { maxSourceChars?: number; maxLeadingTextChars?: number; headingLimit?: number } = {},
+): string[] {
+  const segments: string[] = [];
+  const headingLimit = options.headingLimit ?? ORAMA_BODY_NGRAM_HEADING_LIMIT;
+  let remaining = options.maxSourceChars ?? ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT;
+  const maxLeadingTextChars = options.maxLeadingTextChars ?? ORAMA_BODY_NGRAM_LEADING_TEXT_CHAR_LIMIT;
+  const leadingParts: string[] = [];
+  let headingCount = 0;
+  let inFence = false;
+  let leadingStarted = false;
+  let leadingDone = false;
+
+  for (const line of raw.split(/\r?\n/u)) {
+    if (MARKDOWN_FENCE_PATTERN.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      continue;
+    }
+
+    const heading = line.match(MARKDOWN_ATX_HEADING_PATTERN);
+    if (heading?.[1] !== undefined) {
+      if (headingCount < headingLimit) {
+        remaining = pushSegmentWithinBudget(segments, heading[1], remaining);
+        headingCount += 1;
+      }
+      continue;
+    }
+
+    if (leadingDone) {
+      continue;
+    }
+
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (leadingStarted && leadingParts.length > 0) {
+        leadingDone = true;
+      }
+      continue;
+    }
+
+    leadingStarted = true;
+    const currentLength = [...leadingParts.join(' ')].length;
+    const partBudget = maxLeadingTextChars - currentLength;
+    if (partBudget <= 0) {
+      leadingDone = true;
+      continue;
+    }
+    leadingParts.push(takeSegmentWithinBudget(trimmed, partBudget));
+    if ([...leadingParts.join(' ')].length >= maxLeadingTextChars) {
+      leadingDone = true;
+    }
+  }
+
+  if (leadingParts.length > 0) {
+    pushSegmentWithinBudget(segments, leadingParts.join(' '), remaining);
+  }
+
+  return segments;
+}
+
+export function bodyNgramSearchTerms(
+  raw: string,
+  options: { maxTerms?: number; maxSourceChars?: number; surfaceTermLimit?: number } = {},
+): string[] {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  const append = (term: string): boolean => pushUniqueTerm(term, seen, terms, options.maxTerms);
+
+  for (const segment of bodyNgramSourceSegments(raw, { maxSourceChars: options.maxSourceChars })) {
+    if (appendNgramSearchTerms(segment, append, options)) {
+      return terms;
     }
   }
 
@@ -270,7 +380,7 @@ export function buildOramaSearchChannelFields(
     slugNgram: termsText(ngramSearchTerms(slug)),
     titleNgram: termsText(ngramSearchTerms(title)),
     bodyNgram: termsText(
-      ngramSearchTerms(body, {
+      bodyNgramSearchTerms(body, {
         maxTerms: ORAMA_BODY_NGRAM_TERM_LIMIT,
         maxSourceChars: ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT,
         surfaceTermLimit: ORAMA_BODY_SURFACE_TERM_LIMIT,

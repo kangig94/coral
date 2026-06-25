@@ -210,7 +210,7 @@ describe('Orama AC1 projection metadata', () => {
     ).load();
 
     expect(sidecar.identitySchemaVersion).toBe(ORAMA_PROJECTION_IDENTITY_SCHEMA_VERSION);
-    expect(sidecar.schemaVersion).toBe(3);
+    expect(sidecar.schemaVersion).toBe(4);
     expect(sidecar.schemaDigest).toMatch(/^[a-f0-9]{64}$/);
     expect(sidecar.nodeVersion).toBe(process.versions.node);
     expect(sidecar.icuVersion).toBe(process.versions.icu ?? null);

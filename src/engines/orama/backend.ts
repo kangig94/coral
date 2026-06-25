@@ -76,6 +76,11 @@ type OramaSearchRun = {
   readonly terms: readonly string[];
 };
 
+type OramaCandidateCollection = {
+  candidates: Map<string, OramaCandidateAccumulator>;
+  exhausted: boolean;
+};
+
 type OramaCandidateAccumulator = {
   readonly document: KbOramaDocument;
   readonly channelHits: Set<OramaSearchChannel>;
@@ -201,7 +206,7 @@ function uniqueSearchTerms(terms: Iterable<string>): string[] {
   return unique;
 }
 
-function buildStrictSearchRuns(analysis: OramaSearchQueryAnalysis): OramaSearchRun[] {
+function buildPrimarySearchRuns(analysis: OramaSearchQueryAnalysis): OramaSearchRun[] {
   const runs: OramaSearchRun[] = [];
   if (analysis.morph.length > 0) {
     runs.push({ channel: 'morph', terms: analysis.morph });
@@ -209,6 +214,11 @@ function buildStrictSearchRuns(analysis: OramaSearchQueryAnalysis): OramaSearchR
   if (analysis.surface.length > 0) {
     runs.push({ channel: 'surface', terms: analysis.surface });
   }
+  return runs;
+}
+
+function buildNgramSearchRuns(analysis: OramaSearchQueryAnalysis): OramaSearchRun[] {
+  const runs: OramaSearchRun[] = [];
   if (analysis.ngram.length > 0) {
     runs.push({ channel: 'ngram', terms: analysis.ngram });
   }
@@ -477,7 +487,7 @@ function collectFuzzyOramaSearchCandidates(
   analysis: OramaSearchQueryAnalysis,
   limit: number,
   scope?: RetrievalScope,
-): { candidates: Map<string, OramaCandidateAccumulator>; exhausted: boolean } {
+): OramaCandidateCollection {
   if (analysis.fuzzy.length === 0) {
     return { candidates: new Map(), exhausted: true };
   }
@@ -515,7 +525,7 @@ async function collectOramaSearchCandidates(
   runs: readonly OramaSearchRun[],
   limit: number,
   scope?: RetrievalScope,
-): Promise<{ candidates: Map<string, OramaCandidateAccumulator>; exhausted: boolean }> {
+): Promise<OramaCandidateCollection> {
   const candidates = new Map<string, OramaCandidateAccumulator>();
   let exhausted = true;
 
@@ -562,6 +572,28 @@ async function collectOramaSearchCandidates(
   }
 
   return { candidates, exhausted };
+}
+
+function mergeOramaCandidateCollections(
+  primary: OramaCandidateCollection,
+  fallback: OramaCandidateCollection,
+): OramaCandidateCollection {
+  const candidates = new Map(primary.candidates);
+
+  for (const [entryId, fallbackCandidate] of fallback.candidates) {
+    const primaryCandidate = candidates.get(entryId);
+    if (primaryCandidate === undefined) {
+      candidates.set(entryId, fallbackCandidate);
+      continue;
+    }
+    primaryCandidate.score += fallbackCandidate.score;
+    primaryCandidate.bestRawScore = Math.max(primaryCandidate.bestRawScore, fallbackCandidate.bestRawScore);
+    for (const channel of fallbackCandidate.channelHits) {
+      primaryCandidate.channelHits.add(channel);
+    }
+  }
+
+  return { candidates, exhausted: primary.exhausted && fallback.exhausted };
 }
 
 function communityMetadataHash(rawContent: string): string {
@@ -821,7 +853,14 @@ export class OramaSearchPort implements FtsRetrieval {
       const served = await this.ensureServedIndex(lease);
       const limit = Math.max(safeTopK * 10, 50);
       const analysis = analyzeOramaSearchQuery(term, tokenizeQuery(term, served.dbTokenizer));
-      const strict = await collectOramaSearchCandidates(served.db, buildStrictSearchRuns(analysis), limit, scope);
+      const primary = await collectOramaSearchCandidates(served.db, buildPrimarySearchRuns(analysis), limit, scope);
+      const strict =
+        primary.candidates.size >= limit
+          ? primary
+          : mergeOramaCandidateCollections(
+              primary,
+              await collectOramaSearchCandidates(served.db, buildNgramSearchRuns(analysis), limit, scope),
+            );
       const collected =
         strict.candidates.size > 0 ? strict : collectFuzzyOramaSearchCandidates(served.db, analysis, limit, scope);
       const ranked = rankOramaCandidates(collected.candidates.values(), analysis);

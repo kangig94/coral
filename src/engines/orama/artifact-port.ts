@@ -11,7 +11,7 @@ import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
 import { ORAMA_SCHEMA } from './schema.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 
-const ORAMA_PROJECTION_SCHEMA_VERSION = 3;
+const ORAMA_PROJECTION_SCHEMA_VERSION = 4;
 export const ORAMA_PROJECTION_IDENTITY_SCHEMA_VERSION = 1;
 export const ORAMA_INTL_TOKENIZER_IDENTITY = 'intl-baseline';
 export const ORAMA_KIWI_TOKENIZER_IDENTITY = 'intl-baseline+kiwi:0.23.0:0.23.0:cong-global';

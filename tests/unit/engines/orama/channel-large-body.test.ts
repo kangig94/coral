@@ -30,4 +30,19 @@ describe('orama search-channels large-body regression', () => {
     expect(() => ngramSearchTerms(longHangulBody)).not.toThrow();
     expect(ngramSearchTerms('가나다').length).toBeGreaterThan(0);
   });
+
+  it('does not synthesize body ngrams across high-signal segment boundaries', () => {
+    const fields = buildOramaSearchChannelFields({
+      slug: 'segment-boundary',
+      title: 'segment boundary',
+      body: ['# 가나', '', '다라'].join('\n'),
+      tags: [],
+      principles: [],
+    });
+    const bodyNgrams = new Set(fields.bodyNgram.split(/\s+/u).filter(Boolean));
+
+    expect(bodyNgrams).toContain('가나');
+    expect(bodyNgrams).toContain('다라');
+    expect(bodyNgrams).not.toContain('나다');
+  });
 });
