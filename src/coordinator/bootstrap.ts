@@ -78,7 +78,9 @@ export async function main(): Promise<number> {
   shedInheritedClaudeCodeEnv(process.env);
 
   if (process.env.CORAL_KB_CHILD === '1' || process.argv.includes('--kb-child')) {
-    return runKbChildMain();
+    return runKbChildMain({
+      pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+    });
   }
 
   if (process.argv.includes('--smoke-open-store')) {

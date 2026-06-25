@@ -950,6 +950,15 @@ describe('execution backend server', () => {
       request: { method: 'readSearch', args: { query: 'alpha' } },
     });
     expect(readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
+
+    await fetch(`${backend.baseUrl}/kb/communities-stale`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    await fetch(`${backend.baseUrl}/kb/communities/community-slug/summary-input`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(readKb).toHaveBeenCalledTimes(1);
   });
 
   it('returns KB unavailable when read delegation is enabled without a child supervisor', async () => {

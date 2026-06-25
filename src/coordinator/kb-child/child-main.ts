@@ -8,13 +8,21 @@ import {
   type KbChildControlMessage,
   type KbChildRequestMessage,
 } from './protocol.js';
+import { createKbChildReadHandler } from './read-handler.js';
+import { errorMessage } from '../../infra/error-format.js';
+
+type KbChildMainOptions = {
+  pluginRoot?: string;
+};
 
 function writeControlMessage(message: KbChildControlMessage): void {
   process.stdout.write(encodeKbChildMessage(message));
 }
 
-export async function runKbChildMain(): Promise<number> {
+export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
+  const pluginRoot = options.pluginRoot ?? process.cwd();
+  const readKb = createKbChildReadHandler({ pluginRoot });
   let resolveShutdown!: (code: number) => void;
   let settled = false;
   const shutdown = new Promise<number>((resolve) => {
@@ -36,7 +44,7 @@ export async function runKbChildMain(): Promise<number> {
     startedAt,
     uptimeMs: Math.max(0, Date.now() - startedAt),
   });
-  const handleRequest = (request: KbChildRequestMessage): void => {
+  const handleRequest = async (request: KbChildRequestMessage): Promise<void> => {
     switch (request.method) {
       case 'health':
         writeControlMessage({ type: KB_CHILD_RESPONSE_MESSAGE, id: request.id, ok: true, result: health() });
@@ -56,12 +64,7 @@ export async function runKbChildMain(): Promise<number> {
           id: request.id,
           ok: true,
           result: isKbChildKbReadRequest(request.params)
-            ? {
-                ok: false,
-                code: 'kb_unavailable',
-                message: 'KB child read handler is not installed yet.',
-                detail: { reason: 'kb_child_not_ready' },
-              }
+            ? await readKb(request.params)
             : {
                 ok: false,
                 code: 'invalid_request',
@@ -85,7 +88,14 @@ export async function runKbChildMain(): Promise<number> {
       try {
         const parsed = JSON.parse(trimmed) as unknown;
         if (isKbChildRequestMessage(parsed)) {
-          handleRequest(parsed);
+          void handleRequest(parsed).catch((error: unknown) => {
+            writeControlMessage({
+              type: KB_CHILD_RESPONSE_MESSAGE,
+              id: parsed.id,
+              ok: false,
+              error: { message: errorMessage(error) },
+            });
+          });
           continue;
         }
       } catch {
