@@ -5,7 +5,8 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createKbChildProxySubsystem } from '#src/coordinator/kb-child/proxy-subsystem.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -185,20 +186,6 @@ function createRuntimeStateMock() {
   return { runtimeState, setLifecycle: runtimeState.setLifecycle };
 }
 
-function createMockKbSubsystem() {
-  return {
-    kb: {} as never,
-    readDb: {} as never,
-    curateScheduler: {
-      start: vi.fn(async () => {}),
-      schedule: vi.fn(),
-      scheduleDeferredCommit: vi.fn(),
-      isRunning: () => false,
-      stop: vi.fn(async () => {}),
-    },
-  };
-}
-
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
@@ -304,6 +291,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     }
   });
   const storeServices = createStoreServicesHarness(progressStore);
+  const kbChildSupervisor = createMockKbChildSupervisor();
 
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
@@ -346,9 +334,9 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
+    kbChildSupervisor,
     handoffQuiescePorts: () => [],
-    createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
-    createCurateAssistant: () => ({ complete: async () => '' }),
+    createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisor),
     registerBuiltInProvidersFn: () => {},
     // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
     // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion

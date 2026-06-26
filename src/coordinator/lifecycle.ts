@@ -17,8 +17,7 @@ import { createReplacementBackendOwnershipChecker } from './ownership-checker.js
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
 import type { JobStore } from '../jobs/store.js';
-import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import { kbRuntimeDir } from '../kb/paths.js';
+import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
 import { KB_ID, type Subsystem } from './subsystems/contract.js';
@@ -46,7 +45,6 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { KbChildSupervisor } from './kb-child/supervisor.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -131,26 +129,11 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
 }
 
 /**
- * Factory for the KB subsystem. Returns a `Subsystem<KnowledgeBaseRuntime>`
- * to register with the runtime-state registry. The registered subsystem
- * owns its own retry loop and curate-scheduler bridge; lifecycle.ts merely
+ * Factory for the KB health subsystem registered with the runtime-state
+ * registry. Production supplies a child-proxy subsystem; lifecycle.ts only
  * registers it and triggers `initAll` after Era II completes.
  */
-export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Subsystem<KnowledgeBaseRuntime>;
-
-/**
- * Builds the curate assistant the KB subsystem uses to drive provider-backed
- * curation. Injected (not imported) so this lower composition layer never
- * statically reaches a provider runtime module — the production assembly wires
- * the real Claude-backed factory; the simulation/idle paths use a stub. Keeps
- * `tools/simulation` sealed off from `src/providers/claude` (see
- * `tools/simulation/sealed-inventory.json`).
- */
-export type CurateAssistantFactory = (deps: {
-  readonly runtime: Runtime;
-  readonly launchCoordinator: Pick<LaunchCoordinator, 'withInternalPermit'>;
-  readonly providerHostManager: Pick<ProviderHostManager, 'acquireServer'>;
-}) => CurateAssistantPort;
+export type CreateKbProxySubsystemFn = () => Subsystem<KnowledgeBaseRuntime>;
 
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
@@ -375,8 +358,7 @@ export type LifecycleDeps = {
   readonly kbChildSupervisor?: KbChildSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void;
-  readonly createKbSubsystemFn: CreateKbSubsystemFn;
-  readonly createCurateAssistant: CurateAssistantFactory;
+  readonly createKbProxySubsystemFn: CreateKbProxySubsystemFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   readonly runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -428,7 +410,6 @@ async function runLifecycleStartup({
     storeServicesRef,
     createStoreServicesFromDbFn,
     launchCoordinator,
-    providerHostManager,
     kbChildSupervisor,
     providerRegistry,
     server,
@@ -439,8 +420,7 @@ async function runLifecycleStartup({
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn,
-    createKbSubsystemFn,
-    createCurateAssistant,
+    createKbProxySubsystemFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
     runStartupRecoveryFn,
@@ -575,8 +555,8 @@ async function runLifecycleStartup({
     registerBuiltInProvidersFn(providerRegistry);
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
-    // recovery work. KB is a subsystem (Era III); its boot work cannot gate
-    // daemon liveness. The CLI's `waitForBackendReady` resolves on
+    // recovery work. KB child startup cannot gate daemon liveness. The CLI's
+    // `waitForBackendReady` resolves on
     // `kernel.phase ∈ { 'kernel-ready', 'running' }` so once we reach this
     // point the CLI returns within `KERNEL_READY_DEADLINE_MS`.
     const { port, host } = await listenFn(server);
@@ -631,24 +611,7 @@ async function runLifecycleStartup({
 
     let registeredSubsystems = false;
     try {
-      const kbSubsystem = createKbSubsystemFn({
-        db: progressStore.getDb(),
-        version,
-        paths: {
-          markdownRoot: runtime.paths.coral.corpus.kbRoot,
-          runtimeDir: kbRuntimeDir(flavor, runtime.paths.configSlot),
-        },
-        curateAssistant: createCurateAssistant({
-          runtime,
-          launchCoordinator,
-          providerHostManager,
-        }),
-        processPort: runtime.process,
-        storagePort: runtime.storage,
-        envPort: runtime.env,
-        timePort: runtime.time,
-        idsPort: runtime.ids,
-      });
+      const kbSubsystem = createKbProxySubsystemFn();
       runtimeState.subsystems.register(kbSubsystem);
       registeredSubsystems = true;
     } catch (error: unknown) {
@@ -673,10 +636,8 @@ async function runLifecycleStartup({
 
     idleTimer.startWatching(
       () => {
-        // Probe the curate scheduler through the registry. While KB is still
-        // initializing/offline, the registry returns an error envelope; treat
-        // that as "not running" so idle-shutdown can fire under those phases
-        // (when no actual curate work can be in flight).
+        // The child proxy has no scheduler resource, so an error envelope
+        // means no coordinator-owned curate work is in flight.
         const curateProbe = runtimeState.subsystems.run<KnowledgeBaseRuntime, boolean>(KB_ID, (kb) =>
           kb.curateScheduler.isRunning(),
         );
@@ -700,13 +661,9 @@ async function runLifecycleStartup({
     await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
     // ===== Era III (subsystems — fire-and-forget) =====
-    // Subsystems were registered before `running` became externally visible
-    // and are now kicked off in the background. The KB subsystem owns its own
-    // retry loop and curate-scheduler bridge; the registry surfaces its phase
-    // via `runtimeState.subsystems.status('kb')`.
-    // KB-routed handlers consult the registry through `subsystems.run`/
-    // `runAsync` and receive a structured `kb_initializing` / `kb_offline`
-    // envelope while the subsystem is not online.
+    // The KB subsystem is a child-health proxy; init is intentionally a no-op
+    // and the child supervisor owns actual KB process startup. The registry
+    // surfaces child phase via `runtimeState.subsystems.status('kb')`.
     try {
       if (registeredSubsystems) {
         runtimeState.subsystems.initAll(signal);

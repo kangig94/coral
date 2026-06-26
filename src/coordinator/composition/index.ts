@@ -31,37 +31,6 @@ import {
   handleDiscussStart,
   handleDiscussWatch,
 } from '../../discuss/shell/tools.js';
-import {
-  handleKbCommunityListStale,
-  handleKbCommunityRead,
-  handleKbCommunitySetSummary,
-  handleKbCommunitySummaryInput,
-  handleKbDiagnose,
-  handleKbMemo,
-  handleKbMemoDeleteConsolidated,
-  handleKbMemoList,
-  handleKbMemoRead,
-  handleKbNoteRead,
-  handleKbPrincipleRead,
-  handleKbPrinciples,
-  handleKbPromote,
-  handleKbSearch,
-  handleKbSourceDelete,
-  handleKbSourceList,
-  handleKbSourceRead,
-  handleKbUpdate,
-  handleKbDelete,
-  handleKbWakeUp,
-  handleKbWikiAdopt,
-  handleKbWikiCite,
-  handleKbWikiCreate,
-  handleKbWikiDelete,
-  handleKbWikiLink,
-  handleKbWikiList,
-  handleKbWikiRead,
-  handleKbWikiRewrite,
-  handleKbWikiUnlink,
-} from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
@@ -72,8 +41,6 @@ import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../lifecycle.js';
 import { createSubsystemRegistry } from '../subsystems/registry.js';
-import { KB_ID } from '../subsystems/contract.js';
-import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
@@ -99,11 +66,9 @@ import type {
   UnequipExpansionRequest,
   UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
-import { parseKbSourceImportRequest } from '../services/kb/source-import.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import {
-  createDisabledKbChildSupervisor,
   type KbChildHealthSnapshot,
   type KbChildSupervisor,
 } from '../kb-child/supervisor.js';
@@ -114,6 +79,25 @@ import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_CHILD_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
+
+type KbReadRpcPort = Pick<
+  RpcPorts['kb'],
+  | 'readSearch'
+  | 'diagnose'
+  | 'readNote'
+  | 'readSource'
+  | 'readCommunity'
+  | 'listStaleCommunities'
+  | 'readCommunitySummaryInput'
+  | 'readWiki'
+  | 'readMemo'
+  | 'readPrinciple'
+  | 'listSources'
+  | 'listWikis'
+  | 'listMemos'
+  | 'listPrinciples'
+  | 'wakeUp'
+>;
 
 const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
@@ -160,30 +144,6 @@ function readPersistedCorpusSnapshot(db: {
   };
 }
 
-function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSupervisor: KbChildSupervisor): boolean {
-  if (options.delegateKbReadsToChild === false) return false;
-  if (options.delegateKbReadsToChild === true) return true;
-  return kbChildSupervisor.read().enabled;
-}
-
-function shouldDelegateKbMutationsToChild(
-  options: CoordinatorCoreOptions,
-  kbChildSupervisor: KbChildSupervisor,
-): boolean {
-  if (options.delegateKbMutationsToChild === false) return false;
-  if (options.delegateKbMutationsToChild === true) return true;
-  return kbChildSupervisor.read().enabled;
-}
-
-function kbChildOnlyJobUnavailable(operation: 'source import' | 'reindex'): KbToolResult {
-  return {
-    ok: false,
-    code: 'kb_unavailable',
-    message: `KB ${operation} requires the KB child runtime.`,
-    detail: { reason: 'kb_child_required' },
-  };
-}
-
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
 
 function readEventLoopLagMs(): number {
@@ -225,9 +185,8 @@ function readResourceSnapshot(
   };
 }
 
-function createKbChildReadPort(localKb: RpcPorts['kb'], kbChildSupervisor: KbChildSupervisor): RpcPorts['kb'] {
+function createKbChildReadPort(kbChildSupervisor: KbChildSupervisor): KbReadRpcPort {
   return {
-    ...localKb,
     readSearch: (args) => kbChildSupervisor.readKb({ method: 'readSearch', args }),
     diagnose: () => kbChildSupervisor.readKb({ method: 'diagnose' }),
     readNote: (slug) => kbChildSupervisor.readKb({ method: 'readNote', slug }),
@@ -258,7 +217,7 @@ function readStartedKbJobId(result: KbToolResult): string | null {
 }
 
 function createKbChildMutationPort(
-  localKb: RpcPorts['kb'],
+  readPort: ReturnType<typeof createKbChildReadPort>,
   kbChildSupervisor: KbChildSupervisor,
   recordHostedKbFailure: (operation: string, ctx: InvocationContext | undefined, result: KbToolResult) => void,
   notifyHostedCorpusMutation: () => void,
@@ -279,7 +238,7 @@ function createKbChildMutationPort(
   };
   const ctxOrFallback = (ctx: InvocationContext | undefined): InvocationContext => ctx ?? fallbackContext;
   return {
-    ...localKb,
+    ...readPort,
     setCommunitySummary: async (args, ctx) => {
       const invocationCtx = ctxOrFallback(ctx);
       const result = await kbChildSupervisor.mutateKb({ method: 'setCommunitySummary', args, ctx: invocationCtx });
@@ -384,8 +343,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
-  const kbChildSupervisor =
-    options.kbChildSupervisor ?? createDisabledKbChildSupervisor('not configured for this coordinator core');
+  const kbChildSupervisor = options.kbChildSupervisor;
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
   // Local indirection: callers in non-health/handoff paths use this to get
@@ -474,14 +432,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     coralEnv: { ...world.coralEnvSnapshot },
     authority: 'admin',
   };
-  // KB-tool handlers route through the subsystem registry. The registry
-  // returns a structured `kb_initializing` / `kb_offline` envelope whenever
-  // the subsystem is not online or degraded — handlers cascade that envelope
-  // up to the transport layer where it maps to HTTP 503.
-  const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
-    runtimeState.subsystems.run<KnowledgeBaseRuntime, T>(KB_ID, run);
-  const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
-    runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>(KB_ID, run);
   const recordHostedKbFailure = (operation: string, ctx: InvocationContext | undefined, result: KbToolResult): void => {
     if (result.ok || ctx === undefined) {
       return;
@@ -520,10 +470,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     try {
       const storeServices = getStoreServices();
       const snapshot = readPersistedCorpusSnapshot(storeServices.storeDb);
-      const invalidateResult = runtimeState.subsystems.run<KnowledgeBaseRuntime, void>(KB_ID, (kbSubsystem) => {
-        kbSubsystem.kb.invalidateKbCache();
-      });
-      void invalidateResult;
       storeServices.consumerDriver?.notifyCorpus(snapshot);
     } catch (error) {
       world.log(`[kb-child] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
@@ -678,6 +624,15 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
   };
   const disposeKbChildExitListener = kbChildSupervisor.onExit?.(failTrackedChildJobs) ?? (() => {});
+  const childKbReadPort = createKbChildReadPort(kbChildSupervisorWithTrackedShutdown);
+  const kbRpcPort = createKbChildMutationPort(
+    childKbReadPort,
+    kbChildSupervisorWithTrackedShutdown,
+    recordHostedKbFailure,
+    notifyHostedCorpusMutation,
+    registerChildJobAbortProxy,
+    readOnlyInvocationContext,
+  );
 
   const rpcPorts: RpcPorts = {
     sessions: {
@@ -759,114 +714,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         }
       },
     },
-    kb: {
-      readSearch: (args) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
-      diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
-      readNote: (slug) =>
-        withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
-      readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
-      readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
-      listStaleCommunities: () => withKb((kbSubsystem) => handleKbCommunityListStale(kbSubsystem)),
-      readCommunitySummaryInput: (slug) => withKb((kbSubsystem) => handleKbCommunitySummaryInput(slug, kbSubsystem)),
-      setCommunitySummary: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbCommunitySetSummary(args, kbSubsystem));
-        recordHostedKbFailure('community_set_summary', ctx, result);
-        return result;
-      },
-      readWiki: (slug) => withKb((kbSubsystem) => handleKbWikiRead(slug, kbSubsystem, runtime)),
-      readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),
-      readPrinciple: (slug) => withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, runtime)),
-      listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
-      listWikis: () => withKbAsync((kbSubsystem) => handleKbWikiList({}, kbSubsystem)),
-      listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx, runtime)),
-      listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
-      createNote: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx, runtime));
-        recordHostedKbFailure('promote', ctx, result);
-        return result;
-      },
-      updateNote: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem));
-        recordHostedKbFailure('update', ctx, result);
-        return result;
-      },
-      deleteNote: async (slug, ctx) => {
-        const args = { note: slug };
-        const result = await withKbAsync((kbSubsystem) => handleKbDelete(args, kbSubsystem));
-        recordHostedKbFailure('delete', ctx, result);
-        return result;
-      },
-      createWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiCreate(args, kbSubsystem));
-        recordHostedKbFailure('wiki_create', ctx, result);
-        return result;
-      },
-      rewriteWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiRewrite(args, kbSubsystem));
-        recordHostedKbFailure('wiki_rewrite', ctx, result);
-        return result;
-      },
-      linkWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiLink(args, kbSubsystem));
-        recordHostedKbFailure('wiki_link', ctx, result);
-        return result;
-      },
-      unlinkWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiUnlink(args, kbSubsystem));
-        recordHostedKbFailure('wiki_unlink', ctx, result);
-        return result;
-      },
-      citeWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiCite(args, kbSubsystem));
-        recordHostedKbFailure('wiki_cite', ctx, result);
-        return result;
-      },
-      adoptWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiAdopt(args, kbSubsystem, ctx, runtime));
-        recordHostedKbFailure('wiki_adopt', ctx, result);
-        return result;
-      },
-      deleteWiki: async (slug, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiDelete({ slug }, kbSubsystem));
-        recordHostedKbFailure('wiki_delete', ctx, result);
-        return result;
-      },
-      wakeUp: (args) => withKbAsync((kbSubsystem) => handleKbWakeUp(args, kbSubsystem)),
-      createSource: async (args, ctx) => {
-        const parsed = parseKbSourceImportRequest(args);
-        if (!parsed.ok) {
-          return {
-            ok: false,
-            code: 'invalid_request',
-            message: parsed.message,
-          } satisfies KbToolResult;
-        }
-        const result = kbChildOnlyJobUnavailable('source import');
-        recordHostedKbFailure('source_import', ctx, result);
-        return result;
-      },
-      deleteSource: async (slug, ctx) => {
-        const args = { slug };
-        const result = await withKbAsync((kbSubsystem) => handleKbSourceDelete(args, kbSubsystem));
-        recordHostedKbFailure('source_delete', ctx, result);
-        return result;
-      },
-      createMemo: (args, ctx) => {
-        const result = withKb(() => handleKbMemo(args, ctx, runtime));
-        recordHostedKbFailure('memo_create', ctx, result);
-        return result;
-      },
-      deleteMemos: (args, ctx) => {
-        const result = withKb(() => handleKbMemoDeleteConsolidated(args, ctx, runtime));
-        recordHostedKbFailure('memo_delete', ctx, result);
-        return result;
-      },
-      reindex: async (_args, ctx) => {
-        const result = kbChildOnlyJobUnavailable('reindex');
-        recordHostedKbFailure('reindex', ctx, result);
-        return result;
-      },
-    },
+    kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,
       start: (args, ctx) => handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
@@ -880,28 +728,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
-  const childRuntimeOnlyRequested = options.useKbChildRuntimeOnly === true;
-  const delegateKbReadsToChild = childRuntimeOnlyRequested || shouldDelegateKbReadsToChild(options, kbChildSupervisor);
-  const delegateKbMutationsToChild =
-    childRuntimeOnlyRequested || shouldDelegateKbMutationsToChild(options, kbChildSupervisor);
-  const useKbChildRuntimeOnly = childRuntimeOnlyRequested && delegateKbReadsToChild && delegateKbMutationsToChild;
-
-  let effectiveKbPorts = rpcPorts.kb;
-  if (delegateKbReadsToChild) {
-    effectiveKbPorts = createKbChildReadPort(effectiveKbPorts, kbChildSupervisor);
-  }
-  if (delegateKbMutationsToChild) {
-    effectiveKbPorts = createKbChildMutationPort(
-      effectiveKbPorts,
-      kbChildSupervisor,
-      recordHostedKbFailure,
-      notifyHostedCorpusMutation,
-      registerChildJobAbortProxy,
-      readOnlyInvocationContext,
-    );
-  }
-  const effectiveRpcPorts: RpcPorts = { ...rpcPorts, kb: effectiveKbPorts };
-
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
     time: runtime.time,
@@ -1038,7 +864,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         cleanup();
       },
     },
-    ...effectiveRpcPorts,
+    ...rpcPorts,
   };
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
@@ -1095,10 +921,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
-    createKbSubsystemFn: useKbChildRuntimeOnly
-      ? () => createKbChildProxySubsystem(kbChildSupervisorWithTrackedShutdown)
-      : defaults.createKbSubsystemFn,
-    createCurateAssistant: defaults.createCurateAssistant,
+    createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisorWithTrackedShutdown),
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
     runStartupRecoveryFn: options.runStartupRecoveryFn,

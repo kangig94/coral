@@ -10,8 +10,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
-import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Database } from '#src/store/db.js';
@@ -185,20 +184,6 @@ function createStoreServices(storeDb: Database): CoordinatorStoreServices {
   } as unknown as CoordinatorStoreServices;
 }
 
-function createKbSubsystemStub(): KnowledgeBaseRuntime {
-  return {
-    kb: {},
-    readDb: {},
-    curateScheduler: {
-      isRunning: () => false,
-      start: async () => {},
-      stop: async () => {},
-      schedule: () => {},
-      scheduleDeferredCommit: () => {},
-    },
-  } as unknown as KnowledgeBaseRuntime;
-}
-
 afterEach(async () => {
   for (const listener of [...ipcListeners].reverse()) {
     ipcListeners.delete(listener);
@@ -299,7 +284,7 @@ describe('incumbent handoff reset authority', () => {
         return result;
       },
       createStoreServicesFromDbFn: createStoreServices,
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => createKbSubsystemStub()),
+      kbChildSupervisor: createMockKbChildSupervisor(),
       runStartupRecoveryFn: async () => [],
       cleanupStaleJobsFn: () => {},
       markJobsAsErrorFn: () => {},

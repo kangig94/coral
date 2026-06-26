@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import {
   createServer,
   request as httpRequest,
@@ -16,7 +16,7 @@ import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -77,6 +77,7 @@ import {
 } from '#src/kb/tool-handlers.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { createKbChildProxySubsystem } from '#src/coordinator/kb-child/proxy-subsystem.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { MutableRuntimeState as MutableCoordinatorRuntimeState } from '#src/coordinator/lifecycle.js';
 import {
@@ -727,6 +728,10 @@ describe('execution backend server', () => {
   async function startBackendServer(overrides: Parameters<ServerModule['createCoordinatorServer']>[0] = {}) {
     const { serverModule, backendInfo } = await loadExecutionModules();
     const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
+    const defaultKbChildSupervisor =
+      process.env.CORAL_KB_ENABLE === '0' || restOverrides.kbChildSupervisor !== undefined
+        ? {}
+        : { kbChildSupervisor: createMockKbChildSupervisor() };
     controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
@@ -738,8 +743,8 @@ describe('execution backend server', () => {
         log: () => {},
         ...bootOverrides,
       },
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
       cleanupStaleJobsFn: () => {},
+      ...defaultKbChildSupervisor,
       ...restOverrides,
     });
     const started = await controller.start();
@@ -929,7 +934,7 @@ describe('execution backend server', () => {
     expect(kbChildSupervisor.probe).not.toHaveBeenCalled();
   });
 
-  it('uses a KB child proxy subsystem without building the parent KB runtime when child-only mode is enabled', async () => {
+  it('uses a KB child proxy subsystem for coordinator health', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -938,24 +943,9 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
-      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
-      mutateKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
-    const createKbRuntimeFn = vi.fn(async () => {
-      throw new Error('parent KB runtime should not be built');
-    });
+    const kbChildSupervisor = createMockKbChildSupervisor({ health: childHealth });
     const backend = await startBackendServer({
       kbChildSupervisor,
-      useKbChildRuntimeOnly: true,
-      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -964,12 +954,11 @@ describe('execution backend server', () => {
     const body = (await response.json()) as { subsystems?: Array<{ id: string; phase: string }> };
 
     expect(response.status).toBe(200);
-    expect(createKbRuntimeFn).not.toHaveBeenCalled();
     expect(body.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('online');
     expect(kbChildSupervisor.start).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps child-only mode on the child RPC path even when delegation flags are disabled', async () => {
+  it('routes KB memo mutations through the child RPC path', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -982,26 +971,12 @@ describe('execution backend server', () => {
       ok: true as const,
       data: { servedBy: 'kb-child', method: request.method },
     }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
-      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+    const kbChildSupervisor = createMockKbChildSupervisor({
+      health: childHealth,
       mutateKb,
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
-    const createKbRuntimeFn = vi.fn(async () => {
-      throw new Error('parent KB runtime should not be built');
     });
     const backend = await startBackendServer({
       kbChildSupervisor,
-      useKbChildRuntimeOnly: true,
-      delegateKbReadsToChild: false,
-      delegateKbMutationsToChild: false,
-      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
@@ -1019,7 +994,6 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(createKbRuntimeFn).not.toHaveBeenCalled();
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
@@ -1027,7 +1001,7 @@ describe('execution backend server', () => {
     });
   });
 
-  it('keeps the standard server path child-only when no KB subsystem factory is provided', async () => {
+  it('uses the child RPC path in the standard server path', async () => {
     const { serverModule } = await loadExecutionModules();
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
@@ -1041,17 +1015,10 @@ describe('execution backend server', () => {
       ok: true as const,
       data: { servedBy: 'kb-child', method: request.method },
     }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
-      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+    const kbChildSupervisor = createMockKbChildSupervisor({
+      health: childHealth,
       mutateKb,
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
+    });
     controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
@@ -1064,9 +1031,6 @@ describe('execution backend server', () => {
       },
       cleanupStaleJobsFn: () => {},
       kbChildSupervisor,
-      useKbChildRuntimeOnly: false,
-      delegateKbReadsToChild: false,
-      delegateKbMutationsToChild: false,
     });
     const started = await controller.start();
 
@@ -1092,7 +1056,7 @@ describe('execution backend server', () => {
     });
   });
 
-  it('keeps child-only mode off the parent KB runtime when the child is disabled', async () => {
+  it('reports the KB child proxy offline when the child is disabled', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: false,
       phase: 'disabled',
@@ -1100,13 +1064,10 @@ describe('execution backend server', () => {
       pid: null,
       startedAt: null,
       readyAt: null,
-      reason: 'disabled for fallback test',
+      reason: 'disabled for test',
     };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+    const kbChildSupervisor = createMockKbChildSupervisor({
+      health: childHealth,
       readKb: vi.fn(async () => ({
         ok: false as const,
         code: 'kb_unavailable',
@@ -1119,17 +1080,9 @@ describe('execution backend server', () => {
         message: 'KB child supervisor is disabled',
         detail: { reason: 'kb_child_disabled' },
       })),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
-    const createKbRuntimeFn = vi.fn(async () => {
-      throw new Error('parent KB runtime should not be built');
     });
     const backend = await startBackendServer({
       kbChildSupervisor,
-      useKbChildRuntimeOnly: true,
-      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
     const healthResponse = await fetch(`${backend.baseUrl}/health`, {
@@ -1138,7 +1091,6 @@ describe('execution backend server', () => {
     const health = (await healthResponse.json()) as { subsystems?: Array<{ id: string; phase: string }> };
 
     expect(healthResponse.status).toBe(200);
-    expect(createKbRuntimeFn).not.toHaveBeenCalled();
     expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('offline');
 
     const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
@@ -1183,7 +1135,7 @@ describe('execution backend server', () => {
     }
   });
 
-  it('delegates read-only KB RPCs to an enabled KB child by default', async () => {
+  it('routes read-only KB RPCs through the child supervisor', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1274,7 +1226,7 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('delegates migrated KB memo mutations to an enabled KB child by default', async () => {
+  it('routes KB memo mutations through the child supervisor', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1326,7 +1278,7 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('delegates migrated KB corpus mutations to an enabled KB child by default', async () => {
+  it('routes KB corpus mutations through the child supervisor', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1758,177 +1710,49 @@ describe('execution backend server', () => {
     expect(abortKbJobs).not.toHaveBeenCalled();
   });
 
-  it('keeps migrated KB memo mutations in the parent when child mutation delegation is disabled', async () => {
+  it('reports KB unavailable when the child supervisor is failed', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
-      phase: 'online',
+      phase: 'failed',
       generation: 1,
-      pid: 12345,
+      pid: null,
       startedAt: 10,
-      readyAt: 20,
+      readyAt: null,
+      lastError: 'simulated KB child failure',
     };
-    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (_request) => ({
-      ok: false as const,
-      code: 'unexpected_mutation',
-      message: 'unexpected mutation',
-    }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
-      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
-      mutateKb,
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
-    const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: false });
-    const projectRoot = join(mockState.tmpHome, 'project-with-parent-memo');
-    const sourcePath = join(projectRoot, 'source.md');
-    mkdirSync(projectRoot, { recursive: true });
-    writeFileSync(sourcePath, '# Parent Fallback Blocked\n\nBody\n', 'utf8');
-
-    const response = await fetch(`${backend.baseUrl}/kb/memos`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
-      },
-      body: JSON.stringify({
-        projectRoot,
-        topic: 'alpha',
-        content: 'memo body',
-        owner: 'kang',
-      }),
-    });
-
-    expect(response.status).toBe(201);
-    expect(mutateKb).not.toHaveBeenCalled();
-
-    const sourceImportResponse = await fetch(`${backend.baseUrl}/kb/sources`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
-      },
-      body: JSON.stringify({
-        projectRoot,
-        filePath: sourcePath,
-        slug: 'parent-fallback-blocked',
-        readiness: 'commit',
-        async: false,
-      }),
-    });
-    expect(sourceImportResponse.status).toBe(503);
-    await expect(sourceImportResponse.json()).resolves.toMatchObject({
-      code: 'kb_unavailable',
-      detail: { reason: 'kb_child_required' },
-    });
-
-    const reindexResponse = await fetch(`${backend.baseUrl}/kb/index`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Coral-Backend-Token': backend.token,
-      },
-      body: JSON.stringify({
-        projectRoot,
-        async: false,
-      }),
-    });
-    expect(reindexResponse.status).toBe(503);
-    await expect(reindexResponse.json()).resolves.toMatchObject({
-      code: 'kb_unavailable',
-      detail: { reason: 'kb_child_required' },
-    });
-    expect(mutateKb).not.toHaveBeenCalled();
-  });
-
-  it('keeps read-only KB RPCs in the parent when child delegation is disabled', async () => {
-    const childHealth: KbChildHealthSnapshot = {
-      enabled: true,
-      phase: 'online',
-      generation: 1,
-      pid: 12345,
-      startedAt: 10,
-      readyAt: 20,
-    };
-    const readKb = vi.fn(async (request: unknown) => ({
-      ok: true as const,
-      data: { servedBy: 'kb-child', request },
-    }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
-      readKb,
-      mutateKb: vi.fn(async () => ({
+    const kbChildSupervisor = createMockKbChildSupervisor({
+      health: childHealth,
+      readKb: vi.fn(async () => ({
         ok: false as const,
-        code: 'unexpected_mutation',
-        message: 'unexpected mutation',
+        code: 'kb_unavailable',
+        message: 'KB child supervisor is failed',
+        detail: { reason: 'kb_child_failed' },
       })),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
+    });
     const backend = await startBackendServer({
-      delegateKbReadsToChild: false,
       kbChildSupervisor,
     });
 
-    await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
-
-    expect(readKb).not.toHaveBeenCalled();
-  });
-
-  it('returns KB unavailable when read delegation is enabled without a child supervisor', async () => {
-    const backend = await startBackendServer({
-      delegateKbReadsToChild: true,
-    });
-
-    const response = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
-    });
-
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({
-      code: 'kb_unavailable',
-      detail: { reason: 'kb_child_disabled' },
-    });
-  });
-
-  it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const backend = await startBackendServer({
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => {
-        throw new Error('simulated KB init failure');
-      }),
-    });
-
-    // Under the 3-era boot, KB init runs in Era III (fire-and-forget) with
-    // its own retry loop. The first attempt fails; subsequent attempts back
-    // off [1s, 4s, 16s]. Health reports `kind: 'initializing'` while
-    // retries are in flight and `kind: 'unavailable'` after exhaustion.
-    // Either is acceptable here — both surface as HTTP 503 on KB tool calls.
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
-    // KB init runs in Era III (fire-and-forget) so the kernel reaches
-    // `running` regardless of KB outcome; the per-subsystem entry carries
-    // the failure state.
     expect(body.status).toBe('ok');
     const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
     const kb = subsystems.find((s) => s.id === 'kb');
     expect(kb).toBeDefined();
-    expect(['initializing', 'offline']).toContain(kb!.phase);
-    stderrSpy.mockRestore();
+    expect(kb!.phase).toBe('offline');
+
+    const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    expect(kbResponse.status).toBe(503);
+    await expect(kbResponse.json()).resolves.toMatchObject({
+      code: 'kb_unavailable',
+      detail: { reason: 'kb_child_failed' },
+    });
   });
 
   it('includes active launches in active count', async () => {
@@ -2041,7 +1865,7 @@ describe('execution backend server', () => {
         flavor: 'prod',
         log: () => {},
       },
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
+      kbChildSupervisor: createMockKbChildSupervisor(),
       cleanupStaleJobsFn: () => {},
       providerHostManager,
       createExecutionService: (ctx, deps) => {
@@ -2167,88 +1991,6 @@ describe('execution backend server', () => {
     });
   });
 
-  it('runs KB initialization during startup before idle watching begins', async () => {
-    const fakeIdleTimer = createFakeIdleTimer();
-    type KbRuntimeThreadOptions = {
-      processPort: { exec: unknown };
-      storagePort: { writeAtomicSync: unknown };
-      envPort: { get: unknown };
-    };
-    let receivedKbOptions: KbRuntimeThreadOptions | null = null;
-    const createKbRuntimeFn = vi.fn(async (options) => {
-      receivedKbOptions = options;
-      return {
-        kb: {} as never,
-        readDb: asReadonlyDatabase({} as never),
-        curateScheduler: {
-          start: vi.fn(async () => {}),
-          schedule: vi.fn(),
-          scheduleDeferredCommit: vi.fn(),
-          isRunning: () => false,
-          stop: vi.fn(async () => {}),
-        },
-      } satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime;
-    });
-
-    await startBackendServer({
-      createIdleTimer: () => fakeIdleTimer as never,
-      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
-    });
-
-    expect(createKbRuntimeFn).toHaveBeenCalledTimes(1);
-    expect(receivedKbOptions).not.toBeNull();
-    const kbOptions = receivedKbOptions as unknown as KbRuntimeThreadOptions;
-    expect(typeof kbOptions.processPort.exec).toBe('function');
-    expect(typeof kbOptions.storagePort.writeAtomicSync).toBe('function');
-    expect(typeof kbOptions.envPort.get).toBe('function');
-    // Under the 3-era boot, idle watching starts in Era II BEFORE KB
-    // (Era III) is registered with the subsystems registry. The KB factory
-    // is still invoked during start() (synchronously inside Era III) — but
-    // ordering relative to `idleTimer.startWatching` flips:
-    const initOrder = createKbRuntimeFn.mock.invocationCallOrder.at(0);
-    const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
-    expect(initOrder).toBeDefined();
-    expect(watchOrder).toBeDefined();
-    expect(watchOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(initOrder ?? Number.POSITIVE_INFINITY);
-  });
-
-  it('sets the settled build flavor before KB initialization starts', async () => {
-    const { serverModule } = await loadExecutionModules();
-    const pluginRoot = createProjectRoot('kb-init-build-flavor');
-    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
-    writeFileSync(
-      join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'testhash1234', flavor: 'dev' }),
-      'utf-8',
-    );
-
-    let observedRuntimeDir = '';
-    const createKbRuntimeFn = vi.fn(async (ctx) => {
-      observedRuntimeDir = ctx.paths.runtimeDir;
-      return createMockKbSubsystem();
-    });
-
-    controller = serverModule.createCoordinatorServer({
-      pluginRoot,
-      bootSnapshot: {
-        instanceId: 'execution-backend-instance-1',
-        token: 'test-token',
-        version: '9.9.9',
-        bundleHash: 'testhash1234',
-        log: () => {},
-      },
-      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
-      cleanupStaleJobsFn: () => {},
-    });
-
-    const started = await controller.start();
-
-    expect(started.flavor).toBe('dev');
-    expect(createKbRuntimeFn).toHaveBeenCalledTimes(1);
-    // Flavor settles before KB init: dev runtimeDir lives under data-dev/.
-    expect(observedRuntimeDir).toMatch(/data-dev\b/);
-  });
-
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('discuss-only-project');
@@ -2343,82 +2085,6 @@ describe('execution backend server', () => {
     }
   });
 
-  it('routes KB tool calls through direct handlers and catches errors', async () => {
-    const kbSubsystem = createMockKbSubsystem();
-    const ensureCorpusFreshness = vi.fn(async () => ({
-      entries: {},
-      principles: {},
-      entityMeta: {},
-      relationships: [],
-    }));
-    const backend = await startBackendServer({
-      createKbSubsystemFn: adaptLegacyKbFactory(async () =>
-        ({
-          kb: {
-            ...(kbSubsystem.kb as unknown as Record<string, unknown>),
-            projectionArtifacts: {
-              ...(kbSubsystem.kb as unknown as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts,
-              files: {
-                ...(kbSubsystem.kb as unknown as { projectionArtifacts: { files: Record<string, unknown> } })
-                  .projectionArtifacts.files,
-                existsSync: vi.fn(() => true),
-              },
-            },
-            ensureCorpusFreshness,
-            readIndex: vi.fn(() => {
-              throw new Error('mock KB runtime unavailable');
-            }),
-            ensureOramaIndex: vi.fn(async () => ({
-              db: {} as never,
-              tokenizer: {} as never,
-              index: {
-                entries: {
-                  'note:broken-entry': {
-                    kind: 'note',
-                    slug: 'broken-entry',
-                    title: 'Broken Entry',
-                    tags: [],
-                    principles: [],
-                    source: ['kangig94/coral'],
-                    createdAt: '2026-03-20T00:00:00.000Z',
-                    updatedAt: '2026-03-20T00:00:00.000Z',
-                    related: [],
-                    entrySeq: 1,
-                  },
-                },
-                principles: {},
-              },
-            })),
-          } as never,
-          readDb: kbSubsystem.readDb,
-          curateScheduler: kbSubsystem.curateScheduler,
-        }) satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime),
-    });
-    await vi.waitFor(async () => {
-      const healthResponse = await fetch(`${backend.baseUrl}/health`, {
-        headers: {
-          'X-Coral-Backend-Token': backend.token,
-        },
-      });
-      const health = (await healthResponse.json()) as { subsystems?: Array<{ id: string; phase: string }> };
-      expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('online');
-    });
-    ensureCorpusFreshness.mockRejectedValue(new Error('mock KB runtime unavailable'));
-
-    const response = await fetch(`${backend.baseUrl}/kb/entries?q=test`, {
-      headers: {
-        'X-Coral-Backend-Token': backend.token,
-      },
-    });
-
-    expect(response.status).toBe(500);
-    const body = (await response.json()) as Record<string, unknown>;
-    // Mock KB subsystem has no real runtime, so the handler catches the error
-    expect(body).toMatchObject({
-      code: 'kb_error',
-    });
-  });
-
   it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
     const { handleKbPrinciples } = await import('#src/kb/tool-handlers.js');
 
@@ -2487,18 +2153,31 @@ describe('execution backend server', () => {
     });
   });
 
-  it('routes kb memo list and consolidated delete through the backend tool handlers', async () => {
-    const backend = await startBackendServer();
+  it('routes kb memo list and consolidated delete through the KB child RPC port', async () => {
     const projectRoot = join(mockState.tmpHome, 'project');
-    const memoRoot = join(runtime.paths.projectData(projectRoot), 'memo');
-    mkdirSync(projectRoot, { recursive: true });
-    mkdirSync(memoRoot, { recursive: true });
-    const aMemo = join(memoRoot, 'a.md');
-    const bMemo = join(memoRoot, 'b.md');
-    writeFileSync(aMemo, 'Alpha summary\n', 'utf-8');
-    writeFileSync(bMemo, 'Bravo summary\n', 'utf-8');
-    utimesSync(aMemo, new Date('2026-03-24T00:00:00.000Z'), new Date('2026-03-24T00:00:00.000Z'));
-    utimesSync(bMemo, new Date('2026-03-25T00:00:00.000Z'), new Date('2026-03-25T00:00:00.000Z'));
+    const readKb = vi.fn<KbChildSupervisor['readKb']>(async (request) => {
+      expect(request.method).toBe('listMemos');
+      return {
+        ok: true,
+        data: {
+          memos: [
+            { filename: 'b.md', summary: 'Bravo summary', createdAt: '2026-03-25T00:00:00.000Z' },
+            { filename: 'a.md', summary: 'Alpha summary', createdAt: '2026-03-24T00:00:00.000Z' },
+          ],
+        },
+      };
+    });
+    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (request) => {
+      expect(request.method).toBe('deleteMemos');
+      const args = request.args as Record<string, unknown>;
+      if (args.all === true) {
+        return { ok: true, data: { deleted: 1 } };
+      }
+      return { ok: true, data: { deleted: ['a.md'], count: 1 } };
+    });
+    const backend = await startBackendServer({
+      kbChildSupervisor: createMockKbChildSupervisor({ readKb, mutateKb }),
+    });
 
     const listResponse = await fetch(`${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}`, {
       headers: {
@@ -2510,9 +2189,14 @@ describe('execution backend server', () => {
     const listBody = (await listResponse.json()) as Record<string, unknown>;
     expect(listBody).toEqual({
       memos: [
-        { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
-        { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
+        { filename: 'b.md', summary: 'Bravo summary', createdAt: '2026-03-25T00:00:00.000Z' },
+        { filename: 'a.md', summary: 'Alpha summary', createdAt: '2026-03-24T00:00:00.000Z' },
       ],
+    });
+    expect(readKb).toHaveBeenCalledWith({
+      method: 'listMemos',
+      args: {},
+      ctx: expect.objectContaining({ authority: 'user', projectRoot }),
     });
 
     const deleteResponse = await fetch(
@@ -2531,6 +2215,11 @@ describe('execution backend server', () => {
       deleted: ['a.md'],
       count: 1,
     });
+    expect(mutateKb).toHaveBeenCalledWith({
+      method: 'deleteMemos',
+      args: { pattern: 'a*' },
+      ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+    });
 
     const purgeResponse = await fetch(
       `${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`,
@@ -2545,6 +2234,11 @@ describe('execution backend server', () => {
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
     expect(purgeBody).toEqual({ deleted: 1 });
+    expect(mutateKb).toHaveBeenLastCalledWith({
+      method: 'deleteMemos',
+      args: { all: true },
+      ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+    });
   });
 
   describe('resource-oriented HTTP routes', () => {
@@ -6031,6 +5725,7 @@ describe('execution backend server', () => {
       });
       runtimeState.setLifecycle('running');
 
+      const kbChildSupervisor = createMockKbChildSupervisor();
       const controller = lifecycleModule.createLifecycle({
         identity: {
           pluginRoot,
@@ -6074,9 +5769,9 @@ describe('execution backend server', () => {
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
+        kbChildSupervisor,
         handoffQuiescePorts: () => [fakeService as never],
-        createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
-        createCurateAssistant: () => ({ complete: async () => '' }),
+        createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisor),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
         runStartupRecoveryFn: async () => [],
@@ -6216,6 +5911,13 @@ describe('execution backend server', () => {
       const startupBlocked = createDeferred();
       const releaseStartup = createDeferred();
       const startupRegistry = createDiscussContextRegistry();
+      const kbChildSupervisor = createMockKbChildSupervisor({
+        start: vi.fn(async () => {
+          startupBlocked.resolve();
+          await releaseStartup.promise;
+          throw new Error('startup interrupted for shutdown test');
+        }),
+      });
 
       controller = serverModule.createCoordinatorServer({
         bootSnapshot: {
@@ -6226,11 +5928,7 @@ describe('execution backend server', () => {
           flavor: 'prod',
           log: () => {},
         },
-        createKbSubsystemFn: adaptLegacyKbFactory(async () => {
-          startupBlocked.resolve();
-          await releaseStartup.promise;
-          throw new Error('startup interrupted for shutdown test');
-        }),
+        kbChildSupervisor,
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
       });
@@ -6265,12 +5963,9 @@ describe('execution backend server', () => {
 
       releaseStartup.resolve();
       const startResult = await startPromise;
-      // Under the 3-era boot, KB init runs in Era III (fire-and-forget)
-      // AFTER Era II completes and `setLifecycle('running')` returns. Even
-      // when KB init fails (or is interrupted by shutdown), start() resolves
-      // successfully with a CoordinatorServerInfo. The shutdown's abort
-      // signal propagates to KB init's retry sleep, but does not bubble
-      // back into start()'s return path.
+      // The KB child starts after `running` and does not gate start()'s return
+      // path. A child start failure during shutdown is contained by the
+      // supervisor path, so the server info still resolves.
       expect(startResult).toMatchObject({ port: expect.any(Number) });
 
       const restartRegistry = createDiscussContextRegistry();

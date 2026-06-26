@@ -615,7 +615,7 @@ describe('journal commit atomicity invariant', () => {
       expect(progress).toBeDefined();
       expect(terminal).toBeDefined();
       if (progress === undefined || terminal === undefined) {
-        throw new Error('Expected migrated KB recorder to append progress and terminal rows.');
+        throw new Error('Expected KB recorder to append progress and terminal rows.');
       }
       const progressBody = decodeEventBody(progress.body);
       const terminalBody = decodeEventBody(terminal.body);

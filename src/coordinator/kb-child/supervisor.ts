@@ -140,13 +140,13 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
     warmup: async () => ({ ...snapshot }),
     readKb: async () => ({
       ok: false,
-      code: 'kb_unavailable',
+      code: 'kb_disabled',
       message: `KB child supervisor is disabled: ${reason}`,
       detail: { reason: 'kb_child_disabled' },
     }),
     mutateKb: async () => ({
       ok: false,
-      code: 'kb_unavailable',
+      code: 'kb_disabled',
       message: `KB child supervisor is disabled: ${reason}`,
       detail: { reason: 'kb_child_disabled' },
     }),
@@ -789,13 +789,9 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
 }
 
 export function createDefaultKbChildSupervisor(options: KbChildSupervisorOptions): KbChildSupervisor {
-  if (options.runtime.env.get('CORAL_KB_CHILD_ENABLE') === '0') {
-    return createDisabledKbChildSupervisor('disabled by CORAL_KB_CHILD_ENABLE=0');
-  }
-
   const entrypoint = options.entrypoint ?? resolveDefaultKbChildEntrypoint(options.pluginRoot);
   if (!options.runtime.storage.existsSync(entrypoint)) {
-    return createDisabledKbChildSupervisor(`entrypoint not found: ${entrypoint}`);
+    throw new Error(`KB child entrypoint not found: ${entrypoint}`);
   }
 
   return createKbChildSupervisor({ ...options, entrypoint });

@@ -486,7 +486,7 @@ describe('simulation runtime', () => {
     expect(startedA.port).toBe(4_201);
     expect(startedB.port).toBe(4_202);
     expect(worldA.hooks.listenCalls).toEqual([{ host: '127.0.0.1', port: 4_201 }]);
-    expect(worldA.hooks.createKbSubsystemCalls).toHaveLength(1);
+    expect(worldA.hooks.kbChildStartCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(true);

@@ -31,11 +31,10 @@ import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
 import { workflowRegistry } from '../../../src/workflow/events.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
-import type { Runtime } from '../../../src/runtime/ports.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
-import { adaptLegacyKbFactory } from '../../testing/kb-subsystem-adapter.js';
 import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '../../../src/coordinator/composition/store-services-ref.js';
+import type { KbChildHealthSnapshot, KbChildSupervisor } from '../../../src/coordinator/kb-child/supervisor.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
@@ -47,7 +46,6 @@ import { openWritableStoreDbNoReset } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
-import { asReadonlyDatabase, type ReadonlyDatabase } from '../../../src/store/read-port.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
 import { setStoreServicesForTest } from '../../testing/store-services.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
@@ -105,20 +103,6 @@ export type SimulationScenario = {
 
 function readFileIfPresent(storage: Pick<StoragePort, 'existsSync' | 'readFileSync'>, path: string): string {
   return storage.existsSync(path) ? storage.readFileSync(path, 'utf-8') : '';
-}
-
-function createMockKbSubsystem(readDb: ReadonlyDatabase) {
-  return {
-    kb: {} as never,
-    readDb,
-    curateScheduler: {
-      start: async () => {},
-      schedule: () => {},
-      scheduleDeferredCommit: () => {},
-      isRunning: () => false,
-      stop: async () => {},
-    },
-  };
 }
 
 function headerValue(headers: HeadersInit | undefined, name: string): string | null {
@@ -345,12 +329,8 @@ export type SimulationHookLog = {
   listenCalls: Array<{ host: string; port: number }>;
   writeBackendInfoCalls: Array<{ pluginRoot: string; info: BackendInfo }>;
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
-  createKbSubsystemCalls: Array<{
-    markdownRoot: string;
-    processPort: Pick<Runtime['process'], 'exec' | 'execSync'>;
-    storagePort: Pick<Runtime['storage'], 'writeAtomicSync'>;
-    envPort: Pick<Runtime['env'], 'get'>;
-  }>;
+  kbChildStartCalls: Array<{ pluginRoot: string }>;
+  kbChildWarmupCalls: Array<{ pluginRoot: string }>;
   recoverPersistedDiscussCalls: number;
 };
 
@@ -430,7 +410,8 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     listenCalls: [],
     writeBackendInfoCalls: [],
     removeBackendInfoCalls: [],
-    createKbSubsystemCalls: [],
+    kbChildStartCalls: [],
+    kbChildWarmupCalls: [],
     recoverPersistedDiscussCalls: 0,
   };
 
@@ -451,6 +432,40 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
   const listenHost = scenario.listen?.host ?? DEFAULT_LISTEN_HOST;
   const listenPort = scenario.listen?.port ?? DEFAULT_LISTEN_PORT;
+  const kbChildHealth: KbChildHealthSnapshot = {
+    enabled: true,
+    phase: 'online',
+    generation: 1,
+    pid: runtime.env.pid(),
+    startedAt: runtime.time.now(),
+    readyAt: runtime.time.now(),
+  };
+  const kbChildSupervisor: KbChildSupervisor = {
+    read: () => ({ ...kbChildHealth }),
+    start: async () => {
+      hooks.kbChildStartCalls.push({ pluginRoot });
+      return { ...kbChildHealth };
+    },
+    probe: async () => ({ ...kbChildHealth }),
+    warmup: async () => {
+      hooks.kbChildWarmupCalls.push({ pluginRoot });
+      return { ...kbChildHealth };
+    },
+    readKb: async (request) => ({
+      ok: true,
+      data: { servedBy: 'simulation-kb-child', method: request.method },
+    }),
+    mutateKb: async (request) => ({
+      ok: true,
+      data: { servedBy: 'simulation-kb-child', method: request.method },
+    }),
+    abortKbJobs: async (jobIds) => ({ aborted: [], notFound: [...jobIds] }),
+    listActiveKbJobs: async () => ({ active: [] }),
+    stop: async () => ({ ...kbChildHealth }),
+    restart: async () => ({ ...kbChildHealth }),
+    dispose: async () => undefined,
+    onExit: () => () => {},
+  };
 
   const core = createCoordinatorCore({
     runtime,
@@ -507,15 +522,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         paths: runtime.paths,
       });
     },
-    createKbSubsystemFn: adaptLegacyKbFactory(async ({ paths: kbPaths, processPort, storagePort, envPort }) => {
-      hooks.createKbSubsystemCalls.push({
-        markdownRoot: kbPaths.markdownRoot,
-        processPort,
-        storagePort,
-        envPort,
-      });
-      return createMockKbSubsystem(asReadonlyDatabase(storeDb));
-    }),
+    kbChildSupervisor,
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;

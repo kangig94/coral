@@ -261,7 +261,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         drainForHandoff: vi.fn(),
       } as never,
       handoffQuiescePorts: () => [],
-      createKbSubsystemFn: vi.fn(() => ({
+      createKbProxySubsystemFn: vi.fn(() => ({
         id: KB_ID,
         status: { id: KB_ID, phase: 'initializing', attempt: 0 },
         init: vi.fn(async () => {}),
@@ -273,7 +273,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         })),
         onStatusChange: vi.fn(() => () => {}),
       })) as never,
-      createCurateAssistant: () => ({ complete: async () => '' }),
       registerBuiltInProvidersFn: vi.fn(),
       recoverPersistedDiscussFn: vi.fn(async () => []),
       runStartupRecoveryFn: vi.fn(async () => []),

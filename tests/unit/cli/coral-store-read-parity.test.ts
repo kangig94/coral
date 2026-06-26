@@ -34,9 +34,8 @@ async function seedKbSearchSnapshot(): Promise<void> {
       import('#tests/helpers/kb-test-runtime.js'),
     ]);
   const realRuntime = createRealRuntime('prod');
-  // Production threads the backend store db into createKbSubsystem (coordinator/index.ts:180).
-  // Mirror that here so the seeded retry queue is visible to the read-only query runtime that
-  // opens the same backend store via defaultRegistry.getDb in createDefaultKbQueryRuntime.
+  // Mirror the backend store db wiring so the seeded retry queue is visible to
+  // the read-only query runtime that opens the same store via defaultRegistry.
   const db = openWritableStoreDbNoReset(realRuntime);
   const { kb } = createKbTestRuntime({
     markdownRoot: process.env.CORAL_KB_PATH!,

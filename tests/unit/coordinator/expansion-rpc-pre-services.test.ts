@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 
 const openServers = new Set<Server>();
 
@@ -119,6 +120,7 @@ describe('expansion RPC before store services exist', () => {
         log: () => {},
       },
       createServerFn: (handler) => createServer(handler),
+      kbChildSupervisor: createMockKbChildSupervisor(),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),

@@ -105,7 +105,7 @@ describe('rpc catalog source of truth', () => {
     expect(Object.values(kbChildReadRpcByMethod).every((name) => catalogNames.has(name))).toBe(true);
   });
 
-  it('keeps KB child mutation protocol methods aligned with migrated KB RPC catalog entries', () => {
+  it('keeps KB child mutation protocol methods aligned with KB RPC catalog entries', () => {
     const kbChildMutationRpcByMethod = {
       setCommunitySummary: 'kb.community.set-summary',
       createNote: 'kb.note.create',

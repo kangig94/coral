@@ -6,7 +6,7 @@ import type { Runtime, RuntimeObserver } from '../runtime/ports.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { nowDate } from '../infra/time.js';
 import { backendLog } from '../infra/backend-log.js';
-import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../infra/kb-toggle.js';
+import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import {
   EventEmitterObserver,
   asEmittingRuntimeObserver,
@@ -15,13 +15,11 @@ import {
   resolveSpawnRecordingDir,
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
-import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import { disabledKbSubsystem } from './subsystems/kb.js';
 import { KB_ID } from './subsystems/contract.js';
 import { isErrorEnvelope } from './subsystems/registry.js';
-import type { CoordinatorServerInfo, CreateKbSubsystemFn, LifecycleState } from './lifecycle.js';
+import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
@@ -56,7 +54,11 @@ import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
-import { createDefaultKbChildSupervisor, createDisabledKbChildSupervisor } from './kb-child/supervisor.js';
+import {
+  createDefaultKbChildSupervisor,
+  createDisabledKbChildSupervisor,
+  type KbChildSupervisor,
+} from './kb-child/supervisor.js';
 import type { KbChildEventMessage } from './kb-child/protocol.js';
 import { waitForCorpusReadiness } from './services/kb/readiness.js';
 export { readBoundCorpusConsumerIds, waitForCorpusReadiness } from './services/kb/readiness.js';
@@ -69,15 +71,11 @@ export type CoordinatorServerOptions = Omit<
   | 'getConsumerStuck'
   | 'getMutationBlocked'
   | 'createStoreServicesFromDbFn'
-  | 'createKbSubsystemFn'
+  | 'kbChildSupervisor'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
-  /**
-   * Test/simulation seam for injecting a KB subsystem. Production omits this
-   * so the coordinator registers only the KB child proxy when KB is enabled.
-   */
-  createKbSubsystemFn?: CreateKbSubsystemFn;
+  kbChildSupervisor?: KbChildSupervisor;
 };
 
 export type CoordinatorServerController = {
@@ -209,7 +207,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     runtime: providedRuntime,
     runtimeObserver: providedRuntimeObserver,
     registerBuiltInProvidersFn,
-    createKbSubsystemFn: providedCreateKbSubsystemFn,
     ...coreOptions
   } = options;
   const flavor = deriveCoordinatorFlavor(options);
@@ -250,25 +247,16 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
-  // Preserve CORAL_KB_ENABLE=0's explicit disabled subsystem. With no
-  // injected subsystem factory there is no parent runtime to fall back to, so
-  // the standard server path stays child-only even if legacy callers pass a
-  // false child-only override.
-  const useKbChildRuntimeOnly =
-    kbEnabled && (providedCreateKbSubsystemFn === undefined || coreOptions.useKbChildRuntimeOnly === true);
-  const serverCreateKbSubsystemFn: CreateKbSubsystemFn | undefined = kbEnabled
-    ? providedCreateKbSubsystemFn
-    : () => disabledKbSubsystem();
   let handleKbChildEvent: ((message: KbChildEventMessage) => void) | null = null;
   const kbChildSupervisor = (() => {
     if (coreOptions.kbChildSupervisor) {
       return coreOptions.kbChildSupervisor;
     }
     if (!kbEnabled) {
-      return createDisabledKbChildSupervisor(`disabled by ${CORAL_KB_ENABLE_ENV}=0`);
+      return createDisabledKbChildSupervisor(KB_DISABLED_REASON);
     }
     if (explicitPluginRoot === undefined) {
-      return createDisabledKbChildSupervisor('pluginRoot not provided');
+      throw new Error('KB child supervisor requires pluginRoot when KB is enabled');
     }
     return createDefaultKbChildSupervisor({
       runtime,
@@ -305,9 +293,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return consumerDriver;
   };
 
-  // Late-bound KB runtime accessor. Parent-runtime test/simulation injections
-  // can still expose a subsystem resource; the production child-only path uses
-  // the proxy subsystem and therefore returns null here.
+  // Late-bound KB runtime accessor for coordinator services that have not yet
+  // moved behind the child boundary. The child proxy exposes health only, so
+  // this normally returns null until those services are fully child-hosted.
   const resolveKbRuntime = (): KbRuntime | null => {
     const c = core;
     if (c === null) return null;
@@ -467,13 +455,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
-    useKbChildRuntimeOnly,
-    ...(serverCreateKbSubsystemFn === undefined ? {} : { createKbSubsystemFn: serverCreateKbSubsystemFn }),
-    // Production-only wiring of the real Claude-backed curate assistant. The
-    // composition layer (shared with `tools/simulation`) only knows the
-    // `CurateAssistantFactory` shape, never the provider runtime — see
-    // `tools/simulation/sealed-inventory.json`.
-    createCurateAssistant: createClaudeCurateAssistant,
     createExecutionService: (ctx, deps) => {
       const wiredDeps = {
         ...deps,
@@ -608,8 +589,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
   const coordinatorCore = core;
-  // KB lifecycle is now owned by the child proxy or an explicitly injected
-  // subsystem; the server no longer builds or boots a parent KB runtime.
+  // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.
   resolveLifecyclePhase = () => coordinatorCore.runtimeState.getLifecycle();
 
   return {

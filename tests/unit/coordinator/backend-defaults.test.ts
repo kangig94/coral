@@ -12,6 +12,7 @@ import {
   HTTP_SERVER_REQUEST_TIMEOUT_MS,
   resolveCoordinatorDefaults,
 } from '#src/coordinator/composition/defaults.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -48,6 +49,7 @@ function createHarness() {
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),
+      kbChildSupervisor: createMockKbChildSupervisor(),
     },
     runtime,
   );

@@ -8,23 +8,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
-import type { KbChildHealthSnapshot, KbChildSupervisor } from '#src/coordinator/kb-child/supervisor.js';
-import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
-import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import { createRuntimeBinding } from '#src/runtime/binding.js';
-import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
-import {
-  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-  KB_EMBEDDING_CAPABILITY,
-  KB_FTS_CAPABILITY,
-  KB_VECTOR_CAPABILITY,
-} from '#src/kb/capability/constants.js';
+import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import { workflowRecover } from '#src/workflow/recover.js';
-import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
-import { createRoleRegistry } from '#src/kb/search/role-registry.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -36,103 +22,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<voi
 }
 
 const tempRoots: string[] = [];
-const EMPTY_CORPUS_SNAPSHOT: CorpusSnapshot = {
-  snapshotId: '',
-  contentSeq: 0,
-  metadataSeq: 0,
-  contentManifestHash: '',
-  metadataManifestHash: '',
-};
-const EMPTY_INDEX = {
-  entries: {},
-  principles: {},
-  entityMeta: {},
-  relationships: [],
-};
-
-function createMockKb(order?: string[]) {
-  const capabilityRegistry = createCapabilityRegistry();
-  capabilityRegistry.registerBuiltin(
-    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-    createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
-  );
-  capabilityRegistry.registerBuiltin(
-    BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-    createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
-  );
-  capabilityRegistry.registerBuiltin(
-    BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-    createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
-  );
-  const roleRegistry = createRoleRegistry();
-  const runtimeDir = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-kb-runtime-'));
-  tempRoots.push(runtimeDir);
-
-  return {
-    runtimeDir,
-    roleRegistry,
-    roleCatalog: roleRegistry.catalogView(),
-    capabilityRegistry,
-    capabilities: capabilityRegistry.catalogView(),
-    engineArtifactRegistry: new EngineArtifactRegistry(),
-    corpusAuthorityBaseline: {
-      ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
-      rebuild: vi.fn(() => new Map()),
-      read: vi.fn(() => new Map()),
-      replace: vi.fn(),
-    },
-    projectionArtifacts: {
-      runtimeDir,
-      files: {
-        existsSync: vi.fn(() => false),
-        readFileSync: vi.fn(() => '{}'),
-        rmSync: vi.fn(),
-        mkdirSync: vi.fn(),
-        renameSync: vi.fn(),
-        writeTextAtomic: vi.fn(),
-        writeJsonAtomic: vi.fn(),
-      },
-    },
-    // Promote-recovery preflight (boot step 0) probes
-    // `runtimeDir/promote-recovery/` — return false so the worker skips the
-    // empty-marker-dir scan without invoking the rest of StoragePort.
-    storagePort: {
-      existsSync: vi.fn(() => false),
-    },
-    corpusProjectionReader: {
-      resolveCurrentIndex: vi.fn(() => EMPTY_INDEX),
-      prepareCurrentProjectionInput: vi.fn(async () => ({
-        index: EMPTY_INDEX,
-        records: [],
-        communityFresh: false,
-      })),
-    },
-    retryPendingCorpusPublication: vi.fn(async () => {
-      order?.push('retryPendingCorpusPublication');
-    }),
-    withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => {
-      order?.push('withMutationLock:start');
-      const result = await fn();
-      order?.push('withMutationLock:end');
-      return result;
-    }),
-    mutationLockDiagnostics: vi.fn(() => ({ blocked: false })),
-    ensureCorpusFreshness: vi.fn(async () => {
-      order?.push('ensureCorpusFreshness');
-      return {
-        entries: {},
-        principles: {},
-        entityMeta: {},
-        relationships: [],
-      };
-    }),
-    recordIndexSyncSuccess: vi.fn(),
-    getCorpusStateSnapshot: vi.fn(() => {
-      order?.push('getCorpusStateSnapshot');
-      return { ...EMPTY_CORPUS_SNAPSHOT };
-    }),
-  } as never;
-}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -168,21 +57,12 @@ describe('coordinator startup ordering', () => {
     const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
       order.push('jobsReconcile.runStartup');
     });
+    const kbChildSupervisor = createMockKbChildSupervisor();
 
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => ({
-        kb: createMockKb(),
-        readDb: {} as never,
-        curateScheduler: {
-          start: vi.fn(async () => {}),
-          schedule: vi.fn(),
-          scheduleDeferredCommit: vi.fn(),
-          isRunning: () => false,
-          stop: vi.fn(async () => {}),
-        },
-      })),
+      kbChildSupervisor,
       recoverPersistedDiscussFn: async () => [],
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
@@ -265,25 +145,17 @@ describe('coordinator startup ordering', () => {
     const writeBackendInfoFn = vi.fn(() => {
       order.push('writeBackendInfoFn');
     });
+    const kbChildSupervisor = createMockKbChildSupervisor({
+      start: vi.fn(async () => {
+        order.push('kbChildSupervisor.start');
+        return kbChildSupervisor.read();
+      }),
+    });
 
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => {
-        const kbSubsystem = {
-          kb: createMockKb(),
-          readDb: {} as never,
-          curateScheduler: {
-            start: vi.fn(async () => {}),
-            schedule: vi.fn(),
-            scheduleDeferredCommit: vi.fn(),
-            isRunning: () => false,
-            stop: vi.fn(async () => {}),
-          },
-        };
-        order.push('kbSubsystem ready');
-        return kbSubsystem;
-      }),
+      kbChildSupervisor,
       recoverPersistedDiscussFn,
       writeBackendInfoFn,
       createServerFn: (handler) => createServer(handler),
@@ -317,11 +189,10 @@ describe('coordinator startup ordering', () => {
       // Era I (listen + register cursors) precedes Era II (waitFresh):
       expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));
-      // Era III (KB) starts AFTER Era II's recovery completes — but KB
-      // build's first sync step runs on the same tick as `subsystems.initAll`
-      // before the test resumes, so we assert the build ran AFTER recovery
-      // wrote the recovery markers:
-      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('kbSubsystem ready'));
+      await waitFor(() => order.includes('kbChildSupervisor.start'));
+      // The KB child starts only after Era II recovery has completed and the
+      // coordinator reaches running.
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('kbChildSupervisor.start'));
       // Era II ordering of recovery steps:
       expect(Math.max(...waitFreshOrder)).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
@@ -343,7 +214,7 @@ describe('coordinator startup ordering', () => {
     }
   });
 
-  it('keeps the standard server path child-only without parent corpus replay', async () => {
+  it('starts the KB child without coordinator-side corpus replay', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -359,31 +230,16 @@ describe('coordinator startup ordering', () => {
 
     const runtime = createRealRuntime('prod');
     const order: string[] = [];
-    const childHealth: KbChildHealthSnapshot = {
-      enabled: true,
-      phase: 'online',
-      generation: 1,
-      pid: 12345,
-      startedAt: 10,
-      readyAt: 20,
-    };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
+    const kbChildSupervisor = createMockKbChildSupervisor({
       start: vi.fn(async () => {
         order.push('kbChildSupervisor.start');
-        return childHealth;
+        return kbChildSupervisor.read();
       }),
-      probe: vi.fn(async () => childHealth),
       warmup: vi.fn(async () => {
         order.push('kbChildSupervisor.warmup');
-        return childHealth;
+        return kbChildSupervisor.read();
       }),
-      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
-      mutateKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
-      dispose: vi.fn(async () => undefined),
-    };
+    });
     const register = vi.spyOn(ConsumerDriver.prototype, 'register');
     const notifyCorpus = vi
       .spyOn(ConsumerDriver.prototype, 'notifyCorpus')
@@ -395,8 +251,6 @@ describe('coordinator startup ordering', () => {
       runtime,
       pluginRoot,
       kbChildSupervisor,
-      delegateKbReadsToChild: false,
-      delegateKbMutationsToChild: false,
       recoverPersistedDiscussFn: async () => [],
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => {

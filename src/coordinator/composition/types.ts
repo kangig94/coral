@@ -5,8 +5,6 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
   CoordinatorIdentity,
   MutableRuntimeState as MutableCoordinatorRuntimeState,
-  CreateKbSubsystemFn,
-  CurateAssistantFactory,
   LifecycleController,
   LifecycleHooks,
   RecoverPersistedDiscussFn,
@@ -69,20 +67,6 @@ export type CoordinatorCoreOptions = {
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
   terminateAllFn?: () => void;
-  /**
-   * Subsystem factory for KB. Coordinator wraps the user-facing legacy
-   * build factory into this shape; composition forwards it to
-   * `LifecycleDeps.createKbSubsystemFn`.
-   */
-  createKbSubsystemFn?: CreateKbSubsystemFn;
-  /**
-   * Builds the KB curate assistant. Injected so this composition layer never
-   * statically imports a provider runtime module — production wires the real
-   * Claude-backed factory through `createCoordinatorServer`; tests/simulation
-   * fall back to the idle stub. Keeps `tools/simulation` sealed from
-   * `src/providers/claude` (`tools/simulation/sealed-inventory.json`).
-   */
-  createCurateAssistant?: CurateAssistantFactory;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -91,30 +75,7 @@ export type CoordinatorCoreOptions = {
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
   waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
-  kbChildSupervisor?: KbChildSupervisor;
-  /**
-   * Staged KB child-daemon migration switch. Read-only KB RPCs delegate to an
-   * enabled child by default in legacy parent-runtime mode; set false there
-   * to keep reads in the parent. Ignored when `useKbChildRuntimeOnly` is true.
-   */
-  delegateKbReadsToChild?: boolean;
-  /**
-   * Staged KB mutation migration switch for legacy parent-runtime mode. Set
-   * false there to keep migrated note/wiki/source/community-summary/memo
-   * operations in the parent. KB source import and reindex jobs are
-   * child-runtime-only and return kb_unavailable when this switch prevents
-   * delegation. Ignored when `useKbChildRuntimeOnly` is true.
-   */
-  delegateKbMutationsToChild?: boolean;
-  /**
-   * Uses a lightweight subsystem registry proxy instead of starting the full
-   * parent KB runtime. When enabled, KB RPCs stay on the child supervisor path
-   * even if the child is disabled or offline; the proxy reports that state
-   * instead of falling back to the parent runtime. Production enables this by
-   * default once the standard KB factory is in use; tests with explicit KB
-   * factories keep the parent runtime unless they opt in.
-   */
-  useKbChildRuntimeOnly?: boolean;
+  kbChildSupervisor: KbChildSupervisor;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
    * has been requested but whose `inFlight` hasn't settled. Surfaces in

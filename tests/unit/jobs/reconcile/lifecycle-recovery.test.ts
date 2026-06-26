@@ -8,7 +8,8 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createKbChildProxySubsystem } from '#src/coordinator/kb-child/proxy-subsystem.js';
+import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -142,20 +143,6 @@ function createFakeProviderHostManager() {
     borrowLiveServer: vi.fn(),
     drainForHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
-  };
-}
-
-function createMockKbSubsystem() {
-  return {
-    kb: {} as never,
-    readDb: {} as never,
-    curateScheduler: {
-      start: vi.fn(async () => {}),
-      schedule: vi.fn(),
-      scheduleDeferredCommit: vi.fn(),
-      isRunning: () => false,
-      stop: vi.fn(async () => {}),
-    },
   };
 }
 
@@ -430,6 +417,7 @@ function createLifecycleHarness(
   const getRecoveryService = options.getRecoveryService ?? getExecutionService;
   const storeServices = createStoreServicesHarness(options.progressStore);
 
+  const kbChildSupervisor = createMockKbChildSupervisor();
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
       pluginRoot: options.pluginRoot,
@@ -471,9 +459,9 @@ function createLifecycleHarness(
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
+    kbChildSupervisor,
     handoffQuiescePorts: () => [],
-    createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
-    createCurateAssistant: () => ({ complete: async () => '' }),
+    createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisor),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
     runStartupRecoveryFn:
