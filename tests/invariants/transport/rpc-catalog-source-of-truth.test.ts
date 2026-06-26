@@ -107,6 +107,18 @@ describe('rpc catalog source of truth', () => {
 
   it('keeps KB child mutation protocol methods aligned with migrated KB RPC catalog entries', () => {
     const kbChildMutationRpcByMethod = {
+      setCommunitySummary: 'kb.community.set-summary',
+      createNote: 'kb.note.create',
+      updateNote: 'kb.note.update',
+      deleteNote: 'kb.note.delete',
+      createWiki: 'kb.wiki.create',
+      rewriteWiki: 'kb.wiki.rewrite',
+      linkWiki: 'kb.wiki.link',
+      unlinkWiki: 'kb.wiki.unlink',
+      citeWiki: 'kb.wiki.cite',
+      adoptWiki: 'kb.wiki.adopt',
+      deleteWiki: 'kb.wiki.delete',
+      deleteSource: 'kb.source.delete',
       createMemo: 'kb.memo.create',
       deleteMemos: 'kb.memo.delete',
     } as const;

@@ -1,7 +1,10 @@
+import { join } from 'node:path';
+
 import type { Database } from '../store/db.js';
 import { createRuntimeBinding } from '../runtime/binding.js';
 import type { EnvPort, StoragePort, TimePort } from '../infra/port-types.js';
 import { backendLog } from '../infra/backend-log.js';
+import { acquireDirectoryLock } from '../infra/fs-lock.js';
 import type { IdPort, ProcessPort } from '../runtime/ports.js';
 import type { CurateAssistantPort } from './curate/assistant.js';
 import type {
@@ -95,12 +98,17 @@ export interface CreateKbRuntimeOptions {
   engineArtifactRegistry?: EngineArtifactRegistry;
 }
 
+type KbRuntimeTimePort = Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'> & Partial<Pick<TimePort, 'sleep'>>;
+
+const KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS = 10 * 60 * 1000;
+const KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS = 60_000;
+
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
   readonly version: string;
   readonly runtimeDir: string;
   readonly db: Database;
-  readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
+  readonly time: KbRuntimeTimePort;
   readonly ids: Pick<IdPort, 'uuid'>;
   readonly storagePort: StoragePort;
   readonly corpusStorage: CorpusStorage;
@@ -117,6 +125,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly projectionArtifacts: KbProjectionArtifactPort;
   readonly corpusProjectionReader: KbRuntime['corpusProjectionReader'];
   private readonly paths: KbRuntimePaths;
+  private readonly directoryMutationLockDir: string;
   private readonly manifestAuthority = createManifestAuthority();
   private readonly indexStore: KbIndexStore;
   private mutationLock: Promise<void> = Promise.resolve();
@@ -155,6 +164,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.runtimeDir = runtimeDir;
     this.db = db;
     this.time = time;
+    this.directoryMutationLockDir = join(this.runtimeDir, 'mutation.lock');
     this.ids = ids;
     this.storagePort = storage;
     this.corpusStorage = createCorpusStorage(storage);
@@ -486,10 +496,37 @@ class KbRuntimeImpl implements KbRuntime {
     fn: (mutation: KbMutationEffects, args: { signal: AbortSignal }) => Promise<T> | T,
     options: KbMutationLockOptions = {},
   ): Promise<T> {
-    return this.mutationLockController.withMutationLock(
-      (_lockContext, args) => fn(this.mutationFinalizer.mutationEffects, args),
-      options,
+    const timeoutMs = options.timeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS;
+    const releaseDirectoryLock = await acquireDirectoryLock(
+      this.directoryMutationLockDir,
+      {
+        storage: this.storagePort,
+        time: {
+          now: this.time.now,
+          sleep: this.sleep.bind(this),
+        },
+        staleMs: Math.max(KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS, timeoutMs * 2 + KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS),
+      },
+      timeoutMs,
     );
+    try {
+      return await this.mutationLockController.withMutationLock(
+        (_lockContext, args) => fn(this.mutationFinalizer.mutationEffects, args),
+        options,
+      );
+    } finally {
+      releaseDirectoryLock();
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    if (this.time.sleep !== undefined) {
+      return this.time.sleep(ms);
+    }
+    return new Promise((resolve) => {
+      const timer = this.time.setTimeout(resolve, ms);
+      timer.unref?.();
+    });
   }
 
   mutationLockDiagnostics(): KbMutationLockDiagnostics {

@@ -1071,6 +1071,88 @@ describe('execution backend server', () => {
     ]);
   });
 
+  it('delegates migrated KB corpus mutations to an enabled KB child when opted in', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (_request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-child' },
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: true });
+    const projectRoot = '/workspace/project-a';
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Coral-Backend-Token': backend.token,
+    };
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/wikis`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          slug: 'alpha-wiki',
+          title: 'Alpha',
+          tags: ['child'],
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-child' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/sources/alpha-source`, {
+        method: 'DELETE',
+        headers,
+        body: JSON.stringify({ projectRoot }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/communities/alpha-community/summary`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          summary: 'Community summary from child.',
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
+
+    expect(mutateKb.mock.calls.map(([request]) => request)).toEqual([
+      {
+        method: 'createWiki',
+        args: { slug: 'alpha-wiki', title: 'Alpha', tags: ['child'] },
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      },
+      {
+        method: 'deleteSource',
+        slug: 'alpha-source',
+        ctx: undefined,
+      },
+      {
+        method: 'setCommunitySummary',
+        args: { summary: 'Community summary from child.', slug: 'alpha-community' },
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      },
+    ]);
+  });
+
   it('keeps migrated KB memo mutations in the parent by default even when a KB child is enabled', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,

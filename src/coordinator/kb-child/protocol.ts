@@ -24,7 +24,22 @@ export const KB_CHILD_KB_READ_METHODS = [
 
 export type KbChildKbReadMethod = (typeof KB_CHILD_KB_READ_METHODS)[number];
 
-export const KB_CHILD_KB_MUTATION_METHODS = ['createMemo', 'deleteMemos'] as const;
+export const KB_CHILD_KB_MUTATION_METHODS = [
+  'setCommunitySummary',
+  'createNote',
+  'updateNote',
+  'deleteNote',
+  'createWiki',
+  'rewriteWiki',
+  'linkWiki',
+  'unlinkWiki',
+  'citeWiki',
+  'adoptWiki',
+  'deleteWiki',
+  'deleteSource',
+  'createMemo',
+  'deleteMemos',
+] as const;
 
 export type KbChildKbMutationMethod = (typeof KB_CHILD_KB_MUTATION_METHODS)[number];
 
@@ -90,6 +105,7 @@ export type KbChildHealthResult = {
   startedAt: number;
   uptimeMs: number;
   kbRead?: KbChildKbReadHealth;
+  kbWrite?: KbChildKbReadHealth;
 };
 
 export function encodeKbChildMessage(message: KbChildControlMessage): string {
@@ -161,7 +177,8 @@ export function isKbChildHealthResult(value: unknown): value is KbChildHealthRes
     isPositiveInteger(record.pid) &&
     isNonNegativeFiniteNumber(record.startedAt) &&
     isNonNegativeFiniteNumber(record.uptimeMs) &&
-    (record.kbRead === undefined || isKbChildKbReadHealth(record.kbRead))
+    (record.kbRead === undefined || isKbChildKbReadHealth(record.kbRead)) &&
+    (record.kbWrite === undefined || isKbChildKbReadHealth(record.kbWrite))
   );
 }
 

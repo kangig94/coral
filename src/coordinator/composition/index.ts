@@ -104,6 +104,7 @@ import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { createDisabledKbChildSupervisor, type KbChildSupervisor } from '../kb-child/supervisor.js';
+import type { KbCorpusSnapshot } from '../../kb/contract.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 export const CORAL_KB_CHILD_READS_ENV = 'CORAL_KB_CHILD_READS';
@@ -113,6 +114,44 @@ const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
   message: 'Too many event stream connections',
 };
+
+const EMPTY_CORPUS_SNAPSHOT: KbCorpusSnapshot = {
+  snapshotId: '',
+  contentSeq: 0,
+  metadataSeq: 0,
+  contentManifestHash: '',
+  metadataManifestHash: '',
+};
+
+type CorpusSnapshotCursorRow = {
+  snapshot_id: string | null;
+  content_seq: number | null;
+  metadata_seq: number | null;
+  content_manifest_hash: string | null;
+  metadata_manifest_hash: string | null;
+};
+
+function readPersistedCorpusSnapshot(db: { prepare(sql: string): { get(): CorpusSnapshotCursorRow | undefined } }): KbCorpusSnapshot {
+  const row = db
+    .prepare(
+      `
+        SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
+          FROM kb_corpus_state
+         WHERE id = 1
+      `,
+    )
+    .get();
+  if (row === undefined) {
+    return { ...EMPTY_CORPUS_SNAPSHOT };
+  }
+  return {
+    snapshotId: row.snapshot_id ?? '',
+    contentSeq: row.content_seq ?? 0,
+    metadataSeq: row.metadata_seq ?? 0,
+    contentManifestHash: row.content_manifest_hash ?? '',
+    metadataManifestHash: row.metadata_manifest_hash ?? '',
+  };
+}
 
 function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSupervisor: KbChildSupervisor): boolean {
   if (options.delegateKbReadsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '0') {
@@ -196,22 +235,84 @@ function createKbChildReadPort(localKb: RpcPorts['kb'], kbChildSupervisor: KbChi
   };
 }
 
-function createKbChildMemoMutationPort(
+function createKbChildMutationPort(
   localKb: RpcPorts['kb'],
   kbChildSupervisor: KbChildSupervisor,
   recordHostedKbFailure: (operation: string, ctx: InvocationContext | undefined, result: KbToolResult) => void,
+  notifyHostedCorpusMutation: () => void,
+  fallbackContext: InvocationContext,
 ): RpcPorts['kb'] {
+  const recordAndNotify = (
+    operation: string,
+    ctx: InvocationContext | undefined,
+    result: KbToolResult,
+    options: { corpusMutation?: boolean } = {},
+  ): KbToolResult => {
+    recordHostedKbFailure(operation, ctx, result);
+    if (result.ok && options.corpusMutation === true) {
+      notifyHostedCorpusMutation();
+    }
+    return result;
+  };
+  const ctxOrFallback = (ctx: InvocationContext | undefined): InvocationContext => ctx ?? fallbackContext;
   return {
     ...localKb,
+    setCommunitySummary: async (args, ctx) => {
+      const invocationCtx = ctxOrFallback(ctx);
+      const result = await kbChildSupervisor.mutateKb({ method: 'setCommunitySummary', args, ctx: invocationCtx });
+      return recordAndNotify('community_set_summary', ctx, result, { corpusMutation: true });
+    },
+    createNote: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'createNote', args, ctx });
+      return recordAndNotify('promote', ctx, result, { corpusMutation: true });
+    },
+    updateNote: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'updateNote', args, ctx });
+      return recordAndNotify('update', ctx, result, { corpusMutation: true });
+    },
+    deleteNote: async (slug, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'deleteNote', slug, ctx });
+      return recordAndNotify('delete', ctx, result, { corpusMutation: true });
+    },
+    createWiki: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'createWiki', args, ctx });
+      return recordAndNotify('wiki_create', ctx, result, { corpusMutation: true });
+    },
+    rewriteWiki: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx });
+      return recordAndNotify('wiki_rewrite', ctx, result, { corpusMutation: true });
+    },
+    linkWiki: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'linkWiki', args, ctx });
+      return recordAndNotify('wiki_link', ctx, result, { corpusMutation: true });
+    },
+    unlinkWiki: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx });
+      return recordAndNotify('wiki_unlink', ctx, result, { corpusMutation: true });
+    },
+    citeWiki: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'citeWiki', args, ctx });
+      return recordAndNotify('wiki_cite', ctx, result, { corpusMutation: true });
+    },
+    adoptWiki: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'adoptWiki', args, ctx });
+      return recordAndNotify('wiki_adopt', ctx, result, { corpusMutation: true });
+    },
+    deleteWiki: async (slug, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx });
+      return recordAndNotify('wiki_delete', ctx, result, { corpusMutation: true });
+    },
+    deleteSource: async (slug, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'deleteSource', slug, ctx });
+      return recordAndNotify('source_delete', ctx, result, { corpusMutation: true });
+    },
     createMemo: async (args, ctx) => {
       const result = await kbChildSupervisor.mutateKb({ method: 'createMemo', args, ctx });
-      recordHostedKbFailure('memo_create', ctx, result);
-      return result;
+      return recordAndNotify('memo_create', ctx, result);
     },
     deleteMemos: async (args, ctx) => {
       const result = await kbChildSupervisor.mutateKb({ method: 'deleteMemos', args, ctx });
-      recordHostedKbFailure('memo_delete', ctx, result);
-      return result;
+      return recordAndNotify('memo_delete', ctx, result);
     },
   };
 }
@@ -404,6 +505,19 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       message: result.message,
       detail,
     });
+  };
+  const notifyHostedCorpusMutation = (): void => {
+    try {
+      const storeServices = getStoreServices();
+      const snapshot = readPersistedCorpusSnapshot(storeServices.storeDb);
+      const invalidateResult = runtimeState.subsystems.run<KnowledgeBaseRuntime, void>(KB_ID, (kbSubsystem) => {
+        kbSubsystem.kb.invalidateKbCache();
+      });
+      void invalidateResult;
+      storeServices.consumerDriver?.notifyCorpus(snapshot);
+    } catch (error) {
+      world.log(`[kb-child] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
+    }
   };
 
   const rpcPorts: RpcPorts = {
@@ -618,7 +732,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     effectiveKbPorts = createKbChildReadPort(effectiveKbPorts, kbChildSupervisor);
   }
   if (shouldDelegateKbMutationsToChild(options)) {
-    effectiveKbPorts = createKbChildMemoMutationPort(effectiveKbPorts, kbChildSupervisor, recordHostedKbFailure);
+    effectiveKbPorts = createKbChildMutationPort(
+      effectiveKbPorts,
+      kbChildSupervisor,
+      recordHostedKbFailure,
+      notifyHostedCorpusMutation,
+      readOnlyInvocationContext,
+    );
   }
   const effectiveRpcPorts: RpcPorts = { ...rpcPorts, kb: effectiveKbPorts };
 

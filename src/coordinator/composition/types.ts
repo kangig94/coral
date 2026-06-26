@@ -100,9 +100,9 @@ export type CoordinatorCoreOptions = {
   delegateKbReadsToChild?: boolean;
   /**
    * Staged KB mutation migration switch. Mutations stay in the parent by
-   * default; set true (or CORAL_KB_CHILD_MUTATIONS=1) to delegate the migrated
-   * memo create/delete operations while corpus mutations, source import, and
-   * reindex remain parent-owned.
+   * default; set true (or CORAL_KB_CHILD_MUTATIONS=1) to delegate migrated
+   * note/wiki/source-delete/community-summary/memo operations. Source import
+   * and reindex remain parent-owned until child job ownership is migrated.
    */
   delegateKbMutationsToChild?: boolean;
   /**

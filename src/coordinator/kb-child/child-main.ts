@@ -10,6 +10,7 @@ import {
   type KbChildRequestMessage,
 } from './protocol.js';
 import { createKbChildReadService } from './read-handler.js';
+import { createKbChildWriteRuntimeHost } from './write-runtime.js';
 import { errorMessage } from '../../infra/error-format.js';
 
 const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
@@ -94,7 +95,8 @@ export function startKbChildParentWatchdog(options: KbChildParentWatchdogOptions
 export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
-  const kbService = createKbChildReadService({ pluginRoot });
+  const kbWriteHost = createKbChildWriteRuntimeHost({ pluginRoot });
+  const kbService = createKbChildReadService({ pluginRoot, writeRuntime: kbWriteHost });
   const parentPid = options.parentPid ?? resolveKbChildParentPid(process.env.CORAL_KB_CHILD_PARENT_PID);
   let resolveShutdown!: (code: number) => void;
   let settled = false;
@@ -126,6 +128,7 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
     startedAt,
     uptimeMs: Math.max(0, Date.now() - startedAt),
     kbRead: kbService.health(),
+    kbWrite: kbWriteHost.health(),
   });
   const handleRequest = async (request: KbChildRequestMessage): Promise<void> => {
     switch (request.method) {

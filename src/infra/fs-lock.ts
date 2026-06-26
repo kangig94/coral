@@ -8,6 +8,7 @@ const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 export type DirectoryLockDeps = {
   storage: Pick<StoragePort, 'mkdirSync' | 'rmSync' | 'statSync'>;
   time: Pick<TimePort, 'now' | 'sleep'>;
+  staleMs?: number;
 };
 
 export class DirectoryLockTimeoutError extends Error {
@@ -72,7 +73,7 @@ function releaseDirectoryLock(lockDir: string, storage: DirectoryLockDeps['stora
 
 function isStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
   try {
-    return deps.time.now() - deps.storage.statSync(lockDir).mtimeMs > STALE_LOCK_MS;
+    return deps.time.now() - deps.storage.statSync(lockDir).mtimeMs > (deps.staleMs ?? STALE_LOCK_MS);
   } catch {
     return false;
   }
