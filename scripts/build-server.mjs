@@ -83,6 +83,7 @@ const sharedOpts = {
   banner: {
     js:
       'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
+      'var __BUNDLE_DIR__=__dirname;' +
       'var __importMetaUrl=require("url").pathToFileURL(__filename).href;',
   },
   define: {

@@ -1,4 +1,5 @@
 declare const __PLUGIN_ROOT__: string;
+declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string;
 
 import { spawn } from 'node:child_process';
@@ -512,6 +513,13 @@ function resolvePluginRoot(pluginRoot?: string): string {
   return process.cwd();
 }
 
+function resolveBackendBin(root: string): string {
+  if (typeof __BUNDLE_DIR__ === 'string' && __BUNDLE_DIR__.length > 0) {
+    return join(__BUNDLE_DIR__, 'coral-backend.cjs');
+  }
+  return join(root, 'bridge', 'coral-backend.cjs');
+}
+
 /**
  * Ensure a Coral coordinator daemon is running and compatible with the calling
  * plugin bundle. The CLI side mirrors daemon-side `bindWithHandoff` — it
@@ -544,7 +552,7 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
     namespace,
   };
   const desiredIdentity: DesiredIncumbentIdentity = { bundleHash, flavor, namespace };
-  const backendBin = join(root, 'bridge', 'coral-backend.cjs');
+  const backendBin = resolveBackendBin(root);
 
   const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, ipcTime));
 

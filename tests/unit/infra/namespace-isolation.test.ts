@@ -19,6 +19,7 @@ function createPluginRoot(name: string, bundleHash?: string): string {
 }
 
 afterEach(() => {
+  delete (globalThis as { __BUNDLE_DIR__?: string }).__BUNDLE_DIR__;
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -55,6 +56,22 @@ describe('infra namespace isolation', () => {
     expect(readBuildFlavor(prodRoot)).toBe('prod');
     expect(readBuildFlavor(missingRoot)).toBe('prod');
     expect(readBuildFlavor(corruptRoot)).toBe('prod');
+  });
+
+  it('prefers the manifest colocated with the active bundle when bundled', () => {
+    const root = createPluginRoot('coral-bundle-root', 'bridge-bundle');
+    const bundleDir = mkdtempSync(join(tmpdir(), 'coral-bundle-dir-'));
+    tempRoots.push(bundleDir);
+    writeFileSync(
+      join(bundleDir, 'manifest.json'),
+      JSON.stringify({ bundleHash: 'active-bundle', flavor: 'dev' }),
+      'utf-8',
+    );
+
+    (globalThis as { __BUNDLE_DIR__?: string }).__BUNDLE_DIR__ = bundleDir;
+
+    expect(readBundleHash(root)).toBe('active-bundle');
+    expect(readBuildFlavor(root)).toBe('dev');
   });
 
   it('matches the namespace hashing algorithm', () => {
