@@ -11,6 +11,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 function createRecorder(): {
   recorder: KbJobRecorder;
   abortRegistry: AbortRegistry;
+  progressStore: JobStore;
 } {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
@@ -27,7 +28,7 @@ function createRecorder(): {
     bundleHash: 'bundle-a',
     abortRegistry,
   });
-  return { recorder, abortRegistry };
+  return { recorder, abortRegistry, progressStore };
 }
 
 describe('KbJobRecorder.startInternalJob', () => {
@@ -88,5 +89,36 @@ describe('KbJobRecorder.startInternalJob', () => {
     abortRegistry.abort([jobId]);
 
     expect(signal.aborted).toBe(false);
+  });
+
+  it('persists the configured internal job owner in the runtime record', () => {
+    const db = newRawDatabase(':memory:');
+    applyBundledStoreSchema(db);
+    const runtime = new SimulationRuntime();
+    const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
+    const abortRegistry = new AbortRegistry(runtime.ids);
+    const recorder = new KbJobRecorder({
+      runtime,
+      progressStore,
+      backendNamespace: 'test-ns',
+      bundleHash: 'bundle-a',
+      abortRegistry,
+      internalJobOwner: 'kb-child',
+    });
+
+    const { jobId } = recorder.startInternalJob({
+      projectRoot: '/workspace/coral',
+      operation: 'kb.reindex',
+      request: {},
+    });
+
+    expect(progressStore.readRuntimeProjection(jobId)).toMatchObject({
+      transport: 'internal',
+      operation: 'kb.reindex',
+      owner: 'kb-child',
+    });
   });
 });

@@ -1343,6 +1343,105 @@ describe('execution backend server', () => {
     );
   });
 
+  it('marks durable child-owned KB jobs as error when the child exits before proxy registration', async () => {
+    const jobId = 'kb-child-unproxied-import-job-1';
+    const projectRoot = '/workspace/project-a';
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const exit = { listener: null as ((snapshot: KbChildHealthSnapshot) => void) | null };
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      onExit: vi.fn((listener) => {
+        exit.listener = listener;
+        return vi.fn();
+      }),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      owner: 'kb-child',
+      startTime: new Date().toISOString(),
+    });
+
+    expect(exit.listener).not.toBeNull();
+    if (exit.listener === null) {
+      throw new Error('expected KB child exit listener');
+    }
+    exit.listener({
+      ...childHealth,
+      phase: 'failed',
+      pid: null,
+      readyAt: null,
+      lastExit: { code: 1, signal: null, at: 30, uptimeMs: 20 },
+      lastError: 'child crashed before returning job id',
+    });
+
+    const detailResponse = await fetch(
+      `${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
+    const detailBody = (await detailResponse.json()) as {
+      status: { phase?: string };
+      events: Array<{ type?: string; result?: { outcome?: { kind?: string; fault?: { kind?: string } } } }>;
+    };
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.status.phase).toBe('error');
+    expect(detailBody.events).toContainEqual(
+      expect.objectContaining({
+        type: 'terminal',
+        result: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'wrapper_crashed' }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('removes child-owned KB abort proxies when the child job reaches terminal state', async () => {
     const jobId = 'kb-child-import-job-terminal';
     const projectRoot = '/workspace/project-a';

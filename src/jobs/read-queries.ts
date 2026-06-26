@@ -93,6 +93,7 @@ type JobAppServerRuntimeProjection = {
 type JobInternalRuntimeProjection = {
   transport: 'internal';
   operation: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
+  owner?: 'parent' | 'kb-child';
   startTime: string;
 };
 
@@ -423,6 +424,7 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
     return {
       transport: 'internal',
       operation: parsed.operation,
+      owner: parsed.owner,
       startTime: parsed.startedAt,
     };
   }

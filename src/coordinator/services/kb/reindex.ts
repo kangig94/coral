@@ -3,6 +3,7 @@ import { kbSuccess, type KbToolResult } from '../../../kb/result.js';
 import type { KnowledgeBaseRuntime } from '../../../kb/subsystem.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
+import type { InternalJobRuntime } from '../../../jobs/records.js';
 import type { KbReindexStarted, ReindexResult } from '../../../kb/entry-types.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
 import type { Runtime } from '../../../runtime/ports.js';
@@ -16,6 +17,7 @@ export interface KbReindexServiceDeps {
   bundleHash: string;
   waitForReadiness: KbSourceImportReadinessWaiter;
   abortRegistry: JobAbortRegistryPort;
+  internalJobOwner?: InternalJobRuntime['owner'];
 }
 
 export type KbReindexRequest = {

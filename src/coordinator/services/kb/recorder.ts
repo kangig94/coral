@@ -4,6 +4,7 @@ import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registr
 import type { KbSourceImportJobRequest, KbJobOperation } from '../../../jobs/launch.js';
 import type { AbortReason, TerminalOutcome } from '../../../jobs/outcome.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
+import type { InternalJobRuntime } from '../../../jobs/records.js';
 import { buildJobEventRefs } from '../../../jobs/refs.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../../../jobs/terminal/recording.js';
 import type { Runtime } from '../../../runtime/ports.js';
@@ -18,6 +19,7 @@ export interface KbJobRecorderDeps {
   backendNamespace: string;
   bundleHash: string;
   abortRegistry: JobAbortRegistryPort;
+  internalJobOwner?: InternalJobRuntime['owner'];
 }
 
 /**
@@ -98,6 +100,7 @@ export class KbJobRecorder {
     this.deps.progressStore.appendRuntimeStarted(jobId, {
       transport: 'internal',
       operation: params.operation,
+      ...(this.deps.internalJobOwner === undefined ? {} : { owner: this.deps.internalJobOwner }),
       startTime: nowIsoString(this.deps.runtime.time),
     });
 

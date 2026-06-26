@@ -130,6 +130,7 @@ export interface AppServerRuntime {
 export interface InternalJobRuntime {
   transport: 'internal';
   operation: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
+  owner?: 'parent' | 'kb-child';
   startTime: string;
 }
 

@@ -15,6 +15,7 @@ import type { Authority } from '../../../runtime/invocation-context.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../../jobs/contracts/job-store.js';
+import type { InternalJobRuntime } from '../../../jobs/records.js';
 import { sourceImportReadinessValues, type SourceImportReadiness } from '../../../jobs/launch.js';
 import { KbOperationJobShell, type KbOperationJobBodyContext, type KbOperationJobContext } from './shell.js';
 
@@ -59,6 +60,7 @@ export interface KbSourceImportServiceDeps {
   bundleHash: string;
   waitForReadiness: KbSourceImportReadinessWaiter;
   abortRegistry: JobAbortRegistryPort;
+  internalJobOwner?: InternalJobRuntime['owner'];
 }
 
 type ParseKbSourceImportRequestResult = { ok: true; data: KbSourceImportRequest } | { ok: false; message: string };

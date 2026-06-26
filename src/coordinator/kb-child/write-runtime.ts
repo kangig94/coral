@@ -506,6 +506,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
         bundleHash,
         waitForReadiness,
         abortRegistry,
+        internalJobOwner: 'kb-child',
       });
       const reindexService = new KbReindexService({
         runtime,
@@ -514,6 +515,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
         bundleHash,
         waitForReadiness,
         abortRegistry,
+        internalJobOwner: 'kb-child',
       });
       state = {
         runtime,

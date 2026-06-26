@@ -110,6 +110,7 @@ import {
 import { createKbChildProxySubsystem } from '../kb-child/proxy-subsystem.js';
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 const KB_CHILD_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -580,16 +581,35 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         : ` (code=${String(exit.code)}, signal=${String(exit.signal)}, generation=${snapshot.generation})`;
     return `KB child exited${suffix}: ${snapshot.lastError ?? snapshot.reason ?? snapshot.phase}`;
   };
-  const failTrackedChildJobs = (snapshot: KbChildHealthSnapshot): void => {
-    if (childOwnedKbJobs.size === 0) {
-      return;
+  const listDurableChildOwnedKbJobs = (progressStore: JobProgressStore): string[] => {
+    const jobIds: string[] = [];
+    for (const jobId of progressStore.listJobIds()) {
+      const status = progressStore.readStatus(jobId);
+      if (
+        status === null ||
+        !isLivePhase(status.phase) ||
+        !belongsToNamespace(status, world.namespace) ||
+        status.jobKind !== 'kb'
+      ) {
+        continue;
+      }
+      const runtime = progressStore.readRuntimeProjection(jobId);
+      if (runtime?.transport === 'internal' && runtime.owner === 'kb-child') {
+        jobIds.push(jobId);
+      }
     }
-
+    return jobIds;
+  };
+  const failTrackedChildJobs = (snapshot: KbChildHealthSnapshot): void => {
     const message = describeKbChildExit(snapshot);
     try {
       const progressStore = getProgressStore();
+      const childOwnedJobIds = new Set([...childOwnedKbJobs.keys(), ...listDurableChildOwnedKbJobs(progressStore)]);
+      if (childOwnedJobIds.size === 0) {
+        return;
+      }
       const failed: string[] = [];
-      for (const jobId of [...childOwnedKbJobs.keys()]) {
+      for (const jobId of childOwnedJobIds) {
         const status = progressStore.readStatus(jobId);
         if (
           status === null ||
