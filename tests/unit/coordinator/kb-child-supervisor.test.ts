@@ -372,6 +372,31 @@ describe('KB child supervisor', () => {
     await expect(abort).resolves.toEqual({ aborted: ['kb-job-1'], notFound: [] });
   });
 
+  it('lists active child KB jobs over the control protocol', async () => {
+    const child = new FakeChildProcess(162);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const list = supervisor.listActiveKbJobs?.();
+    await flushMicrotasks();
+    const request = latestRequest(child);
+    expect(request.method).toBe('kb.jobs');
+    expect(request.params).toBeUndefined();
+    writeResponse(child, request.id, { active: ['kb-job-1', 'kb-job-2'] });
+
+    await expect(list).resolves.toEqual({ active: ['kb-job-1', 'kb-job-2'] });
+  });
+
   it('restarts once and retries read-only KB requests after the child exits', async () => {
     const first = new FakeChildProcess(171);
     const second = new FakeChildProcess(172);

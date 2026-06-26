@@ -5,6 +5,7 @@ import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinato
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
+import { throwIfAborted } from '#src/runtime/abort.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -161,5 +162,30 @@ describe('KbOperationJobShell', () => {
       },
     });
     expect(abortRegistry.has(jobId)).toBe(false);
+  });
+
+  it('launchAsync exposes active jobs until abort terminal cleanup finalizes them', async () => {
+    const { shell, progressStore, abortRegistry } = createShell();
+
+    const { jobId } = shell.launchAsync('kb.reindex', reindexContext(), async (job) => {
+      await new Promise<void>((resolve) => job.signal.addEventListener('abort', () => resolve(), { once: true }));
+      throwIfAborted(job.signal, 'test');
+      return {
+        data: { launched: true },
+        terminalContent: 'unreachable',
+      };
+    });
+
+    expect(abortRegistry.listActive()).toEqual([jobId]);
+    expect(abortRegistry.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+
+    await expect(waitForTerminal(progressStore, jobId)).resolves.toMatchObject({
+      phase: 'aborted',
+      result: {
+        content: '',
+        outcome: { kind: 'aborted', reason: 'user_abort' },
+      },
+    });
+    expect(abortRegistry.listActive()).toEqual([]);
   });
 });

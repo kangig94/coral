@@ -4,6 +4,7 @@ import {
   KB_CHILD_RESPONSE_MESSAGE,
   encodeKbChildMessage,
   isKbChildAbortResult,
+  isKbChildJobsResult,
   isKbChildKbMutationRequest,
   isKbChildKbReadRequest,
   isKbChildRequestMessage,
@@ -212,6 +213,16 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
           id: request.id,
           ok: true,
           result: isKbChildAbortResult(result) ? result : { aborted: [], notFound: [] },
+        });
+        return;
+      }
+      case 'kb.jobs': {
+        const result = { active: kbWriteHost.listActiveJobs() };
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: isKbChildJobsResult(result) ? result : { active: [] },
         });
         return;
       }

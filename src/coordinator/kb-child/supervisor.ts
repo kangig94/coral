@@ -9,6 +9,7 @@ import {
   isKbChildAbortResult,
   isKbChildEventMessage,
   isKbChildHealthResult,
+  isKbChildJobsResult,
   isKbChildKbMutationResult,
   isKbChildKbReadHealth,
   isKbChildKbReadResult,
@@ -23,6 +24,7 @@ import {
   type KbChildResponseMessage,
   type KbChildAbortResult,
   type KbChildEventMessage,
+  type KbChildJobsResult,
 } from './protocol.js';
 import { readBundleHash } from '../../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
@@ -64,6 +66,7 @@ export interface KbChildSupervisor {
   readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
   mutateKb(request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult>;
   abortKbJobs?(jobIds: string[]): Promise<KbChildAbortResult>;
+  listActiveKbJobs?(): Promise<KbChildJobsResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
@@ -149,6 +152,7 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
     }),
     onExit: () => () => {},
     abortKbJobs: async (jobIds) => ({ aborted: [], notFound: [...jobIds] }),
+    listActiveKbJobs: async () => ({ active: [] }),
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
     dispose: async () => undefined,
@@ -458,6 +462,18 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     }
   };
 
+  const listActiveKbJobsNow = async (): Promise<KbChildJobsResult> => {
+    try {
+      const response = await sendRequest('kb.jobs');
+      if (!response.ok || !isKbChildJobsResult(response.result)) {
+        return { active: [] };
+      }
+      return response.result;
+    } catch {
+      return { active: [] };
+    }
+  };
+
   const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
     if (!requestRecoveryEnabled) {
       return readKbUnavailable('KB child read request skipped: supervisor is disposing.');
@@ -721,6 +737,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     readKb: readKbNow,
     mutateKb: mutateKbNow,
     abortKbJobs: abortKbJobsNow,
+    listActiveKbJobs: listActiveKbJobsNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {

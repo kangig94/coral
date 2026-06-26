@@ -26,6 +26,10 @@ export class AbortRegistry implements JobAbortRegistryPort {
     return this.controllers.has(jobId);
   }
 
+  listActive(): string[] {
+    return [...this.controllers.keys()];
+  }
+
   abort(jobIds: string[]): AbortResult {
     const aborted: string[] = [];
     const notFound: string[] = [];

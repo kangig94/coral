@@ -3,7 +3,14 @@ export const KB_CHILD_REQUEST_MESSAGE = 'coral.kb_child.request';
 export const KB_CHILD_RESPONSE_MESSAGE = 'coral.kb_child.response';
 export const KB_CHILD_EVENT_MESSAGE = 'coral.kb_child.event';
 
-export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read' | 'kb.mutate' | 'kb.abort' | 'kb.warmup';
+export type KbChildRequestMethod =
+  | 'health'
+  | 'shutdown'
+  | 'kb.read'
+  | 'kb.mutate'
+  | 'kb.abort'
+  | 'kb.jobs'
+  | 'kb.warmup';
 
 export const KB_CHILD_KB_READ_METHODS = [
   'readSearch',
@@ -67,6 +74,10 @@ export type KbChildAbortRequest = {
 export type KbChildAbortResult = {
   aborted: string[];
   notFound: string[];
+};
+
+export type KbChildJobsResult = {
+  active: string[];
 };
 
 export type KbChildKbReadResult =
@@ -177,6 +188,7 @@ export function isKbChildRequestMessage(value: unknown): value is KbChildRequest
       record.method === 'kb.read' ||
       record.method === 'kb.mutate' ||
       record.method === 'kb.abort' ||
+      record.method === 'kb.jobs' ||
       record.method === 'kb.warmup')
   );
 }
@@ -300,4 +312,12 @@ export function isKbChildAbortResult(value: unknown): value is KbChildAbortResul
     Array.isArray(record.notFound) &&
     record.notFound.every((entry) => typeof entry === 'string')
   );
+}
+
+export function isKbChildJobsResult(value: unknown): value is KbChildJobsResult {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return Array.isArray(record.active) && record.active.every((entry) => typeof entry === 'string');
 }

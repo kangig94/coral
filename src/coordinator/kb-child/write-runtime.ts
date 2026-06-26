@@ -89,6 +89,8 @@ type StoreDbModule = {
 };
 
 const DEFAULT_CHILD_CORPUS_READINESS_TIMEOUT_MS = 90_000;
+const DEFAULT_CHILD_JOB_DRAIN_TIMEOUT_MS = 5_000;
+const CHILD_JOB_DRAIN_POLL_MS = 25;
 const BUILTIN_CAPABILITY_DESCRIPTORS = [
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
   BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
@@ -261,6 +263,7 @@ export type KbChildWriteRuntimeHost = {
   withKb<T>(fn: (state: KbChildWriteRuntimeState) => Promise<T> | T): Promise<T>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  listActiveJobs(): string[];
   abortJobs(jobIds: string[]): { aborted: string[]; notFound: string[] };
   dispose(options?: { signal?: AbortSignal }): Promise<void>;
   health(): KbChildKbReadHealth;
@@ -327,6 +330,25 @@ function waitAbortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, 
       signal.removeEventListener('abort', onAbort);
     });
   });
+}
+
+async function drainAbortRegistry(
+  runtime: Pick<Runtime, 'time'>,
+  abortRegistry: AbortRegistry,
+  options: { timeoutMs?: number; pollMs?: number; signal?: AbortSignal } = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_CHILD_JOB_DRAIN_TIMEOUT_MS;
+  const pollMs = options.pollMs ?? CHILD_JOB_DRAIN_POLL_MS;
+  const deadline = runtime.time.now() + timeoutMs;
+  while (abortRegistry.listActive().length > 0) {
+    if (options.signal?.aborted) {
+      throw new AbortError({ stage: 'kb_child_job_drain', reason: options.signal.reason });
+    }
+    if (runtime.time.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${abortRegistry.listActive().length} active KB job(s) to stop.`);
+    }
+    await runtime.time.sleep(pollMs, { signal: options.signal });
+  }
 }
 
 export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOptions): KbChildWriteRuntimeHost {
@@ -549,6 +571,15 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
     let closeError: unknown;
     try {
       try {
+        const activeJobs = activeState.abortRegistry.listActive();
+        if (activeJobs.length > 0) {
+          activeState.abortRegistry.abort(activeJobs);
+          await drainAbortRegistry(activeState.runtime, activeState.abortRegistry, { signal });
+        }
+      } catch (error: unknown) {
+        cleanupError ??= error;
+      }
+      try {
         await activeState.kbSubsystem.curateScheduler.stop();
       } catch (error: unknown) {
         cleanupError ??= error;
@@ -646,6 +677,10 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
         return { aborted: [], notFound: [...jobIds] };
       }
       return activeState.abortRegistry.abort(jobIds);
+    },
+    listActiveJobs() {
+      const activeState = state;
+      return activeState === null ? [] : activeState.abortRegistry.listActive();
     },
     dispose,
     health() {

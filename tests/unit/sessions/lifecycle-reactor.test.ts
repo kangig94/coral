@@ -1064,6 +1064,7 @@ describe('LifecycleReactor retention enforcement', () => {
         register: () => 'abort-key',
         getSignal: () => null,
         has: () => false,
+        listActive: () => [],
         abort: () => ({ aborted: [], notFound: [] }),
         remove: vi.fn(),
       },
