@@ -1027,6 +1027,70 @@ describe('execution backend server', () => {
     });
   });
 
+  it('defaults the standard server path to child-only when no legacy KB factory is provided', async () => {
+    const { serverModule } = await loadExecutionModules();
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-child', method: request.method },
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+      mutateKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    controller = serverModule.createCoordinatorServer({
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        shutdownToken: 'test-shutdown-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        flavor: 'prod',
+        log: () => {},
+      },
+      cleanupStaleJobsFn: () => {},
+      kbChildSupervisor,
+      delegateKbReadsToChild: false,
+      delegateKbMutationsToChild: false,
+    });
+    const started = await controller.start();
+
+    const response = await fetch(`http://127.0.0.1:${started.port}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': started.token,
+      },
+      body: JSON.stringify({
+        projectRoot: '/workspace/project-a',
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mutateKb).toHaveBeenCalledWith({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+      ctx: expect.objectContaining({ projectRoot: '/workspace/project-a', authority: 'user' }),
+    });
+  });
+
   it('keeps child-only mode off the parent KB runtime when the child is disabled', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: false,
