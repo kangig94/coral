@@ -112,8 +112,6 @@ import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
-export const CORAL_KB_CHILD_READS_ENV = 'CORAL_KB_CHILD_READS';
-export const CORAL_KB_CHILD_MUTATIONS_ENV = 'CORAL_KB_CHILD_MUTATIONS';
 const KB_CHILD_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
 const EVENT_STREAM_CAPACITY_RESPONSE = {
@@ -162,12 +160,8 @@ function readPersistedCorpusSnapshot(db: {
 }
 
 function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSupervisor: KbChildSupervisor): boolean {
-  if (options.delegateKbReadsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '0') {
-    return false;
-  }
-  if (options.delegateKbReadsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_READS_ENV) === '1') {
-    return true;
-  }
+  if (options.delegateKbReadsToChild === false) return false;
+  if (options.delegateKbReadsToChild === true) return true;
   return kbChildSupervisor.read().enabled;
 }
 
@@ -175,12 +169,8 @@ function shouldDelegateKbMutationsToChild(
   options: CoordinatorCoreOptions,
   kbChildSupervisor: KbChildSupervisor,
 ): boolean {
-  if (options.delegateKbMutationsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '0') {
-    return false;
-  }
-  if (options.delegateKbMutationsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '1') {
-    return true;
-  }
+  if (options.delegateKbMutationsToChild === false) return false;
+  if (options.delegateKbMutationsToChild === true) return true;
   return kbChildSupervisor.read().enabled;
 }
 

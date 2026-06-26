@@ -94,17 +94,15 @@ export type CoordinatorCoreOptions = {
   kbChildSupervisor?: KbChildSupervisor;
   /**
    * Staged KB child-daemon migration switch. Read-only KB RPCs delegate to an
-   * enabled child by default; set false (or CORAL_KB_CHILD_READS=0) to keep
-   * reads in the parent.
+   * enabled child by default; set false to keep reads in the parent.
    */
   delegateKbReadsToChild?: boolean;
   /**
    * Staged KB mutation migration switch. Mutations stay in the parent by
-   * default only when no KB child is enabled; set false (or
-   * CORAL_KB_CHILD_MUTATIONS=0) to keep migrated note/wiki/source/
-   * community-summary/memo operations in the parent. KB source import and
-   * reindex jobs are child-runtime-only and return kb_unavailable when this
-   * switch prevents delegation.
+   * default only when no KB child is enabled; set false to keep migrated
+   * note/wiki/source/community-summary/memo operations in the parent. KB
+   * source import and reindex jobs are child-runtime-only and return
+   * kb_unavailable when this switch prevents delegation.
    */
   delegateKbMutationsToChild?: boolean;
   /**
