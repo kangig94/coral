@@ -103,9 +103,14 @@ import { KbSourceImportService, parseKbSourceImportRequest } from '../services/k
 import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { createDisabledKbChildSupervisor, type KbChildSupervisor } from '../kb-child/supervisor.js';
+import {
+  createDisabledKbChildSupervisor,
+  type KbChildHealthSnapshot,
+  type KbChildSupervisor,
+} from '../kb-child/supervisor.js';
 import { createKbChildProxySubsystem } from '../kb-child/proxy-subsystem.js';
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
+import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 export const CORAL_KB_CHILD_READS_ENV = 'CORAL_KB_CHILD_READS';
@@ -554,19 +559,78 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       world.log(`[kb-child] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
     }
   };
+  const childOwnedKbJobs = new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>();
+  const cleanupChildJobAbortProxy = (jobId: string): void => {
+    const tracked = childOwnedKbJobs.get(jobId);
+    if (tracked !== undefined) {
+      runtime.time.clearTimeout(tracked.cleanupTimer);
+      childOwnedKbJobs.delete(jobId);
+    }
+    internalJobAbortRegistry.remove(jobId);
+  };
+  const describeKbChildExit = (snapshot: KbChildHealthSnapshot): string => {
+    const exit = snapshot.lastExit;
+    const suffix =
+      exit === undefined
+        ? ''
+        : ` (code=${String(exit.code)}, signal=${String(exit.signal)}, generation=${snapshot.generation})`;
+    return `KB child exited${suffix}: ${snapshot.lastError ?? snapshot.reason ?? snapshot.phase}`;
+  };
+  const failTrackedChildJobs = (snapshot: KbChildHealthSnapshot): void => {
+    if (childOwnedKbJobs.size === 0) {
+      return;
+    }
+
+    const message = describeKbChildExit(snapshot);
+    try {
+      const progressStore = getProgressStore();
+      const failed: string[] = [];
+      for (const jobId of [...childOwnedKbJobs.keys()]) {
+        const status = progressStore.readStatus(jobId);
+        if (
+          status === null ||
+          !isLivePhase(status.phase) ||
+          !belongsToNamespace(status, world.namespace) ||
+          status.jobKind !== 'kb'
+        ) {
+          cleanupChildJobAbortProxy(jobId);
+          continue;
+        }
+        markJobAsError(
+          progressStore,
+          status,
+          { kind: 'wrapper_crashed', cause: { message } },
+          (line) => world.log(`${line}\n`),
+        );
+        cleanupChildJobAbortProxy(jobId);
+        failed.push(jobId);
+      }
+      if (failed.length > 0) {
+        world.log(`[kb-child] marked ${failed.length} child-owned KB job(s) as error after child exit\n`);
+      }
+    } catch (error: unknown) {
+      world.log(`[kb-child] failed to reconcile child-owned KB jobs after child exit: ${formatError(error)}\n`);
+    }
+  };
   const registerChildJobAbortProxy = (jobId: string): void => {
+    cleanupChildJobAbortProxy(jobId);
     const cleanupTimer = runtime.time.setTimeout(() => {
-      internalJobAbortRegistry.remove(jobId);
+      cleanupChildJobAbortProxy(jobId);
     }, KB_CHILD_JOB_ABORT_PROXY_TTL_MS);
     cleanupTimer.unref?.();
+    childOwnedKbJobs.set(jobId, { cleanupTimer });
     internalJobAbortRegistry.register(jobId, () => {
-      runtime.time.clearTimeout(cleanupTimer);
+      const tracked = childOwnedKbJobs.get(jobId);
+      if (tracked !== undefined) {
+        runtime.time.clearTimeout(tracked.cleanupTimer);
+      }
       const abortResult = kbChildSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
       void abortResult.finally(() => {
-        internalJobAbortRegistry.remove(jobId);
+        cleanupChildJobAbortProxy(jobId);
       });
     });
   };
+  const disposeKbChildExitListener = kbChildSupervisor.onExit?.(failTrackedChildJobs) ?? (() => {});
 
   const rpcPorts: RpcPorts = {
     sessions: {
@@ -977,7 +1041,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
     kbChildSupervisor,
-    disposeLifecycleReactor: options.disposeLifecycleReactor ?? (() => {}),
+    disposeLifecycleReactor: () => {
+      disposeKbChildExitListener();
+      options.disposeLifecycleReactor?.();
+    },
     handoffQuiescePorts: () =>
       services
         .listExecutionServices()

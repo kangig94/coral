@@ -57,6 +57,7 @@ export type KbChildHealthSnapshot = {
 
 export interface KbChildSupervisor {
   read(): KbChildHealthSnapshot;
+  onExit?(listener: (snapshot: KbChildHealthSnapshot) => void): () => void;
   start(): Promise<KbChildHealthSnapshot>;
   probe(): Promise<KbChildHealthSnapshot>;
   warmup(): Promise<KbChildHealthSnapshot>;
@@ -146,6 +147,7 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
       message: `KB child supervisor is disabled: ${reason}`,
       detail: { reason: 'kb_child_disabled' },
     }),
+    onExit: () => () => {},
     abortKbJobs: async (jobIds) => ({ aborted: [], notFound: [...jobIds] }),
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
@@ -220,6 +222,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   let kbReadHealth: KbChildKbReadHealth | undefined;
   let kbWriteHealth: KbChildKbReadHealth | undefined;
   let requestRecoveryEnabled = true;
+  const exitListeners = new Set<(snapshot: KbChildHealthSnapshot) => void>();
 
   const read = (): KbChildHealthSnapshot => ({
     enabled: true,
@@ -243,6 +246,17 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     lastError = message;
     phase = 'failed';
     log(`[kb-child] ${message}`);
+  };
+
+  const notifyExitListeners = (): void => {
+    const snapshot = read();
+    for (const listener of exitListeners) {
+      try {
+        listener(snapshot);
+      } catch (error: unknown) {
+        log(`[kb-child] exit listener failed: ${formatError(error)}`);
+      }
+    }
   };
 
   const runExclusive = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -632,6 +646,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
             phase = 'failed';
             lastError = stderrBuffer.trim().length > 0 ? stderrBuffer.trim() : 'child exited';
           }
+          notifyExitListeners();
         }
         settle('closed');
       });
@@ -690,6 +705,12 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
 
   return {
     read,
+    onExit: (listener) => {
+      exitListeners.add(listener);
+      return () => {
+        exitListeners.delete(listener);
+      };
+    },
     start: () =>
       runExclusive(async () => {
         requestRecoveryEnabled = true;

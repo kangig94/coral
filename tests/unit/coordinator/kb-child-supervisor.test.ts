@@ -316,6 +316,37 @@ describe('KB child supervisor', () => {
     });
   });
 
+  it('notifies exit listeners when the active child closes', async () => {
+    const child = new FakeChildProcess(160);
+    const { runtime } = createRuntime([child]);
+    const onExit = vi.fn();
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+    supervisor.onExit?.(onExit);
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    (child.stderr as unknown as PassThrough).write('child failed while running job\n');
+    child.emitClose(1, null);
+    await flushMicrotasks();
+
+    expect(onExit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: 'failed',
+        generation: 1,
+        lastError: 'child failed while running job',
+        lastExit: expect.objectContaining({ code: 1, signal: null }),
+      }),
+    );
+  });
+
   it('sends child KB job abort requests over the control protocol', async () => {
     const child = new FakeChildProcess(161);
     const { runtime } = createRuntime([child]);
