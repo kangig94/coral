@@ -100,11 +100,20 @@ export type CoordinatorCoreOptions = {
   delegateKbReadsToChild?: boolean;
   /**
    * Staged KB mutation migration switch. Mutations stay in the parent by
-   * default; set true (or CORAL_KB_CHILD_MUTATIONS=1) to delegate migrated
-   * note/wiki/source/community-summary/memo operations plus KB source import
-   * and reindex jobs.
+   * default only when no KB child is enabled; set false (or
+   * CORAL_KB_CHILD_MUTATIONS=0) to keep migrated note/wiki/source/
+   * community-summary/memo operations plus KB source import and reindex jobs
+   * in the parent.
    */
   delegateKbMutationsToChild?: boolean;
+  /**
+   * Uses a lightweight subsystem registry proxy instead of starting the full
+   * parent KB runtime when read and mutation RPCs are both delegated to the
+   * child. Production enables this by default once the standard KB factory is
+   * in use; tests with explicit KB factories keep the parent runtime unless
+   * they opt in.
+   */
+  useKbChildRuntimeOnly?: boolean;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
    * has been requested but whose `inFlight` hasn't settled. Surfaces in

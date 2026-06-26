@@ -693,6 +693,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
+    useKbChildRuntimeOnly: coreOptions.useKbChildRuntimeOnly ?? (providedCreateKbSubsystemFn === undefined),
     createKbSubsystemFn: (ctx) => {
       // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
       // corpus/curate wiring below. KB stays off until a daemon restart.

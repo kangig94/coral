@@ -104,6 +104,7 @@ import { KbReindexService } from '../services/kb/reindex.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { createDisabledKbChildSupervisor, type KbChildSupervisor } from '../kb-child/supervisor.js';
+import { createKbChildProxySubsystem } from '../kb-child/proxy-subsystem.js';
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
@@ -164,14 +165,14 @@ function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSu
   return kbChildSupervisor.read().enabled;
 }
 
-function shouldDelegateKbMutationsToChild(options: CoordinatorCoreOptions): boolean {
+function shouldDelegateKbMutationsToChild(options: CoordinatorCoreOptions, kbChildSupervisor: KbChildSupervisor): boolean {
   if (options.delegateKbMutationsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '0') {
     return false;
   }
   if (options.delegateKbMutationsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '1') {
     return true;
   }
-  return false;
+  return kbChildSupervisor.read().enabled;
 }
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -774,11 +775,16 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
+  const delegateKbReadsToChild = shouldDelegateKbReadsToChild(options, kbChildSupervisor);
+  const delegateKbMutationsToChild = shouldDelegateKbMutationsToChild(options, kbChildSupervisor);
+  const useKbChildRuntimeOnly =
+    options.useKbChildRuntimeOnly === true && delegateKbReadsToChild && delegateKbMutationsToChild;
+
   let effectiveKbPorts = rpcPorts.kb;
-  if (shouldDelegateKbReadsToChild(options, kbChildSupervisor)) {
+  if (delegateKbReadsToChild) {
     effectiveKbPorts = createKbChildReadPort(effectiveKbPorts, kbChildSupervisor);
   }
-  if (shouldDelegateKbMutationsToChild(options)) {
+  if (delegateKbMutationsToChild) {
     effectiveKbPorts = createKbChildMutationPort(
       effectiveKbPorts,
       kbChildSupervisor,
@@ -979,7 +985,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
-    createKbSubsystemFn: defaults.createKbSubsystemFn,
+    createKbSubsystemFn: useKbChildRuntimeOnly
+      ? () => createKbChildProxySubsystem(kbChildSupervisor)
+      : defaults.createKbSubsystemFn,
     createCurateAssistant: defaults.createCurateAssistant,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,

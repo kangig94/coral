@@ -928,6 +928,46 @@ describe('execution backend server', () => {
     expect(kbChildSupervisor.probe).not.toHaveBeenCalled();
   });
 
+  it('uses a KB child proxy subsystem without building the parent KB runtime when child-only mode is enabled', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+      mutateKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const createKbSubsystemFn = vi.fn(async () => {
+      throw new Error('parent KB runtime should not be built');
+    });
+    const backend = await startBackendServer({
+      kbChildSupervisor,
+      useKbChildRuntimeOnly: true,
+      createKbSubsystemFn,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const body = (await response.json()) as { subsystems?: Array<{ id: string; phase: string }> };
+
+    expect(response.status).toBe(200);
+    expect(createKbSubsystemFn).not.toHaveBeenCalled();
+    expect(body.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('online');
+    expect(kbChildSupervisor.start).toHaveBeenCalledTimes(1);
+  });
+
   it('delegates read-only KB RPCs to an enabled KB child by default', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
@@ -1019,7 +1059,7 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('delegates migrated KB memo mutations to an enabled KB child when opted in', async () => {
+  it('delegates migrated KB memo mutations to an enabled KB child by default', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1043,7 +1083,7 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: true });
+    const backend = await startBackendServer({ kbChildSupervisor });
     const projectRoot = '/workspace/project-a';
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
@@ -1071,7 +1111,7 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('delegates migrated KB corpus mutations to an enabled KB child when opted in', async () => {
+  it('delegates migrated KB corpus mutations to an enabled KB child by default', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1095,7 +1135,7 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: true });
+    const backend = await startBackendServer({ kbChildSupervisor });
     const projectRoot = '/workspace/project-a';
     const headers = {
       'Content-Type': 'application/json',
@@ -1188,7 +1228,7 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('keeps migrated KB memo mutations in the parent by default even when a KB child is enabled', async () => {
+  it('keeps migrated KB memo mutations in the parent when child mutation delegation is disabled', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
       phase: 'online',
@@ -1213,7 +1253,7 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: false });
     const projectRoot = join(mockState.tmpHome, 'project-with-parent-memo');
     mkdirSync(projectRoot, { recursive: true });
 
