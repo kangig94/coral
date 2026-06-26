@@ -880,7 +880,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
-  const childRuntimeOnlyRequested = options.useKbChildRuntimeOnly === true && kbChildSupervisor.read().enabled;
+  const childRuntimeOnlyRequested = options.useKbChildRuntimeOnly === true;
   const delegateKbReadsToChild = childRuntimeOnlyRequested || shouldDelegateKbReadsToChild(options, kbChildSupervisor);
   const delegateKbMutationsToChild =
     childRuntimeOnlyRequested || shouldDelegateKbMutationsToChild(options, kbChildSupervisor);

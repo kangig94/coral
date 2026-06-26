@@ -88,6 +88,7 @@ import type { KbChildHealthSnapshot, KbChildSupervisor } from '#src/coordinator/
 import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
@@ -1024,6 +1025,97 @@ describe('execution backend server', () => {
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
       ctx: expect.objectContaining({ projectRoot: '/workspace/project-a', authority: 'user' }),
     });
+  });
+
+  it('keeps child-only mode off the parent KB runtime when the child is disabled', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: false,
+      phase: 'disabled',
+      generation: 0,
+      pid: null,
+      startedAt: null,
+      readyAt: null,
+      reason: 'disabled for fallback test',
+    };
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'kb_unavailable',
+        message: 'KB child supervisor is disabled',
+        detail: { reason: 'kb_child_disabled' },
+      })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'kb_unavailable',
+        message: 'KB child supervisor is disabled',
+        detail: { reason: 'kb_child_disabled' },
+      })),
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const createKbSubsystemFn = vi.fn(async () => {
+      throw new Error('parent KB runtime should not be built');
+    });
+    const backend = await startBackendServer({
+      kbChildSupervisor,
+      useKbChildRuntimeOnly: true,
+      createKbSubsystemFn,
+    });
+
+    const healthResponse = await fetch(`${backend.baseUrl}/health`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    const health = (await healthResponse.json()) as { subsystems?: Array<{ id: string; phase: string }> };
+
+    expect(healthResponse.status).toBe(200);
+    expect(createKbSubsystemFn).not.toHaveBeenCalled();
+    expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('offline');
+
+    const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(kbResponse.status).toBe(503);
+    expect(kbChildSupervisor.readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
+  });
+
+  it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB subsystem path', async () => {
+    const previousKbEnabled = process.env.CORAL_KB_ENABLE;
+    process.env.CORAL_KB_ENABLE = '0';
+    try {
+      const backend = await startBackendServer();
+
+      const healthResponse = await fetch(`${backend.baseUrl}/health`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+      const health = (await healthResponse.json()) as {
+        subsystems?: Array<{ id: string; phase: string; reason?: string }>;
+      };
+
+      expect(healthResponse.status).toBe(200);
+      expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')).toMatchObject({
+        phase: 'offline',
+        reason: KB_DISABLED_REASON,
+      });
+
+      const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+
+      expect(kbResponse.status).toBe(503);
+      await expect(kbResponse.json()).resolves.toMatchObject({ code: 'kb_disabled' });
+    } finally {
+      if (previousKbEnabled === undefined) {
+        delete process.env.CORAL_KB_ENABLE;
+      } else {
+        process.env.CORAL_KB_ENABLE = previousKbEnabled;
+      }
+    }
   });
 
   it('delegates read-only KB RPCs to an enabled KB child by default', async () => {

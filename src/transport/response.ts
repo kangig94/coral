@@ -69,6 +69,7 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
       statusCode = 403;
       break;
     case 'backend_recovering':
+    case 'kb_disabled':
     case 'kb_unavailable':
     case 'kb_initializing':
     case 'kb_offline':

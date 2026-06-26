@@ -94,23 +94,25 @@ export type CoordinatorCoreOptions = {
   kbChildSupervisor?: KbChildSupervisor;
   /**
    * Staged KB child-daemon migration switch. Read-only KB RPCs delegate to an
-   * enabled child by default; set false to keep reads in the parent.
+   * enabled child by default in legacy parent-runtime mode; set false there
+   * to keep reads in the parent. Ignored when `useKbChildRuntimeOnly` is true.
    */
   delegateKbReadsToChild?: boolean;
   /**
-   * Staged KB mutation migration switch. Mutations stay in the parent by
-   * default only when no KB child is enabled; set false to keep migrated
-   * note/wiki/source/community-summary/memo operations in the parent. KB
-   * source import and reindex jobs are child-runtime-only and return
-   * kb_unavailable when this switch prevents delegation.
+   * Staged KB mutation migration switch for legacy parent-runtime mode. Set
+   * false there to keep migrated note/wiki/source/community-summary/memo
+   * operations in the parent. KB source import and reindex jobs are
+   * child-runtime-only and return kb_unavailable when this switch prevents
+   * delegation. Ignored when `useKbChildRuntimeOnly` is true.
    */
   delegateKbMutationsToChild?: boolean;
   /**
    * Uses a lightweight subsystem registry proxy instead of starting the full
-   * parent KB runtime when read and mutation RPCs are both delegated to the
-   * child. Production enables this by default once the standard KB factory is
-   * in use; tests with explicit KB factories keep the parent runtime unless
-   * they opt in.
+   * parent KB runtime. When enabled, KB RPCs stay on the child supervisor path
+   * even if the child is disabled or offline; the proxy reports that state
+   * instead of falling back to the parent runtime. Production enables this by
+   * default once the standard KB factory is in use; tests with explicit KB
+   * factories keep the parent runtime unless they opt in.
    */
   useKbChildRuntimeOnly?: boolean;
   /**

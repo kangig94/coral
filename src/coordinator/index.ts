@@ -88,9 +88,9 @@ export type CoordinatorServerOptions = Omit<
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
   /**
-   * Test seam: replaces the default `createKbRuntime` build step with a
-   * factory returning `KnowledgeBaseRuntime`. Coordinator wraps this into
-   * the new `Subsystem<KnowledgeBaseRuntime>` registry contract; the
+   * Legacy/test seam: opts this server back into the parent KB runtime build
+   * path unless `useKbChildRuntimeOnly` is set. Coordinator wraps the factory
+   * into the `Subsystem<KnowledgeBaseRuntime>` registry contract; the
    * subsystem's retry / dispose / curate-bridge semantics still apply.
    */
   createKbSubsystemFn?: (options: CreateKbSubsystemOptions) => Promise<KnowledgeBaseRuntime>;
@@ -313,6 +313,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
+  // Preserve CORAL_KB_ENABLE=0's explicit disabled subsystem; otherwise the
+  // standard server path stays child-only unless a legacy KB factory is injected.
+  const useKbChildRuntimeOnly =
+    kbEnabled && (coreOptions.useKbChildRuntimeOnly ?? providedCreateKbSubsystemFn === undefined);
   let handleKbChildEvent: ((message: KbChildEventMessage) => void) | null = null;
   const kbChildSupervisor = (() => {
     if (coreOptions.kbChildSupervisor) {
@@ -601,7 +605,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
-    useKbChildRuntimeOnly: coreOptions.useKbChildRuntimeOnly ?? providedCreateKbSubsystemFn === undefined,
+    useKbChildRuntimeOnly,
     createKbSubsystemFn: (ctx) => {
       // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
       // corpus/curate wiring below. KB stays off until a daemon restart.
