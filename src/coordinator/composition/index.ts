@@ -633,6 +633,30 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       });
     });
   };
+  const trackActiveChildKbJobs = async (reason: string, signal?: AbortSignal): Promise<void> => {
+    try {
+      const activeJobs = (await kbChildSupervisor.listActiveKbJobs?.({ signal }))?.active ?? [];
+      for (const jobId of activeJobs) {
+        registerChildJobAbortProxy(jobId);
+      }
+      if (activeJobs.length > 0) {
+        world.log(`[kb-child] tracking ${activeJobs.length} active KB job(s) before ${reason}\n`);
+      }
+    } catch (error: unknown) {
+      world.log(`[kb-child] failed to list active KB jobs before ${reason}: ${formatError(error)}\n`);
+    }
+  };
+  const kbChildSupervisorWithTrackedShutdown: KbChildSupervisor = {
+    ...kbChildSupervisor,
+    restart: async (reason) => {
+      await trackActiveChildKbJobs(reason ?? 'restart');
+      return kbChildSupervisor.restart(reason);
+    },
+    dispose: async (reason, disposeOptions) => {
+      await trackActiveChildKbJobs(reason ?? 'dispose', disposeOptions?.signal);
+      return kbChildSupervisor.dispose(reason, disposeOptions);
+    },
+  };
   const disposeKbChildExitListener = kbChildSupervisor.onExit?.(failTrackedChildJobs) ?? (() => {});
 
   const rpcPorts: RpcPorts = {
@@ -874,7 +898,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       },
       requestDrain: control.requestDrain,
       probeKbChild: () => kbChildSupervisor.probe(),
-      restartKbChild: (reason) => kbChildSupervisor.restart(reason),
+      restartKbChild: (reason) => kbChildSupervisorWithTrackedShutdown.restart(reason),
     },
     health: {
       read: () => {
@@ -1037,7 +1061,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
-    kbChildSupervisor,
+    kbChildSupervisor: kbChildSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: () => {
       disposeKbChildExitListener();
       disposeChildJobTerminalListeners();
@@ -1051,7 +1075,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
     createKbSubsystemFn: useKbChildRuntimeOnly
-      ? () => createKbChildProxySubsystem(kbChildSupervisor)
+      ? () => createKbChildProxySubsystem(kbChildSupervisorWithTrackedShutdown)
       : defaults.createKbSubsystemFn,
     createCurateAssistant: defaults.createCurateAssistant,
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,

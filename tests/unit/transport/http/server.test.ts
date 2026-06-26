@@ -5382,6 +5382,117 @@ describe('execution backend server', () => {
     }
   });
 
+  it('tracks active child KB jobs before admin restart reconciliation', async () => {
+    const jobId = 'kb-child-restart-active-job-1';
+    const projectRoot = '/workspace/project-a';
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 2,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const exit = { listener: null as ((snapshot: KbChildHealthSnapshot) => void) | null };
+    const listActiveKbJobs = vi.fn(async () => ({ active: [jobId] }));
+    const restart = vi.fn(async () => childHealth);
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      onExit: vi.fn((listener) => {
+        exit.listener = listener;
+        return vi.fn();
+      }),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
+      listActiveKbJobs,
+      stop: vi.fn(async () => childHealth),
+      restart,
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      startTime: new Date().toISOString(),
+    });
+
+    const response = await fetch(`${backend.baseUrl}/admin/kb/restart`, {
+      method: 'POST',
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+    });
+
+    expect(response.status).toBe(200);
+    expect(listActiveKbJobs).toHaveBeenCalledTimes(1);
+    expect(restart).toHaveBeenCalledWith('http-admin');
+    expect(listActiveKbJobs.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]);
+    expect(exit.listener).not.toBeNull();
+
+    if (exit.listener === null) {
+      throw new Error('expected KB child exit listener');
+    }
+    exit.listener({
+      ...childHealth,
+      phase: 'failed',
+      pid: null,
+      readyAt: null,
+      lastExit: { code: null, signal: 'SIGTERM', at: 30, uptimeMs: 20 },
+      lastError: 'restart interrupted active import',
+    });
+
+    const detailResponse = await fetch(
+      `${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
+    const detailBody = (await detailResponse.json()) as {
+      status: { phase?: string };
+      events: Array<{ type?: string; result?: { outcome?: { kind?: string; fault?: { kind?: string } } } }>;
+    };
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.status.phase).toBe('error');
+    expect(detailBody.events).toContainEqual(
+      expect.objectContaining({
+        type: 'terminal',
+        result: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'wrapper_crashed' }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('rejects /admin/kb/restart when only the general backend token is provided', async () => {
     const backend = await startBackendServer();
 

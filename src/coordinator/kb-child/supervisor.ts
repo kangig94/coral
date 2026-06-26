@@ -66,7 +66,7 @@ export interface KbChildSupervisor {
   readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
   mutateKb(request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult>;
   abortKbJobs?(jobIds: string[]): Promise<KbChildAbortResult>;
-  listActiveKbJobs?(): Promise<KbChildJobsResult>;
+  listActiveKbJobs?(options?: { signal?: AbortSignal }): Promise<KbChildJobsResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
@@ -193,6 +193,7 @@ type PendingRequest = {
   timeout: ReturnType<Runtime['time']['setTimeout']>;
   resolve: (response: KbChildResponseMessage) => void;
   reject: (error: Error) => void;
+  cleanup?: () => void;
 };
 
 export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbChildSupervisor {
@@ -290,27 +291,55 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     method: KbChildRequestMethod,
     params?: unknown,
     timeoutMs = requestTimeoutMs,
+    signal?: AbortSignal,
   ): Promise<KbChildResponseMessage> => {
     const activeChild = child;
     if (activeChild === null || activeChild.stdin === null || phase !== 'online') {
       throw new Error('KB child is not online');
     }
+    if (signal?.aborted) {
+      throw new Error('KB child request aborted');
+    }
 
     const id = `${generation}:${nextRequestId++}`;
     const sentAt = runtime.time.now();
     const response = await new Promise<KbChildResponseMessage>((resolve, reject) => {
-      const timeout = runtime.time.setTimeout(() => {
+      let settled = false;
+      const cleanup = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        runtime.time.clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
         pendingRequests.delete(id);
-        reject(new Error(`KB child request timed out after ${timeoutMs}ms`));
+      };
+      const rejectWith = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
+      const onAbort = (): void => {
+        rejectWith(new Error('KB child request aborted'));
+      };
+      const timeout = runtime.time.setTimeout(() => {
+        rejectWith(new Error(`KB child request timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       timeout.unref?.();
-      pendingRequests.set(id, { generation, timeout, resolve, reject });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pendingRequests.set(id, {
+        generation,
+        timeout,
+        resolve: (message) => {
+          cleanup();
+          resolve(message);
+        },
+        reject: rejectWith,
+        cleanup,
+      });
       try {
         activeChild.stdin?.write(encodeKbChildMessage({ type: KB_CHILD_REQUEST_MESSAGE, id, method, params }));
       } catch (error: unknown) {
-        runtime.time.clearTimeout(timeout);
-        pendingRequests.delete(id);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        rejectWith(error instanceof Error ? error : new Error(String(error)));
       }
     });
     lastHeartbeatLatencyMs = Math.max(0, runtime.time.now() - sentAt);
@@ -462,9 +491,9 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     }
   };
 
-  const listActiveKbJobsNow = async (): Promise<KbChildJobsResult> => {
+  const listActiveKbJobsNow = async (options: { signal?: AbortSignal } = {}): Promise<KbChildJobsResult> => {
     try {
-      const response = await sendRequest('kb.jobs');
+      const response = await sendRequest('kb.jobs', undefined, requestTimeoutMs, options.signal);
       if (!response.ok || !isKbChildJobsResult(response.result)) {
         return { active: [] };
       }
