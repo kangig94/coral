@@ -393,6 +393,11 @@ function stagePreparedSourceMarkdown(stageRoot: string, markdown: string, runtim
   return stagedPath;
 }
 
+export function cleanupSourceImportRuntimeArtifacts(runtimeRoot: string, runtime: SourceImportRuntime): void {
+  runtime.storage.rmSync(sourceImportStageDir(runtimeRoot), { recursive: true, force: true });
+  runtime.storage.rmSync(join(runtimeRoot, 'source-import-pdf'), { recursive: true, force: true });
+}
+
 export function hasParentPathSegment(filePath: string): boolean {
   return filePath.split(/[\\/]+/u).some((segment) => segment === '..');
 }

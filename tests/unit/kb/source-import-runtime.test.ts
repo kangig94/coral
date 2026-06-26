@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +23,7 @@ import {
   SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV,
   SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES,
   USER_SOURCE_IMPORT_MAX_BYTES,
+  cleanupSourceImportRuntimeArtifacts,
   deriveSourceImportReadPolicy,
   prepareSourceImport,
   resolveAdminSourceImportCap,
@@ -161,6 +162,23 @@ describe('source import runtime isolation', () => {
     expect(prepared.stagedPath).toBe(join(runtimeRoot, 'source-import-staging', 'fixed-source-import-id.md'));
     expect(readFileSync(prepared.stagedPath, 'utf8')).toContain('importedAt: 2026-04-24T00:00:00.000Z');
     expect(readFile).toHaveBeenCalledWith(input, 'utf-8');
+  });
+
+  it('cleans orphaned source import runtime artifacts on boot recovery', () => {
+    const root = tempRoot('coral-source-import-cleanup-');
+    const runtimeRoot = join(root, 'runtime');
+    const runtime = fakeRuntime();
+    const stagedDir = join(runtimeRoot, 'source-import-staging');
+    const pdfDir = join(runtimeRoot, 'source-import-pdf');
+    mkdirSync(stagedDir, { recursive: true });
+    mkdirSync(pdfDir, { recursive: true });
+    writeFileSync(join(stagedDir, 'orphan.md'), '# Orphan\n', 'utf8');
+    writeFileSync(join(pdfDir, 'marker-output.md'), '# Temp\n', 'utf8');
+
+    cleanupSourceImportRuntimeArtifacts(runtimeRoot, runtime);
+
+    expect(existsSync(stagedDir)).toBe(false);
+    expect(existsSync(pdfDir)).toBe(false);
   });
 
   it('rejects traversal and root escapes under a user sandboxed policy', () => {

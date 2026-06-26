@@ -10,6 +10,7 @@ import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import { parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
+import { kbRuntimeDir } from '#src/kb/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -70,12 +71,57 @@ function readImportPath(value: unknown): string {
 }
 
 describe('KB child write runtime', () => {
+  it('cleans orphaned source import runtime artifacts during boot', async () => {
+    const root = createTempRoot();
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const stagedDir = join(runtimeDir, 'source-import-staging');
+    const pdfDir = join(runtimeDir, 'source-import-pdf');
+    runtime.storage.mkdirSync(stagedDir, { recursive: true });
+    runtime.storage.mkdirSync(pdfDir, { recursive: true });
+    runtime.storage.writeFileSync(join(stagedDir, 'orphan.md'), '# Orphan\n');
+    runtime.storage.writeFileSync(join(pdfDir, 'artifact.md'), '# Artifact\n');
+    const host = createKbChildWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+      db,
+    });
+
+    try {
+      await host.withKb(() => undefined);
+
+      expect(runtime.storage.existsSync(stagedDir)).toBe(false);
+      expect(runtime.storage.existsSync(pdfDir)).toBe(false);
+    } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      if (previousClaudeConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      }
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('waits for the child Orama corpus consumer before completing source imports', async () => {
     const root = createTempRoot();
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const projectRoot = join(root, 'project-a');
     const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
     const sourcePath = join(projectRoot, 'paper.md');
     writeImportSource(runtime, sourcePath);
     const host = createKbChildWriteRuntimeHost({
@@ -158,7 +204,14 @@ describe('KB child write runtime', () => {
         message: expect.stringContaining('disposed'),
       });
     } finally {
+      await host.dispose().catch(() => undefined);
       db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      if (previousClaudeConfigDir === undefined) {
+        delete process.env.CLAUDE_CONFIG_DIR;
+      } else {
+        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+      }
       while (tempRoots.length > 0) {
         rmSync(tempRoots.pop()!, { recursive: true, force: true });
       }

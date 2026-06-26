@@ -12,6 +12,7 @@ import { createKbRuntime } from '../../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../../kb/curate/assistant.js';
 import { runPromoteRecovery } from '../../kb/ops/promote-recovery.js';
+import { cleanupSourceImportRuntimeArtifacts } from '../../kb/ops/source-import.js';
 import type {
   KbCorpusPublication,
   KbCorpusSnapshot,
@@ -395,6 +396,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
       const markdownRoot = runtime.paths.coral.corpus.kbRoot;
       const runtimeDir = kbRuntimeDir(flavor, runtime.paths.configSlot);
+      cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
       const curateAssistant = createChildCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
       const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
