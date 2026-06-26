@@ -7,10 +7,13 @@ import {
   KB_CHILD_REQUEST_MESSAGE,
   encodeKbChildMessage,
   isKbChildHealthResult,
+  isKbChildKbMutationResult,
   isKbChildKbReadHealth,
   isKbChildKbReadResult,
   isKbChildReadyMessage,
   isKbChildResponseMessage,
+  type KbChildKbMutationRequest,
+  type KbChildKbMutationResult,
   type KbChildKbReadHealth,
   type KbChildKbReadRequest,
   type KbChildKbReadResult,
@@ -51,6 +54,7 @@ export interface KbChildSupervisor {
   probe(): Promise<KbChildHealthSnapshot>;
   warmup(): Promise<KbChildHealthSnapshot>;
   readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
+  mutateKb(request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
@@ -96,6 +100,12 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
     probe: async () => ({ ...snapshot }),
     warmup: async () => ({ ...snapshot }),
     readKb: async () => ({
+      ok: false,
+      code: 'kb_unavailable',
+      message: `KB child supervisor is disabled: ${reason}`,
+      detail: { reason: 'kb_child_disabled' },
+    }),
+    mutateKb: async () => ({
       ok: false,
       code: 'kb_unavailable',
       message: `KB child supervisor is disabled: ${reason}`,
@@ -169,7 +179,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   let lastHeartbeatLatencyMs: number | undefined;
   let childUptimeMs: number | undefined;
   let kbReadHealth: KbChildKbReadHealth | undefined;
-  let readRecoveryEnabled = true;
+  let requestRecoveryEnabled = true;
 
   const read = (): KbChildHealthSnapshot => ({
     enabled: true,
@@ -301,13 +311,13 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     }
   };
 
-  const recoverForRead = async (
+  const recoverForRequest = async (
     failedGeneration: number,
     failedPhase: KbChildPhase,
     reason: string,
   ): Promise<KbChildHealthSnapshot> =>
     runExclusive(async () => {
-      if (!readRecoveryEnabled) {
+      if (!requestRecoveryEnabled) {
         return read();
       }
       if (phase === 'online' && child !== null && (generation !== failedGeneration || failedPhase !== 'online')) {
@@ -324,6 +334,13 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     });
 
   const readKbUnavailable = (message: string): KbChildKbReadResult => ({
+    ok: false,
+    code: 'kb_unavailable',
+    message,
+    detail: { reason: 'kb_child_unavailable' },
+  });
+
+  const mutateKbUnavailable = (message: string): KbChildKbMutationResult => ({
     ok: false,
     code: 'kb_unavailable',
     message,
@@ -349,8 +366,27 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     return response.result;
   };
 
+  const sendKbMutationRequest = async (request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult> => {
+    const response = await sendRequest('kb.mutate', request);
+    if (!response.ok) {
+      return {
+        ok: false,
+        code: 'kb_child_protocol_error',
+        message: response.error.message,
+      };
+    }
+    if (!isKbChildKbMutationResult(response.result)) {
+      return {
+        ok: false,
+        code: 'kb_child_protocol_error',
+        message: 'KB child returned malformed mutation result.',
+      };
+    }
+    return response.result;
+  };
+
   const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
-    if (!readRecoveryEnabled) {
+    if (!requestRecoveryEnabled) {
       return readKbUnavailable('KB child read request skipped: supervisor is disposing.');
     }
     const failedGeneration = generation;
@@ -359,7 +395,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
       return await sendKbReadRequest(request);
     } catch (error: unknown) {
       const initialError = errorMessage(error);
-      const recovered = await recoverForRead(failedGeneration, failedPhase, 'read request recovery');
+      const recovered = await recoverForRequest(failedGeneration, failedPhase, 'read request recovery');
       if (recovered.phase !== 'online') {
         return readKbUnavailable(
           `KB child read request failed: ${initialError}; recovery ended in ${recovered.phase}.`,
@@ -372,6 +408,25 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
           `KB child read request failed after recovery: ${errorMessage(retryError)}; initial failure: ${initialError}`,
         );
       }
+    }
+  };
+
+  const mutateKbNow = async (request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult> => {
+    if (!requestRecoveryEnabled) {
+      return mutateKbUnavailable('KB child mutation request skipped: supervisor is disposing.');
+    }
+    const failedGeneration = generation;
+    const failedPhase = phase;
+    if (phase !== 'online' || child === null) {
+      const recovered = await recoverForRequest(failedGeneration, failedPhase, 'mutation request recovery');
+      if (recovered.phase !== 'online') {
+        return mutateKbUnavailable(`KB child mutation request skipped: recovery ended in ${recovered.phase}.`);
+      }
+    }
+    try {
+      return await sendKbMutationRequest(request);
+    } catch (error: unknown) {
+      return mutateKbUnavailable(`KB child mutation request failed: ${errorMessage(error)}; request was not retried.`);
     }
   };
 
@@ -567,16 +622,17 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     read,
     start: () =>
       runExclusive(async () => {
-        readRecoveryEnabled = true;
+        requestRecoveryEnabled = true;
         return startNow();
       }),
     probe: probeExclusive,
     warmup: () => runExclusive(warmupNow),
     readKb: readKbNow,
+    mutateKb: mutateKbNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {
-        readRecoveryEnabled = true;
+        requestRecoveryEnabled = true;
         phase = 'restarting';
         await stopNow(reason);
         if (child !== null) {
@@ -585,9 +641,9 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
         return startNow();
       }),
     dispose: async (reason = 'dispose', disposeOptions) => {
-      readRecoveryEnabled = false;
+      requestRecoveryEnabled = false;
       await runExclusive(() => {
-        readRecoveryEnabled = false;
+        requestRecoveryEnabled = false;
         return stopNow(reason, disposeOptions?.signal);
       });
     },

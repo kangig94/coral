@@ -87,8 +87,8 @@ export interface KbRequestPort {
   wakeUp(args: Record<string, unknown>): Promise<KbToolResult>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   deleteSource(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
-  createMemo(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
-  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
+  createMemo(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
+  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
   reindex(request: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
 }
 

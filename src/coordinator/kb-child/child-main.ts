@@ -2,6 +2,7 @@ import {
   KB_CHILD_READY_MESSAGE,
   KB_CHILD_RESPONSE_MESSAGE,
   encodeKbChildMessage,
+  isKbChildKbMutationRequest,
   isKbChildKbReadRequest,
   isKbChildRequestMessage,
   type KbChildHealthResult,
@@ -93,7 +94,7 @@ export function startKbChildParentWatchdog(options: KbChildParentWatchdogOptions
 export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
-  const kbRead = createKbChildReadService({ pluginRoot });
+  const kbService = createKbChildReadService({ pluginRoot });
   const parentPid = options.parentPid ?? resolveKbChildParentPid(process.env.CORAL_KB_CHILD_PARENT_PID);
   let resolveShutdown!: (code: number) => void;
   let settled = false;
@@ -124,7 +125,7 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
     pid: process.pid,
     startedAt,
     uptimeMs: Math.max(0, Date.now() - startedAt),
-    kbRead: kbRead.health(),
+    kbRead: kbService.health(),
   });
   const handleRequest = async (request: KbChildRequestMessage): Promise<void> => {
     switch (request.method) {
@@ -146,11 +147,25 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
           id: request.id,
           ok: true,
           result: isKbChildKbReadRequest(request.params)
-            ? await kbRead.read(request.params)
+            ? await kbService.read(request.params)
             : {
                 ok: false,
                 code: 'invalid_request',
                 message: 'Malformed KB child read request.',
+              },
+        });
+        return;
+      case 'kb.mutate':
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: isKbChildKbMutationRequest(request.params)
+            ? await kbService.mutate(request.params)
+            : {
+                ok: false,
+                code: 'invalid_request',
+                message: 'Malformed KB child mutation request.',
               },
         });
         return;
@@ -159,7 +174,7 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
           type: KB_CHILD_RESPONSE_MESSAGE,
           id: request.id,
           ok: true,
-          result: await kbRead.warmup(),
+          result: await kbService.warmup(),
         });
         return;
     }

@@ -858,6 +858,11 @@ describe('execution backend server', () => {
       }),
       warmup: vi.fn(async () => currentHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
       stop: vi.fn(async () => currentHealth),
       restart: vi.fn(async () => currentHealth),
       dispose: vi.fn(async () => undefined),
@@ -901,6 +906,11 @@ describe('execution backend server', () => {
       probe: vi.fn(async () => childHealth),
       warmup: vi.fn(async () => childHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
@@ -937,6 +947,11 @@ describe('execution backend server', () => {
       probe: vi.fn(async () => childHealth),
       warmup: vi.fn(async () => childHealth),
       readKb,
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
@@ -960,6 +975,7 @@ describe('execution backend server', () => {
     await expect(getJson('/kb/sources/alpha-source')).resolves.toEqual({ servedBy: 'kb-child' });
     await expect(getJson('/kb/wikis')).resolves.toEqual({ servedBy: 'kb-child' });
     await expect(getJson('/kb/wikis/alpha-wiki')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/wake-up?project=kangig94-coral')).resolves.toEqual({ servedBy: 'kb-child' });
     await expect(getJson('/kb/communities/alpha-community')).resolves.toEqual({ servedBy: 'kb-child' });
     await expect(getJson('/kb/communities-stale')).resolves.toEqual({ servedBy: 'kb-child' });
     await expect(getJson('/kb/communities/alpha-community/summary-input')).resolves.toEqual({
@@ -984,6 +1000,7 @@ describe('execution backend server', () => {
       { method: 'readSource', slug: 'alpha-source' },
       { method: 'listWikis' },
       { method: 'readWiki', slug: 'alpha-wiki' },
+      { method: 'wakeUp', args: { project: 'kangig94-coral' } },
       { method: 'readCommunity', slug: 'alpha-community' },
       { method: 'listStaleCommunities' },
       { method: 'readCommunitySummaryInput', slug: 'alpha-community' },
@@ -1000,6 +1017,105 @@ describe('execution backend server', () => {
       { method: 'listPrinciples', args: { query: 'alpha', top_k: 2, verbose: true } },
       { method: 'readPrinciple', slug: 'alpha-principle' },
     ]);
+  });
+
+  it('delegates migrated KB memo mutations to an enabled KB child when opted in', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (_request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-child' },
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: true });
+    const projectRoot = '/workspace/project-a';
+
+    const response = await fetch(`${backend.baseUrl}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ servedBy: 'kb-child' });
+    expect(mutateKb.mock.calls.map(([request]) => request)).toEqual([
+      {
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      },
+    ]);
+  });
+
+  it('keeps migrated KB memo mutations in the parent by default even when a KB child is enabled', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (_request) => ({
+      ok: false as const,
+      code: 'unexpected_mutation',
+      message: 'unexpected mutation',
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbChildSupervisor });
+    const projectRoot = join(mockState.tmpHome, 'project-with-parent-memo');
+    mkdirSync(projectRoot, { recursive: true });
+
+    const response = await fetch(`${backend.baseUrl}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mutateKb).not.toHaveBeenCalled();
   });
 
   it('keeps read-only KB RPCs in the parent when child delegation is disabled', async () => {
@@ -1021,6 +1137,11 @@ describe('execution backend server', () => {
       probe: vi.fn(async () => childHealth),
       warmup: vi.fn(async () => childHealth),
       readKb,
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
@@ -1059,6 +1180,11 @@ describe('execution backend server', () => {
         probe: vi.fn(async () => childHealth),
         warmup: vi.fn(async () => childHealth),
         readKb,
+        mutateKb: vi.fn(async () => ({
+          ok: false as const,
+          code: 'unexpected_mutation',
+          message: 'unexpected mutation',
+        })),
         stop: vi.fn(async () => childHealth),
         restart: vi.fn(async () => childHealth),
         dispose: vi.fn(async () => undefined),
@@ -4881,6 +5007,11 @@ describe('execution backend server', () => {
       probe: vi.fn(async () => childHealth),
       warmup: vi.fn(async () => childHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
       stop: vi.fn(async () => childHealth),
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),

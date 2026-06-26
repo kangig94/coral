@@ -2,7 +2,7 @@ export const KB_CHILD_READY_MESSAGE = 'coral.kb_child.ready';
 export const KB_CHILD_REQUEST_MESSAGE = 'coral.kb_child.request';
 export const KB_CHILD_RESPONSE_MESSAGE = 'coral.kb_child.response';
 
-export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read' | 'kb.warmup';
+export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read' | 'kb.mutate' | 'kb.warmup';
 
 export const KB_CHILD_KB_READ_METHODS = [
   'readSearch',
@@ -19,9 +19,14 @@ export const KB_CHILD_KB_READ_METHODS = [
   'listWikis',
   'listMemos',
   'listPrinciples',
+  'wakeUp',
 ] as const;
 
 export type KbChildKbReadMethod = (typeof KB_CHILD_KB_READ_METHODS)[number];
+
+export const KB_CHILD_KB_MUTATION_METHODS = ['createMemo', 'deleteMemos'] as const;
+
+export type KbChildKbMutationMethod = (typeof KB_CHILD_KB_MUTATION_METHODS)[number];
 
 export type KbChildKbReadRequest = {
   method: KbChildKbReadMethod;
@@ -30,9 +35,18 @@ export type KbChildKbReadRequest = {
   ctx?: unknown;
 };
 
+export type KbChildKbMutationRequest = {
+  method: KbChildKbMutationMethod;
+  args?: unknown;
+  slug?: string;
+  ctx?: unknown;
+};
+
 export type KbChildKbReadResult =
   | { ok: true; data: unknown }
   | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
+
+export type KbChildKbMutationResult = KbChildKbReadResult;
 
 export type KbChildKbReadHealth = {
   phase: 'not_initialized' | 'ready' | 'failed';
@@ -115,6 +129,7 @@ export function isKbChildRequestMessage(value: unknown): value is KbChildRequest
     (record.method === 'health' ||
       record.method === 'shutdown' ||
       record.method === 'kb.read' ||
+      record.method === 'kb.mutate' ||
       record.method === 'kb.warmup')
   );
 }
@@ -166,6 +181,10 @@ export function isKbChildKbReadMethod(value: unknown): value is KbChildKbReadMet
   return typeof value === 'string' && KB_CHILD_KB_READ_METHODS.includes(value as KbChildKbReadMethod);
 }
 
+export function isKbChildKbMutationMethod(value: unknown): value is KbChildKbMutationMethod {
+  return typeof value === 'string' && KB_CHILD_KB_MUTATION_METHODS.includes(value as KbChildKbMutationMethod);
+}
+
 export function isKbChildKbReadRequest(value: unknown): value is KbChildKbReadRequest {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -174,7 +193,15 @@ export function isKbChildKbReadRequest(value: unknown): value is KbChildKbReadRe
   return isKbChildKbReadMethod(record.method) && (record.slug === undefined || typeof record.slug === 'string');
 }
 
-export function isKbChildKbReadResult(value: unknown): value is KbChildKbReadResult {
+export function isKbChildKbMutationRequest(value: unknown): value is KbChildKbMutationRequest {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return isKbChildKbMutationMethod(record.method) && (record.slug === undefined || typeof record.slug === 'string');
+}
+
+function isKbChildKbResult(value: unknown): value is KbChildKbReadResult {
   if (value === null || typeof value !== 'object') {
     return false;
   }
@@ -186,4 +213,12 @@ export function isKbChildKbReadResult(value: unknown): value is KbChildKbReadRes
     return false;
   }
   return record.remediation === undefined || typeof record.remediation === 'string';
+}
+
+export function isKbChildKbReadResult(value: unknown): value is KbChildKbReadResult {
+  return isKbChildKbResult(value);
+}
+
+export function isKbChildKbMutationResult(value: unknown): value is KbChildKbMutationResult {
+  return isKbChildKbResult(value);
 }

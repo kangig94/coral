@@ -642,7 +642,7 @@ export async function executeCatalogRequest(
 
       const args = stripTransportContextKeys(parsed);
       const memoArgs = ctx.coralEnv.CORAL_OWNER === undefined ? args : { ...args, owner: ctx.coralEnv.CORAL_OWNER };
-      return unaryDomain(rpcPorts.kb.createMemo(memoArgs, ctx), 201);
+      return unaryDomain(await rpcPorts.kb.createMemo(memoArgs, ctx), 201);
     }
 
     case 'kb.memo.delete': {
@@ -656,7 +656,7 @@ export async function executeCatalogRequest(
         buildBodyInvocationContext(parsed, rpcPorts, authority) ?? buildQueryContext(parsed, rpcPorts, authority);
       return unaryHttp(
         domainResultToHttp(
-          rpcPorts.kb.deleteMemos(
+          await rpcPorts.kb.deleteMemos(
             {
               ...(parsed.pattern === undefined ? {} : { pattern: parsed.pattern }),
               ...(parsed.owner === undefined ? {} : { owner: parsed.owner }),

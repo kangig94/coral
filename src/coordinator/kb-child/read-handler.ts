@@ -28,9 +28,13 @@ import {
 import { readEntryByKind } from '../../kb/read.js';
 import { communitiesDir, kbRuntimeDir } from '../../kb/paths.js';
 import type { KbReadKind } from '../../kb/selector.js';
-import { kbError, kbSuccess, type KbToolResult } from '../../kb/result.js';
+import { kbError, kbSuccess, kbValidationError, type KbToolResult } from '../../kb/result.js';
+import { handleKbMemo, handleKbMemoDeleteConsolidated } from '../../kb/tool-handlers.js';
+import { kbWakeUpSchema } from '../../kb/tool-contracts.js';
+import { generateWakeUpPacket } from '../../kb/ops/wake-up.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../../kb/validation.js';
-import type { KbChildKbReadHealth, KbChildKbReadRequest } from './protocol.js';
+import type { Authority, InvocationContext } from '../../runtime/invocation-context.js';
+import type { KbChildKbMutationRequest, KbChildKbReadHealth, KbChildKbReadRequest } from './protocol.js';
 
 type KbChildReadHandlerOptions = {
   pluginRoot: string;
@@ -40,6 +44,9 @@ type KbChildReadHandlerOptions = {
 
 type KbChildReadContext = {
   projectRoot: string;
+  pluginRoot?: string;
+  coralEnv?: Record<string, string>;
+  authority?: Authority;
 };
 
 type KbChildReadHandlerState = {
@@ -50,6 +57,7 @@ type KbChildReadHandlerState = {
 
 export type KbChildReadService = {
   read(request: KbChildKbReadRequest): Promise<KbToolResult>;
+  mutate(request: KbChildKbMutationRequest): Promise<KbToolResult>;
   warmup(): Promise<KbChildKbReadHealth>;
   health(): KbChildKbReadHealth;
 };
@@ -74,12 +82,43 @@ function parseRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function parseStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const parsed: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') {
+      parsed[key] = entry;
+    }
+  }
+  return parsed;
+}
+
 function parseContext(value: unknown): KbChildReadContext | undefined {
   if (!isRecord(value) || typeof value.projectRoot !== 'string' || value.projectRoot.length === 0) {
     return undefined;
   }
   return {
     projectRoot: value.projectRoot,
+    ...(typeof value.pluginRoot === 'string' && value.pluginRoot.length > 0 ? { pluginRoot: value.pluginRoot } : {}),
+    ...(value.authority === 'admin' || value.authority === 'user' ? { authority: value.authority } : {}),
+    ...(value.coralEnv === undefined ? {} : { coralEnv: parseStringRecord(value.coralEnv) ?? {} }),
+  };
+}
+
+function invocationContext(
+  state: KbChildReadHandlerState,
+  ctx: KbChildReadContext | undefined,
+): InvocationContext | KbToolResult {
+  if (ctx === undefined) {
+    return invalidRequest('KB child mutation request requires project context.');
+  }
+  return {
+    projectRoot: ctx.projectRoot,
+    pluginRoot: ctx.pluginRoot ?? state.pluginRoot,
+    coralEnv: ctx.coralEnv ?? {},
+    authority: ctx.authority ?? 'admin',
   };
 }
 
@@ -197,6 +236,18 @@ async function run(
 ): Promise<KbToolResult> {
   try {
     return kbSuccess(await action());
+  } catch (error: unknown) {
+    onError?.(error);
+    return failed(error);
+  }
+}
+
+async function runToolResult(
+  action: () => Promise<KbToolResult> | KbToolResult,
+  onError?: (error: unknown) => void,
+): Promise<KbToolResult> {
+  try {
+    return await action();
   } catch (error: unknown) {
     onError?.(error);
     return failed(error);
@@ -338,6 +389,25 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
             const host = createKbQueryHost(queryContext);
             return listKnowledgeBasePrinciples(parsePrinciplesArgs(args), host);
           }, markFailure);
+        case 'wakeUp': {
+          const parsed = kbWakeUpSchema.safeParse(args);
+          if (!parsed.success) {
+            return kbValidationError(parsed.error);
+          }
+          return run(async () => {
+            const { runtime, queryContext } = createContext(state, ctx);
+            const paths = createDefaultKbReadPaths(queryContext);
+            return {
+              content: await generateWakeUpPacket(
+                {
+                  storagePort: runtime.storage,
+                  wikiPath: paths.wikiPath,
+                },
+                parsed.data.project,
+              ),
+            };
+          }, markFailure);
+        }
         case 'listStaleCommunities': {
           const { runtime, queryContext } = createContext(state, ctx);
           return kbSuccess(listStaleCommunities(createCommunitySummaryRuntime(runtime, queryContext)));
@@ -352,12 +422,35 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
             return normalizedSlug;
           }
           const { runtime, queryContext } = createContext(state, ctx);
-          const input = readCommunitySummaryInput(
-            createCommunitySummaryRuntime(runtime, queryContext),
-            normalizedSlug,
-          );
+          const input = readCommunitySummaryInput(createCommunitySummaryRuntime(runtime, queryContext), normalizedSlug);
           return input === null ? notFound('community', normalizedSlug) : kbSuccess(input);
         }
+      }
+    } catch (error: unknown) {
+      markFailure(error);
+      return failed(error);
+    }
+  };
+  const mutate = async (request: KbChildKbMutationRequest): Promise<KbToolResult> => {
+    try {
+      const args = parseRecord(request.args);
+      const ctx = parseContext(request.ctx);
+      const invocation = invocationContext(state, ctx);
+      if ('ok' in invocation) {
+        return invocation;
+      }
+
+      switch (request.method) {
+        case 'createMemo':
+          return runToolResult(() => {
+            const { runtime } = createContext(state, ctx);
+            return handleKbMemo(args, invocation, runtime);
+          }, markFailure);
+        case 'deleteMemos':
+          return runToolResult(() => {
+            const { runtime } = createContext(state, ctx);
+            return handleKbMemoDeleteConsolidated(args, invocation, runtime);
+          }, markFailure);
       }
     } catch (error: unknown) {
       markFailure(error);
@@ -382,6 +475,7 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
 
   return {
     read,
+    mutate,
     warmup,
     health,
   };

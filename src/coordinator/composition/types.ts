@@ -95,10 +95,16 @@ export type CoordinatorCoreOptions = {
   /**
    * Staged KB child-daemon migration switch. Read-only KB RPCs delegate to an
    * enabled child by default; set false (or CORAL_KB_CHILD_READS=0) to keep
-   * reads in the parent. Mutations/import/reindex stay in the parent until the
-   * child owns the full KB runtime.
+   * reads in the parent.
    */
   delegateKbReadsToChild?: boolean;
+  /**
+   * Staged KB mutation migration switch. Mutations stay in the parent by
+   * default; set true (or CORAL_KB_CHILD_MUTATIONS=1) to delegate the migrated
+   * memo create/delete operations while corpus mutations, source import, and
+   * reindex remain parent-owned.
+   */
+  delegateKbMutationsToChild?: boolean;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
    * has been requested but whose `inFlight` hasn't settled. Surfaces in

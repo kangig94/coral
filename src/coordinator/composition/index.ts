@@ -107,6 +107,7 @@ import { createDisabledKbChildSupervisor, type KbChildSupervisor } from '../kb-c
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 export const CORAL_KB_CHILD_READS_ENV = 'CORAL_KB_CHILD_READS';
+export const CORAL_KB_CHILD_MUTATIONS_ENV = 'CORAL_KB_CHILD_MUTATIONS';
 
 const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
@@ -121,6 +122,16 @@ function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSu
     return true;
   }
   return kbChildSupervisor.read().enabled;
+}
+
+function shouldDelegateKbMutationsToChild(options: CoordinatorCoreOptions): boolean {
+  if (options.delegateKbMutationsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '0') {
+    return false;
+  }
+  if (options.delegateKbMutationsToChild === true || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '1') {
+    return true;
+  }
+  return false;
 }
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -181,6 +192,27 @@ function createKbChildReadPort(localKb: RpcPorts['kb'], kbChildSupervisor: KbChi
     listPrinciples: (args) => kbChildSupervisor.readKb({ method: 'listPrinciples', args }),
     listStaleCommunities: () => kbChildSupervisor.readKb({ method: 'listStaleCommunities' }),
     readCommunitySummaryInput: (slug) => kbChildSupervisor.readKb({ method: 'readCommunitySummaryInput', slug }),
+    wakeUp: (args) => kbChildSupervisor.readKb({ method: 'wakeUp', args }),
+  };
+}
+
+function createKbChildMemoMutationPort(
+  localKb: RpcPorts['kb'],
+  kbChildSupervisor: KbChildSupervisor,
+  recordHostedKbFailure: (operation: string, ctx: InvocationContext | undefined, result: KbToolResult) => void,
+): RpcPorts['kb'] {
+  return {
+    ...localKb,
+    createMemo: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'createMemo', args, ctx });
+      recordHostedKbFailure('memo_create', ctx, result);
+      return result;
+    },
+    deleteMemos: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'deleteMemos', args, ctx });
+      recordHostedKbFailure('memo_delete', ctx, result);
+      return result;
+    },
   };
 }
 
@@ -581,9 +613,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
-  const effectiveRpcPorts: RpcPorts = shouldDelegateKbReadsToChild(options, kbChildSupervisor)
-    ? { ...rpcPorts, kb: createKbChildReadPort(rpcPorts.kb, kbChildSupervisor) }
-    : rpcPorts;
+  let effectiveKbPorts = rpcPorts.kb;
+  if (shouldDelegateKbReadsToChild(options, kbChildSupervisor)) {
+    effectiveKbPorts = createKbChildReadPort(effectiveKbPorts, kbChildSupervisor);
+  }
+  if (shouldDelegateKbMutationsToChild(options)) {
+    effectiveKbPorts = createKbChildMemoMutationPort(effectiveKbPorts, kbChildSupervisor, recordHostedKbFailure);
+  }
+  const effectiveRpcPorts: RpcPorts = { ...rpcPorts, kb: effectiveKbPorts };
 
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,

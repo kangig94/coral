@@ -237,6 +237,45 @@ describe('KB child supervisor', () => {
     });
   });
 
+  it('sends KB mutation requests over the child control protocol', async () => {
+    const child = new FakeChildProcess(159);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const mutation = supervisor.mutateKb({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'body', owner: 'kang' },
+      ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+    });
+    await flushMicrotasks();
+    const request = latestRequest(child);
+    expect(request.method).toBe('kb.mutate');
+    expect(request.params).toEqual({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'body', owner: 'kang' },
+      ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+    });
+    writeResponse(child, request.id, {
+      ok: true,
+      data: { filename: 'memo.md' },
+    });
+
+    await expect(mutation).resolves.toEqual({
+      ok: true,
+      data: { filename: 'memo.md' },
+    });
+  });
+
   it('restarts once and retries read-only KB requests after the child exits', async () => {
     const first = new FakeChildProcess(171);
     const second = new FakeChildProcess(172);
@@ -366,6 +405,44 @@ describe('KB child supervisor', () => {
       data: { slug: 'alpha-note', source: 'timeout-recovered-child' },
     });
     expect(supervisor.read()).toMatchObject({ phase: 'online', generation: 2, pid: 175, pendingRequests: 0 });
+  });
+
+  it('does not retry KB mutation requests after a request timeout', async () => {
+    const first = new FakeChildProcess(174);
+    const second = new FakeChildProcess(175);
+    const { runtime, spawnCalls, time } = createRuntime([first, second]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      requestTimeoutMs: 25,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(first);
+    await start;
+
+    const mutation = supervisor.mutateKb({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'body', owner: 'kang' },
+      ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+    });
+    await flushMicrotasks();
+    expect(latestRequest(first).method).toBe('kb.mutate');
+
+    time.tick(25);
+    await flushMicrotasks(12);
+
+    await expect(mutation).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_unavailable',
+      message: expect.stringContaining('request was not retried'),
+    });
+    expect(first.stdin.destroyed).toBe(false);
+    expect(first.stdin.chunks.join('')).not.toContain('"reason":"mutation request recovery"');
+    expect(spawnCalls).toHaveLength(1);
   });
 
   it('does not restart read-only KB requests after dispose is requested', async () => {

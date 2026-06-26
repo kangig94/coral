@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createKbChildReadHandler, createKbChildReadService } from '#src/coordinator/kb-child/read-handler.js';
 import { INDEX_FILE } from '#src/kb/corpus/index-store.js';
-import { communityPathFromName, kbRuntimeDir, memoDir, notePathFromName } from '#src/kb/paths.js';
+import { communityPathFromName, kbRuntimeDir, memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 function writeNote(runtime: SimulationRuntime, slug: string): void {
@@ -50,6 +50,29 @@ function writeCommunity(runtime: SimulationRuntime, slug: string): void {
       '# Alpha Community',
       '',
       '## Members',
+      '',
+    ].join('\n'),
+  );
+}
+
+function writeWiki(runtime: SimulationRuntime, slug: string): void {
+  const path = wikiPathFromName(slug, runtime.paths.coral.corpus.kbRoot);
+  runtime.storage.mkdirSync(dirname(path), { recursive: true });
+  runtime.storage.writeFileSync(
+    path,
+    [
+      '---',
+      'tags: [wake]',
+      'createdAt: 2026-05-04T00:00:00.000Z',
+      'updatedAt: 2026-05-04T01:00:00.000Z',
+      '---',
+      `# ${slug}`,
+      '',
+      '## Understanding',
+      '',
+      'Child wake-up understanding.',
+      '',
+      '## Knowledge',
       '',
     ].join('\n'),
   );
@@ -149,6 +172,73 @@ describe('KB child read handler', () => {
       ok: true,
       data: {
         memos: [{ filename: '20260101-000000-alpha.md', owner: 'kang' }],
+      },
+    });
+  });
+
+  it('creates memos through the child mutation handler', async () => {
+    const runtime = new SimulationRuntime();
+    const projectRoot = '/workspace/project-a';
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime });
+
+    const missingContext = await service.mutate({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'child memo body', owner: 'kang' },
+    });
+    expect(missingContext).toMatchObject({
+      ok: false,
+      code: 'invalid_request',
+    });
+
+    await expect(
+      service.mutate({
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'child memo body', owner: 'kang' },
+        ctx: { projectRoot, pluginRoot: '/plugin', authority: 'user', coralEnv: { CORAL_JOB_ID: 'job-1' } },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    await expect(
+      service.read({ method: 'listMemos', args: { owner: 'kang' }, ctx: { projectRoot } }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        memos: [expect.objectContaining({ owner: 'kang' })],
+      },
+    });
+  });
+
+  it('deletes memos through the child mutation handler', async () => {
+    const runtime = new SimulationRuntime();
+    const projectRoot = '/workspace/project-a';
+    writeMemo(runtime, projectRoot);
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime });
+
+    await expect(
+      service.mutate({
+        method: 'deleteMemos',
+        args: { pattern: '*alpha.md', owner: 'kang' },
+        ctx: { projectRoot, pluginRoot: '/plugin' },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    await expect(
+      service.read({ method: 'listMemos', args: { owner: 'kang' }, ctx: { projectRoot } }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: { memos: [] },
+    });
+  });
+
+  it('generates wake-up packets from the child read runtime', async () => {
+    const runtime = new SimulationRuntime();
+    writeWiki(runtime, 'kangig94-coral');
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime });
+
+    await expect(service.read({ method: 'wakeUp', args: { project: 'kangig94-coral' } })).resolves.toMatchObject({
+      ok: true,
+      data: {
+        content: expect.stringContaining('Child wake-up understanding.'),
       },
     });
   });
