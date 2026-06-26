@@ -251,23 +251,25 @@ export async function runCorpusApply(
         projectionInput,
         signal: controller.signal,
       });
-      if (applyResult?.advance === false) {
+      if (applyResult !== undefined && 'advance' in applyResult && applyResult.advance === false) {
         if (state.kind === 'corpus') {
           state.lastApplyError = null;
         }
         return true;
       }
+      const appliedSnapshot =
+        applyResult !== undefined && 'advanceTo' in applyResult ? applyResult.advanceTo : snapshot;
       if (reg.projectionSync === 'text-index') {
         deps.onTextProjectionSync?.();
       }
-      deps.repository.advanceCorpusCursor(reg, snapshot);
+      deps.repository.advanceCorpusCursor(reg, appliedSnapshot);
       if (state.kind === 'corpus' && options.forceGeneration !== undefined) {
         state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, options.forceGeneration);
       }
       if (state.kind === 'corpus') {
         state.lastApplyError = null;
       }
-      deps.resolveWaiters(state, snapshot);
+      deps.resolveWaiters(state, appliedSnapshot);
       return true;
     } finally {
       if (trackTextProjection) {

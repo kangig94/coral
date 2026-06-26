@@ -60,6 +60,10 @@ const TIMER_EXEMPT_FILES = new Set<string>([
   // just for this single ref, which is the boundary case `claude/appserver/server.ts`
   // is also exempt for.
   'src/coordinator/bootstrap.ts',
+  // KB child main is the bootstrap entrypoint for the child process itself.
+  // It owns its keepalive and parent-exit watchdog before any request-scoped
+  // Runtime port is available.
+  'src/coordinator/kb-child/child-main.ts',
   'src/providers/claude/appserver/controller.ts',
 ]);
 const DATE_NOW_EXEMPT_FILES = new Set<string>([

@@ -1212,7 +1212,12 @@ describe('execution backend server', () => {
       },
       {
         method: 'createSource',
-        args: { filePath: '/workspace/project-a/source.md', slug: 'alpha-source', readiness: 'base-search', async: true },
+        args: {
+          filePath: '/workspace/project-a/source.md',
+          slug: 'alpha-source',
+          readiness: 'base-search',
+          async: true,
+        },
         ctx: expect.objectContaining({ authority: 'user', projectRoot }),
       },
       {
@@ -1336,6 +1341,107 @@ describe('execution backend server', () => {
         }),
       }),
     );
+  });
+
+  it('removes child-owned KB abort proxies when the child job reaches terminal state', async () => {
+    const jobId = 'kb-child-import-job-terminal';
+    const projectRoot = '/workspace/project-a';
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const abortKbJobs = vi.fn(async () => ({ aborted: [jobId], notFound: [] }));
+    const eventBus = new TypedEventBus();
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      onExit: vi.fn(() => vi.fn()),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({ ok: true as const, data: { status: 'running', job: jobId } })),
+      abortKbJobs,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ eventBus, kbChildSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      startTime: new Date().toISOString(),
+    });
+
+    const createResponse = await fetch(`${backend.baseUrl}/kb/sources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+        async: true,
+      }),
+    });
+    expect(createResponse.status).toBe(202);
+
+    commitJobTerminal(
+      progressStore,
+      jobId,
+      null,
+      { content: 'Imported source.', outcome: { kind: 'completed' } },
+      'completed',
+    );
+    eventBus.emit('job:completed', {
+      jobId,
+      result: { content: 'Imported source.', outcome: { kind: 'completed' } },
+    });
+
+    const abortResponse = await fetch(`${backend.baseUrl}/jobs/abort`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobs: [jobId],
+        projectRoot,
+      }),
+    });
+
+    expect(abortResponse.status).toBe(200);
+    await expect(abortResponse.json()).resolves.toEqual({
+      aborted: [],
+      notFound: [jobId],
+    });
+    expect(abortKbJobs).not.toHaveBeenCalled();
   });
 
   it('keeps migrated KB memo mutations in the parent when child mutation delegation is disabled', async () => {

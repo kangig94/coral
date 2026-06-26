@@ -502,10 +502,13 @@ class KbRuntimeImpl implements KbRuntime {
       {
         storage: this.storagePort,
         time: {
-          now: this.time.now,
+          now: () => this.time.now(),
           sleep: this.sleep.bind(this),
         },
-        staleMs: Math.max(KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS, timeoutMs * 2 + KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS),
+        staleMs: Math.max(
+          KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS,
+          timeoutMs * 2 + KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS,
+        ),
       },
       timeoutMs,
     );

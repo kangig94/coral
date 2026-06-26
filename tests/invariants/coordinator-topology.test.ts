@@ -44,6 +44,12 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/expansion/state.ts',
   'src/coordinator/handoff.ts',
   'src/coordinator/invocation-scope.ts',
+  'src/coordinator/kb-child/child-main.ts',
+  'src/coordinator/kb-child/protocol.ts',
+  'src/coordinator/kb-child/proxy-subsystem.ts',
+  'src/coordinator/kb-child/read-handler.ts',
+  'src/coordinator/kb-child/supervisor.ts',
+  'src/coordinator/kb-child/write-runtime.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
@@ -65,6 +71,7 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-wait.ts',
   'src/coordinator/services/kb/community-summary.ts',
   'src/coordinator/services/kb/curate-assistant.ts',
+  'src/coordinator/services/kb/readiness.ts',
   'src/coordinator/services/kb/recorder.ts',
   'src/coordinator/services/kb/reindex.ts',
   'src/coordinator/services/kb/shell.ts',
@@ -119,6 +126,7 @@ const COORDINATOR_GLUE_SOURCES = new Set([
 const BROAD_IMPORT_PREFIXES = [
   'src/coordinator/composition/',
   'src/coordinator/expansion/',
+  'src/coordinator/kb-child/',
   'src/coordinator/services/',
   'src/coordinator/subsystems/',
 ] as const;

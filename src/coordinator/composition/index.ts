@@ -83,7 +83,7 @@ import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld } from './world.js';
 import { storeServicesStartupNotReadyError, type StoreServicesRef } from './store-services-ref.js';
-import { isLivePhase } from '../../jobs/phase.js';
+import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
 import { createExpansionRpc } from '../expansion/rpc.js';
 import type {
@@ -138,7 +138,9 @@ type CorpusSnapshotCursorRow = {
   metadata_manifest_hash: string | null;
 };
 
-function readPersistedCorpusSnapshot(db: { prepare(sql: string): { get(): CorpusSnapshotCursorRow | undefined } }): KbCorpusSnapshot {
+function readPersistedCorpusSnapshot(db: {
+  prepare(sql: string): { get(): CorpusSnapshotCursorRow | undefined };
+}): KbCorpusSnapshot {
   const row = db
     .prepare(
       `
@@ -170,7 +172,10 @@ function shouldDelegateKbReadsToChild(options: CoordinatorCoreOptions, kbChildSu
   return kbChildSupervisor.read().enabled;
 }
 
-function shouldDelegateKbMutationsToChild(options: CoordinatorCoreOptions, kbChildSupervisor: KbChildSupervisor): boolean {
+function shouldDelegateKbMutationsToChild(
+  options: CoordinatorCoreOptions,
+  kbChildSupervisor: KbChildSupervisor,
+): boolean {
   if (options.delegateKbMutationsToChild === false || options.runtime.env.get(CORAL_KB_CHILD_MUTATIONS_ENV) === '0') {
     return false;
   }
@@ -247,11 +252,7 @@ function readStartedKbJobId(result: KbToolResult): string | null {
     return null;
   }
   const data = result.data as { status?: unknown; job?: unknown };
-  if (
-    (data.status === 'running' || data.status === 'queued') &&
-    typeof data.job === 'string' &&
-    data.job.length > 0
-  ) {
+  if ((data.status === 'running' || data.status === 'queued') && typeof data.job === 'string' && data.job.length > 0) {
     return data.job;
   }
   return null;
@@ -567,6 +568,41 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       childOwnedKbJobs.delete(jobId);
     }
     internalJobAbortRegistry.remove(jobId);
+    if (childOwnedKbJobs.size === 0) {
+      disposeChildJobTerminalListeners();
+    }
+  };
+  const cleanupTerminalChildJobAbortProxy = (jobId: string, phase: string): void => {
+    if (!isTerminalPhase(phase) || !childOwnedKbJobs.has(jobId)) {
+      return;
+    }
+    cleanupChildJobAbortProxy(jobId);
+  };
+  const onChildJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
+    cleanupTerminalChildJobAbortProxy(event.jobId, event.phase);
+  };
+  const onChildJobCompleted = (event: { jobId: string }): void => {
+    if (!childOwnedKbJobs.has(event.jobId)) {
+      return;
+    }
+    cleanupChildJobAbortProxy(event.jobId);
+  };
+  let childJobTerminalListenersRegistered = false;
+  const ensureChildJobTerminalListeners = (): void => {
+    if (childJobTerminalListenersRegistered) {
+      return;
+    }
+    childJobTerminalListenersRegistered = true;
+    world.eventBus.on('job:phase_changed', onChildJobPhaseChanged);
+    world.eventBus.on('job:completed', onChildJobCompleted);
+  };
+  const disposeChildJobTerminalListeners = (): void => {
+    if (!childJobTerminalListenersRegistered) {
+      return;
+    }
+    childJobTerminalListenersRegistered = false;
+    world.eventBus.off('job:phase_changed', onChildJobPhaseChanged);
+    world.eventBus.off('job:completed', onChildJobCompleted);
   };
   const describeKbChildExit = (snapshot: KbChildHealthSnapshot): string => {
     const exit = snapshot.lastExit;
@@ -596,11 +632,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           cleanupChildJobAbortProxy(jobId);
           continue;
         }
-        markJobAsError(
-          progressStore,
-          status,
-          { kind: 'wrapper_crashed', cause: { message } },
-          (line) => world.log(`${line}\n`),
+        markJobAsError(progressStore, status, { kind: 'wrapper_crashed', cause: { message } }, (line) =>
+          world.log(`${line}\n`),
         );
         cleanupChildJobAbortProxy(jobId);
         failed.push(jobId);
@@ -614,6 +647,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   };
   const registerChildJobAbortProxy = (jobId: string): void => {
     cleanupChildJobAbortProxy(jobId);
+    ensureChildJobTerminalListeners();
     const cleanupTimer = runtime.time.setTimeout(() => {
       cleanupChildJobAbortProxy(jobId);
     }, KB_CHILD_JOB_ABORT_PROXY_TTL_MS);
@@ -624,7 +658,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       if (tracked !== undefined) {
         runtime.time.clearTimeout(tracked.cleanupTimer);
       }
-      const abortResult = kbChildSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
+      const abortResult =
+        kbChildSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
       void abortResult.finally(() => {
         cleanupChildJobAbortProxy(jobId);
       });
@@ -1043,6 +1078,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     kbChildSupervisor,
     disposeLifecycleReactor: () => {
       disposeKbChildExitListener();
+      disposeChildJobTerminalListeners();
       options.disposeLifecycleReactor?.();
     },
     handoffQuiescePorts: () =>

@@ -444,6 +444,43 @@ describe('ConsumerDriver waitFreshUntil', () => {
     }
   });
 
+  it('advances corpus cursors and waiters to the snapshot actually applied by the consumer', async () => {
+    const requestedSnapshot = buildSnapshot({ snapshotId: 'requested', contentSeq: 3, metadataSeq: 3 });
+    const appliedSnapshot = buildSnapshot({ snapshotId: 'applied', contentSeq: 2, metadataSeq: 2 });
+    const { db, driver, consumerId, handle } = createCorpusDriver(async () => ({ advanceTo: appliedSnapshot }));
+
+    try {
+      let requestedResolved = false;
+      let appliedResolved = false;
+      const requestedWait = driver.waitFreshUntil('corpus', requestedSnapshot, consumerId, 25).then(
+        () => {
+          requestedResolved = true;
+        },
+        (error: unknown) => error,
+      );
+      const appliedWait = driver.waitFreshUntil('corpus', appliedSnapshot, consumerId, 5000).then(() => {
+        appliedResolved = true;
+      });
+
+      driver.notify('corpus', requestedSnapshot);
+      await appliedWait;
+      await driver.drainAll();
+
+      expect(appliedResolved).toBe(true);
+      expect(requestedResolved).toBe(false);
+      expect(handle.status()).toMatchObject({
+        authority: 'corpus',
+        snapshotId: 'applied',
+        contentSeq: 2,
+        metadataSeq: 2,
+      });
+      await expect(requestedWait).resolves.toBeInstanceOf(FreshnessTimeout);
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
   it('resolves forced corpus waits only after the returned generation is applied', async () => {
     const snapshot = buildSnapshot({ snapshotId: 'forced-current', contentSeq: 3, metadataSeq: 3 });
     const forcedApplyStarted = createDeferred<void>();

@@ -60,6 +60,7 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
   'src/coordinator/expansion/',
+  'src/coordinator/kb-child/',
   'src/coordinator/services/',
   'src/coordinator/subsystems/',
 ] as const;
@@ -177,6 +178,7 @@ describe('architecture layering invariants', () => {
       (source, target) =>
         target === 'src/kb/tool-contracts.ts' &&
         !source.startsWith('src/transport/') &&
+        !source.startsWith('src/coordinator/kb-child/') &&
         source !== 'src/kb/tool-handlers.ts',
     );
 

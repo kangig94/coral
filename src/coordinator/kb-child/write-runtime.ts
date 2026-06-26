@@ -6,10 +6,12 @@ import { nowDate } from '../../infra/time.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
+import { AbortError, throwIfAborted } from '../../runtime/abort.js';
 import { kbRuntimeDir } from '../../kb/paths.js';
 import { createKbRuntime } from '../../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../../kb/curate/assistant.js';
+import { runPromoteRecovery } from '../../kb/ops/promote-recovery.js';
 import type {
   KbCorpusPublication,
   KbCorpusSnapshot,
@@ -22,10 +24,27 @@ import { JobStore } from '../../jobs/store.js';
 import { noProviderLookupPort } from '../../providers/catalog.js';
 import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb/source-import.js';
+import {
+  KbSourceImportService,
+  parseKbSourceImportRequest,
+  type KbSourceImportReadinessWaiter,
+} from '../services/kb/source-import.js';
 import { KbReindexService } from '../services/kb/reindex.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { kbError, type KbToolResult } from '../../kb/result.js';
+import { ConsumerDriver } from '../consumer-driver/index.js';
+import { createHostFactory } from '../expansion/host-factory.js';
+import { ExpansionLifecycleService, createLifecycleBundledLoaders } from '../expansion/lifecycle.js';
+import { ExpansionStateStore } from '../expansion/state.js';
+import { createExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
+import { initializeCapabilityCatalog } from '../../expansion/manifest-fills-validation.js';
+import {
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+} from '../../kb/capability/constants.js';
+import { waitForCorpusReadiness } from '../services/kb/readiness.js';
+import type { Database } from '../../store/db.js';
 
 type KbChildWriteRuntimeOptions = {
   pluginRoot: string;
@@ -43,7 +62,7 @@ type WritableStatement<TParams extends unknown[] = unknown[], TRow = unknown> = 
   get(...params: TParams): TRow | undefined;
   all(...params: TParams): TRow[];
   iterate(...params: TParams): IterableIterator<TRow>;
-  run(...params: TParams): { changes: number };
+  run(...params: TParams): { changes: number | bigint };
 };
 
 type WritableDatabase = {
@@ -56,6 +75,8 @@ type KbChildWriteRuntimeState = {
   runtime: Runtime;
   db: WritableDatabase;
   kbSubsystem: ChildKnowledgeBaseRuntime;
+  consumerDriver: ConsumerDriver;
+  expansionLifecycleService: ExpansionLifecycleService;
   sourceImportService: KbSourceImportService;
   reindexService: KbReindexService;
   abortRegistry: AbortRegistry;
@@ -65,6 +86,13 @@ const STORE_DB_MODULE = '../../store/db.js';
 type StoreDbModule = {
   openWritableStoreDbNoReset(runtime: Runtime): WritableDatabase;
 };
+
+const DEFAULT_CHILD_CORPUS_READINESS_TIMEOUT_MS = 90_000;
+const BUILTIN_CAPABILITY_DESCRIPTORS = [
+  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
+  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
+  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
+] as const;
 
 export type ChildKnowledgeBaseRuntime = {
   kb: KbRuntime;
@@ -215,7 +243,7 @@ function persistChildCorpusState(
       snapshot.metadataSeq,
       snapshot.snapshotId,
     );
-    if (result.changes === 0) {
+    if (Number(result.changes) === 0) {
       return {
         snapshot: toSnapshot(readCorpusStateRow(db)),
         changedLanes: [],
@@ -255,6 +283,50 @@ function resolveVersion(version: string | undefined): string {
   return typeof __VERSION__ === 'string' ? __VERSION__ : '0.0.0';
 }
 
+function resolveChildCorpusReadinessTimeoutMs(runtime: Pick<Runtime, 'env'>): number {
+  const raw = runtime.env.get('CORAL_BOOT_FRESHNESS_TIMEOUT_MS');
+  if (!raw) {
+    return DEFAULT_CHILD_CORPUS_READINESS_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHILD_CORPUS_READINESS_TIMEOUT_MS;
+}
+
+function notifyChildCorpus(driver: ConsumerDriver | null, publication: KbCorpusPublication): void {
+  if (driver === null) {
+    return;
+  }
+  if (publication.changedLanes.length === 1) {
+    driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
+    return;
+  }
+  driver.notifyCorpus(publication.snapshot);
+}
+
+function notifyChildCorpusDeferred(getDriver: () => ConsumerDriver | null, publication: KbCorpusPublication): void {
+  const deferredPublication: KbCorpusPublication = {
+    snapshot: { ...publication.snapshot },
+    changedLanes: [...publication.changedLanes],
+  };
+  void Promise.resolve().then(() => {
+    notifyChildCorpus(getDriver(), deferredPublication);
+  });
+}
+
+function waitAbortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, stage: string): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  throwIfAborted(signal, stage);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new AbortError({ stage, reason: signal.reason }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort);
+    });
+  });
+}
+
 export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOptions): KbChildWriteRuntimeHost {
   const now = options.now ?? Date.now;
   let phase: KbChildKbReadHealth['phase'] = 'not_initialized';
@@ -275,74 +347,163 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
 
   const build = async (): Promise<KbChildWriteRuntimeState> => {
     const runtime = options.runtime ?? createRuntime(options.pluginRoot);
-    const db =
-      options.db ??
-      ((await import(STORE_DB_MODULE)) as StoreDbModule).openWritableStoreDbNoReset(runtime);
-    const flavor = readBuildFlavor(options.pluginRoot);
-    const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
-    const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
-    const markdownRoot = runtime.paths.coral.corpus.kbRoot;
-    const runtimeDir = kbRuntimeDir(flavor, runtime.paths.configSlot);
-    const curateAssistant = createChildCurateAssistant();
-    const abortRegistry = new AbortRegistry(runtime.ids);
-    const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
-      db: db as ConstructorParameters<typeof JobStore>[3]['db'],
-      providers: noProviderLookupPort,
-      observer: (appended) => options.onJournalEvents?.(appended),
-    });
-    const kb = createKbRuntime({
-      markdownRoot,
-      runtimeDir,
-      version: resolveVersion(options.version),
-      db: db as Parameters<typeof createKbRuntime>[0]['db'],
-      envPort: runtime.env,
-      time: runtime.time,
-      ids: runtime.ids,
-      storage: runtime.storage,
-      curateAssistant,
-      processPort: runtime.process,
-      corpusPublishCallbacks: {
-        persistCorpusState: (snapshot) =>
-          persistChildCorpusState(db, snapshot, {
-            now: () => nowDate(runtime.time),
-          }),
-        // Parent observes successful child mutations and notifies consumers
-        // from the persisted corpus-state row. The child must not try to reach
-        // parent process memory directly.
-        notifyCorpusMutation: (publication) => options.onCorpusMutation?.(publication),
-      },
-    });
-    const kbSubsystem: ChildKnowledgeBaseRuntime = {
-      kb,
-      readDb: db,
-      curateScheduler: createCurateScheduler({
-        kb,
+    const ownsDb = options.db === undefined;
+    let db: WritableDatabase | null = null;
+    let consumerDriver: ConsumerDriver | null = null;
+    let expansionLifecycleService: ExpansionLifecycleService | null = null;
+    let childConsumerDriver: ConsumerDriver | null = null;
+
+    try {
+      db = options.db ?? ((await import(STORE_DB_MODULE)) as StoreDbModule).openWritableStoreDbNoReset(runtime);
+      const activeDb = db;
+      const flavor = readBuildFlavor(options.pluginRoot);
+      const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
+      const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
+      const markdownRoot = runtime.paths.coral.corpus.kbRoot;
+      const runtimeDir = kbRuntimeDir(flavor, runtime.paths.configSlot);
+      const curateAssistant = createChildCurateAssistant();
+      const abortRegistry = new AbortRegistry(runtime.ids);
+      const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
+        db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
+        providers: noProviderLookupPort,
+        observer: (appended) => options.onJournalEvents?.(appended),
+      });
+      const kb = createKbRuntime({
+        markdownRoot,
+        runtimeDir,
+        version: resolveVersion(options.version),
+        db: activeDb as Parameters<typeof createKbRuntime>[0]['db'],
+        envPort: runtime.env,
+        time: runtime.time,
+        ids: runtime.ids,
+        storage: runtime.storage,
         curateAssistant,
         processPort: runtime.process,
-        storagePort: runtime.storage,
-        envPort: runtime.env,
-      }),
-    };
-    const waitForReadiness = async (): Promise<void> => undefined;
-    const sourceImportService = new KbSourceImportService({
-      runtime,
-      progressStore,
-      backendNamespace,
-      bundleHash,
-      waitForReadiness,
-      abortRegistry,
-    });
-    const reindexService = new KbReindexService({
-      runtime,
-      progressStore,
-      backendNamespace,
-      bundleHash,
-      waitForReadiness,
-      abortRegistry,
-    });
-    state = { runtime, db, kbSubsystem, sourceImportService, reindexService, abortRegistry };
-    markReady();
-    return state;
+        corpusPublishCallbacks: {
+          persistCorpusState: (snapshot) =>
+            persistChildCorpusState(activeDb, snapshot, {
+              now: () => nowDate(runtime.time),
+            }),
+          // Parent observes successful child mutations from the persisted
+          // corpus-state row; the child also wakes its local projection driver.
+          notifyCorpusMutation: (publication) => {
+            notifyChildCorpusDeferred(() => childConsumerDriver, publication);
+            options.onCorpusMutation?.(publication);
+          },
+        },
+      });
+      const activeConsumerDriver = new ConsumerDriver({
+        db: activeDb as Database,
+        now: () => nowDate(runtime.time),
+        time: runtime.time,
+        corpusProjectionReader: {
+          resolveCurrentIndex: () => kb.corpusProjectionReader.resolveCurrentIndex(),
+          prepareCurrentProjectionInput: (input) => kb.corpusProjectionReader.prepareCurrentProjectionInput(input),
+        },
+        onTextProjectionSync: () => {
+          kb.recordIndexSyncSuccess();
+        },
+      });
+      consumerDriver = activeConsumerDriver;
+      childConsumerDriver = activeConsumerDriver;
+      const corpusReadinessTimeoutMs = resolveChildCorpusReadinessTimeoutMs(runtime);
+      const manifestCatalog = createExpansionManifestCatalog({
+        db: activeDb as Database,
+        now: () => nowDate(runtime.time).toISOString(),
+      });
+      initializeCapabilityCatalog(
+        kb.capabilityRegistry,
+        manifestCatalog.listManifests(),
+        BUILTIN_CAPABILITY_DESCRIPTORS,
+      );
+      const expansionStateStore = new ExpansionStateStore(activeDb as Database);
+      const activeExpansionLifecycleService = new ExpansionLifecycleService({
+        makeHost: createHostFactory({
+          runtime,
+          kbRuntime: kb,
+          consumerDriver: activeConsumerDriver,
+        }),
+        state: expansionStateStore,
+        manifest: manifestCatalog.listManifests(),
+        manifestCatalog,
+        bundledLoaders: createLifecycleBundledLoaders(),
+        now: () => nowDate(runtime.time).toISOString(),
+        resolveKbRuntime: () => kb,
+      });
+      expansionLifecycleService = activeExpansionLifecycleService;
+      await runPromoteRecovery(kb);
+      await kb.retryPendingCorpusPublication();
+      await kb.ensureCorpusFreshness({ wait: true });
+      await activeExpansionLifecycleService.recoverOnBoot();
+      activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
+      await activeConsumerDriver.drainAll({ timeoutMs: corpusReadinessTimeoutMs });
+      const kbSubsystem: ChildKnowledgeBaseRuntime = {
+        kb,
+        readDb: activeDb,
+        curateScheduler: createCurateScheduler({
+          kb,
+          curateAssistant,
+          processPort: runtime.process,
+          storagePort: runtime.storage,
+          envPort: runtime.env,
+        }),
+      };
+      const waitForReadiness: KbSourceImportReadinessWaiter = async ({ kb, readiness, snapshot, signal }) => {
+        activeConsumerDriver.notifyCorpus(snapshot);
+        return waitForCorpusReadiness({
+          kb,
+          readiness,
+          snapshot,
+          timeoutMs: corpusReadinessTimeoutMs,
+          waitFresh: ({ consumerId, snapshot: target, timeoutMs }) =>
+            waitAbortable(
+              activeConsumerDriver.waitFreshUntil('corpus', target, consumerId, timeoutMs),
+              signal,
+              `kb_readiness:${readiness}`,
+            ),
+        });
+      };
+      const sourceImportService = new KbSourceImportService({
+        runtime,
+        progressStore,
+        backendNamespace,
+        bundleHash,
+        waitForReadiness,
+        abortRegistry,
+      });
+      const reindexService = new KbReindexService({
+        runtime,
+        progressStore,
+        backendNamespace,
+        bundleHash,
+        waitForReadiness,
+        abortRegistry,
+      });
+      state = {
+        runtime,
+        db: activeDb,
+        kbSubsystem,
+        consumerDriver: activeConsumerDriver,
+        expansionLifecycleService: activeExpansionLifecycleService,
+        sourceImportService,
+        reindexService,
+        abortRegistry,
+      };
+      markReady();
+      return state;
+    } catch (error: unknown) {
+      childConsumerDriver = null;
+      await expansionLifecycleService?.shutdownActiveExpansions().catch(() => undefined);
+      await consumerDriver?.shutdown({ drainTimeoutMs: 0 }).catch(() => undefined);
+      if (ownsDb && db !== null) {
+        try {
+          db.close();
+        } catch {
+          // Preserve the initialization error; a failed cleanup is secondary.
+        }
+      }
+      throw error;
+    }
   };
 
   const init = async (): Promise<KbChildWriteRuntimeState> => {

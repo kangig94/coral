@@ -7,6 +7,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import type { FtsRetrieval, KbEngineRuntimeBase, KbCorpusSnapshot } from '../../kb/contract.js';
 import type {
   ConsumerApplyError,
+  CorpusApplyResult,
   CorpusConsumerApplyContext,
   CorpusConsumerRegistration,
 } from '../../store/consumer-contract.js';
@@ -1029,8 +1030,8 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     this.searchPort = this.createSearchPort();
   }
 
-  async apply(ctx: CorpusConsumerApplyContext): Promise<void> {
-    await this.withAnalyzerLease((lease) => this.installLatestCoalescedSnapshot(ctx, lease));
+  async apply(ctx: CorpusConsumerApplyContext): Promise<CorpusApplyResult> {
+    return { advanceTo: await this.withAnalyzerLease((lease) => this.installLatestCoalescedSnapshot(ctx, lease)) };
   }
 
   async ensureLoaded(): Promise<OramaLoadedIndex> {
@@ -1110,21 +1111,28 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     };
   }
 
-  async installFullSnapshot(snapshot: KbCorpusSnapshot, preparedProjection: PreparedOramaProjection): Promise<void> {
-    await this.withAnalyzerLease(() => this.installFullSnapshotUnlocked(snapshot, preparedProjection));
+  async installFullSnapshot(
+    snapshot: KbCorpusSnapshot,
+    preparedProjection: PreparedOramaProjection,
+  ): Promise<KbCorpusSnapshot> {
+    return await this.withAnalyzerLease(() => this.installFullSnapshotUnlocked(snapshot, preparedProjection));
   }
 
   private async installFullSnapshotUnlocked(
     snapshot: KbCorpusSnapshot,
     preparedProjection: PreparedOramaProjection,
-  ): Promise<void> {
+  ): Promise<KbCorpusSnapshot> {
     if (preparedProjection.documents.length > 0) {
       await insertOramaDocumentsCooperatively(preparedProjection.db, preparedProjection.documents);
     }
     const identityInput = this.projectionIdentityInput();
-    if (await this.shouldSkipStaleProjectionWrite(snapshot, ORAMA_PROJECTION_IDENTITY_HASH(identityInput))) {
+    const skipSnapshot = await this.staleProjectionWriteSkipSnapshot(
+      snapshot,
+      ORAMA_PROJECTION_IDENTITY_HASH(identityInput),
+    );
+    if (skipSnapshot !== null) {
       this.searchPort.probeFreshness();
-      return;
+      return skipSnapshot;
     }
     const metadata = await this.snapshotStore.persistAsync(snapshot, preparedProjection.db, identityInput);
     this.snapshotStore.install({
@@ -1133,6 +1141,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       metadata,
     });
     this.searchPort.probeFreshness();
+    return this.snapshotFromMetadata(metadata);
   }
 
   /**
@@ -1143,38 +1152,48 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   private async installLatestCoalescedSnapshot(
     ctx: CorpusConsumerApplyContext,
     lease: OramaAnalyzerLeaseContext,
-  ): Promise<void> {
+  ): Promise<KbCorpusSnapshot> {
     const { snapshot, projectionInput } = await this.resolveLatestSettledProjectionInput(ctx);
     const currentByEntryId = this.prepareCurrentDocumentMap(projectionInput);
     const loaded = await this.loadPersistedDeltaBase(lease);
     if (loaded === null) {
-      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease));
-      return;
+      return await this.installFullSnapshot(
+        snapshot,
+        await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease),
+      );
     }
 
     const persistedSnapshot = this.snapshotFromMetadata(loaded.metadata);
     if (!isSnapshotFresherForInterest(snapshot, persistedSnapshot, this.corpusInterest)) {
       this.snapshotStore.install(loaded);
       this.searchPort.probeFreshness();
-      return;
+      return persistedSnapshot;
     }
 
     if (this.requiresFullInstallFromManifest(loaded.metadata.entryManifest, currentByEntryId)) {
-      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease));
-      return;
+      return await this.installFullSnapshot(
+        snapshot,
+        await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease),
+      );
     }
 
     try {
       await this.applyDeltaFromManifest(loaded.db, loaded.metadata.entryManifest, currentByEntryId);
     } catch {
-      await this.installFullSnapshot(snapshot, await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease));
-      return;
+      return await this.installFullSnapshot(
+        snapshot,
+        await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease),
+      );
     }
 
     const identityInput = this.projectionIdentityInput();
-    if (await this.shouldSkipStaleProjectionWrite(snapshot, ORAMA_PROJECTION_IDENTITY_HASH(identityInput))) {
+    const skipSnapshot = await this.staleProjectionWriteSkipSnapshot(
+      snapshot,
+      ORAMA_PROJECTION_IDENTITY_HASH(identityInput),
+    );
+    if (skipSnapshot !== null) {
       this.searchPort.probeFreshness();
-      return;
+      return skipSnapshot;
     }
     const metadata = await this.snapshotStore.persistAsync(snapshot, loaded.db, identityInput);
     this.snapshotStore.install({
@@ -1183,6 +1202,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       metadata,
     });
     this.searchPort.probeFreshness();
+    return this.snapshotFromMetadata(metadata);
   }
 
   private latestSnapshot(left: KbCorpusSnapshot, right: KbCorpusSnapshot): KbCorpusSnapshot {
@@ -1192,28 +1212,28 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     return { ...left };
   }
 
-  private async shouldSkipStaleProjectionWrite(
+  private async staleProjectionWriteSkipSnapshot(
     sourceSnapshot: KbCorpusSnapshot,
     targetProjectionIdentityHash: string,
-  ): Promise<boolean> {
+  ): Promise<KbCorpusSnapshot | null> {
     const cached = this.snapshotStore.getCache();
     if (cached?.metadata !== undefined) {
       if (
         this.shouldSkipProjectionWriteAgainstMetadata(cached.metadata, sourceSnapshot, targetProjectionIdentityHash)
       ) {
-        return true;
+        return this.snapshotFromMetadata(cached.metadata);
       }
     }
 
     try {
-      return this.shouldSkipProjectionWriteAgainstMetadata(
-        this.snapshotStore.loadMetadata(),
-        sourceSnapshot,
-        targetProjectionIdentityHash,
-      );
+      const metadata = this.snapshotStore.loadMetadata();
+      if (this.shouldSkipProjectionWriteAgainstMetadata(metadata, sourceSnapshot, targetProjectionIdentityHash)) {
+        return this.snapshotFromMetadata(metadata);
+      }
+      return null;
     } catch {
       // A missing or unreadable persisted artifact is handled by the normal write path.
-      return false;
+      return null;
     }
   }
 

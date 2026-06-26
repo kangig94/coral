@@ -43,22 +43,17 @@ import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
-import type { Backed, FtsRetrieval, KbCorpusPublication, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { KbCorpusPublication, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import type { VectorRetrieval } from '../kb/search/contract.js';
-import type { RegisteredKbCapability } from '../kb/capability/contract.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
   BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-  KB_FTS_CAPABILITY,
-  KB_VECTOR_CAPABILITY,
 } from '../kb/capability/constants.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
 import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
-import type { SourceImportReadiness } from '../jobs/launch.js';
-import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
 import {
   createLifecycleBundledLoaders,
@@ -77,6 +72,9 @@ import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import { createDefaultKbChildSupervisor, createDisabledKbChildSupervisor } from './kb-child/supervisor.js';
 import type { KbChildEventMessage } from './kb-child/protocol.js';
+import { waitForCorpusReadiness } from './services/kb/readiness.js';
+export { readBoundCorpusConsumerIds, waitForCorpusReadiness } from './services/kb/readiness.js';
+export type { CorpusSnapshotWaiter } from './services/kb/readiness.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -228,98 +226,6 @@ const BUILTIN_CAPABILITY_DESCRIPTORS = [
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
 ] as const;
 
-function isTrustedCorpusCapability(record: RegisteredKbCapability): boolean {
-  if (record.origin !== 'builtin') {
-    return false;
-  }
-  const { name } = record.descriptor;
-  return name === KB_FTS_CAPABILITY || name === KB_VECTOR_CAPABILITY;
-}
-
-// Bundled Orama always binds kb.fts; engines like needle bind kb.vector when
-// equipped. Unbound capabilities throw 'binding_empty' from `read()` — catch
-// and skip so 'all-equipped' is best-effort over what's currently equipped.
-export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'capabilityRegistry'>): string[] {
-  const runtimeView = kb.capabilityRegistry.runtimeView();
-  const ids: string[] = [];
-  for (const record of runtimeView.list()) {
-    if (!isTrustedCorpusCapability(record)) {
-      continue;
-    }
-    try {
-      ids.push(runtimeView.read<Backed<FtsRetrieval | VectorRetrieval>>(record.descriptor.name).consumer.id);
-    } catch {
-      // binding_empty — corpus consumer not currently equipped; skip.
-    }
-  }
-  return ids;
-}
-
-export type CorpusSnapshotWaiter = (params: {
-  consumerId: string;
-  snapshot: KbCorpusSnapshot;
-  timeoutMs: number;
-}) => Promise<void>;
-
-function isBindingEmpty(error: unknown): boolean {
-  return error instanceof CoralSetupError && error.code === 'binding_empty';
-}
-
-// Spec §6.4 readiness contract. Surfaced as a pure function so tests can drive
-// it without booting the coordinator. The real coordinator wires this to
-// `getConsumerDriver().waitFreshUntil('corpus', snapshot, consumerId, timeoutMs)`.
-//
-// `base-search` and `active-vector` both depend on a bound retrieval engine
-// (`kb.fts` and `kb.vector` respectively). When the binding is empty we surface
-// `kb_unavailable` so the readiness failure is consistent across both branches
-// (spec §6.4 readiness table) instead of leaking a raw `binding_empty` from the
-// runtime-binding internal helper.
-export async function waitForCorpusReadiness(params: {
-  kb: Pick<KbRuntime, 'capabilityRegistry'>;
-  readiness: SourceImportReadiness;
-  snapshot: KbCorpusSnapshot;
-  timeoutMs: number;
-  waitFresh: CorpusSnapshotWaiter;
-}): Promise<void> {
-  const { kb, readiness, snapshot, timeoutMs, waitFresh } = params;
-  switch (readiness) {
-    case 'commit':
-      return;
-    case 'base-search': {
-      let consumerId: string;
-      try {
-        consumerId = kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).consumer.id;
-      } catch (error) {
-        if (isBindingEmpty(error)) {
-          throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.fts' });
-        }
-        throw error;
-      }
-      await waitFresh({ consumerId, snapshot, timeoutMs });
-      return;
-    }
-    case 'active-vector': {
-      let consumerId: string;
-      try {
-        consumerId = kb.capabilityRegistry.runtimeView().read<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY)
-          .consumer.id;
-      } catch (error) {
-        if (isBindingEmpty(error)) {
-          throw documentedCoralSetupError('kb_unavailable', { readiness, binding: 'kb.vector' });
-        }
-        throw error;
-      }
-      await waitFresh({ consumerId, snapshot, timeoutMs });
-      return;
-    }
-    case 'all-equipped': {
-      const corpusConsumerIds = readBoundCorpusConsumerIds(kb);
-      await Promise.all(corpusConsumerIds.map((consumerId) => waitFresh({ consumerId, snapshot, timeoutMs })));
-      return;
-    }
-  }
-}
-
 type BootProjectionArtifactRepairResult = {
   readonly allowStaleFts: boolean;
 };
@@ -425,7 +331,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ? {}
         : { instanceId: coreOptions.bootSnapshot.instanceId }),
       ...(coreOptions.backendNamespace === undefined ? {} : { backendNamespace: coreOptions.backendNamespace }),
-      ...(coreOptions.bootSnapshot?.bundleHash === undefined ? {} : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
+      ...(coreOptions.bootSnapshot?.bundleHash === undefined
+        ? {}
+        : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
       onEvent: (message) => handleKbChildEvent?.(message),
       log: (message) => backendLog.warn(message),
     });
@@ -693,7 +601,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
-    useKbChildRuntimeOnly: coreOptions.useKbChildRuntimeOnly ?? (providedCreateKbSubsystemFn === undefined),
+    useKbChildRuntimeOnly: coreOptions.useKbChildRuntimeOnly ?? providedCreateKbSubsystemFn === undefined,
     createKbSubsystemFn: (ctx) => {
       // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
       // corpus/curate wiring below. KB stays off until a daemon restart.
