@@ -48,7 +48,10 @@ describe('shutdownBackend', () => {
     mockState.info = backendInfo();
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(JSON.stringify({ status: 'shutting_down' }), { status: 200 })),
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ status: 'draining', instanceId: 'test-instance' }), { status: 200 }),
+      ),
     );
   });
 
@@ -79,5 +82,30 @@ describe('shutdownBackend', () => {
         headers: { 'X-Coral-Backend-Token': 'backend-token' },
       }),
     );
+  });
+
+  it('accepts legacy 200 shutting_down responses', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ status: 'shutting_down' }), { status: 200 })),
+    );
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true });
+  });
+
+  it('treats backend_shutting_down as already draining', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ code: 'backend_shutting_down', message: 'Backend shutting down' }), {
+            status: 503,
+          }),
+      ),
+    );
+    const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
+
+    await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true, alreadyDraining: true });
   });
 });
