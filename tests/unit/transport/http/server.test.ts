@@ -1471,7 +1471,9 @@ describe('execution backend server', () => {
     };
     const backend = await startBackendServer({ kbChildSupervisor, delegateKbMutationsToChild: false });
     const projectRoot = join(mockState.tmpHome, 'project-with-parent-memo');
+    const sourcePath = join(projectRoot, 'source.md');
     mkdirSync(projectRoot, { recursive: true });
+    writeFileSync(sourcePath, '# Parent Fallback Blocked\n\nBody\n', 'utf8');
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
       method: 'POST',
@@ -1488,6 +1490,44 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
+    expect(mutateKb).not.toHaveBeenCalled();
+
+    const sourceImportResponse = await fetch(`${backend.baseUrl}/kb/sources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        filePath: sourcePath,
+        slug: 'parent-fallback-blocked',
+        readiness: 'commit',
+        async: false,
+      }),
+    });
+    expect(sourceImportResponse.status).toBe(503);
+    await expect(sourceImportResponse.json()).resolves.toMatchObject({
+      code: 'kb_unavailable',
+      detail: { reason: 'kb_child_required' },
+    });
+
+    const reindexResponse = await fetch(`${backend.baseUrl}/kb/index`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        async: false,
+      }),
+    });
+    expect(reindexResponse.status).toBe(503);
+    await expect(reindexResponse.json()).resolves.toMatchObject({
+      code: 'kb_unavailable',
+      detail: { reason: 'kb_child_required' },
+    });
     expect(mutateKb).not.toHaveBeenCalled();
   });
 

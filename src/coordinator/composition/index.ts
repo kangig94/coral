@@ -99,8 +99,7 @@ import type {
   UnequipExpansionRequest,
   UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
-import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb/source-import.js';
-import { KbReindexService } from '../services/kb/reindex.js';
+import { parseKbSourceImportRequest } from '../services/kb/source-import.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import {
@@ -183,6 +182,15 @@ function shouldDelegateKbMutationsToChild(
     return true;
   }
   return kbChildSupervisor.read().enabled;
+}
+
+function kbChildOnlyJobUnavailable(operation: 'source import' | 'reindex'): KbToolResult {
+  return {
+    ok: false,
+    code: 'kb_unavailable',
+    message: `KB ${operation} requires the KB child runtime.`,
+    detail: { reason: 'kb_child_required' },
+  };
 }
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -454,36 +462,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     getProgressStore,
     internalJobAbortRegistry,
   });
-  let kbSourceImportService: KbSourceImportService | null = null;
-  const getKbSourceImportService = (): KbSourceImportService => {
-    const existing = kbSourceImportService;
-    if (existing) return existing;
-    const created = new KbSourceImportService({
-      runtime,
-      progressStore: getProgressStore(),
-      backendNamespace: world.namespace,
-      bundleHash: identity.bundleHash,
-      waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
-      abortRegistry: internalJobAbortRegistry,
-    });
-    kbSourceImportService = created;
-    return created;
-  };
-  let kbReindexService: KbReindexService | null = null;
-  const getKbReindexService = (): KbReindexService => {
-    const existing = kbReindexService;
-    if (existing) return existing;
-    const created = new KbReindexService({
-      runtime,
-      progressStore: getProgressStore(),
-      backendNamespace: world.namespace,
-      bundleHash: identity.bundleHash,
-      waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
-      abortRegistry: internalJobAbortRegistry,
-    });
-    kbReindexService = created;
-    return created;
-  };
   let kbJobRecorder: KbJobRecorder | null = null;
   const getKbJobRecorder = (): KbJobRecorder => {
     const existing = kbJobRecorder;
@@ -829,9 +807,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
             message: parsed.message,
           } satisfies KbToolResult;
         }
-        const result = await withKbAsync((kbSubsystem) =>
-          Promise.resolve(getKbSourceImportService().start(parsed.data, ctx, kbSubsystem)),
-        );
+        const result = kbChildOnlyJobUnavailable('source import');
         recordHostedKbFailure('source_import', ctx, result);
         return result;
       },
@@ -851,12 +827,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         recordHostedKbFailure('memo_delete', ctx, result);
         return result;
       },
-      reindex: async (args, ctx) => {
-        const invocationContext = ctx ?? readOnlyInvocationContext;
-        const request = { async: args.async === true };
-        const result = await withKbAsync((kbSubsystem) =>
-          Promise.resolve(getKbReindexService().run(request, invocationContext, kbSubsystem)),
-        );
+      reindex: async (_args, ctx) => {
+        const result = kbChildOnlyJobUnavailable('reindex');
         recordHostedKbFailure('reindex', ctx, result);
         return result;
       },
