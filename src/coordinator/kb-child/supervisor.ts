@@ -6,6 +6,8 @@ import type { Runtime } from '../../runtime/ports.js';
 import {
   KB_CHILD_REQUEST_MESSAGE,
   encodeKbChildMessage,
+  isKbChildAbortResult,
+  isKbChildEventMessage,
   isKbChildHealthResult,
   isKbChildKbMutationResult,
   isKbChildKbReadHealth,
@@ -19,7 +21,11 @@ import {
   type KbChildKbReadResult,
   type KbChildRequestMethod,
   type KbChildResponseMessage,
+  type KbChildAbortResult,
+  type KbChildEventMessage,
 } from './protocol.js';
+import { readBundleHash } from '../../infra/bundle-manifest.js';
+import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 
 export type KbChildPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
@@ -56,6 +62,7 @@ export interface KbChildSupervisor {
   warmup(): Promise<KbChildHealthSnapshot>;
   readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
   mutateKb(request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult>;
+  abortKbJobs?(jobIds: string[]): Promise<KbChildAbortResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
   restart(reason?: string): Promise<KbChildHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
@@ -70,12 +77,39 @@ type KbChildSupervisorOptions = {
   startTimeoutMs?: number;
   stopTimeoutMs?: number;
   requestTimeoutMs?: number;
+  jobRequestTimeoutMs?: number;
+  backendNamespace?: string;
+  bundleHash?: string;
+  onEvent?: (message: KbChildEventMessage) => void;
   log?: (message: string) => void;
 };
 
 const DEFAULT_START_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
+const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
+
+function resolveChildBackendNamespace(pluginRoot: string, override: string | undefined): string {
+  if (override !== undefined) {
+    return override;
+  }
+  try {
+    return pluginRootNamespace(pluginRoot);
+  } catch {
+    return `kb-child:${pluginRoot}`;
+  }
+}
+
+function resolveChildBundleHash(pluginRoot: string, override: string | undefined): string {
+  if (override !== undefined) {
+    return override;
+  }
+  try {
+    return readBundleHash(pluginRoot);
+  } catch {
+    return 'unknown';
+  }
+}
 
 export function resolveDefaultKbChildEntrypoint(pluginRoot: string, currentEntrypoint = process.argv[1]): string {
   if (typeof currentEntrypoint === 'string' && basename(currentEntrypoint) === 'coral-backend.cjs') {
@@ -112,6 +146,7 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
       message: `KB child supervisor is disabled: ${reason}`,
       detail: { reason: 'kb_child_disabled' },
     }),
+    abortKbJobs: async (jobIds) => ({ aborted: [], notFound: [...jobIds] }),
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
     dispose: async () => undefined,
@@ -161,6 +196,9 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   const startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const jobRequestTimeoutMs = options.jobRequestTimeoutMs ?? DEFAULT_JOB_REQUEST_TIMEOUT_MS;
+  const backendNamespace = resolveChildBackendNamespace(pluginRoot, options.backendNamespace);
+  const bundleHash = resolveChildBundleHash(pluginRoot, options.bundleHash);
   const log = options.log ?? (() => undefined);
 
   let phase: KbChildPhase = 'stopped';
@@ -230,7 +268,11 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     }
   };
 
-  const sendRequest = async (method: KbChildRequestMethod, params?: unknown): Promise<KbChildResponseMessage> => {
+  const sendRequest = async (
+    method: KbChildRequestMethod,
+    params?: unknown,
+    timeoutMs = requestTimeoutMs,
+  ): Promise<KbChildResponseMessage> => {
     const activeChild = child;
     if (activeChild === null || activeChild.stdin === null || phase !== 'online') {
       throw new Error('KB child is not online');
@@ -241,8 +283,8 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     const response = await new Promise<KbChildResponseMessage>((resolve, reject) => {
       const timeout = runtime.time.setTimeout(() => {
         pendingRequests.delete(id);
-        reject(new Error(`KB child request timed out after ${requestTimeoutMs}ms`));
-      }, requestTimeoutMs);
+        reject(new Error(`KB child request timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       timeout.unref?.();
       pendingRequests.set(id, { generation, timeout, resolve, reject });
       try {
@@ -371,7 +413,8 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   };
 
   const sendKbMutationRequest = async (request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult> => {
-    const response = await sendRequest('kb.mutate', request);
+    const timeoutMs = request.method === 'createSource' || request.method === 'reindex' ? jobRequestTimeoutMs : undefined;
+    const response = await sendRequest('kb.mutate', request, timeoutMs);
     if (!response.ok) {
       return {
         ok: false,
@@ -387,6 +430,18 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
       };
     }
     return response.result;
+  };
+
+  const abortKbJobsNow = async (jobIds: string[]): Promise<KbChildAbortResult> => {
+    try {
+      const response = await sendRequest('kb.abort', { jobIds });
+      if (!response.ok || !isKbChildAbortResult(response.result)) {
+        return { aborted: [], notFound: [...jobIds] };
+      }
+      return response.result;
+    } catch {
+      return { aborted: [], notFound: [...jobIds] };
+    }
   };
 
   const readKbNow = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
@@ -461,6 +516,8 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
           CORAL_KB_CHILD: '1',
           CORAL_KB_CHILD_GENERATION: String(generation),
           CORAL_KB_CHILD_PARENT_PID: String(process.pid),
+          CORAL_KB_CHILD_BACKEND_NAMESPACE: backendNamespace,
+          CORAL_KB_CHILD_BUNDLE_HASH: bundleHash,
           ...(options.instanceId === undefined ? {} : { CORAL_KB_CHILD_INSTANCE_ID: options.instanceId }),
         },
       });
@@ -529,6 +586,14 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
                 runtime.time.clearTimeout(pending.timeout);
                 pendingRequests.delete(parsed.id);
                 pending.resolve(parsed);
+              }
+              continue;
+            }
+            if (isKbChildEventMessage(parsed)) {
+              try {
+                options.onEvent?.(parsed);
+              } catch (error: unknown) {
+                log(`[kb-child] event callback failed: ${formatError(error)}`);
               }
               continue;
             }
@@ -634,6 +699,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     warmup: () => runExclusive(warmupNow),
     readKb: readKbNow,
     mutateKb: mutateKbNow,
+    abortKbJobs: abortKbJobsNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {

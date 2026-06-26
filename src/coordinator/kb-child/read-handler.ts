@@ -78,6 +78,8 @@ type KbChildWriteRuntimeHost = {
       runtime: KbQueryRuntime;
     }) => Promise<T> | T,
   ): Promise<T>;
+  createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
 };
 
 export type KbChildReadService = {
@@ -468,19 +470,23 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
     try {
       const args = parseRecord(request.args);
       const ctx = parseContext(request.ctx);
-      const invocation = invocationContext(state, ctx);
-      if ('ok' in invocation) {
-        return invocation;
-      }
 
       switch (request.method) {
         case 'createMemo':
           return runToolResult(() => {
+            const invocation = invocationContext(state, ctx);
+            if ('ok' in invocation) {
+              return invocation;
+            }
             const { runtime } = createContext(state, ctx);
             return handleKbMemo(args, invocation, runtime);
           }, markFailure);
         case 'deleteMemos':
           return runToolResult(() => {
+            const invocation = invocationContext(state, ctx);
+            if ('ok' in invocation) {
+              return invocation;
+            }
             const { runtime } = createContext(state, ctx);
             return handleKbMemoDeleteConsolidated(args, invocation, runtime);
           }, markFailure);
@@ -496,9 +502,24 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
             if (writeRuntime === undefined) {
               return kbError('kb_unavailable', 'KB child write runtime is not configured.');
             }
+            const invocation = invocationContext(state, ctx);
+            if ('ok' in invocation) {
+              return invocation;
+            }
             return writeRuntime.withKb(({ kbSubsystem, runtime }) =>
               handleKbPromote(args, kbSubsystem, invocation, runtime),
             );
+          }, markFailure);
+        case 'createSource':
+          return runToolResult(() => {
+            if (writeRuntime === undefined) {
+              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            }
+            const invocation = invocationContext(state, ctx);
+            if ('ok' in invocation) {
+              return invocation;
+            }
+            return writeRuntime.createSource(args, invocation);
           }, markFailure);
         case 'updateNote':
           return runToolResult(() => {
@@ -558,6 +579,10 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
             if (writeRuntime === undefined) {
               return kbError('kb_unavailable', 'KB child write runtime is not configured.');
             }
+            const invocation = invocationContext(state, ctx);
+            if ('ok' in invocation) {
+              return invocation;
+            }
             return writeRuntime.withKb(({ kbSubsystem, runtime }) =>
               handleKbWikiAdopt(args, kbSubsystem, invocation, runtime),
             );
@@ -583,6 +608,17 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
               return slug;
             }
             return writeRuntime.withKb(({ kbSubsystem }) => handleKbSourceDelete({ slug }, kbSubsystem));
+          }, markFailure);
+        case 'reindex':
+          return runToolResult(() => {
+            if (writeRuntime === undefined) {
+              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            }
+            const invocation = invocationContext(state, ctx);
+            if ('ok' in invocation) {
+              return invocation;
+            }
+            return writeRuntime.reindex(args, invocation);
           }, markFailure);
       }
     } catch (error: unknown) {

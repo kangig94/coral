@@ -1124,6 +1124,31 @@ describe('execution backend server', () => {
     ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
 
     await expect(
+      fetch(`${backend.baseUrl}/kb/sources`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          filePath: '/workspace/project-a/source.md',
+          slug: 'alpha-source',
+          readiness: 'base-search',
+          async: true,
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-child' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/index`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          async: true,
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
+
+    await expect(
       fetch(`${backend.baseUrl}/kb/communities/alpha-community/summary`, {
         method: 'POST',
         headers,
@@ -1144,6 +1169,16 @@ describe('execution backend server', () => {
         method: 'deleteSource',
         slug: 'alpha-source',
         ctx: undefined,
+      },
+      {
+        method: 'createSource',
+        args: { filePath: '/workspace/project-a/source.md', slug: 'alpha-source', readiness: 'base-search', async: true },
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      },
+      {
+        method: 'reindex',
+        args: { async: true },
+        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
       },
       {
         method: 'setCommunitySummary',

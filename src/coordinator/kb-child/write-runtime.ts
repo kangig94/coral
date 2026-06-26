@@ -1,23 +1,42 @@
 declare const __VERSION__: string;
 
-import { readBuildFlavor } from '../../infra/bundle-manifest.js';
+import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowDate } from '../../infra/time.js';
+import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { kbRuntimeDir } from '../../kb/paths.js';
 import { createKbRuntime } from '../../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../../kb/curate/assistant.js';
-import type { KbCorpusSnapshot, KbPersistCorpusStateResult, KbRuntime } from '../../kb/contract.js';
+import type {
+  KbCorpusPublication,
+  KbCorpusSnapshot,
+  KbPersistCorpusStateResult,
+  KbRuntime,
+} from '../../kb/contract.js';
 import type { KbChildKbReadHealth } from './protocol.js';
+import type { AppendedEvent } from '../../store/append.js';
+import { JobStore } from '../../jobs/store.js';
+import { noProviderLookupPort } from '../../providers/catalog.js';
+import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
+import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
+import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb/source-import.js';
+import { KbReindexService } from '../services/kb/reindex.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { kbError, type KbToolResult } from '../../kb/result.js';
 
 type KbChildWriteRuntimeOptions = {
   pluginRoot: string;
+  backendNamespace?: string;
+  bundleHash?: string;
   runtime?: Runtime;
   db?: WritableDatabase;
   version?: string;
   now?: () => number;
+  onJournalEvents?: (appended: readonly AppendedEvent[]) => void;
+  onCorpusMutation?: (publication: KbCorpusPublication) => void;
 };
 
 type WritableStatement<TParams extends unknown[] = unknown[], TRow = unknown> = {
@@ -37,6 +56,9 @@ type KbChildWriteRuntimeState = {
   runtime: Runtime;
   db: WritableDatabase;
   kbSubsystem: ChildKnowledgeBaseRuntime;
+  sourceImportService: KbSourceImportService;
+  reindexService: KbReindexService;
+  abortRegistry: AbortRegistry;
 };
 
 const STORE_DB_MODULE = '../../store/db.js';
@@ -208,6 +230,9 @@ function persistChildCorpusState(
 
 export type KbChildWriteRuntimeHost = {
   withKb<T>(fn: (state: KbChildWriteRuntimeState) => Promise<T> | T): Promise<T>;
+  createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  abortJobs(jobIds: string[]): { aborted: string[]; notFound: string[] };
   health(): KbChildKbReadHealth;
 };
 
@@ -254,9 +279,17 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       options.db ??
       ((await import(STORE_DB_MODULE)) as StoreDbModule).openWritableStoreDbNoReset(runtime);
     const flavor = readBuildFlavor(options.pluginRoot);
+    const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
+    const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
     const markdownRoot = runtime.paths.coral.corpus.kbRoot;
     const runtimeDir = kbRuntimeDir(flavor, runtime.paths.configSlot);
     const curateAssistant = createChildCurateAssistant();
+    const abortRegistry = new AbortRegistry(runtime.ids);
+    const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
+      db: db as ConstructorParameters<typeof JobStore>[3]['db'],
+      providers: noProviderLookupPort,
+      observer: (appended) => options.onJournalEvents?.(appended),
+    });
     const kb = createKbRuntime({
       markdownRoot,
       runtimeDir,
@@ -276,7 +309,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
         // Parent observes successful child mutations and notifies consumers
         // from the persisted corpus-state row. The child must not try to reach
         // parent process memory directly.
-        notifyCorpusMutation: () => undefined,
+        notifyCorpusMutation: (publication) => options.onCorpusMutation?.(publication),
       },
     });
     const kbSubsystem: ChildKnowledgeBaseRuntime = {
@@ -290,7 +323,24 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
         envPort: runtime.env,
       }),
     };
-    state = { runtime, db, kbSubsystem };
+    const waitForReadiness = async (): Promise<void> => undefined;
+    const sourceImportService = new KbSourceImportService({
+      runtime,
+      progressStore,
+      backendNamespace,
+      bundleHash,
+      waitForReadiness,
+      abortRegistry,
+    });
+    const reindexService = new KbReindexService({
+      runtime,
+      progressStore,
+      backendNamespace,
+      bundleHash,
+      waitForReadiness,
+      abortRegistry,
+    });
+    state = { runtime, db, kbSubsystem, sourceImportService, reindexService, abortRegistry };
     markReady();
     return state;
   };
@@ -320,6 +370,29 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       initialized.kbSubsystem.kb.invalidateKbCache();
       await initialized.kbSubsystem.kb.ensureCorpusFreshness({ wait: true });
       return fn(initialized);
+    },
+    async createSource(args, ctx) {
+      const parsed = parseKbSourceImportRequest(args);
+      if (!parsed.ok) {
+        return kbError('invalid_request', parsed.message);
+      }
+      const initialized = await init();
+      initialized.kbSubsystem.kb.invalidateKbCache();
+      await initialized.kbSubsystem.kb.ensureCorpusFreshness({ wait: true });
+      return initialized.sourceImportService.start(parsed.data, ctx, initialized.kbSubsystem);
+    },
+    async reindex(args, ctx) {
+      const initialized = await init();
+      initialized.kbSubsystem.kb.invalidateKbCache();
+      await initialized.kbSubsystem.kb.ensureCorpusFreshness({ wait: true });
+      return initialized.reindexService.run({ async: args.async === true }, ctx, initialized.kbSubsystem);
+    },
+    abortJobs(jobIds) {
+      const activeState = state;
+      if (activeState === null) {
+        return { aborted: [], notFound: [...jobIds] };
+      }
+      return activeState.abortRegistry.abort(jobIds);
     },
     health() {
       return {

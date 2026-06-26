@@ -1,8 +1,9 @@
 export const KB_CHILD_READY_MESSAGE = 'coral.kb_child.ready';
 export const KB_CHILD_REQUEST_MESSAGE = 'coral.kb_child.request';
 export const KB_CHILD_RESPONSE_MESSAGE = 'coral.kb_child.response';
+export const KB_CHILD_EVENT_MESSAGE = 'coral.kb_child.event';
 
-export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read' | 'kb.mutate' | 'kb.warmup';
+export type KbChildRequestMethod = 'health' | 'shutdown' | 'kb.read' | 'kb.mutate' | 'kb.abort' | 'kb.warmup';
 
 export const KB_CHILD_KB_READ_METHODS = [
   'readSearch',
@@ -29,6 +30,7 @@ export const KB_CHILD_KB_MUTATION_METHODS = [
   'createNote',
   'updateNote',
   'deleteNote',
+  'createSource',
   'createWiki',
   'rewriteWiki',
   'linkWiki',
@@ -39,6 +41,7 @@ export const KB_CHILD_KB_MUTATION_METHODS = [
   'deleteSource',
   'createMemo',
   'deleteMemos',
+  'reindex',
 ] as const;
 
 export type KbChildKbMutationMethod = (typeof KB_CHILD_KB_MUTATION_METHODS)[number];
@@ -55,6 +58,15 @@ export type KbChildKbMutationRequest = {
   args?: unknown;
   slug?: string;
   ctx?: unknown;
+};
+
+export type KbChildAbortRequest = {
+  jobIds: string[];
+};
+
+export type KbChildAbortResult = {
+  aborted: string[];
+  notFound: string[];
 };
 
 export type KbChildKbReadResult =
@@ -97,7 +109,23 @@ export type KbChildResponseMessage =
       error: { message: string };
     };
 
-export type KbChildControlMessage = KbChildReadyMessage | KbChildRequestMessage | KbChildResponseMessage;
+export type KbChildEventMessage =
+  | {
+      type: typeof KB_CHILD_EVENT_MESSAGE;
+      event: 'journal';
+      appended: unknown[];
+    }
+  | {
+      type: typeof KB_CHILD_EVENT_MESSAGE;
+      event: 'corpus';
+      publication: unknown;
+    };
+
+export type KbChildControlMessage =
+  | KbChildReadyMessage
+  | KbChildRequestMessage
+  | KbChildResponseMessage
+  | KbChildEventMessage;
 
 export type KbChildHealthResult = {
   status: 'ready';
@@ -146,8 +174,23 @@ export function isKbChildRequestMessage(value: unknown): value is KbChildRequest
       record.method === 'shutdown' ||
       record.method === 'kb.read' ||
       record.method === 'kb.mutate' ||
+      record.method === 'kb.abort' ||
       record.method === 'kb.warmup')
   );
+}
+
+export function isKbChildEventMessage(value: unknown): value is KbChildEventMessage {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type !== KB_CHILD_EVENT_MESSAGE) {
+    return false;
+  }
+  if (record.event === 'journal') {
+    return Array.isArray(record.appended);
+  }
+  return record.event === 'corpus' && record.publication !== undefined;
 }
 
 export function isKbChildResponseMessage(value: unknown): value is KbChildResponseMessage {
@@ -238,4 +281,17 @@ export function isKbChildKbReadResult(value: unknown): value is KbChildKbReadRes
 
 export function isKbChildKbMutationResult(value: unknown): value is KbChildKbMutationResult {
   return isKbChildKbResult(value);
+}
+
+export function isKbChildAbortResult(value: unknown): value is KbChildAbortResult {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    Array.isArray(record.aborted) &&
+    record.aborted.every((entry) => typeof entry === 'string') &&
+    Array.isArray(record.notFound) &&
+    record.notFound.every((entry) => typeof entry === 'string')
+  );
 }

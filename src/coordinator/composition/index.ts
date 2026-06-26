@@ -109,6 +109,7 @@ import type { KbCorpusSnapshot } from '../../kb/contract.js';
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
 export const CORAL_KB_CHILD_READS_ENV = 'CORAL_KB_CHILD_READS';
 export const CORAL_KB_CHILD_MUTATIONS_ENV = 'CORAL_KB_CHILD_MUTATIONS';
+const KB_CHILD_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
 const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
@@ -235,11 +236,27 @@ function createKbChildReadPort(localKb: RpcPorts['kb'], kbChildSupervisor: KbChi
   };
 }
 
+function readStartedKbJobId(result: KbToolResult): string | null {
+  if (!result.ok || typeof result.data !== 'object' || result.data === null) {
+    return null;
+  }
+  const data = result.data as { status?: unknown; job?: unknown };
+  if (
+    (data.status === 'running' || data.status === 'queued') &&
+    typeof data.job === 'string' &&
+    data.job.length > 0
+  ) {
+    return data.job;
+  }
+  return null;
+}
+
 function createKbChildMutationPort(
   localKb: RpcPorts['kb'],
   kbChildSupervisor: KbChildSupervisor,
   recordHostedKbFailure: (operation: string, ctx: InvocationContext | undefined, result: KbToolResult) => void,
   notifyHostedCorpusMutation: () => void,
+  registerChildJobAbortProxy: (jobId: string) => void,
   fallbackContext: InvocationContext,
 ): RpcPorts['kb'] {
   const recordAndNotify = (
@@ -273,6 +290,14 @@ function createKbChildMutationPort(
     deleteNote: async (slug, ctx) => {
       const result = await kbChildSupervisor.mutateKb({ method: 'deleteNote', slug, ctx });
       return recordAndNotify('delete', ctx, result, { corpusMutation: true });
+    },
+    createSource: async (args, ctx) => {
+      const result = await kbChildSupervisor.mutateKb({ method: 'createSource', args, ctx });
+      const jobId = readStartedKbJobId(result);
+      if (jobId !== null) {
+        registerChildJobAbortProxy(jobId);
+      }
+      return recordAndNotify('source_import', ctx, result);
     },
     createWiki: async (args, ctx) => {
       const result = await kbChildSupervisor.mutateKb({ method: 'createWiki', args, ctx });
@@ -313,6 +338,15 @@ function createKbChildMutationPort(
     deleteMemos: async (args, ctx) => {
       const result = await kbChildSupervisor.mutateKb({ method: 'deleteMemos', args, ctx });
       return recordAndNotify('memo_delete', ctx, result);
+    },
+    reindex: async (args, ctx) => {
+      const invocationCtx = ctxOrFallback(ctx);
+      const result = await kbChildSupervisor.mutateKb({ method: 'reindex', args, ctx: invocationCtx });
+      const jobId = readStartedKbJobId(result);
+      if (jobId !== null) {
+        registerChildJobAbortProxy(jobId);
+      }
+      return recordAndNotify('reindex', ctx, result);
     },
   };
 }
@@ -518,6 +552,19 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     } catch (error) {
       world.log(`[kb-child] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
     }
+  };
+  const registerChildJobAbortProxy = (jobId: string): void => {
+    const cleanupTimer = runtime.time.setTimeout(() => {
+      internalJobAbortRegistry.remove(jobId);
+    }, KB_CHILD_JOB_ABORT_PROXY_TTL_MS);
+    cleanupTimer.unref?.();
+    internalJobAbortRegistry.register(jobId, () => {
+      runtime.time.clearTimeout(cleanupTimer);
+      const abortResult = kbChildSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
+      void abortResult.finally(() => {
+        internalJobAbortRegistry.remove(jobId);
+      });
+    });
   };
 
   const rpcPorts: RpcPorts = {
@@ -737,6 +784,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       kbChildSupervisor,
       recordHostedKbFailure,
       notifyHostedCorpusMutation,
+      registerChildJobAbortProxy,
       readOnlyInvocationContext,
     );
   }

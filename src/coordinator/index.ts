@@ -25,7 +25,7 @@ import { KB_ID } from './subsystems/contract.js';
 import { isErrorEnvelope } from './subsystems/registry.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
-import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
+import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
 import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
@@ -43,7 +43,7 @@ import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
 import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
-import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { Backed, FtsRetrieval, KbCorpusPublication, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { VectorRetrieval } from '../kb/search/contract.js';
 import type { RegisteredKbCapability } from '../kb/capability/contract.js';
@@ -76,6 +76,7 @@ import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import { createDefaultKbChildSupervisor, createDisabledKbChildSupervisor } from './kb-child/supervisor.js';
+import type { KbChildEventMessage } from './kb-child/protocol.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -105,6 +106,42 @@ export type CoordinatorServerController = {
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => CoordinatorCoreResult['idleTimer'];
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isAppendedEventArray(value: unknown): value is AppendedEvent[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (event) =>
+        isRecord(event) &&
+        typeof event.seq === 'number' &&
+        typeof event.ts === 'string' &&
+        typeof event.type === 'string' &&
+        isRecord(event.stream),
+    )
+  );
+}
+
+function isCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
+  return (
+    isRecord(value) &&
+    typeof value.snapshotId === 'string' &&
+    typeof value.contentSeq === 'number' &&
+    typeof value.metadataSeq === 'number' &&
+    typeof value.contentManifestHash === 'string' &&
+    typeof value.metadataManifestHash === 'string'
+  );
+}
+
+function isCorpusPublication(value: unknown): value is KbCorpusPublication {
+  if (!isRecord(value) || !isCorpusSnapshot(value.snapshot) || !Array.isArray(value.changedLanes)) {
+    return false;
+  }
+  return value.changedLanes.every((lane) => lane === 'content' || lane === 'metadata');
+}
 
 function deriveCoordinatorFlavor(options: CoordinatorServerOptions): 'prod' | 'dev' {
   if (options.bootSnapshot?.flavor) {
@@ -370,6 +407,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
+  let handleKbChildEvent: ((message: KbChildEventMessage) => void) | null = null;
   const kbChildSupervisor = (() => {
     if (coreOptions.kbChildSupervisor) {
       return coreOptions.kbChildSupervisor;
@@ -386,6 +424,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       ...(coreOptions.bootSnapshot?.instanceId === undefined
         ? {}
         : { instanceId: coreOptions.bootSnapshot.instanceId }),
+      ...(coreOptions.backendNamespace === undefined ? {} : { backendNamespace: coreOptions.backendNamespace }),
+      ...(coreOptions.bootSnapshot?.bundleHash === undefined ? {} : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
+      onEvent: (message) => handleKbChildEvent?.(message),
       log: (message) => backendLog.warn(message),
     });
   })();
@@ -558,6 +599,33 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     time: runtime.time,
     commitEvents: coordinatorCommit,
   });
+  handleKbChildEvent = (message: KbChildEventMessage): void => {
+    if (message.event === 'journal') {
+      if (!isAppendedEventArray(message.appended)) {
+        backendLog.warn('[kb-child] ignored malformed journal event payload.');
+        return;
+      }
+      const appended = message.appended;
+      if (appended.length === 0) {
+        return;
+      }
+      publishJobEvents(appended);
+      getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
+      lifecycleReactor.observe(appended);
+      return;
+    }
+
+    if (!isCorpusPublication(message.publication)) {
+      backendLog.warn('[kb-child] ignored malformed corpus event payload.');
+      return;
+    }
+    const driver = getConsumerDriver();
+    if (message.publication.changedLanes.length === 1) {
+      driver.notifyCorpus(message.publication.snapshot, message.publication.changedLanes[0]);
+      return;
+    }
+    driver.notifyCorpus(message.publication.snapshot);
+  };
 
   // The seven boot steps (I0..I6) lifted from the previous
   // `createKbSubsystemFn` closure. Runs inside the subsystem's retry loop —

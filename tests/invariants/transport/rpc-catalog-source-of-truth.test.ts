@@ -111,6 +111,7 @@ describe('rpc catalog source of truth', () => {
       createNote: 'kb.note.create',
       updateNote: 'kb.note.update',
       deleteNote: 'kb.note.delete',
+      createSource: 'kb.source.create',
       createWiki: 'kb.wiki.create',
       rewriteWiki: 'kb.wiki.rewrite',
       linkWiki: 'kb.wiki.link',
@@ -121,6 +122,7 @@ describe('rpc catalog source of truth', () => {
       deleteSource: 'kb.source.delete',
       createMemo: 'kb.memo.create',
       deleteMemos: 'kb.memo.delete',
+      reindex: 'kb.reindex',
     } as const;
     const catalogNames = new Set(rpcCatalog.map((spec) => spec.name));
 

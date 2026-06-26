@@ -1,7 +1,9 @@
 import {
+  KB_CHILD_EVENT_MESSAGE,
   KB_CHILD_READY_MESSAGE,
   KB_CHILD_RESPONSE_MESSAGE,
   encodeKbChildMessage,
+  isKbChildAbortResult,
   isKbChildKbMutationRequest,
   isKbChildKbReadRequest,
   isKbChildRequestMessage,
@@ -95,7 +97,23 @@ export function startKbChildParentWatchdog(options: KbChildParentWatchdogOptions
 export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
-  const kbWriteHost = createKbChildWriteRuntimeHost({ pluginRoot });
+  const kbWriteHost = createKbChildWriteRuntimeHost({
+    pluginRoot,
+    backendNamespace: process.env.CORAL_KB_CHILD_BACKEND_NAMESPACE,
+    bundleHash: process.env.CORAL_KB_CHILD_BUNDLE_HASH,
+    onJournalEvents: (appended) =>
+      writeControlMessage({
+        type: KB_CHILD_EVENT_MESSAGE,
+        event: 'journal',
+        appended: [...appended],
+      }),
+    onCorpusMutation: (publication) =>
+      writeControlMessage({
+        type: KB_CHILD_EVENT_MESSAGE,
+        event: 'corpus',
+        publication,
+      }),
+  });
   const kbService = createKbChildReadService({ pluginRoot, writeRuntime: kbWriteHost });
   const parentPid = options.parentPid ?? resolveKbChildParentPid(process.env.CORAL_KB_CHILD_PARENT_PID);
   let resolveShutdown!: (code: number) => void;
@@ -172,6 +190,19 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
               },
         });
         return;
+      case 'kb.abort': {
+        const params = request.params as { jobIds?: unknown };
+        const result = Array.isArray(params?.jobIds)
+          ? kbWriteHost.abortJobs(params.jobIds.filter((jobId): jobId is string => typeof jobId === 'string'))
+          : { aborted: [], notFound: [] };
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: isKbChildAbortResult(result) ? result : { aborted: [], notFound: [] },
+        });
+        return;
+      }
       case 'kb.warmup':
         writeControlMessage({
           type: KB_CHILD_RESPONSE_MESSAGE,

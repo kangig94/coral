@@ -276,6 +276,71 @@ describe('KB child supervisor', () => {
     });
   });
 
+  it('forwards child event messages to the supervisor event callback', async () => {
+    const child = new FakeChildProcess(160);
+    const { runtime } = createRuntime([child]);
+    const onEvent = vi.fn();
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      onEvent,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    (child.stdout as unknown as PassThrough).write(
+      `${JSON.stringify({
+        type: 'coral.kb_child.event',
+        event: 'journal',
+        appended: [{ seq: 1, ts: '2026-06-26T00:00:00.000Z', type: 'job.progress.emitted', stream: { kind: 'job', id: 'job-1' } }],
+      })}\n`,
+    );
+    await flushMicrotasks();
+
+    expect(onEvent).toHaveBeenCalledWith({
+      type: 'coral.kb_child.event',
+      event: 'journal',
+      appended: [
+        {
+          seq: 1,
+          ts: '2026-06-26T00:00:00.000Z',
+          type: 'job.progress.emitted',
+          stream: { kind: 'job', id: 'job-1' },
+        },
+      ],
+    });
+  });
+
+  it('sends child KB job abort requests over the control protocol', async () => {
+    const child = new FakeChildProcess(161);
+    const { runtime } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    const abort = supervisor.abortKbJobs?.(['kb-job-1']);
+    await flushMicrotasks();
+    const request = latestRequest(child);
+    expect(request.method).toBe('kb.abort');
+    expect(request.params).toEqual({ jobIds: ['kb-job-1'] });
+    writeResponse(child, request.id, { aborted: ['kb-job-1'], notFound: [] });
+
+    await expect(abort).resolves.toEqual({ aborted: ['kb-job-1'], notFound: [] });
+  });
+
   it('restarts once and retries read-only KB requests after the child exits', async () => {
     const first = new FakeChildProcess(171);
     const second = new FakeChildProcess(172);
@@ -443,6 +508,50 @@ describe('KB child supervisor', () => {
     expect(first.stdin.destroyed).toBe(false);
     expect(first.stdin.chunks.join('')).not.toContain('"reason":"mutation request recovery"');
     expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('uses the extended request timeout for KB job mutations', async () => {
+    const child = new FakeChildProcess(176);
+    const { runtime, time } = createRuntime([child]);
+    const supervisor = createKbChildSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      requestTimeoutMs: 25,
+      jobRequestTimeoutMs: 100,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(child);
+    await start;
+
+    let settled = false;
+    const mutation = supervisor
+      .mutateKb({
+        method: 'createSource',
+        args: { filePath: '/workspace/project-a/source.md', async: false },
+        ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+      })
+      .finally(() => {
+        settled = true;
+      });
+    await flushMicrotasks();
+    expect(latestRequest(child).method).toBe('kb.mutate');
+
+    time.tick(25);
+    await flushMicrotasks(12);
+    expect(settled).toBe(false);
+    expect(supervisor.read()).toMatchObject({ pendingRequests: 1 });
+
+    time.tick(75);
+    await flushMicrotasks(12);
+    await expect(mutation).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_unavailable',
+      message: expect.stringContaining('timed out after 100ms'),
+    });
   });
 
   it('does not restart read-only KB requests after dispose is requested', async () => {
