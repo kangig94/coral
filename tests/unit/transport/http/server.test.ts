@@ -968,6 +968,64 @@ describe('execution backend server', () => {
     expect(kbChildSupervisor.start).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps child-only mode on the child RPC path even when delegation flags are disabled', async () => {
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-child', method: request.method },
+    }));
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => childHealth),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => childHealth),
+      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+      mutateKb,
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const createKbSubsystemFn = vi.fn(async () => {
+      throw new Error('parent KB runtime should not be built');
+    });
+    const backend = await startBackendServer({
+      kbChildSupervisor,
+      useKbChildRuntimeOnly: true,
+      delegateKbReadsToChild: false,
+      delegateKbMutationsToChild: false,
+      createKbSubsystemFn,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot: '/workspace/project-a',
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(createKbSubsystemFn).not.toHaveBeenCalled();
+    expect(mutateKb).toHaveBeenCalledWith({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+      ctx: expect.objectContaining({ projectRoot: '/workspace/project-a', authority: 'user' }),
+    });
+  });
+
   it('delegates read-only KB RPCs to an enabled KB child by default', async () => {
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,

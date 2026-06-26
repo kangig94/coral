@@ -880,10 +880,11 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     },
     expansion: createRefBackedExpansionRpc(storeServicesRef),
   };
-  const delegateKbReadsToChild = shouldDelegateKbReadsToChild(options, kbChildSupervisor);
-  const delegateKbMutationsToChild = shouldDelegateKbMutationsToChild(options, kbChildSupervisor);
-  const useKbChildRuntimeOnly =
-    options.useKbChildRuntimeOnly === true && delegateKbReadsToChild && delegateKbMutationsToChild;
+  const childRuntimeOnlyRequested = options.useKbChildRuntimeOnly === true && kbChildSupervisor.read().enabled;
+  const delegateKbReadsToChild = childRuntimeOnlyRequested || shouldDelegateKbReadsToChild(options, kbChildSupervisor);
+  const delegateKbMutationsToChild =
+    childRuntimeOnlyRequested || shouldDelegateKbMutationsToChild(options, kbChildSupervisor);
+  const useKbChildRuntimeOnly = childRuntimeOnlyRequested && delegateKbReadsToChild && delegateKbMutationsToChild;
 
   let effectiveKbPorts = rpcPorts.kb;
   if (delegateKbReadsToChild) {
