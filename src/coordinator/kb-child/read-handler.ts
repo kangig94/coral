@@ -80,6 +80,7 @@ type KbChildWriteRuntimeHost = {
   ): Promise<T>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  health(): KbChildKbReadHealth;
 };
 
 export type KbChildReadService = {
@@ -189,6 +190,17 @@ function invalidRequestFromError(error: unknown): KbToolResult {
 
 function failed(error: unknown): KbToolResult {
   return kbError('kb_error', errorMessage(error), error instanceof Error ? { message: error.message } : error);
+}
+
+function getWriteRuntimeOrError(writeRuntime: KbChildWriteRuntimeHost | undefined): KbChildWriteRuntimeHost | KbToolResult {
+  if (writeRuntime === undefined) {
+    return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+  }
+  const phase = writeRuntime.health().phase;
+  if (phase === 'disposing' || phase === 'disposed') {
+    return kbError('kb_unavailable', `KB child write runtime is ${phase}.`);
+  }
+  return writeRuntime;
 }
 
 function notFound(kind: KbReadKind, slug: string): KbToolResult {
@@ -492,133 +504,147 @@ export function createKbChildReadService(options: KbChildReadHandlerOptions): Kb
           }, markFailure);
         case 'setCommunitySummary':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbCommunitySetSummary(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbCommunitySetSummary(args, kbSubsystem));
           }, markFailure);
         case 'createNote':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const invocation = invocationContext(state, ctx);
             if ('ok' in invocation) {
               return invocation;
             }
-            return writeRuntime.withKb(({ kbSubsystem, runtime }) =>
+            return activeWriteRuntime.withKb(({ kbSubsystem, runtime }) =>
               handleKbPromote(args, kbSubsystem, invocation, runtime),
             );
           }, markFailure);
         case 'createSource':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const invocation = invocationContext(state, ctx);
             if ('ok' in invocation) {
               return invocation;
             }
-            return writeRuntime.createSource(args, invocation);
+            return activeWriteRuntime.createSource(args, invocation);
           }, markFailure);
         case 'updateNote':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbUpdate(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbUpdate(args, kbSubsystem));
           }, markFailure);
         case 'deleteNote':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const slug = getMutationSlug(request);
             if (typeof slug !== 'string') {
               return slug;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbDelete({ note: slug }, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbDelete({ note: slug }, kbSubsystem));
           }, markFailure);
         case 'createWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbWikiCreate(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbWikiCreate(args, kbSubsystem));
           }, markFailure);
         case 'rewriteWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbWikiRewrite(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbWikiRewrite(args, kbSubsystem));
           }, markFailure);
         case 'linkWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbWikiLink(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbWikiLink(args, kbSubsystem));
           }, markFailure);
         case 'unlinkWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbWikiUnlink(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbWikiUnlink(args, kbSubsystem));
           }, markFailure);
         case 'citeWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbWikiCite(args, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbWikiCite(args, kbSubsystem));
           }, markFailure);
         case 'adoptWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const invocation = invocationContext(state, ctx);
             if ('ok' in invocation) {
               return invocation;
             }
-            return writeRuntime.withKb(({ kbSubsystem, runtime }) =>
+            return activeWriteRuntime.withKb(({ kbSubsystem, runtime }) =>
               handleKbWikiAdopt(args, kbSubsystem, invocation, runtime),
             );
           }, markFailure);
         case 'deleteWiki':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const slug = getMutationSlug(request);
             if (typeof slug !== 'string') {
               return slug;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbWikiDelete({ slug }, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbWikiDelete({ slug }, kbSubsystem));
           }, markFailure);
         case 'deleteSource':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const slug = getMutationSlug(request);
             if (typeof slug !== 'string') {
               return slug;
             }
-            return writeRuntime.withKb(({ kbSubsystem }) => handleKbSourceDelete({ slug }, kbSubsystem));
+            return activeWriteRuntime.withKb(({ kbSubsystem }) => handleKbSourceDelete({ slug }, kbSubsystem));
           }, markFailure);
         case 'reindex':
           return runToolResult(() => {
-            if (writeRuntime === undefined) {
-              return kbError('kb_unavailable', 'KB child write runtime is not configured.');
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
             }
             const invocation = invocationContext(state, ctx);
             if ('ok' in invocation) {
               return invocation;
             }
-            return writeRuntime.reindex(args, invocation);
+            return activeWriteRuntime.reindex(args, invocation);
           }, markFailure);
       }
     } catch (error: unknown) {

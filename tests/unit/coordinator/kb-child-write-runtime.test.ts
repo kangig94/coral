@@ -139,6 +139,24 @@ describe('KB child write runtime', () => {
         const result = await fts.search('searchable', 5);
         expect(result.hits.map((hit) => hit.documentId)).toContain('source:child-projection-readiness');
       });
+
+      await host.dispose();
+      expect(host.health()).toEqual({ phase: 'disposed', initializedAt: expect.any(Number) });
+      await expect(
+        host.createSource(
+          {
+            filePath: sourcePath,
+            slug: 'after-dispose',
+            readiness: 'commit',
+            async: false,
+          },
+          { projectRoot, pluginRoot, coralEnv: {}, authority: 'user' },
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        code: 'kb_unavailable',
+        message: expect.stringContaining('disposed'),
+      });
     } finally {
       db.close();
       while (tempRoots.length > 0) {

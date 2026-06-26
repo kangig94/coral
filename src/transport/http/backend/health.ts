@@ -44,6 +44,14 @@ export type TransportKbChildPhase =
   | 'stopped'
   | 'failed';
 
+export type TransportKbChildRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+
+export type TransportKbChildRuntimeHealth = {
+  phase: TransportKbChildRuntimeHealthPhase;
+  initializedAt?: number;
+  lastError?: string;
+};
+
 export type TransportKbChildHealthSnapshot = {
   enabled: boolean;
   phase: TransportKbChildPhase;
@@ -56,11 +64,8 @@ export type TransportKbChildHealthSnapshot = {
   lastHeartbeatAt?: number;
   lastHeartbeatLatencyMs?: number;
   childUptimeMs?: number;
-  kbRead?: {
-    phase: 'not_initialized' | 'ready' | 'failed';
-    initializedAt?: number;
-    lastError?: string;
-  };
+  kbRead?: TransportKbChildRuntimeHealth;
+  kbWrite?: TransportKbChildRuntimeHealth;
   reason?: string;
   lastExit?: {
     code: number | null;
@@ -240,12 +245,16 @@ function isKbChildExit(value: unknown): value is NonNullable<TransportKbChildHea
   );
 }
 
-function isKbChildReadHealth(value: unknown): value is NonNullable<TransportKbChildHealthSnapshot['kbRead']> {
+function isKbChildRuntimeHealth(value: unknown): value is TransportKbChildRuntimeHealth {
   if (!isRecord(value)) {
     return false;
   }
   return (
-    (value.phase === 'not_initialized' || value.phase === 'ready' || value.phase === 'failed') &&
+    (value.phase === 'not_initialized' ||
+      value.phase === 'ready' ||
+      value.phase === 'failed' ||
+      value.phase === 'disposing' ||
+      value.phase === 'disposed') &&
     (value.initializedAt === undefined || isNonNegativeFiniteNumber(value.initializedAt)) &&
     (value.lastError === undefined || typeof value.lastError === 'string')
   );
@@ -265,7 +274,8 @@ function isKbChildHealth(value: unknown): value is TransportKbChildHealthSnapsho
     (value.lastHeartbeatAt === undefined || isNonNegativeFiniteNumber(value.lastHeartbeatAt)) &&
     (value.lastHeartbeatLatencyMs === undefined || isNonNegativeFiniteNumber(value.lastHeartbeatLatencyMs)) &&
     (value.childUptimeMs === undefined || isNonNegativeFiniteNumber(value.childUptimeMs)) &&
-    (value.kbRead === undefined || isKbChildReadHealth(value.kbRead)) &&
+    (value.kbRead === undefined || isKbChildRuntimeHealth(value.kbRead)) &&
+    (value.kbWrite === undefined || isKbChildRuntimeHealth(value.kbWrite)) &&
     (value.reason === undefined || typeof value.reason === 'string') &&
     (value.lastExit === undefined || isKbChildExit(value.lastExit)) &&
     (value.lastError === undefined || typeof value.lastError === 'string')

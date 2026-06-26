@@ -75,8 +75,10 @@ export type KbChildKbReadResult =
 
 export type KbChildKbMutationResult = KbChildKbReadResult;
 
+export type KbChildRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+
 export type KbChildKbReadHealth = {
-  phase: 'not_initialized' | 'ready' | 'failed';
+  phase: KbChildRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
 };
@@ -231,7 +233,11 @@ export function isKbChildKbReadHealth(value: unknown): value is KbChildKbReadHea
   }
   const record = value as Record<string, unknown>;
   return (
-    (record.phase === 'not_initialized' || record.phase === 'ready' || record.phase === 'failed') &&
+    (record.phase === 'not_initialized' ||
+      record.phase === 'ready' ||
+      record.phase === 'failed' ||
+      record.phase === 'disposing' ||
+      record.phase === 'disposed') &&
     (record.initializedAt === undefined || isNonNegativeFiniteNumber(record.initializedAt)) &&
     (record.lastError === undefined || typeof record.lastError === 'string')
   );

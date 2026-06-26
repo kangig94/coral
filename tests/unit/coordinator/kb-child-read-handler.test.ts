@@ -230,6 +230,36 @@ describe('KB child read handler', () => {
     });
   });
 
+  it('returns kb_unavailable for write-backed mutations after the write runtime is disposed', async () => {
+    const runtime = new SimulationRuntime();
+    const writeRuntime = {
+      withKb: vi.fn(async () => {
+        throw new Error('write runtime should not be called');
+      }),
+      createSource: vi.fn(async () => {
+        throw new Error('source import should not be called');
+      }),
+      reindex: vi.fn(async () => {
+        throw new Error('reindex should not be called');
+      }),
+      health: () => ({ phase: 'disposed' as const }),
+    };
+    const service = createKbChildReadService({ pluginRoot: '/plugin', runtime, writeRuntime });
+
+    await expect(
+      service.mutate({
+        method: 'updateNote',
+        args: { note: 'alpha-note' },
+        ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_unavailable',
+      message: expect.stringContaining('disposed'),
+    });
+    expect(writeRuntime.withKb).not.toHaveBeenCalled();
+  });
+
   it('generates wake-up packets from the child read runtime', async () => {
     const runtime = new SimulationRuntime();
     writeWiki(runtime, 'kangig94-coral');

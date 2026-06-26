@@ -122,7 +122,13 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
   const shutdown = new Promise<number>((resolve) => {
     resolveShutdown = resolve;
   });
+  let stopPromise: Promise<void> | null = null;
   const stop = (code: number): void => {
+    stopPromise ??= stopAsync(code).finally(() => {
+      stopPromise = null;
+    });
+  };
+  const stopAsync = async (code: number): Promise<void> => {
     if (settled) {
       return;
     }
@@ -132,7 +138,13 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
       clearInterval(parentWatchdog);
     }
     parentWatchdog = null;
-    resolveShutdown(code);
+    try {
+      await kbWriteHost.dispose();
+    } catch (error: unknown) {
+      process.stderr.write(`[kb-child] write runtime dispose failed: ${errorMessage(error)}\n`);
+    } finally {
+      resolveShutdown(code);
+    }
   };
   const keepalive = setInterval(() => undefined, 60_000);
   parentWatchdog = startKbChildParentWatchdog({

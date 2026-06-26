@@ -56,6 +56,14 @@ export type TransportKbChildPhase =
   | 'stopped'
   | 'failed';
 
+export type TransportKbChildRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+
+export type TransportKbChildRuntimeHealth = {
+  phase: TransportKbChildRuntimeHealthPhase;
+  initializedAt?: number;
+  lastError?: string;
+};
+
 export type TransportKbChildHealthSnapshot = {
   enabled: boolean;
   phase: TransportKbChildPhase;
@@ -68,11 +76,8 @@ export type TransportKbChildHealthSnapshot = {
   lastHeartbeatAt?: number;
   lastHeartbeatLatencyMs?: number;
   childUptimeMs?: number;
-  kbRead?: {
-    phase: 'not_initialized' | 'ready' | 'failed';
-    initializedAt?: number;
-    lastError?: string;
-  };
+  kbRead?: TransportKbChildRuntimeHealth;
+  kbWrite?: TransportKbChildRuntimeHealth;
   reason?: string;
   lastExit?: {
     code: number | null;

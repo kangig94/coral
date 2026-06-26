@@ -74,6 +74,7 @@ type WritableDatabase = {
 type KbChildWriteRuntimeState = {
   runtime: Runtime;
   db: WritableDatabase;
+  ownsDb: boolean;
   kbSubsystem: ChildKnowledgeBaseRuntime;
   consumerDriver: ConsumerDriver;
   expansionLifecycleService: ExpansionLifecycleService;
@@ -261,6 +262,7 @@ export type KbChildWriteRuntimeHost = {
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   abortJobs(jobIds: string[]): { aborted: string[]; notFound: string[] };
+  dispose(options?: { signal?: AbortSignal }): Promise<void>;
   health(): KbChildKbReadHealth;
 };
 
@@ -334,6 +336,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
   let lastError: string | undefined;
   let state: KbChildWriteRuntimeState | null = null;
   let initPromise: Promise<KbChildWriteRuntimeState> | null = null;
+  let disposePromise: Promise<void> | null = null;
 
   const markReady = (): void => {
     phase = 'ready';
@@ -344,6 +347,15 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
     phase = 'failed';
     lastError = errorMessage(error);
   };
+  const markDisposing = (): void => {
+    phase = 'disposing';
+  };
+  const markDisposed = (): void => {
+    phase = 'disposed';
+    lastError = undefined;
+  };
+  const disposedError = (): KbToolResult =>
+    kbError('kb_unavailable', `KB child write runtime is ${phase}.`);
 
   const build = async (): Promise<KbChildWriteRuntimeState> => {
     const runtime = options.runtime ?? createRuntime(options.pluginRoot);
@@ -482,6 +494,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       state = {
         runtime,
         db: activeDb,
+        ownsDb,
         kbSubsystem,
         consumerDriver: activeConsumerDriver,
         expansionLifecycleService: activeExpansionLifecycleService,
@@ -507,6 +520,9 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
   };
 
   const init = async (): Promise<KbChildWriteRuntimeState> => {
+    if (phase === 'disposing' || phase === 'disposed') {
+      throw new Error(`KB child write runtime is ${phase}.`);
+    }
     if (state !== null) {
       markReady();
       return state;
@@ -521,8 +537,78 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       })
       .finally(() => {
         initPromise = null;
-      });
+    });
     return initPromise;
+  };
+
+  const disposeState = async (
+    activeState: KbChildWriteRuntimeState,
+    signal: AbortSignal | undefined,
+  ): Promise<void> => {
+    let cleanupError: unknown;
+    let closeError: unknown;
+    try {
+      try {
+        await activeState.kbSubsystem.curateScheduler.stop();
+      } catch (error: unknown) {
+        cleanupError ??= error;
+      }
+      try {
+        await activeState.expansionLifecycleService.shutdownActiveExpansions({ signal });
+      } catch (error: unknown) {
+        cleanupError ??= error;
+      }
+      try {
+        await activeState.consumerDriver.shutdown({ drainTimeoutMs: 0 });
+      } catch (error: unknown) {
+        cleanupError ??= error;
+      }
+    } finally {
+      state = null;
+      if (activeState.ownsDb) {
+        try {
+          activeState.db.close();
+        } catch (error: unknown) {
+          closeError = error;
+        }
+      }
+    }
+    if (cleanupError !== undefined) {
+      throw cleanupError instanceof Error ? cleanupError : new Error(errorMessage(cleanupError));
+    }
+    if (closeError !== undefined) {
+      throw closeError instanceof Error ? closeError : new Error(errorMessage(closeError));
+    }
+  };
+
+  const dispose = async (options: { signal?: AbortSignal } = {}): Promise<void> => {
+    if (disposePromise !== null) {
+      return disposePromise;
+    }
+    disposePromise = (async () => {
+      markDisposing();
+      try {
+        let activeState = state;
+        if (activeState === null && initPromise !== null) {
+          try {
+            activeState = await initPromise;
+          } catch {
+            markDisposed();
+            return;
+          }
+        }
+        if (activeState !== null) {
+          await disposeState(activeState, options.signal);
+        }
+        markDisposed();
+      } catch (error: unknown) {
+        markFailure(error);
+        throw error;
+      }
+    })().finally(() => {
+      disposePromise = null;
+    });
+    return disposePromise;
   };
 
   return {
@@ -533,6 +619,9 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       return fn(initialized);
     },
     async createSource(args, ctx) {
+      if (phase === 'disposing' || phase === 'disposed') {
+        return disposedError();
+      }
       const parsed = parseKbSourceImportRequest(args);
       if (!parsed.ok) {
         return kbError('invalid_request', parsed.message);
@@ -543,6 +632,9 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       return initialized.sourceImportService.start(parsed.data, ctx, initialized.kbSubsystem);
     },
     async reindex(args, ctx) {
+      if (phase === 'disposing' || phase === 'disposed') {
+        return disposedError();
+      }
       const initialized = await init();
       initialized.kbSubsystem.kb.invalidateKbCache();
       await initialized.kbSubsystem.kb.ensureCorpusFreshness({ wait: true });
@@ -555,6 +647,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       }
       return activeState.abortRegistry.abort(jobIds);
     },
+    dispose,
     health() {
       return {
         phase,
