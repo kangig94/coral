@@ -16,6 +16,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
+import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import {
   appendPersistedEvents,
@@ -275,7 +276,7 @@ describe('server discuss API', () => {
       },
       discussRegistry: registry,
       createExecutionService: () => service as never,
-      createKbSubsystemFn: async () => ({
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => ({
         kb: {} as never,
         readDb: {} as never,
         curateScheduler: {
@@ -285,7 +286,7 @@ describe('server discuss API', () => {
           isRunning: () => false,
           stop: async () => {},
         },
-      }),
+      })),
     });
     const started = await controller.start();
     return {

@@ -17,6 +17,7 @@ import type { EngineManifest, Expansion, ExpansionHost } from '../../expansion/c
 import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
 import { disposeExpansionScope } from '../../expansion/host.js';
 import { createScope } from '../../expansion/scope.js';
+import { detectProjectionArtifactLag } from '../../kb/corpus/rescan/drift.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { KbCapabilityName, KbCapabilityStatus } from '../../kb/capability/contract.js';
 import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';
@@ -121,6 +122,11 @@ type OramaProjectionReconcileDriver = {
 };
 
 export type OramaProjectionReconcileRuntime = Pick<KbRuntime, 'getCorpusStateSnapshot' | 'invalidateTextSnapshot'>;
+export type ProjectionArtifactBootRuntime = Pick<KbRuntime, 'engineArtifactRegistry' | 'getCorpusStateSnapshot'>;
+
+type BootProjectionArtifactRepairResult = {
+  readonly allowStaleFts: boolean;
+};
 
 /**
  * True when the only projection-artifact-lag repair target is the Orama base
@@ -130,6 +136,42 @@ export type OramaProjectionReconcileRuntime = Pick<KbRuntime, 'getCorpusStateSna
  */
 export function isOramaOnlyRepairTarget(consumerIds: readonly string[]): boolean {
   return consumerIds.length === 1 && consumerIds[0] === ORAMA_BASE_CONSUMER_ID;
+}
+
+export async function repairProjectionArtifactLagOnBoot(
+  kb: ProjectionArtifactBootRuntime,
+  driver: OramaProjectionReconcileDriver,
+  timeoutMs: number,
+): Promise<BootProjectionArtifactRepairResult> {
+  const lag = detectProjectionArtifactLag(kb, await kb.engineArtifactRegistry.describeArtifacts());
+  const targetConsumerIds: string[] = [];
+  const seenTargetConsumers = new Set<string>();
+  for (const entry of lag) {
+    for (const consumerId of entry.targetConsumerIds) {
+      if (seenTargetConsumers.has(consumerId)) {
+        continue;
+      }
+      seenTargetConsumers.add(consumerId);
+      targetConsumerIds.push(consumerId);
+    }
+  }
+  if (targetConsumerIds.length === 0) {
+    return { allowStaleFts: false };
+  }
+
+  const snapshot = kb.getCorpusStateSnapshot();
+  const forced = await driver.forceCorpusApply(snapshot, {
+    reason: 'projection-artifact-lag',
+    consumers: targetConsumerIds,
+  });
+  void timeoutMs;
+  if (forced.consumers.length > 0) {
+    backendLog.warn(
+      `[kb] Projection artifact repair scheduled during boot for ${forced.consumers.join(', ')}; ` +
+        'KB will serve stale or degraded retrieval until background reconcile catches up.',
+    );
+  }
+  return { allowStaleFts: isOramaOnlyRepairTarget(targetConsumerIds) };
 }
 
 export type OramaProjectionReconcileRequester = {

@@ -738,7 +738,7 @@ describe('execution backend server', () => {
         log: () => {},
         ...bootOverrides,
       },
-      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
       cleanupStaleJobsFn: () => {},
       ...restOverrides,
     });
@@ -949,13 +949,13 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const createKbSubsystemFn = vi.fn(async () => {
+    const createKbRuntimeFn = vi.fn(async () => {
       throw new Error('parent KB runtime should not be built');
     });
     const backend = await startBackendServer({
       kbChildSupervisor,
       useKbChildRuntimeOnly: true,
-      createKbSubsystemFn,
+      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -964,7 +964,7 @@ describe('execution backend server', () => {
     const body = (await response.json()) as { subsystems?: Array<{ id: string; phase: string }> };
 
     expect(response.status).toBe(200);
-    expect(createKbSubsystemFn).not.toHaveBeenCalled();
+    expect(createKbRuntimeFn).not.toHaveBeenCalled();
     expect(body.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('online');
     expect(kbChildSupervisor.start).toHaveBeenCalledTimes(1);
   });
@@ -993,7 +993,7 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const createKbSubsystemFn = vi.fn(async () => {
+    const createKbRuntimeFn = vi.fn(async () => {
       throw new Error('parent KB runtime should not be built');
     });
     const backend = await startBackendServer({
@@ -1001,7 +1001,7 @@ describe('execution backend server', () => {
       useKbChildRuntimeOnly: true,
       delegateKbReadsToChild: false,
       delegateKbMutationsToChild: false,
-      createKbSubsystemFn,
+      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
@@ -1019,7 +1019,7 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    expect(createKbSubsystemFn).not.toHaveBeenCalled();
+    expect(createKbRuntimeFn).not.toHaveBeenCalled();
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
@@ -1027,7 +1027,7 @@ describe('execution backend server', () => {
     });
   });
 
-  it('defaults the standard server path to child-only when no legacy KB factory is provided', async () => {
+  it('keeps the standard server path child-only when no KB subsystem factory is provided', async () => {
     const { serverModule } = await loadExecutionModules();
     const childHealth: KbChildHealthSnapshot = {
       enabled: true,
@@ -1064,6 +1064,7 @@ describe('execution backend server', () => {
       },
       cleanupStaleJobsFn: () => {},
       kbChildSupervisor,
+      useKbChildRuntimeOnly: false,
       delegateKbReadsToChild: false,
       delegateKbMutationsToChild: false,
     });
@@ -1122,13 +1123,13 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => childHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const createKbSubsystemFn = vi.fn(async () => {
+    const createKbRuntimeFn = vi.fn(async () => {
       throw new Error('parent KB runtime should not be built');
     });
     const backend = await startBackendServer({
       kbChildSupervisor,
       useKbChildRuntimeOnly: true,
-      createKbSubsystemFn,
+      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
     const healthResponse = await fetch(`${backend.baseUrl}/health`, {
@@ -1137,7 +1138,7 @@ describe('execution backend server', () => {
     const health = (await healthResponse.json()) as { subsystems?: Array<{ id: string; phase: string }> };
 
     expect(healthResponse.status).toBe(200);
-    expect(createKbSubsystemFn).not.toHaveBeenCalled();
+    expect(createKbRuntimeFn).not.toHaveBeenCalled();
     expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('offline');
 
     const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
@@ -1903,9 +1904,9 @@ describe('execution backend server', () => {
   it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const backend = await startBackendServer({
-      createKbSubsystemFn: async () => {
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => {
         throw new Error('simulated KB init failure');
-      },
+      }),
     });
 
     // Under the 3-era boot, KB init runs in Era III (fire-and-forget) with
@@ -2040,7 +2041,7 @@ describe('execution backend server', () => {
         flavor: 'prod',
         log: () => {},
       },
-      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
       cleanupStaleJobsFn: () => {},
       providerHostManager,
       createExecutionService: (ctx, deps) => {
@@ -2174,7 +2175,7 @@ describe('execution backend server', () => {
       envPort: { get: unknown };
     };
     let receivedKbOptions: KbRuntimeThreadOptions | null = null;
-    const createKbSubsystemFn = vi.fn(async (options) => {
+    const createKbRuntimeFn = vi.fn(async (options) => {
       receivedKbOptions = options;
       return {
         kb: {} as never,
@@ -2191,10 +2192,10 @@ describe('execution backend server', () => {
 
     await startBackendServer({
       createIdleTimer: () => fakeIdleTimer as never,
-      createKbSubsystemFn,
+      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
     });
 
-    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
+    expect(createKbRuntimeFn).toHaveBeenCalledTimes(1);
     expect(receivedKbOptions).not.toBeNull();
     const kbOptions = receivedKbOptions as unknown as KbRuntimeThreadOptions;
     expect(typeof kbOptions.processPort.exec).toBe('function');
@@ -2204,7 +2205,7 @@ describe('execution backend server', () => {
     // (Era III) is registered with the subsystems registry. The KB factory
     // is still invoked during start() (synchronously inside Era III) — but
     // ordering relative to `idleTimer.startWatching` flips:
-    const initOrder = createKbSubsystemFn.mock.invocationCallOrder.at(0);
+    const initOrder = createKbRuntimeFn.mock.invocationCallOrder.at(0);
     const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
     expect(initOrder).toBeDefined();
     expect(watchOrder).toBeDefined();
@@ -2222,7 +2223,7 @@ describe('execution backend server', () => {
     );
 
     let observedRuntimeDir = '';
-    const createKbSubsystemFn = vi.fn(async (ctx) => {
+    const createKbRuntimeFn = vi.fn(async (ctx) => {
       observedRuntimeDir = ctx.paths.runtimeDir;
       return createMockKbSubsystem();
     });
@@ -2236,14 +2237,14 @@ describe('execution backend server', () => {
         bundleHash: 'testhash1234',
         log: () => {},
       },
-      createKbSubsystemFn,
+      createKbSubsystemFn: adaptLegacyKbFactory(createKbRuntimeFn),
       cleanupStaleJobsFn: () => {},
     });
 
     const started = await controller.start();
 
     expect(started.flavor).toBe('dev');
-    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
+    expect(createKbRuntimeFn).toHaveBeenCalledTimes(1);
     // Flavor settles before KB init: dev runtimeDir lives under data-dev/.
     expect(observedRuntimeDir).toMatch(/data-dev\b/);
   });
@@ -2351,7 +2352,7 @@ describe('execution backend server', () => {
       relationships: [],
     }));
     const backend = await startBackendServer({
-      createKbSubsystemFn: async () =>
+      createKbSubsystemFn: adaptLegacyKbFactory(async () =>
         ({
           kb: {
             ...(kbSubsystem.kb as unknown as Record<string, unknown>),
@@ -2391,7 +2392,7 @@ describe('execution backend server', () => {
           } as never,
           readDb: kbSubsystem.readDb,
           curateScheduler: kbSubsystem.curateScheduler,
-        }) satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime,
+        }) satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime),
     });
     await vi.waitFor(async () => {
       const healthResponse = await fetch(`${backend.baseUrl}/health`, {
@@ -6225,11 +6226,11 @@ describe('execution backend server', () => {
           flavor: 'prod',
           log: () => {},
         },
-        createKbSubsystemFn: async () => {
+        createKbSubsystemFn: adaptLegacyKbFactory(async () => {
           startupBlocked.resolve();
           await releaseStartup.promise;
           throw new Error('startup interrupted for shutdown test');
-        },
+        }),
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
       });

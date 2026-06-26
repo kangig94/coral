@@ -8,6 +8,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
 import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
+import type { KbChildHealthSnapshot, KbChildSupervisor } from '#src/coordinator/kb-child/supervisor.js';
 import type { Backed, EmbeddingService, FtsRetrieval, KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import { createRuntimeBinding } from '#src/runtime/binding.js';
@@ -23,6 +24,7 @@ import {
 import { workflowRecover } from '#src/workflow/recover.js';
 import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
+import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -170,7 +172,7 @@ describe('coordinator startup ordering', () => {
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      createKbSubsystemFn: async () => ({
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => ({
         kb: createMockKb(),
         readDb: {} as never,
         curateScheduler: {
@@ -180,7 +182,7 @@ describe('coordinator startup ordering', () => {
           isRunning: () => false,
           stop: vi.fn(async () => {}),
         },
-      }),
+      })),
       recoverPersistedDiscussFn: async () => [],
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
@@ -267,7 +269,7 @@ describe('coordinator startup ordering', () => {
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      createKbSubsystemFn: async () => {
+      createKbSubsystemFn: adaptLegacyKbFactory(async () => {
         const kbSubsystem = {
           kb: createMockKb(),
           readDb: {} as never,
@@ -281,7 +283,7 @@ describe('coordinator startup ordering', () => {
         };
         order.push('kbSubsystem ready');
         return kbSubsystem;
-      },
+      }),
       recoverPersistedDiscussFn,
       writeBackendInfoFn,
       createServerFn: (handler) => createServer(handler),
@@ -341,7 +343,7 @@ describe('coordinator startup ordering', () => {
     }
   });
 
-  it('replays the persisted corpus snapshot before starting curate scheduling or opening read surfaces', async () => {
+  it('keeps the standard server path child-only without parent corpus replay', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -357,6 +359,31 @@ describe('coordinator startup ordering', () => {
 
     const runtime = createRealRuntime('prod');
     const order: string[] = [];
+    const childHealth: KbChildHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const kbChildSupervisor: KbChildSupervisor = {
+      read: vi.fn(() => childHealth),
+      start: vi.fn(async () => {
+        order.push('kbChildSupervisor.start');
+        return childHealth;
+      }),
+      probe: vi.fn(async () => childHealth),
+      warmup: vi.fn(async () => {
+        order.push('kbChildSupervisor.warmup');
+        return childHealth;
+      }),
+      readKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+      mutateKb: vi.fn(async () => ({ ok: true as const, data: { servedBy: 'kb-child' } })),
+      stop: vi.fn(async () => childHealth),
+      restart: vi.fn(async () => childHealth),
+      dispose: vi.fn(async () => undefined),
+    };
     const register = vi.spyOn(ConsumerDriver.prototype, 'register');
     const notifyCorpus = vi
       .spyOn(ConsumerDriver.prototype, 'notifyCorpus')
@@ -367,19 +394,9 @@ describe('coordinator startup ordering', () => {
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      createKbSubsystemFn: async () => ({
-        kb: createMockKb(order),
-        readDb: {} as never,
-        curateScheduler: {
-          start: vi.fn(async () => {
-            order.push('curateScheduler.start');
-          }),
-          schedule: vi.fn(),
-          scheduleDeferredCommit: vi.fn(),
-          isRunning: () => false,
-          stop: vi.fn(async () => {}),
-        },
-      }),
+      kbChildSupervisor,
+      delegateKbReadsToChild: false,
+      delegateKbMutationsToChild: false,
       recoverPersistedDiscussFn: async () => [],
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => {
@@ -392,23 +409,12 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      // Wait for Era III's `runBootSequence` to finish — its final step is
-      // `curateScheduler.start`.
-      await waitFor(() => order.includes('curateScheduler.start'));
-      expect(notifyCorpus).toHaveBeenCalledTimes(1);
-      expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(true);
-      expect(order).toContain('retryPendingCorpusPublication');
-      expect(order).toContain('ensureCorpusFreshness');
-      expect(order).toContain('getCorpusStateSnapshot');
-      expect(order).toContain('notifyCorpus');
-      expect(order).toContain('curateScheduler.start');
+      await waitFor(() => order.includes('kbChildSupervisor.start'));
+      expect(notifyCorpus).not.toHaveBeenCalled();
+      expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(false);
       expect(order).toContain('listenFn');
-      expect(order.indexOf('retryPendingCorpusPublication')).toBeLessThan(order.indexOf('ensureCorpusFreshness'));
-      expect(order.indexOf('ensureCorpusFreshness')).toBeLessThan(order.indexOf('getCorpusStateSnapshot'));
-      expect(order.indexOf('getCorpusStateSnapshot')).toBeLessThan(order.indexOf('notifyCorpus'));
-      expect(order.indexOf('notifyCorpus')).toBeLessThan(order.indexOf('curateScheduler.start'));
-      // The IPC listener binds in Era I before any KB Era III work runs.
-      expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('notifyCorpus'));
+      expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('kbChildSupervisor.start'));
+      expect(kbChildSupervisor.warmup).toHaveBeenCalledTimes(1);
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();

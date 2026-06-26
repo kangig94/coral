@@ -16,17 +16,14 @@ import {
 } from './spawn-observer.js';
 import { createCoordinatorCore } from './composition/index.js';
 import { createClaudeCurateAssistant } from './services/kb/curate-assistant.js';
-import { createRunCommunitySummaryJob } from './services/kb/community-summary.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import type { CreateKbSubsystemOptions } from '../kb/subsystem.js';
-import { createKbSubsystem, disabledKbSubsystem, runKbBootStep } from './subsystems/kb.js';
+import { disabledKbSubsystem } from './subsystems/kb.js';
 import { KB_ID } from './subsystems/contract.js';
 import { isErrorEnvelope } from './subsystems/registry.js';
-import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
+import type { CoordinatorServerInfo, CreateKbSubsystemFn, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
-import { persistCorpusState as persistCorpusStateInDb } from '../kb/state/corpus-state.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
 import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
@@ -42,25 +39,15 @@ import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
-import { createCoordinatorCurateScheduler, createCurateSchedulerHealthBridge } from './live/curate-scheduler.js';
-import type { KbCorpusPublication, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import {
-  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-} from '../kb/capability/constants.js';
-import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
+import type { KbCorpusPublication, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
-import { detectProjectionArtifactLag } from '../kb/corpus/rescan/drift.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createHostFactory } from './expansion/host-factory.js';
 import {
   createLifecycleBundledLoaders,
   createOramaProjectionReconcileRequester,
   ExpansionLifecycleService,
-  isOramaOnlyRepairTarget,
-  startKiwiArtifactFetchOnBoot,
 } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
@@ -68,7 +55,6 @@ import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
-import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import { createDefaultKbChildSupervisor, createDisabledKbChildSupervisor } from './kb-child/supervisor.js';
 import type { KbChildEventMessage } from './kb-child/protocol.js';
@@ -88,12 +74,10 @@ export type CoordinatorServerOptions = Omit<
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
   /**
-   * Legacy/test seam: opts this server back into the parent KB runtime build
-   * path unless `useKbChildRuntimeOnly` is set. Coordinator wraps the factory
-   * into the `Subsystem<KnowledgeBaseRuntime>` registry contract; the
-   * subsystem's retry / dispose / curate-bridge semantics still apply.
+   * Test/simulation seam for injecting a KB subsystem. Production omits this
+   * so the coordinator registers only the KB child proxy when KB is enabled.
    */
-  createKbSubsystemFn?: (options: CreateKbSubsystemOptions) => Promise<KnowledgeBaseRuntime>;
+  createKbSubsystemFn?: CreateKbSubsystemFn;
 };
 
 export type CoordinatorServerController = {
@@ -220,52 +204,6 @@ export async function finalizeStoreServices(ref: StoreServicesRef): Promise<void
   ref.clear();
 }
 
-const BUILTIN_CAPABILITY_DESCRIPTORS = [
-  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-] as const;
-
-type BootProjectionArtifactRepairResult = {
-  readonly allowStaleFts: boolean;
-};
-
-export async function repairProjectionArtifactLagOnBoot(
-  kb: KbRuntime,
-  driver: ConsumerDriver,
-  timeoutMs: number,
-): Promise<BootProjectionArtifactRepairResult> {
-  const lag = detectProjectionArtifactLag(kb, await kb.engineArtifactRegistry.describeArtifacts());
-  const targetConsumerIds: string[] = [];
-  const seenTargetConsumers = new Set<string>();
-  for (const entry of lag) {
-    for (const consumerId of entry.targetConsumerIds) {
-      if (seenTargetConsumers.has(consumerId)) {
-        continue;
-      }
-      seenTargetConsumers.add(consumerId);
-      targetConsumerIds.push(consumerId);
-    }
-  }
-  if (targetConsumerIds.length === 0) {
-    return { allowStaleFts: false };
-  }
-
-  const snapshot = kb.getCorpusStateSnapshot();
-  const forced = driver.forceCorpusApply(snapshot, {
-    reason: 'projection-artifact-lag',
-    consumers: targetConsumerIds,
-  });
-  void timeoutMs;
-  if (forced.consumers.length > 0) {
-    backendLog.warn(
-      `[kb] Projection artifact repair scheduled during boot for ${forced.consumers.join(', ')}; ` +
-        'KB will serve stale or degraded retrieval until background reconcile catches up.',
-    );
-  }
-  return { allowStaleFts: isOramaOnlyRepairTarget(targetConsumerIds) };
-}
-
 export function createCoordinatorServer(options: CoordinatorServerOptions = {}): CoordinatorServerController {
   const {
     runtime: providedRuntime,
@@ -309,14 +247,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const readCtx = { schemas: reducers.schemas, upcasters };
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
-  const curateSchedulerHealth = createCurateSchedulerHealthBridge();
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
-  // Preserve CORAL_KB_ENABLE=0's explicit disabled subsystem; otherwise the
-  // standard server path stays child-only unless a legacy KB factory is injected.
+  // Preserve CORAL_KB_ENABLE=0's explicit disabled subsystem. With no
+  // injected subsystem factory there is no parent runtime to fall back to, so
+  // the standard server path stays child-only even if legacy callers pass a
+  // false child-only override.
   const useKbChildRuntimeOnly =
-    kbEnabled && (coreOptions.useKbChildRuntimeOnly ?? providedCreateKbSubsystemFn === undefined);
+    kbEnabled && (providedCreateKbSubsystemFn === undefined || coreOptions.useKbChildRuntimeOnly === true);
+  const serverCreateKbSubsystemFn: CreateKbSubsystemFn | undefined = kbEnabled
+    ? providedCreateKbSubsystemFn
+    : () => disabledKbSubsystem();
   let handleKbChildEvent: ((message: KbChildEventMessage) => void) | null = null;
   const kbChildSupervisor = (() => {
     if (coreOptions.kbChildSupervisor) {
@@ -354,12 +296,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return getStoreServices().storeDb;
   };
   const getQueryDb = () => getStoreDb();
-  const getKbJobRecorder = () => {
-    if (core === null) {
-      throw documentedCoralSetupError('startup_not_ready');
-    }
-    return core.getKbJobRecorder();
-  };
 
   const getConsumerDriver = () => {
     const consumerDriver = getStoreServices().consumerDriver;
@@ -369,26 +305,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return consumerDriver;
   };
 
-  const getExpansionLifecycleService = () => {
-    const expansionLifecycleService = getStoreServices().expansionLifecycleService;
-    if (expansionLifecycleService === null) {
-      throw documentedCoralSetupError('startup_not_ready');
-    }
-    return expansionLifecycleService;
-  };
-  // Late-bound KB runtime accessor. Normal coordinator requests read via
-  // `subsystems.run` once KB is online/degraded. The remaining early-boot
-  // gap is narrower: `createKbSubsystem.init()` has already built the runtime
-  // but has not yet completed `runBootSequence`, so the registry must still
-  // report `initializing`. During that window, boot-only callbacks owned by
-  // already-created store services (consumer-driver corpus projection and
-  // expansion fallback recovery) need the same built runtime to finish the
-  // boot sequence that will make the registry online. `pendingKbRuntime`
-  // bridges only that bootstrap callback cycle; external KB RPCs still route
-  // through the registry and receive the initializing/offline envelope.
-  let pendingKbRuntime: KbRuntime | null = null;
+  // Late-bound KB runtime accessor. Parent-runtime test/simulation injections
+  // can still expose a subsystem resource; the production child-only path uses
+  // the proxy subsystem and therefore returns null here.
   const resolveKbRuntime = (): KbRuntime | null => {
-    if (pendingKbRuntime !== null) return pendingKbRuntime;
     const c = core;
     if (c === null) return null;
     const result = c.runtimeState.subsystems.run<KnowledgeBaseRuntime, KbRuntime>(KB_ID, (kb) => kb.kb);
@@ -402,10 +322,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return kbRuntime;
   };
   let resolveLifecyclePhase: (() => 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped') | null = null;
-  // Spec §12.3 lazy non-blocking rescan: shutdown aborts any pending background
-  // rebuild kicks so a draining instance does not start fresh KB work. Boot's
-  // blocking `wait: true` on the next coordinator picks up the staleness.
-  const corpusRescanAbort = new AbortController();
   const createStoreServicesFromDbFn = (storeDb: Database): CoordinatorStoreServices => {
     if (core === null) {
       throw documentedCoralSetupError('startup_not_ready');
@@ -539,60 +455,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     driver.notifyCorpus(message.publication.snapshot);
   };
 
-  // The seven boot steps (I0..I6) lifted from the previous
-  // `createKbSubsystemFn` closure. Runs inside the subsystem's retry loop —
-  // each step honors `signal.aborted` between operations.
-  const runBootSequence = async (built: KnowledgeBaseRuntime, signal: AbortSignal): Promise<void> => {
-    signal.throwIfAborted();
-    // Boot step 0 (I0): finish or roll back any in-flight promote-to-wiki
-    // before any corpus snapshot can be published.
-    await runKbBootStep('I0 promote recovery', () => runPromoteRecovery(built.kb));
-    signal.throwIfAborted();
-    // Boot step 1: replay any corpus publication that committed state
-    // before a prior notify failure.
-    await runKbBootStep('I1 pending corpus publication retry', () => built.kb.retryPendingCorpusPublication());
-    signal.throwIfAborted();
-    // Boot step 2: absorb external Corpus edits before replaying consumers.
-    await runKbBootStep('I2 corpus freshness rescan', () =>
-      built.kb.ensureCorpusFreshness({ wait: true, signal: corpusRescanAbort.signal }),
-    );
-    signal.throwIfAborted();
-    const driver = getConsumerDriver();
-    // Boot step 3: replay installed-tier rows + apply bundled fallback to
-    // fill empty bindings.
-    await runKbBootStep('I3 expansion recover on boot', () => getExpansionLifecycleService().recoverOnBoot());
-    signal.throwIfAborted();
-    // Korean analyzer artifacts are intentionally fetched out-of-band:
-    // boot/search stays on the Intl baseline while the model downloads, then
-    // the text projection is force-reapplied once the artifact lands.
-    startKiwiArtifactFetchOnBoot({
-      runtime,
-      kb: built.kb,
-      driver,
-      timeoutMs: bootFreshnessTimeoutMs,
-      signal,
-      onModelFetchStart: textProjectionHealth.beginModelFetch,
-      onModelFetchEnd: textProjectionHealth.endModelFetch,
-    });
-    // Boot step 4: schedule repair for unchanged-snapshot projection artifacts
-    // without extending the kernel boot path.
-    await runKbBootStep('I4 projection artifact lag repair', () =>
-      repairProjectionArtifactLagOnBoot(built.kb, driver, bootFreshnessTimeoutMs),
-    );
-    signal.throwIfAborted();
-    // Boot step 5: replay the persisted corpus snapshot into downstream consumers.
-    await runKbBootStep('I5 corpus consumer replay', () => {
-      const corpusSnapshot = built.kb.getCorpusStateSnapshot();
-      driver.notifyCorpus(corpusSnapshot);
-    });
-    backendLog.warn('[kb] Boot scheduled FTS freshness replay; serving stale/degraded retrieval until it catches up.');
-    signal.throwIfAborted();
-    if (built.curateScheduler) {
-      // Boot step 6: start background curation after consumer replay has been
-      // scheduled; read projections may still catch up asynchronously.
-      await runKbBootStep('I6 curate scheduler start', () => built.curateScheduler.start());
-    }
-  };
   core = createCoordinatorCore({
     ...coreOptions,
     providerRegistry,
@@ -606,93 +468,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
     useKbChildRuntimeOnly,
-    createKbSubsystemFn: (ctx) => {
-      // CORAL_KB_ENABLE=0: register a terminal offline KB and skip all
-      // corpus/curate wiring below. KB stays off until a daemon restart.
-      if (!kbEnabled) {
-        return disabledKbSubsystem();
-      }
-      // Coordinator wires the KB subsystem with its corpus + curate
-      // callbacks. The subsystem owns the retry loop; `runBootSequence`
-      // below contains the seven boot steps (I0..I6) that previously lived
-      // in this closure.
-      const buildOptions = {
-        ...ctx,
-        db: getStoreDb(),
-        persistCorpusState: (snapshot: KbCorpusSnapshot) =>
-          persistCorpusStateInDb(getStoreDb(), snapshot, {
-            now: () => nowDate(runtime.time),
-          }),
-        notifyCorpusMutation: async (publication: {
-          snapshot: KbCorpusSnapshot;
-          changedLanes: ('content' | 'metadata')[];
-        }) => {
-          const driver = getConsumerDriver();
-          if (publication.changedLanes.length === 1) {
-            driver.notifyCorpus(publication.snapshot, publication.changedLanes[0]);
-            return;
-          }
-          driver.notifyCorpus(publication.snapshot);
-        },
-        onCorpusPublishFailure: (failure: Parameters<typeof curateSchedulerHealth.onCorpusPublishFailure>[0]) => {
-          curateSchedulerHealth.onCorpusPublishFailure(failure);
-        },
-        onCorpusPublishSuccess: () => {
-          curateSchedulerHealth.onCorpusPublishSuccess();
-        },
-        // The curate scheduler fills stale community summaries via one recorded,
-        // abortable `kb.community_summary` agent turn. The job is backend-global,
-        // so it records against the KB corpus root.
-        createCommunitySummaryJob: (kb: KbRuntime) =>
-          createRunCommunitySummaryJob({
-            kb,
-            curateAssistant: ctx.curateAssistant,
-            recorder: getKbJobRecorder(),
-            projectRoot: ctx.paths.markdownRoot,
-          }),
-      };
-
-      const prepareRuntime = (built: KnowledgeBaseRuntime): void => {
-        // Expose the freshly built runtime to coordinator callbacks
-        // (consumer-driver, expansion lifecycle) BEFORE `runBootSequence`
-        // executes — those callbacks fire during `recoverOnBoot()` /
-        // `notifyCorpus` and would otherwise see an offline registry.
-        pendingKbRuntime = built.kb;
-        initializeCapabilityCatalog(
-          built.kb.capabilityRegistry,
-          getStoreServices().expansionManifestCatalog.listManifests(),
-          BUILTIN_CAPABILITY_DESCRIPTORS,
-        );
-        if (built.curateScheduler) {
-          built.curateScheduler = createCoordinatorCurateScheduler({
-            scheduler: built.curateScheduler,
-            db: getStoreDb(),
-            runtime,
-          });
-        }
-      };
-
-      // Test seam: when a host overrides `createKbSubsystemFn` with an
-      // async factory returning `KnowledgeBaseRuntime`, route it through
-      // the subsystem's `build` override so retry/dispose semantics still
-      // apply. Production omits this branch.
-      const buildOverride = providedCreateKbSubsystemFn;
-
-      const subsystem = createKbSubsystem({
-        ...buildOptions,
-        time: runtime.time,
-        curateBridge: curateSchedulerHealth,
-        prepareRuntime,
-        runBootSequence,
-        ...(buildOverride === undefined ? {} : { build: buildOverride }),
-      });
-      subsystem.onStatusChange((status) => {
-        if (status.phase !== 'initializing') {
-          pendingKbRuntime = null;
-        }
-      });
-      return subsystem;
-    },
+    ...(serverCreateKbSubsystemFn === undefined ? {} : { createKbSubsystemFn: serverCreateKbSubsystemFn }),
     // Production-only wiring of the real Claude-backed curate assistant. The
     // composition layer (shared with `tools/simulation`) only knows the
     // `CurateAssistantFactory` shape, never the provider runtime — see
@@ -832,20 +608,16 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
   });
   const coordinatorCore = core;
-  // The curate-scheduler health bridge wires into the KB subsystem during
-  // its `init()` phase via `attachCurateBridge` — no additional wiring here.
+  // KB lifecycle is now owned by the child proxy or an explicitly injected
+  // subsystem; the server no longer builds or boots a parent KB runtime.
   resolveLifecyclePhase = () => coordinatorCore.runtimeState.getLifecycle();
 
   return {
     server: coordinatorCore.server,
     start: () => coordinatorCore.lifecycleController.start(),
-    shutdown: (reason) => {
-      corpusRescanAbort.abort();
-      return coordinatorCore.lifecycleController.shutdown(reason);
-    },
+    shutdown: (reason) => coordinatorCore.lifecycleController.shutdown(reason),
     waitForShutdown: async () => {
       await coordinatorCore.lifecycleController.waitForShutdown();
-      corpusRescanAbort.abort();
       await finalizeStoreServices(coordinatorCore.storeServicesRef);
     },
     getLifecycle: () => coordinatorCore.runtimeState.getLifecycle(),
