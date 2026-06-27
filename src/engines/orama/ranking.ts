@@ -393,7 +393,12 @@ export function fuzzyDocumentScore(document: KbOramaDocument, terms: readonly st
   return score;
 }
 
-function collectFuzzyOramaSearchCandidates(
+/**
+ * Edit-distance fallback used when strict + ngram channels find nothing.
+ * Exported so the {@link FtsSearchResult.exhausted} contract — a truncated scan
+ * must report `exhausted: true` — can be locked by an invariant-style test.
+ */
+export function collectFuzzyOramaSearchCandidates(
   db: KbOramaDb,
   analysis: OramaSearchQueryAnalysis,
   limit: number,
