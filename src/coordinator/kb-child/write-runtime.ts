@@ -731,11 +731,21 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
     dispose,
     health() {
       const activeState = state;
+      const mutationDiagnostics = activeState?.kbSubsystem.kb.mutationLockDiagnostics();
+      const mutationBlocked =
+        mutationDiagnostics?.blocked === true
+          ? {
+              owner: mutationDiagnostics.owner,
+              ageMs: mutationDiagnostics.ageMs,
+              signaledAtMs: mutationDiagnostics.signaledAtMs,
+            }
+          : undefined;
       return {
         phase,
         ...(initializedAt === undefined ? {} : { initializedAt }),
         ...(lastError === undefined ? {} : { lastError }),
         ...(activeState === null ? {} : { curateRunning: activeState.kbSubsystem.curateScheduler.isRunning() }),
+        ...(mutationBlocked === undefined ? {} : { mutationBlocked }),
       };
     },
   };

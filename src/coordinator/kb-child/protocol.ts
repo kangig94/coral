@@ -111,6 +111,7 @@ export type KbChildKbReadHealth = {
   initializedAt?: number;
   lastError?: string;
   curateRunning?: boolean;
+  mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
 
 export type KbChildReadyMessage = {
@@ -272,7 +273,20 @@ export function isKbChildKbReadHealth(value: unknown): value is KbChildKbReadHea
       record.phase === 'disposed') &&
     (record.initializedAt === undefined || isNonNegativeFiniteNumber(record.initializedAt)) &&
     (record.lastError === undefined || typeof record.lastError === 'string') &&
-    (record.curateRunning === undefined || typeof record.curateRunning === 'boolean')
+    (record.curateRunning === undefined || typeof record.curateRunning === 'boolean') &&
+    (record.mutationBlocked === undefined || isKbChildMutationBlocked(record.mutationBlocked))
+  );
+}
+
+function isKbChildMutationBlocked(value: unknown): value is NonNullable<KbChildKbReadHealth['mutationBlocked']> {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.owner === 'string' &&
+    isNonNegativeFiniteNumber(record.ageMs) &&
+    isNonNegativeFiniteNumber(record.signaledAtMs)
   );
 }
 

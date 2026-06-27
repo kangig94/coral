@@ -25,7 +25,15 @@ describe('KB child protocol', () => {
   });
 
   it('accepts child runtime health with curate scheduler state', () => {
-    expect(isKbChildKbReadHealth({ phase: 'ready', initializedAt: 123, curateRunning: true })).toBe(true);
+    expect(
+      isKbChildKbReadHealth({
+        phase: 'ready',
+        initializedAt: 123,
+        curateRunning: true,
+        mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 123456 },
+      }),
+    ).toBe(true);
     expect(isKbChildKbReadHealth({ phase: 'ready', curateRunning: 'yes' })).toBe(false);
+    expect(isKbChildKbReadHealth({ phase: 'ready', mutationBlocked: { owner: 'reindex' } })).toBe(false);
   });
 });

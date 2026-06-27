@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbChildSupervisor, createOnlineKbChildHealth } from '#tools/testing/kb-child-supervisor.js';
 
 const openServers = new Set<Server>();
 
@@ -219,5 +219,43 @@ describe('expansion RPC before store services exist', () => {
       remediation: failure.remediation,
       context: failure.detail,
     });
+  });
+
+  it('surfaces child-owned mutation lock diagnostics through health without parent KB runtime access', async () => {
+    const token = 'test-token';
+    const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
+    const core = createCoordinatorCore({
+      runtime: makeRuntime(),
+      bootSnapshot: {
+        version: 'test-version',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+        instanceId: 'test-instance',
+        token,
+        now: () => 1_000,
+        log: () => {},
+      },
+      createServerFn: (handler) => createServer(handler),
+      kbChildSupervisor: createMockKbChildSupervisor({
+        health: createOnlineKbChildHealth({
+          kbWrite: { phase: 'ready', mutationBlocked },
+        }),
+      }),
+      runStartupRecoveryFn: async () => [],
+      getConsumerStuck: () => [],
+    });
+
+    const port = await listen(core.server);
+    const response = await fetch(`http://127.0.0.1:${port}/health`, {
+      headers: { 'x-coral-backend-token': token },
+    });
+    const body = (await response.json()) as {
+      diagnostics?: { mutationBlocked?: unknown };
+      kbChild?: { kbWrite?: { mutationBlocked?: unknown } };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.kbChild?.kbWrite?.mutationBlocked).toEqual(mutationBlocked);
+    expect(body.diagnostics?.mutationBlocked).toEqual(mutationBlocked);
   });
 });

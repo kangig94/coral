@@ -166,6 +166,7 @@ describe('/health typed shape (AC10a)', () => {
           phase: 'disposed',
           initializedAt: 1_700_000_000_056,
           curateRunning: false,
+          mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1_700_000_000_057 },
         },
         lastExit: {
           code: 0,

@@ -795,16 +795,22 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         // Strip the branded `SubsystemId` to plain string at the wire boundary;
         // transport types use `string` because the brand is enforced producer-side.
         const subsystems = runtimeState.subsystems.list().map((entry) => ({ ...entry, id: entry.id as string }));
+        const kbChild = kbChildSupervisor.read();
 
         const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
           storeServices === null ? [] : (options.getConsumerStuck() ?? []);
+        const mutationBlocked = kbChild.kbWrite?.mutationBlocked;
         const diagnostics: {
+          mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
         } = {};
+        if (mutationBlocked !== undefined) {
+          diagnostics.mutationBlocked = mutationBlocked;
+        }
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
-        const hasDiagnostics = diagnostics.consumerStuck !== undefined;
+        const hasDiagnostics = diagnostics.mutationBlocked !== undefined || diagnostics.consumerStuck !== undefined;
 
         return {
           status: legacyStatus,
@@ -829,7 +835,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           textProjectionState: options.getTextProjectionState?.() ?? 'idle',
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           subsystems,
-          kbChild: kbChildSupervisor.read(),
+          kbChild,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
         };

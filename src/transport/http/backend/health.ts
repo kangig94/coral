@@ -51,6 +51,7 @@ export type TransportKbChildRuntimeHealth = {
   initializedAt?: number;
   lastError?: string;
   curateRunning?: boolean;
+  mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
 
 export type TransportKbChildHealthSnapshot = {
@@ -258,7 +259,8 @@ function isKbChildRuntimeHealth(value: unknown): value is TransportKbChildRuntim
       value.phase === 'disposed') &&
     (value.initializedAt === undefined || isNonNegativeFiniteNumber(value.initializedAt)) &&
     (value.lastError === undefined || typeof value.lastError === 'string') &&
-    (value.curateRunning === undefined || typeof value.curateRunning === 'boolean')
+    (value.curateRunning === undefined || typeof value.curateRunning === 'boolean') &&
+    (value.mutationBlocked === undefined || isMutationBlocked(value.mutationBlocked))
   );
 }
 

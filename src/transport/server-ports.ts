@@ -63,6 +63,7 @@ export type TransportKbChildRuntimeHealth = {
   initializedAt?: number;
   lastError?: string;
   curateRunning?: boolean;
+  mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
 
 export type TransportKbChildHealthSnapshot = {
