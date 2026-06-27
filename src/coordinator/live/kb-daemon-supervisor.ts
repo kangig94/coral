@@ -1,6 +1,6 @@
 import { basename, join } from 'node:path';
 import { errorMessage, formatError } from '../../infra/error-format.js';
-import { appendBuffer, requirePipedHandles, safeKill } from './process-supervision.js';
+import { appendBuffer, gracefulKill, requirePipedHandles, safeKill } from './process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
@@ -556,85 +556,52 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       return startNow();
     });
 
-  const readKbUnavailable = (message: string): KbDaemonKbReadResult => ({
+  const kbUnavailable = (message: string): KbDaemonKbReadResult => ({
     ok: false,
     code: 'kb_unavailable',
     message,
     detail: { reason: 'kb_daemon_unavailable' },
   });
 
-  const mutateKbUnavailable = (message: string): KbDaemonKbMutationResult => ({
-    ok: false,
-    code: 'kb_unavailable',
-    message,
-    detail: { reason: 'kb_daemon_unavailable' },
-  });
-
-  const expansionRpcUnavailable = (message: string): KbDaemonExpansionResult => ({
-    ok: false,
-    code: 'kb_unavailable',
-    message,
-    detail: { reason: 'kb_daemon_unavailable' },
-  });
-
-  const sendKbReadRequest = async (request: KbDaemonKbReadRequest): Promise<KbDaemonKbReadResult> => {
-    const response = await sendRequest('kb.read', request);
+  const sendTypedRequest = async (
+    method: KbDaemonRequestMethod,
+    request: unknown,
+    isResult: (value: unknown) => value is KbDaemonKbReadResult,
+    malformedMessage: string,
+    timeoutMs?: number,
+  ): Promise<KbDaemonKbReadResult> => {
+    const response = await sendRequest(method, request, timeoutMs);
     if (!response.ok) {
-      return {
-        ok: false,
-        code: 'kb_daemon_protocol_error',
-        message: response.error.message,
-      };
+      return { ok: false, code: 'kb_daemon_protocol_error', message: response.error.message };
     }
-    if (!isKbDaemonKbReadResult(response.result)) {
-      return {
-        ok: false,
-        code: 'kb_daemon_protocol_error',
-        message: 'KB daemon returned malformed read result.',
-      };
+    if (!isResult(response.result)) {
+      return { ok: false, code: 'kb_daemon_protocol_error', message: malformedMessage };
     }
     return response.result;
   };
 
-  const sendKbMutationRequest = async (request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult> => {
+  const sendKbReadRequest = (request: KbDaemonKbReadRequest): Promise<KbDaemonKbReadResult> =>
+    sendTypedRequest('kb.read', request, isKbDaemonKbReadResult, 'KB daemon returned malformed read result.');
+
+  const sendKbMutationRequest = (request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult> => {
     const timeoutMs =
       request.method === 'createSource' || request.method === 'reindex' ? jobRequestTimeoutMs : undefined;
-    const response = await sendRequest('kb.mutate', request, timeoutMs);
-    if (!response.ok) {
-      return {
-        ok: false,
-        code: 'kb_daemon_protocol_error',
-        message: response.error.message,
-      };
-    }
-    if (!isKbDaemonKbMutationResult(response.result)) {
-      return {
-        ok: false,
-        code: 'kb_daemon_protocol_error',
-        message: 'KB daemon returned malformed mutation result.',
-      };
-    }
-    return response.result;
+    return sendTypedRequest(
+      'kb.mutate',
+      request,
+      isKbDaemonKbMutationResult,
+      'KB daemon returned malformed mutation result.',
+      timeoutMs,
+    );
   };
 
-  const sendExpansionRpcRequest = async (request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult> => {
-    const response = await sendRequest('expansion.rpc', request);
-    if (!response.ok) {
-      return {
-        ok: false,
-        code: 'kb_daemon_protocol_error',
-        message: response.error.message,
-      };
-    }
-    if (!isKbDaemonExpansionResult(response.result)) {
-      return {
-        ok: false,
-        code: 'kb_daemon_protocol_error',
-        message: 'KB daemon returned malformed expansion result.',
-      };
-    }
-    return response.result;
-  };
+  const sendExpansionRpcRequest = (request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult> =>
+    sendTypedRequest(
+      'expansion.rpc',
+      request,
+      isKbDaemonExpansionResult,
+      'KB daemon returned malformed expansion result.',
+    );
 
   const abortKbJobsNow = async (jobIds: string[]): Promise<KbDaemonAbortResult> => {
     try {
@@ -662,7 +629,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
 
   const readKbNow = async (request: KbDaemonKbReadRequest): Promise<KbDaemonKbReadResult> => {
     if (!requestRecoveryEnabled) {
-      return readKbUnavailable('KB daemon read request skipped: supervisor is disposing.');
+      return kbUnavailable('KB daemon read request skipped: supervisor is disposing.');
     }
     const failedGeneration = generation;
     const failedPhase = phase;
@@ -672,14 +639,14 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       const initialError = errorMessage(error);
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'read request recovery');
       if (recovered.phase !== 'online') {
-        return readKbUnavailable(
+        return kbUnavailable(
           `KB daemon read request failed: ${initialError}; recovery ended in ${recovered.phase}.`,
         );
       }
       try {
         return await sendKbReadRequest(request);
       } catch (retryError: unknown) {
-        return readKbUnavailable(
+        return kbUnavailable(
           `KB daemon read request failed after recovery: ${errorMessage(retryError)}; initial failure: ${initialError}`,
         );
       }
@@ -688,39 +655,39 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
 
   const mutateKbNow = async (request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult> => {
     if (!requestRecoveryEnabled) {
-      return mutateKbUnavailable('KB daemon mutation request skipped: supervisor is disposing.');
+      return kbUnavailable('KB daemon mutation request skipped: supervisor is disposing.');
     }
     const failedGeneration = generation;
     const failedPhase = phase;
     if (phase !== 'online' || daemonProcess === null) {
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'mutation request recovery');
       if (recovered.phase !== 'online') {
-        return mutateKbUnavailable(`KB daemon mutation request skipped: recovery ended in ${recovered.phase}.`);
+        return kbUnavailable(`KB daemon mutation request skipped: recovery ended in ${recovered.phase}.`);
       }
     }
     try {
       return await sendKbMutationRequest(request);
     } catch (error: unknown) {
-      return mutateKbUnavailable(`KB daemon mutation request failed: ${errorMessage(error)}; request was not retried.`);
+      return kbUnavailable(`KB daemon mutation request failed: ${errorMessage(error)}; request was not retried.`);
     }
   };
 
   const expansionRpcNow = async (request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult> => {
     if (!requestRecoveryEnabled) {
-      return expansionRpcUnavailable('KB daemon expansion request skipped: supervisor is disposing.');
+      return kbUnavailable('KB daemon expansion request skipped: supervisor is disposing.');
     }
     const failedGeneration = generation;
     const failedPhase = phase;
     if (phase !== 'online' || daemonProcess === null) {
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'expansion request recovery');
       if (recovered.phase !== 'online') {
-        return expansionRpcUnavailable(`KB daemon expansion request skipped: recovery ended in ${recovered.phase}.`);
+        return kbUnavailable(`KB daemon expansion request skipped: recovery ended in ${recovered.phase}.`);
       }
     }
     try {
       return await sendExpansionRpcRequest(request);
     } catch (error: unknown) {
-      return expansionRpcUnavailable(
+      return kbUnavailable(
         `KB daemon expansion request failed: ${errorMessage(error)}; request was not retried.`,
       );
     }
@@ -744,6 +711,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     kbWriteHealth = undefined;
 
     let spawned: DaemonProcessLike | null = null;
+    let pipedHandles: ReturnType<typeof requirePipedHandles> | undefined;
     try {
       spawned = runtime.process.spawn({
         command,
@@ -758,7 +726,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           ...(options.instanceId === undefined ? {} : { CORAL_KB_DAEMON_INSTANCE_ID: options.instanceId }),
         },
       });
-      requirePipedHandles(spawned, command);
+      pipedHandles = requirePipedHandles(spawned, command);
     } catch (error: unknown) {
       if (spawned !== null) {
         safeKill(spawned, 'SIGTERM');
@@ -768,7 +736,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       setFailure(`spawn failed: ${formatError(error)}`);
       return read();
     }
-    if (spawned === null) {
+    if (spawned === null || pipedHandles === undefined) {
       setFailure('spawn did not return a daemon process');
       return read();
     }
@@ -777,7 +745,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     pid = spawned.pid ?? null;
     const activeGeneration = generation;
     const startedAtForExit = startedAt;
-    const { stdout, stderr } = requirePipedHandles(spawned, command);
+    const { stdout, stderr } = pipedHandles;
     stdout.setEncoding('utf-8');
     stderr.setEncoding('utf-8');
 
@@ -886,7 +854,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
     if (result === 'timeout' && daemonProcess === spawned) {
       setFailure(`daemon did not become ready within ${startTimeoutMs}ms`);
-      safeKill(spawned, 'SIGTERM');
+      gracefulKill(spawned, runtime);
     }
 
     return read();
@@ -915,7 +883,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       );
       activeDaemonProcess.stdin?.end();
     } catch {
-      safeKill(activeDaemonProcess, 'SIGTERM');
+      gracefulKill(activeDaemonProcess, runtime);
     }
 
     const result = await Promise.race([closed, withAbortableTimeout(runtime, stopTimeoutMs, signal)]);
@@ -925,7 +893,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           ? 'daemon stop aborted by shutdown budget'
           : `daemon stop timed out after ${stopTimeoutMs}ms`,
       );
-      safeKill(activeDaemonProcess, 'SIGTERM');
+      gracefulKill(activeDaemonProcess, runtime);
     }
     rejectPendingRequests('KB daemon stopped');
     return read();
@@ -965,6 +933,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     dispose: async (reason = 'dispose', disposeOptions) => {
       requestRecoveryEnabled = false;
       await runExclusive(() => {
+        // Re-assert inside the exclusive turn: a start/restart queued ahead of us
+        // re-enables recovery, so disabling only before runExclusive would let a
+        // post-dispose read/mutate revive the daemon. This second write is load-bearing.
         requestRecoveryEnabled = false;
         return stopNow(reason, disposeOptions?.signal);
       });

@@ -188,9 +188,9 @@ describe('kb diagnose integration', () => {
     expect(stderr).toBe('');
     expect(stdout).toBe(
       'entry_id: note:broken-frontmatter\n' +
+        'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n' +
         'locus: frontmatter-shape\n' +
         'canonical_incident: frontmatter-shape/missing-required-fields\n' +
-        'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n' +
         'signals:\n' +
         '{\n' +
         '  "missingFields": [\n' +
@@ -202,9 +202,9 @@ describe('kb diagnose integration', () => {
         'retry_not_before: 2026-04-21T00:05:00.000Z\n' +
         '\n' +
         'entry_id: source:merge-conflict\n' +
+        'repair_hint: Resolve the conflict markers and keep one authoritative body.\n' +
         'locus: file-syntax\n' +
         'canonical_incident: file-syntax/conflict-markers\n' +
-        'repair_hint: Resolve the conflict markers and keep one authoritative body.\n' +
         'signals:\n' +
         '{\n' +
         '  "markers": [\n' +

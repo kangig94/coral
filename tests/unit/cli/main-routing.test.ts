@@ -1795,9 +1795,9 @@ describe('cli main routing', () => {
     expect(mockState.kbDiagnose).toHaveBeenCalledWith({});
     expect(stdout).toBe(
       'entry_id: note:broken-frontmatter\n' +
+        'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n' +
         'locus: frontmatter-shape\n' +
         'canonical_incident: frontmatter-shape/missing-required-fields\n' +
-        'repair_hint: Restore createdAt and updatedAt in note frontmatter.\n' +
         'signals:\n' +
         '{\n' +
         '  "missingFields": [\n' +

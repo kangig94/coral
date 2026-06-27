@@ -29,6 +29,10 @@ describe('kb-daemon-error-codes invariant', () => {
     expect(domainResultToHttp(domainError('kb_unavailable', 'unavailable')).statusCode).toBe(503);
   });
 
+  it('maps kb_daemon_protocol_error to HTTP 502 (upstream daemon returned a bad response)', () => {
+    expect(domainResultToHttp(domainError('kb_daemon_protocol_error', 'malformed read result')).statusCode).toBe(502);
+  });
+
   it('carries KB daemon remediation through domainResultToHttp', () => {
     const response = domainResultToHttp({
       ok: false,

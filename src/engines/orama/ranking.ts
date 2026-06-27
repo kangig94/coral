@@ -405,7 +405,10 @@ function collectFuzzyOramaSearchCandidates(
 
   const fuzzyScan = collectOramaDocumentsForFuzzyScan(db);
   if (fuzzyScan.truncated) {
-    return { candidates: new Map(), exhausted: false };
+    // The fuzzy scan hit its hard document cap, which `limit` cannot raise. Report
+    // exhausted so the KB-tier widening loop stops instead of doubling `limit`
+    // forever against an empty, re-truncated result.
+    return { candidates: new Map(), exhausted: true };
   }
 
   const matches = fuzzyScan.documents

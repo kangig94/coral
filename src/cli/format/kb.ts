@@ -178,9 +178,9 @@ export function formatKbDiagnose(data: KbDiagnoseResult): string {
     .map((incident) =>
       joinLines([
         `entry_id: ${incident.entry_id}`,
-        `locus: ${incident.locus ?? 'null'}`,
-        `canonical_incident: ${incident.canonical_incident ?? 'null'}`,
-        `repair_hint: ${incident.repair_hint ?? 'null'}`,
+        incident.repair_hint === null ? undefined : `repair_hint: ${incident.repair_hint}`,
+        incident.locus === null ? undefined : `locus: ${incident.locus}`,
+        incident.canonical_incident === null ? undefined : `canonical_incident: ${incident.canonical_incident}`,
         'signals:',
         JSON.stringify(incident.signals ?? null, null, 2),
         `retry_count: ${incident.retry_count}`,

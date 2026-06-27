@@ -273,16 +273,12 @@ function appendNgramSearchTerms(
   return false;
 }
 
-function takeSegmentWithinBudget(raw: string, budget: number): string {
-  return takeCodePoints(raw, budget);
-}
-
 function pushSegmentWithinBudget(segments: string[], raw: string, remaining: number): number {
   const segment = raw.trim();
   if (!segment || remaining <= 0) {
     return remaining;
   }
-  const bounded = takeSegmentWithinBudget(segment, remaining).trim();
+  const bounded = takeCodePoints(segment, remaining).trim();
   if (bounded) {
     segments.push(bounded);
   }
@@ -340,7 +336,7 @@ export function bodyNgramSourceSegments(
       leadingDone = true;
       continue;
     }
-    leadingParts.push(takeSegmentWithinBudget(trimmed, partBudget));
+    leadingParts.push(takeCodePoints(trimmed, partBudget));
     if ([...leadingParts.join(' ')].length >= maxLeadingTextChars) {
       leadingDone = true;
     }

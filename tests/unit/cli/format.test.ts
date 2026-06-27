@@ -415,7 +415,7 @@ describe('cli format', () => {
       expect(output).toContain('    attempts: 4');
       expect(output).toContain('    retry: daemon restart required');
       expect(output).not.toContain('lastErrorStack');
-      expect(output).toContain('    hint: coral-cli backend shutdown');
+      expect(output).toContain('    hint: restart the daemon: coral-cli backend shutdown');
     });
 
     it('omits the last-log line for an offline component when lastLogLine is absent', () => {
@@ -430,7 +430,30 @@ describe('cli format', () => {
       const output = formatBackendStatus(status);
       expect(output).toContain('  kb: offline');
       expect(output).not.toContain('last log:');
-      expect(output).toContain('    hint: coral-cli backend shutdown');
+      expect(output).toContain('    hint: restart the daemon: coral-cli backend shutdown');
+    });
+
+    it('points a non-retryable offline component at the failure details and reindex recovery', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [
+            {
+              id: 'kb',
+              phase: 'offline' as const,
+              reason: 'binding_empty',
+              diagnostic: { retry: 'none' as const },
+            },
+          ],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain('    retry: not retryable');
+      expect(output).toContain(
+        '    hint: review the failure details above; coral-cli kb reindex can rebuild a corrupt KB index',
+      );
     });
 
     it('omits the queue-depth line when queueDepth is absent', () => {

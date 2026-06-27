@@ -2264,6 +2264,17 @@ describe('curate', () => {
       ]);
     });
 
+    it('invokes the injected runCommunitySummaryJob during the curate community subphase', async () => {
+      const runCommunitySummaryJob = vi.fn(async (_signal: AbortSignal) => false);
+      useScheduler(noopCurateAssistant, 0, runCommunitySummaryJob);
+
+      await scheduler.start();
+      await settleCurateRuntime(scheduler);
+
+      expect(runCommunitySummaryJob).toHaveBeenCalled();
+      expect(runCommunitySummaryJob.mock.calls[0]?.[0]).toBeInstanceOf(AbortSignal);
+    });
+
     it('writes the KB gitignore block once and leaves it unchanged on a second runtime start', async () => {
       const gitignorePath = join(tempDir, '.gitignore');
       writeFileSync(gitignorePath, 'notes/\n', 'utf-8');

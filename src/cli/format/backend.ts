@@ -83,7 +83,7 @@ function formatComponentLines(component: RuntimeComponent): string[] {
       if (component.diagnostic?.retry) {
         lines.push(`    retry: ${formatOfflineRetry(component.diagnostic.retry)}`);
       }
-      lines.push('    hint: coral-cli backend shutdown');
+      lines.push(`    hint: ${formatOfflineHint(component.diagnostic?.retry)}`);
       return lines;
     }
     default:
@@ -100,6 +100,13 @@ function formatOfflineRetry(retry: 'restart-daemon' | 'none'): string {
     default:
       return assertNever(retry);
   }
+}
+
+function formatOfflineHint(retry: 'restart-daemon' | 'none' | undefined): string {
+  if (retry === 'none') {
+    return 'review the failure details above; coral-cli kb reindex can rebuild a corrupt KB index';
+  }
+  return 'restart the daemon: coral-cli backend shutdown';
 }
 
 function formatDegradedDetail(reason: DegradedReason): string {

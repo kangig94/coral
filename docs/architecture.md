@@ -186,6 +186,15 @@ The CLI's fail-fast path watches Era I and II only: `KERNEL_BIND_DEADLINE_MS` (5
 
 KB is not hosted as a coordinator component. The parent daemon registers only `createKbDaemonHealthComponent(kbDaemonSupervisor)`, which mirrors KB daemon health into `/health.components[]`; the KB daemon process owns KB runtime boot, Corpus replay, CorpusConsumer registration, Orama freshness, curate work, and expansion lifecycle. With `CORAL_KB_ENABLE=0`, the parent wires a disabled KB daemon supervisor so the health component reports terminal `offline` without spawning the KB daemon.
 
+#### KB Daemon Protocol
+
+Parent and child speak a newline-framed JSON protocol over the child's stdio (vocabulary owned by `kb-daemon/protocol.ts`; non-control stdout lines are ignored, stderr is buffered for diagnostics):
+
+- **Child → parent**: `coral.kb_daemon.ready` (one-time readiness with pid/readyAt), `coral.kb_daemon.response` (correlated reply to a parent request), and `coral.kb_daemon.event` (journal/corpus events the parent ingests into the ConsumerDriver and lifecycle reactor).
+- **Parent → child**: `coral.kb_daemon.request` carries KB reads, mutations, expansion RPC, job abort/list, and `shutdown`. Request ids are generation-scoped (`${generation}:${seq}`) so a reply from a previous daemon generation can never settle a current request.
+- **Reverse channel (child → parent → child)**: `coral.kb_daemon.parent_request` / `coral.kb_daemon.parent_response` let the daemon call back into the parent for `curate.assistant.complete` and `curate.assistant.cancel`, since the provider host that runs the curate assistant lives in the parent.
+- **Liveness**: the child runs a parent-PID watchdog (`DEFAULT_PARENT_WATCHDOG_INTERVAL_MS`, 1s) and self-terminates if the parent exits; the parent escalates a stuck child SIGTERM→SIGKILL via `gracefulKill` on start-timeout and stop.
+
 ### Discuss and KB
 
 - `coral-cli discuss ...` maps to resource routes under `/discuss/*`; the discuss domain exposes explicit coordinator-facing owner modules for commands, reads, and recovery rather than a compatibility `api.ts` facade
@@ -193,7 +202,7 @@ KB is not hosted as a coordinator component. The parent daemon registers only `c
 - Discuss follows the functional-core / imperative-shell pattern: the core is pure event-sourced state transitions; the shell carries persistence, loop control, and subflows
 - KB markdown is the Corpus authority for notes, sources, principles, communities, and wiki entries. Memos are project-scoped scratch artifacts that can be promoted into Corpus notes or wiki entries. Source import and explicit reindex are job-owned by the coordinator because they can be long-running; lightweight KB reads, note mutations, wiki mutations, and memo operations stay direct commands.
 - KB markdown syncs across machines through git. Custom merge drivers make derivative files converge where possible (`.entity-graph.json`, note/source/community frontmatter), while tracked provenance (`inputFingerprint` and `summaryInputFingerprint`) lets a peer skip LLM work already computed for the current content.
-- Retrieval projections are CorpusConsumers. Orama is the always-present base retrieval consumer (constructor-time default of the `kb.vector` and `kb.fts` `RuntimeBinding<Backed<T>>` cells); Needle is an Expansion that binds `kb.vector` when equipped. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling expansion status.
+- Retrieval projections are CorpusConsumers. The `kb.fts`, `kb.vector`, and `kb.embedding` `RuntimeBinding<Backed<T>>` cells are constructed empty; bundled Orama binds `kb.fts` during expansion lifecycle startup (it does not fill `kb.vector` or `kb.embedding`), and Needle is an Expansion that binds `kb.vector` when equipped. Commands that need retrieval readiness wait through `ConsumerDriver.waitFreshUntil('corpus', snapshot, consumerId)` instead of polling expansion status.
 
 ## Module Map
 

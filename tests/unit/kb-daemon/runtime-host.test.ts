@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
@@ -71,10 +71,13 @@ function readImportPath(value: unknown): string {
 }
 
 describe('KB daemon runtime host', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('cleans orphaned source import runtime artifacts during boot', async () => {
     const root = createTempRoot();
-    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
@@ -102,11 +105,6 @@ describe('KB daemon runtime host', () => {
       await host.dispose().catch(() => undefined);
       db.close();
       rmSync(runtimeDir, { recursive: true, force: true });
-      if (previousClaudeConfigDir === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      } else {
-        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
-      }
       while (tempRoots.length > 0) {
         rmSync(tempRoots.pop()!, { recursive: true, force: true });
       }
@@ -115,8 +113,7 @@ describe('KB daemon runtime host', () => {
 
   it('waits for the daemon Orama corpus consumer before completing source imports', async () => {
     const root = createTempRoot();
-    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const projectRoot = join(root, 'project-a');
@@ -206,11 +203,6 @@ describe('KB daemon runtime host', () => {
       await host.dispose().catch(() => undefined);
       db.close();
       rmSync(runtimeDir, { recursive: true, force: true });
-      if (previousClaudeConfigDir === undefined) {
-        delete process.env.CLAUDE_CONFIG_DIR;
-      } else {
-        process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
-      }
       while (tempRoots.length > 0) {
         rmSync(tempRoots.pop()!, { recursive: true, force: true });
       }

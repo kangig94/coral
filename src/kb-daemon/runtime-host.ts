@@ -117,10 +117,6 @@ export type KbDaemonWriteRuntimeHost = {
   health(): KbDaemonKbReadHealth;
 };
 
-function createRuntime(pluginRoot: string): Runtime {
-  return createRealRuntime(readBuildFlavor(pluginRoot));
-}
-
 function createUnavailableCurateAssistant(): CurateAssistantPort {
   return {
     async complete() {
@@ -243,7 +239,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   const disposedError = (): KbToolResult => kbError('kb_unavailable', `KB daemon write runtime is ${phase}.`);
 
   const build = async (): Promise<KbDaemonWriteRuntimeState> => {
-    const runtime = options.runtime ?? createRuntime(options.pluginRoot);
+    const runtime = options.runtime ?? createRealRuntime(readBuildFlavor(options.pluginRoot));
     const ownsDb = options.db === undefined;
     let db: WritableDatabase | null = null;
     let consumerDriver: ConsumerDriver | null = null;
@@ -556,6 +552,8 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
             return { ok: true, data: await rpc.listExpansion((request.args ?? {}) as never) };
           case 'readBinding':
             return { ok: true, data: await rpc.readBinding(request.args as never) };
+          default:
+            return kbError('invalid_request', `Unknown expansion method: ${String(request.method)}`);
         }
       } catch (error: unknown) {
         return expansionRpcError(error);

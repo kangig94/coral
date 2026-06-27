@@ -1,4 +1,3 @@
-import type { Runtime } from '../runtime/ports.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { isRecord } from '../infra/json.js';
@@ -86,10 +85,6 @@ export type KbDaemonRequestService = {
   warmup(): Promise<KbDaemonKbReadHealth>;
   health(): KbDaemonKbReadHealth;
 };
-
-function createRuntime(pluginRoot: string): Runtime {
-  return createRealRuntime(readBuildFlavor(pluginRoot));
-}
 
 function createContext(state: KbDaemonRequestServiceState, ctx?: KbDaemonRequestContext) {
   const runtime = state.getRuntime();
@@ -358,7 +353,7 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
         return runtime;
       }
       try {
-        runtime = createRuntime(options.pluginRoot);
+        runtime = createRealRuntime(readBuildFlavor(options.pluginRoot));
         markReady();
       } catch (error: unknown) {
         markFailure(error);

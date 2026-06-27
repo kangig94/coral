@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
+import { KB_COMPONENT_ID, type RuntimeComponentId } from '#src/coordinator/runtime-components/contract.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 
 import { createStubRuntimeComponent, runtimeComponentPhase } from './stub.js';
@@ -73,5 +73,27 @@ describe('createRuntimeComponentRegistry', () => {
     const ctrl = new AbortController();
     await registry.disposeAll(ctrl.signal);
     expect(disposeSpy).toHaveBeenCalledWith(ctrl.signal);
+  });
+
+  it('disposeAll keeps disposing peers and resolves when one component dispose rejects', async () => {
+    const registry = createRuntimeComponentRegistry();
+
+    const failing = createStubRuntimeComponent({
+      id: KB_COMPONENT_ID,
+      initialPhase: runtimeComponentPhase.online(KB_COMPONENT_ID),
+    });
+    (failing as unknown as { dispose: () => Promise<void> }).dispose = () =>
+      Promise.reject(new Error('dispose boom'));
+    registry.register(failing);
+
+    const peerId = 'peer' as RuntimeComponentId;
+    const peer = createStubRuntimeComponent({ id: peerId, initialPhase: runtimeComponentPhase.online(peerId) });
+    const peerDisposeSpy = vi.fn().mockResolvedValue(undefined);
+    (peer as unknown as { dispose: typeof peerDisposeSpy }).dispose = peerDisposeSpy;
+    registry.register(peer);
+
+    const ctrl = new AbortController();
+    await expect(registry.disposeAll(ctrl.signal)).resolves.toBeUndefined();
+    expect(peerDisposeSpy).toHaveBeenCalledWith(ctrl.signal);
   });
 });

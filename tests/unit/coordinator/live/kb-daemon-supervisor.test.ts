@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createDisabledKbDaemonSupervisor,
   createKbDaemonSupervisor,
   type KbDaemonCurateAssistantHandler,
 } from '#src/coordinator/live/kb-daemon-supervisor.js';
@@ -160,6 +161,45 @@ describe('KB daemon supervisor', () => {
       startedAt: 1_000_000,
       readyAt: 1_000_123,
     });
+  });
+
+  it('reports failed when the daemon closes before emitting ready', async () => {
+    const daemonProcess = new FakeDaemonProcess(102);
+    const { runtime } = createRuntime([daemonProcess]);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    daemonProcess.emitClose(1, null);
+
+    await expect(start).resolves.toMatchObject({ phase: 'failed', generation: 1, pid: null });
+  });
+
+  it('reports failed and escalates SIGTERM→SIGKILL when the daemon misses the start timeout', async () => {
+    const daemonProcess = new FakeDaemonProcess(103);
+    const { runtime, time } = createRuntime([daemonProcess]);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      startTimeoutMs: 50,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    time.tick(50);
+
+    await expect(start).resolves.toMatchObject({ phase: 'failed', generation: 1 });
+    expect(daemonProcess.killedSignals).toContain('SIGTERM');
+
+    time.tick(5_000);
+    expect(daemonProcess.killedSignals).toContain('SIGKILL');
   });
 
   it('probes the daemon over the JSONL control protocol and records heartbeat health', async () => {
@@ -1006,5 +1046,49 @@ describe('KB daemon supervisor', () => {
       generation: 2,
       pid: 202,
     });
+  });
+});
+
+describe('createDisabledKbDaemonSupervisor', () => {
+  it('reports a terminal disabled snapshot from read/start/probe', async () => {
+    const supervisor = createDisabledKbDaemonSupervisor('disabled (CORAL_KB_ENABLE=0)');
+
+    expect(supervisor.read()).toMatchObject({
+      enabled: false,
+      phase: 'disabled',
+      generation: 0,
+      pid: null,
+      reason: 'disabled (CORAL_KB_ENABLE=0)',
+    });
+    await expect(supervisor.start()).resolves.toMatchObject({ phase: 'disabled', enabled: false });
+    await expect(supervisor.probe()).resolves.toMatchObject({ phase: 'disabled' });
+  });
+
+  it('returns a kb_disabled envelope for reads, mutations, and expansion RPC without spawning', async () => {
+    const supervisor = createDisabledKbDaemonSupervisor();
+
+    await expect(supervisor.readKb({ method: 'readNote', args: {} } as never)).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_disabled',
+      detail: { reason: 'kb_daemon_disabled' },
+    });
+    await expect(supervisor.mutateKb({ method: 'createNote', args: {} } as never)).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_disabled',
+    });
+    await expect(supervisor.expansionRpc({ method: 'listExpansion', args: {} } as never)).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_disabled',
+    });
+  });
+
+  it('reports every requested job as not found on abort and disposes cleanly', async () => {
+    const supervisor = createDisabledKbDaemonSupervisor();
+
+    await expect(supervisor.abortKbJobs?.(['jb-1', 'jb-2'])).resolves.toEqual({
+      aborted: [],
+      notFound: ['jb-1', 'jb-2'],
+    });
+    await expect(supervisor.dispose()).resolves.toBeUndefined();
   });
 });

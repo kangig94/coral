@@ -80,6 +80,9 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
     case 'discuss_error':
       statusCode = 500;
       break;
+    case 'kb_daemon_protocol_error':
+      statusCode = 502;
+      break;
   }
   const body = {
     code: result.code,
