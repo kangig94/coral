@@ -77,7 +77,7 @@ export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
 
-  if (process.env.CORAL_KB_CHILD === '1' || process.argv.includes('--kb-child')) {
+  if (process.env.CORAL_KB_CHILD === '1') {
     return runKbChildMain({
       pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
     });

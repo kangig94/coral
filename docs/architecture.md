@@ -18,7 +18,7 @@ The product frame is coding assistance. The architecture frame is local coordina
 | Long-term coding memory | KB Corpus authority + retrieval projections |
 | Provider continuity | Sessions authority |
 | Long-running observable work | Jobs authority |
-| Optional sharper retrieval | Coordinator-owned expansion lifecycle |
+| Optional sharper retrieval | KB child expansion lifecycle |
 
 This frame constrains new code: first name the truth owner, then decide whether the work is direct, durable, or projection freshness, then compose cross-domain behavior only in the coordinator or CLI.
 
@@ -184,7 +184,7 @@ Backend boot is split into three sequential eras so the CLI gets a usable socket
 
 The CLI's fail-fast path watches Era I and II only: `KERNEL_BIND_DEADLINE_MS` (5s) for first health response after spawn, `KERNEL_READY_DEADLINE_MS` (15s) for the daemon to reach the `running` phase. Era III takes whatever time it needs without holding the CLI. `HANDOFF_DRAIN_TIMEOUT_MS` (30s) bounds the incumbent's drain on socket handoff. All three values are constants in `src/transport/ipc/ensure.ts` and `src/coordinator/shutdown.ts`.
 
-KB is the only subsystem in 0.7.1; new long-init subsystems register through `subsystems.register(createXxxSubsystem(...))` in `coordinator/composition/index.ts` and inherit the same retry/error-envelope/`/health` surface. A subsystem can also be registered as an intentionally inert variant — `disabledKbSubsystem()` (wired when `CORAL_KB_ENABLE=0`) conforms to the same `Subsystem<R>` contract but builds no runtime, runs no boot sequence, and reports a terminal `offline` status; this is the pattern for a feature-flag-gated subsystem.
+KB is the only subsystem in 0.7.1, but the parent daemon registers only a proxy subsystem. `createKbChildProxySubsystem(kbChildSupervisor)` mirrors KB child health into the retry/error-envelope/`/health` surface; the child process owns KB runtime boot, Corpus replay, CorpusConsumer registration, Orama freshness, curate work, and expansion lifecycle. With `CORAL_KB_ENABLE=0`, the parent wires a disabled KB child supervisor so the proxy reports terminal `offline` without spawning a child.
 
 ### Discuss and KB
 
@@ -225,8 +225,9 @@ KB is the only subsystem in 0.7.1; new long-init subsystems register through `su
 | `sessions/` | Provider continuity and session scope | Session streams/projections | Provider-owned opaque continuity | Job terminal policy |
 | `workflow/` | Semantic plan, slots, dependency shape | Workflow streams/projections | Jobs via coordinator composition | Provider/session persistence |
 | `discuss/` | Discuss events, state machine, shell loop | Discuss streams/projections | Provider execution through injected shell seams | Coordinator lifecycle |
-| `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | Expansion-bound backends through `KbRuntime` `RuntimeBinding<Backed<T>>` cells | Expansion lifecycle, coordinator startup |
-| `coordinator/` | Live state, startup order, expansion lifecycle, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary |
+| `kb/` | Corpus markdown and KB query semantics | Corpus files under mutation lock | `KbRuntime` contracts and `RuntimeBinding<Backed<T>>` cells | Expansion lifecycle or process supervision |
+| `coordinator/kb-child/` | Child-owned KB runtime boot, mutation/read RPC, expansion lifecycle | KB runtime state and child job control | KB domain ops/contracts | Parent daemon lifecycle truth |
+| `coordinator/` | Live state, startup order, KB child supervision, cross-domain assembly | Authority writes through domain shells/substrates | Broad domain owner modules/contracts | Domain vocabulary or KB runtime ownership |
 | `transport/` | Wire parsing, validation, response mapping | Nothing authoritative | Coordinator ports and domain contracts | Business behavior |
 | `cli/` | User command parsing, local startup, activation glue | No domain truth directly | IPC/HTTP clients and read facade | Coordinator lifecycle truth |
 | `infra/` / `runtime/` | Low-level path, flavor, I/O ports | Files/process/env through ports | No domain imports | Domain concepts |
@@ -261,14 +262,14 @@ Coordinator startup
     -> discuss shell recovery startup
     -> workflowRecover.resumeAll
   Era III — Subsystems (fire-and-forget; CLI no longer blocked)
-    -> CORAL_KB_ENABLE=0 ? subsystems.register(disabledKbSubsystem())  // terminal offline, no boot work
-                          : subsystems.register(createKbSubsystem(...))
+    -> createKbChildProxySubsystem(kbChildSupervisor)
+       (CORAL_KB_ENABLE=0 uses a disabled supervisor: terminal offline, no child spawn)
     -> subsystems.initAll()
-        KB subsystem retry loop (3×1/4/16s), enabled path only:
-          -> Absorb KB Corpus edits into text artifacts
-          -> Register KB CorpusConsumers
-          -> Replay Corpus snapshot, wait for Orama base freshness
-          -> phase: online (or degraded/offline)
+        KB proxy mirrors child health; enabled child boot owns:
+          -> Corpus replay and pending publication retry
+          -> CorpusConsumer registration and Orama base freshness
+          -> Curate scheduler, source import/reindex services
+          -> Expansion lifecycle recovery
 
 Discuss shell
   -> Pure discuss core (state machine + reducer)

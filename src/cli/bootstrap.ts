@@ -8,7 +8,7 @@ const parseKeepAlive = setInterval(() => undefined, 2 ** 31 - 1);
 // The bundled CLI entrypoint is CommonJS, so top-level await is unavailable.
 // Keep the process alive while async command handlers are still awaiting
 // unref'ed runtime timers such as coordinator startup polling.
-void program
+export const bootstrapCompletion = program
   .parseAsync(process.argv)
   .catch((error) => {
     if (isCommanderDisplayOnlyError(error)) {
@@ -26,3 +26,5 @@ void program
   .finally(() => {
     clearInterval(parseKeepAlive);
   });
+
+void bootstrapCompletion;

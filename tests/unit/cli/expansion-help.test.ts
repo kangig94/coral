@@ -28,9 +28,8 @@ describe('expansion bootstrap output', () => {
       return true;
     }) as typeof process.stderr.write);
 
-    await import('#src/cli/bootstrap.js');
-    await Promise.resolve();
-    await Promise.resolve();
+    const { bootstrapCompletion } = await import('#src/cli/bootstrap.js');
+    await bootstrapCompletion;
   }
 
   afterEach(() => {

@@ -102,7 +102,7 @@ vi.mock('#src/kb/ops/wake-up.js', () => ({ generateWakeUpPacket: mockState.gener
 
 const KB_ROOT = '/virtual/kb';
 
-function createKbSubsystem(): KnowledgeBaseRuntime {
+function createKbToolRuntime(): KnowledgeBaseRuntime {
   return {
     kb: {
       notePath: (slug: string) => `${KB_ROOT}/notes/${slug}.md`,
@@ -191,7 +191,7 @@ describe('kb-tools', () => {
   });
 
   it.each([
-    ['search', () => handleKbSearch({ query: 'contracts', extra: true }, createKbSubsystem())],
+    ['search', () => handleKbSearch({ query: 'contracts', extra: true }, createKbToolRuntime())],
     ['read', () => handleKbRead({ note: 'contracts/overview', extra: true }, testContext, testRuntime)],
     [
       'promote',
@@ -205,20 +205,20 @@ describe('kb-tools', () => {
             topic: 'routing',
             extra: true,
           },
-          createKbSubsystem(),
+          createKbToolRuntime(),
           testContext,
           testRuntime,
         ),
     ],
     [
       'update',
-      () => handleKbUpdate({ note: 'contracts/overview', title: 'Updated', extra: true }, createKbSubsystem()),
+      () => handleKbUpdate({ note: 'contracts/overview', title: 'Updated', extra: true }, createKbToolRuntime()),
     ],
-    ['delete', () => handleKbDelete({ note: 'contracts/overview', extra: true }, createKbSubsystem())],
-    ['source-list', () => handleKbSourceList({ extra: true }, createKbSubsystem())],
-    ['source-delete', () => handleKbSourceDelete({ slug: 'bridge-removal-plan', extra: true }, createKbSubsystem())],
-    ['diagnose', () => handleKbDiagnose({ extra: true }, createKbSubsystem())],
-    ['principles', () => handleKbPrinciples({ query: 'contract', extra: true }, createKbSubsystem())],
+    ['delete', () => handleKbDelete({ note: 'contracts/overview', extra: true }, createKbToolRuntime())],
+    ['source-list', () => handleKbSourceList({ extra: true }, createKbToolRuntime())],
+    ['source-delete', () => handleKbSourceDelete({ slug: 'bridge-removal-plan', extra: true }, createKbToolRuntime())],
+    ['diagnose', () => handleKbDiagnose({ extra: true }, createKbToolRuntime())],
+    ['principles', () => handleKbPrinciples({ query: 'contract', extra: true }, createKbToolRuntime())],
     [
       'memo',
       () =>
@@ -235,7 +235,7 @@ describe('kb-tools', () => {
   });
 
   it('uses search defaults after schema parsing', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.searchKb.mockResolvedValue({ hits: ['note:a'] });
 
     const result = await handleKbSearch({ query: 'contracts' }, kbSubsystem);
@@ -248,7 +248,7 @@ describe('kb-tools', () => {
   });
 
   it('forwards explicit search modes after schema parsing', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.searchKb.mockResolvedValue({ hits: ['note:a'], mode: 'vector' });
 
     const result = await handleKbSearch({ query: 'contracts', mode: 'vector' }, kbSubsystem);
@@ -284,7 +284,7 @@ describe('kb-tools', () => {
   });
 
   it('reads a note by slug via the per-kind note handler', () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     setMockFile(
       notePathFromName('contract-first-design', KB_ROOT),
       `---
@@ -316,11 +316,11 @@ State contracts first.
   });
 
   it('returns not_found for a missing note read', () => {
-    expectNotFound(handleKbNoteRead('missing-note', testContext, testRuntime, createKbSubsystem()));
+    expectNotFound(handleKbNoteRead('missing-note', testContext, testRuntime, createKbToolRuntime()));
   });
 
   it('reads a source by slug via the per-kind source handler', () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     setMockFile(
       kbSubsystem.kb.sourcePath('bridge-removal-plan'),
       `---
@@ -347,11 +347,11 @@ Source body.
   });
 
   it('returns not_found for a missing source read', () => {
-    expectNotFound(handleKbSourceRead('missing-source', createKbSubsystem(), testRuntime));
+    expectNotFound(handleKbSourceRead('missing-source', createKbToolRuntime(), testRuntime));
   });
 
   it('reads a community by slug via the per-kind community handler', () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     setMockFile(
       kbSubsystem.kb.communityPath('graph-rag'),
       `---
@@ -395,11 +395,11 @@ Clusters graph-backed retrieval notes.
   });
 
   it('returns not_found for a missing community read', () => {
-    expectNotFound(handleKbCommunityRead('missing-community', createKbSubsystem(), testRuntime));
+    expectNotFound(handleKbCommunityRead('missing-community', createKbToolRuntime(), testRuntime));
   });
 
   it('reads a wiki by slug via the per-kind wiki handler', () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     setMockFile(
       wikiPathFromName('living-knowledge', KB_ROOT),
       `---
@@ -444,7 +444,7 @@ Wiki entries keep durable understanding.
   });
 
   it('returns not_found for a missing wiki read', () => {
-    expectNotFound(handleKbWikiRead('missing-wiki', createKbSubsystem(), testRuntime));
+    expectNotFound(handleKbWikiRead('missing-wiki', createKbToolRuntime(), testRuntime));
   });
 
   it('reads a memo by slug via the per-kind memo handler', () => {
@@ -500,7 +500,7 @@ Scratch body.
   });
 
   it('reads a principle by slug via the per-kind principle handler', () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     const raw = '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n';
     setMockFile(kbSubsystem.kb.principlePath('contract-first-design'), raw);
 
@@ -520,7 +520,7 @@ Scratch body.
   });
 
   it('returns not_found for a missing principle read', () => {
-    expectNotFound(handleKbPrincipleRead('missing-principle', createKbSubsystem(), testRuntime));
+    expectNotFound(handleKbPrincipleRead('missing-principle', createKbToolRuntime(), testRuntime));
   });
 
   it('keeps memo precedence for timestamp-shaped bare reads', () => {
@@ -549,7 +549,7 @@ Note body.
 `,
     );
 
-    expect(handleKbRead({ note: slug }, testContext, testRuntime, createKbSubsystem())).toEqual({
+    expect(handleKbRead({ note: slug }, testContext, testRuntime, createKbToolRuntime())).toEqual({
       ok: true,
       data: {
         kind: 'memo',
@@ -563,7 +563,7 @@ Note body.
   });
 
   it('dispatches explicit community selectors through the shared read contract', () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     setMockFile(
       kbSubsystem.kb.communityPath('graph-rag'),
       `---
@@ -628,22 +628,22 @@ level: 1
   });
 
   it.each([
-    ['wiki-create', () => handleKbWikiCreate({ slug: 'living-knowledge', extra: true }, createKbSubsystem())],
+    ['wiki-create', () => handleKbWikiCreate({ slug: 'living-knowledge', extra: true }, createKbToolRuntime())],
     [
       'wiki-rewrite',
       () =>
         handleKbWikiRewrite(
           { slug: 'living-knowledge', understandingFile: '/tmp/u.md', extra: true },
-          createKbSubsystem(),
+          createKbToolRuntime(),
         ),
     ],
     [
       'wiki-link',
-      () => handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbSubsystem()),
+      () => handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbToolRuntime()),
     ],
     [
       'wiki-unlink',
-      () => handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbSubsystem()),
+      () => handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:a'], extra: true }, createKbToolRuntime()),
     ],
     [
       'wiki-cite',
@@ -655,18 +655,18 @@ level: 1
             evidenceFile: '/tmp/e.md',
             extra: true,
           },
-          createKbSubsystem(),
+          createKbToolRuntime(),
         ),
     ],
-    ['wiki-delete', () => handleKbWikiDelete({ slug: 'living-knowledge', extra: true }, createKbSubsystem())],
-    ['wiki-list', () => handleKbWikiList({ extra: true }, createKbSubsystem())],
-    ['wake-up', () => handleKbWakeUp({ extra: true }, createKbSubsystem())],
+    ['wiki-delete', () => handleKbWikiDelete({ slug: 'living-knowledge', extra: true }, createKbToolRuntime())],
+    ['wiki-list', () => handleKbWikiList({ extra: true }, createKbToolRuntime())],
+    ['wake-up', () => handleKbWakeUp({ extra: true }, createKbToolRuntime())],
   ])('rejects undeclared fields for %s', async (_name, run) => {
     expectInvalidRequest(await run());
   });
 
   it('handleKbWikiCreate calls createWiki and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.createWiki.mockResolvedValue({ slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiCreate({ slug: 'living-knowledge' }, kbSubsystem);
@@ -682,7 +682,7 @@ level: 1
   });
 
   it('handleKbWikiRewrite calls rewriteWikiUnderstanding and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.rewriteWikiUnderstanding.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiRewrite({ slug: 'living-knowledge', understandingFile: '/tmp/u.md' }, kbSubsystem);
@@ -696,7 +696,7 @@ level: 1
   });
 
   it('handleKbWikiLink calls linkWikiKnowledge and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.linkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbSubsystem);
@@ -710,7 +710,7 @@ level: 1
   });
 
   it('handleKbWikiUnlink calls unlinkWikiKnowledge and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.unlinkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbSubsystem);
@@ -724,7 +724,7 @@ level: 1
   });
 
   it('handleKbWikiCite calls citeWikiKnowledge and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.citeWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiCite(
@@ -746,7 +746,7 @@ level: 1
   });
 
   it('handleKbWikiAdopt calls adoptIntoWiki with the project root and wires onSchedule to curate scheduler', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.adoptIntoWiki.mockImplementation(async (_kb, _projectRoot, _input, onSchedule: () => void) => {
       onSchedule();
       return { path: '/virtual/kb/notes/coral-kb-promotion.md', wikiSlug: 'living-knowledge' };
@@ -785,7 +785,7 @@ level: 1
   });
 
   it('handleKbWikiDelete calls deleteWiki and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.deleteWiki.mockResolvedValue({ deleted: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiDelete({ slug: 'living-knowledge' }, kbSubsystem);
@@ -796,7 +796,7 @@ level: 1
   });
 
   it('handleKbWikiList wraps listWikis in the wikis envelope', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.listWikis.mockResolvedValue([
       { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], createdAt: '', updatedAt: '' },
     ]);
@@ -808,7 +808,7 @@ level: 1
   });
 
   it('handleKbWakeUp forwards the project arg after schema parsing', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.generateWakeUpPacket.mockReturnValue('## wake-up packet body');
 
     const result = await handleKbWakeUp({ project: 'kangig94-coral' }, kbSubsystem);
@@ -818,7 +818,7 @@ level: 1
   });
 
   it('handleKbWakeUp returns an empty packet when project is omitted', async () => {
-    const kbSubsystem = createKbSubsystem();
+    const kbSubsystem = createKbToolRuntime();
     mockState.generateWakeUpPacket.mockReturnValue('');
 
     const result = await handleKbWakeUp({}, kbSubsystem);

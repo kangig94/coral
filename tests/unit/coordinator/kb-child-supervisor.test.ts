@@ -114,7 +114,7 @@ describe('KB child supervisor', () => {
     expect(spawnCalls).toEqual([
       expect.objectContaining({
         command: '/node',
-        args: ['/plugin/bridge/coral-backend.cjs', '--kb-child'],
+        args: ['/plugin/bridge/coral-backend.cjs'],
         cwd: '/plugin',
         envAdditions: expect.objectContaining({
           CORAL_KB_CHILD: '1',
@@ -297,7 +297,14 @@ describe('KB child supervisor', () => {
       `${JSON.stringify({
         type: 'coral.kb_child.event',
         event: 'journal',
-        appended: [{ seq: 1, ts: '2026-06-26T00:00:00.000Z', type: 'job.progress.emitted', stream: { kind: 'job', id: 'job-1' } }],
+        appended: [
+          {
+            seq: 1,
+            ts: '2026-06-26T00:00:00.000Z',
+            type: 'job.progress.emitted',
+            stream: { kind: 'job', id: 'job-1' },
+          },
+        ],
       })}\n`,
     );
     await flushMicrotasks();

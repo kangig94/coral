@@ -627,7 +627,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     try {
       spawned = runtime.process.spawn({
         command,
-        args: [entrypoint, '--kb-child'],
+        args: [entrypoint],
         cwd: pluginRoot,
         envAdditions: {
           CORAL_KB_CHILD: '1',

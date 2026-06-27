@@ -97,7 +97,7 @@ The coordinator layer owns process lifecycle, the three-era boot sequence (Kerne
 
 - `contract.ts` — `Subsystem<R>` (init / dispose / resource), `SubsystemStatus` (5-state phase: `pending → initializing → online | degraded | offline`), `DegradedReason` (discriminated union, currently only `{ kind: 'curate-publish'; consecutiveFailures; lastError }`), branded `SubsystemId`, and `SubsystemUnavailableError`.
 - `registry.ts` — `createSubsystemRegistry()` exposing `register / initAll / disposeAll / run / runAsync / list / status`. `run(id, fn)` resolves the subsystem's `R` and runs `fn(R)` only when `phase === 'online'`; otherwise it returns a `SubsystemErrorEnvelope = { ok: false, code, message, remediation? }`.
-- `kb.ts` — the only registered subsystem in 0.7.1. `createKbSubsystem(deps)` runs the KB boot pipeline (Corpus replay + CorpusConsumer registration + Orama freshness wait) inside a retry loop (3 attempts at 1s/4s/16s). `buildKbRuntime` and `initializeCapabilityCatalog` are hoisted outside the loop so retries do not duplicate work. `disabledKbSubsystem()` is the inert variant the coordinator wires when `CORAL_KB_ENABLE=0`: it conforms to `Subsystem<R>`, builds no runtime and runs no boot sequence, and reports a terminal `offline` status carrying the shared `KB_DISABLED_REASON` (from `infra/kb-toggle.ts`). The CLI matches that reason on `/health` to decide whether to restart the daemon and re-enable KB; `registry.run`/`runAsync` map it to a `kb_disabled` envelope whose remediation points at the env var rather than a bare restart.
+- `kb.ts` is represented in the parent daemon by a proxy subsystem. `createKbChildProxySubsystem(kbChildSupervisor)` mirrors child health into the subsystem registry; the KB child process owns the boot pipeline (Corpus replay + CorpusConsumer registration + Orama freshness wait), runtime construction, curate work, and expansion lifecycle. When `CORAL_KB_ENABLE=0`, the parent wires a disabled child supervisor, so the proxy reports terminal `offline` with `KB_DISABLED_REASON` and does not spawn a child. The CLI matches that reason on `/health` to decide whether to restart the daemon and re-enable KB; `registry.run`/`runAsync` map it to a `kb_disabled` envelope whose remediation points at the env var rather than a bare restart.
 
 A `SubsystemErrorEnvelope` lifts to HTTP 503 (`kb_initializing` while the lane is still attempting init; `kb_offline` once retries are exhausted) and to the CLI through the standard error envelope with the `remediation` field. New long-init coordinator services should be added as `Subsystem<R>` implementations rather than as bespoke startup branches.
 
@@ -142,14 +142,14 @@ coordinator API
   -> jobs domain owner modules/contracts
   -> sessions domain owner modules/contracts
   -> provider adapters
-  -> expansion lifecycle service
+  -> KB child expansion proxy
   -> live launch / host management
   -> provider host manager
 
 coordinator startup (three eras)
   Era I  Kernel:     Journal open, freshness drain, transport listeners bound (lifecycle = kernel-ready)
   Era II Recovery:   jobs / discuss / workflow startup reconcile (lifecycle = running)
-  Era III Subsystems: subsystems.initAll() — fire-and-forget; KB subsystem retries on its own
+  Era III Subsystems: subsystems.initAll() — fire-and-forget; KB proxy mirrors child health while the child owns boot
 
 discuss shell
   -> discuss pure core
@@ -174,7 +174,7 @@ These are the load-bearing boundaries that must not leak:
 - Each domain owner module/contract set is the coordinator-facing surface for its domain; deleted `api.ts` barrels and compatibility shims are not recreated for convenience.
 - `store/` is the SQL/Journal substrate; `read-model/CoralStore` composes product reads over domain-owned query modules.
 - Domain registries own event schemas, append validators, and reducers; `store/` only runs the composed validators transactionally.
-- Expansion lifecycle is coordinator-owned: transport reaches it through `ExpansionLifecycleService`, and KB routing reads the active backend through `kbRuntime.<name>.read()` on each `RuntimeBinding<Backed<T>>` cell.
+- Expansion lifecycle is KB-child-owned: transport reaches it through the parent `KbChildSupervisor.expansionRpc` proxy, and the child resolves active backends through `kbRuntime.<name>.read()` on each `RuntimeBinding<Backed<T>>` cell.
 - KB retrieval projections are rebuildable consumers of the Corpus authority; source import and explicit reindex readiness wait on `ConsumerDriver.waitFreshUntil('corpus', ...)`.
 - KB source import/reindex failure facts are recorded by coordinator-owned KB job recording glue as job progress cause events; the KB domain remains Corpus authority only.
 - Legacy compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.
