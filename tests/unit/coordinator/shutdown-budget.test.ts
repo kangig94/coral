@@ -66,14 +66,12 @@ function buildHarness(opts: {
       setLifecycle: (s) => {
         callLog.push(`setLifecycle:${s}`);
       },
-      subsystems: {
+      components: {
         register: () => {},
         initAll: () => {},
         disposeAll: async () => {
-          callLog.push('subsystems.disposeAll');
+          callLog.push('components.disposeAll');
         },
-        run: () => ({ ok: false, code: 'kb_initializing', message: '' }),
-        runAsync: async () => ({ ok: false, code: 'kb_initializing', message: '' }),
         list: () => [],
         status: () => null,
       },

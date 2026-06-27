@@ -38,7 +38,7 @@ import { readCurateDiscoveryBacklog } from '#src/kb/curate/discovery-backlog.js'
 import { readCurateRetryQueue, syncCurateRetryQueue } from '#src/kb/curate/retry.js';
 import { readCurateSchedulerState } from '#src/kb/curate/state-scheduler.js';
 import { parseFrontmatter } from '#src/kb/corpus/frontmatter.js';
-import { cloneKbIndex } from '#src/kb/corpus/index-records.js';
+import { cloneKbIndex } from '#src/kb/corpus/index/records.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/kb/entry-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';

@@ -4,31 +4,43 @@
 // Line 1: model │ limits │ ctx │ session │ skill
 // Line 2: codex model │ codex limits │ codex credits
 
-import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync, openSync, fstatSync, statSync, readSync, closeSync, renameSync, unlinkSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-import { execSync } from "child_process";
-import { createHash } from "crypto";
-import { pathToFileURL } from "url";
+import {
+  readFileSync,
+  readdirSync,
+  existsSync,
+  writeFileSync,
+  mkdirSync,
+  openSync,
+  fstatSync,
+  statSync,
+  readSync,
+  closeSync,
+  renameSync,
+  unlinkSync,
+} from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
+import { execSync } from 'child_process';
+import { createHash } from 'crypto';
+import { pathToFileURL } from 'url';
 
 // Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
 // inherited by this statusLine subprocess). Falls back to ~/.claude.
-const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 
-const SEP = " \u2502 ";
-const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
-const RED = "\x1b[31m";
-const DIM = "\x1b[2m";
-const RESET = "\x1b[0m";
-const CYAN = "\x1b[36m";
-const MAGENTA = "\x1b[35m";
-const CODEX_USER_AGENT = "codex_cli_rs/0.117.0";
-
+const SEP = ' \u2502 ';
+const GREEN = '\x1b[32m';
+const YELLOW = '\x1b[33m';
+const RED = '\x1b[31m';
+const DIM = '\x1b[2m';
+const RESET = '\x1b[0m';
+const CYAN = '\x1b[36m';
+const MAGENTA = '\x1b[35m';
+const CODEX_USER_AGENT = 'codex_cli_rs/0.117.0';
 
 function getCodexClientId(idToken) {
   try {
-    const payload = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString());
+    const payload = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64url').toString());
     const aud = payload.aud;
     return Array.isArray(aud) ? aud[0] : aud;
   } catch {
@@ -41,12 +53,12 @@ function getCodexClientId(idToken) {
 async function readStdin() {
   if (process.stdin.isTTY) return null;
   const chunks = [];
-  process.stdin.setEncoding("utf8");
+  process.stdin.setEncoding('utf8');
   try {
     for await (const chunk of process.stdin) {
       chunks.push(chunk);
     }
-    const raw = chunks.join("");
+    const raw = chunks.join('');
     if (!raw.trim()) return null;
     return JSON.parse(raw);
   } catch {
@@ -60,11 +72,11 @@ function renderGitBranch(input) {
   const cwd = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
   if (!cwd) return null;
   try {
-    const opts = { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"], cwd, timeout: 2000 };
-    const branch = execSync("git branch --show-current", opts).trim()
-      || execSync("git rev-parse --short HEAD", opts).trim();
+    const opts = { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], cwd, timeout: 2000 };
+    const branch =
+      execSync('git branch --show-current', opts).trim() || execSync('git rev-parse --short HEAD', opts).trim();
     if (!branch) return null;
-    const dirty = execSync("git status --porcelain", opts).trim() ? `${YELLOW}*${RESET}` : "";
+    const dirty = execSync('git status --porcelain', opts).trim() ? `${YELLOW}*${RESET}` : '';
     return `${CYAN}⎇ ${branch}${RESET}${dirty}`;
   } catch {
     return null;
@@ -75,12 +87,13 @@ function renderGitBranch(input) {
 
 function renderModel(input) {
   if (!input.model) return null;
-  const name = input.model.display_name || input.model.id || "";
-  return name.toLowerCase()
-    .replace(/^claude\s+/, "")
-    .replace(/\(200k\s+context\)/i, "")
-    .replace(/\((\d+[km])\s+context\)/i, "$1")
-    .replace(/\s+$/, "");
+  const name = input.model.display_name || input.model.id || '';
+  return name
+    .toLowerCase()
+    .replace(/^claude\s+/, '')
+    .replace(/\(200k\s+context\)/i, '')
+    .replace(/\((\d+[km])\s+context\)/i, '$1')
+    .replace(/\s+$/, '');
 }
 
 function renderSession(input) {
@@ -104,13 +117,13 @@ function renderSession(input) {
       else {
         const hr = Math.floor(min / 60);
         const remMin = min % 60;
-        durationStr = `${hr}h${remMin > 0 ? remMin + "m" : ""}`;
+        durationStr = `${hr}h${remMin > 0 ? remMin + 'm' : ''}`;
       }
     }
   }
 
   const parts = [costStr, durationStr].filter(Boolean);
-  return parts.length > 0 ? parts.join(" ") : null;
+  return parts.length > 0 ? parts.join(' ') : null;
 }
 
 function renderContext(input) {
@@ -132,12 +145,12 @@ function readTranscriptTail(transcriptPath) {
   if (!transcriptPath) return null;
   let fd;
   try {
-    fd = openSync(transcriptPath, "r");
+    fd = openSync(transcriptPath, 'r');
     const { size } = fstatSync(fd);
     const readSize = Math.min(size, 512 * 1024);
     const buf = Buffer.alloc(readSize);
     readSync(fd, buf, 0, readSize, size - readSize);
-    const lines = buf.toString("utf-8").split("\n");
+    const lines = buf.toString('utf-8').split('\n');
     if (size > readSize) lines.shift(); // drop potentially incomplete first line
     return lines;
   } catch {
@@ -151,11 +164,11 @@ function parseLastSkill(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     // Case 1: user-typed slash command → user message with <command-message> tag
-    if (line.includes("command-message")) {
+    if (line.includes('command-message')) {
       try {
         const entry = JSON.parse(line);
         const content = entry?.message?.content;
-        if (typeof content === "string") {
+        if (typeof content === 'string') {
           const m = content.match(/<command-message>([^<]+)<\/command-message>/);
           if (m?.[1]) return m[1];
         }
@@ -169,9 +182,11 @@ function parseLastSkill(lines) {
         if (!Array.isArray(blocks)) continue;
         for (let j = blocks.length - 1; j >= 0; j--) {
           const block = blocks[j];
-          if (block.type === "tool_use"
-              && (block.name === "Skill" || block.name === "proxy_Skill")
-              && block.input?.skill) {
+          if (
+            block.type === 'tool_use' &&
+            (block.name === 'Skill' || block.name === 'proxy_Skill') &&
+            block.input?.skill
+          ) {
             return block.input.skill;
           }
         }
@@ -191,24 +206,20 @@ function parseRunningAgents(lines) {
       const ts = entry.timestamp ? new Date(entry.timestamp) : null;
       if (!Array.isArray(content)) continue;
       for (const block of content) {
-        if (block.type === "tool_use"
-            && (block.name === "Task" || block.name === "proxy_Task")
-            && block.id) {
+        if (block.type === 'tool_use' && (block.name === 'Task' || block.name === 'proxy_Task') && block.id) {
           agentMap.set(block.id, {
-            subagent_type: block.input?.subagent_type || "unknown",
+            subagent_type: block.input?.subagent_type || 'unknown',
             startTime: ts,
           });
         }
-        if (block.type === "tool_result" && block.tool_use_id) {
+        if (block.type === 'tool_result' && block.tool_use_id) {
           agentMap.delete(block.tool_use_id);
         }
       }
     } catch {}
   }
   const now = Date.now();
-  return Array.from(agentMap.values()).filter(a =>
-    !a.startTime || now - a.startTime.getTime() < STALE_AGENT_MS
-  );
+  return Array.from(agentMap.values()).filter((a) => !a.startTime || now - a.startTime.getTime() < STALE_AGENT_MS);
 }
 
 function extractUserText(raw) {
@@ -221,9 +232,14 @@ function extractUserText(raw) {
     return args ? `${name} ${args}` : name;
   }
   // System-injected content — skip entirely
-  if (/<task-notification>|<local-command|^Base directory for this skill:|^This session is being continued from|^Stop hook feedback:/i.test(raw)) return null;
+  if (
+    /<task-notification>|<local-command|^Base directory for this skill:|^This session is being continued from|^Stop hook feedback:/i.test(
+      raw,
+    )
+  )
+    return null;
   // Strip remaining XML tags (system-reminder etc.) and noise markers
-  const clean = raw.replace(/<[^>]+>/g, "").trim();
+  const clean = raw.replace(/<[^>]+>/g, '').trim();
   if (!clean || /^\[Request interrupted|^\[Tool cancelled|^\[User cancelled/i.test(clean)) return null;
   return clean;
 }
@@ -234,15 +250,15 @@ function parseLastUserMessage(lines) {
     if (!line.includes('"user"')) continue;
     try {
       const entry = JSON.parse(line);
-      if (entry?.type !== "human" && entry?.message?.role !== "user") continue;
+      if (entry?.type !== 'human' && entry?.message?.role !== 'user') continue;
       const content = entry?.message?.content;
-      if (typeof content === "string") {
+      if (typeof content === 'string') {
         const text = extractUserText(content);
         if (text) return text;
       }
       if (Array.isArray(content)) {
         for (const block of content) {
-          if (block.type === "text" && typeof block.text === "string") {
+          if (block.type === 'text' && typeof block.text === 'string') {
             const text = extractUserText(block.text);
             if (text) return text;
           }
@@ -256,13 +272,15 @@ function parseLastUserMessage(lines) {
 function formatAgentCounts(agents) {
   const counts = {};
   for (const a of agents) counts[a.subagent_type] = (counts[a.subagent_type] || 0) + 1;
-  return `${DIM}${Object.entries(counts).map(([t, c]) => c > 1 ? `${t}×${c}` : t).join(" ")}${RESET}`;
+  return `${DIM}${Object.entries(counts)
+    .map(([t, c]) => (c > 1 ? `${t}×${c}` : t))
+    .join(' ')}${RESET}`;
 }
 
 function renderActivityStr(agents, activity) {
   const agentList = Array.isArray(agents) ? agents : Object.values(agents || {});
   if (agentList.length > 0) return formatAgentCounts(agentList);
-  if (activity?.name && activity?.ts && (Date.now() - activity.ts < ACTIVITY_TTL_MS)) {
+  if (activity?.name && activity?.ts && Date.now() - activity.ts < ACTIVITY_TTL_MS) {
     return `${CYAN}${activity.name}${RESET}`;
   }
   return null;
@@ -273,7 +291,9 @@ function parseTranscript(input) {
   const transcriptPath = input.transcript_path;
 
   let transcriptSize = 0;
-  try { transcriptSize = statSync(transcriptPath).size; } catch {}
+  try {
+    transcriptSize = statSync(transcriptPath).size;
+  } catch {}
 
   const cached = sessionId ? readSessionEntry(sessionId) : null;
 
@@ -287,7 +307,12 @@ function parseTranscript(input) {
   }
 
   const lines = readTranscriptTail(transcriptPath);
-  if (!lines) return { activity: null, lastUserMessage: null, _session: { activity: null, agents: {}, prompt: null, transcriptSize } };
+  if (!lines)
+    return {
+      activity: null,
+      lastUserMessage: null,
+      _session: { activity: null, agents: {}, prompt: null, transcriptSize },
+    };
 
   const running = parseRunningAgents(lines);
   const skill = parseLastSkill(lines);
@@ -300,8 +325,8 @@ function parseTranscript(input) {
 
   const now = Date.now();
   const activity = skill
-    ? { name: skill, ts: (cached?.activity?.name === skill ? cached.activity.ts : now) }
-    : (cached?.activity || null);
+    ? { name: skill, ts: cached?.activity?.name === skill ? cached.activity.ts : now }
+    : cached?.activity || null;
 
   return {
     activity: renderActivityStr(running, activity),
@@ -312,10 +337,10 @@ function parseTranscript(input) {
 
 // --- cache ---
 
-const CACHE_DIR = join(CLAUDE_DIR, "hud");
-const CACHE_FILE = join(CACHE_DIR, ".coral-cache.json");
-const BACKEND_CACHE_FILE = join(CACHE_DIR, ".coral-backend-cache.json");
-const CODEX_FLAG_FILE = join(CACHE_DIR, ".coral-codex-enabled");
+const CACHE_DIR = join(CLAUDE_DIR, 'hud');
+const CACHE_FILE = join(CACHE_DIR, '.coral-cache.json');
+const BACKEND_CACHE_FILE = join(CACHE_DIR, '.coral-backend-cache.json');
+const CODEX_FLAG_FILE = join(CACHE_DIR, '.coral-codex-enabled');
 const CACHE_TTL_MS = 180_000;
 const CACHE_FAIL_TTL_MS = 30_000;
 const RATE_LIMIT_BASE_MS = 120_000;
@@ -327,13 +352,13 @@ const CORAL_HEALTH_TIMEOUT_MS = 3_000;
 
 // --- session state ---
 
-const SESSIONS_FILE = join(CACHE_DIR, ".coral-sessions.json");
+const SESSIONS_FILE = join(CACHE_DIR, '.coral-sessions.json');
 let _sessionsCache = null;
 
 function readSessions() {
   if (_sessionsCache) return _sessionsCache;
   try {
-    _sessionsCache = JSON.parse(readFileSync(SESSIONS_FILE, "utf-8"));
+    _sessionsCache = JSON.parse(readFileSync(SESSIONS_FILE, 'utf-8'));
   } catch {
     _sessionsCache = {};
   }
@@ -364,7 +389,7 @@ function writeSession(sessionId, data) {
 
 function readFullCache() {
   try {
-    return JSON.parse(readFileSync(CACHE_FILE, "utf-8"));
+    return JSON.parse(readFileSync(CACHE_FILE, 'utf-8'));
   } catch {
     return {};
   }
@@ -451,17 +476,19 @@ function readStaleCacheData(key) {
 function acquireFetchLock(key) {
   const lockPath = join(CACHE_DIR, `.coral-${key}.lock`);
   try {
-    const raw = readFileSync(lockPath, "utf-8");
+    const raw = readFileSync(lockPath, 'utf-8');
     let isStale = true;
     try {
       const lockData = JSON.parse(raw);
       isStale = Date.now() - lockData.ts > LOCK_STALE_MS;
     } catch {} // corrupt/empty JSON → treat as stale
     if (!isStale) return null;
-    try { unlinkSync(lockPath); } catch {}
+    try {
+      unlinkSync(lockPath);
+    } catch {}
   } catch {} // ENOENT → no lock exists
   try {
-    writeFileSync(lockPath, JSON.stringify({ ts: Date.now() }), { flag: "wx", mode: 0o600 });
+    writeFileSync(lockPath, JSON.stringify({ ts: Date.now() }), { flag: 'wx', mode: 0o600 });
     return lockPath;
   } catch {
     return null;
@@ -469,12 +496,14 @@ function acquireFetchLock(key) {
 }
 
 function releaseFetchLock(lockPath) {
-  try { unlinkSync(lockPath); } catch {}
+  try {
+    unlinkSync(lockPath);
+  } catch {}
 }
 
 function readBackendSlot() {
   try {
-    const raw = JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8"));
+    const raw = JSON.parse(readFileSync(BACKEND_CACHE_FILE, 'utf-8'));
     if (!raw || !Number.isFinite(raw.ts)) return null;
     if (Date.now() - raw.ts > CORAL_HEALTH_TTL_MS) return null;
     return normalizeBackendSlot(raw);
@@ -484,16 +513,16 @@ function readBackendSlot() {
 }
 
 function normalizeBackendSlot(raw) {
-  if (!raw || typeof raw.line !== "string") return null;
+  if (!raw || typeof raw.line !== 'string') return null;
   return {
     line: raw.line,
-    indicator: typeof raw.indicator === "string" && raw.indicator.length > 0 ? raw.indicator : null,
+    indicator: typeof raw.indicator === 'string' && raw.indicator.length > 0 ? raw.indicator : null,
   };
 }
 
 function readStaleBackendSlot() {
   try {
-    return normalizeBackendSlot(JSON.parse(readFileSync(BACKEND_CACHE_FILE, "utf-8")));
+    return normalizeBackendSlot(JSON.parse(readFileSync(BACKEND_CACHE_FILE, 'utf-8')));
   } catch {
     return null;
   }
@@ -512,12 +541,12 @@ function writeBackendSlot(slot, online) {
 
 function getClaudeAccessToken() {
   // macOS Keychain
-  if (process.platform === "darwin") {
+  if (process.platform === 'darwin') {
     try {
-      const raw = execSync(
-        '/usr/bin/security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
-        { encoding: "utf-8", timeout: 2000 }
-      ).trim();
+      const raw = execSync('/usr/bin/security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null', {
+        encoding: 'utf-8',
+        timeout: 2000,
+      }).trim();
       if (raw) {
         const parsed = JSON.parse(raw);
         return (parsed.claudeAiOauth || parsed).accessToken || null;
@@ -526,8 +555,8 @@ function getClaudeAccessToken() {
   }
   // File fallback
   try {
-    const credPath = join(CLAUDE_DIR, ".credentials.json");
-    const parsed = JSON.parse(readFileSync(credPath, "utf-8"));
+    const credPath = join(CLAUDE_DIR, '.credentials.json');
+    const parsed = JSON.parse(readFileSync(credPath, 'utf-8'));
     return (parsed.claudeAiOauth || parsed).accessToken || null;
   } catch {
     return null;
@@ -536,11 +565,11 @@ function getClaudeAccessToken() {
 
 async function fetchUsage(accessToken, signal) {
   try {
-    const resp = await fetch("https://api.anthropic.com/api/oauth/usage", {
+    const resp = await fetch('https://api.anthropic.com/api/oauth/usage', {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "anthropic-beta": "oauth-2025-04-20",
-        "Content-Type": "application/json",
+        'anthropic-beta': 'oauth-2025-04-20',
+        'Content-Type': 'application/json',
       },
       signal,
     });
@@ -570,18 +599,18 @@ function formatResetTime(isoString, mode) {
   if (diffMs <= 0) return null;
   const totalMin = Math.floor(diffMs / 60000);
   const totalHr = Math.floor(totalMin / 60);
-  if (mode === "wk" && totalHr >= 24) {
+  if (mode === 'wk' && totalHr >= 24) {
     return `${(totalHr / 24).toFixed(1)}d`;
   }
   const mm = totalMin % 60;
-  return `${totalHr}:${String(mm).padStart(2, "0")}`;
+  return `${totalHr}:${String(mm).padStart(2, '0')}`;
 }
 
 function formatWindow(label, val, resetsAt, mode, dimLabel = false) {
   if (val == null) return null;
   const pct = clampPct(val);
   const reset = formatResetTime(resetsAt, mode);
-  const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : "";
+  const resetStr = reset ? ` ${DIM}(${reset})${RESET}` : '';
   const prefix = dimLabel ? `${DIM}${label}:${RESET}` : `${label}:`;
   return `${prefix}${colorPct(pct)}${resetStr}`;
 }
@@ -598,10 +627,10 @@ function fmtUsd(n) {
 // `utilization` field null at zero usage).
 function parseExtraUsage(eu) {
   if (!eu || !eu.is_enabled || eu.disabled_reason) return null;
-  if (typeof eu.monthly_limit !== "number" || eu.monthly_limit <= 0) return null;
-  const div = Math.pow(10, typeof eu.decimal_places === "number" ? eu.decimal_places : 2);
+  if (typeof eu.monthly_limit !== 'number' || eu.monthly_limit <= 0) return null;
+  const div = Math.pow(10, typeof eu.decimal_places === 'number' ? eu.decimal_places : 2);
   const limit = eu.monthly_limit / div;
-  const used = (typeof eu.used_credits === "number" ? eu.used_credits : 0) / div;
+  const used = (typeof eu.used_credits === 'number' ? eu.used_credits : 0) / div;
   return { used, limit, pct: (used / limit) * 100 };
 }
 
@@ -616,7 +645,7 @@ function parseCodexCredits(credits) {
     hasCredits: Boolean(credits.has_credits),
     unlimited: Boolean(credits.unlimited),
     overageLimitReached: Boolean(credits.overage_limit_reached),
-    balance: typeof credits.balance === "string" ? credits.balance : null,
+    balance: typeof credits.balance === 'string' ? credits.balance : null,
   };
 }
 
@@ -629,7 +658,7 @@ function parseCodexSpendControl(spendControl) {
 }
 
 function formatCreditBalanceUsd(raw, showZero) {
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
@@ -644,7 +673,7 @@ function formatCreditBalanceUsd(raw, showZero) {
 }
 
 function formatCreditValueUsd(value, showZero = false) {
-  const numeric = typeof value === "number" ? value : Number(value);
+  const numeric = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(numeric)) return null;
   if (numeric > 0) return fmtUsd(numeric / 25);
   return showZero && numeric === 0 ? fmtUsd(0) : null;
@@ -658,31 +687,28 @@ function formatCodexCreditState(credits, spendControl, showZero = false) {
   } else {
     const balance = formatCreditBalanceUsd(credits.balance, showZero || spendControl?.reached);
     if (balance) {
-      const color = spendControl?.reached || balance === "$0" ? RED : GREEN;
+      const color = spendControl?.reached || balance === '$0' ? RED : GREEN;
       parts.push(`${DIM}cr:${RESET}${color}${balance}${RESET}`);
     }
   }
 
   const individualLimit = formatCreditValueUsd(spendControl?.individualLimit);
   if (individualLimit) {
-    const hit = spendControl?.reached ? ` ${RED}hit${RESET}` : "";
+    const hit = spendControl?.reached ? ` ${RED}hit${RESET}` : '';
     parts.push(`${DIM}cap:${RESET}${individualLimit}${hit}`);
   }
 
-  return parts.length > 0 ? parts.join(" ") : null;
+  return parts.length > 0 ? parts.join(' ') : null;
 }
 
 function formatLimits(data) {
   if (!data) return null;
   const windows = [
-    formatWindow("5h", data.fiveHour, data.fiveHourResetsAt, "5h"),
-    formatWindow("wk", data.weekly, data.weeklyResetsAt, "wk", true),
+    formatWindow('5h', data.fiveHour, data.fiveHourResetsAt, '5h'),
+    formatWindow('wk', data.weekly, data.weeklyResetsAt, 'wk', true),
   ].filter(Boolean);
-  const parts = [
-    ...windows,
-    formatExtraUsage(data.extraUsage),
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join(" ") : null;
+  const parts = [...windows, formatExtraUsage(data.extraUsage)].filter(Boolean);
+  return parts.length > 0 ? parts.join(' ') : null;
 }
 
 function formatRemainingTime(cache) {
@@ -693,9 +719,9 @@ function formatRemainingTime(cache) {
 
 function formatErrorIndicator(cache) {
   switch (cache.errorKind) {
-    case "rateLimit":
+    case 'rateLimit':
       return `${DIM}throttled: refreshes in ${formatRemainingTime(cache)}${RESET}`;
-    case "auth":
+    case 'auth':
       return `${DIM}re-login required${RESET}`;
     default:
       return `${DIM}API unavailable${RESET}`;
@@ -708,7 +734,7 @@ function cacheError(slot, errorKind, rateLimit = 0) {
 }
 
 async function renderLimits() {
-  const cached = readCacheSlot("claude");
+  const cached = readCacheSlot('claude');
   if (cached) {
     if (cached.error) {
       if (cached.data) return formatLimits(cached.data);
@@ -717,8 +743,8 @@ async function renderLimits() {
     return formatLimits(cached.data);
   }
 
-  const lock = acquireFetchLock("claude");
-  if (!lock) return readStaleCacheData("claude");
+  const lock = acquireFetchLock('claude');
+  if (!lock) return readStaleCacheData('claude');
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
@@ -727,9 +753,9 @@ async function renderLimits() {
     if (!token) return null;
 
     const resp = await fetchUsage(token, controller.signal);
-    if (resp?.unauthorized) return cacheError("claude", "auth");
-    if (resp?.rateLimited) return cacheError("claude", "rateLimit", readBackoffState("claude") + 1);
-    if (!resp) return cacheError("claude", "generic");
+    if (resp?.unauthorized) return cacheError('claude', 'auth');
+    if (resp?.rateLimited) return cacheError('claude', 'rateLimit', readBackoffState('claude') + 1);
+    if (!resp) return cacheError('claude', 'generic');
 
     const data = {
       fiveHour: resp.five_hour?.utilization,
@@ -738,7 +764,7 @@ async function renderLimits() {
       weeklyResetsAt: resp.seven_day?.resets_at || null,
       extraUsage: parseExtraUsage(resp.extra_usage),
     };
-    writeCacheSlot("claude", data);
+    writeCacheSlot('claude', data);
     return formatLimits(data);
   } finally {
     clearTimeout(timer);
@@ -750,8 +776,8 @@ async function renderLimits() {
 
 function readCodexCredentials() {
   try {
-    const authPath = join(homedir(), ".codex", "auth.json");
-    const parsed = JSON.parse(readFileSync(authPath, "utf-8"));
+    const authPath = join(homedir(), '.codex', 'auth.json');
+    const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
     const { id_token, access_token, refresh_token, account_id } = parsed.tokens || {};
     if (!account_id) return null;
     const clientId = getCodexClientId(id_token);
@@ -764,11 +790,11 @@ function readCodexCredentials() {
 
 function writeBackCodexCredentials(creds, refreshed) {
   try {
-    const authPath = join(homedir(), ".codex", "auth.json");
-    const parsed = JSON.parse(readFileSync(authPath, "utf-8"));
+    const authPath = join(homedir(), '.codex', 'auth.json');
+    const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
     parsed.tokens.access_token = refreshed.accessToken;
     parsed.tokens.refresh_token = refreshed.refreshToken;
-    const tmpPath = authPath + ".tmp";
+    const tmpPath = authPath + '.tmp';
     writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
     renameSync(tmpPath, authPath);
   } catch {}
@@ -776,14 +802,14 @@ function writeBackCodexCredentials(creds, refreshed) {
 
 async function refreshCodexToken(refreshTok, clientId, signal) {
   try {
-    const resp = await fetch("https://auth.openai.com/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    const resp = await fetch('https://auth.openai.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type: "refresh_token",
+        grant_type: 'refresh_token',
         client_id: clientId,
         refresh_token: refreshTok,
-        scope: "openid profile email",
+        scope: 'openid profile email',
       }).toString(),
       signal,
     });
@@ -809,8 +835,10 @@ function parseLimitsFromRl(rl) {
   const pri = parseWindow(rl.primary_window);
   const sec = parseWindow(rl.secondary_window);
   return {
-    fiveHour: pri.pct, weekly: sec.pct,
-    fiveHourResetsAt: pri.resetsAt, weeklyResetsAt: sec.resetsAt,
+    fiveHour: pri.pct,
+    weekly: sec.pct,
+    fiveHourResetsAt: pri.resetsAt,
+    weeklyResetsAt: sec.resetsAt,
   };
 }
 
@@ -827,12 +855,12 @@ function attachCodexAccountState(limits, body) {
 
 async function fetchCodexUsage(accessToken, accountId, signal) {
   try {
-    const resp = await fetch("https://chatgpt.com/backend-api/wham/usage", {
+    const resp = await fetch('https://chatgpt.com/backend-api/wham/usage', {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "chatgpt-account-id": accountId,
-        "User-Agent": CODEX_USER_AGENT,
-        originator: "codex_cli_rs",
+        'chatgpt-account-id': accountId,
+        'User-Agent': CODEX_USER_AGENT,
+        originator: 'codex_cli_rs',
       },
       signal,
     });
@@ -850,24 +878,24 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
 }
 
 async function renderCodexData() {
-  if (!existsSync(CODEX_FLAG_FILE)) return { kind: "none" };
+  if (!existsSync(CODEX_FLAG_FILE)) return { kind: 'none' };
 
-  const cached = readCacheSlot("codex");
+  const cached = readCacheSlot('codex');
   if (cached) {
     if (cached.error) {
-      if (cached.data) return { kind: "data", ...cached.data };
-      return { kind: "error", message: formatErrorIndicator(cached) };
+      if (cached.data) return { kind: 'data', ...cached.data };
+      return { kind: 'error', message: formatErrorIndicator(cached) };
     }
-    return { kind: "data", ...cached.data };
+    return { kind: 'data', ...cached.data };
   }
 
-  const lock = acquireFetchLock("codex");
+  const lock = acquireFetchLock('codex');
   if (!lock) {
     try {
       const prev = normalizeCacheEntry(readFullCache().codex);
-      if (prev.data) return { kind: "data", ...prev.data };
+      if (prev.data) return { kind: 'data', ...prev.data };
     } catch {}
-    return { kind: "none" };
+    return { kind: 'none' };
   }
 
   const controller = new AbortController();
@@ -875,30 +903,31 @@ async function renderCodexData() {
 
   try {
     const creds = readCodexCredentials();
-    if (!creds) return { kind: "none" };
+    if (!creds) return { kind: 'none' };
 
     let token = creds.accessToken;
     let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
 
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
-      if (!refreshed) return { kind: "error", message: cacheError("codex", "generic") };
+      if (!refreshed) return { kind: 'error', message: cacheError('codex', 'generic') };
       token = refreshed.accessToken;
       if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
-    if (result?.unauthorized) return { kind: "error", message: cacheError("codex", "auth") };
-    if (result?.rateLimited) return { kind: "error", message: cacheError("codex", "rateLimit", readBackoffState("codex") + 1) };
+    if (result?.unauthorized) return { kind: 'error', message: cacheError('codex', 'auth') };
+    if (result?.rateLimited)
+      return { kind: 'error', message: cacheError('codex', 'rateLimit', readBackoffState('codex') + 1) };
 
     if (result) {
-      writeCacheSlot("codex", result);
-      return { kind: "data", ...result };
+      writeCacheSlot('codex', result);
+      return { kind: 'data', ...result };
     }
 
-    return { kind: "error", message: cacheError("codex", "generic") };
+    return { kind: 'error', message: cacheError('codex', 'generic') };
   } catch {
-    return { kind: "error", message: cacheError("codex", "generic") };
+    return { kind: 'error', message: cacheError('codex', 'generic') };
   } finally {
     clearTimeout(timer);
     releaseFetchLock(lock);
@@ -914,19 +943,23 @@ async function renderCodexData() {
 // in `src/infra/path/root.ts` so the HUD reads the same backend the CLI does.
 function coralStateRoot() {
   const home = homedir();
-  if (CLAUDE_DIR === join(home, ".claude")) return join(home, ".coral");
-  const slot = createHash("sha256").update(CLAUDE_DIR).digest("hex").slice(0, 8);
-  return join(home, ".coral", "by-config", slot);
+  if (CLAUDE_DIR === join(home, '.claude')) return join(home, '.coral');
+  const slot = createHash('sha256').update(CLAUDE_DIR).digest('hex').slice(0, 8);
+  return join(home, '.coral', 'by-config', slot);
 }
 
 // The statusline is gated to the prod flavor by `hud-auto-update.mjs`, so we
 // read prod's runDir directly.
 function resolveBackendInfoPath() {
-  const infoPath = join(coralStateRoot(), "run", "coordinator.json");
+  const infoPath = join(coralStateRoot(), 'run', 'coordinator.json');
   try {
-    const info = JSON.parse(readFileSync(infoPath, "utf-8"));
+    const info = JSON.parse(readFileSync(infoPath, 'utf-8'));
     if (!info?.pid) return null;
-    try { process.kill(info.pid, 0); } catch { return null; }
+    try {
+      process.kill(info.pid, 0);
+    } catch {
+      return null;
+    }
     return infoPath;
   } catch {
     return null;
@@ -934,11 +967,11 @@ function resolveBackendInfoPath() {
 }
 
 // Resolved dynamically on each cache-miss (not cached at module load)
-const REEF_INFO_PATH = join(CLAUDE_DIR, "coral", "reef.json");
+const REEF_INFO_PATH = join(CLAUDE_DIR, 'coral', 'reef.json');
 
 function readReefInfo() {
   try {
-    const info = JSON.parse(readFileSync(REEF_INFO_PATH, "utf-8"));
+    const info = JSON.parse(readFileSync(REEF_INFO_PATH, 'utf-8'));
     return info?.url ? info : null;
   } catch {
     return null;
@@ -946,8 +979,8 @@ function readReefInfo() {
 }
 
 export function renderTextProjectionIndicator(state) {
-  if (state === "fetching") return `${YELLOW}fetching${RESET}`;
-  if (state === "reindexing") return `${YELLOW}reindexing${RESET}`;
+  if (state === 'fetching') return `${YELLOW}fetching${RESET}`;
+  if (state === 'reindexing') return `${YELLOW}reindexing${RESET}`;
   return null;
 }
 
@@ -956,9 +989,9 @@ export function composeCoralThirdLine(coralLine, rightIndicator, lastUserMessage
   if (!right && lastUserMessage && targetWidth > 0) {
     const maxMsg = Math.min(40, targetWidth - visualLen(coralLine) - 3);
     if (maxMsg > 8) {
-      const oneLineMessage = lastUserMessage.replace(/[\n\r]+/g, " ");
+      const oneLineMessage = lastUserMessage.replace(/[\n\r]+/g, ' ');
       const truncated =
-        oneLineMessage.length > maxMsg ? oneLineMessage.slice(0, maxMsg - 1) + "\u2026" : oneLineMessage;
+        oneLineMessage.length > maxMsg ? oneLineMessage.slice(0, maxMsg - 1) + '\u2026' : oneLineMessage;
       right = DIM + truncated + RESET;
     }
   }
@@ -967,16 +1000,19 @@ export function composeCoralThirdLine(coralLine, rightIndicator, lastUserMessage
 
   const gap = targetWidth - visualLen(coralLine) - visualLen(right);
   if (gap > 0) {
-    return coralLine + " ".repeat(gap) + right;
+    return coralLine + ' '.repeat(gap) + right;
   }
   return `${coralLine} ${right}`;
 }
 
 async function renderCoralLine() {
-  // Migrate: remove legacy backend slot from shared cache
+  // Migrate: remove retired backend slot from shared cache
   try {
     const shared = readFullCache();
-    if (shared.backend) { delete shared.backend; writeFullCache(shared); }
+    if (shared.backend) {
+      delete shared.backend;
+      writeFullCache(shared);
+    }
   } catch {}
 
   const cached = readBackendSlot();
@@ -987,20 +1023,20 @@ async function renderCoralLine() {
 
   let info;
   try {
-    info = JSON.parse(readFileSync(backendInfoPath, "utf-8"));
+    info = JSON.parse(readFileSync(backendInfoPath, 'utf-8'));
     if (!info?.port || !info?.token) return null;
   } catch {
     return null;
   }
 
-  const lock = acquireFetchLock("backend");
+  const lock = acquireFetchLock('backend');
   if (!lock) {
     return readStaleBackendSlot();
   }
 
   try {
     const resp = await fetch(`http://127.0.0.1:${info.port}/health`, {
-      headers: { "x-coral-backend-token": info.token },
+      headers: { 'x-coral-backend-token': info.token },
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
     if (!resp.ok) {
@@ -1018,12 +1054,14 @@ async function renderCoralLine() {
     const reefInfo = readReefInfo();
     if (reefInfo) {
       try {
-        const reefResp = await fetch(`${reefInfo.url}/health`, { signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS) });
+        const reefResp = await fetch(`${reefInfo.url}/health`, {
+          signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
+        });
         if (reefResp.ok) parts.push(`\x1b]8;;${reefInfo.url}\x07reef\x1b]8;;\x07`);
       } catch {}
     }
 
-    const slot = { line: parts.join(" "), indicator };
+    const slot = { line: parts.join(' '), indicator };
     writeBackendSlot(slot, true);
     return slot;
   } catch {
@@ -1038,12 +1076,12 @@ async function renderCoralLine() {
 // --- main ---
 
 function visualLen(str) {
-  return str.replace(/\x1b\[[0-9;]*m/g, "").length;
+  return str.replace(/\x1b\[[0-9;]*m/g, '').length;
 }
 
 function padVisual(str, len) {
   const pad = len - visualLen(str);
-  return pad > 0 ? str + " ".repeat(pad) : str;
+  return pad > 0 ? str + ' '.repeat(pad) : str;
 }
 
 function alignColumns(a, b) {
@@ -1055,7 +1093,7 @@ function alignColumns(a, b) {
 async function main() {
   const input = await readStdin();
   if (!input) {
-    process.stdout.write("");
+    process.stdout.write('');
     return;
   }
 
@@ -1065,22 +1103,18 @@ async function main() {
     safe(renderCodexData()),
     safe(renderCoralLine()),
   ]);
-  const codexData = rawCodexData ?? { kind: "none" };
+  const codexData = rawCodexData ?? { kind: 'none' };
 
   // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
-  const envModel = process.env.CORAL_CODEX_MODEL || "gpt-5.5";
+  const envModel = process.env.CORAL_CODEX_MODEL || 'gpt-5.5';
   let col1Claude, col1Codex, col2Claude, col2Codex;
   let codexCreditStr = null;
 
-  if (codexData.kind === "data") {
+  if (codexData.kind === 'data') {
     [col1Claude, col1Codex] = alignColumns(claudeModel, envModel);
     const codexLimits = formatLimits(codexData.codex);
-    codexCreditStr = formatCodexCreditState(
-      codexData.codex?.credits,
-      codexData.codex?.spendControl,
-      !codexLimits,
-    );
+    codexCreditStr = formatCodexCreditState(codexData.codex?.credits, codexData.codex?.spendControl, !codexLimits);
     [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
   } else {
     col1Claude = claudeModel;
@@ -1105,27 +1139,23 @@ async function main() {
   let output = line1.join(SEP);
 
   // Line 2: Codex
-  if (codexData.kind === "data") {
+  if (codexData.kind === 'data') {
     if (col1Codex) col1Codex = `${GREEN}${col1Codex}${RESET}`;
-    const line2 = [
-      col1Codex,
-      col2Codex,
-      codexCreditStr,
-    ].filter(Boolean);
+    const line2 = [col1Codex, col2Codex, codexCreditStr].filter(Boolean);
     if (line2.length > 0) {
-      output += "\n" + line2.join(SEP);
+      output += '\n' + line2.join(SEP);
     }
-  } else if (codexData.kind === "error") {
-    output += "\n" + codexData.message;
+  } else if (codexData.kind === 'error') {
+    output += '\n' + codexData.message;
   }
 
   // Line 3: Coral backend + right-aligned last user input
   if (coralSlot) {
-    const coralLine = typeof coralSlot === "string" ? coralSlot : coralSlot.line;
-    const rightIndicator = typeof coralSlot === "string" ? null : coralSlot.indicator;
+    const coralLine = typeof coralSlot === 'string' ? coralSlot : coralSlot.line;
+    const rightIndicator = typeof coralSlot === 'string' ? null : coralSlot.indicator;
     const targetWidth = visualLen(line1.join(SEP));
     const coralFinal = composeCoralThirdLine(coralLine, rightIndicator, transcript.lastUserMessage, targetWidth);
-    output += "\n" + coralFinal;
+    output += '\n' + coralFinal;
   }
 
   // Write session state
@@ -1136,12 +1166,12 @@ async function main() {
   }
 
   output = output
-    .split("\n")
-    .map(line => line.replace(/ +$/, m => "\u00A0".repeat(m.length)))
-    .join("\n");
+    .split('\n')
+    .map((line) => line.replace(/ +$/, (m) => '\u00A0'.repeat(m.length)))
+    .join('\n');
   process.stdout.write(output);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => process.stdout.write(""));
+  main().catch(() => process.stdout.write(''));
 }

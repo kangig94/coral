@@ -183,7 +183,7 @@ describe('entity-consolidation', () => {
             source: 'resolver',
             target: 'resolver-cache',
             type: 'requires',
-            description: 'Legacy aliases should rewire cleanly.',
+            description: 'Retired aliases should rewire cleanly.',
             evidence: ['note:2', 'note:2'],
           },
         ],
@@ -207,7 +207,7 @@ describe('entity-consolidation', () => {
         source: 'graphql-resolver',
         target: 'resolver-caching',
         type: 'requires',
-        description: 'Legacy aliases should rewire cleanly. Resolvers require caching.',
+        description: 'Retired aliases should rewire cleanly. Resolvers require caching.',
         evidence: ['note:1', 'note:2'],
       },
     ]);

@@ -55,12 +55,12 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/execution-service.ts',
   'src/coordinator/shutdown.ts',
   'src/coordinator/live/durable-transport.ts',
+  'src/coordinator/live/kb-daemon-supervisor.ts',
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/kb-child/',
   'src/coordinator/services/',
-  'src/coordinator/subsystems/',
+  'src/coordinator/runtime-components/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',
@@ -176,7 +176,7 @@ describe('architecture layering invariants', () => {
       (source, target) =>
         target === 'src/kb/tool-contracts.ts' &&
         !source.startsWith('src/transport/') &&
-        !source.startsWith('src/coordinator/kb-child/') &&
+        source !== 'src/kb-daemon/request-service.ts' &&
         source !== 'src/kb/tool-handlers.ts',
     );
 

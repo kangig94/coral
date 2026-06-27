@@ -124,7 +124,7 @@ Quality rules:
 
 Module docs (e.g., core-modules.md) describe **architectural roles**, not source contents:
 
-1. **Role tables by subsystem** — group modules by architectural layer/subsystem, one table per group
+1. **Role tables by component** — group modules by architectural layer/component, one table per group
 2. **Module name + responsibility** — each row is `module.ts` + one-line role description
 3. **No per-file sections** — a section-per-file catalog goes stale on every refactor. Tables are scannable and maintainable.
 4. **No export listings** — function signatures and parameter details belong in source JSDoc

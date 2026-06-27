@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
@@ -127,7 +127,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         }
         return storeServices;
       },
-      kbChildSupervisor: createMockKbChildSupervisor(),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},

@@ -33,7 +33,7 @@ function collectMatches(files: readonly string[], pattern: RegExp): string[] {
 }
 
 describe('coordinator pre-bind store access invariants', () => {
-  it('does not expose legacy concrete progress store handles from composition', () => {
+  it('does not expose retired concrete progress store handles from composition', () => {
     const matches = collectMatches(
       listTypescriptFiles(COMPOSITION_ROOT),
       /\b(?:world\.progressStore|coreResult\.progressStore)\b/g,

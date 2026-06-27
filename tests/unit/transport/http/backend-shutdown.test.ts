@@ -68,7 +68,7 @@ describe('shutdownBackend', () => {
     );
   });
 
-  it('falls back to the backend token for legacy discovery records', async () => {
+  it('falls back to the backend token for retired discovery records', async () => {
     mockState.info = backendInfo({ shutdownToken: undefined });
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
@@ -83,7 +83,7 @@ describe('shutdownBackend', () => {
     );
   });
 
-  it('accepts legacy 200 shutting_down responses', async () => {
+  it('accepts retired 200 shutting_down responses', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response(JSON.stringify({ status: 'shutting_down' }), { status: 200 })),

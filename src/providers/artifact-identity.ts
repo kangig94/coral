@@ -9,10 +9,6 @@ export const providerArtifactIdentitySchema = z
 
 export type ProviderArtifactIdentity = z.infer<typeof providerArtifactIdentitySchema>;
 
-export function legacyProviderArtifactIdentity(handle: string): ProviderArtifactIdentity {
-  return { kind: 'legacy-handle', handle };
-}
-
 export function providerArtifactIdentityKey(provider: string, identity: ProviderArtifactIdentity): string {
   return `${provider}:${createHash('sha256').update(canonicalizeIdentity(identity), 'utf8').digest('hex')}`;
 }

@@ -8,8 +8,8 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbChildProxySubsystem } from '#src/coordinator/kb-child/proxy-subsystem.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -166,14 +166,12 @@ function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
   let launchFenceActive = false;
-  // Stub subsystem registry: tests in this file don't exercise KB-routed
+  // Stub component registry: tests in this file don't exercise KB-routed
   // calls; an always-initializing registry is sufficient.
-  const subsystems = {
+  const components = {
     register: vi.fn(),
     initAll: vi.fn(),
     disposeAll: vi.fn(async () => {}),
-    run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
-    runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
     list: vi.fn(() => []),
     status: vi.fn(() => null),
   };
@@ -182,7 +180,7 @@ function createRuntimeStateMock() {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
     getLaunchFenceActive: () => launchFenceActive,
-    subsystems: subsystems as never,
+    components: components as never,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
     }),
@@ -414,7 +412,7 @@ function createLifecycleHarness(
   const getRecoveryService = options.getRecoveryService ?? getExecutionService;
   const storeServices = createStoreServicesHarness(options.progressStore);
 
-  const kbChildSupervisor = createMockKbChildSupervisor();
+  const kbDaemonSupervisor = createMockKbDaemonSupervisor();
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
       pluginRoot: options.pluginRoot,
@@ -456,9 +454,9 @@ function createLifecycleHarness(
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
-    kbChildSupervisor,
+    kbDaemonSupervisor,
     handoffQuiescePorts: () => [],
-    createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisor),
+    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
     runStartupRecoveryFn:
@@ -718,7 +716,12 @@ describe('lifecycle recovery', () => {
         },
         diagnostics: {},
       },
-      artifactHandles: [{ handle: '/tmp/provider-artifact.jsonl' }],
+      artifactHandles: [
+        {
+          handle: '/tmp/provider-artifact.jsonl',
+          identity: { kind: 'test-artifact', path: '/tmp/provider-artifact.jsonl' },
+        },
+      ],
       continuity: {
         conversationRef: 'thread-from-runtime-meta',
         resumable: true,
@@ -783,7 +786,12 @@ describe('lifecycle recovery', () => {
     expect(service.recordRecoveredArtifactHandles).toHaveBeenCalledWith(sessionId, {
       jobId,
       provider: 'fakeprovider',
-      handles: [{ handle: '/tmp/provider-artifact.jsonl' }],
+      handles: [
+        {
+          handle: '/tmp/provider-artifact.jsonl',
+          identity: { kind: 'test-artifact', path: '/tmp/provider-artifact.jsonl' },
+        },
+      ],
     });
     expect(callOrder).toEqual(['handles', 'complete']);
   });

@@ -1,4 +1,4 @@
-// Standalone type declarations for the Corpus manifest-authority subsystem.
+// Standalone type declarations for the Corpus manifest-authority component.
 // Lives in its own file to break a `kb/contracts.ts ↔ manifest-authority.ts`
 // import cycle: `kb/contracts.ts` references `ManifestAuthorityDelta` on the
 // `KbRuntime` interface, while `manifest-authority.ts` references `KbRuntime`

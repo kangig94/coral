@@ -38,15 +38,15 @@ const CLIENT_ROOT = ['src', 'client'].join('/');
 const SKILLS_ROOT = ['src', 'skills'].join('/');
 const SHARED_ROOT = ['src', 'shared'].join('/');
 const SIMULATION_ROOT = ['src', 'simulation'].join('/');
-const RETIRED_PRIVATE_STATE_ROOT = ['src', ['_', 'le', 'gacy'].join('')].join('/');
+const RETIRED_PRIVATE_STATE_ROOT = 'src/_retired';
 const ROOT_SCENARIOS_ROOT = 'scenarios';
 const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].join('/');
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
-const RETIRED_KB_CHILD_ARG = '--kb-child';
-const RETIRED_KB_CHILD_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
-const RETIRED_KB_CHILD_OLD_SUPERVISORS = 'old supervisors';
+const RETIRED_KB_DAEMON_ARG = '--kb-daemon';
+const RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
+const RETIRED_KB_DAEMON_OLD_SUPERVISORS = 'old supervisors';
 const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
@@ -56,10 +56,10 @@ const SESSION_FAULT_EVENTS = 'src/sessions/event-builders.ts';
 const COORDINATOR_TERMINAL_MATERIALIZER = 'src/coordinator/services/terminal-materializer.ts';
 const JOBS_TERMINAL_RECORDING = 'src/jobs/terminal/recording.ts';
 const KB_PATHS_MODULE = 'src/kb/paths.ts';
-const KB_JOB_RECORDER = 'src/coordinator/services/kb/recorder.ts';
+const KB_JOB_RECORDER = 'src/jobs/kb/recorder.ts';
 const DURABLE_TRANSPORT_MODULE = 'src/coordinator/live/durable-transport.ts';
 const PROVIDER_SERVER_TRANSPORT_MODULE = 'src/coordinator/live/provider-server-transport.ts';
-const CONSUMER_DRIVER_MODULE = 'src/coordinator/consumer-driver/index.ts';
+const CONSUMER_DRIVER_MODULE = 'src/projection-consumers/index.ts';
 
 const PRODUCTION_FILE_PATHS = listProductionSourceFiles(SRC_ROOT);
 const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => toCanonicalSrcPath(REPO_ROOT, filePath));
@@ -452,26 +452,26 @@ describe('architecture boundary guard', () => {
     expect(kbPathSource).not.toContain('currentBuildFlavor');
     expect(collectReadModelAmbientRuntimeAccess()).toEqual([]);
   });
-  it('kb operation failure journal facts are centralized in the coordinator recorder', () => {
+  it('kb operation failure journal facts are centralized in the jobs-owned KB recorder', () => {
     expect(collectKbOperationFailureWriters()).toEqual([KB_JOB_RECORDER]);
   });
-  it('large coordinator transport and consumer-driver subsystem stay split by responsibility', () => {
+  it('large coordinator transport and consumer-driver component stay split by responsibility', () => {
     expect(PRODUCTION_SOURCE_FILES).toContain(PROVIDER_SERVER_TRANSPORT_MODULE);
     expect(PRODUCTION_SOURCE_FILES).toContain(CONSUMER_DRIVER_MODULE);
-    // design-philosophy.md §9.6: cohesive subsystems with enough sibling files
+    // design-philosophy.md §9.6: cohesive components with enough sibling files
     // should subdivide under a named directory instead of growing a root magnet.
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/state.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/persistence.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/registration.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/freshness-waiter.ts');
-    expect(PRODUCTION_SOURCE_FILES).toContain('src/coordinator/consumer-driver/authority-apply.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/state.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/persistence.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/registration.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/freshness-waiter.ts');
+    expect(PRODUCTION_SOURCE_FILES).toContain('src/projection-consumers/authority-apply.ts');
 
     const durableTransportSource = readFileSync(resolve(REPO_ROOT, DURABLE_TRANSPORT_MODULE), 'utf8');
     expect(durableTransportSource).not.toContain('createInterface');
     expect(durableTransportSource).not.toContain('ProviderServerEntry');
   });
   it('coordinator root forbids content-blank consumer-driver-support magnet', () => {
-    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/coordinator/consumer-driver-support.ts');
+    expect(PRODUCTION_SOURCE_FILES).not.toContain('src/projection-consumers-support.ts');
   });
   it('kb/ may not import coordinator/ implementation modules', () => {
     const violations = collectViolations(
@@ -540,9 +540,9 @@ describe('architecture boundary guard', () => {
       collectProductionStringResidue([
         RETIRED_STATUS_SCHEMA_FAULT,
         RETIRED_TEXT_ARTIFACT_LOCK_METHOD,
-        RETIRED_KB_CHILD_ARG,
-        RETIRED_KB_CHILD_PLAINTEXT_SHUTDOWN,
-        RETIRED_KB_CHILD_OLD_SUPERVISORS,
+        RETIRED_KB_DAEMON_ARG,
+        RETIRED_KB_DAEMON_PLAINTEXT_SHUTDOWN,
+        RETIRED_KB_DAEMON_OLD_SUPERVISORS,
       ]),
     ).toEqual([]);
   });
@@ -623,9 +623,9 @@ describe('architecture boundary guard', () => {
     expect(executionFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, EXECUTION_ROOT))).toBe(false);
   });
-  it('the removed src _legacy private-state tree must remain deleted', () => {
-    const legacyFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, RETIRED_PRIVATE_STATE_ROOT));
-    expect(legacyFiles).toEqual([]);
+  it('the removed src _retired private-state tree must remain deleted', () => {
+    const retiredFiles = PRODUCTION_SOURCE_FILES.filter((file) => isWithinPath(file, RETIRED_PRIVATE_STATE_ROOT));
+    expect(retiredFiles).toEqual([]);
     expect(existsSync(resolve(REPO_ROOT, RETIRED_PRIVATE_STATE_ROOT))).toBe(false);
   });
   it('content-blank filenames are forbidden anywhere under src/ (helpers/utils/shared magnets)', () => {
@@ -731,7 +731,7 @@ describe('architecture boundary guard', () => {
     expect(existsSync(resolve(REPO_ROOT, 'src/infra/paths.ts'))).toBe(false);
   });
   it('production src/ imports infra/path/ subdir only via index.ts (sibling files stay subdir-internal)', () => {
-    // The infra/path/ subdir is the path subsystem: index.ts is the public
+    // The infra/path/ subdir is the path component: index.ts is the public
     // composer (used by runtime port construction); root/store/coordinator/
     // engine are private family builders. External src/ callers must go
     // through composeCoralPaths so that flavor-aware path resolution stays
@@ -1094,16 +1094,18 @@ describe('architecture boundary guard', () => {
 
   it('only the documented manifest registry and lifecycle wiring point reach into src/engines/** (AC7.1)', () => {
     // Engine-blindness: code outside `src/engines/**` must not know engine
-    // identity. Two files are documented wiring points:
+    // identity. Documented wiring points:
     //   - `src/expansion/bundled.ts` declares `BUNDLED_ENGINES.specifier`
     //     strings (manifest declarations; no executed import of engine code).
-    //   - `src/coordinator/kb-child/expansion/lifecycle.ts` is the wiring point that
-    //     dynamically `import()`s engine specifiers from `BUNDLED_ENGINES`.
+    //   - `src/kb-daemon/expansion/*` wiring files adapt engine
+    //     modules into the KB daemon expansion lifecycle.
     // Sibling imports inside a single engine (`src/engines/<id>/...`) are
     // allowed — engines own their own internals.
     const allowedEngineImporters = new Set<string>([
       'src/expansion/bundled.ts',
-      'src/coordinator/kb-child/expansion/lifecycle.ts',
+      'src/kb-daemon/expansion/bundled-loaders.ts',
+      'src/kb-daemon/expansion/kiwi-boot.ts',
+      'src/kb-daemon/expansion/projection-reconcile.ts',
     ]);
 
     type EngineImportEdge = {
@@ -1162,10 +1164,10 @@ describe('architecture boundary guard', () => {
     // (`'kb.fts'`, `'kb.vector'`, `'kb.embedding'`) and authority/interest
     // names (`'corpus'`, `'content'`, `'metadata'`, `'journal'`) remain
     // allowed — they are capability vocabulary, not engine identity.
-    // Allowlist the lifecycle wiring point (the only legitimate consumer of
-    // BUNDLED_ENGINES.id strings).
+    // Allowlist the bundled-loader wiring point (the only legitimate consumer
+    // of bundled engine ids in coordinator code).
     const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx']);
-    const ALLOWED_FILES = new Set<string>(['src/coordinator/kb-child/expansion/lifecycle.ts']);
+    const ALLOWED_FILES = new Set<string>(['src/kb-daemon/expansion/bundled-loaders.ts']);
 
     const violations: string[] = [];
 

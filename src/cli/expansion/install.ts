@@ -3,8 +3,8 @@ import { isAbsolute, join } from 'node:path';
 
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import { INSTALL_ONLY_PACKAGES } from '../../expansion/install-only.js';
-import { createExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
-import { parseEngineManifest } from '../../expansion/manifest-schema.js';
+import { createExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
+import { parseEngineManifest } from '../../expansion/manifest/schema.js';
 import type { EngineInstaller, EngineInstallerOptions, LocalExpansionInstallState } from '../../expansion/contract.js';
 import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { createRealRuntime } from '../../runtime/real.js';

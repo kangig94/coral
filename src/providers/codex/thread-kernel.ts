@@ -191,7 +191,7 @@ function emitCodexRolloutArtifactHandleOnce(state: CodexTurnState, emit: (event:
     emit({
       kind: 'artifact_handle',
       handle: result.artifact.handle,
-      ...(result.artifact.identity === undefined ? {} : { identity: result.artifact.identity }),
+      identity: result.artifact.identity,
     });
     return;
   }

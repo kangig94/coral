@@ -5,8 +5,8 @@ import { nowIsoString } from '../../../infra/time.js';
 import { captureNoteManifestDeltas } from '../../corpus/manifest-authority.js';
 import { extractBody } from '../../corpus/frontmatter.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
-import { commitIndexUpdate, recordContentAndMetadataMutation } from '../../corpus/index-mutations.js';
-import { buildNoteIndexEntry } from '../../corpus/index-records.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../../corpus/index/mutations.js';
+import { buildNoteIndexEntry } from '../../corpus/index/records.js';
 import { loadKbWiki } from '../../read.js';
 import { memoPathFromContext } from '../../paths.js';
 import {

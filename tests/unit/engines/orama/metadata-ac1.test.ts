@@ -13,13 +13,14 @@ import {
   oramaProjectionTokenizerTier,
   type OramaProjectionMetadata,
 } from '#src/engines/orama/artifact-port.js';
-import { OramaBaseProjection, ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/backend.js';
+import { OramaBaseProjection } from '#src/engines/orama/base-projection.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { ORAMA_SCHEMA } from '#src/engines/orama/schema.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
-import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
+import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
@@ -135,7 +136,7 @@ function writeMetadata(kb: KbRuntime, metadata: Record<string, unknown>): void {
   writeFileSync(metadataPath(kb), `${JSON.stringify(metadata, null, 2)}\n`, 'utf-8');
 }
 
-function legacyOramaProjectionIdentityHash(): string {
+function retiredOramaProjectionIdentityHash(): string {
   return sha256Hex(
     JSON.stringify({
       schemaVersion: 2,
@@ -155,7 +156,7 @@ describe('Orama AC1 projection metadata', () => {
     const currentMetadata = readMetadata(kb);
     const oldSidecar: Record<string, unknown> = {
       ...currentMetadata,
-      projectionIdentityHash: legacyOramaProjectionIdentityHash(),
+      projectionIdentityHash: retiredOramaProjectionIdentityHash(),
     };
     for (const key of [
       'identitySchemaVersion',
@@ -177,7 +178,7 @@ describe('Orama AC1 projection metadata', () => {
 
     expect(loaded.metadata).toBeDefined();
     const loadedMetadata = loaded.metadata!;
-    expect(loadedMetadata.projectionIdentityHash).toBe(legacyOramaProjectionIdentityHash());
+    expect(loadedMetadata.projectionIdentityHash).toBe(retiredOramaProjectionIdentityHash());
     expect(hasCompleteOramaProjectionIdentityMetadata(loadedMetadata)).toBe(false);
     expect(oramaProjectionTokenizerTier(loadedMetadata)).toBe('unknown');
 

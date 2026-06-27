@@ -1,8 +1,8 @@
 import { nowIsoString } from '../../../infra/time.js';
 import { captureWikiManifestDeltas } from '../../corpus/manifest-authority.js';
 import { serializeWiki } from '../../corpus/frontmatter.js';
-import { commitCorpusEntryLocked } from '../../corpus/index-mutations.js';
-import { buildWikiIndexEntry } from '../../corpus/index-records.js';
+import { commitCorpusEntryLocked } from '../../corpus/index/mutations.js';
+import { buildWikiIndexEntry } from '../../corpus/index/records.js';
 import {
   setEntry,
   wikiEntryId,

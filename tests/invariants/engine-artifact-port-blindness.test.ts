@@ -169,7 +169,7 @@ describe('engine artifact port blindness', () => {
     ]);
   });
 
-  it('Orama persists full projected identity in a sidecar and reports legacy sidecars as corrupt', async () => {
+  it('Orama persists full projected identity in a sidecar and reports retired sidecars as corrupt', async () => {
     const root = tempRoot();
     const portFiles = filesPort();
     const snapshot = {
@@ -189,7 +189,7 @@ describe('engine artifact port blindness', () => {
       projected: expect.objectContaining(snapshot),
     });
 
-    writeFileSync(oramaIndexMetadataPath(root), `${JSON.stringify({ snapshotId: 'legacy-only' })}\n`, 'utf-8');
+    writeFileSync(oramaIndexMetadataPath(root), `${JSON.stringify({ snapshotId: 'retired-only' })}\n`, 'utf-8');
     const corrupt = await createOramaArtifactPort(portFiles, root, []).describeArtifacts();
     expect(corrupt[0]?.freshness).toMatchObject({
       status: 'corrupt',

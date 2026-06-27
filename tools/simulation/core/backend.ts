@@ -34,7 +34,7 @@ import type { StoragePort } from '../../../src/infra/port-types.js';
 import { createCoordinatorCore } from '../../../src/coordinator/composition/index.js';
 import type { CoordinatorCoreResult, CreateServerFn, FetchFn } from '../../../src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '../../../src/coordinator/composition/store-services-ref.js';
-import type { KbChildHealthSnapshot, KbChildSupervisor } from '../../../src/coordinator/kb-child/supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '../../../src/coordinator/live/kb-daemon-supervisor.js';
 import { coordinatorPaths } from '../../../src/infra/path/coordinator.js';
 import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
@@ -327,8 +327,8 @@ export type SimulationHookLog = {
   listenCalls: Array<{ host: string; port: number }>;
   writeBackendInfoCalls: Array<{ pluginRoot: string; info: BackendInfo }>;
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
-  kbChildStartCalls: Array<{ pluginRoot: string }>;
-  kbChildWarmupCalls: Array<{ pluginRoot: string }>;
+  kbDaemonStartCalls: Array<{ pluginRoot: string }>;
+  kbDaemonWarmupCalls: Array<{ pluginRoot: string }>;
   recoverPersistedDiscussCalls: number;
 };
 
@@ -405,8 +405,8 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     listenCalls: [],
     writeBackendInfoCalls: [],
     removeBackendInfoCalls: [],
-    kbChildStartCalls: [],
-    kbChildWarmupCalls: [],
+    kbDaemonStartCalls: [],
+    kbDaemonWarmupCalls: [],
     recoverPersistedDiscussCalls: 0,
   };
 
@@ -427,7 +427,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
 
   const listenHost = scenario.listen?.host ?? DEFAULT_LISTEN_HOST;
   const listenPort = scenario.listen?.port ?? DEFAULT_LISTEN_PORT;
-  const kbChildHealth: KbChildHealthSnapshot = {
+  const kbDaemonHealth: KbDaemonHealthSnapshot = {
     enabled: true,
     phase: 'online',
     generation: 1,
@@ -435,33 +435,33 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     startedAt: runtime.time.now(),
     readyAt: runtime.time.now(),
   };
-  const kbChildSupervisor: KbChildSupervisor = {
-    read: () => ({ ...kbChildHealth }),
+  const kbDaemonSupervisor: KbDaemonSupervisor = {
+    read: () => ({ ...kbDaemonHealth }),
     start: async () => {
-      hooks.kbChildStartCalls.push({ pluginRoot });
-      return { ...kbChildHealth };
+      hooks.kbDaemonStartCalls.push({ pluginRoot });
+      return { ...kbDaemonHealth };
     },
-    probe: async () => ({ ...kbChildHealth }),
+    probe: async () => ({ ...kbDaemonHealth }),
     warmup: async () => {
-      hooks.kbChildWarmupCalls.push({ pluginRoot });
-      return { ...kbChildHealth };
+      hooks.kbDaemonWarmupCalls.push({ pluginRoot });
+      return { ...kbDaemonHealth };
     },
     readKb: async (request) => ({
       ok: true,
-      data: { servedBy: 'simulation-kb-child', method: request.method },
+      data: { servedBy: 'simulation-kb-daemon', method: request.method },
     }),
     mutateKb: async (request) => ({
       ok: true,
-      data: { servedBy: 'simulation-kb-child', method: request.method },
+      data: { servedBy: 'simulation-kb-daemon', method: request.method },
     }),
     expansionRpc: async (request) => ({
       ok: true,
-      data: { servedBy: 'simulation-kb-child', method: request.method },
+      data: { servedBy: 'simulation-kb-daemon', method: request.method },
     }),
     abortKbJobs: async (jobIds) => ({ aborted: [], notFound: [...jobIds] }),
     listActiveKbJobs: async () => ({ active: [] }),
-    stop: async () => ({ ...kbChildHealth }),
-    restart: async () => ({ ...kbChildHealth }),
+    stop: async () => ({ ...kbDaemonHealth }),
+    restart: async () => ({ ...kbDaemonHealth }),
     dispose: async () => undefined,
     onExit: () => () => {},
   };
@@ -520,7 +520,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
         paths: runtime.paths,
       });
     },
-    kbChildSupervisor,
+    kbDaemonSupervisor,
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async (deps) => {
       hooks.recoverPersistedDiscussCalls += 1;

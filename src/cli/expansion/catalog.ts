@@ -1,6 +1,6 @@
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
 import type { EngineManifest } from '../../expansion/contract.js';
-import { createExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
+import { createExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
 import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { serializeCoralSetupError } from '../../runtime/errors.js';
 import { createRealRuntime } from '../../runtime/real.js';

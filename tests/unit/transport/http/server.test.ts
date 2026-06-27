@@ -16,7 +16,7 @@ import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -45,7 +45,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/tool-result.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { createKbChildProxySubsystem } from '#src/coordinator/kb-child/proxy-subsystem.js';
+import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { MutableRuntimeState as MutableCoordinatorRuntimeState } from '#src/coordinator/lifecycle.js';
 import {
@@ -53,7 +53,7 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { MAX_EVENT_STREAM_CONNECTIONS } from '#src/coordinator/composition/index.js';
-import type { KbChildHealthSnapshot, KbChildSupervisor } from '#src/coordinator/kb-child/supervisor.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
@@ -534,16 +534,10 @@ describe('execution backend server', () => {
     let kbOnline = true;
     let launchFenceActive = false;
 
-    const subsystems = {
+    const components = {
       register: vi.fn(),
       initAll: vi.fn(),
       disposeAll: vi.fn(async () => {}),
-      run: vi.fn(() => ({ ok: false as const, code: 'kb_proxy_only', message: 'KB runs in the child process' })),
-      runAsync: vi.fn(async () => ({
-        ok: false as const,
-        code: 'kb_proxy_only',
-        message: 'KB runs in the child process',
-      })),
       list: vi.fn(() => (kbOnline ? [{ id: 'kb' as never, phase: 'online' as const }] : [])),
       status: vi.fn(() =>
         !kbOnline
@@ -556,7 +550,7 @@ describe('execution backend server', () => {
       getLifecycle: () => lifecycle,
       getStartedAt: () => startedAt,
       getLaunchFenceActive: () => launchFenceActive,
-      subsystems: subsystems as never,
+      components: components as never,
       setLifecycle: vi.fn((state: LifecycleState) => {
         lifecycle = state;
       }),
@@ -577,7 +571,7 @@ describe('execution backend server', () => {
     };
   }
 
-  function createUnexpectedExpansionRpc(): KbChildSupervisor['expansionRpc'] {
+  function createUnexpectedExpansionRpc(): KbDaemonSupervisor['expansionRpc'] {
     return vi.fn(async () => ({
       ok: false as const,
       code: 'unexpected_expansion_rpc',
@@ -588,10 +582,10 @@ describe('execution backend server', () => {
   async function startBackendServer(overrides: Parameters<ServerModule['createCoordinatorServer']>[0] = {}) {
     const { serverModule, backendInfo } = await loadExecutionModules();
     const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
-    const defaultKbChildSupervisor =
-      process.env.CORAL_KB_ENABLE === '0' || restOverrides.kbChildSupervisor !== undefined
+    const defaultKbDaemonSupervisor =
+      process.env.CORAL_KB_ENABLE === '0' || restOverrides.kbDaemonSupervisor !== undefined
         ? {}
-        : { kbChildSupervisor: createMockKbChildSupervisor() };
+        : { kbDaemonSupervisor: createMockKbDaemonSupervisor() };
     controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
@@ -604,7 +598,7 @@ describe('execution backend server', () => {
         ...bootOverrides,
       },
       cleanupStaleJobsFn: () => {},
-      ...defaultKbChildSupervisor,
+      ...defaultKbDaemonSupervisor,
       ...restOverrides,
     });
     const started = await controller.start();
@@ -693,13 +687,13 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect(Array.isArray(body.subsystems)).toBe(true);
-    const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
-    expect(subsystems.find((s) => s.id === 'kb')?.phase).toBe('online');
+    expect(Array.isArray(body.components)).toBe(true);
+    const components = body.components as Array<{ id: string; phase: string }>;
+    expect(components.find((s) => s.id === 'kb')?.phase).toBe('online');
   });
 
-  it('probes an online KB child before returning /health', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('probes an online KB daemon before returning /health', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -708,14 +702,14 @@ describe('execution backend server', () => {
       readyAt: 20,
       pendingRequests: 0,
     };
-    const probedHealth: KbChildHealthSnapshot = {
-      ...childHealth,
+    const probedHealth: KbDaemonHealthSnapshot = {
+      ...daemonHealth,
       lastHeartbeatAt: 30,
       lastHeartbeatLatencyMs: 2,
-      childUptimeMs: 20,
+      daemonUptimeMs: 20,
     };
-    let currentHealth = childHealth;
-    const kbChildSupervisor: KbChildSupervisor = {
+    let currentHealth = daemonHealth;
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
       read: vi.fn(() => currentHealth),
       start: vi.fn(async () => currentHealth),
       probe: vi.fn(async () => {
@@ -734,28 +728,28 @@ describe('execution backend server', () => {
       restart: vi.fn(async () => currentHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     await vi.waitFor(() => {
-      expect(kbChildSupervisor.warmup).toHaveBeenCalledTimes(1);
+      expect(kbDaemonSupervisor.warmup).toHaveBeenCalledTimes(1);
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
-    const body = (await response.json()) as { kbChild?: KbChildHealthSnapshot };
+    const body = (await response.json()) as { kbDaemon?: KbDaemonHealthSnapshot };
 
     expect(response.status).toBe(200);
-    expect(kbChildSupervisor.probe).toHaveBeenCalledTimes(1);
-    expect(body.kbChild).toMatchObject({
+    expect(kbDaemonSupervisor.probe).toHaveBeenCalledTimes(1);
+    expect(body.kbDaemon).toMatchObject({
       phase: 'online',
       lastHeartbeatAt: 30,
       lastHeartbeatLatencyMs: 2,
-      childUptimeMs: 20,
+      daemonUptimeMs: 20,
     });
   });
 
-  it('does not probe an online KB child when recent heartbeat health is cached', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('does not probe an online KB daemon when recent heartbeat health is cached', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -765,13 +759,13 @@ describe('execution backend server', () => {
       pendingRequests: 0,
       lastHeartbeatAt: 1_000,
       lastHeartbeatLatencyMs: 2,
-      childUptimeMs: 20,
+      daemonUptimeMs: 20,
     };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb: vi.fn(async () => ({
         ok: false as const,
@@ -779,13 +773,13 @@ describe('execution backend server', () => {
         message: 'unexpected mutation',
       })),
       expansionRpc: createUnexpectedExpansionRpc(),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
     const backend = await startBackendServer({
       bootSnapshot: { now: () => 2_000 },
-      kbChildSupervisor,
+      kbDaemonSupervisor,
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -793,11 +787,11 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(200);
-    expect(kbChildSupervisor.probe).not.toHaveBeenCalled();
+    expect(kbDaemonSupervisor.probe).not.toHaveBeenCalled();
   });
 
-  it('uses a KB child proxy subsystem for coordinator health', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('uses a KB daemon health component for coordinator health', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -805,23 +799,23 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const kbChildSupervisor = createMockKbChildSupervisor({ health: childHealth });
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({ health: daemonHealth });
     const backend = await startBackendServer({
-      kbChildSupervisor,
+      kbDaemonSupervisor,
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
-    const body = (await response.json()) as { subsystems?: Array<{ id: string; phase: string }> };
+    const body = (await response.json()) as { components?: Array<{ id: string; phase: string }> };
 
     expect(response.status).toBe(200);
-    expect(body.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('online');
-    expect(kbChildSupervisor.start).toHaveBeenCalledTimes(1);
+    expect(body.components?.find((component) => component.id === 'kb')?.phase).toBe('online');
+    expect(kbDaemonSupervisor.start).toHaveBeenCalledTimes(1);
   });
 
-  it('routes KB memo mutations through the child RPC path', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('routes KB memo mutations through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -829,16 +823,16 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (request) => ({
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (request) => ({
       ok: true as const,
-      data: { servedBy: 'kb-child', method: request.method },
+      data: { servedBy: 'kb-daemon', method: request.method },
     }));
-    const kbChildSupervisor = createMockKbChildSupervisor({
-      health: childHealth,
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
       mutateKb,
     });
     const backend = await startBackendServer({
-      kbChildSupervisor,
+      kbDaemonSupervisor,
     });
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
@@ -863,9 +857,9 @@ describe('execution backend server', () => {
     });
   });
 
-  it('uses the child RPC path in the standard server path', async () => {
+  it('uses the daemon supervisor in the standard server path', async () => {
     const { serverModule } = await loadExecutionModules();
-    const childHealth: KbChildHealthSnapshot = {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -873,12 +867,12 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (request) => ({
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (request) => ({
       ok: true as const,
-      data: { servedBy: 'kb-child', method: request.method },
+      data: { servedBy: 'kb-daemon', method: request.method },
     }));
-    const kbChildSupervisor = createMockKbChildSupervisor({
-      health: childHealth,
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
       mutateKb,
     });
     controller = serverModule.createCoordinatorServer({
@@ -892,7 +886,7 @@ describe('execution backend server', () => {
         log: () => {},
       },
       cleanupStaleJobsFn: () => {},
-      kbChildSupervisor,
+      kbDaemonSupervisor,
     });
     const started = await controller.start();
 
@@ -918,8 +912,8 @@ describe('execution backend server', () => {
     });
   });
 
-  it('reports the KB child proxy offline when the child is disabled', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('reports the KB daemon proxy offline when the daemon is disabled', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: false,
       phase: 'disabled',
       generation: 0,
@@ -928,42 +922,42 @@ describe('execution backend server', () => {
       readyAt: null,
       reason: 'disabled for test',
     };
-    const kbChildSupervisor = createMockKbChildSupervisor({
-      health: childHealth,
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
       readKb: vi.fn(async () => ({
         ok: false as const,
         code: 'kb_unavailable',
-        message: 'KB child supervisor is disabled',
-        detail: { reason: 'kb_child_disabled' },
+        message: 'KB daemon supervisor is disabled',
+        detail: { reason: 'kb_daemon_disabled' },
       })),
       mutateKb: vi.fn(async () => ({
         ok: false as const,
         code: 'kb_unavailable',
-        message: 'KB child supervisor is disabled',
-        detail: { reason: 'kb_child_disabled' },
+        message: 'KB daemon supervisor is disabled',
+        detail: { reason: 'kb_daemon_disabled' },
       })),
     });
     const backend = await startBackendServer({
-      kbChildSupervisor,
+      kbDaemonSupervisor,
     });
 
     const healthResponse = await fetch(`${backend.baseUrl}/health`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
-    const health = (await healthResponse.json()) as { subsystems?: Array<{ id: string; phase: string }> };
+    const health = (await healthResponse.json()) as { components?: Array<{ id: string; phase: string }> };
 
     expect(healthResponse.status).toBe(200);
-    expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')?.phase).toBe('offline');
+    expect(health.components?.find((component) => component.id === 'kb')?.phase).toBe('offline');
 
     const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
 
     expect(kbResponse.status).toBe(503);
-    expect(kbChildSupervisor.readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
+    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
   });
 
-  it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB subsystem path', async () => {
+  it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB daemon runtime path', async () => {
     const previousKbEnabled = process.env.CORAL_KB_ENABLE;
     process.env.CORAL_KB_ENABLE = '0';
     try {
@@ -973,11 +967,11 @@ describe('execution backend server', () => {
         headers: { 'X-Coral-Backend-Token': backend.token },
       });
       const health = (await healthResponse.json()) as {
-        subsystems?: Array<{ id: string; phase: string; reason?: string }>;
+        components?: Array<{ id: string; phase: string; reason?: string }>;
       };
 
       expect(healthResponse.status).toBe(200);
-      expect(health.subsystems?.find((subsystem) => subsystem.id === 'kb')).toMatchObject({
+      expect(health.components?.find((component) => component.id === 'kb')).toMatchObject({
         phase: 'offline',
         reason: KB_DISABLED_REASON,
       });
@@ -997,8 +991,8 @@ describe('execution backend server', () => {
     }
   });
 
-  it('routes read-only KB RPCs through the child supervisor', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('routes read-only KB RPCs through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -1006,15 +1000,15 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const readKb = vi.fn<KbChildSupervisor['readKb']>(async (_request) => ({
+    const readKb = vi.fn<KbDaemonSupervisor['readKb']>(async (_request) => ({
       ok: true as const,
-      data: { servedBy: 'kb-child' },
+      data: { servedBy: 'kb-daemon' },
     }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb,
       mutateKb: vi.fn(async () => ({
         ok: false as const,
@@ -1022,11 +1016,11 @@ describe('execution backend server', () => {
         message: 'unexpected mutation',
       })),
       expansionRpc: createUnexpectedExpansionRpc(),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const projectRoot = '/workspace/project-a';
     const projectRootQuery = encodeURIComponent(projectRoot);
     const getJson = async (path: string): Promise<unknown> => {
@@ -1038,29 +1032,29 @@ describe('execution backend server', () => {
       return await response.json();
     };
 
-    await expect(getJson('/kb/entries?q=alpha')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/diagnose')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/notes/alpha-note')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/sources')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/sources/alpha-source')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/wikis')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/wikis/alpha-wiki')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/wake-up?project=kangig94-coral')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/communities/alpha-community')).resolves.toEqual({ servedBy: 'kb-child' });
-    await expect(getJson('/kb/communities-stale')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/entries?q=alpha')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/diagnose')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/notes/alpha-note')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/sources')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/sources/alpha-source')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/wikis')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/wikis/alpha-wiki')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/wake-up?project=kangig94-coral')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/communities/alpha-community')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/communities-stale')).resolves.toEqual({ servedBy: 'kb-daemon' });
     await expect(getJson('/kb/communities/alpha-community/summary-input')).resolves.toEqual({
-      servedBy: 'kb-child',
+      servedBy: 'kb-daemon',
     });
     await expect(getJson(`/kb/memos?projectRoot=${projectRootQuery}&owner=kang`)).resolves.toEqual({
-      servedBy: 'kb-child',
+      servedBy: 'kb-daemon',
     });
     await expect(getJson(`/kb/memos/alpha-memo?projectRoot=${projectRootQuery}`)).resolves.toEqual({
-      servedBy: 'kb-child',
+      servedBy: 'kb-daemon',
     });
     await expect(getJson('/kb/principles?q=alpha&top_k=2&verbose=1')).resolves.toEqual({
-      servedBy: 'kb-child',
+      servedBy: 'kb-daemon',
     });
-    await expect(getJson('/kb/principles/alpha-principle')).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(getJson('/kb/principles/alpha-principle')).resolves.toEqual({ servedBy: 'kb-daemon' });
 
     expect(readKb.mock.calls.map(([request]) => request)).toEqual([
       { method: 'readSearch', args: { query: 'alpha' } },
@@ -1089,8 +1083,8 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('routes KB memo mutations through the child supervisor', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('routes KB memo mutations through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -1098,23 +1092,23 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (_request) => ({
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (_request) => ({
       ok: true as const,
-      data: { servedBy: 'kb-child' },
+      data: { servedBy: 'kb-daemon' },
     }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb,
       expansionRpc: createUnexpectedExpansionRpc(),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const projectRoot = '/workspace/project-a';
 
     const response = await fetch(`${backend.baseUrl}/kb/memos`, {
@@ -1132,7 +1126,7 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(201);
-    await expect(response.json()).resolves.toEqual({ servedBy: 'kb-child' });
+    await expect(response.json()).resolves.toEqual({ servedBy: 'kb-daemon' });
     expect(mutateKb.mock.calls.map(([request]) => request)).toEqual([
       {
         method: 'createMemo',
@@ -1142,8 +1136,8 @@ describe('execution backend server', () => {
     ]);
   });
 
-  it('routes KB corpus mutations through the child supervisor', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('routes KB corpus mutations through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -1151,23 +1145,23 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (_request) => ({
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (_request) => ({
       ok: true as const,
-      data: { servedBy: 'kb-child' },
+      data: { servedBy: 'kb-daemon' },
     }));
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb,
       expansionRpc: createUnexpectedExpansionRpc(),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const projectRoot = '/workspace/project-a';
     const headers = {
       'Content-Type': 'application/json',
@@ -1182,10 +1176,10 @@ describe('execution backend server', () => {
           projectRoot,
           slug: 'alpha-wiki',
           title: 'Alpha',
-          tags: ['child'],
+          tags: ['daemon'],
         }),
       }).then(async (response) => ({ status: response.status, body: await response.json() })),
-    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-child' } });
+    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-daemon' } });
 
     await expect(
       fetch(`${backend.baseUrl}/kb/sources/alpha-source`, {
@@ -1193,7 +1187,7 @@ describe('execution backend server', () => {
         headers,
         body: JSON.stringify({ projectRoot }),
       }).then(async (response) => ({ status: response.status, body: await response.json() })),
-    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-daemon' } });
 
     await expect(
       fetch(`${backend.baseUrl}/kb/sources`, {
@@ -1207,7 +1201,7 @@ describe('execution backend server', () => {
           async: true,
         }),
       }).then(async (response) => ({ status: response.status, body: await response.json() })),
-    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-child' } });
+    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-daemon' } });
 
     await expect(
       fetch(`${backend.baseUrl}/kb/index`, {
@@ -1218,7 +1212,7 @@ describe('execution backend server', () => {
           async: true,
         }),
       }).then(async (response) => ({ status: response.status, body: await response.json() })),
-    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-daemon' } });
 
     await expect(
       fetch(`${backend.baseUrl}/kb/communities/alpha-community/summary`, {
@@ -1226,15 +1220,15 @@ describe('execution backend server', () => {
         headers,
         body: JSON.stringify({
           projectRoot,
-          summary: 'Community summary from child.',
+          summary: 'Community summary from daemon.',
         }),
       }).then(async (response) => ({ status: response.status, body: await response.json() })),
-    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-child' } });
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-daemon' } });
 
     expect(mutateKb.mock.calls.map(([request]) => request)).toEqual([
       {
         method: 'createWiki',
-        args: { slug: 'alpha-wiki', title: 'Alpha', tags: ['child'] },
+        args: { slug: 'alpha-wiki', title: 'Alpha', tags: ['daemon'] },
         ctx: expect.objectContaining({ authority: 'user', projectRoot }),
       },
       {
@@ -1259,16 +1253,16 @@ describe('execution backend server', () => {
       },
       {
         method: 'setCommunitySummary',
-        args: { summary: 'Community summary from child.', slug: 'alpha-community' },
+        args: { summary: 'Community summary from daemon.', slug: 'alpha-community' },
         ctx: expect.objectContaining({ authority: 'user', projectRoot }),
       },
     ]);
   });
 
-  it('marks tracked child-owned KB jobs as error when the KB child exits', async () => {
-    const jobId = 'kb-child-import-job-1';
+  it('marks tracked daemon-owned KB jobs as error when the KB daemon exits', async () => {
+    const jobId = 'kb-daemon-import-job-1';
     const projectRoot = '/workspace/project-a';
-    const childHealth: KbChildHealthSnapshot = {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -1276,25 +1270,25 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const exit = { listener: null as ((snapshot: KbChildHealthSnapshot) => void) | null };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
+    const exit = { listener: null as ((snapshot: KbDaemonHealthSnapshot) => void) | null };
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
       onExit: vi.fn((listener) => {
         exit.listener = listener;
         return vi.fn();
       }),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb: vi.fn(async () => ({ ok: true as const, data: { status: 'running', job: jobId } })),
       expansionRpc: createUnexpectedExpansionRpc(),
       abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const progressStore = createProgressStore();
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
@@ -1339,10 +1333,10 @@ describe('execution backend server', () => {
     expect(exit.listener).not.toBeNull();
 
     if (exit.listener === null) {
-      throw new Error('expected KB child exit listener');
+      throw new Error('expected KB daemon exit listener');
     }
     exit.listener({
-      ...childHealth,
+      ...daemonHealth,
       phase: 'failed',
       pid: null,
       readyAt: null,
@@ -1376,10 +1370,10 @@ describe('execution backend server', () => {
     );
   });
 
-  it('marks durable child-owned KB jobs as error when the child exits before proxy registration', async () => {
-    const jobId = 'kb-child-unproxied-import-job-1';
+  it('marks durable daemon-owned KB jobs as error when the daemon exits before proxy registration', async () => {
+    const jobId = 'kb-daemon-unproxied-import-job-1';
     const projectRoot = '/workspace/project-a';
-    const childHealth: KbChildHealthSnapshot = {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -1387,16 +1381,16 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const exit = { listener: null as ((snapshot: KbChildHealthSnapshot) => void) | null };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
+    const exit = { listener: null as ((snapshot: KbDaemonHealthSnapshot) => void) | null };
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
       onExit: vi.fn((listener) => {
         exit.listener = listener;
         return vi.fn();
       }),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb: vi.fn(async () => ({
         ok: false as const,
@@ -1405,11 +1399,11 @@ describe('execution backend server', () => {
       })),
       expansionRpc: createUnexpectedExpansionRpc(),
       abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const progressStore = createProgressStore();
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
@@ -1433,21 +1427,21 @@ describe('execution backend server', () => {
     progressStore.appendRuntimeStarted(jobId, {
       transport: 'internal',
       operation: 'kb.source_import',
-      owner: 'kb-child',
+      owner: 'kb-daemon',
       startTime: new Date().toISOString(),
     });
 
     expect(exit.listener).not.toBeNull();
     if (exit.listener === null) {
-      throw new Error('expected KB child exit listener');
+      throw new Error('expected KB daemon exit listener');
     }
     exit.listener({
-      ...childHealth,
+      ...daemonHealth,
       phase: 'failed',
       pid: null,
       readyAt: null,
       lastExit: { code: 1, signal: null, at: 30, uptimeMs: 20 },
-      lastError: 'child crashed before returning job id',
+      lastError: 'daemon crashed before returning job id',
     });
 
     const detailResponse = await fetch(
@@ -1476,10 +1470,10 @@ describe('execution backend server', () => {
     );
   });
 
-  it('removes child-owned KB abort proxies when the child job reaches terminal state', async () => {
-    const jobId = 'kb-child-import-job-terminal';
+  it('removes daemon-owned KB abort proxies when the daemon-owned KB job reaches terminal state', async () => {
+    const jobId = 'kb-daemon-import-job-terminal';
     const projectRoot = '/workspace/project-a';
-    const childHealth: KbChildHealthSnapshot = {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 1,
@@ -1489,21 +1483,21 @@ describe('execution backend server', () => {
     };
     const abortKbJobs = vi.fn(async () => ({ aborted: [jobId], notFound: [] }));
     const eventBus = new TypedEventBus();
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
       onExit: vi.fn(() => vi.fn()),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb: vi.fn(async () => ({ ok: true as const, data: { status: 'running', job: jobId } })),
       expansionRpc: createUnexpectedExpansionRpc(),
       abortKbJobs,
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ eventBus, kbChildSupervisor });
+    const backend = await startBackendServer({ eventBus, kbDaemonSupervisor });
     const progressStore = createProgressStore();
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
@@ -1578,27 +1572,27 @@ describe('execution backend server', () => {
     expect(abortKbJobs).not.toHaveBeenCalled();
   });
 
-  it('reports KB unavailable when the child supervisor is failed', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('reports KB unavailable when the daemon supervisor is failed', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'failed',
       generation: 1,
       pid: null,
       startedAt: 10,
       readyAt: null,
-      lastError: 'simulated KB child failure',
+      lastError: 'simulated KB daemon failure',
     };
-    const kbChildSupervisor = createMockKbChildSupervisor({
-      health: childHealth,
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
       readKb: vi.fn(async () => ({
         ok: false as const,
         code: 'kb_unavailable',
-        message: 'KB child supervisor is failed',
-        detail: { reason: 'kb_child_failed' },
+        message: 'KB daemon supervisor is failed',
+        detail: { reason: 'kb_daemon_failed' },
       })),
     });
     const backend = await startBackendServer({
-      kbChildSupervisor,
+      kbDaemonSupervisor,
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -1608,8 +1602,8 @@ describe('execution backend server', () => {
 
     expect(response.status).toBe(200);
     expect(body.status).toBe('ok');
-    const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
-    const kb = subsystems.find((s) => s.id === 'kb');
+    const components = body.components as Array<{ id: string; phase: string }>;
+    const kb = components.find((s) => s.id === 'kb');
     expect(kb).toBeDefined();
     expect(kb!.phase).toBe('offline');
 
@@ -1619,7 +1613,7 @@ describe('execution backend server', () => {
     expect(kbResponse.status).toBe(503);
     await expect(kbResponse.json()).resolves.toMatchObject({
       code: 'kb_unavailable',
-      detail: { reason: 'kb_child_failed' },
+      detail: { reason: 'kb_daemon_failed' },
     });
   });
 
@@ -1733,7 +1727,7 @@ describe('execution backend server', () => {
         flavor: 'prod',
         log: () => {},
       },
-      kbChildSupervisor: createMockKbChildSupervisor(),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       cleanupStaleJobsFn: () => {},
       providerHostManager,
       createExecutionService: (ctx, deps) => {
@@ -2021,9 +2015,9 @@ describe('execution backend server', () => {
     });
   });
 
-  it('routes kb memo list and consolidated delete through the KB child RPC port', async () => {
+  it('routes kb memo list and consolidated delete through the KB daemon RPC port', async () => {
     const projectRoot = join(mockState.tmpHome, 'project');
-    const readKb = vi.fn<KbChildSupervisor['readKb']>(async (request) => {
+    const readKb = vi.fn<KbDaemonSupervisor['readKb']>(async (request) => {
       expect(request.method).toBe('listMemos');
       return {
         ok: true,
@@ -2035,7 +2029,7 @@ describe('execution backend server', () => {
         },
       };
     });
-    const mutateKb = vi.fn<KbChildSupervisor['mutateKb']>(async (request) => {
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (request) => {
       expect(request.method).toBe('deleteMemos');
       const args = request.args as Record<string, unknown>;
       if (args.all === true) {
@@ -2044,7 +2038,7 @@ describe('execution backend server', () => {
       return { ok: true, data: { deleted: ['a.md'], count: 1 } };
     });
     const backend = await startBackendServer({
-      kbChildSupervisor: createMockKbChildSupervisor({ readKb, mutateKb }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({ readKb, mutateKb }),
     });
 
     const listResponse = await fetch(`${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}`, {
@@ -2194,7 +2188,7 @@ describe('execution backend server', () => {
 
     function createHttpHandlerDeps(
       options: {
-        kbSubsystem?: unknown | null;
+        kbRuntime?: unknown | null;
         launchFenceActive?: boolean;
         executionService?: FakeExecutionService;
         abortJobs?: any['abortJobs'];
@@ -2227,7 +2221,7 @@ describe('execution backend server', () => {
 
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(options.launchFenceActive ?? false);
-      const kbAvailable = options.kbSubsystem !== null;
+      const kbAvailable = options.kbRuntime !== null;
       setKbOnline(kbAvailable);
       const service = executionService as any;
 
@@ -2278,7 +2272,7 @@ describe('execution backend server', () => {
         },
         health: {
           read: () => {
-            const kb = runtimeState.subsystems.status('kb' as never);
+            const kb = runtimeState.components.status('kb' as never);
             return {
               status: 'ok' as const,
               kernel: { phase: 'running' as const, readyAt: 0 },
@@ -2295,7 +2289,7 @@ describe('execution backend server', () => {
               queueDepth: 0,
               inflightRequests: idleTimer.inflightRequests,
               env: coralEnvSnapshot,
-              subsystems: kb === null ? [] : [{ ...kb, id: kb.id as string }],
+              components: kb === null ? [] : [{ ...kb, id: kb.id as string }],
             };
           },
         },
@@ -2406,7 +2400,7 @@ describe('execution backend server', () => {
 
     async function startMockedRouteServer(
       options: {
-        kbSubsystem?: unknown | null;
+        kbRuntime?: unknown | null;
         launchFenceActive?: boolean;
         executionService?: FakeExecutionService;
         abortJobs?: any['abortJobs'];
@@ -3535,8 +3529,8 @@ describe('execution backend server', () => {
       }
     });
 
-    it('returns kb_initializing when the KB subsystem is not initialized', async () => {
-      const { deps } = createHttpHandlerDeps({ kbSubsystem: null });
+    it('returns kb_initializing when the KB daemon runtime is not initialized', async () => {
+      const { deps } = createHttpHandlerDeps({ kbRuntime: null });
       const started = await startHttpHandlerServer(deps);
 
       try {
@@ -3547,10 +3541,8 @@ describe('execution backend server', () => {
         });
 
         expect(response.status).toBe(503);
-        // The KB subsystem registry returns `kb_initializing` while the
-        // subsystem hasn't yet transitioned to `online`. AC10a will rewrite
-        // the registry-side stub to differentiate `kb_initializing` from
-        // `kb_offline` based on retry exhaustion.
+        // The KB request port returns a startup/offline code while the daemon
+        // runtime has not reached a serving state.
         expect(await response.json()).toMatchObject({
           code: expect.stringMatching(/^kb_(initializing|offline)$/),
         });
@@ -3562,7 +3554,7 @@ describe('execution backend server', () => {
     it('keeps KB IPC ops flowing when curate health is degraded but kbStatus is ok (§16(a))', async () => {
       const started = await startMockedRouteServer();
       // No-op: under the new model, curate degradation is reported through
-      // the subsystem's `degraded` phase. KB tool calls flow when phase is
+      // the component's `degraded` phase. KB tool calls flow when phase is
       // `online | degraded`. The mock registry's online-by-default state
       // is sufficient to verify that flow.
 
@@ -5210,8 +5202,8 @@ describe('execution backend server', () => {
     expect(backend.controller.getLifecycle()).toBe('running');
   });
 
-  it('restarts the KB child supervisor through the shutdown-token admin route', async () => {
-    const childHealth: KbChildHealthSnapshot = {
+  it('restarts the KB daemon supervisor through the shutdown-token admin route', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 2,
@@ -5219,11 +5211,11 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb: vi.fn(async () => ({
         ok: false as const,
@@ -5231,11 +5223,11 @@ describe('execution backend server', () => {
         message: 'unexpected mutation',
       })),
       expansionRpc: createUnexpectedExpansionRpc(),
-      stop: vi.fn(async () => childHealth),
-      restart: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     try {
@@ -5248,13 +5240,13 @@ describe('execution backend server', () => {
       expect(await response.json()).toEqual({
         status: 'ok',
         instanceId: 'execution-backend-instance-1',
-        kbChild: childHealth,
+        kbDaemon: daemonHealth,
       });
-      expect(kbChildSupervisor.restart).toHaveBeenCalledWith('http-admin');
+      expect(kbDaemonSupervisor.restart).toHaveBeenCalledWith('http-admin');
       const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
       expect(
         messages.some(
-          (message) => message.startsWith('audit ') && message.includes('"event":"admin_kb_child_restart_requested"'),
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_kb_daemon_restart_requested"'),
         ),
       ).toBe(true);
     } finally {
@@ -5262,10 +5254,10 @@ describe('execution backend server', () => {
     }
   });
 
-  it('tracks active child KB jobs before admin restart reconciliation', async () => {
-    const jobId = 'kb-child-restart-active-job-1';
+  it('tracks active daemon KB jobs before admin restart reconciliation', async () => {
+    const jobId = 'kb-daemon-restart-active-job-1';
     const projectRoot = '/workspace/project-a';
-    const childHealth: KbChildHealthSnapshot = {
+    const daemonHealth: KbDaemonHealthSnapshot = {
       enabled: true,
       phase: 'online',
       generation: 2,
@@ -5273,18 +5265,18 @@ describe('execution backend server', () => {
       startedAt: 10,
       readyAt: 20,
     };
-    const exit = { listener: null as ((snapshot: KbChildHealthSnapshot) => void) | null };
+    const exit = { listener: null as ((snapshot: KbDaemonHealthSnapshot) => void) | null };
     const listActiveKbJobs = vi.fn(async () => ({ active: [jobId] }));
-    const restart = vi.fn(async () => childHealth);
-    const kbChildSupervisor: KbChildSupervisor = {
-      read: vi.fn(() => childHealth),
+    const restart = vi.fn(async () => daemonHealth);
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
       onExit: vi.fn((listener) => {
         exit.listener = listener;
         return vi.fn();
       }),
-      start: vi.fn(async () => childHealth),
-      probe: vi.fn(async () => childHealth),
-      warmup: vi.fn(async () => childHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
       readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
       mutateKb: vi.fn(async () => ({
         ok: false as const,
@@ -5294,11 +5286,11 @@ describe('execution backend server', () => {
       expansionRpc: createUnexpectedExpansionRpc(),
       abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
       listActiveKbJobs,
-      stop: vi.fn(async () => childHealth),
+      stop: vi.fn(async () => daemonHealth),
       restart,
       dispose: vi.fn(async () => undefined),
     };
-    const backend = await startBackendServer({ kbChildSupervisor });
+    const backend = await startBackendServer({ kbDaemonSupervisor });
     const progressStore = createProgressStore();
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
@@ -5337,10 +5329,10 @@ describe('execution backend server', () => {
     expect(exit.listener).not.toBeNull();
 
     if (exit.listener === null) {
-      throw new Error('expected KB child exit listener');
+      throw new Error('expected KB daemon exit listener');
     }
     exit.listener({
-      ...childHealth,
+      ...daemonHealth,
       phase: 'failed',
       pid: null,
       readyAt: null,
@@ -5598,7 +5590,7 @@ describe('execution backend server', () => {
       });
       runtimeState.setLifecycle('running');
 
-      const kbChildSupervisor = createMockKbChildSupervisor();
+      const kbDaemonSupervisor = createMockKbDaemonSupervisor();
       const controller = lifecycleModule.createLifecycle({
         identity: {
           pluginRoot,
@@ -5642,9 +5634,9 @@ describe('execution backend server', () => {
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
-        kbChildSupervisor,
+        kbDaemonSupervisor,
         handoffQuiescePorts: () => [fakeService as never],
-        createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisor),
+        createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
         runStartupRecoveryFn: async () => [],
@@ -5784,7 +5776,7 @@ describe('execution backend server', () => {
       const startupBlocked = createDeferred();
       const releaseStartup = createDeferred();
       const startupRegistry = createDiscussContextRegistry();
-      const kbChildSupervisor = createMockKbChildSupervisor({
+      const kbDaemonSupervisor = createMockKbDaemonSupervisor({
         start: vi.fn(async () => {
           startupBlocked.resolve();
           await releaseStartup.promise;
@@ -5801,7 +5793,7 @@ describe('execution backend server', () => {
           flavor: 'prod',
           log: () => {},
         },
-        kbChildSupervisor,
+        kbDaemonSupervisor,
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
       });
@@ -5836,8 +5828,8 @@ describe('execution backend server', () => {
 
       releaseStartup.resolve();
       const startResult = await startPromise;
-      // The KB child starts after `running` and does not gate start()'s return
-      // path. A child start failure during shutdown is contained by the
+      // The KB daemon starts after `running` and does not gate start()'s return
+      // path. A daemon start failure during shutdown is contained by the
       // supervisor path, so the server info still resolves.
       expect(startResult).toMatchObject({ port: expect.any(Number) });
 
@@ -5916,7 +5908,7 @@ describe('execution backend server', () => {
             queueDepth: 0,
             inflightRequests: idleTimer.inflightRequests,
             env: coralEnvSnapshot,
-            subsystems: [{ id: 'kb', phase: 'online' as const }],
+            components: [{ id: 'kb', phase: 'online' as const }],
           }),
         },
         events: {

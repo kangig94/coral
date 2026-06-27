@@ -100,7 +100,7 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
         inflightRequests: 0,
         textProjectionState: 'idle',
         env: {},
-        subsystems: [{ id: 'kb', phase: 'online' as const }],
+        components: [{ id: 'kb', phase: 'online' as const }],
       }),
     },
     events: {

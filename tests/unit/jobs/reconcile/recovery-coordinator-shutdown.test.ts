@@ -5,8 +5,8 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createKbChildProxySubsystem } from '#src/coordinator/kb-child/proxy-subsystem.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -153,13 +153,11 @@ function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
   let launchFenceActive = false;
-  // Stub subsystem registry. KB-routed handlers are not exercised here.
-  const subsystems = {
+  // Stub component registry. KB-routed handlers are not exercised here.
+  const components = {
     register: vi.fn(),
     initAll: vi.fn(),
     disposeAll: vi.fn(async () => {}),
-    run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
-    runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
     list: vi.fn(() => []),
     status: vi.fn(() => null),
   };
@@ -168,7 +166,7 @@ function createRuntimeStateMock() {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
     getLaunchFenceActive: () => launchFenceActive,
-    subsystems: subsystems as never,
+    components: components as never,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
     }),
@@ -288,7 +286,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     }
   });
   const storeServices = createStoreServicesHarness(progressStore);
-  const kbChildSupervisor = createMockKbChildSupervisor();
+  const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
@@ -331,9 +329,9 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
-    kbChildSupervisor,
+    kbDaemonSupervisor,
     handoffQuiescePorts: () => [],
-    createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisor),
+    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
     registerBuiltInProvidersFn: () => {},
     // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
     // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion

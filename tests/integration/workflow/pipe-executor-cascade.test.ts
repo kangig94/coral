@@ -196,7 +196,11 @@ describe('pipe executor coral cascade invariant', () => {
         name: 'stub-provider',
         execute: () =>
           streamProviderEvents((emit) => {
-            emit({ kind: 'artifact_handle', handle: artifactPath });
+            emit({
+              kind: 'artifact_handle',
+              handle: artifactPath,
+              identity: { kind: 'test-artifact', path: artifactPath },
+            });
             emit({
               kind: 'terminal',
               terminal: { content: 'artifact-cleaned', outcome: { kind: 'completed' } },

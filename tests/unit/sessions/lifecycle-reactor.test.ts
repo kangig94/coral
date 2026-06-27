@@ -187,6 +187,7 @@ async function recordArtifact(harness: Harness, sessionId: string, jobId: string
       expectedVersion: current.version,
       provider: 'codex',
       handle,
+      identity: { kind: 'test-artifact', handle },
       sourceJobId: jobId,
     }),
   ).resolves.toMatchObject({ ok: true });

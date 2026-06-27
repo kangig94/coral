@@ -43,7 +43,9 @@ const PRODUCTION_FILE_INDEX = createProductionFileIndex(REPO_ROOT, PRODUCTION_FI
 
 const ALLOWED_ENGINE_IMPORTERS = new Set<string>([
   'src/expansion/bundled.ts',
-  'src/coordinator/kb-child/expansion/lifecycle.ts',
+  'src/kb-daemon/expansion/bundled-loaders.ts',
+  'src/kb-daemon/expansion/kiwi-boot.ts',
+  'src/kb-daemon/expansion/projection-reconcile.ts',
 ]);
 
 const ENGINE_BLIND_SCOPES = [
@@ -54,14 +56,14 @@ const ENGINE_BLIND_SCOPES = [
   'src/runtime/',
 ] as const;
 const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx', 'kb-scann']);
-const ENGINE_ID_LITERAL_ALLOWED_FILES = new Set<string>(['src/coordinator/kb-child/expansion/lifecycle.ts']);
+const ENGINE_ID_LITERAL_ALLOWED_FILES = new Set<string>(['src/kb-daemon/expansion/bundled-loaders.ts']);
 
 function isInEngineBlindScope(canonical: string): boolean {
   return ENGINE_BLIND_SCOPES.some((scope) => canonical.startsWith(scope));
 }
 
 describe('engine acceptance — kb_scann gate', () => {
-  it('only the manifest registry and the lifecycle wiring point import from src/engines/', () => {
+  it('only the manifest registry and expansion wiring files import from src/engines/', () => {
     const violations: string[] = [];
 
     for (const filePath of PRODUCTION_FILE_PATHS) {

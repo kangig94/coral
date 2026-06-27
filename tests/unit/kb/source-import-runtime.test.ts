@@ -32,8 +32,8 @@ import {
   sourceImportAdminLimitExceededHint,
   type SourceImportReadPolicy,
   type SourceImportRuntime,
-} from '#src/kb/ops/source-import.js';
-import { convertSourceInWorker } from '#src/kb/ops/source-conversion-worker.js';
+} from '#src/kb/ops/source/import.js';
+import { convertSourceInWorker } from '#src/kb/ops/source/conversion-worker.js';
 import { kbSourceImportSchema } from '#src/kb/tool-contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 

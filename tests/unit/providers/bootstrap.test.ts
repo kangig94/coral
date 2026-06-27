@@ -246,7 +246,7 @@ describe('registerBuiltInProviders', () => {
     },
   );
 
-  it('uses Claude recovery metadata for continuity and artifact lookup without parsing legacy stdout', async () => {
+  it('uses Claude recovery metadata for continuity and artifact lookup without parsing retired stdout', async () => {
     const claude = createBuiltInProviderRegistry().get('claude');
 
     const result = await claude?.recovery?.finalizeFromArtifacts({

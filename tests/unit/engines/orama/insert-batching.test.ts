@@ -1,7 +1,7 @@
 import { search as oramaSearch } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
-import { insertOramaDocumentsCooperatively } from '#src/engines/orama/backend.js';
+import { insertOramaDocumentsCooperatively } from '#src/engines/orama/insert-batching.js';
 import {
   createOramaDb,
   normalizeOramaTerm,

@@ -253,6 +253,7 @@ describe('consumeJobStream', () => {
         yield {
           kind: 'artifact_handle',
           handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
+          identity: { kind: 'test-artifact', threadId: 'thread-1' },
         } as const;
         yield {
           kind: 'continuity',
@@ -282,6 +283,7 @@ describe('consumeJobStream', () => {
       expectedVersion: 5,
       provider: 'codex',
       handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
+      identity: { kind: 'test-artifact', threadId: 'thread-1' },
       sourceJobId: 'job-4',
     });
     expect(checkpointJobContinuityAtomic).toHaveBeenCalledWith('session-4', {

@@ -8,8 +8,8 @@ import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
-import type { SubsystemRegistry } from './subsystems/registry.js';
-import type { KbChildSupervisor } from './kb-child/supervisor.js';
+import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
+import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -33,7 +33,7 @@ export type LifecycleWiringState = {
 
 export interface ShutdownRuntimeState {
   setLifecycle(state: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped'): void;
-  readonly subsystems: SubsystemRegistry;
+  readonly components: RuntimeComponentRegistry;
 }
 
 type RunShutdownSequenceContext = {
@@ -56,7 +56,7 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
-  kbChildSupervisor?: KbChildSupervisor;
+  kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
@@ -125,7 +125,7 @@ export async function runShutdownSequence({
   namespace,
   markJobsAsErrorFn,
   providerHostManager,
-  kbChildSupervisor,
+  kbDaemonSupervisor,
   storeServicesRef,
   terminateAllFn,
   handoffQuiescePorts,
@@ -158,11 +158,11 @@ export async function runShutdownSequence({
   state.ownershipCheckerTeardown?.();
   state.ownershipCheckerTeardown = null;
 
-  if (kbChildSupervisor !== undefined) {
+  if (kbDaemonSupervisor !== undefined) {
     await withBudget(
       'kb child shutdown',
       async (signal) => {
-        await kbChildSupervisor.dispose(reason, { signal });
+        await kbDaemonSupervisor.dispose(reason, { signal });
       },
       remainingDrain,
       runtime.time,
@@ -215,8 +215,8 @@ export async function runShutdownSequence({
   }
 
   await withBudget(
-    'subsystems disposeAll',
-    async (signal) => runtimeState.subsystems.disposeAll(signal),
+    'components disposeAll',
+    async (signal) => runtimeState.components.disposeAll(signal),
     remainingDrain,
     runtime.time,
     log,

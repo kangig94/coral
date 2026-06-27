@@ -1,6 +1,6 @@
-// AC10a: `/health.subsystems` is an array of transport subsystem-status entries
+// AC10a: `/health.components` is an array of transport component-status entries
 // (4-phase tagged union per `id`). `mutationBlocked` and `consumerStuck`
-// move from `subsystems.kb` to top-level `diagnostics`. The validator
+// move from `components.kb` to top-level `diagnostics`. The validator
 // pins this shape so external consumers can rely on the structure.
 
 import { describe, expect, it } from 'vitest';
@@ -21,30 +21,30 @@ const HEALTHY_BASE: BackendHealth = {
   inflightRequests: 0,
   queueDepth: 0,
   textProjectionState: 'idle',
-  subsystems: [{ id: 'kb', phase: 'online' }],
+  components: [{ id: 'kb', phase: 'online' }],
 };
 
 describe('/health typed shape (AC10a)', () => {
-  it('accepts a healthy shape with one online subsystem and no diagnostics', () => {
+  it('accepts a healthy shape with one online component and no diagnostics', () => {
     expect(isBackendHealth(HEALTHY_BASE)).toBe(true);
   });
 
-  it('accepts an empty subsystems array', () => {
-    expect(isBackendHealth({ ...HEALTHY_BASE, subsystems: [] })).toBe(true);
+  it('accepts an empty components array', () => {
+    expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
-  it('accepts an initializing subsystem with attempt count', () => {
+  it('accepts an initializing component with attempt count', () => {
     const initializing: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [{ id: 'kb', phase: 'initializing', attempt: 2 }],
+      components: [{ id: 'kb', phase: 'initializing', attempt: 2 }],
     };
     expect(isBackendHealth(initializing)).toBe(true);
   });
 
-  it('accepts a degraded subsystem with curate-publish reason', () => {
+  it('accepts a degraded component with curate-publish reason', () => {
     const degraded: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [
+      components: [
         {
           id: 'kb',
           phase: 'degraded',
@@ -55,20 +55,20 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(degraded)).toBe(true);
   });
 
-  it('accepts an offline subsystem with reason and last log line', () => {
+  it('accepts an offline component with reason and last log line', () => {
     const offline: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [
-        { id: 'kb', phase: 'offline', reason: 'init failed', lastLogLine: '[subsystem:kb] catalog scan failed' },
+      components: [
+        { id: 'kb', phase: 'offline', reason: 'init failed', lastLogLine: '[component:kb] catalog scan failed' },
       ],
     };
     expect(isBackendHealth(offline)).toBe(true);
   });
 
-  it('accepts an offline subsystem diagnostic with boot failure context', () => {
+  it('accepts an offline component diagnostic with boot failure context', () => {
     const offline: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [
+      components: [
         {
           id: 'kb',
           phase: 'offline',
@@ -143,10 +143,10 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(withResources)).toBe(true);
   });
 
-  it('accepts KB child supervisor health', () => {
-    const withKbChild: BackendHealth = {
+  it('accepts KB daemon supervisor health', () => {
+    const withKbDaemon: BackendHealth = {
       ...HEALTHY_BASE,
-      kbChild: {
+      kbDaemon: {
         enabled: true,
         phase: 'online',
         generation: 2,
@@ -157,7 +157,7 @@ describe('/health typed shape (AC10a)', () => {
         pendingRequests: 0,
         lastHeartbeatAt: 1_700_000_000_060,
         lastHeartbeatLatencyMs: 3,
-        childUptimeMs: 50,
+        daemonUptimeMs: 50,
         kbRead: {
           phase: 'ready',
           initializedAt: 1_700_000_000_055,
@@ -176,13 +176,13 @@ describe('/health typed shape (AC10a)', () => {
         },
       },
     };
-    expect(isBackendHealth(withKbChild)).toBe(true);
+    expect(isBackendHealth(withKbDaemon)).toBe(true);
   });
 
-  it('rejects malformed KB child supervisor health', () => {
+  it('rejects malformed KB daemon supervisor health', () => {
     const malformed = {
       ...HEALTHY_BASE,
-      kbChild: {
+      kbDaemon: {
         enabled: true,
         phase: 'online',
         generation: '2',
@@ -224,31 +224,31 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects the legacy `subsystems.kb.kind` object shape (clean-slate cost)', () => {
-    // Pre-AC10a responses returned `subsystems` as a record with `kb.kind`.
+  it('rejects the retired `components.kb.kind` object shape (clean-slate cost)', () => {
+    // Pre-AC10a responses returned `components` as a record with `kb.kind`.
     // The validator must fail-loud on that shape so the contract change
     // surfaces rather than silently parsing as a degenerate structure.
-    const legacy = {
+    const retired = {
       ...HEALTHY_BASE,
-      subsystems: { kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' },
+      components: { kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' },
     };
-    expect(isBackendHealth(legacy)).toBe(false);
+    expect(isBackendHealth(retired)).toBe(false);
   });
 
   it('rejects an unknown phase string', () => {
-    const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'unavailable' }] };
+    const malformed = { ...HEALTHY_BASE, components: [{ id: 'kb', phase: 'unavailable' }] };
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects a degraded subsystem missing the reason object', () => {
-    const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'degraded' }] };
+  it('rejects a degraded component missing the reason object', () => {
+    const malformed = { ...HEALTHY_BASE, components: [{ id: 'kb', phase: 'degraded' }] };
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects a malformed offline subsystem diagnostic', () => {
+  it('rejects a malformed offline component diagnostic', () => {
     const malformed = {
       ...HEALTHY_BASE,
-      subsystems: [
+      components: [
         {
           id: 'kb',
           phase: 'offline',
@@ -260,10 +260,10 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects a negative offline subsystem diagnostic attempt count', () => {
+  it('rejects a negative offline component diagnostic attempt count', () => {
     const malformed = {
       ...HEALTHY_BASE,
-      subsystems: [
+      components: [
         {
           id: 'kb',
           phase: 'offline',

@@ -1,6 +1,6 @@
 import { nowIsoString } from '../../../infra/time.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../contract.js';
-import { recordMetadataMutation } from '../../corpus/index-mutations.js';
+import { recordMetadataMutation } from '../../corpus/index/mutations.js';
 import { compareLocale } from '../../validation.js';
 import { buildCommunityPartitionTree } from './detection.js';
 import { buildCommunityDocuments, generateCommunityFiles, loadExistingCommunityState } from './documents.js';

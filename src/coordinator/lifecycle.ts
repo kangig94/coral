@@ -19,8 +19,8 @@ import { writeResultArtifact } from '../jobs/terminal/export.js';
 import type { JobStore } from '../jobs/store.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { Subsystem } from './subsystems/contract.js';
-import type { SubsystemRegistry } from './subsystems/registry.js';
+import type { RuntimeComponent } from './runtime-components/contract.js';
+import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
@@ -44,7 +44,7 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import type { KbChildSupervisor } from './kb-child/supervisor.js';
+import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -81,7 +81,7 @@ export interface ReadonlyRuntimeState {
   getLifecycle(): LifecycleState;
   getStartedAt(): number;
   getLaunchFenceActive(): boolean;
-  readonly subsystems: SubsystemRegistry;
+  readonly components: RuntimeComponentRegistry;
 }
 
 export interface MutableRuntimeState extends ReadonlyRuntimeState {
@@ -90,7 +90,7 @@ export interface MutableRuntimeState extends ReadonlyRuntimeState {
   setLaunchFenceActive(active: boolean): void;
 }
 
-export function createRuntimeState(startedAt: number, subsystems: SubsystemRegistry): MutableRuntimeState {
+export function createRuntimeState(startedAt: number, components: RuntimeComponentRegistry): MutableRuntimeState {
   let lifecycle: LifecycleState = 'starting';
   let currentStartedAt = startedAt;
   let launchFenceActive = false;
@@ -108,7 +108,7 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
     getLifecycle: () => lifecycle,
     getStartedAt: () => currentStartedAt,
     getLaunchFenceActive: () => launchFenceActive,
-    subsystems,
+    components,
     setLifecycle: (state) => {
       if (state === lifecycle) {
         return;
@@ -128,11 +128,11 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
 }
 
 /**
- * Factory for the KB health subsystem registered with the runtime-state
- * registry. Production supplies a child-proxy subsystem; lifecycle.ts only
+ * Factory for the KB health component registered with the runtime-state
+ * registry. Production supplies a KB daemon health component; lifecycle.ts only
  * registers it and triggers `initAll` after Era II completes.
  */
-export type CreateKbProxySubsystemFn = () => Subsystem;
+export type CreateKbHealthComponentFn = () => RuntimeComponent;
 
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
@@ -354,10 +354,10 @@ export type LifecycleDeps = {
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
-  readonly kbChildSupervisor?: KbChildSupervisor;
+  readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void;
-  readonly createKbProxySubsystemFn: CreateKbProxySubsystemFn;
+  readonly createKbHealthComponentFn: CreateKbHealthComponentFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   readonly runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -409,7 +409,7 @@ async function runLifecycleStartup({
     storeServicesRef,
     createStoreServicesFromDbFn,
     launchCoordinator,
-    kbChildSupervisor,
+    kbDaemonSupervisor,
     providerRegistry,
     server,
     getRecoveryService,
@@ -419,7 +419,7 @@ async function runLifecycleStartup({
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn,
-    createKbProxySubsystemFn,
+    createKbHealthComponentFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
     runStartupRecoveryFn,
@@ -554,7 +554,7 @@ async function runLifecycleStartup({
     registerBuiltInProvidersFn(providerRegistry);
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
-    // recovery work. KB child startup cannot gate daemon liveness. The CLI's
+    // recovery work. KB daemon startup cannot gate daemon liveness. The CLI's
     // `waitForBackendReady` resolves on
     // `kernel.phase ∈ { 'kernel-ready', 'running' }` so once we reach this
     // point the CLI returns within `KERNEL_READY_DEADLINE_MS`.
@@ -608,34 +608,34 @@ async function runLifecycleStartup({
       runtimeState.setLaunchFenceActive(false);
     }
 
-    let registeredSubsystems = false;
+    let registeredComponents = false;
     try {
-      const kbSubsystem = createKbProxySubsystemFn();
-      runtimeState.subsystems.register(kbSubsystem);
-      registeredSubsystems = true;
+      const kbHealthComponent = createKbHealthComponentFn();
+      runtimeState.components.register(kbHealthComponent);
+      registeredComponents = true;
     } catch (error: unknown) {
-      backendLog.error('Subsystem registration failed — KB will be offline until restart', error);
+      backendLog.error('Runtime component registration failed — KB will be offline until restart', error);
     }
 
     runtimeState.setLifecycle('running');
     state.started = true;
-    void kbChildSupervisor
+    void kbDaemonSupervisor
       ?.start()
       .then((health) => {
         if (health.phase !== 'online') {
           return;
         }
-        void kbChildSupervisor.warmup().catch((error: unknown) => {
-          backendLog.warn(`KB child supervisor warmup failed: ${formatError(error)}`);
+        void kbDaemonSupervisor.warmup().catch((error: unknown) => {
+          backendLog.warn(`KB daemon supervisor warmup failed: ${formatError(error)}`);
         });
       })
       .catch((error: unknown) => {
-        backendLog.warn(`KB child supervisor start failed: ${formatError(error)}`);
+        backendLog.warn(`KB daemon supervisor start failed: ${formatError(error)}`);
       });
 
     idleTimer.startWatching(
       () => {
-        const childCurateRunning = kbChildSupervisor?.read().kbWrite?.curateRunning === true;
+        const daemonCurateRunning = kbDaemonSupervisor?.read().kbWrite?.curateRunning === true;
         return (
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
@@ -643,7 +643,7 @@ async function runLifecycleStartup({
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&
           !hooks.onIdleCheck() &&
-          !childCurateRunning
+          !daemonCurateRunning
         );
       },
       (reason) => {
@@ -654,16 +654,16 @@ async function runLifecycleStartup({
     state.ownershipCheckerTeardown = ownershipChecker.install();
     await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
-    // ===== Era III (subsystems — fire-and-forget) =====
-    // The KB subsystem is a child-health proxy; init is intentionally a no-op
-    // and the child supervisor owns actual KB process startup. The registry
-    // surfaces child phase via `runtimeState.subsystems.status('kb')`.
+    // ===== Era III (components — fire-and-forget) =====
+    // The KB daemon health component is a daemon-health mirror; init is intentionally a no-op
+    // and the daemon supervisor owns actual KB process startup. The registry
+    // surfaces child phase via `runtimeState.components.status('kb')`.
     try {
-      if (registeredSubsystems) {
-        runtimeState.subsystems.initAll(signal);
+      if (registeredComponents) {
+        runtimeState.components.initAll(signal);
       }
     } catch (error: unknown) {
-      backendLog.error('Subsystem initialization dispatch failed — KB will be offline until restart', error);
+      backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
     }
 
     return {
@@ -735,7 +735,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
-    kbChildSupervisor,
+    kbDaemonSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
     closeServerFn,
@@ -796,7 +796,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         namespace,
         markJobsAsErrorFn,
         providerHostManager,
-        kbChildSupervisor,
+        kbDaemonSupervisor,
         storeServicesRef,
         terminateAllFn,
         handoffQuiescePorts: deps.handoffQuiescePorts,

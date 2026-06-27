@@ -19,7 +19,7 @@ import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
 import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
 import { shutdownBackend } from '../http/backend/shutdown.js';
-import type { TransportSubsystemStatus } from '../server-ports.js';
+import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
 export const STARTUP_POLL_MS = 200;
@@ -52,7 +52,7 @@ export type RawCoordinatorHealth = {
   namespace: string;
   pid?: number;
   processStartedAt?: number;
-  subsystems?: TransportSubsystemStatus[];
+  components?: TransportRuntimeComponentStatus[];
 };
 
 export type VerifiedBackendInfo = {
@@ -147,15 +147,15 @@ function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
     value.instanceId.length > 0 &&
     typeof value.namespace === 'string' &&
     value.namespace.length > 0 &&
-    (value.subsystems === undefined || Array.isArray(value.subsystems))
+    (value.components === undefined || Array.isArray(value.components))
   );
 }
 
 /**
- * Treat both legacy `'ok'` and the new lifecycle phases (`'kernel-ready'`,
- * `'running'`) as "the daemon is ready to serve requests". Older composition
- * layers may map kernel-ready/running to legacy `'ok'`; newer ones report the
- * lifecycle phase directly.
+ * Treat both coarse `'ok'` and lifecycle phases (`'kernel-ready'`,
+ * `'running'`) as "the daemon is ready to serve requests". Some composition
+ * layers map kernel-ready/running to `'ok'`; others report the lifecycle phase
+ * directly.
  */
 function isReadyStatus(status: RawCoordinatorHealth['status']): boolean {
   return status === 'ok' || status === 'kernel-ready' || status === 'running';

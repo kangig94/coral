@@ -118,13 +118,13 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
 
 type StoreSchemaClassification =
   | { kind: 'fresh'; userVersion: 0; storedVersion: 0 }
-  | { kind: 'legacy'; userVersion: 0; storedVersion: number }
+  | { kind: 'retired'; userVersion: 0; storedVersion: number }
   | { kind: 'current'; userVersion: number; storedVersion: number }
   | { kind: 'mismatch'; userVersion: number; storedVersion: number };
 
 const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
 
-const CORAL_LEGACY_TABLES = [
+const CORAL_RETIRED_TABLES = [
   'events',
   'projection_jobs',
   'projection_sessions',
@@ -153,7 +153,7 @@ function hasUserTable(db: Database): boolean {
   return db.prepare(USER_TABLE_EXISTS_SQL).get() !== undefined;
 }
 
-function readLegacyMetaSchemaVersion(db: Database): number | null {
+function readRetiredMetaSchemaVersion(db: Database): number | null {
   try {
     const row = db
       .prepare<[], { value?: unknown }>("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1")
@@ -171,8 +171,8 @@ function readLegacyMetaSchemaVersion(db: Database): number | null {
   }
 }
 
-function hasCoralLegacyTable(db: Database): boolean {
-  const quotedNames = CORAL_LEGACY_TABLES.map((name) => `'${name}'`).join(', ');
+function hasCoralRetiredTable(db: Database): boolean {
+  const quotedNames = CORAL_RETIRED_TABLES.map((name) => `'${name}'`).join(', ');
   return (
     db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`).get() !==
     undefined
@@ -193,9 +193,9 @@ function classifyStoreSchema(db: Database): StoreSchemaClassification {
     if (!hasUserTable(db)) {
       return { kind: 'fresh', userVersion: 0, storedVersion: 0 };
     }
-    const legacyMetaVersion = readLegacyMetaSchemaVersion(db);
-    if (legacyMetaVersion !== null || hasCoralLegacyTable(db)) {
-      return { kind: 'legacy', userVersion: 0, storedVersion: legacyMetaVersion ?? 0 };
+    const retiredMetaVersion = readRetiredMetaSchemaVersion(db);
+    if (retiredMetaVersion !== null || hasCoralRetiredTable(db)) {
+      return { kind: 'retired', userVersion: 0, storedVersion: retiredMetaVersion ?? 0 };
     }
   }
 
@@ -603,7 +603,7 @@ export function openOrResetBackendStoreDb(
     }
 
     const classification = classifyStoreFile(files.dbFile, runtime.storage);
-    if (classification.kind === 'legacy' || classification.kind === 'mismatch') {
+    if (classification.kind === 'retired' || classification.kind === 'mismatch') {
       const quarantineDir = quarantineStoreFiles(runtime.storage, files, classification, {
         nowMs: runtime.time.now(),
         pid: runtime.env.pid(),

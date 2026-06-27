@@ -3,7 +3,7 @@ import { backendLog } from '../../../infra/backend-log.js';
 import { extractBody, replaceFrontmatter, replaceSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../../corpus/index-records.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, cloneKbIndex } from '../../corpus/index/records.js';
 import { computeBodySurfaceHash } from '../../corpus/snapshot.js';
 import { advanceIndexStateToEntrySeq, currentEntrySeq } from '../../index-state.js';
 import { stripMdExt } from '../../paths.js';

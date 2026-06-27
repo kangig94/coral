@@ -6,11 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { jobsReconcile } from '#src/jobs/startup.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import { workflowRecover } from '#src/workflow/recover.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -57,12 +57,12 @@ describe('coordinator startup ordering', () => {
     const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async () => {
       order.push('jobsReconcile.runStartup');
     });
-    const kbChildSupervisor = createMockKbChildSupervisor();
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      kbChildSupervisor,
+      kbDaemonSupervisor,
       recoverPersistedDiscussFn: async () => [],
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
@@ -145,17 +145,17 @@ describe('coordinator startup ordering', () => {
     const writeBackendInfoFn = vi.fn(() => {
       order.push('writeBackendInfoFn');
     });
-    const kbChildSupervisor = createMockKbChildSupervisor({
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
       start: vi.fn(async () => {
-        order.push('kbChildSupervisor.start');
-        return kbChildSupervisor.read();
+        order.push('kbDaemonSupervisor.start');
+        return kbDaemonSupervisor.read();
       }),
     });
 
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      kbChildSupervisor,
+      kbDaemonSupervisor,
       recoverPersistedDiscussFn,
       writeBackendInfoFn,
       createServerFn: (handler) => createServer(handler),
@@ -189,10 +189,10 @@ describe('coordinator startup ordering', () => {
       // Era I (listen + register cursors) precedes Era II (waitFresh):
       expect(order.indexOf('listenFn (bind)')).toBeLessThan(order.indexOf('registerJournalConsumers'));
       expect(order.indexOf('registerJournalConsumers')).toBeLessThan(Math.min(...waitFreshOrder));
-      await waitFor(() => order.includes('kbChildSupervisor.start'));
-      // The KB child starts only after Era II recovery has completed and the
+      await waitFor(() => order.includes('kbDaemonSupervisor.start'));
+      // The KB daemon starts only after Era II recovery has completed and the
       // coordinator reaches running.
-      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('kbChildSupervisor.start'));
+      expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('kbDaemonSupervisor.start'));
       // Era II ordering of recovery steps:
       expect(Math.max(...waitFreshOrder)).toBeLessThan(order.indexOf('jobsReconcile.runStartup'));
       expect(order.indexOf('jobsReconcile.runStartup')).toBeLessThan(order.indexOf('recoverPersistedDiscussFn'));
@@ -214,7 +214,7 @@ describe('coordinator startup ordering', () => {
     }
   });
 
-  it('starts the KB child without coordinator-side corpus replay', async () => {
+  it('starts the KB daemon without coordinator-side corpus replay', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
     tempRoots.push(home, pluginRoot);
@@ -230,14 +230,14 @@ describe('coordinator startup ordering', () => {
 
     const runtime = createRealRuntime('prod');
     const order: string[] = [];
-    const kbChildSupervisor = createMockKbChildSupervisor({
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
       start: vi.fn(async () => {
-        order.push('kbChildSupervisor.start');
-        return kbChildSupervisor.read();
+        order.push('kbDaemonSupervisor.start');
+        return kbDaemonSupervisor.read();
       }),
       warmup: vi.fn(async () => {
-        order.push('kbChildSupervisor.warmup');
-        return kbChildSupervisor.read();
+        order.push('kbDaemonSupervisor.warmup');
+        return kbDaemonSupervisor.read();
       }),
     });
     const register = vi.spyOn(ConsumerDriver.prototype, 'register');
@@ -250,7 +250,7 @@ describe('coordinator startup ordering', () => {
     const coordinator = createCoordinatorServer({
       runtime,
       pluginRoot,
-      kbChildSupervisor,
+      kbDaemonSupervisor,
       recoverPersistedDiscussFn: async () => [],
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => {
@@ -263,12 +263,12 @@ describe('coordinator startup ordering', () => {
 
     try {
       await coordinator.start();
-      await waitFor(() => order.includes('kbChildSupervisor.start'));
+      await waitFor(() => order.includes('kbDaemonSupervisor.start'));
       expect(notifyCorpus).not.toHaveBeenCalled();
       expect(register.mock.calls.some(([reg]) => reg.authority === 'corpus')).toBe(false);
       expect(order).toContain('listenFn');
-      expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('kbChildSupervisor.start'));
-      expect(kbChildSupervisor.warmup).toHaveBeenCalledTimes(1);
+      expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('kbDaemonSupervisor.start'));
+      expect(kbDaemonSupervisor.warmup).toHaveBeenCalledTimes(1);
     } finally {
       await coordinator.shutdown('test-cleanup');
       await coordinator.waitForShutdown();

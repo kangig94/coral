@@ -1,6 +1,6 @@
 import { nowIsoString } from '../../../infra/time.js';
 import { captureWikiManifestDeltas } from '../../corpus/manifest-authority.js';
-import { commitCorpusEntryLocked } from '../../corpus/index-mutations.js';
+import { commitCorpusEntryLocked } from '../../corpus/index/mutations.js';
 import {
   extractBody,
   extractTitle,
@@ -12,7 +12,7 @@ import {
   type KnowledgeBlock,
   type WikiBodySections,
 } from '../../corpus/frontmatter.js';
-import { buildWikiIndexEntry } from '../../corpus/index-records.js';
+import { buildWikiIndexEntry } from '../../corpus/index/records.js';
 import { extractKnowledgeLinks } from '../../corpus/wiki-links.js';
 import { setEntry, wikiEntryId, type KbEntryId, type KbWikiFrontmatter } from '../../entry-types.js';
 import { assertWikiSlug } from '../../validation.js';

@@ -97,8 +97,8 @@ describe('detectIncidentRetryDrift', () => {
     expect(detectIncidentRetryDrift([pendingRepair(slug, queuedContent)], [detectedIncident(slug)], scan)).toBe('both');
   });
 
-  it('returns "both" for a legacy queue row with no observed content hash', () => {
-    const slug = 'legacy';
+  it('returns "both" for a retired queue row with no observed content hash', () => {
+    const slug = 'retired';
     const scan = noteScan(slug, 'broken');
     const row: PendingRepair = {
       entryId: noteEntryId(slug),

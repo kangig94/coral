@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
-import { type ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
-import { repairProjectionArtifactLagOnBoot } from '#src/coordinator/kb-child/expansion/lifecycle.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/backend.js';
+import { type ConsumerDriver } from '#src/projection-consumers/index.js';
+import { repairProjectionArtifactLagOnBoot } from '#src/kb-daemon/expansion/projection-reconcile.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import type { EngineArtifactDescriptor } from '#src/kb/corpus/artifact-port.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 

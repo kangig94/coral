@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { createMockKbChildSupervisor, createOnlineKbChildHealth } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools/testing/kb-daemon-supervisor.js';
 
 const openServers = new Set<Server>();
 
@@ -106,7 +106,7 @@ afterEach(async () => {
 });
 
 describe('expansion RPC before store services exist', () => {
-  it('routes through the KB child supervisor on a never-started server', async () => {
+  it('routes through the KB daemon supervisor on a never-started server', async () => {
     const token = 'test-token';
     const expansionRpc = vi.fn(async () => ({
       ok: true as const,
@@ -131,7 +131,7 @@ describe('expansion RPC before store services exist', () => {
         log: () => {},
       },
       createServerFn: (handler) => createServer(handler),
-      kbChildSupervisor: createMockKbChildSupervisor({ expansionRpc }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
     });
@@ -163,9 +163,9 @@ describe('expansion RPC before store services exist', () => {
     {
       code: 'kb_unavailable',
       statusCode: 503,
-      message: 'KB child expansion request skipped: recovery ended in failed.',
-      remediation: 'Wait for the KB child runtime to become available.',
-      detail: { reason: 'kb_child_unavailable' },
+      message: 'KB daemon expansion request skipped: recovery ended in failed.',
+      remediation: 'Wait for the KB daemon runtime to become available.',
+      detail: { reason: 'kb_daemon_unavailable' },
     },
     {
       code: 'unknown_expansion',
@@ -195,7 +195,7 @@ describe('expansion RPC before store services exist', () => {
         log: () => {},
       },
       createServerFn: (handler) => createServer(handler),
-      kbChildSupervisor: createMockKbChildSupervisor({ expansionRpc }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
     });
@@ -221,7 +221,7 @@ describe('expansion RPC before store services exist', () => {
     });
   });
 
-  it('surfaces child-owned mutation lock diagnostics through health without parent KB runtime access', async () => {
+  it('surfaces daemon-owned mutation lock diagnostics through health without parent KB runtime access', async () => {
     const token = 'test-token';
     const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
     const core = createCoordinatorCore({
@@ -236,8 +236,8 @@ describe('expansion RPC before store services exist', () => {
         log: () => {},
       },
       createServerFn: (handler) => createServer(handler),
-      kbChildSupervisor: createMockKbChildSupervisor({
-        health: createOnlineKbChildHealth({
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({
+        health: createOnlineKbDaemonHealth({
           kbWrite: { phase: 'ready', mutationBlocked },
         }),
       }),
@@ -251,11 +251,11 @@ describe('expansion RPC before store services exist', () => {
     });
     const body = (await response.json()) as {
       diagnostics?: { mutationBlocked?: unknown };
-      kbChild?: { kbWrite?: { mutationBlocked?: unknown } };
+      kbDaemon?: { kbWrite?: { mutationBlocked?: unknown } };
     };
 
     expect(response.status).toBe(200);
-    expect(body.kbChild?.kbWrite?.mutationBlocked).toEqual(mutationBlocked);
+    expect(body.kbDaemon?.kbWrite?.mutationBlocked).toEqual(mutationBlocked);
     expect(body.diagnostics?.mutationBlocked).toEqual(mutationBlocked);
   });
 });

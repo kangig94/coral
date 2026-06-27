@@ -27,33 +27,15 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/composition/world.ts',
   'src/coordinator/composition/index.ts',
   'src/coordinator/composition/execution-services.ts',
-  'src/coordinator/consumer-driver/authority-apply.ts',
-  'src/coordinator/consumer-driver/freshness-waiter.ts',
-  'src/coordinator/consumer-driver/index.ts',
-  'src/coordinator/consumer-driver/persistence.ts',
-  'src/coordinator/consumer-driver/registration.ts',
-  'src/coordinator/consumer-driver/state.ts',
   'src/coordinator/contracts.ts',
   'src/coordinator/lifecycle.ts',
   'src/coordinator/index.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
-  'src/coordinator/kb-child/expansion/host-factory.ts',
-  'src/coordinator/kb-child/expansion/lifecycle.ts',
-  'src/coordinator/kb-child/expansion/rpc.ts',
-  'src/coordinator/kb-child/expansion/state.ts',
   'src/coordinator/handoff.ts',
   'src/coordinator/invocation-scope.ts',
-  'src/coordinator/kb-child/child-main.ts',
-  'src/coordinator/kb-child/protocol.ts',
-  'src/coordinator/kb-child/proxy-subsystem.ts',
-  'src/coordinator/kb-child/read-handler.ts',
-  'src/coordinator/kb-child/services/reindex.ts',
-  'src/coordinator/kb-child/services/readiness.ts',
-  'src/coordinator/kb-child/services/shell.ts',
-  'src/coordinator/kb-child/services/source-import.ts',
-  'src/coordinator/kb-child/supervisor.ts',
-  'src/coordinator/kb-child/write-runtime.ts',
+  'src/coordinator/runtime-components/kb-health-component.ts',
+  'src/coordinator/live/kb-daemon-supervisor.ts',
   'src/coordinator/live/admission.ts',
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
@@ -72,9 +54,8 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-abort.ts',
   'src/coordinator/services/job-launch.ts',
   'src/coordinator/services/job-wait.ts',
-  'src/coordinator/services/kb/recorder.ts',
-  'src/coordinator/subsystems/contract.ts',
-  'src/coordinator/subsystems/registry.ts',
+  'src/coordinator/runtime-components/contract.ts',
+  'src/coordinator/runtime-components/registry.ts',
   'src/coordinator/services/recovery/actions.ts',
   'src/coordinator/services/recovery/index.ts',
   'src/coordinator/services/recovery/service.ts',
@@ -116,13 +97,13 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/execution-service.ts',
   'src/coordinator/shutdown.ts',
   'src/coordinator/live/durable-transport.ts',
+  'src/coordinator/live/kb-daemon-supervisor.ts',
 ]);
 
 const BROAD_IMPORT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/kb-child/',
   'src/coordinator/services/',
-  'src/coordinator/subsystems/',
+  'src/coordinator/runtime-components/',
 ] as const;
 const FORBIDDEN_PREFIXES = [
   'src/execution/',
@@ -132,16 +113,13 @@ const FORBIDDEN_PREFIXES = [
   'src/workflow/recover.ts',
   'src/jobs/reconcile/',
 ] as const;
-const KB_RUNTIME_IMPLEMENTATION_TARGETS = new Set(['src/kb/runtime.ts', 'src/kb/subsystem.ts']);
-const KB_CHILD_IMPLEMENTATION_TARGETS = new Set([
-  'src/coordinator/kb-child/child-main.ts',
-  'src/coordinator/kb-child/read-handler.ts',
-  'src/coordinator/kb-child/write-runtime.ts',
+const KB_RUNTIME_IMPLEMENTATION_TARGETS = new Set(['src/kb/runtime.ts', 'src/kb/runtime-contract.ts']);
+const KB_DAEMON_IMPLEMENTATION_TARGETS = new Set([
+  'src/kb-daemon/daemon-main.ts',
+  'src/kb-daemon/request-service.ts',
+  'src/kb-daemon/runtime-host.ts',
 ]);
-const KB_CHILD_IMPLEMENTATION_PREFIXES = [
-  'src/coordinator/kb-child/expansion/',
-  'src/coordinator/kb-child/services/',
-] as const;
+const KB_DAEMON_IMPLEMENTATION_PREFIXES = ['src/kb-daemon/expansion/', 'src/kb-daemon/services/'] as const;
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
@@ -151,8 +129,8 @@ function isBroadImportSource(source: string): boolean {
   return COORDINATOR_GLUE_SOURCES.has(source) || startsWithAny(source, BROAD_IMPORT_PREFIXES);
 }
 
-function isKbChildOwnedSource(source: string): boolean {
-  return source.startsWith('src/coordinator/kb-child/');
+function isKbDaemonOwnedSource(source: string): boolean {
+  return source.startsWith('src/kb-daemon/');
 }
 
 describe('coordinator topology invariants', () => {
@@ -215,18 +193,18 @@ describe('coordinator topology invariants', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps child-owned KB runtime modules out of parent coordinator wiring', () => {
+  it('keeps daemon-owned KB runtime modules out of parent coordinator wiring', () => {
     const violations = COORDINATOR_EDGES.filter(({ source, target }) => {
-      if (isKbChildOwnedSource(source)) {
+      if (isKbDaemonOwnedSource(source)) {
         return false;
       }
-      if (source === 'src/coordinator/bootstrap.ts' && target === 'src/coordinator/kb-child/child-main.ts') {
+      if (source === 'src/coordinator/bootstrap.ts' && target === 'src/kb-daemon/daemon-main.ts') {
         return false;
       }
       return (
         KB_RUNTIME_IMPLEMENTATION_TARGETS.has(target) ||
-        KB_CHILD_IMPLEMENTATION_TARGETS.has(target) ||
-        startsWithAny(target, KB_CHILD_IMPLEMENTATION_PREFIXES)
+        KB_DAEMON_IMPLEMENTATION_TARGETS.has(target) ||
+        startsWithAny(target, KB_DAEMON_IMPLEMENTATION_PREFIXES)
       );
     }).map(({ source, target }) => `${source} -> ${target}`);
 

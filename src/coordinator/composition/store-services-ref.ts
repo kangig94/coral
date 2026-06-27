@@ -1,7 +1,7 @@
 import type { JobStore } from '../../jobs/store.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../../runtime/errors.js';
 import type { Database } from '../../store/db.js';
-import type { ConsumerDriver } from '../consumer-driver/index.js';
+import type { ConsumerDriver } from '../../projection-consumers/index.js';
 
 export interface CoordinatorStoreServices {
   storeDb: Database;

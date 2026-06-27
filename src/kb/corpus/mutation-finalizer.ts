@@ -2,8 +2,8 @@ import type { KbCorpusPublication, KbIndexMutationLane, KbIndexState, KbMutation
 import type { EntityGraph, KbIndex } from '../entry-types.js';
 import type { FileAtomicHost } from './file-atomic.js';
 import { writeEntityGraphFile } from './entity-graph-store.js';
-import type { KbIndexStore } from './index-store.js';
-import { cloneKbIndex } from './index-records.js';
+import type { KbIndexStore } from './index/store.js';
+import { cloneKbIndex } from './index/records.js';
 import { previewPendingMutationState, type KbIndexStateSnapshot } from './lanes.js';
 import { captureEntityGraphManifestDelta, type ManifestAuthority } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';

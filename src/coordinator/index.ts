@@ -34,7 +34,7 @@ import { workflowRegistry } from '../workflow/events.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
-import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
+import { ConsumerDrainTimeout, ConsumerDriver } from '../projection-consumers/index.js';
 import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
@@ -44,19 +44,19 @@ import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
 import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import {
-  createDefaultKbChildSupervisor,
-  createDisabledKbChildSupervisor,
-  type KbChildSupervisor,
-} from './kb-child/supervisor.js';
-import type { KbChildEventMessage } from './kb-child/protocol.js';
+  createDefaultKbDaemonSupervisor,
+  createDisabledKbDaemonSupervisor,
+  type KbDaemonSupervisor,
+} from './live/kb-daemon-supervisor.js';
+import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbChildSupervisor'
+  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbDaemonSupervisor'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
-  kbChildSupervisor?: KbChildSupervisor;
+  kbDaemonSupervisor?: KbDaemonSupervisor;
 };
 
 export type CoordinatorServerController = {
@@ -195,7 +195,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
 
-  // KB boot gate: CORAL_KB_ENABLE=0 wires a terminal offline KB subsystem so
+  // KB boot gate: CORAL_KB_ENABLE=0 wires a terminal offline KB daemon health component so
   // the daemon boots without the KB runtime, curate scheduler, or corpus
   // projection. Only the explicit '0' disables; a malformed value warns once
   // and leaves KB enabled.
@@ -228,18 +228,18 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
-  let handleKbChildEvent: ((message: KbChildEventMessage) => void) | null = null;
-  const kbChildSupervisor = (() => {
-    if (coreOptions.kbChildSupervisor) {
-      return coreOptions.kbChildSupervisor;
+  let handleKbDaemonEvent: ((message: KbDaemonEventMessage) => void) | null = null;
+  const kbDaemonSupervisor = (() => {
+    if (coreOptions.kbDaemonSupervisor) {
+      return coreOptions.kbDaemonSupervisor;
     }
     if (!kbEnabled) {
-      return createDisabledKbChildSupervisor(KB_DISABLED_REASON);
+      return createDisabledKbDaemonSupervisor(KB_DISABLED_REASON);
     }
     if (explicitPluginRoot === undefined) {
-      throw new Error('KB child supervisor requires pluginRoot when KB is enabled');
+      throw new Error('KB daemon supervisor requires pluginRoot when KB is enabled');
     }
-    return createDefaultKbChildSupervisor({
+    return createDefaultKbDaemonSupervisor({
       runtime,
       pluginRoot: explicitPluginRoot,
       ...(coreOptions.bootSnapshot?.instanceId === undefined
@@ -249,7 +249,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       ...(coreOptions.bootSnapshot?.bundleHash === undefined
         ? {}
         : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
-      onEvent: (message) => handleKbChildEvent?.(message),
+      onEvent: (message) => handleKbDaemonEvent?.(message),
       log: (message) => backendLog.warn(message),
     });
   })();
@@ -327,10 +327,10 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     time: runtime.time,
     commitEvents: coordinatorCommit,
   });
-  handleKbChildEvent = (message: KbChildEventMessage): void => {
+  handleKbDaemonEvent = (message: KbDaemonEventMessage): void => {
     if (message.event === 'journal') {
       if (!isAppendedEventArray(message.appended)) {
-        backendLog.warn('[kb-child] ignored malformed journal event payload.');
+        backendLog.warn('[kb-daemon] ignored malformed journal event payload.');
         return;
       }
       const appended = message.appended;
@@ -344,7 +344,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     }
 
     if (!isCorpusPublication(message.publication)) {
-      backendLog.warn('[kb-child] ignored malformed corpus event payload.');
+      backendLog.warn('[kb-daemon] ignored malformed corpus event payload.');
       return;
     }
     const driver = getConsumerDriver();
@@ -365,7 +365,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
     getTextProjectionState: textProjectionHealth.read,
-    kbChildSupervisor,
+    kbDaemonSupervisor,
     createExecutionService: (ctx, deps) => {
       const wiredDeps = {
         ...deps,

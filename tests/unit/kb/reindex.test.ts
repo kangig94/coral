@@ -241,7 +241,7 @@ Make the contract explicit first.
       import('#src/kb/direct-read-index.js'),
       import('#src/kb/projection-input.js'),
       import('#src/kb/corpus/frontmatter.js'),
-      import('#src/engines/orama/backend.js'),
+      import('#src/engines/orama/base-projection.js'),
       import('#src/engines/orama/snapshot.js'),
     ]);
     const kb = createRuntime(createKbRuntime, paths);

@@ -37,11 +37,11 @@ const SHUTDOWN_UNAUTHORIZED_RESPONSE = {
 };
 const KB_RESTART_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
-  message: 'Manual KB child restart requires shutdown capability',
+  message: 'Manual KB daemon restart requires shutdown capability',
 };
 const KB_RESTART_UNAVAILABLE_RESPONSE = {
   code: 'not_implemented',
-  message: 'KB child supervisor is not available',
+  message: 'KB daemon supervisor is not available',
 };
 export const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
 export const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
@@ -521,7 +521,7 @@ async function dispatchFrame(
       socket.end();
       return;
     }
-    if (!rpcPorts.admin.restartKbChild) {
+    if (!rpcPorts.admin.restartKbDaemon) {
       await writeEnvelope(
         socket,
         requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
@@ -531,7 +531,7 @@ async function dispatchFrame(
       return;
     }
     writeAuditEvent(
-      'admin_kb_child_restart_requested',
+      'admin_kb_daemon_restart_requested',
       {
         transport: 'ipc',
         reason: 'admin',
@@ -540,13 +540,13 @@ async function dispatchFrame(
       'warn',
     );
     try {
-      const kbChild = await rpcPorts.admin.restartKbChild('ipc-admin');
+      const kbDaemon = await rpcPorts.admin.restartKbDaemon('ipc-admin');
       await writeEnvelope(
         socket,
         {
           kind: 'response',
           id: request.id,
-          result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbChild },
+          result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
         },
         { drainTimeoutMs: options.writeDrainTimeoutMs },
       );

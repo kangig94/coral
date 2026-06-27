@@ -7,7 +7,7 @@ import type {
   KbRuntime,
 } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
-import { emptyIndex, isFreshTextSnapshot, type KbIndexStore } from './index-store.js';
+import { emptyIndex, isFreshTextSnapshot, type KbIndexStore } from './index/store.js';
 import { captureIndexStateSnapshot } from './lanes.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockController } from './mutation-lock.js';

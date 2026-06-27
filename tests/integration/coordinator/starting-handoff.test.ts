@@ -48,7 +48,7 @@ function buildPorts(opts: {
     inflightRequests: 0,
     textProjectionState: 'idle',
     env: {},
-    subsystems: [{ id: 'kb', phase: 'offline', reason: 'test' }],
+    components: [{ id: 'kb', phase: 'offline', reason: 'test' }],
   };
   return {
     identity: {

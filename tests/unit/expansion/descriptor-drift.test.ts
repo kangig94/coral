@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { validateManifestCompleteness } from '#src/expansion/manifest-completeness.js';
+import { validateManifestCompleteness } from '#src/expansion/manifest/completeness.js';
 import type { EngineManifest } from '#src/expansion/contract.js';
 import { createScope } from '#src/expansion/scope.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';

@@ -146,6 +146,7 @@ async function recordArtifact(sessionManager: SessionManager, sessionId: string,
       expectedVersion: claimed.version,
       provider: 'claude',
       handle: `/tmp/${jobId}.jsonl`,
+      identity: { kind: 'test-artifact', jobId },
       sourceJobId: jobId,
     }),
   ).resolves.toMatchObject({ ok: true });

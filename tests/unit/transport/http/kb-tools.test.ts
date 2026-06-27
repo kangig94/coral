@@ -4,7 +4,7 @@ import type * as MemoMod from '#src/kb/ops/memo.js';
 import { memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import type * as SearchMod from '#src/kb/ops/search.js';
 import { KB_BARE_READ_ORDER, expandKbReadSelector, parseKbSelector } from '#src/kb/selector.js';
-import type { KbToolRuntime, KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
+import type { KbToolRuntime, KnowledgeBaseRuntime } from '#src/kb/runtime-contract.js';
 import {
   handleKbCommunityRead,
   handleKbDelete,
@@ -235,12 +235,12 @@ describe('kb-tools', () => {
   });
 
   it('uses search defaults after schema parsing', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.searchKb.mockResolvedValue({ hits: ['note:a'] });
 
-    const result = await handleKbSearch({ query: 'contracts' }, kbSubsystem);
+    const result = await handleKbSearch({ query: 'contracts' }, kbRuntime);
 
-    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', 'auto', undefined);
+    expect(mockState.searchKb).toHaveBeenCalledWith(kbRuntime.kb, 'contracts', 20, 'all', 'auto', undefined);
     expect(result).toEqual({
       ok: true,
       data: { hits: ['note:a'] },
@@ -248,12 +248,12 @@ describe('kb-tools', () => {
   });
 
   it('forwards explicit search modes after schema parsing', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.searchKb.mockResolvedValue({ hits: ['note:a'], mode: 'vector' });
 
-    const result = await handleKbSearch({ query: 'contracts', mode: 'vector' }, kbSubsystem);
+    const result = await handleKbSearch({ query: 'contracts', mode: 'vector' }, kbRuntime);
 
-    expect(mockState.searchKb).toHaveBeenCalledWith(kbSubsystem.kb, 'contracts', 20, 'all', 'vector', undefined);
+    expect(mockState.searchKb).toHaveBeenCalledWith(kbRuntime.kb, 'contracts', 20, 'all', 'vector', undefined);
     expect(result).toEqual({
       ok: true,
       data: { hits: ['note:a'], mode: 'vector' },
@@ -284,7 +284,7 @@ describe('kb-tools', () => {
   });
 
   it('reads a note by slug via the per-kind note handler', () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     setMockFile(
       notePathFromName('contract-first-design', KB_ROOT),
       `---
@@ -301,7 +301,7 @@ State contracts first.
 `,
     );
 
-    expect(handleKbNoteRead('contract-first-design', testContext, testRuntime, kbSubsystem)).toEqual({
+    expect(handleKbNoteRead('contract-first-design', testContext, testRuntime, kbRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'note',
@@ -320,9 +320,9 @@ State contracts first.
   });
 
   it('reads a source by slug via the per-kind source handler', () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     setMockFile(
-      kbSubsystem.kb.sourcePath('bridge-removal-plan'),
+      kbRuntime.kb.sourcePath('bridge-removal-plan'),
       `---
 title: Bridge Removal Plan
 type: markdown
@@ -333,7 +333,7 @@ Source body.
 `,
     );
 
-    expect(handleKbSourceRead('bridge-removal-plan', kbSubsystem, testRuntime)).toEqual({
+    expect(handleKbSourceRead('bridge-removal-plan', kbRuntime, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'source',
@@ -351,9 +351,9 @@ Source body.
   });
 
   it('reads a community by slug via the per-kind community handler', () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     setMockFile(
-      kbSubsystem.kb.communityPath('graph-rag'),
+      kbRuntime.kb.communityPath('graph-rag'),
       `---
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-24T12:00:00.000Z
@@ -374,7 +374,7 @@ Clusters graph-backed retrieval notes.
 `,
     );
 
-    expect(handleKbCommunityRead('graph-rag', kbSubsystem, testRuntime)).toEqual({
+    expect(handleKbCommunityRead('graph-rag', kbRuntime, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'community',
@@ -399,7 +399,7 @@ Clusters graph-backed retrieval notes.
   });
 
   it('reads a wiki by slug via the per-kind wiki handler', () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     setMockFile(
       wikiPathFromName('living-knowledge', KB_ROOT),
       `---
@@ -420,7 +420,7 @@ Wiki entries keep durable understanding.
 `,
     );
 
-    expect(handleKbWikiRead('living-knowledge', kbSubsystem, testRuntime)).toEqual({
+    expect(handleKbWikiRead('living-knowledge', kbRuntime, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'wiki',
@@ -500,11 +500,11 @@ Scratch body.
   });
 
   it('reads a principle by slug via the per-kind principle handler', () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     const raw = '---\ncreatedAt: 2026-03-23\nupdatedAt: 2026-03-23\n---\nState contracts first.\n';
-    setMockFile(kbSubsystem.kb.principlePath('contract-first-design'), raw);
+    setMockFile(kbRuntime.kb.principlePath('contract-first-design'), raw);
 
-    expect(handleKbPrincipleRead('contract-first-design', kbSubsystem, testRuntime)).toEqual({
+    expect(handleKbPrincipleRead('contract-first-design', kbRuntime, testRuntime)).toEqual({
       ok: true,
       data: {
         kind: 'principle',
@@ -563,9 +563,9 @@ Note body.
   });
 
   it('dispatches explicit community selectors through the shared read contract', () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     setMockFile(
-      kbSubsystem.kb.communityPath('graph-rag'),
+      kbRuntime.kb.communityPath('graph-rag'),
       `---
 createdAt: 2026-03-20T00:00:00.000Z
 updatedAt: 2026-03-24T12:00:00.000Z
@@ -578,7 +578,7 @@ level: 1
 `,
     );
 
-    expect(handleKbRead({ note: 'communities:graph-rag' }, testContext, testRuntime, kbSubsystem)).toMatchObject({
+    expect(handleKbRead({ note: 'communities:graph-rag' }, testContext, testRuntime, kbRuntime)).toMatchObject({
       ok: true,
       data: {
         kind: 'community',
@@ -666,15 +666,15 @@ level: 1
   });
 
   it('handleKbWikiCreate calls createWiki and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.createWiki.mockResolvedValue({ slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiCreate({ slug: 'living-knowledge' }, kbSubsystem);
+    const result = await handleKbWikiCreate({ slug: 'living-knowledge' }, kbRuntime);
 
-    expect(mockState.createWiki).toHaveBeenCalledWith(kbSubsystem.kb, {
+    expect(mockState.createWiki).toHaveBeenCalledWith(kbRuntime.kb, {
       slug: 'living-knowledge',
     });
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toEqual({
       ok: true,
       data: { slug: 'living-knowledge', path: '/virtual/kb/wiki/living-knowledge.md' },
@@ -682,49 +682,49 @@ level: 1
   });
 
   it('handleKbWikiRewrite calls rewriteWikiUnderstanding and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.rewriteWikiUnderstanding.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiRewrite({ slug: 'living-knowledge', understandingFile: '/tmp/u.md' }, kbSubsystem);
+    const result = await handleKbWikiRewrite({ slug: 'living-knowledge', understandingFile: '/tmp/u.md' }, kbRuntime);
 
-    expect(mockState.rewriteWikiUnderstanding).toHaveBeenCalledWith(kbSubsystem.kb, {
+    expect(mockState.rewriteWikiUnderstanding).toHaveBeenCalledWith(kbRuntime.kb, {
       slug: 'living-knowledge',
       understandingFile: '/tmp/u.md',
     });
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });
 
   it('handleKbWikiLink calls linkWikiKnowledge and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.linkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbSubsystem);
+    const result = await handleKbWikiLink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbRuntime);
 
-    expect(mockState.linkWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
+    expect(mockState.linkWikiKnowledge).toHaveBeenCalledWith(kbRuntime.kb, {
       slug: 'living-knowledge',
       refs: ['note:alpha'],
     });
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });
 
   it('handleKbWikiUnlink calls unlinkWikiKnowledge and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.unlinkWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbSubsystem);
+    const result = await handleKbWikiUnlink({ slug: 'living-knowledge', refs: ['note:alpha'] }, kbRuntime);
 
-    expect(mockState.unlinkWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
+    expect(mockState.unlinkWikiKnowledge).toHaveBeenCalledWith(kbRuntime.kb, {
       slug: 'living-knowledge',
       refs: ['note:alpha'],
     });
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });
 
   it('handleKbWikiCite calls citeWikiKnowledge and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.citeWikiKnowledge.mockResolvedValue({ path: '/virtual/kb/wiki/living-knowledge.md' });
 
     const result = await handleKbWikiCite(
@@ -733,20 +733,20 @@ level: 1
         ref: '[[notes/alpha]]',
         evidenceFile: '/tmp/e.md',
       },
-      kbSubsystem,
+      kbRuntime,
     );
 
-    expect(mockState.citeWikiKnowledge).toHaveBeenCalledWith(kbSubsystem.kb, {
+    expect(mockState.citeWikiKnowledge).toHaveBeenCalledWith(kbRuntime.kb, {
       slug: 'living-knowledge',
       ref: '[[notes/alpha]]',
       evidenceFile: '/tmp/e.md',
     });
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });
 
   it('handleKbWikiAdopt calls adoptIntoWiki with the project root and wires onSchedule to curate scheduler', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.adoptIntoWiki.mockImplementation(async (_kb, _projectRoot, _input, onSchedule: () => void) => {
       onSchedule();
       return { path: '/virtual/kb/notes/coral-kb-promotion.md', wikiSlug: 'living-knowledge' };
@@ -761,13 +761,13 @@ level: 1
         domain: 'coral',
         topic: 'kb-promotion',
       },
-      kbSubsystem,
+      kbRuntime,
       testContext,
       testRuntime,
     );
 
     expect(mockState.adoptIntoWiki).toHaveBeenCalledWith(
-      kbSubsystem.kb,
+      kbRuntime.kb,
       testContext.projectRoot,
       {
         slug: 'living-knowledge',
@@ -779,51 +779,51 @@ level: 1
       },
       expect.any(Function),
     );
-    expect(kbSubsystem.curateScheduler.schedule).toHaveBeenCalledOnce();
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.schedule).toHaveBeenCalledOnce();
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });
 
   it('handleKbWikiDelete calls deleteWiki and schedules a deferred commit', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.deleteWiki.mockResolvedValue({ deleted: '/virtual/kb/wiki/living-knowledge.md' });
 
-    const result = await handleKbWikiDelete({ slug: 'living-knowledge' }, kbSubsystem);
+    const result = await handleKbWikiDelete({ slug: 'living-knowledge' }, kbRuntime);
 
-    expect(mockState.deleteWiki).toHaveBeenCalledWith(kbSubsystem.kb, { slug: 'living-knowledge' });
-    expect(kbSubsystem.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
+    expect(mockState.deleteWiki).toHaveBeenCalledWith(kbRuntime.kb, { slug: 'living-knowledge' });
+    expect(kbRuntime.curateScheduler.scheduleDeferredCommit).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ ok: true });
   });
 
   it('handleKbWikiList wraps listWikis in the wikis envelope', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.listWikis.mockResolvedValue([
       { slug: 'living-knowledge', title: 'LK', knowledge: [], tags: [], createdAt: '', updatedAt: '' },
     ]);
 
-    const result = await handleKbWikiList({}, kbSubsystem);
+    const result = await handleKbWikiList({}, kbRuntime);
 
-    expect(mockState.listWikis).toHaveBeenCalledWith(kbSubsystem.kb);
+    expect(mockState.listWikis).toHaveBeenCalledWith(kbRuntime.kb);
     expect(result).toMatchObject({ ok: true, data: { wikis: expect.any(Array) } });
   });
 
   it('handleKbWakeUp forwards the project arg after schema parsing', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.generateWakeUpPacket.mockReturnValue('## wake-up packet body');
 
-    const result = await handleKbWakeUp({ project: 'kangig94-coral' }, kbSubsystem);
+    const result = await handleKbWakeUp({ project: 'kangig94-coral' }, kbRuntime);
 
-    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, 'kangig94-coral');
+    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbRuntime.kb, 'kangig94-coral');
     expect(result).toEqual({ ok: true, data: { content: '## wake-up packet body' } });
   });
 
   it('handleKbWakeUp returns an empty packet when project is omitted', async () => {
-    const kbSubsystem = createKbToolRuntime();
+    const kbRuntime = createKbToolRuntime();
     mockState.generateWakeUpPacket.mockReturnValue('');
 
-    const result = await handleKbWakeUp({}, kbSubsystem);
+    const result = await handleKbWakeUp({}, kbRuntime);
 
-    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbSubsystem.kb, undefined);
+    expect(mockState.generateWakeUpPacket).toHaveBeenCalledWith(kbRuntime.kb, undefined);
     expect(result).toEqual({ ok: true, data: { content: '' } });
   });
 

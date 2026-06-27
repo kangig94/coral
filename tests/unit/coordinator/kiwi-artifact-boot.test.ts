@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { startKiwiArtifactFetchOnBoot } from '#src/coordinator/kb-child/expansion/lifecycle.js';
-import type { ForcedCorpusFreshnessTarget } from '#src/coordinator/consumer-driver/index.js';
-import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/backend.js';
+import { startKiwiArtifactFetchOnBoot } from '#src/kb-daemon/expansion/kiwi-boot.js';
+import type { ForcedCorpusFreshnessTarget } from '#src/projection-consumers/index.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 

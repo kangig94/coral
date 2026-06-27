@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import {
   createOramaProjectionReconcileRequester,
   type OramaProjectionReconcileRuntime,
-} from '#src/coordinator/kb-child/expansion/lifecycle.js';
+} from '#src/kb-daemon/expansion/projection-reconcile.js';
 import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
@@ -17,12 +17,14 @@ import {
   oramaProjectionTokenizerTier,
   type OramaProjectionMetadata,
 } from '#src/engines/orama/artifact-port.js';
-import { ORAMA_BASE_CONSUMER_ID, OramaBaseProjection, type OramaAnalyzerManager } from '#src/engines/orama/backend.js';
+import { OramaBaseProjection } from '#src/engines/orama/base-projection.js';
+import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
+import type { OramaAnalyzerManager } from '#src/engines/orama/analyzer.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { TimerHandle } from '#src/infra/port-types.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
-import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
+import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { persistCorpusState } from '#src/kb/state/corpus-state.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';

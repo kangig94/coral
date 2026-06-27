@@ -1,6 +1,6 @@
 ---
 paths:
-  - "{agents,skills,hooks,methods}/**/*"
+  - '{agents,skills,hooks,methods}/**/*'
 ---
 
 # Plugin Extension Rules
@@ -23,11 +23,11 @@ paths:
 When agent or skill files reference other coral plugin files, use path aliases to distinguish
 plugin files from project files. Two read patterns and one spawn pattern exist — never mix them:
 
-| Pattern | Usage | Example |
-|---------|-------|---------|
-| `CORAL_METHODS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_METHODS/HOW-REVIEW.md` |
-| `CORAL_PROJECT` | **Read/write** project-local data | `CORAL_PROJECT/plans/`, `CORAL_PROJECT/memo/` |
-| `coral:xxx` | **Spawn** subagent (Agent tool) | `coral:scanner` |
+| Pattern                | Usage                              | Example                                       |
+| ---------------------- | ---------------------------------- | --------------------------------------------- |
+| `CORAL_METHODS/xxx.md` | **Read** the file (Read/Glob tool) | `CORAL_METHODS/HOW-REVIEW.md`                 |
+| `CORAL_PROJECT`        | **Read/write** project-local data  | `CORAL_PROJECT/plans/`, `CORAL_PROJECT/memo/` |
+| `coral:xxx`            | **Spawn** subagent (Agent tool)    | `coral:scanner`                               |
 
 - **Skills**: `coral-skill-vars.mjs` hook injects CORAL_PROJECT and CORAL_METHODS
   as additionalContext on UserPromptSubmit and PreToolUse(Skill).
@@ -49,7 +49,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist �
 
 ## Plugin.json Sync
 
-- `.claude-plugin/plugin.json` is host metadata only — do not rely on legacy host-side registration files
+- `.claude-plugin/plugin.json` is host metadata only — do not rely on old host-side registration files
 - Agent declarations in plugin.json must match files in `agents/`
 - Skill declarations must match directories in `skills/`
 - When adding a new CLI/backend surface: update command registration, schemas, and user-facing docs together

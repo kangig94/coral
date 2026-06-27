@@ -22,7 +22,7 @@ function readBundleManifest(pluginRoot: string): unknown {
       const raw = readFileSync(path, 'utf-8');
       return JSON.parse(raw) as unknown;
     } catch {
-      // Try the legacy plugin-root bridge manifest before failing open.
+      // Try the plugin-root bridge manifest before failing open.
     }
   }
   return null;

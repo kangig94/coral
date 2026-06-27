@@ -436,7 +436,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     try {
       const client = await ensure(getPluginRoot());
       const health = await client.health<RawCoordinatorHealth>({ timeoutMs: HEALTH_TIMEOUT_MS });
-      const kbDisabled = (health.subsystems ?? []).some(
+      const kbDisabled = (health.components ?? []).some(
         (s) => s.id === 'kb' && s.phase === 'offline' && s.reason === KB_DISABLED_REASON,
       );
       if (kbDisabled) {

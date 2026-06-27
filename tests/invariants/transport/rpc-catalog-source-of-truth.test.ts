@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { KB_CHILD_KB_MUTATION_METHODS, KB_CHILD_KB_READ_METHODS } from '#src/coordinator/kb-child/protocol.js';
+import { KB_DAEMON_KB_MUTATION_METHODS, KB_DAEMON_KB_READ_METHODS } from '#src/kb-daemon/protocol.js';
 import { rpcCatalog, transportOperationalCarveouts } from '#src/transport/rpc/catalog.js';
 import {
   buildCoordinatorHttpDispatchTable,
@@ -81,8 +81,8 @@ describe('rpc catalog source of truth', () => {
     expect(transportLocalRoutes.map((route) => route.path)).toEqual([...transportOperationalCarveouts]);
   });
 
-  it('keeps KB child read protocol methods aligned with read-only KB RPC catalog entries', () => {
-    const kbChildReadRpcByMethod = {
+  it('keeps KB daemon read protocol methods aligned with read-only KB RPC catalog entries', () => {
+    const kbDaemonReadRpcByMethod = {
       readSearch: 'kb.entries.search',
       diagnose: 'kb.diagnose',
       readNote: 'kb.note.read',
@@ -101,12 +101,12 @@ describe('rpc catalog source of truth', () => {
     } as const;
     const catalogNames = new Set(rpcCatalog.map((spec) => spec.name));
 
-    expect([...KB_CHILD_KB_READ_METHODS].sort()).toEqual(Object.keys(kbChildReadRpcByMethod).sort());
-    expect(Object.values(kbChildReadRpcByMethod).every((name) => catalogNames.has(name))).toBe(true);
+    expect([...KB_DAEMON_KB_READ_METHODS].sort()).toEqual(Object.keys(kbDaemonReadRpcByMethod).sort());
+    expect(Object.values(kbDaemonReadRpcByMethod).every((name) => catalogNames.has(name))).toBe(true);
   });
 
-  it('keeps KB child mutation protocol methods aligned with KB RPC catalog entries', () => {
-    const kbChildMutationRpcByMethod = {
+  it('keeps KB daemon mutation protocol methods aligned with KB RPC catalog entries', () => {
+    const kbDaemonMutationRpcByMethod = {
       setCommunitySummary: 'kb.community.set-summary',
       createNote: 'kb.note.create',
       updateNote: 'kb.note.update',
@@ -126,7 +126,7 @@ describe('rpc catalog source of truth', () => {
     } as const;
     const catalogNames = new Set(rpcCatalog.map((spec) => spec.name));
 
-    expect([...KB_CHILD_KB_MUTATION_METHODS].sort()).toEqual(Object.keys(kbChildMutationRpcByMethod).sort());
-    expect(Object.values(kbChildMutationRpcByMethod).every((name) => catalogNames.has(name))).toBe(true);
+    expect([...KB_DAEMON_KB_MUTATION_METHODS].sort()).toEqual(Object.keys(kbDaemonMutationRpcByMethod).sort());
+    expect(Object.values(kbDaemonMutationRpcByMethod).every((name) => catalogNames.has(name))).toBe(true);
   });
 });

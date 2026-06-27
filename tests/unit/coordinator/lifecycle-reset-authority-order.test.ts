@@ -6,7 +6,7 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { createLifecycle, STARTUP_STORE_BUSY_TIMEOUT_MS, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
-import { KB_ID } from '#src/coordinator/subsystems/contract.js';
+import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
 import type * as StoreDbMod from '#src/store/db.js';
@@ -183,18 +183,16 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         getLifecycle: () => lifecycleState,
         getStartedAt: () => 1_000,
         getLaunchFenceActive: () => false,
-        subsystems: {
+        components: {
           register: vi.fn(() => {
-            mockState.events.push('subsystems:register');
+            mockState.events.push('components:register');
           }),
           initAll: vi.fn(() => {
-            mockState.events.push('subsystems:initAll');
+            mockState.events.push('components:initAll');
           }),
           disposeAll: vi.fn(async () => {
-            mockState.events.push('subsystems:disposeAll');
+            mockState.events.push('components:disposeAll');
           }),
-          run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
-          runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
           list: vi.fn(() => []),
           status: vi.fn(() => null),
         } as never,
@@ -252,17 +250,11 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         drainForHandoff: vi.fn(),
       } as never,
       handoffQuiescePorts: () => [],
-      createKbProxySubsystemFn: vi.fn(() => ({
-        id: KB_ID,
-        status: { id: KB_ID, phase: 'initializing', attempt: 0 },
+      createKbHealthComponentFn: vi.fn(() => ({
+        id: KB_COMPONENT_ID,
+        status: { id: KB_COMPONENT_ID, phase: 'initializing', attempt: 0 },
         init: vi.fn(async () => {}),
         dispose: vi.fn(async () => {}),
-        resource: vi.fn(() => ({
-          kb: {},
-          readDb: {},
-          curateScheduler: { isRunning: () => false, stop: vi.fn() },
-        })),
-        onStatusChange: vi.fn(() => () => {}),
       })) as never,
       registerBuiltInProvidersFn: vi.fn(),
       recoverPersistedDiscussFn: vi.fn(async () => []),
@@ -321,22 +313,22 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
   });
 
-  it('registers subsystems before exposing the running lifecycle', async () => {
+  it('registers components before exposing the running lifecycle', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);
 
     await lifecycle.start();
 
-    expect(mockState.events.indexOf('subsystems:register')).toBeGreaterThan(-1);
-    expect(mockState.events.indexOf('subsystems:register')).toBeLessThan(
+    expect(mockState.events.indexOf('components:register')).toBeGreaterThan(-1);
+    expect(mockState.events.indexOf('components:register')).toBeLessThan(
       mockState.events.indexOf('setLifecycle:running'),
     );
     expect(mockState.events.indexOf('setLifecycle:running')).toBeLessThan(
-      mockState.events.indexOf('subsystems:initAll'),
+      mockState.events.indexOf('components:initAll'),
     );
   });
 
-  it('does not report passive idle while the KB child curate scheduler is running', async () => {
+  it('does not report passive idle while the KB daemon curate scheduler is running', async () => {
     const { deps } = makeLifecycleDeps();
     const childHealth = {
       enabled: true,
@@ -347,7 +339,7 @@ describe('lifecycle reset authority and finalizer order', () => {
       readyAt: 1_001,
       kbWrite: { phase: 'ready' as const, curateRunning: true },
     };
-    (deps as { kbChildSupervisor: LifecycleDeps['kbChildSupervisor'] }).kbChildSupervisor = {
+    (deps as { kbDaemonSupervisor: LifecycleDeps['kbDaemonSupervisor'] }).kbDaemonSupervisor = {
       read: () => childHealth,
       start: async () => childHealth,
       probe: async () => childHealth,

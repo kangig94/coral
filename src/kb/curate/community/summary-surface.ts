@@ -1,7 +1,7 @@
 import { nowIsoString } from '../../../infra/time.js';
 import { captureCommunityManifestDelta } from '../../corpus/manifest-authority.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
-import { recordMetadataMutation } from '../../corpus/index-mutations.js';
+import { recordMetadataMutation } from '../../corpus/index/mutations.js';
 import { compareLocale } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
 import type { ExistingGeneratedCommunity } from './contracts.js';

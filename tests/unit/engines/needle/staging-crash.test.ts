@@ -6,7 +6,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type * as NeedleStoreModule from '#src/engines/needle/store.js';
 
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';

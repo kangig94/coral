@@ -52,7 +52,7 @@ const BODY_READ_CAPACITY_RESPONSE = {
   code: 'too_many_request_bodies',
   message: 'Too many concurrent request bodies',
 };
-const KB_CHILD_HEALTH_PROBE_TTL_MS = 5_000;
+const KB_DAEMON_HEALTH_PROBE_TTL_MS = 5_000;
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
 const eventStreamQuerySchema = z
   .object({
@@ -64,15 +64,15 @@ const eventStreamQuerySchema = z
   })
   .passthrough();
 
-function shouldProbeKbChildHealth(health: ReturnType<HttpHandlerPorts['health']['read']>, now: number): boolean {
-  const kbChild = health.kbChild;
-  if (kbChild?.enabled !== true || kbChild.phase !== 'online') {
+function shouldProbeKbDaemonHealth(health: ReturnType<HttpHandlerPorts['health']['read']>, now: number): boolean {
+  const kbDaemon = health.kbDaemon;
+  if (kbDaemon?.enabled !== true || kbDaemon.phase !== 'online') {
     return false;
   }
-  if ((kbChild.pendingRequests ?? 0) > 0) {
+  if ((kbDaemon.pendingRequests ?? 0) > 0) {
     return false;
   }
-  return kbChild.lastHeartbeatAt === undefined || now - kbChild.lastHeartbeatAt >= KB_CHILD_HEALTH_PROBE_TTL_MS;
+  return kbDaemon.lastHeartbeatAt === undefined || now - kbDaemon.lastHeartbeatAt >= KB_DAEMON_HEALTH_PROBE_TTL_MS;
 }
 
 /**
@@ -731,9 +731,9 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       requiresRunningLifecycle: false,
       handle: async (_req, res) => {
         let health = deps.health.read();
-        if (shouldProbeKbChildHealth(health, deps.identity.now()) && deps.admin.probeKbChild) {
+        if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
           try {
-            await deps.admin.probeKbChild();
+            await deps.admin.probeKbDaemon();
             health = deps.health.read();
           } catch {
             // `/health` must stay available even if the child probe path itself fails.
@@ -771,12 +771,12 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
       requiresRunningLifecycle: true,
       handle: async (req, res) => {
         req.resume();
-        if (!deps.admin.restartKbChild) {
-          sendJson(res, 501, { code: 'not_implemented', message: 'KB child supervisor is not available' });
+        if (!deps.admin.restartKbDaemon) {
+          sendJson(res, 501, { code: 'not_implemented', message: 'KB daemon supervisor is not available' });
           return;
         }
         writeAuditEvent(
-          'admin_kb_child_restart_requested',
+          'admin_kb_daemon_restart_requested',
           {
             transport: 'http',
             reason: 'admin',
@@ -787,8 +787,8 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
           },
           'warn',
         );
-        const kbChild = await deps.admin.restartKbChild('http-admin');
-        sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbChild });
+        const kbDaemon = await deps.admin.restartKbDaemon('http-admin');
+        sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbDaemon });
       },
     },
     {

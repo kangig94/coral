@@ -2,7 +2,7 @@
 // Each `createScope()` call returns a fresh `Disposable` whose `[Symbol.dispose]`
 // is decorated by `RuntimeBinding.bind` and `host.registerConsumer` to chain
 // teardown work in registration order. Single home so the loader (`src/expansion/loader.ts`)
-// and the KB child lifecycle (`src/coordinator/kb-child/expansion/lifecycle.ts`)
+// and the KB daemon lifecycle (`src/kb-daemon/expansion/lifecycle.ts`)
 // agree on the exact dispose semantic.
 
 import type { Disposable } from '../runtime/ports.js';

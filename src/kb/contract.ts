@@ -135,7 +135,7 @@ export interface KbEngineRuntime extends KbEngineRuntimeBase {
 /**
  * kb-domain port aggregator. Carries the ports that domain orchestrators
  * (performRescan, gitSync) construct from; cross-domain consumers should
- * compose at the subsystem level instead.
+ * compose at the component level instead.
  */
 export interface KbRuntime extends KbEngineRuntimeBase {
   readonly capabilityRegistry: KbCapabilityRegistry;

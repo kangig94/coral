@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const mockState = vi.hoisted(() => ({
   request: vi.fn(),
   subscribe: vi.fn(),
-  health: vi.fn(async () => ({ subsystems: [] as Array<Record<string, unknown>> })),
+  health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
   shutdownAndAwaitRelease: vi.fn(async () => {}),
   readStore: {
     discuss: {
@@ -261,7 +261,7 @@ describe('kb lazy reconcile', () => {
   it('restarts the daemon when a kb command runs with KB enabled against a KB-disabled daemon', async () => {
     process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockResolvedValueOnce({
-      subsystems: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
+      components: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
     });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
@@ -273,7 +273,7 @@ describe('kb lazy reconcile', () => {
 
   it('does not restart when the daemon already has KB online', async () => {
     process.env.CORAL_KB_ENABLE = '1';
-    mockState.health.mockResolvedValueOnce({ subsystems: [{ id: 'kb', phase: 'online' }] });
+    mockState.health.mockResolvedValueOnce({ components: [{ id: 'kb', phase: 'online' }] });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
 

@@ -34,7 +34,7 @@ export type SessionArtifactHandleRecordOptions = {
   expectedVersion: number;
   provider: string;
   handle: string;
-  identity?: ProviderArtifactIdentity;
+  identity: ProviderArtifactIdentity;
   sourceJobId?: string;
 };
 

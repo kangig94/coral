@@ -45,7 +45,7 @@ import {
 } from './corpus/mutation-lock.js';
 import { createManifestAuthority } from './corpus/manifest-authority.js';
 import type { ManifestAuthorityDelta } from './corpus/manifest-types.js';
-import { cloneKbIndex } from './corpus/index-records.js';
+import { cloneKbIndex } from './corpus/index/records.js';
 import {
   applyMutationLane,
   commitMutationState,
@@ -54,7 +54,7 @@ import {
   previewPendingMutationState,
   withoutTextStaleReason,
 } from './corpus/lanes.js';
-import { KbIndexStore, writeJsonAtomic } from './corpus/index-store.js';
+import { KbIndexStore, writeJsonAtomic } from './corpus/index/store.js';
 import { writeFileAtomic } from './corpus/file-atomic.js';
 import { readEntityGraphFile } from './corpus/entity-graph-store.js';
 import { resolveCorpusStructuralKey, type CorpusStructuralKey } from './corpus/structural-key.js';

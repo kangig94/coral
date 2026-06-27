@@ -1439,7 +1439,7 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('does not support the legacy wait --jobs form', async () => {
+  it('does not support the retired wait --jobs form', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     program.exitOverride();

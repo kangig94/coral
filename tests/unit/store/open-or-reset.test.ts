@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { readDefaultExpansionCatalog, readExpansionCatalog } from '#src/cli/expansion/catalog.js';
 import { openReadCoralStore } from '#src/cli/read-store.js';
 import {
@@ -93,7 +93,7 @@ function tableExists(dbPath: string, name: string): boolean {
   }
 }
 
-function legacySchemaVersionRow(dbPath: string): string | null {
+function retiredSchemaVersionRow(dbPath: string): string | null {
   const db = new DatabaseSync(dbPath);
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1").get() as
@@ -105,7 +105,7 @@ function legacySchemaVersionRow(dbPath: string): string | null {
   }
 }
 
-function createLegacyStore(dbPath: string): void {
+function createRetiredStore(dbPath: string): void {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
@@ -219,17 +219,17 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(join(dbDir, 'store.db.reset.lock'))).toBe(false);
   });
 
-  it('resets a legacy v0.6.2 store, warns, and removes the old meta schema marker', () => {
+  it('resets a retired v0.6.2 store, warns, and removes the old meta schema marker', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-legacy-'), 'store.db');
-    createLegacyStore(dbPath);
+    const dbPath = join(makeTempRoot('coral-store-retired-'), 'store.db');
+    createRetiredStore(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     const db = openReset(runtime, dbPath);
     db.close();
 
     expect(readUserVersion(dbPath)).not.toBe(0);
-    expect(legacySchemaVersionRow(dbPath)).toBeNull();
+    expect(retiredSchemaVersionRow(dbPath)).toBeNull();
     const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
     expect(messages.some((message) => message.includes('will be lost'))).toBe(true);
     expect(
@@ -456,21 +456,21 @@ describe('openOrResetBackendStoreDb', () => {
 });
 
 describe('read-only store access', () => {
-  it('throws store_schema_outdated for legacy and mismatched stores without changing the file', () => {
+  it('throws store_schema_outdated for retired and mismatched stores without changing the file', () => {
     const runtime = createRuntime();
-    const legacyPath = join(makeTempRoot('coral-store-readonly-legacy-'), 'store.db');
+    const retiredPath = join(makeTempRoot('coral-store-readonly-retired-'), 'store.db');
     const mismatchPath = join(makeTempRoot('coral-store-readonly-mismatch-'), 'store.db');
-    createLegacyStore(legacyPath);
+    createRetiredStore(retiredPath);
     createMismatchStore(mismatchPath);
-    const legacyBefore = readFileSync(legacyPath);
+    const retiredBefore = readFileSync(retiredPath);
     const mismatchBefore = readFileSync(mismatchPath);
 
-    const legacyError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: legacyPath }));
+    const retiredError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: retiredPath }));
     const mismatchError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: mismatchPath }));
 
-    expectSetupCode(legacyError, 'store_schema_outdated');
+    expectSetupCode(retiredError, 'store_schema_outdated');
     expectSetupCode(mismatchError, 'store_schema_outdated');
-    expect(readFileSync(legacyPath)).toEqual(legacyBefore);
+    expect(readFileSync(retiredPath)).toEqual(retiredBefore);
     expect(readFileSync(mismatchPath)).toEqual(mismatchBefore);
   });
 
@@ -556,15 +556,15 @@ describe('openWritableStoreDbNoReset', () => {
     expect(readUserVersion(dbPath)).toBe(marker);
   });
 
-  it('never unlinks legacy or mismatched stores and surfaces store_schema_outdated', () => {
+  it('never unlinks retired or mismatched stores and surfaces store_schema_outdated', () => {
     const runtime = createRuntime();
-    const legacyPath = join(makeTempRoot('coral-store-no-reset-legacy-'), 'store.db');
+    const retiredPath = join(makeTempRoot('coral-store-no-reset-retired-'), 'store.db');
     const mismatchPath = join(makeTempRoot('coral-store-no-reset-mismatch-'), 'store.db');
-    createLegacyStore(legacyPath);
+    createRetiredStore(retiredPath);
     createMismatchStore(mismatchPath);
 
     expectSetupCode(
-      captureError(() => openWritableStoreDbNoReset(runtime, { path: legacyPath })),
+      captureError(() => openWritableStoreDbNoReset(runtime, { path: retiredPath })),
       'store_schema_outdated',
     );
     expectSetupCode(
@@ -572,7 +572,7 @@ describe('openWritableStoreDbNoReset', () => {
       'store_schema_outdated',
     );
 
-    expect(legacySchemaVersionRow(legacyPath)).toBe('1');
+    expect(retiredSchemaVersionRow(retiredPath)).toBe('1');
     expect(tableExists(mismatchPath, 'sentinel_before_reset')).toBe(true);
   });
 

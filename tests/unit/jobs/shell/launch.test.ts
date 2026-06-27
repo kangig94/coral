@@ -894,6 +894,7 @@ describe('ExecutionService launch', () => {
         emit({
           kind: 'artifact_handle',
           handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
+          identity: { kind: 'test-artifact', threadId: 'thread-1' },
         });
         emit(
           providerContinuityEvent({

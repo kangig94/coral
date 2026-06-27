@@ -23,11 +23,11 @@ import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
-import type { KbJobRecorder } from '../services/kb/recorder.js';
+import type { KbJobRecorder } from '../../jobs/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
-import type { KbChildSupervisor } from '../kb-child/supervisor.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 
 export type CoordinatorBootSnapshot = {
   version?: string;
@@ -72,7 +72,7 @@ export type CoordinatorCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
-  kbChildSupervisor: KbChildSupervisor;
+  kbDaemonSupervisor: KbDaemonSupervisor;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
    * has been requested but whose `inFlight` hasn't settled. Surfaces in

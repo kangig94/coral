@@ -1,7 +1,8 @@
 import { insertMultiple } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
-import { collectOramaDocumentsForFuzzyScan, fuzzyDocumentScore, OramaSearchPort } from '#src/engines/orama/backend.js';
+import { OramaSearchPort } from '#src/engines/orama/search-port.js';
+import { collectOramaDocumentsForFuzzyScan, fuzzyDocumentScore } from '#src/engines/orama/ranking.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
 import {
   ORAMA_BODY_NGRAM_TERM_LIMIT,

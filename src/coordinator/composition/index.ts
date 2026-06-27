@@ -42,7 +42,7 @@ import { CoralSetupError } from '../../runtime/errors.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../lifecycle.js';
-import { createSubsystemRegistry } from '../subsystems/registry.js';
+import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
@@ -67,16 +67,16 @@ import type {
   UnequipExpansionRequest,
   UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
-import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
+import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import { type KbChildHealthSnapshot, type KbChildSupervisor } from '../kb-child/supervisor.js';
-import { createKbChildProxySubsystem } from '../kb-child/proxy-subsystem.js';
+import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
-const KB_CHILD_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
+const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
 
 type KbReadRpcPort = Pick<
   RpcPorts['kb'],
@@ -183,23 +183,23 @@ function readResourceSnapshot(
   };
 }
 
-function createKbChildReadPort(kbChildSupervisor: KbChildSupervisor): KbReadRpcPort {
+function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadRpcPort {
   return {
-    readSearch: (args) => kbChildSupervisor.readKb({ method: 'readSearch', args }),
-    diagnose: () => kbChildSupervisor.readKb({ method: 'diagnose' }),
-    readNote: (slug) => kbChildSupervisor.readKb({ method: 'readNote', slug }),
-    readSource: (slug) => kbChildSupervisor.readKb({ method: 'readSource', slug }),
-    readCommunity: (slug) => kbChildSupervisor.readKb({ method: 'readCommunity', slug }),
-    readWiki: (slug) => kbChildSupervisor.readKb({ method: 'readWiki', slug }),
-    readMemo: (slug, ctx) => kbChildSupervisor.readKb({ method: 'readMemo', slug, ctx }),
-    readPrinciple: (slug) => kbChildSupervisor.readKb({ method: 'readPrinciple', slug }),
-    listSources: () => kbChildSupervisor.readKb({ method: 'listSources' }),
-    listWikis: () => kbChildSupervisor.readKb({ method: 'listWikis' }),
-    listMemos: (args, ctx) => kbChildSupervisor.readKb({ method: 'listMemos', args, ctx }),
-    listPrinciples: (args) => kbChildSupervisor.readKb({ method: 'listPrinciples', args }),
-    listStaleCommunities: () => kbChildSupervisor.readKb({ method: 'listStaleCommunities' }),
-    readCommunitySummaryInput: (slug) => kbChildSupervisor.readKb({ method: 'readCommunitySummaryInput', slug }),
-    wakeUp: (args) => kbChildSupervisor.readKb({ method: 'wakeUp', args }),
+    readSearch: (args) => kbDaemonSupervisor.readKb({ method: 'readSearch', args }),
+    diagnose: () => kbDaemonSupervisor.readKb({ method: 'diagnose' }),
+    readNote: (slug) => kbDaemonSupervisor.readKb({ method: 'readNote', slug }),
+    readSource: (slug) => kbDaemonSupervisor.readKb({ method: 'readSource', slug }),
+    readCommunity: (slug) => kbDaemonSupervisor.readKb({ method: 'readCommunity', slug }),
+    readWiki: (slug) => kbDaemonSupervisor.readKb({ method: 'readWiki', slug }),
+    readMemo: (slug, ctx) => kbDaemonSupervisor.readKb({ method: 'readMemo', slug, ctx }),
+    readPrinciple: (slug) => kbDaemonSupervisor.readKb({ method: 'readPrinciple', slug }),
+    listSources: () => kbDaemonSupervisor.readKb({ method: 'listSources' }),
+    listWikis: () => kbDaemonSupervisor.readKb({ method: 'listWikis' }),
+    listMemos: (args, ctx) => kbDaemonSupervisor.readKb({ method: 'listMemos', args, ctx }),
+    listPrinciples: (args) => kbDaemonSupervisor.readKb({ method: 'listPrinciples', args }),
+    listStaleCommunities: () => kbDaemonSupervisor.readKb({ method: 'listStaleCommunities' }),
+    readCommunitySummaryInput: (slug) => kbDaemonSupervisor.readKb({ method: 'readCommunitySummaryInput', slug }),
+    wakeUp: (args) => kbDaemonSupervisor.readKb({ method: 'wakeUp', args }),
   };
 }
 
@@ -214,12 +214,12 @@ function readStartedKbJobId(result: KbToolResult): string | null {
   return null;
 }
 
-function createKbChildMutationPort(
-  readPort: ReturnType<typeof createKbChildReadPort>,
-  kbChildSupervisor: KbChildSupervisor,
+function createKbDaemonMutationPort(
+  readPort: ReturnType<typeof createKbDaemonReadPort>,
+  kbDaemonSupervisor: KbDaemonSupervisor,
   recordHostedKbFailure: (operation: string, ctx: InvocationContext | undefined, result: KbToolResult) => void,
   notifyHostedCorpusMutation: () => void,
-  registerChildJobAbortProxy: (jobId: string) => void,
+  registerDaemonJobAbortProxy: (jobId: string) => void,
   fallbackContext: InvocationContext,
 ): RpcPorts['kb'] {
   const recordAndNotify = (
@@ -239,82 +239,82 @@ function createKbChildMutationPort(
     ...readPort,
     setCommunitySummary: async (args, ctx) => {
       const invocationCtx = ctxOrFallback(ctx);
-      const result = await kbChildSupervisor.mutateKb({ method: 'setCommunitySummary', args, ctx: invocationCtx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'setCommunitySummary', args, ctx: invocationCtx });
       return recordAndNotify('community_set_summary', ctx, result, { corpusMutation: true });
     },
     createNote: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'createNote', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createNote', args, ctx });
       return recordAndNotify('promote', ctx, result, { corpusMutation: true });
     },
     updateNote: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'updateNote', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'updateNote', args, ctx });
       return recordAndNotify('update', ctx, result, { corpusMutation: true });
     },
     deleteNote: async (slug, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'deleteNote', slug, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteNote', slug, ctx });
       return recordAndNotify('delete', ctx, result, { corpusMutation: true });
     },
     createSource: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'createSource', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createSource', args, ctx });
       const jobId = readStartedKbJobId(result);
       if (jobId !== null) {
-        registerChildJobAbortProxy(jobId);
+        registerDaemonJobAbortProxy(jobId);
       }
       return recordAndNotify('source_import', ctx, result);
     },
     createWiki: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'createWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createWiki', args, ctx });
       return recordAndNotify('wiki_create', ctx, result, { corpusMutation: true });
     },
     rewriteWiki: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx });
       return recordAndNotify('wiki_rewrite', ctx, result, { corpusMutation: true });
     },
     linkWiki: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'linkWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'linkWiki', args, ctx });
       return recordAndNotify('wiki_link', ctx, result, { corpusMutation: true });
     },
     unlinkWiki: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx });
       return recordAndNotify('wiki_unlink', ctx, result, { corpusMutation: true });
     },
     citeWiki: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'citeWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'citeWiki', args, ctx });
       return recordAndNotify('wiki_cite', ctx, result, { corpusMutation: true });
     },
     adoptWiki: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'adoptWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'adoptWiki', args, ctx });
       return recordAndNotify('wiki_adopt', ctx, result, { corpusMutation: true });
     },
     deleteWiki: async (slug, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx });
       return recordAndNotify('wiki_delete', ctx, result, { corpusMutation: true });
     },
     deleteSource: async (slug, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'deleteSource', slug, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteSource', slug, ctx });
       return recordAndNotify('source_delete', ctx, result, { corpusMutation: true });
     },
     createMemo: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'createMemo', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createMemo', args, ctx });
       return recordAndNotify('memo_create', ctx, result);
     },
     deleteMemos: async (args, ctx) => {
-      const result = await kbChildSupervisor.mutateKb({ method: 'deleteMemos', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteMemos', args, ctx });
       return recordAndNotify('memo_delete', ctx, result);
     },
     reindex: async (args, ctx) => {
       const invocationCtx = ctxOrFallback(ctx);
-      const result = await kbChildSupervisor.mutateKb({ method: 'reindex', args, ctx: invocationCtx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'reindex', args, ctx: invocationCtx });
       const jobId = readStartedKbJobId(result);
       if (jobId !== null) {
-        registerChildJobAbortProxy(jobId);
+        registerDaemonJobAbortProxy(jobId);
       }
       return recordAndNotify('reindex', ctx, result);
     },
   };
 }
 
-function createKbChildExpansionRpc(kbChildSupervisor: KbChildSupervisor): ExpansionRequestPort {
+function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): ExpansionRequestPort {
   const errorContext = (detail: unknown): Record<string, unknown> | undefined => {
     if (detail === undefined) {
       return undefined;
@@ -326,22 +326,22 @@ function createKbChildExpansionRpc(kbChildSupervisor: KbChildSupervisor): Expans
       case 'invalid_request':
         return "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
       case 'kb_disabled':
-        return 'Enable the KB child runtime and restart Coral, then retry.';
+        return 'Enable the KB daemon runtime and restart Coral, then retry.';
       case 'kb_initializing':
       case 'kb_offline':
       case 'kb_unavailable':
-        return 'Wait for the KB child runtime to become available or restart Coral, then retry.';
-      case 'kb_child_protocol_error':
+        return 'Wait for the KB daemon runtime to become available or restart Coral, then retry.';
+      case 'kb_daemon_protocol_error':
         return 'Restart Coral and retry. If this persists, check the coordinator logs.';
       default:
         return 'Retry the expansion command. If this persists, check the coordinator logs.';
     }
   };
   const run = async <T>(
-    method: Parameters<KbChildSupervisor['expansionRpc']>[0]['method'],
+    method: Parameters<KbDaemonSupervisor['expansionRpc']>[0]['method'],
     args: unknown,
   ): Promise<T> => {
-    const result = await kbChildSupervisor.expansionRpc({ method, args });
+    const result = await kbDaemonSupervisor.expansionRpc({ method, args });
     if (!result.ok) {
       throw new CoralSetupError({
         code: result.code,
@@ -369,7 +369,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
-  const kbChildSupervisor = options.kbChildSupervisor;
+  const kbDaemonSupervisor = options.kbDaemonSupervisor;
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
   // Local indirection: callers in non-health/handoff paths use this to get
@@ -399,8 +399,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     (() => {
       throw storeServicesStartupNotReadyError();
     });
-  const subsystems = createSubsystemRegistry();
-  const runtimeState = createRuntimeState(world.now(), subsystems);
+  const components = createRuntimeComponentRegistry();
+  const runtimeState = createRuntimeState(world.now(), components);
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   let readIpcOpenSockets = () => 0;
@@ -498,62 +498,62 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       const snapshot = readPersistedCorpusSnapshot(storeServices.storeDb);
       storeServices.consumerDriver?.notifyCorpus(snapshot);
     } catch (error) {
-      world.log(`[kb-child] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
+      world.log(`[kb-daemon] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
     }
   };
-  const childOwnedKbJobs = new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>();
-  const cleanupChildJobAbortProxy = (jobId: string): void => {
-    const tracked = childOwnedKbJobs.get(jobId);
+  const daemonOwnedKbJobs = new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>();
+  const cleanupDaemonJobAbortProxy = (jobId: string): void => {
+    const tracked = daemonOwnedKbJobs.get(jobId);
     if (tracked !== undefined) {
       runtime.time.clearTimeout(tracked.cleanupTimer);
-      childOwnedKbJobs.delete(jobId);
+      daemonOwnedKbJobs.delete(jobId);
     }
     internalJobAbortRegistry.remove(jobId);
-    if (childOwnedKbJobs.size === 0) {
-      disposeChildJobTerminalListeners();
+    if (daemonOwnedKbJobs.size === 0) {
+      disposeDaemonJobTerminalListeners();
     }
   };
-  const cleanupTerminalChildJobAbortProxy = (jobId: string, phase: string): void => {
-    if (!isTerminalPhase(phase) || !childOwnedKbJobs.has(jobId)) {
+  const cleanupTerminalDaemonJobAbortProxy = (jobId: string, phase: string): void => {
+    if (!isTerminalPhase(phase) || !daemonOwnedKbJobs.has(jobId)) {
       return;
     }
-    cleanupChildJobAbortProxy(jobId);
+    cleanupDaemonJobAbortProxy(jobId);
   };
-  const onChildJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
-    cleanupTerminalChildJobAbortProxy(event.jobId, event.phase);
+  const onDaemonJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
+    cleanupTerminalDaemonJobAbortProxy(event.jobId, event.phase);
   };
-  const onChildJobCompleted = (event: { jobId: string }): void => {
-    if (!childOwnedKbJobs.has(event.jobId)) {
+  const onDaemonJobCompleted = (event: { jobId: string }): void => {
+    if (!daemonOwnedKbJobs.has(event.jobId)) {
       return;
     }
-    cleanupChildJobAbortProxy(event.jobId);
+    cleanupDaemonJobAbortProxy(event.jobId);
   };
-  let childJobTerminalListenersRegistered = false;
-  const ensureChildJobTerminalListeners = (): void => {
-    if (childJobTerminalListenersRegistered) {
+  let daemonJobTerminalListenersRegistered = false;
+  const ensureDaemonJobTerminalListeners = (): void => {
+    if (daemonJobTerminalListenersRegistered) {
       return;
     }
-    childJobTerminalListenersRegistered = true;
-    world.eventBus.on('job:phase_changed', onChildJobPhaseChanged);
-    world.eventBus.on('job:completed', onChildJobCompleted);
+    daemonJobTerminalListenersRegistered = true;
+    world.eventBus.on('job:phase_changed', onDaemonJobPhaseChanged);
+    world.eventBus.on('job:completed', onDaemonJobCompleted);
   };
-  const disposeChildJobTerminalListeners = (): void => {
-    if (!childJobTerminalListenersRegistered) {
+  const disposeDaemonJobTerminalListeners = (): void => {
+    if (!daemonJobTerminalListenersRegistered) {
       return;
     }
-    childJobTerminalListenersRegistered = false;
-    world.eventBus.off('job:phase_changed', onChildJobPhaseChanged);
-    world.eventBus.off('job:completed', onChildJobCompleted);
+    daemonJobTerminalListenersRegistered = false;
+    world.eventBus.off('job:phase_changed', onDaemonJobPhaseChanged);
+    world.eventBus.off('job:completed', onDaemonJobCompleted);
   };
-  const describeKbChildExit = (snapshot: KbChildHealthSnapshot): string => {
+  const describeKbDaemonExit = (snapshot: KbDaemonHealthSnapshot): string => {
     const exit = snapshot.lastExit;
     const suffix =
       exit === undefined
         ? ''
         : ` (code=${String(exit.code)}, signal=${String(exit.signal)}, generation=${snapshot.generation})`;
-    return `KB child exited${suffix}: ${snapshot.lastError ?? snapshot.reason ?? snapshot.phase}`;
+    return `KB daemon exited${suffix}: ${snapshot.lastError ?? snapshot.reason ?? snapshot.phase}`;
   };
-  const listDurableChildOwnedKbJobs = (progressStore: JobProgressStore): string[] => {
+  const listDurableDaemonOwnedKbJobs = (progressStore: JobProgressStore): string[] => {
     const jobIds: string[] = [];
     for (const jobId of progressStore.listJobIds()) {
       const status = progressStore.readStatus(jobId);
@@ -566,22 +566,22 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         continue;
       }
       const runtime = progressStore.readRuntimeProjection(jobId);
-      if (runtime?.transport === 'internal' && runtime.owner === 'kb-child') {
+      if (runtime?.transport === 'internal' && runtime.owner === 'kb-daemon') {
         jobIds.push(jobId);
       }
     }
     return jobIds;
   };
-  const failTrackedChildJobs = (snapshot: KbChildHealthSnapshot): void => {
-    const message = describeKbChildExit(snapshot);
+  const failTrackedDaemonJobs = (snapshot: KbDaemonHealthSnapshot): void => {
+    const message = describeKbDaemonExit(snapshot);
     try {
       const progressStore = getProgressStore();
-      const childOwnedJobIds = new Set([...childOwnedKbJobs.keys(), ...listDurableChildOwnedKbJobs(progressStore)]);
-      if (childOwnedJobIds.size === 0) {
+      const daemonOwnedJobIds = new Set([...daemonOwnedKbJobs.keys(), ...listDurableDaemonOwnedKbJobs(progressStore)]);
+      if (daemonOwnedJobIds.size === 0) {
         return;
       }
       const failed: string[] = [];
-      for (const jobId of childOwnedJobIds) {
+      for (const jobId of daemonOwnedJobIds) {
         const status = progressStore.readStatus(jobId);
         if (
           status === null ||
@@ -589,74 +589,74 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           !belongsToNamespace(status, world.namespace) ||
           status.jobKind !== 'kb'
         ) {
-          cleanupChildJobAbortProxy(jobId);
+          cleanupDaemonJobAbortProxy(jobId);
           continue;
         }
         markJobAsError(progressStore, status, { kind: 'wrapper_crashed', cause: { message } }, (line) =>
           world.log(`${line}\n`),
         );
-        cleanupChildJobAbortProxy(jobId);
+        cleanupDaemonJobAbortProxy(jobId);
         failed.push(jobId);
       }
       if (failed.length > 0) {
-        world.log(`[kb-child] marked ${failed.length} child-owned KB job(s) as error after child exit\n`);
+        world.log(`[kb-daemon] marked ${failed.length} daemon-owned KB job(s) as error after daemon exit\n`);
       }
     } catch (error: unknown) {
-      world.log(`[kb-child] failed to reconcile child-owned KB jobs after child exit: ${formatError(error)}\n`);
+      world.log(`[kb-daemon] failed to reconcile daemon-owned KB jobs after daemon exit: ${formatError(error)}\n`);
     }
   };
-  const registerChildJobAbortProxy = (jobId: string): void => {
-    cleanupChildJobAbortProxy(jobId);
-    ensureChildJobTerminalListeners();
+  const registerDaemonJobAbortProxy = (jobId: string): void => {
+    cleanupDaemonJobAbortProxy(jobId);
+    ensureDaemonJobTerminalListeners();
     const cleanupTimer = runtime.time.setTimeout(() => {
-      cleanupChildJobAbortProxy(jobId);
-    }, KB_CHILD_JOB_ABORT_PROXY_TTL_MS);
+      cleanupDaemonJobAbortProxy(jobId);
+    }, KB_DAEMON_JOB_ABORT_PROXY_TTL_MS);
     cleanupTimer.unref?.();
-    childOwnedKbJobs.set(jobId, { cleanupTimer });
+    daemonOwnedKbJobs.set(jobId, { cleanupTimer });
     internalJobAbortRegistry.register(jobId, () => {
-      const tracked = childOwnedKbJobs.get(jobId);
+      const tracked = daemonOwnedKbJobs.get(jobId);
       if (tracked !== undefined) {
         runtime.time.clearTimeout(tracked.cleanupTimer);
       }
       const abortResult =
-        kbChildSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
+        kbDaemonSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
       void abortResult.finally(() => {
-        cleanupChildJobAbortProxy(jobId);
+        cleanupDaemonJobAbortProxy(jobId);
       });
     });
   };
-  const trackActiveChildKbJobs = async (reason: string, signal?: AbortSignal): Promise<void> => {
+  const trackActiveDaemonKbJobs = async (reason: string, signal?: AbortSignal): Promise<void> => {
     try {
-      const activeJobs = (await kbChildSupervisor.listActiveKbJobs?.({ signal }))?.active ?? [];
+      const activeJobs = (await kbDaemonSupervisor.listActiveKbJobs?.({ signal }))?.active ?? [];
       for (const jobId of activeJobs) {
-        registerChildJobAbortProxy(jobId);
+        registerDaemonJobAbortProxy(jobId);
       }
       if (activeJobs.length > 0) {
-        world.log(`[kb-child] tracking ${activeJobs.length} active KB job(s) before ${reason}\n`);
+        world.log(`[kb-daemon] tracking ${activeJobs.length} active KB job(s) before ${reason}\n`);
       }
     } catch (error: unknown) {
-      world.log(`[kb-child] failed to list active KB jobs before ${reason}: ${formatError(error)}\n`);
+      world.log(`[kb-daemon] failed to list active KB jobs before ${reason}: ${formatError(error)}\n`);
     }
   };
-  const kbChildSupervisorWithTrackedShutdown: KbChildSupervisor = {
-    ...kbChildSupervisor,
+  const kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor = {
+    ...kbDaemonSupervisor,
     restart: async (reason) => {
-      await trackActiveChildKbJobs(reason ?? 'restart');
-      return kbChildSupervisor.restart(reason);
+      await trackActiveDaemonKbJobs(reason ?? 'restart');
+      return kbDaemonSupervisor.restart(reason);
     },
     dispose: async (reason, disposeOptions) => {
-      await trackActiveChildKbJobs(reason ?? 'dispose', disposeOptions?.signal);
-      return kbChildSupervisor.dispose(reason, disposeOptions);
+      await trackActiveDaemonKbJobs(reason ?? 'dispose', disposeOptions?.signal);
+      return kbDaemonSupervisor.dispose(reason, disposeOptions);
     },
   };
-  const disposeKbChildExitListener = kbChildSupervisor.onExit?.(failTrackedChildJobs) ?? (() => {});
-  const childKbReadPort = createKbChildReadPort(kbChildSupervisorWithTrackedShutdown);
-  const kbRpcPort = createKbChildMutationPort(
-    childKbReadPort,
-    kbChildSupervisorWithTrackedShutdown,
+  const disposeKbDaemonExitListener = kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs) ?? (() => {});
+  const daemonKbReadPort = createKbDaemonReadPort(kbDaemonSupervisorWithTrackedShutdown);
+  const kbRpcPort = createKbDaemonMutationPort(
+    daemonKbReadPort,
+    kbDaemonSupervisorWithTrackedShutdown,
     recordHostedKbFailure,
     notifyHostedCorpusMutation,
-    registerChildJobAbortProxy,
+    registerDaemonJobAbortProxy,
     readOnlyInvocationContext,
   );
 
@@ -752,7 +752,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
-    expansion: createKbChildExpansionRpc(kbChildSupervisorWithTrackedShutdown),
+    expansion: createKbDaemonExpansionRpc(kbDaemonSupervisorWithTrackedShutdown),
   };
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
@@ -770,36 +770,36 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         world.idleTimer.endRequest();
       },
       requestDrain: control.requestDrain,
-      probeKbChild: () => kbChildSupervisor.probe(),
-      restartKbChild: (reason) => kbChildSupervisorWithTrackedShutdown.restart(reason),
+      probeKbDaemon: () => kbDaemonSupervisor.probe(),
+      restartKbDaemon: (reason) => kbDaemonSupervisorWithTrackedShutdown.restart(reason),
     },
     health: {
       read: () => {
         const env = { ...world.coralEnvSnapshot };
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
-        // Legacy `status` field — older CLIs validate the strict
-        // `'starting' | 'ok' | 'draining'` enum. New consumers read
-        // `kernel.phase` for the full 5-state lifecycle.
-        let legacyStatus: 'starting' | 'ok' | 'draining';
+        // Coarse `status` field for clients that validate the strict
+        // `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
+        // lifecycle read `kernel.phase`.
+        let coarseStatus: 'starting' | 'ok' | 'draining';
         if (world.idleTimer.isDraining || lifecycleState === 'draining' || lifecycleState === 'stopped') {
-          legacyStatus = 'draining';
+          coarseStatus = 'draining';
         } else if (lifecycleState === 'running' && storeServices !== null) {
-          legacyStatus = 'ok';
+          coarseStatus = 'ok';
         } else {
-          legacyStatus = 'starting';
+          coarseStatus = 'starting';
         }
         const platform = runtime.env.platform() as NodeJS.Platform;
         const processStartedAt = probeProcessStartedAtSeconds(world.backendPid, platform) ?? undefined;
 
-        // Strip the branded `SubsystemId` to plain string at the wire boundary;
+        // Strip the branded `RuntimeComponentId` to plain string at the wire boundary;
         // transport types use `string` because the brand is enforced producer-side.
-        const subsystems = runtimeState.subsystems.list().map((entry) => ({ ...entry, id: entry.id as string }));
-        const kbChild = kbChildSupervisor.read();
+        const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
+        const kbDaemon = kbDaemonSupervisor.read();
 
         const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
           storeServices === null ? [] : (options.getConsumerStuck() ?? []);
-        const mutationBlocked = kbChild.kbWrite?.mutationBlocked;
+        const mutationBlocked = kbDaemon.kbWrite?.mutationBlocked;
         const diagnostics: {
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
@@ -813,7 +813,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const hasDiagnostics = diagnostics.mutationBlocked !== undefined || diagnostics.consumerStuck !== undefined;
 
         return {
-          status: legacyStatus,
+          status: coarseStatus,
           kernel: {
             phase: lifecycleState,
             readyAt: lifecycleState === 'starting' ? null : runtimeState.getStartedAt(),
@@ -834,8 +834,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           inflightRequests: world.idleTimer.inflightRequests,
           textProjectionState: options.getTextProjectionState?.() ?? 'idle',
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
-          subsystems,
-          kbChild,
+          components,
+          kbDaemon,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
         };
@@ -931,10 +931,10 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
-    kbChildSupervisor: kbChildSupervisorWithTrackedShutdown,
+    kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: () => {
-      disposeKbChildExitListener();
-      disposeChildJobTerminalListeners();
+      disposeKbDaemonExitListener();
+      disposeDaemonJobTerminalListeners();
       options.disposeLifecycleReactor?.();
     },
     handoffQuiescePorts: () =>
@@ -944,7 +944,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
-    createKbProxySubsystemFn: () => createKbChildProxySubsystem(kbChildSupervisorWithTrackedShutdown),
+    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisorWithTrackedShutdown),
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
     runStartupRecoveryFn: options.runStartupRecoveryFn,

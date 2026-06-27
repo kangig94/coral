@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateManifestCompleteness } from '#src/expansion/manifest-completeness.js';
+import { validateManifestCompleteness } from '#src/expansion/manifest/completeness.js';
 import { createScope } from '#src/expansion/scope.js';
 import { searchKb } from '#src/kb/ops/search.js';
 import type { Backed, EmbeddingService } from '#src/kb/contract.js';

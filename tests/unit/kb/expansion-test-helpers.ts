@@ -3,7 +3,7 @@ import {
   createOramaBaseProjection,
   type OramaBaseProjection,
   type OramaBaseProjectionOptions,
-} from '#src/engines/orama/backend.js';
+} from '#src/engines/orama/base-projection.js';
 import { createOramaFtsBacked } from '#src/engines/orama/index.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import type { Backed, EmbeddingService, KbRuntime } from '#src/kb/contract.js';

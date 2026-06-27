@@ -131,7 +131,7 @@ describe('Orama AC2 projection mismatch classifier', () => {
   it.each([
     { name: 'cached metadata undefined', metadata: undefined },
     {
-      name: 'legacy metadata missing discriminating identity fields',
+      name: 'retired metadata missing discriminating identity fields',
       metadata: (() => {
         const metadata = { ...metadataFor(BASE_INPUT) } as Record<string, unknown>;
         for (const field of ALL_DISCRIMINATING_FIELDS) {

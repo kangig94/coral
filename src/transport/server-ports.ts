@@ -12,19 +12,19 @@ export interface AdminControlPort {
   beginRequest(): void;
   endRequest(): void;
   requestDrain(reason: string): void;
-  probeKbChild?(): Promise<TransportKbChildHealthSnapshot>;
-  restartKbChild?(reason: string): Promise<TransportKbChildHealthSnapshot>;
+  probeKbDaemon?(): Promise<TransportKbDaemonHealthSnapshot>;
+  restartKbDaemon?(reason: string): Promise<TransportKbDaemonHealthSnapshot>;
 }
 
 /**
- * Per-subsystem status entry surfaced on `/health.subsystems[]`. Structurally
- * mirrors `SubsystemStatus` from `src/coordinator/subsystems/contract.ts`
+ * Per-component status entry surfaced on `/health.components[]`. Structurally
+ * mirrors `RuntimeComponentStatus` from `src/coordinator/runtime-components/contract.ts`
  * (the canonical authority); transport keeps a structural copy because the
  * architecture-layering invariant forbids transport from importing
  * coordinator internals. `id` is a plain string here — branding is enforced
  * producer-side; transport only emits/parses the wire value.
  */
-export type TransportSubsystemStatus =
+export type TransportRuntimeComponentStatus =
   | { id: string; phase: 'initializing'; attempt: number }
   | { id: string; phase: 'online' }
   | {
@@ -47,7 +47,7 @@ export type TransportSubsystemStatus =
 
 export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
 
-export type TransportKbChildPhase =
+export type TransportKbDaemonPhase =
   | 'disabled'
   | 'starting'
   | 'online'
@@ -56,19 +56,19 @@ export type TransportKbChildPhase =
   | 'stopped'
   | 'failed';
 
-export type TransportKbChildRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+export type TransportKbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
 
-export type TransportKbChildRuntimeHealth = {
-  phase: TransportKbChildRuntimeHealthPhase;
+export type TransportKbDaemonRuntimeHealth = {
+  phase: TransportKbDaemonRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
   curateRunning?: boolean;
   mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
 
-export type TransportKbChildHealthSnapshot = {
+export type TransportKbDaemonHealthSnapshot = {
   enabled: boolean;
-  phase: TransportKbChildPhase;
+  phase: TransportKbDaemonPhase;
   generation: number;
   pid: number | null;
   startedAt: number | null;
@@ -77,9 +77,9 @@ export type TransportKbChildHealthSnapshot = {
   pendingRequests?: number;
   lastHeartbeatAt?: number;
   lastHeartbeatLatencyMs?: number;
-  childUptimeMs?: number;
-  kbRead?: TransportKbChildRuntimeHealth;
-  kbWrite?: TransportKbChildRuntimeHealth;
+  daemonUptimeMs?: number;
+  kbRead?: TransportKbDaemonRuntimeHealth;
+  kbWrite?: TransportKbDaemonRuntimeHealth;
   reason?: string;
   lastExit?: {
     code: number | null;
@@ -92,10 +92,11 @@ export type TransportKbChildHealthSnapshot = {
 
 export type HealthSnapshot = {
   /**
-   * Legacy lifecycle visibility surface kept for older CLIs that validate the
-   * strict `'starting' | 'ok' | 'draining'` enum. New consumers read
-   * `kernel.phase` instead. Handoff contenders read this to distinguish a
-   * same-bundle redundant peer from a mismatch they should replace.
+   * Coarse lifecycle visibility surface for clients that validate the strict
+   * `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
+   * lifecycle read `kernel.phase` instead. Handoff contenders read this to
+   * distinguish a same-bundle redundant peer from a mismatch they should
+   * replace.
    */
   status: 'starting' | 'ok' | 'draining';
   /**
@@ -140,8 +141,8 @@ export type HealthSnapshot = {
     fdCount?: number;
   };
   env: Record<string, string>;
-  subsystems: TransportSubsystemStatus[];
-  kbChild?: TransportKbChildHealthSnapshot;
+  components: TransportRuntimeComponentStatus[];
+  kbDaemon?: TransportKbDaemonHealthSnapshot;
   /**
    * Health diagnostics. Omitted entirely when nothing is wrong so the green
    * path stays compact and operators can grep for these keys to find

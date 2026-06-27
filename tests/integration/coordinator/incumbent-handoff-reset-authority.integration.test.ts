@@ -10,7 +10,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Database } from '#src/store/db.js';
@@ -280,7 +280,7 @@ describe('incumbent handoff reset authority', () => {
         return result;
       },
       createStoreServicesFromDbFn: createStoreServices,
-      kbChildSupervisor: createMockKbChildSupervisor(),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       runStartupRecoveryFn: async () => [],
       cleanupStaleJobsFn: () => {},
       markJobsAsErrorFn: () => {},
@@ -311,7 +311,7 @@ describe('incumbent handoff reset authority', () => {
       const rpcBody = (await rpcResponse.json()) as Record<string, unknown>;
       expect(rpcResponse.status).toBe(200);
       expect(rpcBody).toMatchObject({
-        servedBy: 'kb-child',
+        servedBy: 'kb-daemon',
         method: 'equipExpansion',
       });
 

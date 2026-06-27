@@ -684,6 +684,7 @@ describe('sessions shell store', () => {
           expectedVersion: claimed.version,
           provider: 'codex',
           handle: '/tmp/codex/rollout.jsonl',
+          identity: { kind: 'test-artifact', path: '/tmp/codex/rollout.jsonl' },
           sourceJobId: 'job-1',
         }),
       ).resolves.toEqual({

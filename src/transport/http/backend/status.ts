@@ -8,10 +8,9 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 
 export type BackendStatus =
   | {
-      // CLI-level verdict. The daemon-side legacy lifecycle field (which
-      // can be `'starting' | 'ok' | 'draining'`) is preserved as
-      // `health.status` inside the nested `BackendHealth` payload via
-      // `BackendStatusFull`.
+      // CLI-level verdict. The daemon-side coarse lifecycle field
+      // (`'starting' | 'ok' | 'draining'`) is preserved as `health.status`
+      // inside the nested `BackendHealth` payload via `BackendStatusFull`.
       status: 'ok';
       version: string;
       bundleHash: string;
@@ -23,7 +22,7 @@ export type BackendStatus =
       queueDepth?: number;
       kernel: BackendHealth['kernel'];
       textProjectionState: BackendHealth['textProjectionState'];
-      subsystems: BackendHealth['subsystems'];
+      components: BackendHealth['components'];
       diagnostics?: BackendHealth['diagnostics'];
     }
   | {

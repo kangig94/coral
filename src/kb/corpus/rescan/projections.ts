@@ -13,7 +13,7 @@ import {
   buildNoteIndexEntry,
   buildSourceIndexEntry,
   buildWikiIndexEntry,
-} from '../index-records.js';
+} from '../index/records.js';
 import { assertCommunitySlug, assertSourceSlug, assertWikiSlug } from '../../validation.js';
 import {
   communityEntryId,

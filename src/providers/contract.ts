@@ -144,7 +144,7 @@ export type ProviderTerminalEventBody = {
 export type ProviderArtifactHandleEventBody = {
   kind: 'artifact_handle';
   handle: string;
-  identity?: ProviderArtifactIdentity;
+  identity: ProviderArtifactIdentity;
 };
 
 export type ProviderEventBody =
@@ -248,7 +248,7 @@ export const providerArtifactHandleEventBodySchema = z
   .object({
     kind: z.literal('artifact_handle'),
     handle: z.string().min(1),
-    identity: providerArtifactIdentitySchema.optional(),
+    identity: providerArtifactIdentitySchema,
   })
   .strict();
 
@@ -370,7 +370,7 @@ export type ProviderArtifactHandle = string;
 
 export type ProviderArtifactHandleInput = {
   readonly handle: ProviderArtifactHandle;
-  readonly identity?: ProviderArtifactIdentity;
+  readonly identity: ProviderArtifactIdentity;
   readonly sourceJobId?: string;
 };
 

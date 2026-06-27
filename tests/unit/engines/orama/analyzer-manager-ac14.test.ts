@@ -8,7 +8,8 @@ import {
   createOramaProjectionIdentityInput,
   type OramaProjectionMetadata,
 } from '#src/engines/orama/artifact-port.js';
-import { OramaBaseProjection, type OramaAnalyzerManager } from '#src/engines/orama/backend.js';
+import { OramaBaseProjection } from '#src/engines/orama/base-projection.js';
+import type { OramaAnalyzerManager } from '#src/engines/orama/analyzer.js';
 import type { OramaTokenizerAnalyzer } from '#src/engines/orama/document-builder.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
@@ -16,7 +17,7 @@ import { KiwiAnalyzerManager } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import { createScope } from '#src/expansion/scope.js';
 import type { KbEngineRuntime, KbRuntime } from '#src/kb/contract.js';
-import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
+import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';

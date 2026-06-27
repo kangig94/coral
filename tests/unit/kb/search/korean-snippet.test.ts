@@ -8,7 +8,7 @@ import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';
 import { searchKb } from '#src/kb/ops/search.js';
 import { noteEntryId, type KbResult } from '#src/kb/entry-types.js';
-import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
+import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';

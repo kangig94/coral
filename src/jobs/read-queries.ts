@@ -93,7 +93,7 @@ type JobAppServerRuntimeProjection = {
 type JobInternalRuntimeProjection = {
   transport: 'internal';
   operation: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
-  owner?: 'parent' | 'kb-child';
+  owner?: 'parent' | 'kb-daemon';
   startTime: string;
 };
 

@@ -16,7 +16,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import {
   appendPersistedEvents,
@@ -196,7 +196,7 @@ describe('server discuss API', () => {
         closeServerFn: async (server) => {
           await new Promise<void>((resolve) => server.close(() => resolve()));
         },
-        kbChildSupervisor: createMockKbChildSupervisor(),
+        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
         runStartupRecoveryFn: async () => [],
         getConsumerStuck: () => [],
       });
@@ -273,7 +273,7 @@ describe('server discuss API', () => {
       },
       discussRegistry: registry,
       createExecutionService: () => service as never,
-      kbChildSupervisor: createMockKbChildSupervisor(),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
     });
     const started = await controller.start();
     return {

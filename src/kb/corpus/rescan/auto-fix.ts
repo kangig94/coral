@@ -23,8 +23,8 @@ import { stripMdExt } from '../../paths.js';
 import type { GitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, readCurateRetryQueue, upsertCurateRetryEntry } from '../../curate/retry.js';
 import { writeFileAtomic } from '../file-atomic.js';
-import { commitIndexUpdate, recordContentAndMetadataMutation, recordMetadataMutation } from '../index-mutations.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation, recordMetadataMutation } from '../index/mutations.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index/records.js';
 import { sortedMarkdownEntries } from '../markdown-entries.js';
 import {
   extractBody,

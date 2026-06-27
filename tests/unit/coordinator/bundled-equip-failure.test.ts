@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { ExpansionLifecycleService } from '#src/coordinator/kb-child/expansion/lifecycle.js';
-import { createExpansionRpc } from '#src/coordinator/kb-child/expansion/rpc.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/kb-child/expansion/state.js';
+import { ExpansionLifecycleService } from '#src/kb-daemon/expansion/lifecycle.js';
+import { createExpansionRpc } from '#src/kb-daemon/expansion/rpc.js';
+import type { ExpansionStateRow, ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
 import type { Expansion } from '#src/expansion/contract.js';
 import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { KbRuntime } from '#src/kb/contract.js';

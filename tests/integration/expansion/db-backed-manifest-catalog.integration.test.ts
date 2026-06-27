@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openWritableStoreDbNoReset } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';

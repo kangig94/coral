@@ -4,7 +4,7 @@ import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
 import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 
@@ -91,7 +91,7 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
       backendNamespace: 'world-test-namespace',
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      kbChildSupervisor: createMockKbChildSupervisor(),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       launchCoordinator: {} as never,
       providerHostManager: {
         acquireServer: async () => {
