@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
-import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
+import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import { parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
 import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
@@ -201,6 +201,79 @@ describe('KB daemon runtime host', () => {
       });
     } finally {
       await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('repairs missing daemon Orama projection artifacts during boot', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const projectRoot = join(root, 'project-a');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const sourcePath = join(projectRoot, 'repair.md');
+    writeImportSource(runtime, sourcePath);
+    const firstHost = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+      db,
+    });
+
+    try {
+      const importResult = await firstHost.createSource(
+        {
+          filePath: sourcePath,
+          slug: 'daemon-boot-artifact-repair',
+          readiness: 'base-search',
+          async: false,
+        },
+        { projectRoot, pluginRoot, coralEnv: {}, authority: 'user' },
+      );
+      expect(importResult).toMatchObject({ ok: true });
+      await firstHost.dispose();
+
+      rmSync(oramaIndexPath(runtimeDir), { force: true });
+      rmSync(oramaIndexMetadataPath(runtimeDir), { force: true });
+      expect(runtime.storage.existsSync(oramaIndexMetadataPath(runtimeDir))).toBe(false);
+
+      const secondHost = createKbDaemonWriteRuntimeHost({
+        pluginRoot,
+        backendNamespace: 'test-namespace',
+        bundleHash: 'test-bundle',
+        runtime,
+        db,
+      });
+
+      try {
+        await secondHost.withKb(async ({ consumerDriver, kbRuntime }) => {
+          await consumerDriver.drainAll({ timeoutMs: 5_000 });
+          const metadata = JSON.parse(
+            runtime.storage.readFileSync(oramaIndexMetadataPath(kbRuntime.kb.runtimeDir), 'utf-8'),
+          ) as {
+            entryManifest?: Record<string, unknown>;
+          };
+          expect(Object.keys(metadata.entryManifest ?? {})).toContain('source:daemon-boot-artifact-repair');
+
+          const fts = kbRuntime.kb.capabilityRegistry
+            .runtimeView()
+            .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
+            .read();
+          const result = await fts.search('searchable', 5);
+          expect(result.hits.map((hit) => hit.documentId)).toContain('source:daemon-boot-artifact-repair');
+        });
+      } finally {
+        await secondHost.dispose().catch(() => undefined);
+      }
+    } finally {
+      await firstHost.dispose().catch(() => undefined);
       db.close();
       rmSync(runtimeDir, { recursive: true, force: true });
       while (tempRoots.length > 0) {

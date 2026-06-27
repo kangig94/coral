@@ -35,6 +35,10 @@ import { ConsumerDriver } from '../projection-consumers/index.js';
 import { createHostFactory } from './expansion/host-factory.js';
 import { createExpansionRpc } from './expansion/rpc.js';
 import { createLifecycleBundledLoaders } from './expansion/bundled-loaders.js';
+import {
+  createOramaProjectionReconcileRequester,
+  repairProjectionArtifactLagOnBoot,
+} from './expansion/projection-reconcile.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
@@ -301,6 +305,10 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       consumerDriver = activeConsumerDriver;
       daemonConsumerDriver = activeConsumerDriver;
       const corpusReadinessTimeoutMs = resolveDaemonCorpusReadinessTimeoutMs(runtime);
+      const oramaProjectionReconcileRequester = createOramaProjectionReconcileRequester({
+        kb,
+        driver: activeConsumerDriver,
+      });
       const manifestCatalog = createExpansionManifestCatalog({
         db: activeDb as Database,
         now: () => nowDate(runtime.time).toISOString(),
@@ -320,7 +328,10 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         state: expansionStateStore,
         manifest: manifestCatalog.listManifests(),
         manifestCatalog,
-        bundledLoaders: createLifecycleBundledLoaders(),
+        bundledLoaders: createLifecycleBundledLoaders({
+          requestProjectionReconcile: oramaProjectionReconcileRequester.requestProjectionReconcile,
+          requestKiwiDegradedReconcile: oramaProjectionReconcileRequester.requestKiwiDegradedReconcile,
+        }),
         now: () => nowDate(runtime.time).toISOString(),
         resolveKbRuntime: () => kb,
       });
@@ -331,6 +342,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       await activeExpansionLifecycleService.recoverOnBoot();
       activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
       await activeConsumerDriver.drainAll({ timeoutMs: corpusReadinessTimeoutMs });
+      await repairProjectionArtifactLagOnBoot(kb, activeConsumerDriver, corpusReadinessTimeoutMs);
       const kbRuntime: DaemonKnowledgeBaseRuntime = {
         kb,
         readDb: activeDb,
