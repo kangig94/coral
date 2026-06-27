@@ -1,32 +1,32 @@
-import { backendLog } from '../../infra/backend-log.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { hasKiwiModelArtifact, ensureKiwiModelArtifact } from '../../engines/kiwi/model-artifact.js';
+import { backendLog } from '../../../infra/backend-log.js';
+import { errorMessage } from '../../../infra/error-format.js';
+import { hasKiwiModelArtifact, ensureKiwiModelArtifact } from '../../../engines/kiwi/model-artifact.js';
 import {
   getKiwiAnalyzerManager,
   isKiwiAnalyzerTerminalLoadError,
   type KiwiAnalyzerDegradedEvent,
   type KiwiAnalyzerManager,
-} from '../../engines/kiwi/analyzer-manager.js';
-import { createOramaExpansion, type OramaExpansionOptions } from '../../engines/orama/expansion.js';
+} from '../../../engines/kiwi/analyzer-manager.js';
+import { createOramaExpansion, type OramaExpansionOptions } from '../../../engines/orama/expansion.js';
 import {
   ORAMA_BASE_CONSUMER_ID,
   type OramaAnalyzerManager,
   type OramaReconcileReason,
-} from '../../engines/orama/backend.js';
-import type { EngineManifest, Expansion, ExpansionHost } from '../../expansion/contract.js';
-import { BUNDLED_ENGINES, loadBundledEngine } from '../../expansion/bundled.js';
-import { disposeExpansionScope } from '../../expansion/host.js';
-import { createScope } from '../../expansion/scope.js';
-import { detectProjectionArtifactLag } from '../../kb/corpus/rescan/drift.js';
-import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
-import type { KbCapabilityName, KbCapabilityStatus } from '../../kb/capability/contract.js';
-import { kbCapabilityNameSchema } from '../../kb/capability/contract.js';
-import { AbortError, throwIfAborted } from '../../runtime/abort.js';
-import { documentedCoralSetupError } from '../../runtime/errors.js';
-import type { Disposable, Runtime } from '../../runtime/ports.js';
-import { validateManifestCompleteness } from '../../expansion/manifest-completeness.js';
-import type { EngineManifestProvides } from '../../expansion/contract.js';
-import type { ExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
+} from '../../../engines/orama/backend.js';
+import type { EngineManifest, Expansion, ExpansionHost } from '../../../expansion/contract.js';
+import { BUNDLED_ENGINES, loadBundledEngine } from '../../../expansion/bundled.js';
+import { disposeExpansionScope } from '../../../expansion/host.js';
+import { createScope } from '../../../expansion/scope.js';
+import { detectProjectionArtifactLag } from '../../../kb/corpus/rescan/drift.js';
+import type { KbCorpusSnapshot, KbRuntime } from '../../../kb/contract.js';
+import type { KbCapabilityName, KbCapabilityStatus } from '../../../kb/capability/contract.js';
+import { kbCapabilityNameSchema } from '../../../kb/capability/contract.js';
+import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
+import { documentedCoralSetupError } from '../../../runtime/errors.js';
+import type { Disposable, Runtime } from '../../../runtime/ports.js';
+import { validateManifestCompleteness } from '../../../expansion/manifest-completeness.js';
+import type { EngineManifestProvides } from '../../../expansion/contract.js';
+import type { ExpansionManifestCatalog } from '../../../expansion/manifest-catalog.js';
 import type { ExpansionStateStore } from './state.js';
 
 type ExpansionModule = {

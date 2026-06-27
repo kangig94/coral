@@ -157,7 +157,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
     storeDb: mockState.fakeDb,
     progressStore: fakeProgressStore,
     expansionManifestCatalog: {},
-    expansionStateStore: {},
     consumerDriver,
   } as unknown as CoordinatorStoreServices;
   let lifecycleState: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped' = 'starting';

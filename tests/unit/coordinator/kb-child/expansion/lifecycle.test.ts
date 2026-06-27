@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
+import { ExpansionLifecycleService } from '#src/coordinator/kb-child/expansion/lifecycle.js';
+import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/kb-child/expansion/state.js';
 import { expansionStatusSchema, expansionViewSchema } from '#src/expansion/rpc-contract.js';
 import { createScope, decorateDispose } from '#src/expansion/scope.js';
 import { BUNDLED_ENGINES, BUNDLED_LOADERS } from '#src/expansion/bundled.js';

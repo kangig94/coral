@@ -7,7 +7,7 @@ import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
 import {
   createOramaProjectionReconcileRequester,
   type OramaProjectionReconcileRuntime,
-} from '#src/coordinator/expansion/lifecycle.js';
+} from '#src/coordinator/kb-child/expansion/lifecycle.js';
 import { KiwiAnalyzerManager, isKiwiAnalyzerTerminalLoadError } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import type { KiwiModelArtifactState } from '#src/engines/kiwi/model-artifact.js';

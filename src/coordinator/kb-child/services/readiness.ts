@@ -42,9 +42,7 @@ function isBindingEmpty(error: unknown): boolean {
   return error instanceof CoralSetupError && error.code === 'binding_empty';
 }
 
-// Spec §6.4 readiness contract. This module is shared by the parent daemon and
-// the KB child so source import/reindex completion means the same thing in both
-// runtime ownership modes.
+// Spec §6.4 readiness contract for child-owned source import/reindex completion.
 export async function waitForCorpusReadiness(params: {
   kb: Pick<KbRuntime, 'capabilityRegistry'>;
   readiness: SourceImportReadiness;

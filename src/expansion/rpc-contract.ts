@@ -3,8 +3,8 @@
  * interface. Owned by the `expansion` domain so transport and CLI can
  * import the contract without crossing into `coordinator/`.
  *
- * Coordinator-side wiring (factories that bind the port to
- * `ExpansionLifecycleService`) lives at `src/coordinator/expansion/rpc.ts`.
+ * KB child-side wiring (factories that bind the port to
+ * `ExpansionLifecycleService`) lives at `src/coordinator/kb-child/expansion/rpc.ts`.
  */
 import { z } from 'zod';
 import { retrievalRoleDescriptorSchema } from '../kb/search/contract.js';

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
-import type { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
+import { createExpansionRpc } from '#src/coordinator/kb-child/expansion/rpc.js';
+import type { ExpansionLifecycleService } from '#src/coordinator/kb-child/expansion/lifecycle.js';
 
 describe('createExpansionRpc', () => {
   it('maps lifecycle activation state onto the wire surface', async () => {

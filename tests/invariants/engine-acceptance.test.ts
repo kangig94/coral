@@ -43,7 +43,7 @@ const PRODUCTION_FILE_INDEX = createProductionFileIndex(REPO_ROOT, PRODUCTION_FI
 
 const ALLOWED_ENGINE_IMPORTERS = new Set<string>([
   'src/expansion/bundled.ts',
-  'src/coordinator/expansion/lifecycle.ts',
+  'src/coordinator/kb-child/expansion/lifecycle.ts',
 ]);
 
 const ENGINE_BLIND_SCOPES = [
@@ -54,7 +54,7 @@ const ENGINE_BLIND_SCOPES = [
   'src/runtime/',
 ] as const;
 const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx', 'kb-scann']);
-const ENGINE_ID_LITERAL_ALLOWED_FILES = new Set<string>(['src/coordinator/expansion/lifecycle.ts']);
+const ENGINE_ID_LITERAL_ALLOWED_FILES = new Set<string>(['src/coordinator/kb-child/expansion/lifecycle.ts']);
 
 function isInEngineBlindScope(canonical: string): boolean {
   return ENGINE_BLIND_SCOPES.some((scope) => canonical.startsWith(scope));

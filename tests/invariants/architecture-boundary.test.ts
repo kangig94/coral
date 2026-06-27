@@ -1088,13 +1088,13 @@ describe('architecture boundary guard', () => {
     // identity. Two files are documented wiring points:
     //   - `src/expansion/bundled.ts` declares `BUNDLED_ENGINES.specifier`
     //     strings (manifest declarations; no executed import of engine code).
-    //   - `src/coordinator/expansion/lifecycle.ts` is the wiring point that
+    //   - `src/coordinator/kb-child/expansion/lifecycle.ts` is the wiring point that
     //     dynamically `import()`s engine specifiers from `BUNDLED_ENGINES`.
     // Sibling imports inside a single engine (`src/engines/<id>/...`) are
     // allowed — engines own their own internals.
     const allowedEngineImporters = new Set<string>([
       'src/expansion/bundled.ts',
-      'src/coordinator/expansion/lifecycle.ts',
+      'src/coordinator/kb-child/expansion/lifecycle.ts',
     ]);
 
     type EngineImportEdge = {
@@ -1156,7 +1156,7 @@ describe('architecture boundary guard', () => {
     // Allowlist the lifecycle wiring point (the only legitimate consumer of
     // BUNDLED_ENGINES.id strings).
     const ENGINE_IDS = new Set(['orama', 'needle', 'gemini', 'onnx']);
-    const ALLOWED_FILES = new Set<string>(['src/coordinator/expansion/lifecycle.ts']);
+    const ALLOWED_FILES = new Set<string>(['src/coordinator/kb-child/expansion/lifecycle.ts']);
 
     const violations: string[] = [];
 

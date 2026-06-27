@@ -54,12 +54,10 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/shutdown.ts',
-  'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/expansion/',
   'src/coordinator/kb-child/',
   'src/coordinator/services/',
   'src/coordinator/subsystems/',

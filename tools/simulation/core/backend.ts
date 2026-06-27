@@ -41,7 +41,6 @@ import { ExecutionService } from '../../../src/coordinator/execution-service.js'
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { createExpansionManifestCatalog } from '../../../src/expansion/manifest-catalog.js';
-import { ExpansionStateStore } from '../../../src/coordinator/expansion/state.js';
 import { openWritableStoreDbNoReset } from '../../../src/store/db.js';
 import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
 import { composeReducers } from '../../../src/store/reducers.js';
@@ -389,7 +388,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     storeDb,
     progressStore,
     expansionManifestCatalog: createExpansionManifestCatalog({ db: storeDb }),
-    expansionStateStore: new ExpansionStateStore(storeDb),
     consumerDriver: null,
   };
   const launchCoordinator = new LaunchCoordinator({ runtime });

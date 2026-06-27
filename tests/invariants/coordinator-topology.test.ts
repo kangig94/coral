@@ -38,10 +38,10 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
-  'src/coordinator/expansion/host-factory.ts',
-  'src/coordinator/expansion/lifecycle.ts',
-  'src/coordinator/expansion/rpc.ts',
-  'src/coordinator/expansion/state.ts',
+  'src/coordinator/kb-child/expansion/host-factory.ts',
+  'src/coordinator/kb-child/expansion/lifecycle.ts',
+  'src/coordinator/kb-child/expansion/rpc.ts',
+  'src/coordinator/kb-child/expansion/state.ts',
   'src/coordinator/handoff.ts',
   'src/coordinator/invocation-scope.ts',
   'src/coordinator/kb-child/child-main.ts',
@@ -49,12 +49,12 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/kb-child/proxy-subsystem.ts',
   'src/coordinator/kb-child/read-handler.ts',
   'src/coordinator/kb-child/services/reindex.ts',
+  'src/coordinator/kb-child/services/readiness.ts',
   'src/coordinator/kb-child/services/shell.ts',
   'src/coordinator/kb-child/services/source-import.ts',
   'src/coordinator/kb-child/supervisor.ts',
   'src/coordinator/kb-child/write-runtime.ts',
   'src/coordinator/live/admission.ts',
-  'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
   'src/coordinator/live/idle.ts',
   'src/coordinator/live/process-supervision.ts',
@@ -72,8 +72,6 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-abort.ts',
   'src/coordinator/services/job-launch.ts',
   'src/coordinator/services/job-wait.ts',
-  'src/coordinator/services/kb/community-summary.ts',
-  'src/coordinator/services/kb/readiness.ts',
   'src/coordinator/services/kb/recorder.ts',
   'src/coordinator/subsystems/contract.ts',
   'src/coordinator/subsystems/registry.ts',
@@ -117,13 +115,11 @@ const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/shutdown.ts',
-  'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
 ]);
 
 const BROAD_IMPORT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/expansion/',
   'src/coordinator/kb-child/',
   'src/coordinator/services/',
   'src/coordinator/subsystems/',
@@ -139,11 +135,17 @@ const FORBIDDEN_PREFIXES = [
 const KB_CHILD_OWNED_TARGETS = new Set([
   'src/kb/runtime.ts',
   'src/kb/subsystem.ts',
-  'src/coordinator/expansion/host-factory.ts',
-  'src/coordinator/expansion/lifecycle.ts',
+  'src/coordinator/kb-child/child-main.ts',
+  'src/coordinator/kb-child/expansion/host-factory.ts',
+  'src/coordinator/kb-child/expansion/lifecycle.ts',
+  'src/coordinator/kb-child/expansion/rpc.ts',
+  'src/coordinator/kb-child/expansion/state.ts',
+  'src/coordinator/kb-child/read-handler.ts',
+  'src/coordinator/kb-child/services/readiness.ts',
   'src/coordinator/kb-child/services/reindex.ts',
   'src/coordinator/kb-child/services/shell.ts',
   'src/coordinator/kb-child/services/source-import.ts',
+  'src/coordinator/kb-child/write-runtime.ts',
 ]);
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
@@ -155,7 +157,7 @@ function isBroadImportSource(source: string): boolean {
 }
 
 function isKbChildOwnedSource(source: string): boolean {
-  return source.startsWith('src/coordinator/kb-child/') || source.startsWith('src/coordinator/expansion/');
+  return source.startsWith('src/coordinator/kb-child/');
 }
 
 describe('coordinator topology invariants', () => {
@@ -221,6 +223,9 @@ describe('coordinator topology invariants', () => {
   it('keeps child-owned KB runtime modules out of parent coordinator wiring', () => {
     const violations = COORDINATOR_EDGES.filter(({ source, target }) => {
       if (isKbChildOwnedSource(source)) {
+        return false;
+      }
+      if (source === 'src/coordinator/bootstrap.ts' && target === 'src/coordinator/kb-child/child-main.ts') {
         return false;
       }
       return KB_CHILD_OWNED_TARGETS.has(target);

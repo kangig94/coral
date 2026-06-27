@@ -178,7 +178,6 @@ function createStoreServices(storeDb: Database): CoordinatorStoreServices {
       liveJobCountByNamespace: () => 0,
     },
     expansionManifestCatalog: {},
-    expansionStateStore: {},
     consumerDriver: null,
   } as unknown as CoordinatorStoreServices;
 }

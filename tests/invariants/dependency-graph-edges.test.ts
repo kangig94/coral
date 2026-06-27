@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
+import { ExpansionLifecycleService } from '#src/coordinator/kb-child/expansion/lifecycle.js';
+import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/kb-child/expansion/state.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
 import { initializeCapabilityCatalog } from '#src/expansion/manifest-fills-validation.js';
 import {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { waitForCorpusReadiness } from '#src/coordinator/index.js';
+import { waitForCorpusReadiness } from '#src/coordinator/kb-child/services/readiness.js';
 import type { Backed, FtsRetrieval, KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import type { VectorRetrieval } from '#src/kb/search/contract.js';
 import {

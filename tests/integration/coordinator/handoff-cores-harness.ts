@@ -26,7 +26,6 @@ import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -70,26 +69,7 @@ export interface BootedCore {
   shutdown(reason: string): Promise<void>;
 }
 
-function createMemoryExpansionState(rows: readonly ExpansionStateRow[] = []): ExpansionStateStore {
-  const map = new Map(rows.map((row) => [row.id, row]));
-  return {
-    insert: (row: ExpansionStateRow) => {
-      map.set(row.id, row);
-    },
-    delete: (id: string) => {
-      map.delete(id);
-    },
-    list: () => [...map.values()],
-    get: (id: string) => map.get(id),
-  } as ExpansionStateStore;
-}
-
-function createHarnessStoreServices(
-  runtime: Runtime,
-  db: Database,
-  namespace: string,
-  expansionStateStore: ExpansionStateStore,
-): CoordinatorStoreServices {
+function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: string): CoordinatorStoreServices {
   return {
     storeDb: db,
     progressStore: new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
@@ -101,7 +81,6 @@ function createHarnessStoreServices(
       db,
       now: () => new Date(runtime.time.now()).toISOString(),
     }),
-    expansionStateStore,
     consumerDriver: null,
   };
 }
@@ -133,8 +112,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   const liveCores: BootedCore[] = [];
 
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
-    const expansionStateStore = createMemoryExpansionState();
-    const storeServices = createHarnessStoreServices(runtime, db, backendNamespace, expansionStateStore);
+    const storeServices = createHarnessStoreServices(runtime, db, backendNamespace);
 
     const core = createCoordinatorCore({
       runtime,

@@ -1,4 +1,4 @@
-import type { Database, Statement } from '../../store/db.js';
+import type { Database, Statement } from '../../../store/db.js';
 
 export type ExpansionStateRow = {
   id: string;

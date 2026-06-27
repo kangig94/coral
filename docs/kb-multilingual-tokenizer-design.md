@@ -191,7 +191,7 @@ CORAL_KB_EXTRA_LANGS=ko,ja     # 향후 확장
 - `src/engines/orama/backend.ts` — served-index read path, pure-consumer reconcile request, projection apply, lost-update guard.
 - `src/engines/orama/artifact-port.ts` — projection identity metadata, identity hash, `classifyProjectionMismatch`.
 - `src/engines/orama/snapshot.ts` — metadata-bearing load/persist/cache and tier-appropriate analyzer getter.
-- `src/coordinator/expansion/lifecycle.ts` — `createOramaProjectionReconcileRequester`, Kiwi fetch-triggered reindex, degrade reconcile wiring.
+- `src/coordinator/kb-child/expansion/lifecycle.ts` — `createOramaProjectionReconcileRequester`, Kiwi fetch-triggered reindex, degrade reconcile wiring.
 - `src/coordinator/index.ts` — coordinator wiring and Orama-only boot `FreshnessTimeout` fallback.
 - `src/engines/kiwi/analyzer-manager.ts` — lazy lease lifecycle, idle eviction, `observeDegraded` registration.
 - 코퍼스 델타/스냅샷 측(`src/kb/corpus/…`) — projection input/freshness source.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { startKiwiArtifactFetchOnBoot } from '#src/coordinator/expansion/lifecycle.js';
+import { startKiwiArtifactFetchOnBoot } from '#src/coordinator/kb-child/expansion/lifecycle.js';
 import type { ForcedCorpusFreshnessTarget } from '#src/coordinator/consumer-driver/index.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/backend.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';

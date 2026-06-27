@@ -35,10 +35,10 @@ import { KbReindexService } from './services/reindex.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { kbError, type KbToolResult } from '../../kb/result.js';
 import { ConsumerDriver } from '../consumer-driver/index.js';
-import { createHostFactory } from '../expansion/host-factory.js';
-import { createExpansionRpc } from '../expansion/rpc.js';
-import { ExpansionLifecycleService, createLifecycleBundledLoaders } from '../expansion/lifecycle.js';
-import { ExpansionStateStore } from '../expansion/state.js';
+import { createHostFactory } from './expansion/host-factory.js';
+import { createExpansionRpc } from './expansion/rpc.js';
+import { ExpansionLifecycleService, createLifecycleBundledLoaders } from './expansion/lifecycle.js';
+import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
 import { initializeCapabilityCatalog } from '../../expansion/manifest-fills-validation.js';
 import {
@@ -46,7 +46,7 @@ import {
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
   BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
 } from '../../kb/capability/constants.js';
-import { waitForCorpusReadiness } from '../services/kb/readiness.js';
+import { waitForCorpusReadiness } from './services/readiness.js';
 import type { Database } from '../../store/db.js';
 import type { KbChildExpansionRequest, KbChildExpansionResult } from './protocol.js';
 

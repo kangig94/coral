@@ -1,5 +1,5 @@
 /**
- * Coordinator-side wiring for the expansion RPC port.
+ * KB child-side wiring for the expansion RPC port.
  *
  * Schemas, types, and the `ExpansionRequestPort` interface live in the
  * domain contract at `src/expansion/rpc-contract.ts`; transport, CLI, and
@@ -19,7 +19,7 @@ import {
   type RemoveExpansionCatalogResult,
   type UnequipExpansionRequest,
   type UnequipExpansionResult,
-} from '../../expansion/rpc-contract.js';
+} from '../../../expansion/rpc-contract.js';
 import type { ExpansionLifecycleService } from './lifecycle.js';
 
 function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): ExpansionView {

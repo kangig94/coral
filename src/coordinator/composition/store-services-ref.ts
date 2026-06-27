@@ -3,13 +3,11 @@ import type { JobStore } from '../../jobs/store.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../../runtime/errors.js';
 import type { Database } from '../../store/db.js';
 import type { ConsumerDriver } from '../consumer-driver/index.js';
-import type { ExpansionStateStore } from '../expansion/state.js';
 
 export interface CoordinatorStoreServices {
   storeDb: Database;
   progressStore: JobStore;
   expansionManifestCatalog: ExpansionManifestCatalog;
-  expansionStateStore: ExpansionStateStore;
   consumerDriver: ConsumerDriver | null;
 }
 

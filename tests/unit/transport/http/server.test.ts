@@ -72,7 +72,6 @@ import {
 import { ZodError, ZodIssueCode } from 'zod';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
-import { ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import type { KbRequestPort } from '#src/transport/rpc/ports.js';
 
@@ -120,7 +119,6 @@ function createStoreServicesForProgressStore(progressStore: JobStore): Coordinat
       db,
       now: () => new Date(runtime.time.now()).toISOString(),
     }),
-    expansionStateStore: new ExpansionStateStore(db),
     consumerDriver: null,
   };
 }

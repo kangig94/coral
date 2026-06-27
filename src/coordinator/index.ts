@@ -38,7 +38,6 @@ import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js
 import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
-import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
 import { JobStore } from '../jobs/store.js';
@@ -51,8 +50,6 @@ import {
   type KbChildSupervisor,
 } from './kb-child/supervisor.js';
 import type { KbChildEventMessage } from './kb-child/protocol.js';
-export { readBoundCorpusConsumerIds, waitForCorpusReadiness } from './services/kb/readiness.js';
-export type { CorpusSnapshotWaiter } from './services/kb/readiness.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -293,7 +290,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       db: storeDb,
       now: () => nowDate(runtime.time).toISOString(),
     });
-    const expansionStateStore = new ExpansionStateStore(storeDb);
     const consumerDriver = new ConsumerDriver({
       db: storeDb,
       now: () => nowDate(runtime.time),
@@ -306,7 +302,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       storeDb,
       progressStore,
       expansionManifestCatalog,
-      expansionStateStore,
       consumerDriver,
     };
   };

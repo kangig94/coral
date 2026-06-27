@@ -1,8 +1,8 @@
-import type { ConsumerDriver } from '../consumer-driver/index.js';
-import { createExpansionHost } from '../../expansion/host.js';
-import type { EngineManifest, ExpansionHost } from '../../expansion/contract.js';
-import type { KbRuntime } from '../../kb/contract.js';
-import type { Disposable, Runtime } from '../../runtime/ports.js';
+import type { ConsumerDriver } from '../../consumer-driver/index.js';
+import { createExpansionHost } from '../../../expansion/host.js';
+import type { EngineManifest, ExpansionHost } from '../../../expansion/contract.js';
+import type { KbRuntime } from '../../../kb/contract.js';
+import type { Disposable, Runtime } from '../../../runtime/ports.js';
 
 export interface CreateHostFactoryDeps {
   readonly runtime: Runtime;
