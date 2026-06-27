@@ -26,7 +26,6 @@ import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
 import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -89,7 +88,6 @@ function createHarnessStoreServices(
   runtime: Runtime,
   db: Database,
   namespace: string,
-  expansionLifecycleService: ExpansionLifecycleService,
   expansionStateStore: ExpansionStateStore,
 ): CoordinatorStoreServices {
   return {
@@ -104,7 +102,6 @@ function createHarnessStoreServices(
       now: () => new Date(runtime.time.now()).toISOString(),
     }),
     expansionStateStore,
-    expansionLifecycleService,
     consumerDriver: null,
   };
 }
@@ -137,22 +134,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
 
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
     const expansionStateStore = createMemoryExpansionState();
-    const expansionLifecycle = new ExpansionLifecycleService({
-      makeHost: () => {
-        throw new Error('expansion makeHost should not be invoked in the handoff harness');
-      },
-      state: expansionStateStore,
-      bundledLoaders: {},
-      manifest: [],
-      now: () => new Date('2026-04-27T00:00:00.000Z').toISOString(),
-    });
-    const storeServices = createHarnessStoreServices(
-      runtime,
-      db,
-      backendNamespace,
-      expansionLifecycle,
-      expansionStateStore,
-    );
+    const storeServices = createHarnessStoreServices(runtime, db, backendNamespace, expansionStateStore);
 
     const core = createCoordinatorCore({
       runtime,

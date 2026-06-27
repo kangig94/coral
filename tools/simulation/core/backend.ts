@@ -390,7 +390,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     progressStore,
     expansionManifestCatalog: createExpansionManifestCatalog({ db: storeDb }),
     expansionStateStore: new ExpansionStateStore(storeDb),
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
   const launchCoordinator = new LaunchCoordinator({ runtime });
@@ -456,6 +455,10 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       data: { servedBy: 'simulation-kb-child', method: request.method },
     }),
     mutateKb: async (request) => ({
+      ok: true,
+      data: { servedBy: 'simulation-kb-child', method: request.method },
+    }),
+    expansionRpc: async (request) => ({
       ok: true,
       data: { servedBy: 'simulation-kb-child', method: request.method },
     }),

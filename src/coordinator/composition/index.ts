@@ -49,10 +49,9 @@ import { resolveCoordinatorDefaults } from './defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld } from './world.js';
-import { storeServicesStartupNotReadyError, type StoreServicesRef } from './store-services-ref.js';
+import { storeServicesStartupNotReadyError } from './store-services-ref.js';
 import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
-import { createExpansionRpc } from '../expansion/rpc.js';
 import type {
   EquipExpansionRequest,
   EquipExpansionResult,
@@ -68,10 +67,7 @@ import type {
 } from '../../expansion/rpc-contract.js';
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
-import {
-  type KbChildHealthSnapshot,
-  type KbChildSupervisor,
-} from '../kb-child/supervisor.js';
+import { type KbChildHealthSnapshot, type KbChildSupervisor } from '../kb-child/supervisor.js';
 import { createKbChildProxySubsystem } from '../kb-child/proxy-subsystem.js';
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
@@ -316,25 +312,26 @@ function createKbChildMutationPort(
   };
 }
 
-function createRefBackedExpansionRpc(storeServicesRef: StoreServicesRef): ExpansionRequestPort {
-  const getExpansionRpc = (): ExpansionRequestPort => {
-    const lifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
-    if (lifecycleService === null) {
-      throw storeServicesStartupNotReadyError();
+function createKbChildExpansionRpc(kbChildSupervisor: KbChildSupervisor): ExpansionRequestPort {
+  const run = async <T>(
+    method: Parameters<KbChildSupervisor['expansionRpc']>[0]['method'],
+    args: unknown,
+  ): Promise<T> => {
+    const result = await kbChildSupervisor.expansionRpc({ method, args });
+    if (!result.ok) {
+      throw new Error(result.message);
     }
-    return createExpansionRpc(lifecycleService);
+    return result.data as T;
   };
 
   return {
-    equipExpansion: (request: EquipExpansionRequest): Promise<EquipExpansionResult> =>
-      getExpansionRpc().equipExpansion(request),
+    equipExpansion: (request: EquipExpansionRequest): Promise<EquipExpansionResult> => run('equipExpansion', request),
     unequipExpansion: (request: UnequipExpansionRequest): Promise<UnequipExpansionResult> =>
-      getExpansionRpc().unequipExpansion(request),
+      run('unequipExpansion', request),
     removeExpansionCatalog: (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> =>
-      getExpansionRpc().removeExpansionCatalog(request),
-    listExpansion: (request: ListExpansionRequest): Promise<ListExpansionResult> =>
-      getExpansionRpc().listExpansion(request),
-    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> => getExpansionRpc().readBinding(request),
+      run('removeExpansionCatalog', request),
+    listExpansion: (request: ListExpansionRequest): Promise<ListExpansionResult> => run('listExpansion', request),
+    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> => run('readBinding', request),
   };
 }
 
@@ -726,7 +723,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
-    expansion: createRefBackedExpansionRpc(storeServicesRef),
+    expansion: createKbChildExpansionRpc(kbChildSupervisorWithTrackedShutdown),
   };
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
@@ -961,7 +958,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
-    expansionLifecycleService: null,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

@@ -2,9 +2,7 @@ import { vi } from 'vitest';
 
 import type { KbChildHealthSnapshot, KbChildSupervisor } from '../../src/coordinator/kb-child/supervisor.js';
 
-export function createOnlineKbChildHealth(
-  overrides: Partial<KbChildHealthSnapshot> = {},
-): KbChildHealthSnapshot {
+export function createOnlineKbChildHealth(overrides: Partial<KbChildHealthSnapshot> = {}): KbChildHealthSnapshot {
   return {
     enabled: true,
     phase: 'online',
@@ -24,6 +22,7 @@ export type MockKbChildSupervisorOptions = {
   warmup?: KbChildSupervisor['warmup'];
   readKb?: KbChildSupervisor['readKb'];
   mutateKb?: KbChildSupervisor['mutateKb'];
+  expansionRpc?: KbChildSupervisor['expansionRpc'];
   abortKbJobs?: KbChildSupervisor['abortKbJobs'];
   listActiveKbJobs?: KbChildSupervisor['listActiveKbJobs'];
   stop?: KbChildSupervisor['stop'];
@@ -50,6 +49,17 @@ export function createMockKbChildSupervisor(options: MockKbChildSupervisorOption
       vi.fn(async (request) => ({
         ok: true as const,
         data: { servedBy: 'kb-child', method: request.method },
+      })),
+    expansionRpc:
+      options.expansionRpc ??
+      vi.fn(async (request) => ({
+        ok: true as const,
+        data:
+          request.method === 'listExpansion'
+            ? { expansions: [] }
+            : request.method === 'readBinding'
+              ? { bound: false }
+              : { servedBy: 'kb-child', method: request.method },
       })),
     abortKbJobs: options.abortKbJobs ?? vi.fn(async (jobIds) => ({ aborted: [], notFound: [...jobIds] })),
     listActiveKbJobs: options.listActiveKbJobs ?? vi.fn(async () => ({ active: [] })),

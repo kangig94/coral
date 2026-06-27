@@ -179,7 +179,6 @@ function createStoreServices(storeDb: Database): CoordinatorStoreServices {
     },
     expansionManifestCatalog: {},
     expansionStateStore: {},
-    expansionLifecycleService: null,
     consumerDriver: null,
   } as unknown as CoordinatorStoreServices;
 }
@@ -221,8 +220,7 @@ describe('incumbent handoff reset authority', () => {
     createMismatchStore(dbPath);
     const incumbentStore = new DatabaseSync(dbPath);
     let shutdownReceived = false;
-    const processStartedAt =
-      probeProcessStartedAtSeconds(process.pid, runtime.env.platform() as NodeJS.Platform) ?? 1;
+    const processStartedAt = probeProcessStartedAtSeconds(process.pid, runtime.env.platform() as NodeJS.Platform) ?? 1;
     writeDiscoveryRecord(
       {
         pid: process.pid,
@@ -316,10 +314,10 @@ describe('incumbent handoff reset authority', () => {
         body: JSON.stringify({ name: 'needle' }),
       });
       const rpcBody = (await rpcResponse.json()) as Record<string, unknown>;
-      expect(rpcResponse.status).toBe(500);
+      expect(rpcResponse.status).toBe(200);
       expect(rpcBody).toMatchObject({
-        code: 'startup_not_ready',
-        message: 'Coral backend is still starting.',
+        servedBy: 'kb-child',
+        method: 'equipExpansion',
       });
 
       const startPromise = core.lifecycleController.start();

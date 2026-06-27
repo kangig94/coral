@@ -7,7 +7,7 @@ import {
   type KbFailureDetail,
   type KbInternalJobRequest,
   type KbJobRecorderDeps,
-} from './recorder.js';
+} from '../../services/kb/recorder.js';
 
 export interface KbOperationJobRecorderHelpers {
   appendMessage(message: string): void;

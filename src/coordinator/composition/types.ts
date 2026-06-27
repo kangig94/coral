@@ -23,8 +23,7 @@ import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
-import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
-import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import.js';
+import type { KbSourceImportReadinessWaiter } from '../kb-child/services/source-import.js';
 import type { KbJobRecorder } from '../services/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
@@ -115,7 +114,6 @@ export type CoordinatorCoreResult = {
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
-  expansionLifecycleService: ExpansionLifecycleService | null;
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];

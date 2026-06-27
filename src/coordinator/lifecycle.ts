@@ -17,10 +17,9 @@ import { createReplacementBackendOwnershipChecker } from './ownership-checker.js
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
 import type { JobStore } from '../jobs/store.js';
-import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
-import { KB_ID, type Subsystem } from './subsystems/contract.js';
+import type { Subsystem } from './subsystems/contract.js';
 import type { SubsystemRegistry } from './subsystems/registry.js';
 import {
   SHUTDOWN_POLL_MS,
@@ -133,7 +132,7 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
  * registry. Production supplies a child-proxy subsystem; lifecycle.ts only
  * registers it and triggers `initAll` after Era II completes.
  */
-export type CreateKbProxySubsystemFn = () => Subsystem<KnowledgeBaseRuntime>;
+export type CreateKbProxySubsystemFn = () => Subsystem;
 
 export interface LifecycleHooks {
   onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
@@ -636,20 +635,13 @@ async function runLifecycleStartup({
 
     idleTimer.startWatching(
       () => {
-        // The child proxy has no scheduler resource, so an error envelope
-        // means no coordinator-owned curate work is in flight.
-        const curateProbe = runtimeState.subsystems.run<KnowledgeBaseRuntime, boolean>(KB_ID, (kb) =>
-          kb.curateScheduler.isRunning(),
-        );
-        const curateRunning = typeof curateProbe === 'boolean' ? curateProbe : false;
         return (
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
           !recoveryCoordinator.isIdleBlocked() &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&
-          !hooks.onIdleCheck() &&
-          (idleTimer.isDraining || !curateRunning)
+          !hooks.onIdleCheck()
         );
       },
       (reason) => {

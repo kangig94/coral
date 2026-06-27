@@ -43,7 +43,6 @@ function createStoreServices(progressStore: JobStore): CoordinatorStoreServices 
     progressStore,
     expansionManifestCatalog: {} as never,
     expansionStateStore: {} as never,
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
 }

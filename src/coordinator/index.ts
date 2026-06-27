@@ -17,8 +17,6 @@ import {
 import { createCoordinatorCore } from './composition/index.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import { KB_ID } from './subsystems/contract.js';
-import { isErrorEnvelope } from './subsystems/registry.js';
 import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
@@ -37,16 +35,9 @@ import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
-import type { KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import type { KbCorpusPublication, KbCorpusSnapshot, KbRuntime } from '../kb/contract.js';
+import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
-import { createHostFactory } from './expansion/host-factory.js';
-import {
-  createLifecycleBundledLoaders,
-  createOramaProjectionReconcileRequester,
-  ExpansionLifecycleService,
-} from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
@@ -293,23 +284,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return consumerDriver;
   };
 
-  // Late-bound KB runtime accessor for coordinator services that have not yet
-  // moved behind the child boundary. The child proxy exposes health only, so
-  // this normally returns null until those services are fully child-hosted.
-  const resolveKbRuntime = (): KbRuntime | null => {
-    const c = core;
-    if (c === null) return null;
-    const result = c.runtimeState.subsystems.run<KnowledgeBaseRuntime, KbRuntime>(KB_ID, (kb) => kb.kb);
-    return isErrorEnvelope(result) ? null : result;
-  };
-  const requireKbRuntime = (name: string): KbRuntime => {
-    const kbRuntime = resolveKbRuntime();
-    if (kbRuntime === null) {
-      throw documentedCoralSetupError('expansion_runtime_unavailable', { name });
-    }
-    return kbRuntime;
-  };
-  let resolveLifecyclePhase: (() => 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped') | null = null;
   const createStoreServicesFromDbFn = (storeDb: Database): CoordinatorStoreServices => {
     if (core === null) {
       throw documentedCoralSetupError('startup_not_ready');
@@ -330,52 +304,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       db: storeDb,
       now: () => nowDate(runtime.time),
       time: runtime.time,
-      corpusProjectionReader: {
-        resolveCurrentIndex: () =>
-          requireKbRuntime('kb.corpusProjectionReader').corpusProjectionReader.resolveCurrentIndex(),
-        prepareCurrentProjectionInput: (options) =>
-          requireKbRuntime('kb.corpusProjectionReader').corpusProjectionReader.prepareCurrentProjectionInput(options),
-      },
       onTextProjectionApplyStart: textProjectionHealth.beginReindex,
       onTextProjectionApplyEnd: textProjectionHealth.endReindex,
-      onTextProjectionSync: () => {
-        requireKbRuntime('kb.textProjectionSync').recordIndexSyncSuccess();
-      },
-    });
-    const oramaReconcileRequester = createOramaProjectionReconcileRequester({
-      kb: {
-        getCorpusStateSnapshot: () => requireKbRuntime('orama-reconcile').getCorpusStateSnapshot(),
-        invalidateTextSnapshot: (reason) => requireKbRuntime('orama-reconcile').invalidateTextSnapshot(reason),
-      },
-      driver: consumerDriver,
-    });
-    const expansionLifecycleService = new ExpansionLifecycleService({
-      makeHost: (manifest, scope) => {
-        const kbRuntime = requireKbRuntime(manifest.id);
-        return createHostFactory({
-          runtime,
-          kbRuntime,
-          consumerDriver,
-        })(manifest, scope);
-      },
-      state: expansionStateStore,
-      manifest: expansionManifestCatalog.listManifests(),
-      manifestCatalog: expansionManifestCatalog,
-      bundledLoaders: createLifecycleBundledLoaders({
-        requestProjectionReconcile: oramaReconcileRequester.requestProjectionReconcile,
-        onApplyFailure: () => oramaReconcileRequester.requestProjectionReconcile('terminal-analyzer-failure'),
-        requestKiwiDegradedReconcile: oramaReconcileRequester.requestKiwiDegradedReconcile,
-      }),
-      now: () => nowDate(runtime.time).toISOString(),
-      resolveKbRuntime,
-      getLifecyclePhase: () => {
-        const phase = resolveLifecyclePhase?.() ?? 'starting';
-        // ExpansionLifecycleService accepts `'starting' | 'running' | 'draining' | 'stopped'`.
-        // Map the new `'kernel-ready'` phase to `'starting'` for backward compat — equip
-        // semantics during kernel-ready match the historical `'starting'` semantics
-        // (subsystems are not online yet, but the listener is bound).
-        return phase === 'kernel-ready' ? 'starting' : phase;
-      },
     });
 
     return {
@@ -383,7 +313,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       progressStore,
       expansionManifestCatalog,
       expansionStateStore,
-      expansionLifecycleService,
       consumerDriver,
     };
   };
@@ -452,7 +381,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     disposeLifecycleReactor: () => lifecycleReactor.dispose(),
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
-    getMutationBlocked: () => resolveKbRuntime()?.mutationLockDiagnostics() ?? { blocked: false },
+    getMutationBlocked: () => ({ blocked: false }),
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
     createExecutionService: (ctx, deps) => {
@@ -590,7 +519,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   });
   const coordinatorCore = core;
   // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.
-  resolveLifecyclePhase = () => coordinatorCore.runtimeState.getLifecycle();
 
   return {
     server: coordinatorCore.server,

@@ -29,12 +29,13 @@ import {
   KbSourceImportService,
   parseKbSourceImportRequest,
   type KbSourceImportReadinessWaiter,
-} from '../services/kb/source-import.js';
-import { KbReindexService } from '../services/kb/reindex.js';
+} from './services/source-import.js';
+import { KbReindexService } from './services/reindex.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { kbError, type KbToolResult } from '../../kb/result.js';
 import { ConsumerDriver } from '../consumer-driver/index.js';
 import { createHostFactory } from '../expansion/host-factory.js';
+import { createExpansionRpc } from '../expansion/rpc.js';
 import { ExpansionLifecycleService, createLifecycleBundledLoaders } from '../expansion/lifecycle.js';
 import { ExpansionStateStore } from '../expansion/state.js';
 import { createExpansionManifestCatalog } from '../../expansion/manifest-catalog.js';
@@ -46,6 +47,7 @@ import {
 } from '../../kb/capability/constants.js';
 import { waitForCorpusReadiness } from '../services/kb/readiness.js';
 import type { Database } from '../../store/db.js';
+import type { KbChildExpansionRequest, KbChildExpansionResult } from './protocol.js';
 
 type KbChildWriteRuntimeOptions = {
   pluginRoot: string;
@@ -264,6 +266,7 @@ export type KbChildWriteRuntimeHost = {
   withKb<T>(fn: (state: KbChildWriteRuntimeState) => Promise<T> | T): Promise<T>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
+  expansionRpc(request: KbChildExpansionRequest): Promise<KbChildExpansionResult>;
   listActiveJobs(): string[];
   abortJobs(jobIds: string[]): { aborted: string[]; notFound: string[] };
   dispose(options?: { signal?: AbortSignal }): Promise<void>;
@@ -377,8 +380,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
     phase = 'disposed';
     lastError = undefined;
   };
-  const disposedError = (): KbToolResult =>
-    kbError('kb_unavailable', `KB child write runtime is ${phase}.`);
+  const disposedError = (): KbToolResult => kbError('kb_unavailable', `KB child write runtime is ${phase}.`);
 
   const build = async (): Promise<KbChildWriteRuntimeState> => {
     const runtime = options.runtime ?? createRuntime(options.pluginRoot);
@@ -563,7 +565,7 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       })
       .finally(() => {
         initPromise = null;
-    });
+      });
     return initPromise;
   };
 
@@ -674,6 +676,25 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       initialized.kbSubsystem.kb.invalidateKbCache();
       await initialized.kbSubsystem.kb.ensureCorpusFreshness({ wait: true });
       return initialized.reindexService.run({ async: args.async === true }, ctx, initialized.kbSubsystem);
+    },
+    async expansionRpc(request) {
+      if (phase === 'disposing' || phase === 'disposed') {
+        return disposedError();
+      }
+      const initialized = await init();
+      const rpc = createExpansionRpc(initialized.expansionLifecycleService);
+      switch (request.method) {
+        case 'equipExpansion':
+          return { ok: true, data: await rpc.equipExpansion(request.args as never) };
+        case 'unequipExpansion':
+          return { ok: true, data: await rpc.unequipExpansion(request.args as never) };
+        case 'removeExpansionCatalog':
+          return { ok: true, data: await rpc.removeExpansionCatalog(request.args as never) };
+        case 'listExpansion':
+          return { ok: true, data: await rpc.listExpansion((request.args ?? {}) as never) };
+        case 'readBinding':
+          return { ok: true, data: await rpc.readBinding(request.args as never) };
+      }
     },
     abortJobs(jobIds) {
       const activeState = state;

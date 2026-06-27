@@ -1,6 +1,5 @@
 import type { Server, ServerResponse } from 'node:http';
 import { formatError } from '../infra/error-format.js';
-import { isAbortError } from '../runtime/abort.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { IdleTimer } from './live/idle.js';
 import type { TimePort } from '../infra/port-types.js';
@@ -222,22 +221,6 @@ export async function runShutdownSequence({
     runtime.time,
     log,
   );
-  const expansionLifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
-  if (expansionLifecycleService) {
-    await withBudget(
-      'expansion shutdown',
-      async (signal) =>
-        expansionLifecycleService.shutdownActiveExpansions({ signal }).catch((error: unknown) => {
-          if (isAbortError(error)) {
-            return;
-          }
-          log(`expansion shutdown failed: ${formatError(error)}\n`);
-        }),
-      remainingDrain,
-      runtime.time,
-      log,
-    );
-  }
   await withBudget(
     'hooks.onShutdown',
     async (signal) => hooks.onShutdown(mode, signal),

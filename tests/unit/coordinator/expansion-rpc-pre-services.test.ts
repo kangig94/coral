@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbChildSupervisor } from '#tools/testing/kb-child-supervisor.js';
@@ -106,8 +106,19 @@ afterEach(async () => {
 });
 
 describe('expansion RPC before store services exist', () => {
-  it('returns documented startup_not_ready through transport on a never-started server', async () => {
+  it('routes through the KB child supervisor on a never-started server', async () => {
     const token = 'test-token';
+    const expansionRpc = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        status: 'equipped',
+        expansion: {
+          name: 'needle',
+          tier: 'installed',
+          status: 'equipped',
+        },
+      },
+    }));
     const core = createCoordinatorCore({
       runtime: makeRuntime(),
       bootSnapshot: {
@@ -120,7 +131,7 @@ describe('expansion RPC before store services exist', () => {
         log: () => {},
       },
       createServerFn: (handler) => createServer(handler),
-      kbChildSupervisor: createMockKbChildSupervisor(),
+      kbChildSupervisor: createMockKbChildSupervisor({ expansionRpc }),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       getMutationBlocked: () => ({ blocked: false }),
@@ -137,11 +148,15 @@ describe('expansion RPC before store services exist', () => {
     });
     const body = (await response.json()) as Record<string, unknown>;
 
-    expect(response.status).toBe(500);
-    expect(body).toMatchObject({
-      code: 'startup_not_ready',
-      message: 'Coral backend is still starting.',
-      remediation: 'The Coral backend is still starting; retry shortly.',
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      status: 'equipped',
+      expansion: {
+        name: 'needle',
+        tier: 'installed',
+        status: 'equipped',
+      },
     });
+    expect(expansionRpc).toHaveBeenCalledWith({ method: 'equipExpansion', args: { name: 'needle' } });
   });
 });

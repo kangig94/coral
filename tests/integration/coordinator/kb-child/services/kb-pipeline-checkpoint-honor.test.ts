@@ -23,8 +23,8 @@ import { join } from 'node:path';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { KbReindexService } from '#src/coordinator/services/kb/reindex.js';
-import { KbSourceImportService } from '#src/coordinator/services/kb/source-import.js';
+import { KbReindexService } from '#src/coordinator/kb-child/services/reindex.js';
+import { KbSourceImportService } from '#src/coordinator/kb-child/services/source-import.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { AbortError } from '#src/runtime/abort.js';

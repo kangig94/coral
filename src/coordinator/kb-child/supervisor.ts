@@ -8,6 +8,7 @@ import {
   encodeKbChildMessage,
   isKbChildAbortResult,
   isKbChildEventMessage,
+  isKbChildExpansionResult,
   isKbChildHealthResult,
   isKbChildJobsResult,
   isKbChildKbMutationResult,
@@ -23,6 +24,8 @@ import {
   type KbChildRequestMethod,
   type KbChildResponseMessage,
   type KbChildAbortResult,
+  type KbChildExpansionRequest,
+  type KbChildExpansionResult,
   type KbChildEventMessage,
   type KbChildJobsResult,
 } from './protocol.js';
@@ -65,6 +68,7 @@ export interface KbChildSupervisor {
   warmup(): Promise<KbChildHealthSnapshot>;
   readKb(request: KbChildKbReadRequest): Promise<KbChildKbReadResult>;
   mutateKb(request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult>;
+  expansionRpc(request: KbChildExpansionRequest): Promise<KbChildExpansionResult>;
   abortKbJobs?(jobIds: string[]): Promise<KbChildAbortResult>;
   listActiveKbJobs?(options?: { signal?: AbortSignal }): Promise<KbChildJobsResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbChildHealthSnapshot>;
@@ -145,6 +149,12 @@ export function createDisabledKbChildSupervisor(reason = 'disabled'): KbChildSup
       detail: { reason: 'kb_child_disabled' },
     }),
     mutateKb: async () => ({
+      ok: false,
+      code: 'kb_disabled',
+      message: `KB child supervisor is disabled: ${reason}`,
+      detail: { reason: 'kb_child_disabled' },
+    }),
+    expansionRpc: async () => ({
       ok: false,
       code: 'kb_disabled',
       message: `KB child supervisor is disabled: ${reason}`,
@@ -440,6 +450,13 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     detail: { reason: 'kb_child_unavailable' },
   });
 
+  const expansionRpcUnavailable = (message: string): KbChildExpansionResult => ({
+    ok: false,
+    code: 'kb_unavailable',
+    message,
+    detail: { reason: 'kb_child_unavailable' },
+  });
+
   const sendKbReadRequest = async (request: KbChildKbReadRequest): Promise<KbChildKbReadResult> => {
     const response = await sendRequest('kb.read', request);
     if (!response.ok) {
@@ -460,7 +477,8 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
   };
 
   const sendKbMutationRequest = async (request: KbChildKbMutationRequest): Promise<KbChildKbMutationResult> => {
-    const timeoutMs = request.method === 'createSource' || request.method === 'reindex' ? jobRequestTimeoutMs : undefined;
+    const timeoutMs =
+      request.method === 'createSource' || request.method === 'reindex' ? jobRequestTimeoutMs : undefined;
     const response = await sendRequest('kb.mutate', request, timeoutMs);
     if (!response.ok) {
       return {
@@ -474,6 +492,25 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
         ok: false,
         code: 'kb_child_protocol_error',
         message: 'KB child returned malformed mutation result.',
+      };
+    }
+    return response.result;
+  };
+
+  const sendExpansionRpcRequest = async (request: KbChildExpansionRequest): Promise<KbChildExpansionResult> => {
+    const response = await sendRequest('expansion.rpc', request);
+    if (!response.ok) {
+      return {
+        ok: false,
+        code: 'kb_child_protocol_error',
+        message: response.error.message,
+      };
+    }
+    if (!isKbChildExpansionResult(response.result)) {
+      return {
+        ok: false,
+        code: 'kb_child_protocol_error',
+        message: 'KB child returned malformed expansion result.',
       };
     }
     return response.result;
@@ -545,6 +582,27 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
       return await sendKbMutationRequest(request);
     } catch (error: unknown) {
       return mutateKbUnavailable(`KB child mutation request failed: ${errorMessage(error)}; request was not retried.`);
+    }
+  };
+
+  const expansionRpcNow = async (request: KbChildExpansionRequest): Promise<KbChildExpansionResult> => {
+    if (!requestRecoveryEnabled) {
+      return expansionRpcUnavailable('KB child expansion request skipped: supervisor is disposing.');
+    }
+    const failedGeneration = generation;
+    const failedPhase = phase;
+    if (phase !== 'online' || child === null) {
+      const recovered = await recoverForRequest(failedGeneration, failedPhase, 'expansion request recovery');
+      if (recovered.phase !== 'online') {
+        return expansionRpcUnavailable(`KB child expansion request skipped: recovery ended in ${recovered.phase}.`);
+      }
+    }
+    try {
+      return await sendExpansionRpcRequest(request);
+    } catch (error: unknown) {
+      return expansionRpcUnavailable(
+        `KB child expansion request failed: ${errorMessage(error)}; request was not retried.`,
+      );
     }
   };
 
@@ -765,6 +823,7 @@ export function createKbChildSupervisor(options: KbChildSupervisorOptions): KbCh
     warmup: () => runExclusive(warmupNow),
     readKb: readKbNow,
     mutateKb: mutateKbNow,
+    expansionRpc: expansionRpcNow,
     abortKbJobs: abortKbJobsNow,
     listActiveKbJobs: listActiveKbJobsNow,
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),

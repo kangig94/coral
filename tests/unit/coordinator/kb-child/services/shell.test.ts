@@ -1,7 +1,7 @@
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinator/services/kb/shell.js';
+import { KbOperationJobShell, type KbOperationJobContext } from '#src/coordinator/kb-child/services/shell.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';

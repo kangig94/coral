@@ -4,6 +4,7 @@ import {
   KB_CHILD_RESPONSE_MESSAGE,
   encodeKbChildMessage,
   isKbChildAbortResult,
+  isKbChildExpansionRequest,
   isKbChildJobsResult,
   isKbChildKbMutationRequest,
   isKbChildKbReadRequest,
@@ -232,6 +233,20 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
           id: request.id,
           ok: true,
           result: await kbService.warmup(),
+        });
+        return;
+      case 'expansion.rpc':
+        writeControlMessage({
+          type: KB_CHILD_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: isKbChildExpansionRequest(request.params)
+            ? await kbWriteHost.expansionRpc(request.params)
+            : {
+                ok: false,
+                code: 'invalid_request',
+                message: 'Malformed KB child expansion request.',
+              },
         });
         return;
     }

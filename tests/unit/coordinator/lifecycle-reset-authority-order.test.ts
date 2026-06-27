@@ -148,12 +148,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
     getDb: () => mockState.fakeDb,
     liveJobCountByNamespace: () => 0,
   };
-  const expansionLifecycleService = {
-    shutdownActiveExpansions: vi.fn(async () => {
-      expect(mockState.fakeDb.closed).toBe(false);
-      mockState.events.push('expansion:live-store');
-    }),
-  };
   const consumerDriver = {
     shutdown: vi.fn(async () => {
       mockState.events.push('consumerDriver:shutdown');
@@ -164,7 +158,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
     progressStore: fakeProgressStore,
     expansionManifestCatalog: {},
     expansionStateStore: {},
-    expansionLifecycleService,
     consumerDriver,
   } as unknown as CoordinatorStoreServices;
   let lifecycleState: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped' = 'starting';
@@ -355,7 +348,6 @@ describe('lifecycle reset authority and finalizer order', () => {
     await finalizeStoreServices(servicesRef);
 
     expect(mockState.events.indexOf('markJobsAsError:live-store')).toBeGreaterThan(-1);
-    expect(mockState.events.indexOf('expansion:live-store')).toBeGreaterThan(-1);
     expect(mockState.events.indexOf('runShutdownSequence:return')).toBeLessThan(
       mockState.events.indexOf('storeDb.close'),
     );

@@ -10,7 +10,8 @@ export type KbChildRequestMethod =
   | 'kb.mutate'
   | 'kb.abort'
   | 'kb.jobs'
-  | 'kb.warmup';
+  | 'kb.warmup'
+  | 'expansion.rpc';
 
 export const KB_CHILD_KB_READ_METHODS = [
   'readSearch',
@@ -53,6 +54,16 @@ export const KB_CHILD_KB_MUTATION_METHODS = [
 
 export type KbChildKbMutationMethod = (typeof KB_CHILD_KB_MUTATION_METHODS)[number];
 
+export const KB_CHILD_EXPANSION_METHODS = [
+  'equipExpansion',
+  'unequipExpansion',
+  'removeExpansionCatalog',
+  'listExpansion',
+  'readBinding',
+] as const;
+
+export type KbChildExpansionMethod = (typeof KB_CHILD_EXPANSION_METHODS)[number];
+
 export type KbChildKbReadRequest = {
   method: KbChildKbReadMethod;
   args?: unknown;
@@ -65,6 +76,11 @@ export type KbChildKbMutationRequest = {
   args?: unknown;
   slug?: string;
   ctx?: unknown;
+};
+
+export type KbChildExpansionRequest = {
+  method: KbChildExpansionMethod;
+  args?: unknown;
 };
 
 export type KbChildAbortRequest = {
@@ -85,6 +101,8 @@ export type KbChildKbReadResult =
   | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
 
 export type KbChildKbMutationResult = KbChildKbReadResult;
+
+export type KbChildExpansionResult = KbChildKbReadResult;
 
 export type KbChildRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
 
@@ -189,7 +207,8 @@ export function isKbChildRequestMessage(value: unknown): value is KbChildRequest
       record.method === 'kb.mutate' ||
       record.method === 'kb.abort' ||
       record.method === 'kb.jobs' ||
-      record.method === 'kb.warmup')
+      record.method === 'kb.warmup' ||
+      record.method === 'expansion.rpc')
   );
 }
 
@@ -263,6 +282,10 @@ export function isKbChildKbMutationMethod(value: unknown): value is KbChildKbMut
   return typeof value === 'string' && KB_CHILD_KB_MUTATION_METHODS.includes(value as KbChildKbMutationMethod);
 }
 
+export function isKbChildExpansionMethod(value: unknown): value is KbChildExpansionMethod {
+  return typeof value === 'string' && KB_CHILD_EXPANSION_METHODS.includes(value as KbChildExpansionMethod);
+}
+
 export function isKbChildKbReadRequest(value: unknown): value is KbChildKbReadRequest {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -277,6 +300,14 @@ export function isKbChildKbMutationRequest(value: unknown): value is KbChildKbMu
   }
   const record = value as Record<string, unknown>;
   return isKbChildKbMutationMethod(record.method) && (record.slug === undefined || typeof record.slug === 'string');
+}
+
+export function isKbChildExpansionRequest(value: unknown): value is KbChildExpansionRequest {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return isKbChildExpansionMethod(record.method);
 }
 
 function isKbChildKbResult(value: unknown): value is KbChildKbReadResult {
@@ -298,6 +329,10 @@ export function isKbChildKbReadResult(value: unknown): value is KbChildKbReadRes
 }
 
 export function isKbChildKbMutationResult(value: unknown): value is KbChildKbMutationResult {
+  return isKbChildKbResult(value);
+}
+
+export function isKbChildExpansionResult(value: unknown): value is KbChildExpansionResult {
   return isKbChildKbResult(value);
 }
 

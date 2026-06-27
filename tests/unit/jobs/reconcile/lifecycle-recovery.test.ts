@@ -103,7 +103,6 @@ function createStoreServicesHarness(progressStore: { getDb(): { close(): void } 
     progressStore,
     expansionManifestCatalog: null,
     expansionStateStore: null,
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
   let current: typeof services | null = null;
