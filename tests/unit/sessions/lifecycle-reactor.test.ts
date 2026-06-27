@@ -392,69 +392,77 @@ describe('LifecycleReactor retention enforcement', () => {
     const lateContent = '{"type":"session","message":"late-exit-snapshot"}\n';
     harness.runtime.storage.mkdirSync('/tmp/provider', { recursive: true });
     harness.runtime.storage.writeFileSync(nativeLog, content, { encoding: 'utf-8' });
-    const lateAppend = setTimeout(() => {
+    const sleepSpy = vi.spyOn(harness.runtime.time, 'sleep').mockImplementation(async (ms) => {
+      harness.runtime.time.tick(ms);
+    });
+    const lateAppend = harness.runtime.time.setTimeout(() => {
       harness.runtime.storage.writeFileSync(nativeLog, `${content}${lateContent}`, { encoding: 'utf-8' });
     }, 100);
-    const sessionId = await openClaimedSession(harness, jobId);
-    await recordArtifact(harness, sessionId, jobId, nativeLog);
-    initRunningJob(harness, jobId, sessionId);
 
-    completeJob(harness, jobId, sessionId);
-    harness.sessionManager.releaseJob(sessionId, jobId);
+    try {
+      const sessionId = await openClaimedSession(harness, jobId);
+      await recordArtifact(harness, sessionId, jobId, nativeLog);
+      initRunningJob(harness, jobId, sessionId);
 
-    await expectRetentionEvents(harness, sessionId, [
-      {
-        type: 'session.retention.discard.requested',
-        attempt: 1,
-        handles: [nativeLog],
-      },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [nativeLog],
-        outcome: 'discarded',
-      },
-    ]);
+      completeJob(harness, jobId, sessionId);
+      harness.sessionManager.releaseJob(sessionId, jobId);
 
-    const archiveDir = join(harness.runtime.paths.coral.exports.jobsRoot, jobId, 'provider-artifacts', 'codex');
-    const archivedLog = join(archiveDir, '0001-rollout-archive.jsonl');
-    const manifestPath = join(archiveDir, 'manifest.json');
-    expect(harness.runtime.storage.existsSync(nativeLog)).toBe(false);
-    expect(harness.runtime.storage.readFileSync(archivedLog, 'utf-8')).toBe(`${content}${lateContent}`);
-    clearTimeout(lateAppend);
-    const manifest = JSON.parse(harness.runtime.storage.readFileSync(manifestPath, 'utf-8')) as {
-      schemaVersion: number;
-      jobId: string;
-      sessionId: string;
-      provider: string;
-      artifacts: Array<{
-        sourceHandle: string;
-        archivePath: string;
-        bytes: number;
-        sha256: string;
-        status: string;
-        identity: { kind: string; handle: string };
-        sourceJobId: string;
-      }>;
-    };
-    expect(manifest).toMatchObject({
-      schemaVersion: 1,
-      jobId,
-      sessionId,
-      provider: 'codex',
-      artifacts: [
+      await expectRetentionEvents(harness, sessionId, [
         {
-          sourceHandle: nativeLog,
-          archivePath: archivedLog,
-          bytes: Buffer.byteLength(`${content}${lateContent}`, 'utf-8'),
-          status: 'archived',
-          identity: { kind: 'test-artifact', handle: nativeLog },
-          sourceJobId: jobId,
+          type: 'session.retention.discard.requested',
+          attempt: 1,
+          handles: [nativeLog],
         },
-      ],
-    });
-    expect(manifest.artifacts[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
-    expect(harness.discardCalls).toEqual([[nativeLog]]);
+        {
+          type: 'session.retention.discard.completed',
+          attempt: 1,
+          handles: [nativeLog],
+          outcome: 'discarded',
+        },
+      ]);
+
+      const archiveDir = join(harness.runtime.paths.coral.exports.jobsRoot, jobId, 'provider-artifacts', 'codex');
+      const archivedLog = join(archiveDir, '0001-rollout-archive.jsonl');
+      const manifestPath = join(archiveDir, 'manifest.json');
+      expect(harness.runtime.storage.existsSync(nativeLog)).toBe(false);
+      expect(harness.runtime.storage.readFileSync(archivedLog, 'utf-8')).toBe(`${content}${lateContent}`);
+      const manifest = JSON.parse(harness.runtime.storage.readFileSync(manifestPath, 'utf-8')) as {
+        schemaVersion: number;
+        jobId: string;
+        sessionId: string;
+        provider: string;
+        artifacts: Array<{
+          sourceHandle: string;
+          archivePath: string;
+          bytes: number;
+          sha256: string;
+          status: string;
+          identity: { kind: string; handle: string };
+          sourceJobId: string;
+        }>;
+      };
+      expect(manifest).toMatchObject({
+        schemaVersion: 1,
+        jobId,
+        sessionId,
+        provider: 'codex',
+        artifacts: [
+          {
+            sourceHandle: nativeLog,
+            archivePath: archivedLog,
+            bytes: Buffer.byteLength(`${content}${lateContent}`, 'utf-8'),
+            status: 'archived',
+            identity: { kind: 'test-artifact', handle: nativeLog },
+            sourceJobId: jobId,
+          },
+        ],
+      });
+      expect(manifest.artifacts[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(harness.discardCalls).toEqual([[nativeLog]]);
+    } finally {
+      harness.runtime.time.clearTimeout(lateAppend);
+      sleepSpy.mockRestore();
+    }
   });
 
   it('does not discard stale-aborted session artifacts until the resumed job releases', async () => {

@@ -1,7 +1,8 @@
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { basename } from 'node:path';
-import process from 'node:process';
+import process, { env as processEnv } from 'node:process';
 import type * as ClaudePty from '@lydell/node-pty';
 
 import {
@@ -21,12 +22,23 @@ import {
 import type { JsonRpcRequest } from '../../../infra/json-rpc.js';
 import { buildClaudeChildEnv } from './child-env.js';
 import { createBrokerSession } from './broker-pool.js';
-import type { ClaudeBrokerChild, ClaudeBrokerSession, SpawnClaudeChildOptions } from './session-contract.js';
+import { PrintSessionController } from './print-controller.js';
+import { resolveClaudeTransportMode } from '../transport-mode.js';
+import type {
+  ClaudeBrokerChild,
+  ClaudeBrokerSession,
+  ClaudePrintChild,
+  ControlRequestTimer,
+  PrintSpawnChild,
+  SpawnClaudeChildOptions,
+  SpawnClaudePrintChildOptions,
+} from './session-contract.js';
 
 interface CreateClaudeBrokerServerOptions {
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
   errorOutput?: NodeJS.WritableStream;
+  env?: Readonly<Record<string, string | undefined>>;
   exit?: (code: number) => never | void;
   session?: ClaudeBrokerSession;
 }
@@ -35,17 +47,22 @@ interface ClaudeBrokerServer {
   start(): void;
 }
 
+const realControlRequestTimer = {
+  schedule(callback: () => void, delayMs: number): unknown {
+    return globalThis.setTimeout(callback, delayMs);
+  },
+  cancel(handle: unknown): void {
+    globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
+  },
+} satisfies ControlRequestTimer;
+
 export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOptions = {}): ClaudeBrokerServer {
   const input = options.input ?? process.stdin;
   const output = options.output ?? process.stdout;
   const errorOutput = options.errorOutput ?? process.stderr;
+  const env = options.env ?? processEnv;
   const exit = options.exit ?? ((code: number) => process.exit(code));
-  const session =
-    options.session ??
-    createBrokerSession({
-      spawnChild: createNodeClaudeChildFactory(errorOutput),
-      ids: { uuid: () => randomUUID() },
-    });
+  const session = options.session ?? createDefaultBrokerSession(errorOutput, env);
 
   let shutdownRequested = false;
 
@@ -140,6 +157,26 @@ export function createClaudeBrokerServer(options: CreateClaudeBrokerServerOption
       });
     },
   };
+}
+
+function createDefaultBrokerSession(
+  errorOutput: NodeJS.WritableStream,
+  env: Readonly<Record<string, string | undefined>>,
+): ClaudeBrokerSession {
+  const mode = resolveClaudeTransportMode(env);
+  if (mode === 'tui') {
+    return createBrokerSession({
+      spawnChild: createNodeClaudeChildFactory(errorOutput),
+      ids: { uuid: () => randomUUID() },
+    });
+  }
+
+  return createBrokerSession<PrintSpawnChild>({
+    spawnChild: createNodeClaudePrintChildFactory(errorOutput),
+    ids: { uuid: () => randomUUID() },
+    createController: (controllerOptions) =>
+      new PrintSessionController({ ...controllerOptions, now: Date.now, controlRequestTimer: realControlRequestTimer }),
+  });
 }
 
 type ClaudePtyModule = typeof ClaudePty;
@@ -245,12 +282,135 @@ export function createNodeClaudeChildFactory(
   };
 }
 
+export function createNodeClaudePrintChildFactory(
+  errorOutput: NodeJS.WritableStream = process.stderr,
+): (options: SpawnClaudePrintChildOptions) => ClaudePrintChild {
+  return (options: SpawnClaudePrintChildOptions): ClaudePrintChild => {
+    const child = spawn('claude', buildClaudePrintChildArgs(options), {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: options.cwd || undefined,
+      shell: process.platform === 'win32',
+      env: buildClaudeChildEnv(options.env),
+    });
+
+    if (!child.stdin || !child.stdout || !child.stderr) {
+      throw new Error('Claude child stdio is unavailable.');
+    }
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+
+    const stdoutHandlers = new Set<(line: string) => void>();
+    const exitHandlers = new Set<
+      (event: { code: number | null; signal: NodeJS.Signals | string | number | null; error?: Error }) => void
+    >();
+    const stderrHandlers = new Set<(chunk: string) => void>();
+    const stdoutReader = createInterface({ input: child.stdout });
+
+    let exitEmitted = false;
+    function emitExit(event: {
+      code: number | null;
+      signal: NodeJS.Signals | string | number | null;
+      error?: Error;
+    }): void {
+      if (exitEmitted) {
+        return;
+      }
+      exitEmitted = true;
+      stdoutReader.close();
+      for (const handler of exitHandlers) {
+        handler(event);
+      }
+    }
+
+    stdoutReader.on('line', (line: string) => {
+      for (const handler of stdoutHandlers) {
+        handler(line);
+      }
+    });
+
+    child.stderr.on('data', (chunk: string | Buffer) => {
+      const text = chunk.toString();
+      errorOutput.write(text);
+      for (const handler of stderrHandlers) {
+        handler(text);
+      }
+    });
+
+    child.on('error', (error: Error) => {
+      emitExit({ code: null, signal: null, error });
+    });
+
+    child.on('close', (code, signal) => {
+      emitExit({ code, signal });
+    });
+
+    return {
+      writeLine(line: string): void {
+        if (child.stdin.destroyed) {
+          throw new Error('Claude child stdin is unavailable.');
+        }
+        child.stdin.write(line);
+      },
+      kill(signal?: NodeJS.Signals): void {
+        child.kill(signal);
+      },
+      onStdoutLine(handler: (line: string) => void): () => void {
+        stdoutHandlers.add(handler);
+        return () => {
+          stdoutHandlers.delete(handler);
+        };
+      },
+      onExit(
+        handler: (event: {
+          code: number | null;
+          signal: NodeJS.Signals | string | number | null;
+          error?: Error;
+        }) => void,
+      ): () => void {
+        exitHandlers.add(handler);
+        return () => {
+          exitHandlers.delete(handler);
+        };
+      },
+      onStderrChunk(handler: (chunk: string) => void): () => void {
+        stderrHandlers.add(handler);
+        return () => {
+          stderrHandlers.delete(handler);
+        };
+      },
+    };
+  };
+}
+
 export function buildClaudeChildArgs(options: SpawnClaudeChildOptions): string[] {
   const args: string[] = [];
   if (options.resume) {
     args.push('--resume', options.conversationRef);
   } else {
     args.push('--session-id', options.conversationRef);
+  }
+  if (options.systemPrompt) {
+    args.push('--append-system-prompt', options.systemPrompt);
+  }
+  if (options.model) {
+    args.push('--model', options.model);
+  }
+  if (options.effort) {
+    args.push('--effort', options.effort);
+  }
+  if (isAutoAllowPermissionMode(options.permissionMode)) {
+    args.push('--dangerously-skip-permissions');
+  } else if (options.permissionMode !== 'default') {
+    args.push('--permission-mode', options.permissionMode);
+  }
+  return args;
+}
+
+export function buildClaudePrintChildArgs(options: SpawnClaudePrintChildOptions): string[] {
+  const args = ['-p', '--verbose', '--input-format', 'stream-json', '--output-format', 'stream-json'];
+  if (options.conversationRef !== undefined) {
+    args.push('--resume', options.conversationRef);
   }
   if (options.systemPrompt) {
     args.push('--append-system-prompt', options.systemPrompt);

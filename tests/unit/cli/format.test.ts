@@ -20,7 +20,13 @@ import {
   formatPersonaSeed,
 } from '#src/cli/format/discuss.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
-import { formatAbortResult, formatLaunch, renderJobsList, type JobsListItem } from '#src/cli/format/jobs.js';
+import {
+  formatAbortResult,
+  formatLaunch,
+  formatLaunchWaitHint,
+  renderJobsList,
+  type JobsListItem,
+} from '#src/cli/format/jobs.js';
 import {
   formatKbDelete,
   formatKbMemo,
@@ -169,6 +175,12 @@ describe('cli format', () => {
 
     it('formats a queued decision', () => {
       expect(formatLaunch(queuedDecision)).toBe('Job job-2 queued (session session-2)');
+    });
+  });
+
+  describe('formatLaunchWaitHint', () => {
+    it('formats the wait command for a detached launch', () => {
+      expect(formatLaunchWaitHint(runningDecision)).toBe('Run coral-cli wait jobs job-1 to wait for completion.');
     });
   });
 

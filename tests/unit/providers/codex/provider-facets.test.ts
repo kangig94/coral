@@ -177,6 +177,7 @@ describe('codexArtifactCapability', () => {
     const runtime = {
       storage: { unlinkSync, existsSync: () => false },
       env: { homedir: () => '/home/user' },
+      time: { sleep: async () => {} },
     } as unknown as ArtifactCleanupRuntime;
 
     await expect(

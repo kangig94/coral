@@ -1,5 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises';
-
 import type {
   ArtifactCleanupRuntime,
   DiscardOutcome,
@@ -40,7 +38,7 @@ export async function discardRecordedArtifacts(
     if (attempt === FINAL_UNLINK_ATTEMPTS) {
       break;
     }
-    await delay(FINAL_UNLINK_SETTLE_MS);
+    await runtime.time.sleep(FINAL_UNLINK_SETTLE_MS);
     if (!handles.some((handle) => safeExists(handle, runtime))) {
       break;
     }

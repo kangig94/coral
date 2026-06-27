@@ -166,6 +166,7 @@ export type ClearContinuationLeaseInput = z.infer<typeof clearContinuationLeaseI
 export type SessionControllerId = string;
 
 export const DEFAULT_SESSION_CONTROLLER: SessionControllerId = 'default';
+export const SESSION_CONTROLLER_PROFILE_FIELDS = ['owner', 'effort', 'claudeModelCap'] as const;
 
 export const sessionControllerProfileSchema = z
   .object({
@@ -173,7 +174,12 @@ export const sessionControllerProfileSchema = z
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
   })
-  .strict();
+  .passthrough()
+  .transform((profile) => ({
+    ...(profile.owner !== undefined ? { owner: profile.owner } : {}),
+    ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
+    ...(profile.claudeModelCap !== undefined ? { claudeModelCap: profile.claudeModelCap } : {}),
+  }));
 
 export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
 

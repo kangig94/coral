@@ -180,6 +180,7 @@ describe('claudeArtifactCapability', () => {
     const runtime = {
       storage: { unlinkSync, existsSync: () => false },
       env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      time: { sleep: async () => {} },
     } as unknown as ArtifactCleanupRuntime;
 
     await expect(

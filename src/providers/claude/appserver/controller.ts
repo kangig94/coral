@@ -39,7 +39,6 @@ import type {
   ClaudeBrokerChild,
   ControllerNotification,
   ControllerNotificationMap,
-  CreateBrokerSessionOptions,
   SingleSessionControllerOptions,
 } from './session-contract.js';
 import { DEFAULT_TURN_RECOVERY_BUDGET } from './turn-recovery-budget.js';
@@ -132,10 +131,10 @@ type ChildBinding = {
 };
 
 export class SingleSessionController {
-  private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
-  private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
+  private readonly spawnChild: SingleSessionControllerOptions['spawnChild'];
+  private readonly onTurnStarted: SingleSessionControllerOptions['onTurnStarted'];
   private readonly outputLimit: number;
-  private readonly ids: CreateBrokerSessionOptions['ids'];
+  private readonly ids: SingleSessionControllerOptions['ids'];
   private readonly onUnexpectedExit: (() => void) | undefined;
   private readonly readySettleMs: number;
   private readonly promptAckTimeoutMs: number;

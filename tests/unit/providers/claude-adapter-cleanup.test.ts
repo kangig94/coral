@@ -3,6 +3,19 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
 
+const immediateTime = {
+  sleep: async () => {},
+};
+
+function fakeTimerTime(): Pick<ArtifactCleanupRuntime['time'], 'sleep'> {
+  return {
+    sleep: (ms) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      }),
+  };
+}
+
 function makeRuntime(): {
   runtime: ArtifactCleanupRuntime;
   unlinkSync: ReturnType<typeof vi.fn>;
@@ -14,6 +27,7 @@ function makeRuntime(): {
     runtime: {
       storage: { unlinkSync, existsSync },
       env: { homedir: () => '/home/user' },
+      time: immediateTime,
     } as unknown as ArtifactCleanupRuntime,
     unlinkSync,
     existsSync,
@@ -66,6 +80,7 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
       const runtime = {
         storage: { unlinkSync, existsSync },
         env: { homedir: () => '/home/user' },
+        time: fakeTimerTime(),
       } as unknown as ArtifactCleanupRuntime;
 
       setTimeout(() => {

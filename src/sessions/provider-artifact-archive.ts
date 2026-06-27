@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderArtifactHandle, SessionEntry } from './entry.js';
@@ -136,7 +135,7 @@ async function readStableUtf8File(runtime: ArtifactCleanupRuntime, handle: strin
     }
     previousContent = content;
     if (attempt < STABLE_READ_ATTEMPTS) {
-      await delay(STABLE_READ_SETTLE_MS);
+      await runtime.time.sleep(STABLE_READ_SETTLE_MS);
     }
   }
 

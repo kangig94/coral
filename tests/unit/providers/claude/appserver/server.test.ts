@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildClaudeChildArgs, createNodeClaudeChildFactory } from '#src/providers/claude/appserver/server.js';
-import type { SpawnClaudeChildOptions } from '#src/providers/claude/appserver/session-contract.js';
+import {
+  buildClaudeChildArgs,
+  buildClaudePrintChildArgs,
+  createNodeClaudeChildFactory,
+} from '#src/providers/claude/appserver/server.js';
+import type {
+  SpawnClaudeChildOptions,
+  SpawnClaudePrintChildOptions,
+} from '#src/providers/claude/appserver/session-contract.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 
@@ -10,6 +17,14 @@ function spawnOptions(overrides: Partial<SpawnClaudeChildOptions> = {}): SpawnCl
     cwd: '/workspace',
     conversationRef: TEST_SESSION_ID,
     resume: false,
+    permissionMode: 'default',
+    ...overrides,
+  };
+}
+
+function printSpawnOptions(overrides: Partial<SpawnClaudePrintChildOptions> = {}): SpawnClaudePrintChildOptions {
+  return {
+    cwd: '/workspace',
     permissionMode: 'default',
     ...overrides,
   };
@@ -75,5 +90,55 @@ describe('claude appserver PTY child args', () => {
     expect((error as Error).message).toContain('Claude provider unavailable');
     expect((error as Error).message).toContain('Codex');
     expect((error as Error).message).toContain('pty.node');
+  });
+});
+
+describe('claude appserver print child args', () => {
+  it('starts print-mode sessions without a forced session id by default', () => {
+    expect(buildClaudePrintChildArgs(printSpawnOptions())).toEqual([
+      '-p',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+    ]);
+  });
+
+  it('resumes existing print-mode sessions and carries bootstrap options', () => {
+    expect(
+      buildClaudePrintChildArgs(
+        printSpawnOptions({
+          conversationRef: 'session-existing',
+          systemPrompt: 'Stay concise.',
+          model: 'claude-sonnet-4-6',
+          effort: 'high',
+          permissionMode: 'acceptEdits',
+        }),
+      ),
+    ).toEqual([
+      '-p',
+      '--verbose',
+      '--input-format',
+      'stream-json',
+      '--output-format',
+      'stream-json',
+      '--resume',
+      'session-existing',
+      '--append-system-prompt',
+      'Stay concise.',
+      '--model',
+      'claude-sonnet-4-6',
+      '--effort',
+      'high',
+      '--permission-mode',
+      'acceptEdits',
+    ]);
+  });
+
+  it('maps auto-allow print permission modes to dangerous skip permissions', () => {
+    expect(buildClaudePrintChildArgs(printSpawnOptions({ permissionMode: 'bypassPermissions' }))).toContain(
+      '--dangerously-skip-permissions',
+    );
   });
 });

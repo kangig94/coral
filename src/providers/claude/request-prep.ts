@@ -92,7 +92,7 @@ export function normalizeControllerEnv(env?: Record<string, string>): Record<str
  *
  * Precedence: an explicit per-request `model` wins outright; else
  * `CORAL_CLAUDE_MODEL` is the launch default; else `undefined`, which leaves the
- * model unspecified so the Claude TUI uses its own default (Coral states no
+ * model unspecified so Claude uses its own default (Coral states no
  * opinion). Empty string is treated as unset.
  *
  * The control flow deliberately differs from the Codex analog

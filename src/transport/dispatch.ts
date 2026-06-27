@@ -66,12 +66,16 @@ function buildQueryContext(
 
 function stripTransportContextKeys<T extends Record<string, unknown>>(
   parsed: T,
-): Omit<T, 'projectRoot' | 'owner' | 'effort' | 'claudeModelCap' | 'jobId' | 'sessionId' | 'networkEnv'> {
+): Omit<
+  T,
+  'projectRoot' | 'owner' | 'effort' | 'claudeModelCap' | 'claudeTransport' | 'jobId' | 'sessionId' | 'networkEnv'
+> {
   const {
     projectRoot: _projectRoot,
     owner: _owner,
     effort: _effort,
     claudeModelCap: _claudeModelCap,
+    claudeTransport: _claudeTransport,
     jobId: _jobId,
     sessionId: _sessionId,
     networkEnv: _networkEnv,
@@ -81,6 +85,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     owner?: unknown;
     effort?: unknown;
     claudeModelCap?: unknown;
+    claudeTransport?: unknown;
     jobId?: unknown;
     sessionId?: unknown;
     networkEnv?: unknown;
@@ -192,6 +197,7 @@ export async function executeCatalogRequest(
         projectRoot: _projectRoot,
         effort: _effort,
         claudeModelCap: _claudeModelCap,
+        claudeTransport: _claudeTransport,
         networkEnv: _networkEnv,
         ...workflowCommand
       } = parsed;

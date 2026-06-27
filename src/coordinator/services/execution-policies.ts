@@ -17,8 +17,8 @@ import { describeSessionInterrupted, type SessionInterruptedFault } from '../../
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
 import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
-import type { RetentionPolicy, SessionEntry } from '../../sessions/entry.js';
-import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../../transport/context-profile.js';
+import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy, type SessionEntry } from '../../sessions/entry.js';
+import { CONTEXT_ENV_KEY } from '../../transport/context-profile.js';
 
 export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | 'retention'> & {
   sessionId?: string;
@@ -56,7 +56,7 @@ export function buildSessionControllerProfile(
 ): SessionAllocateOptions['controllerProfile'] | undefined {
   const profile: Partial<NonNullable<SessionAllocateOptions['controllerProfile']>> = {};
 
-  for (const field of TRANSPORT_CONTEXT_FIELDS) {
+  for (const field of SESSION_CONTROLLER_PROFILE_FIELDS) {
     const value = coralEnv[CONTEXT_ENV_KEY[field]];
     if (value !== undefined) {
       profile[field] = value;
@@ -119,7 +119,7 @@ export function buildEffectiveCoralEnv(
   const merged = { ...coralEnv };
   const storedProfile = options.controllerProfile;
 
-  for (const field of TRANSPORT_CONTEXT_FIELDS) {
+  for (const field of SESSION_CONTROLLER_PROFILE_FIELDS) {
     const envKey = CONTEXT_ENV_KEY[field];
     if (field === 'effort') {
       if (options.effort !== undefined) {

@@ -17,12 +17,26 @@ import {
   type TurnStartParams,
   type TurnStartResult,
 } from './protocol.js';
-import type { ClaudeBrokerSession, ControllerNotification, CreateBrokerSessionOptions } from './session-contract.js';
+import type {
+  BrokerSessionController,
+  BrokerSessionControllerOptions,
+  ClaudeBrokerSession,
+  ControllerNotification,
+  CreateBrokerSessionOptions,
+  SingleSessionControllerOptions,
+  TuiSpawnChild,
+} from './session-contract.js';
 
 const DEFAULT_STDERR_RING_LIMIT = 16_384;
 
+type UntypedBrokerSessionOptions = BrokerSessionControllerOptions<unknown> & {
+  createController?: (
+    options: BrokerSessionControllerOptions<unknown> & { onUnexpectedExit?: () => void },
+  ) => BrokerSessionController;
+};
+
 type ControllerEntry = {
-  controller: SingleSessionController;
+  controller: BrokerSessionController;
   dispose: () => void;
   holdNotifications: boolean;
   pendingNotifications: ClaudeBrokerNotification[];
@@ -31,7 +45,10 @@ type ControllerEntry = {
 export class BrokerSessionPool implements ClaudeBrokerSession {
   readonly closed: Promise<Error | void>;
 
-  private readonly spawnChild: CreateBrokerSessionOptions['spawnChild'];
+  private readonly spawnChild: unknown;
+  private readonly createController: (
+    options: BrokerSessionControllerOptions<unknown> & { onUnexpectedExit?: () => void },
+  ) => BrokerSessionController;
   private readonly onTurnStarted: CreateBrokerSessionOptions['onTurnStarted'];
   private readonly stderrLimit: number;
   private readonly ids: CreateBrokerSessionOptions['ids'];
@@ -43,8 +60,12 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   private shuttingDown = false;
   private closedResolved = false;
 
-  constructor(options: CreateBrokerSessionOptions) {
+  constructor(options: UntypedBrokerSessionOptions) {
     this.spawnChild = options.spawnChild;
+    this.createController =
+      options.createController ??
+      ((controllerOptions) =>
+        new SingleSessionController(controllerOptions as unknown as SingleSessionControllerOptions));
     this.onTurnStarted = options.onTurnStarted;
     this.stderrLimit = options.stderrLimit ?? DEFAULT_STDERR_RING_LIMIT;
     this.ids = options.ids;
@@ -184,7 +205,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   }
 
   private createControllerEntry(brokerSessionKey: string, holdNotifications: boolean): ControllerEntry {
-    const controller = new SingleSessionController({
+    const controller = this.createController({
       spawnChild: this.spawnChild,
       ids: this.ids,
       onTurnStarted: this.onTurnStarted,
@@ -339,6 +360,22 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
   }
 }
 
-export function createBrokerSession(options: CreateBrokerSessionOptions): ClaudeBrokerSession {
-  return new BrokerSessionPool(options);
+export function createBrokerSession<TSpawnChild = TuiSpawnChild>(
+  options: CreateBrokerSessionOptions<TSpawnChild>,
+): ClaudeBrokerSession {
+  const createController = options.createController;
+  return new BrokerSessionPool({
+    spawnChild: options.spawnChild,
+    ids: options.ids,
+    onTurnStarted: options.onTurnStarted,
+    stderrLimit: options.stderrLimit,
+    ...(createController === undefined
+      ? {}
+      : {
+          createController: (controllerOptions) =>
+            createController(
+              controllerOptions as BrokerSessionControllerOptions<TSpawnChild> & { onUnexpectedExit?: () => void },
+            ),
+        }),
+  });
 }

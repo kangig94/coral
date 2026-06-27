@@ -82,7 +82,7 @@ const claudeSessionProvider = compose(
 
 For provider-server-backed providers, `sessionContinuity` is the **outermost** middleware so that a single continuity authority observes the full downstream stream — including transport-close events from `appServerSession` via `runtime.continuityBridge`. `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome.
 
-Claude is one of these provider-server-backed providers. The broker helper is intentionally PTY-based: it starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. This keeps Coral aligned with terminal Claude behavior as it diverges from `claude -p`.
+Claude is one of these provider-server-backed providers. The broker helper supports two transports under the same broker RPC surface. The default `print` transport starts `claude -p` with stream-json input/output and drives turns over JSONL. The opt-in `tui` transport starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. `CORAL_CLAUDE_TRANSPORT` is part of provider-server identity, so the two transports never reuse the same broker process.
 
 Adding a new provider is declaring its middleware stack. Provider implementations stay pure: they emit bodies only. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the Journal. Providers never touch envelopes, seqs, or the Journal directly.
 

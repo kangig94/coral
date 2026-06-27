@@ -11,7 +11,13 @@ import { installErrorSchema, installResultSchema } from '#src/expansion/rpc-cont
 import { serializeWaitCursor } from '#src/jobs/wait.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
-import { formatAbortResult, formatJobsList, formatLaunch, renderJobsList } from '#src/cli/format/jobs.js';
+import {
+  formatAbortResult,
+  formatJobsList,
+  formatLaunch,
+  formatLaunchWaitHint,
+  renderJobsList,
+} from '#src/cli/format/jobs.js';
 import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from '#src/cli/format/discuss.js';
 import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -1175,13 +1181,12 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi', '--detach']);
 
-    expect(stdout).toBe(
-      `${formatLaunch({
-        launchState: 'running',
-        job: 'job-1',
-        session: 'session-1',
-      })}\n`,
-    );
+    const launchResult = {
+      launchState: 'running' as const,
+      job: 'job-1',
+      session: 'session-1',
+    };
+    expect(stdout).toBe(`${formatLaunch(launchResult)}\n${formatLaunchWaitHint(launchResult)}\n`);
     expect(stderr).toBe('');
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });

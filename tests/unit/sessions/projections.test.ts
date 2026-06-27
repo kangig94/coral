@@ -141,6 +141,24 @@ describe('sessions projections', () => {
     }
   });
 
+  it('strips non-persistent Claude transport from stale controller profiles', () => {
+    const h = newHarness();
+    try {
+      const entry = {
+        ...sessionEntry({ sessionId: 'session-stale-transport' }),
+        controllerProfile: { owner: 'team-a', claudeTransport: 'print' },
+      } as unknown as SessionEntry;
+
+      h.commit([openedInput(entry, 'scope-stale-transport')]);
+
+      expect(readProjectionSession(h.db, 'session-stale-transport')?.entry.controllerProfile).toEqual({
+        owner: 'team-a',
+      });
+    } finally {
+      h.close();
+    }
+  });
+
   it('should update resumable and conversation ref from continuity checkpoint snapshots', () => {
     const h = newHarness();
     try {

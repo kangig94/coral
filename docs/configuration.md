@@ -12,6 +12,7 @@ Environment variables, plugin metadata, hooks, and flavor-aware runtime state fo
 | `CORAL_CLAUDE_MODEL`              | _(none)_                                       | Default model for the Claude sessions Coral launches. Either a tier alias (`opus`, `sonnet`, `haiku`), capped by `CORAL_CLAUDE_MODEL_CAP` (an alias above the cap is replaced by the cap tier), or a specific model id passed to Claude as-is — e.g. `opus[1m]` (the 1M-context Opus) or a full name like `claude-opus-4-8`; specific ids are not tier-capped. Unset/empty leaves the model unspecified so Claude uses its own default. An explicit per-request model wins. Mirrors `CORAL_CODEX_MODEL` (no built-in default) |
 | `CORAL_CLAUDE_EFFORT`             | `xhigh`                                        | Claude reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku have no `xhigh` level — the adapter collapses `xhigh` to the provider ceiling (`max`) on those tiers                                                                                                                                                                                                                                                                                                                                          |
 | `CORAL_CLAUDE_MODEL_CAP`          | `opus`                                         | Maximum Claude model tier                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `CORAL_CLAUDE_TRANSPORT`          | `print`                                        | Claude broker transport. `print` (also `p` or `stream-json`) launches `claude -p --input-format stream-json --output-format stream-json` and drives turns over JSONL. `tui` (also `pty` or `interactive`) launches interactive Claude through a PTY and derives completion from Claude's JSONL transcript. The value is forwarded per request and participates in provider-server identity, so print and TUI brokers are never reused as the same process                                                                                             |
 | `CORAL_EFFORT`                    | _(none)_                                       | Global effort fallback used only when the provider-specific `CORAL_{CLAUDE,CODEX}_EFFORT` is unset. Explicit request-body effort wins over all env vars                                                                                                                                                                                                                                                                                                                                                                       |
 | `CORAL_DEV_ASSERTIONS`            | _(none)_                                       | Contributor-only developer assertions. Set `1` during local development or `npm test` to make stale continuity-bridge calls throw instead of silently no-oping, and to throw on dispatcher corrupt-state cases. Leave unset for production behavior; never enable in production deploys                                                                                                                                                                                                                                       |
 | `CORAL_MAX_WORKERS`               | `10`                                           | Max concurrent workers (1–10)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -47,7 +48,7 @@ The default backend HTTP bind is loopback-only. If `CORAL_BACKEND_BIND` is set t
 
 The backend is a long-lived shared daemon whose environment is frozen at boot, so a proxy or CA bundle exported in the invoking shell _after_ the daemon started would never reach a spawned provider. Coral therefore forwards the caller shell's network env on every provider launch (`coral-cli claude`/`codex`, workflow, discuss): `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `FTP_PROXY` (upper- and lower-case), and `NODE_EXTRA_CA_CERTS`. Non-empty values are forwarded verbatim as real environment variables on the `claude`/`codex` broker child; an exported-but-empty variable is omitted so it does not shadow the daemon's own setting. This set is fixed and not user-configurable; volatile per-terminal variables are deliberately excluded so broker identity stays stable across turns.
 
-The forwarded env participates in broker identity, so a changed proxy re-establishes the provider rather than silently reusing a stale one — but the two providers differ in mechanism. Codex carries this env in its provider-server spec, so a different proxy keys a distinct Codex broker process. Claude keeps the one shared broker regardless; the proxy instead enters the session's env hash, and a mismatch forces a fresh session bootstrap on that broker rather than a new broker process.
+The forwarded env participates in provider reuse decisions, so a changed proxy re-establishes provider state rather than silently reusing a stale one — but the providers differ in mechanism. Codex carries this env in its provider-server spec, so a different proxy keys a distinct Codex broker process. Claude carries only `CORAL_CLAUDE_TRANSPORT` in its provider-server spec; network env enters the Claude session env hash, and a mismatch forces a fresh session bootstrap on that broker rather than a new broker process.
 
 ### KB Source Imports
 
@@ -65,6 +66,7 @@ export CORAL_CODEX_EFFORT=high
 export CORAL_DISCUSS_MAX_EPOCHS=3
 export CORAL_KB_PATH=/path/to/my-kb
 export CORAL_KB_ENABLE=0   # boot the daemon without the KB daemon; set to 1 (or unset) to re-enable
+export CORAL_CLAUDE_TRANSPORT=tui   # opt into the PTY transport; unset/default uses claude -p stream-json
 ```
 
 `CORAL_KB_ENABLE` is re-read at daemon startup. Setting it while a daemon is already running takes effect only after a restart — but setting it to `1` and running any `kb …` command triggers that restart automatically, so no manual `coral-cli backend shutdown` is needed.
@@ -181,12 +183,12 @@ Live scratch artifacts:
 
 ## External Dependencies
 
-| Tool        | Purpose                                        |
-| ----------- | ---------------------------------------------- |
-| Codex CLI   | Codex execution                                |
-| Claude CLI  | Claude execution through the PTY broker helper |
-| Node.js 24+ | Runtime                                        |
-| `cmake`     | Native KB addon fallback builds                |
+| Tool        | Purpose                                  |
+| ----------- | ---------------------------------------- |
+| Codex CLI   | Codex execution                          |
+| Claude CLI  | Claude execution through the broker helper |
+| Node.js 24+ | Runtime                                  |
+| `cmake`     | Native KB addon fallback builds          |
 
 ## File Role Summary
 
@@ -195,7 +197,7 @@ Live scratch artifacts:
 hooks/hooks.json                               -> hook registration
 bridge/coral-backend.cjs                       -> backend daemon bundle
 bridge/coral-cli.cjs                           -> CLI bundle
-bridge/coral-claude-appserver.cjs              -> Claude PTY broker helper bundle
+bridge/coral-claude-appserver.cjs              -> Claude broker helper bundle
 bridge/manifest.json                           -> backend bundle hash + build flavor
 
 ~/.coral/run*/coordinator.json                 -> active coordinator discovery record

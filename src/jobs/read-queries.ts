@@ -87,6 +87,7 @@ type JobAppServerRuntimeProjection = {
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
     providerContinuity?: Record<string, unknown>;
+    claudeTransport?: string;
   };
 };
 
@@ -398,6 +399,8 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
     const serverGeneration =
       typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined;
     const providerContinuity = providerMeta?.providerContinuity;
+    const claudeTransport =
+      typeof providerMeta?.claudeTransport === 'string' ? providerMeta.claudeTransport : undefined;
     return {
       transport: 'app-server',
       startTime: parsed.startedAt,
@@ -409,6 +412,7 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
           providerContinuity && typeof providerContinuity === 'object'
             ? (providerContinuity as Record<string, unknown>)
             : undefined,
+        ...(claudeTransport === undefined ? {} : { claudeTransport }),
       },
     };
   }

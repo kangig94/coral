@@ -12,14 +12,13 @@ import {
 } from './document-builder.js';
 import { analyzeOramaSearchQuery } from './search-channels.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
-import {
-  classifyProjectionMismatch,
-  oramaProjectionTokenizerTier,
-  type OramaProjectionIdentityInput,
-  type OramaProjectionMetadata,
-  type OramaProjectionMismatchClassification,
+import { classifyProjectionMismatch, oramaProjectionTokenizerTier } from './artifact-port.js';
+import type {
+  OramaProjectionIdentityInput,
+  OramaProjectionMetadata,
+  OramaProjectionMismatchClassification,
 } from './artifact-port.js';
-import { OramaSnapshotStore, type KbCachedOramaIndex } from './snapshot.js';
+import type { KbCachedOramaIndex, OramaSnapshotStore } from './snapshot.js';
 import { readDeclaredAnalyzers, type OramaAnalyzerLeaseContext, type OramaAnalyzerManager } from './analyzer.js';
 import type { OramaReconcileReason } from './constants.js';
 import { collectRankedOramaSearchCandidates, toRetrievedDocument } from './ranking.js';

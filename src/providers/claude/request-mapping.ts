@@ -1,4 +1,5 @@
 declare const __PLUGIN_ROOT__: string;
+declare const __BUNDLE_DIR__: string | undefined;
 
 import { join } from 'node:path';
 
@@ -15,6 +16,7 @@ import {
   type ClaudeBootstrapSignature,
   type PermissionMode,
 } from './request-prep.js';
+import { claudeTransportEnv, resolveClaudeTransportMode } from './transport-mode.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   brokerSessionKey?: string;
@@ -60,14 +62,16 @@ export function buildClaudeBootstrapSignature(
 }
 
 export function buildClaudeProviderServerSpec(
-  request: Pick<ProviderRequest, 'cwd'>,
+  request: Pick<ProviderRequest, 'cwd'> & { coralEnv?: Record<string, string> },
   storage: Pick<StoragePort, 'existsSync'>,
 ): ProviderServerSpec {
+  const transportMode = resolveClaudeTransportMode(request.coralEnv);
   return {
     provider: 'claude',
     command: process.execPath,
     args: [resolveClaudeBrokerEntrypoint(storage)],
     cwd: request.cwd,
+    env: claudeTransportEnv(transportMode),
     shared: true,
     shutdownCapability: {
       method: 'broker/shutdown',
@@ -159,6 +163,12 @@ export function withClaudeContinuity(
 function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');
+  }
+
+  const activeBundleDir = typeof __BUNDLE_DIR__ === 'string' && __BUNDLE_DIR__.length > 0 ? __BUNDLE_DIR__ : null;
+  const activeBundlePath = activeBundleDir === null ? null : join(activeBundleDir, 'coral-claude-appserver.cjs');
+  if (activeBundlePath !== null && storage.existsSync(activeBundlePath)) {
+    return activeBundlePath;
   }
 
   const bundledPath = join(__PLUGIN_ROOT__, 'bridge', 'coral-claude-appserver.cjs');

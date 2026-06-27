@@ -50,6 +50,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -1062,6 +1063,7 @@ describe('ExecutionService launch', () => {
       command: process.execPath,
       args: ['broker.js'],
       cwd: process.cwd(),
+      env: { [CONTEXT_ENV_KEY.claudeTransport]: 'print' },
       shared: true as const,
     };
     const requestGate = createDeferred<void>();
@@ -1159,6 +1161,7 @@ describe('ExecutionService launch', () => {
         provider: 'claude',
         leaseState: 'acquired',
         serverGeneration: 41,
+        claudeTransport: 'print',
       },
     });
 

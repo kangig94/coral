@@ -5,7 +5,7 @@ import { BackendToolHttpError } from '../transport/http/errors.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
 import { buildErrorEnvelope } from './errors.js';
 import { formatErrorEnvelope } from './format/error.js';
-import { formatLaunch } from './format/jobs.js';
+import { formatLaunch, formatLaunchWaitHint } from './format/jobs.js';
 import { launchAndFollow } from './follow.js';
 import { isJsonObject } from './parse.js';
 import { clearPendingReadStoreNote, flushPendingReadStoreNote } from './read-store.js';
@@ -74,7 +74,7 @@ export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunc
 }
 
 export function emitAcceptedLaunchResponse(decision: AcceptedLaunchResponse): void {
-  process.stdout.write(formatLaunch(decision) + '\n');
+  process.stdout.write(`${formatLaunch(decision)}\n${formatLaunchWaitHint(decision)}\n`);
 }
 
 export function getTerminalContext(): { isTTY: boolean; columns: number } {
