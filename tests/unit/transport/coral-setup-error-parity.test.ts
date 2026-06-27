@@ -185,7 +185,8 @@ async function startHttpServer(ports: HttpHandlerPorts): Promise<{ baseUrl: stri
   const server = createServer((req, res) => {
     void handler(req, res).catch((error) => {
       if (!res.headersSent) {
-        sendJson(res, 500, buildTransportErrorResponse(error).body);
+        const response = buildTransportErrorResponse(error);
+        sendJson(res, response.statusCode, response.body);
         return;
       }
       res.destroy();

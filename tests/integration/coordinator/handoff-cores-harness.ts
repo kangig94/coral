@@ -185,7 +185,6 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
           });
         }),
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
     });
     setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
 

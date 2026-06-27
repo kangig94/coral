@@ -62,6 +62,7 @@ export type TransportKbChildRuntimeHealth = {
   phase: TransportKbChildRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
+  curateRunning?: boolean;
 };
 
 export type TransportKbChildHealthSnapshot = {

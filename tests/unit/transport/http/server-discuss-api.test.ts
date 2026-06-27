@@ -201,7 +201,6 @@ describe('server discuss API', () => {
         kbChildSupervisor: createMockKbChildSupervisor(),
         runStartupRecoveryFn: async () => [],
         getConsumerStuck: () => [],
-        getMutationBlocked: () => ({ blocked: false }),
       });
       setStoreServicesForTest(core.storeServicesRef, createStoreServices(progressStore), { storeDbPath: ':memory:' });
       const liveSessions = [...registry.contexts.entries()].flatMap(([projectRoot, context]) =>

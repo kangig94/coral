@@ -136,6 +136,15 @@ const FORBIDDEN_PREFIXES = [
   'src/workflow/recover.ts',
   'src/jobs/reconcile/',
 ] as const;
+const KB_CHILD_OWNED_TARGETS = new Set([
+  'src/kb/runtime.ts',
+  'src/kb/subsystem.ts',
+  'src/coordinator/expansion/host-factory.ts',
+  'src/coordinator/expansion/lifecycle.ts',
+  'src/coordinator/kb-child/services/reindex.ts',
+  'src/coordinator/kb-child/services/shell.ts',
+  'src/coordinator/kb-child/services/source-import.ts',
+]);
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
@@ -143,6 +152,10 @@ function startsWithAny(value: string, prefixes: readonly string[]): boolean {
 
 function isBroadImportSource(source: string): boolean {
   return COORDINATOR_GLUE_SOURCES.has(source) || startsWithAny(source, BROAD_IMPORT_PREFIXES);
+}
+
+function isKbChildOwnedSource(source: string): boolean {
+  return source.startsWith('src/coordinator/kb-child/') || source.startsWith('src/coordinator/expansion/');
 }
 
 describe('coordinator topology invariants', () => {
@@ -200,6 +213,17 @@ describe('coordinator topology invariants', () => {
         return false;
       }
       return startsWithAny(target, FORBIDDEN_PREFIXES);
+    }).map(({ source, target }) => `${source} -> ${target}`);
+
+    expect(violations).toEqual([]);
+  });
+
+  it('keeps child-owned KB runtime modules out of parent coordinator wiring', () => {
+    const violations = COORDINATOR_EDGES.filter(({ source, target }) => {
+      if (isKbChildOwnedSource(source)) {
+        return false;
+      }
+      return KB_CHILD_OWNED_TARGETS.has(target);
     }).map(({ source, target }) => `${source} -> ${target}`);
 
     expect(violations).toEqual([]);

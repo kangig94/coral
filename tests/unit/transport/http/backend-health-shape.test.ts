@@ -165,6 +165,7 @@ describe('/health typed shape (AC10a)', () => {
         kbWrite: {
           phase: 'disposed',
           initializedAt: 1_700_000_000_056,
+          curateRunning: false,
         },
         lastExit: {
           code: 0,

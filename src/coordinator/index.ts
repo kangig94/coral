@@ -51,18 +51,12 @@ import {
   type KbChildSupervisor,
 } from './kb-child/supervisor.js';
 import type { KbChildEventMessage } from './kb-child/protocol.js';
-import { waitForCorpusReadiness } from './services/kb/readiness.js';
 export { readBoundCorpusConsumerIds, waitForCorpusReadiness } from './services/kb/readiness.js';
 export type { CorpusSnapshotWaiter } from './services/kb/readiness.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  | 'runtime'
-  | 'runStartupRecoveryFn'
-  | 'getConsumerStuck'
-  | 'getMutationBlocked'
-  | 'createStoreServicesFromDbFn'
-  | 'kbChildSupervisor'
+  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbChildSupervisor'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
@@ -381,7 +375,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     disposeLifecycleReactor: () => lifecycleReactor.dispose(),
     createStoreServicesFromDbFn,
     getConsumerStuck: () => getConsumerDriver().stuckConsumers(),
-    getMutationBlocked: () => ({ blocked: false }),
     getTextProjectionState: textProjectionHealth.read,
     kbChildSupervisor,
     createExecutionService: (ctx, deps) => {
@@ -396,17 +389,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       return providedCreateExecutionService
         ? providedCreateExecutionService(ctx, wiredDeps)
         : new ExecutionService(ctx, wiredDeps);
-    },
-    waitForKbSourceImportReadiness: ({ kb, readiness, snapshot }) => {
-      const driver = getConsumerDriver();
-      return waitForCorpusReadiness({
-        kb,
-        readiness,
-        snapshot,
-        timeoutMs: bootFreshnessTimeoutMs,
-        waitFresh: ({ consumerId, snapshot: target, timeoutMs }) =>
-          driver.waitFreshUntil('corpus', target, consumerId, timeoutMs),
-      });
     },
     runStartupRecoveryFn: async ({
       identity,

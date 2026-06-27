@@ -291,9 +291,6 @@ describe('incumbent handoff reset authority', () => {
       getConsumerStuck: () => {
         throw new Error('getConsumerStuck must not run before store services exist');
       },
-      getMutationBlocked: () => {
-        throw new Error('getMutationBlocked must not run before store services exist');
-      },
     });
 
     try {

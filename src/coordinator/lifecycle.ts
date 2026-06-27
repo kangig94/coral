@@ -635,13 +635,15 @@ async function runLifecycleStartup({
 
     idleTimer.startWatching(
       () => {
+        const childCurateRunning = kbChildSupervisor?.read().kbWrite?.curateRunning === true;
         return (
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
           !recoveryCoordinator.isIdleBlocked() &&
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&
-          !hooks.onIdleCheck()
+          !hooks.onIdleCheck() &&
+          !childCurateRunning
         );
       },
       (reason) => {

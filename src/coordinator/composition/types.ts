@@ -23,7 +23,6 @@ import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
-import type { KbSourceImportReadinessWaiter } from '../kb-child/services/source-import.js';
 import type { KbJobRecorder } from '../services/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
@@ -73,7 +72,6 @@ export type CoordinatorCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
-  waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
   kbChildSupervisor: KbChildSupervisor;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
@@ -82,12 +80,6 @@ export type CoordinatorCoreOptions = {
    * consumers never appear here (no inflight after stop).
    */
   getConsumerStuck: () => NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']>;
-  /**
-   * Reports the mutation lock state when a deadline has aborted a
-   * mutation but `fn` has not yet settled. Wired against
-   * `kbRuntime.mutationLockDiagnostics()`.
-   */
-  getMutationBlocked: () => { blocked: false } | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
   getTextProjectionState?: () => HealthSnapshot['textProjectionState'];
   disposeLifecycleReactor?: () => void;
   onStopped?: () => void;

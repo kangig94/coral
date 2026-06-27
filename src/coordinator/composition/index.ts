@@ -13,6 +13,7 @@ import type { ServerResponse } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
@@ -37,6 +38,7 @@ import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../lifecycle.js';
@@ -313,13 +315,40 @@ function createKbChildMutationPort(
 }
 
 function createKbChildExpansionRpc(kbChildSupervisor: KbChildSupervisor): ExpansionRequestPort {
+  const errorContext = (detail: unknown): Record<string, unknown> | undefined => {
+    if (detail === undefined) {
+      return undefined;
+    }
+    return isRecord(detail) ? detail : { detail };
+  };
+  const errorRemediation = (code: string): string => {
+    switch (code) {
+      case 'invalid_request':
+        return "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
+      case 'kb_disabled':
+        return 'Enable the KB child runtime and restart Coral, then retry.';
+      case 'kb_initializing':
+      case 'kb_offline':
+      case 'kb_unavailable':
+        return 'Wait for the KB child runtime to become available or restart Coral, then retry.';
+      case 'kb_child_protocol_error':
+        return 'Restart Coral and retry. If this persists, check the coordinator logs.';
+      default:
+        return 'Retry the expansion command. If this persists, check the coordinator logs.';
+    }
+  };
   const run = async <T>(
     method: Parameters<KbChildSupervisor['expansionRpc']>[0]['method'],
     args: unknown,
   ): Promise<T> => {
     const result = await kbChildSupervisor.expansionRpc({ method, args });
     if (!result.ok) {
-      throw new Error(result.message);
+      throw new CoralSetupError({
+        code: result.code,
+        userMessage: result.message,
+        remediation: result.remediation ?? errorRemediation(result.code),
+        context: errorContext(result.detail),
+      });
     }
     return result.data as T;
   };
@@ -769,23 +798,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
         const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
           storeServices === null ? [] : (options.getConsumerStuck() ?? []);
-        const mutationBlockedSnapshot =
-          storeServices === null ? { blocked: false as const } : options.getMutationBlocked();
         const diagnostics: {
-          mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
           consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
         } = {};
-        if (mutationBlockedSnapshot.blocked) {
-          diagnostics.mutationBlocked = {
-            owner: mutationBlockedSnapshot.owner,
-            ageMs: mutationBlockedSnapshot.ageMs,
-            signaledAtMs: mutationBlockedSnapshot.signaledAtMs,
-          };
-        }
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
         }
-        const hasDiagnostics = diagnostics.mutationBlocked !== undefined || diagnostics.consumerStuck !== undefined;
+        const hasDiagnostics = diagnostics.consumerStuck !== undefined;
 
         return {
           status: legacyStatus,
@@ -872,7 +891,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     void handleRequest(req, res).catch((error) => {
       world.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
-        sendJson(res, 500, buildTransportErrorResponse(error).body);
+        const response = buildTransportErrorResponse(error);
+        sendJson(res, response.statusCode, response.body);
         return;
       }
       res.destroy();

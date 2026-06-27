@@ -48,7 +48,6 @@ function createHarness() {
       runtime,
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
       kbChildSupervisor: createMockKbChildSupervisor(),
     },
     runtime,

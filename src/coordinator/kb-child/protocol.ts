@@ -110,6 +110,7 @@ export type KbChildKbReadHealth = {
   phase: KbChildRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
+  curateRunning?: boolean;
 };
 
 export type KbChildReadyMessage = {
@@ -270,7 +271,8 @@ export function isKbChildKbReadHealth(value: unknown): value is KbChildKbReadHea
       record.phase === 'disposing' ||
       record.phase === 'disposed') &&
     (record.initializedAt === undefined || isNonNegativeFiniteNumber(record.initializedAt)) &&
-    (record.lastError === undefined || typeof record.lastError === 'string')
+    (record.lastError === undefined || typeof record.lastError === 'string') &&
+    (record.curateRunning === undefined || typeof record.curateRunning === 'boolean')
   );
 }
 

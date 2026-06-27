@@ -91,7 +91,6 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
       backendNamespace: 'world-test-namespace',
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
       kbChildSupervisor: createMockKbChildSupervisor(),
       launchCoordinator: {} as never,
       providerHostManager: {

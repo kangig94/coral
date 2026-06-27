@@ -7,6 +7,7 @@ import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { AbortError, throwIfAborted } from '../../runtime/abort.js';
+import { serializeCoralSetupError } from '../../runtime/errors.js';
 import { kbRuntimeDir } from '../../kb/paths.js';
 import { createKbRuntime } from '../../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../../kb/curate/scheduler.js';
@@ -320,6 +321,22 @@ function notifyChildCorpusDeferred(getDriver: () => ConsumerDriver | null, publi
   void Promise.resolve().then(() => {
     notifyChildCorpus(getDriver(), deferredPublication);
   });
+}
+
+function expansionRpcError(error: unknown): KbChildExpansionResult {
+  const setupError = serializeCoralSetupError(error);
+  if (setupError !== null) {
+    return {
+      ok: false,
+      code: setupError.code,
+      message: setupError.userMessage,
+      remediation: setupError.remediation,
+      ...(setupError.context === undefined ? {} : { detail: setupError.context }),
+    };
+  }
+
+  const detail = error instanceof Error ? { message: error.message } : error;
+  return kbError('kb_error', errorMessage(error), detail);
 }
 
 function waitAbortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, stage: string): Promise<T> {
@@ -681,19 +698,23 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
       if (phase === 'disposing' || phase === 'disposed') {
         return disposedError();
       }
-      const initialized = await init();
-      const rpc = createExpansionRpc(initialized.expansionLifecycleService);
-      switch (request.method) {
-        case 'equipExpansion':
-          return { ok: true, data: await rpc.equipExpansion(request.args as never) };
-        case 'unequipExpansion':
-          return { ok: true, data: await rpc.unequipExpansion(request.args as never) };
-        case 'removeExpansionCatalog':
-          return { ok: true, data: await rpc.removeExpansionCatalog(request.args as never) };
-        case 'listExpansion':
-          return { ok: true, data: await rpc.listExpansion((request.args ?? {}) as never) };
-        case 'readBinding':
-          return { ok: true, data: await rpc.readBinding(request.args as never) };
+      try {
+        const initialized = await init();
+        const rpc = createExpansionRpc(initialized.expansionLifecycleService);
+        switch (request.method) {
+          case 'equipExpansion':
+            return { ok: true, data: await rpc.equipExpansion(request.args as never) };
+          case 'unequipExpansion':
+            return { ok: true, data: await rpc.unequipExpansion(request.args as never) };
+          case 'removeExpansionCatalog':
+            return { ok: true, data: await rpc.removeExpansionCatalog(request.args as never) };
+          case 'listExpansion':
+            return { ok: true, data: await rpc.listExpansion((request.args ?? {}) as never) };
+          case 'readBinding':
+            return { ok: true, data: await rpc.readBinding(request.args as never) };
+        }
+      } catch (error: unknown) {
+        return expansionRpcError(error);
       }
     },
     abortJobs(jobIds) {
@@ -709,10 +730,12 @@ export function createKbChildWriteRuntimeHost(options: KbChildWriteRuntimeOption
     },
     dispose,
     health() {
+      const activeState = state;
       return {
         phase,
         ...(initializedAt === undefined ? {} : { initializedAt }),
         ...(lastError === undefined ? {} : { lastError }),
+        ...(activeState === null ? {} : { curateRunning: activeState.kbSubsystem.curateScheduler.isRunning() }),
       };
     },
   };

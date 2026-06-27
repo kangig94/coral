@@ -338,6 +338,41 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
   });
 
+  it('does not report passive idle while the KB child curate scheduler is running', async () => {
+    const { deps } = makeLifecycleDeps();
+    const childHealth = {
+      enabled: true,
+      phase: 'online' as const,
+      generation: 1,
+      pid: 123,
+      startedAt: 1_000,
+      readyAt: 1_001,
+      kbWrite: { phase: 'ready' as const, curateRunning: true },
+    };
+    (deps as { kbChildSupervisor: LifecycleDeps['kbChildSupervisor'] }).kbChildSupervisor = {
+      read: () => childHealth,
+      start: async () => childHealth,
+      probe: async () => childHealth,
+      warmup: async () => childHealth,
+      readKb: vi.fn(),
+      mutateKb: vi.fn(),
+      expansionRpc: vi.fn(),
+      stop: async () => childHealth,
+      restart: async () => childHealth,
+      dispose: async () => undefined,
+    } as never;
+    const lifecycle = createLifecycle(deps);
+
+    await lifecycle.start();
+
+    const checkIdle = vi.mocked(deps.idleTimer.startWatching).mock.calls[0]?.[0];
+    expect(checkIdle).toBeDefined();
+    expect(checkIdle?.()).toBe(false);
+
+    childHealth.kbWrite.curateRunning = false;
+    expect(checkIdle?.()).toBe(true);
+  });
+
   it('keeps storeDb live through shutdown sequence and closes it only in the finalizer', async () => {
     const { deps, servicesRef } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);

@@ -50,6 +50,7 @@ export type TransportKbChildRuntimeHealth = {
   phase: TransportKbChildRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
+  curateRunning?: boolean;
 };
 
 export type TransportKbChildHealthSnapshot = {
@@ -256,7 +257,8 @@ function isKbChildRuntimeHealth(value: unknown): value is TransportKbChildRuntim
       value.phase === 'disposing' ||
       value.phase === 'disposed') &&
     (value.initializedAt === undefined || isNonNegativeFiniteNumber(value.initializedAt)) &&
-    (value.lastError === undefined || typeof value.lastError === 'string')
+    (value.lastError === undefined || typeof value.lastError === 'string') &&
+    (value.curateRunning === undefined || typeof value.curateRunning === 'boolean')
   );
 }
 

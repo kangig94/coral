@@ -134,7 +134,6 @@ describe('expansion RPC before store services exist', () => {
       kbChildSupervisor: createMockKbChildSupervisor({ expansionRpc }),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
     });
 
     const port = await listen(core.server);
@@ -158,5 +157,67 @@ describe('expansion RPC before store services exist', () => {
       },
     });
     expect(expansionRpc).toHaveBeenCalledWith({ method: 'equipExpansion', args: { name: 'needle' } });
+  });
+
+  it.each([
+    {
+      code: 'kb_unavailable',
+      statusCode: 503,
+      message: 'KB child expansion request skipped: recovery ended in failed.',
+      remediation: 'Wait for the KB child runtime to become available.',
+      detail: { reason: 'kb_child_unavailable' },
+    },
+    {
+      code: 'unknown_expansion',
+      statusCode: 500,
+      message: 'The expansion needle is not registered in the Coral catalog.',
+      remediation: "Run 'coral-cli expansion list' to see available expansions.",
+      detail: { name: 'needle' },
+    },
+  ])('surfaces child expansion $code failures without collapsing to internal_error', async (failure) => {
+    const token = 'test-token';
+    const expansionRpc = vi.fn(async () => ({
+      ok: false as const,
+      code: failure.code,
+      message: failure.message,
+      remediation: failure.remediation,
+      detail: failure.detail,
+    }));
+    const core = createCoordinatorCore({
+      runtime: makeRuntime(),
+      bootSnapshot: {
+        version: 'test-version',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+        instanceId: 'test-instance',
+        token,
+        now: () => 1_000,
+        log: () => {},
+      },
+      createServerFn: (handler) => createServer(handler),
+      kbChildSupervisor: createMockKbChildSupervisor({ expansionRpc }),
+      runStartupRecoveryFn: async () => [],
+      getConsumerStuck: () => [],
+    });
+
+    const port = await listen(core.server);
+    const response = await fetch(`http://127.0.0.1:${port}/coordinator/expansion`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-coral-backend-token': token,
+      },
+      body: JSON.stringify({ name: 'needle' }),
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(failure.statusCode);
+    expect(body).toMatchObject({
+      code: failure.code,
+      message: failure.message,
+      userMessage: failure.message,
+      remediation: failure.remediation,
+      context: failure.detail,
+    });
   });
 });
