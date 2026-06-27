@@ -167,8 +167,10 @@ export function createDiscussRuntime({
     onShutdown: async (mode: 'handoff' | 'hard', signal: AbortSignal) => {
       const discussSourcesAtShutdown = mode === 'hard' ? [...knownDiscussSources(readHelpersDeps)] : [];
 
-      await clearAllDiscuss(world.discussRegistry, mode, (ctx, sessionId, session) =>
-        discussRecovery.persistAbortEndForShutdown(ctx, sessionId, session, { signal }),
+      await clearAllDiscuss(
+        world.discussRegistry,
+        mode,
+        (ctx, sessionId, session) => discussRecovery.persistAbortEndForShutdown(ctx, sessionId, session, { signal }),
         { signal },
       );
 

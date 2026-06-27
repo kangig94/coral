@@ -2,7 +2,12 @@ import { search as oramaSearch } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
 import { insertOramaDocumentsCooperatively } from '#src/engines/orama/backend.js';
-import { createOramaDb, normalizeOramaTerm, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
+import {
+  createOramaDb,
+  normalizeOramaTerm,
+  toOramaDocument,
+  type KbOramaDocument,
+} from '#src/engines/orama/document-builder.js';
 
 function note(slug: string, body: string): KbOramaDocument {
   return toOramaDocument({

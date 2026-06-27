@@ -134,10 +134,7 @@ describe('starting-incumbent transport.shutdown handoff', () => {
 
     // Contender sends transport.shutdown.
     const client = createIpcClient(socketPath);
-    const result = await client.shutdown<{ status: string }>(
-      { shutdownToken: 'shutdown-token' },
-      { timeoutMs: 1_000 },
-    );
+    const result = await client.shutdown<{ status: string }>({ shutdownToken: 'shutdown-token' }, { timeoutMs: 1_000 });
     expect(result).toMatchObject({ status: 'draining' });
     // The callback ran synchronously alongside requestDrain.
     expect(onShutdownCalled).toBe(true);

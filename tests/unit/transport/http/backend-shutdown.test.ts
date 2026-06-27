@@ -49,8 +49,7 @@ describe('shutdownBackend', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(
-        async () =>
-          new Response(JSON.stringify({ status: 'draining', instanceId: 'test-instance' }), { status: 200 }),
+        async () => new Response(JSON.stringify({ status: 'draining', instanceId: 'test-instance' }), { status: 200 }),
       ),
     );
   });

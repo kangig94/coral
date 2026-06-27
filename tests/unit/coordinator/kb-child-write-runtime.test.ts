@@ -162,9 +162,9 @@ describe('KB child write runtime', () => {
         expect(readImportPath(importResult.data)).toBe(
           `${runtime.paths.coral.corpus.sourcesDir}/child-projection-readiness.md`,
         );
-        expect(parseSourceFrontmatter(runtime.storage.readFileSync(readImportPath(importResult.data), 'utf-8'))).toEqual(
-          expect.objectContaining({ title: 'Child Projection Readiness' }),
-        );
+        expect(
+          parseSourceFrontmatter(runtime.storage.readFileSync(readImportPath(importResult.data), 'utf-8')),
+        ).toEqual(expect.objectContaining({ title: 'Child Projection Readiness' }));
       }
       expect(runtime.storage.readdirSync(runtime.paths.coral.corpus.sourcesDir)).toContain(
         'child-projection-readiness.md',
@@ -174,7 +174,9 @@ describe('KB child write runtime', () => {
         expect(Object.keys(kbSubsystem.kb.readIndexOrEmpty().entries)).toContain('source:child-projection-readiness');
         const projectionInput = await kbSubsystem.kb.corpusProjectionReader.prepareCurrentProjectionInput();
         expect(projectionInput.records.map((record) => record.entry.slug)).toContain('child-projection-readiness');
-        const metadata = JSON.parse(runtime.storage.readFileSync(oramaIndexMetadataPath(kbSubsystem.kb.runtimeDir), 'utf-8')) as {
+        const metadata = JSON.parse(
+          runtime.storage.readFileSync(oramaIndexMetadataPath(kbSubsystem.kb.runtimeDir), 'utf-8'),
+        ) as {
           entryManifest?: Record<string, unknown>;
         };
         expect(Object.keys(metadata.entryManifest ?? {})).toContain('source:child-projection-readiness');

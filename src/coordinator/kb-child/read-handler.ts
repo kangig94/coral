@@ -73,10 +73,7 @@ type KbChildReadHandlerState = {
 
 type KbChildWriteRuntimeHost = {
   withKb<T>(
-    fn: (state: {
-      kbSubsystem: Parameters<typeof handleKbUpdate>[1];
-      runtime: KbQueryRuntime;
-    }) => Promise<T> | T,
+    fn: (state: { kbSubsystem: Parameters<typeof handleKbUpdate>[1]; runtime: KbQueryRuntime }) => Promise<T> | T,
   ): Promise<T>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
@@ -192,7 +189,9 @@ function failed(error: unknown): KbToolResult {
   return kbError('kb_error', errorMessage(error), error instanceof Error ? { message: error.message } : error);
 }
 
-function getWriteRuntimeOrError(writeRuntime: KbChildWriteRuntimeHost | undefined): KbChildWriteRuntimeHost | KbToolResult {
+function getWriteRuntimeOrError(
+  writeRuntime: KbChildWriteRuntimeHost | undefined,
+): KbChildWriteRuntimeHost | KbToolResult {
   if (writeRuntime === undefined) {
     return kbError('kb_unavailable', 'KB child write runtime is not configured.');
   }

@@ -147,9 +147,9 @@ describe('transport HTTP query parsing', () => {
     expect(kbMemoListQuerySchema.safeParse({ projectRoot: '/repo/project', owner: oversizedFilter }).success).toBe(
       false,
     );
-    expect(
-      kbMemoDeleteQuerySchema.safeParse({ projectRoot: '/repo/project', pattern: oversizedFilter }).success,
-    ).toBe(false);
+    expect(kbMemoDeleteQuerySchema.safeParse({ projectRoot: '/repo/project', pattern: oversizedFilter }).success).toBe(
+      false,
+    );
     expect(kbNoteReadRequestSchema.safeParse({ slug: oversizedSlug }).success).toBe(false);
   });
 

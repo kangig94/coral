@@ -109,15 +109,19 @@ export class DefaultProviderHostManager implements ProviderHostManager {
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<void> {
-    await closeAllProviderServerEntries(this.entries, 'drained', (entry, detail, options) =>
-      this.closeProviderServerEntry(entry, detail, options),
+    await closeAllProviderServerEntries(
+      this.entries,
+      'drained',
+      (entry, detail, options) => this.closeProviderServerEntry(entry, detail, options),
       signal === undefined ? {} : { signal },
     );
   }
 
   async shutdown(signal?: AbortSignal): Promise<void> {
-    await closeAllProviderServerEntries(this.entries, 'shut down', (entry, detail, options) =>
-      this.closeProviderServerEntry(entry, detail, options),
+    await closeAllProviderServerEntries(
+      this.entries,
+      'shut down',
+      (entry, detail, options) => this.closeProviderServerEntry(entry, detail, options),
       signal === undefined ? {} : { signal },
     );
   }

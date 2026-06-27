@@ -278,10 +278,13 @@ export function buildCorpusScanView(kb: {
   );
 }
 
-function readEntityGraphScanInput(kb: {
-  corpusStorage: CorpusStorage;
-  entityGraphPath(): string;
-}, limits: CorpusScanLimits): CorpusEntityGraphScanInput | null {
+function readEntityGraphScanInput(
+  kb: {
+    corpusStorage: CorpusStorage;
+    entityGraphPath(): string;
+  },
+  limits: CorpusScanLimits,
+): CorpusEntityGraphScanInput | null {
   const path = kb.entityGraphPath();
   try {
     const sizeBytes = kb.corpusStorage.statSync(path).size;

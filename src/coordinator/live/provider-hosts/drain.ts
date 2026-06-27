@@ -87,7 +87,10 @@ export async function closeProviderServerEntry(
     return;
   }
 
-  const spawnedHandle = await waitForPendingSpawn(pendingSpawn.catch(() => null), signal);
+  const spawnedHandle = await waitForPendingSpawn(
+    pendingSpawn.catch(() => null),
+    signal,
+  );
   if (spawnedHandle) {
     if (signal !== undefined) {
       throwIfAborted(signal, 'provider_host_shutdown_spawned_handle');

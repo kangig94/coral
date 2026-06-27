@@ -506,21 +506,19 @@ export class ExpansionLifecycleService {
     return removal === 'missing' ? { status: 'unknown' } : { status: 'removed' };
   }
 
-  private async runSerial<T>(
-    name: string,
-    work: () => Promise<T>,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<T> {
+  private async runSerial<T>(name: string, work: () => Promise<T>, options: { signal?: AbortSignal } = {}): Promise<T> {
     const previous = this.engineMutex.get(name) ?? Promise.resolve();
     // Tail tracks "this call's completion ignoring its outcome" so the next
     // chained caller waits for serialization regardless of whether `work`
     // resolved or threw.
-    const tail = previous.catch(() => {}).then(() => {
-      if (options.signal !== undefined) {
-        throwIfAborted(options.signal, 'expansion_serial_work');
-      }
-      return work();
-    });
+    const tail = previous
+      .catch(() => {})
+      .then(() => {
+        if (options.signal !== undefined) {
+          throwIfAborted(options.signal, 'expansion_serial_work');
+        }
+        return work();
+      });
     const tracked = tail.then(
       () => {},
       () => {},
@@ -752,20 +750,24 @@ export class ExpansionLifecycleService {
       if (signal !== undefined) {
         throwIfAborted(signal, 'expansion_shutdown_engine');
       }
-      await this.runSerial(id, async () => {
-        if (signal !== undefined) {
-          throwIfAborted(signal, 'expansion_shutdown_engine_serial');
-        }
-        const scopes = this.scopes.get(id);
-        if (scopes === undefined || scopes.length === 0) {
-          return;
-        }
-        this.scopes.delete(id);
-        // LIFO disposal of chained scopes for this engine.
-        for (let index = scopes.length - 1; index >= 0; index -= 1) {
-          await disposeExpansionScope(scopes[index], signal === undefined ? {} : { signal });
-        }
-      }, signal === undefined ? {} : { signal });
+      await this.runSerial(
+        id,
+        async () => {
+          if (signal !== undefined) {
+            throwIfAborted(signal, 'expansion_shutdown_engine_serial');
+          }
+          const scopes = this.scopes.get(id);
+          if (scopes === undefined || scopes.length === 0) {
+            return;
+          }
+          this.scopes.delete(id);
+          // LIFO disposal of chained scopes for this engine.
+          for (let index = scopes.length - 1; index >= 0; index -= 1) {
+            await disposeExpansionScope(scopes[index], signal === undefined ? {} : { signal });
+          }
+        },
+        signal === undefined ? {} : { signal },
+      );
     }
   }
 

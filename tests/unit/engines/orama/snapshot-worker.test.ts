@@ -123,7 +123,9 @@ describe('Orama snapshot artifact worker', () => {
 
     const metadata = await store.persistAsync(snapshot, db, { tokenizerIdentity: 'intl-baseline' });
     const artifactRaw = readFileSync(oramaIndexPath(root), 'utf-8');
-    const persistedMetadata = JSON.parse(readFileSync(oramaIndexMetadataPath(root), 'utf-8')) as OramaProjectionMetadata;
+    const persistedMetadata = JSON.parse(
+      readFileSync(oramaIndexMetadataPath(root), 'utf-8'),
+    ) as OramaProjectionMetadata;
 
     expect(files.textWrites).toEqual([oramaIndexPath(root), oramaIndexMetadataPath(root)]);
     expect(files.jsonWrites).toEqual([]);

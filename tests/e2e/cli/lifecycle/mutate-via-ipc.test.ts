@@ -192,10 +192,7 @@ async function shutdownBackend(record: CoordinatorDiscoveryRecord | null): Promi
   }
 
   try {
-    await createIpcClient(record.socketPath).shutdown(
-      { shutdownToken: record.shutdownToken },
-      { timeoutMs: 5_000 },
-    );
+    await createIpcClient(record.socketPath).shutdown({ shutdownToken: record.shutdownToken }, { timeoutMs: 5_000 });
   } catch {
     try {
       process.kill(record.pid, 'SIGTERM');

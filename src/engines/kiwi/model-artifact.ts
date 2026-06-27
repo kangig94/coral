@@ -446,9 +446,7 @@ function arrayBufferForWorker(buffer: Buffer): ArrayBuffer {
   return copy.buffer;
 }
 
-function prepareKiwiModelWriteWorkerFiles(
-  modelFiles: ReadonlyMap<KiwiModelFileName, Buffer>,
-): {
+function prepareKiwiModelWriteWorkerFiles(modelFiles: ReadonlyMap<KiwiModelFileName, Buffer>): {
   readonly files: readonly KiwiModelWriteWorkerFile[];
   readonly transferList: ArrayBuffer[];
 } {

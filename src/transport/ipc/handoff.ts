@@ -140,7 +140,11 @@ export async function requestIncumbentShutdown(opts: {
     throw new IncumbentMatchesError(opts.desired);
   }
 
-  if (typeof opts.shutdownToken === 'string' && opts.shutdownToken.length > 0 && remainingBudget(deadlineMs, timePort) > 0) {
+  if (
+    typeof opts.shutdownToken === 'string' &&
+    opts.shutdownToken.length > 0 &&
+    remainingBudget(deadlineMs, timePort) > 0
+  ) {
     shutdownAttempted = true;
     try {
       await client.shutdown<unknown>(
