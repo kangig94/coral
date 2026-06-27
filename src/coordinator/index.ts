@@ -46,9 +46,11 @@ import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import {
   createDefaultKbDaemonSupervisor,
   createDisabledKbDaemonSupervisor,
+  type KbDaemonCurateAssistantHandler,
   type KbDaemonSupervisor,
 } from './live/kb-daemon-supervisor.js';
 import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
+import { runClaudeOneShotTurn } from '../providers/claude/one-shot.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -229,6 +231,28 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
   let handleKbDaemonEvent: ((message: KbDaemonEventMessage) => void) | null = null;
+  const completeKbDaemonCurateAssistant: KbDaemonCurateAssistantHandler = (request, { signal }) => {
+    const activeCore = core;
+    if (activeCore === null) {
+      throw documentedCoralSetupError('startup_not_ready');
+    }
+    return runClaudeOneShotTurn(
+      {
+        storage: runtime.storage,
+        env: runtime.env,
+        ids: runtime.ids,
+        acquireServer: (spec, options) => activeCore.providerHostManager.acquireServer(spec, options),
+      },
+      {
+        cwd: runtime.env.cwd(),
+        prompt: request.prompt,
+        ...(request.model === undefined ? {} : { model: request.model }),
+        ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
+        controllerEnv: { ...runtime.env.coralSnapshot() },
+        signal,
+      },
+    );
+  };
   const kbDaemonSupervisor = (() => {
     if (coreOptions.kbDaemonSupervisor) {
       return coreOptions.kbDaemonSupervisor;
@@ -249,6 +273,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       ...(coreOptions.bootSnapshot?.bundleHash === undefined
         ? {}
         : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
+      curateAssistant: completeKbDaemonCurateAssistant,
       onEvent: (message) => handleKbDaemonEvent?.(message),
       log: (message) => backendLog.warn(message),
     });

@@ -2,6 +2,8 @@ export const KB_DAEMON_READY_MESSAGE = 'coral.kb_daemon.ready';
 export const KB_DAEMON_REQUEST_MESSAGE = 'coral.kb_daemon.request';
 export const KB_DAEMON_RESPONSE_MESSAGE = 'coral.kb_daemon.response';
 export const KB_DAEMON_EVENT_MESSAGE = 'coral.kb_daemon.event';
+export const KB_DAEMON_PARENT_REQUEST_MESSAGE = 'coral.kb_daemon.parent_request';
+export const KB_DAEMON_PARENT_RESPONSE_MESSAGE = 'coral.kb_daemon.parent_response';
 
 export type KbDaemonRequestMethod =
   | 'health'
@@ -12,6 +14,21 @@ export type KbDaemonRequestMethod =
   | 'kb.jobs'
   | 'kb.warmup'
   | 'expansion.rpc';
+
+export type KbDaemonParentRequestMethod = 'curate.assistant.complete' | 'curate.assistant.cancel';
+
+export const KB_DAEMON_CURATE_ASSISTANT_PURPOSES = [
+  'classification',
+  'principle-discovery',
+  'community-summary',
+  'git-conflict-resolution',
+] as const;
+
+export type KbDaemonCurateAssistantPurpose = (typeof KB_DAEMON_CURATE_ASSISTANT_PURPOSES)[number];
+
+export const KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES = ['default', 'auto', 'bypassPermissions'] as const;
+
+export type KbDaemonCurateAssistantPermissionMode = (typeof KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES)[number];
 
 export const KB_DAEMON_KB_READ_METHODS = [
   'readSearch',
@@ -83,6 +100,18 @@ export type KbDaemonExpansionRequest = {
   args?: unknown;
 };
 
+export type KbDaemonCurateAssistantCompleteRequest = {
+  prompt: string;
+  purpose: KbDaemonCurateAssistantPurpose;
+  model?: string;
+  permissionMode?: KbDaemonCurateAssistantPermissionMode;
+};
+
+export type KbDaemonCurateAssistantCancelRequest = {
+  requestId: string;
+  reason?: string;
+};
+
 export type KbDaemonAbortRequest = {
   jobIds: string[];
 };
@@ -142,6 +171,27 @@ export type KbDaemonResponseMessage =
       error: { message: string };
     };
 
+export type KbDaemonParentRequestMessage = {
+  type: typeof KB_DAEMON_PARENT_REQUEST_MESSAGE;
+  id: string;
+  method: KbDaemonParentRequestMethod;
+  params?: unknown;
+};
+
+export type KbDaemonParentResponseMessage =
+  | {
+      type: typeof KB_DAEMON_PARENT_RESPONSE_MESSAGE;
+      id: string;
+      ok: true;
+      result: unknown;
+    }
+  | {
+      type: typeof KB_DAEMON_PARENT_RESPONSE_MESSAGE;
+      id: string;
+      ok: false;
+      error: { message: string };
+    };
+
 export type KbDaemonEventMessage =
   | {
       type: typeof KB_DAEMON_EVENT_MESSAGE;
@@ -158,6 +208,8 @@ export type KbDaemonControlMessage =
   | KbDaemonReadyMessage
   | KbDaemonRequestMessage
   | KbDaemonResponseMessage
+  | KbDaemonParentRequestMessage
+  | KbDaemonParentResponseMessage
   | KbDaemonEventMessage;
 
 export type KbDaemonHealthResult = {
@@ -245,6 +297,36 @@ export function isKbDaemonResponseMessage(value: unknown): value is KbDaemonResp
   return typeof (record.error as { message?: unknown }).message === 'string';
 }
 
+export function isKbDaemonParentRequestMessage(value: unknown): value is KbDaemonParentRequestMessage {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.type === KB_DAEMON_PARENT_REQUEST_MESSAGE &&
+    typeof record.id === 'string' &&
+    record.id.length > 0 &&
+    (record.method === 'curate.assistant.complete' || record.method === 'curate.assistant.cancel')
+  );
+}
+
+export function isKbDaemonParentResponseMessage(value: unknown): value is KbDaemonParentResponseMessage {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.type !== KB_DAEMON_PARENT_RESPONSE_MESSAGE || typeof record.id !== 'string' || record.id.length === 0) {
+    return false;
+  }
+  if (record.ok === true) {
+    return true;
+  }
+  if (record.ok !== false || record.error === null || typeof record.error !== 'object') {
+    return false;
+  }
+  return typeof (record.error as { message?: unknown }).message === 'string';
+}
+
 export function isKbDaemonHealthResult(value: unknown): value is KbDaemonHealthResult {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -302,6 +384,21 @@ export function isKbDaemonExpansionMethod(value: unknown): value is KbDaemonExpa
   return typeof value === 'string' && KB_DAEMON_EXPANSION_METHODS.includes(value as KbDaemonExpansionMethod);
 }
 
+export function isKbDaemonCurateAssistantPurpose(value: unknown): value is KbDaemonCurateAssistantPurpose {
+  return (
+    typeof value === 'string' && KB_DAEMON_CURATE_ASSISTANT_PURPOSES.includes(value as KbDaemonCurateAssistantPurpose)
+  );
+}
+
+export function isKbDaemonCurateAssistantPermissionMode(
+  value: unknown,
+): value is KbDaemonCurateAssistantPermissionMode {
+  return (
+    typeof value === 'string' &&
+    KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES.includes(value as KbDaemonCurateAssistantPermissionMode)
+  );
+}
+
 export function isKbDaemonKbReadRequest(value: unknown): value is KbDaemonKbReadRequest {
   if (value === null || typeof value !== 'object') {
     return false;
@@ -324,6 +421,34 @@ export function isKbDaemonExpansionRequest(value: unknown): value is KbDaemonExp
   }
   const record = value as Record<string, unknown>;
   return isKbDaemonExpansionMethod(record.method);
+}
+
+export function isKbDaemonCurateAssistantCompleteRequest(
+  value: unknown,
+): value is KbDaemonCurateAssistantCompleteRequest {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.prompt === 'string' &&
+    record.prompt.length > 0 &&
+    isKbDaemonCurateAssistantPurpose(record.purpose) &&
+    (record.model === undefined || typeof record.model === 'string') &&
+    (record.permissionMode === undefined || isKbDaemonCurateAssistantPermissionMode(record.permissionMode))
+  );
+}
+
+export function isKbDaemonCurateAssistantCancelRequest(value: unknown): value is KbDaemonCurateAssistantCancelRequest {
+  if (value === null || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.requestId === 'string' &&
+    record.requestId.length > 0 &&
+    (record.reason === undefined || typeof record.reason === 'string')
+  );
 }
 
 function isKbDaemonKbResult(value: unknown): value is KbDaemonKbReadResult {

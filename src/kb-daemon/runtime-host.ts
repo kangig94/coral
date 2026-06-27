@@ -12,6 +12,7 @@ import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import { runCommunitySummaryAgent } from '../kb/curate/community/summary-agent.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import { cleanupSourceImportRuntimeArtifacts } from '../kb/ops/source/import.js';
 import type { KbCorpusPublication, KbRuntime } from '../kb/contract.js';
@@ -55,6 +56,7 @@ type KbDaemonWriteRuntimeOptions = {
   db?: WritableDatabase;
   version?: string;
   now?: () => number;
+  curateAssistant?: CurateAssistantPort;
   onJournalEvents?: (appended: readonly AppendedEvent[]) => void;
   onCorpusMutation?: (publication: KbCorpusPublication) => void;
 };
@@ -119,10 +121,10 @@ function createRuntime(pluginRoot: string): Runtime {
   return createRealRuntime(readBuildFlavor(pluginRoot));
 }
 
-function createDaemonCurateAssistant(): CurateAssistantPort {
+function createUnavailableCurateAssistant(): CurateAssistantPort {
   return {
     async complete() {
-      throw new Error('KB daemon write runtime does not own curate assistant execution yet.');
+      throw new Error('KB daemon curate assistant was not configured.');
     },
   };
 }
@@ -257,7 +259,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       const markdownRoot = runtime.paths.coral.corpus.kbRoot;
       const runtimeDir = kbRuntimeDir(flavor, runtime.paths.configSlot);
       cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
-      const curateAssistant = createDaemonCurateAssistant();
+      const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
       const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
         db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
@@ -342,6 +344,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           processPort: runtime.process,
           storagePort: runtime.storage,
           envPort: runtime.env,
+          runCommunitySummaryJob: (signal) => runCommunitySummaryAgent(kb, curateAssistant, signal),
         }),
       };
       const waitForReadiness: KbSourceImportReadinessWaiter = async ({ kb, readiness, snapshot, signal }) => {

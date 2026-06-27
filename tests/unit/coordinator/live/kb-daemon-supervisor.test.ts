@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
-import { createKbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import {
+  createKbDaemonSupervisor,
+  type KbDaemonCurateAssistantHandler,
+} from '#src/coordinator/live/kb-daemon-supervisor.js';
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
@@ -95,6 +98,28 @@ function writeResponse(daemonProcess: FakeDaemonProcess, id: string, result: unk
   (daemonProcess.stdout as unknown as PassThrough).write(
     `${JSON.stringify({ type: 'coral.kb_daemon.response', id, ok: true, result })}\n`,
   );
+}
+
+function writeParentRequest(daemonProcess: FakeDaemonProcess, id: string, method: string, params?: unknown): void {
+  (daemonProcess.stdout as unknown as PassThrough).write(
+    `${JSON.stringify({ type: 'coral.kb_daemon.parent_request', id, method, params })}\n`,
+  );
+}
+
+function parentResponses(daemonProcess: FakeDaemonProcess): Array<{
+  id?: unknown;
+  ok?: unknown;
+  result?: unknown;
+  error?: unknown;
+}> {
+  return daemonProcess.stdin.chunks
+    .join('')
+    .split('\n')
+    .filter(Boolean)
+    .map(
+      (line) => JSON.parse(line) as { type?: unknown; id?: unknown; ok?: unknown; result?: unknown; error?: unknown },
+    )
+    .filter((message) => message.type === 'coral.kb_daemon.parent_response');
 }
 
 describe('KB daemon supervisor', () => {
@@ -322,6 +347,185 @@ describe('KB daemon supervisor', () => {
         },
       ],
     });
+  });
+
+  it('serves daemon curate assistant parent requests through the configured handler', async () => {
+    const daemonProcess = new FakeDaemonProcess(160);
+    const { runtime } = createRuntime([daemonProcess]);
+    const curateAssistant = vi.fn<KbDaemonCurateAssistantHandler>(async () => 'curate-result');
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      curateAssistant,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(daemonProcess);
+    await start;
+
+    writeParentRequest(daemonProcess, 'parent:1', 'curate.assistant.complete', {
+      prompt: 'classify this',
+      purpose: 'classification',
+      model: 'sonnet',
+      permissionMode: 'auto',
+    });
+    await flushMicrotasks(4);
+
+    expect(curateAssistant).toHaveBeenCalledWith(
+      {
+        prompt: 'classify this',
+        purpose: 'classification',
+        model: 'sonnet',
+        permissionMode: 'auto',
+      },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(parentResponses(daemonProcess)).toContainEqual(
+      expect.objectContaining({
+        id: 'parent:1',
+        ok: true,
+        result: 'curate-result',
+      }),
+    );
+  });
+
+  it('returns parent request errors when the configured curate handler throws synchronously', async () => {
+    const daemonProcess = new FakeDaemonProcess(160);
+    const { runtime } = createRuntime([daemonProcess]);
+    const curateAssistant = vi.fn<KbDaemonCurateAssistantHandler>(() => {
+      throw new Error('startup not ready');
+    });
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      curateAssistant,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(daemonProcess);
+    await start;
+
+    writeParentRequest(daemonProcess, 'parent:1', 'curate.assistant.complete', {
+      prompt: 'classify this',
+      purpose: 'classification',
+    });
+    await flushMicrotasks(4);
+
+    expect(parentResponses(daemonProcess)).toContainEqual(
+      expect.objectContaining({
+        id: 'parent:1',
+        ok: false,
+        error: { message: 'startup not ready' },
+      }),
+    );
+  });
+
+  it('continues processing control lines that arrive in the same chunk as daemon ready', async () => {
+    const daemonProcess = new FakeDaemonProcess(160);
+    const { runtime } = createRuntime([daemonProcess]);
+    const curateAssistant = vi.fn<KbDaemonCurateAssistantHandler>(async () => 'curate-result');
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      curateAssistant,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    (daemonProcess.stdout as unknown as PassThrough).write(
+      `${JSON.stringify({
+        type: 'coral.kb_daemon.ready',
+        pid: 160,
+        startedAt: 1_000_000,
+        readyAt: 1_000_123,
+      })}\n${JSON.stringify({
+        type: 'coral.kb_daemon.parent_request',
+        id: 'parent:1',
+        method: 'curate.assistant.complete',
+        params: {
+          prompt: 'classify this',
+          purpose: 'classification',
+        },
+      })}\n`,
+    );
+
+    await start;
+    await flushMicrotasks(4);
+
+    expect(curateAssistant).toHaveBeenCalledWith(
+      {
+        prompt: 'classify this',
+        purpose: 'classification',
+      },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(parentResponses(daemonProcess)).toContainEqual(
+      expect.objectContaining({
+        id: 'parent:1',
+        ok: true,
+        result: 'curate-result',
+      }),
+    );
+  });
+
+  it('aborts an active daemon curate assistant parent request when the daemon cancels it', async () => {
+    const daemonProcess = new FakeDaemonProcess(160);
+    const { runtime } = createRuntime([daemonProcess]);
+    const observed: { signal?: AbortSignal } = {};
+    const curateAssistant = vi.fn<KbDaemonCurateAssistantHandler>(
+      async (_request, { signal }: { signal: AbortSignal }) =>
+        new Promise<string>((_resolve, reject) => {
+          observed.signal = signal;
+          signal.addEventListener(
+            'abort',
+            () => reject(signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason))),
+            { once: true },
+          );
+        }),
+    );
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      curateAssistant,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(daemonProcess);
+    await start;
+
+    writeParentRequest(daemonProcess, 'parent:1', 'curate.assistant.complete', {
+      prompt: 'classify this',
+      purpose: 'classification',
+    });
+    await flushMicrotasks();
+    expect(observed.signal?.aborted).toBe(false);
+
+    writeParentRequest(daemonProcess, 'parent:2', 'curate.assistant.cancel', {
+      requestId: 'parent:1',
+      reason: 'scheduler stopped',
+    });
+    await flushMicrotasks(4);
+
+    expect(observed.signal?.aborted).toBe(true);
+    expect(parentResponses(daemonProcess)).toContainEqual(
+      expect.objectContaining({
+        id: 'parent:2',
+        ok: true,
+        result: { canceled: true },
+      }),
+    );
+    expect(parentResponses(daemonProcess)).not.toContainEqual(expect.objectContaining({ id: 'parent:1' }));
   });
 
   it('notifies exit listeners when the active daemon process closes', async () => {

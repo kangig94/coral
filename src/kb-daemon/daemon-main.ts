@@ -1,5 +1,6 @@
 import {
   KB_DAEMON_EVENT_MESSAGE,
+  KB_DAEMON_PARENT_REQUEST_MESSAGE,
   KB_DAEMON_READY_MESSAGE,
   KB_DAEMON_RESPONSE_MESSAGE,
   encodeKbDaemonMessage,
@@ -8,18 +9,28 @@ import {
   isKbDaemonJobsResult,
   isKbDaemonKbMutationRequest,
   isKbDaemonKbReadRequest,
+  isKbDaemonParentResponseMessage,
   isKbDaemonRequestMessage,
+  type KbDaemonCurateAssistantCompleteRequest,
   type KbDaemonHealthResult,
   type KbDaemonControlMessage,
   type KbDaemonRequestMessage,
+  type KbDaemonParentResponseMessage,
 } from './protocol.js';
 import { createKbDaemonRequestService } from './request-service.js';
 import { createKbDaemonWriteRuntimeHost } from './runtime-host.js';
 import { errorMessage } from '../infra/error-format.js';
+import { AbortError } from '../runtime/abort.js';
+import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 
 const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
 
 type IntervalHandle = ReturnType<typeof setInterval>;
+
+type PendingParentRequest = {
+  resolve: (response: KbDaemonParentResponseMessage) => void;
+  reject: (error: Error) => void;
+};
 
 export type KbDaemonMainOptions = {
   pluginRoot?: string;
@@ -99,8 +110,96 @@ export function startKbDaemonParentWatchdog(options: KbDaemonParentWatchdogOptio
 export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promise<number> {
   const startedAt = Date.now();
   const pluginRoot = options.pluginRoot ?? process.cwd();
+  let nextParentRequestSeq = 1;
+  const pendingParentRequests = new Map<string, PendingParentRequest>();
+  const writeParentCancel = (requestId: string, reason: string): void => {
+    writeControlMessage({
+      type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
+      id: `parent:${nextParentRequestSeq++}`,
+      method: 'curate.assistant.cancel',
+      params: { requestId, reason },
+    });
+  };
+  const sendParentRequest = (
+    method: 'curate.assistant.complete',
+    params: KbDaemonCurateAssistantCompleteRequest,
+    signal: AbortSignal | undefined,
+  ): Promise<KbDaemonParentResponseMessage> => {
+    const id = `parent:${nextParentRequestSeq++}`;
+    if (signal?.aborted) {
+      throw new AbortError({ stage: 'kb_daemon_parent_request', reason: signal.reason });
+    }
+    return new Promise<KbDaemonParentResponseMessage>((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        signal?.removeEventListener('abort', onAbort);
+        pendingParentRequests.delete(id);
+      };
+      const rejectWith = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
+      const onAbort = (): void => {
+        writeParentCancel(id, errorMessage(signal?.reason ?? 'aborted'));
+        rejectWith(new AbortError({ stage: 'kb_daemon_parent_request', reason: signal?.reason }));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      pendingParentRequests.set(id, {
+        resolve: (message) => {
+          cleanup();
+          resolve(message);
+        },
+        reject: rejectWith,
+      });
+      writeControlMessage({
+        type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
+        id,
+        method,
+        params,
+      });
+    });
+  };
+  const parentCurateAssistant: CurateAssistantPort = {
+    async complete(request) {
+      const response = await sendParentRequest(
+        'curate.assistant.complete',
+        {
+          prompt: request.prompt,
+          purpose: request.purpose,
+          ...(request.model === undefined ? {} : { model: request.model }),
+          ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
+        },
+        request.signal,
+      );
+      if (!response.ok) {
+        throw new Error(response.error.message);
+      }
+      if (typeof response.result !== 'string') {
+        throw new Error('KB daemon parent returned malformed curate assistant result.');
+      }
+      return response.result;
+    },
+  };
+  const settleParentResponse = (response: KbDaemonParentResponseMessage): void => {
+    const pending = pendingParentRequests.get(response.id);
+    if (pending === undefined) {
+      return;
+    }
+    pending.resolve(response);
+  };
+  const cancelPendingParentRequests = (message: string): void => {
+    for (const [id, pending] of [...pendingParentRequests]) {
+      writeParentCancel(id, message);
+      pending.reject(new Error(message));
+    }
+  };
   const kbWriteHost = createKbDaemonWriteRuntimeHost({
     pluginRoot,
+    curateAssistant: parentCurateAssistant,
     backendNamespace: process.env.CORAL_KB_DAEMON_BACKEND_NAMESPACE,
     bundleHash: process.env.CORAL_KB_DAEMON_BUNDLE_HASH,
     onJournalEvents: (appended) =>
@@ -145,6 +244,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     } catch (error: unknown) {
       process.stderr.write(`[kb-daemon] write runtime dispose failed: ${errorMessage(error)}\n`);
     } finally {
+      cancelPendingParentRequests('KB daemon is shutting down.');
       resolveShutdown(code);
     }
   };
@@ -264,6 +364,10 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
       }
       try {
         const parsed = JSON.parse(trimmed) as unknown;
+        if (isKbDaemonParentResponseMessage(parsed)) {
+          settleParentResponse(parsed);
+          continue;
+        }
         if (isKbDaemonRequestMessage(parsed)) {
           void handleRequest(parsed).catch((error: unknown) => {
             writeControlMessage({

@@ -125,10 +125,11 @@ function warnPermanentlyDisabledLanes(lanes: PermanentlyDisabledLanes): void {
 }
 
 /**
- * Records and runs the community-summary agent as an observable, abortable
- * `kb.community_summary` job. Returns whether the agent wrote summaries (so the
- * scheduler knows to commit). The coordinator supplies this; when omitted (e.g.
- * tests that exercise topology only), the summary pass is skipped.
+ * Runs the community-summary agent after topology materialization. The runtime
+ * host may wrap this as an observable `kb.community_summary` job, or call the
+ * agent directly. Returns whether the agent wrote summaries (so the scheduler
+ * knows to commit). When omitted (e.g. tests that exercise topology only), the
+ * summary pass is skipped.
  *
  * `runSignal` is the scheduler's run abort signal: the implementation composes
  * it with the job's own (`coral-cli abort`) signal so a scheduler stop cancels

@@ -4,8 +4,11 @@ import { appendBuffer, requirePipedHandles, safeKill } from './process-supervisi
 import type { Runtime } from '../../runtime/ports.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
+  KB_DAEMON_PARENT_RESPONSE_MESSAGE,
   encodeKbDaemonMessage,
   isKbDaemonAbortResult,
+  isKbDaemonCurateAssistantCancelRequest,
+  isKbDaemonCurateAssistantCompleteRequest,
   isKbDaemonEventMessage,
   isKbDaemonExpansionResult,
   isKbDaemonHealthResult,
@@ -13,8 +16,10 @@ import {
   isKbDaemonKbMutationResult,
   isKbDaemonKbReadHealth,
   isKbDaemonKbReadResult,
+  isKbDaemonParentRequestMessage,
   isKbDaemonReadyMessage,
   isKbDaemonResponseMessage,
+  type KbDaemonCurateAssistantCompleteRequest,
   type KbDaemonKbMutationRequest,
   type KbDaemonKbMutationResult,
   type KbDaemonKbReadHealth,
@@ -27,6 +32,7 @@ import {
   type KbDaemonExpansionResult,
   type KbDaemonEventMessage,
   type KbDaemonJobsResult,
+  type KbDaemonParentRequestMessage,
 } from '../../kb-daemon/protocol.js';
 import { readBundleHash } from '../../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
@@ -77,6 +83,11 @@ export interface KbDaemonSupervisor {
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<void>;
 }
 
+export type KbDaemonCurateAssistantHandler = (
+  request: KbDaemonCurateAssistantCompleteRequest,
+  options: { signal: AbortSignal },
+) => Promise<string>;
+
 type KbDaemonSupervisorOptions = {
   runtime: Runtime;
   pluginRoot: string;
@@ -89,6 +100,7 @@ type KbDaemonSupervisorOptions = {
   jobRequestTimeoutMs?: number;
   backendNamespace?: string;
   bundleHash?: string;
+  curateAssistant?: KbDaemonCurateAssistantHandler;
   onEvent?: (message: KbDaemonEventMessage) => void;
   log?: (message: string) => void;
 };
@@ -217,6 +229,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   const jobRequestTimeoutMs = options.jobRequestTimeoutMs ?? DEFAULT_JOB_REQUEST_TIMEOUT_MS;
   const backendNamespace = resolveDaemonBackendNamespace(pluginRoot, options.backendNamespace);
   const bundleHash = resolveDaemonBundleHash(pluginRoot, options.bundleHash);
+  const parentCurateAssistant = options.curateAssistant;
   const log = options.log ?? (() => undefined);
 
   let phase: KbDaemonPhase = 'stopped';
@@ -232,6 +245,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   let stderrBuffer = '';
   let nextRequestId = 1;
   const pendingRequests = new Map<string, PendingRequest>();
+  const activeParentRequests = new Map<string, { generation: number; controller: AbortController }>();
   let lastHeartbeatAt: number | undefined;
   let lastHeartbeatLatencyMs: number | undefined;
   let daemonUptimeMs: number | undefined;
@@ -357,6 +371,105 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     });
     lastHeartbeatLatencyMs = Math.max(0, runtime.time.now() - sentAt);
     return response;
+  };
+
+  const writeParentResponse = (
+    target: DaemonProcessLike,
+    message: { id: string; ok: true; result: unknown } | { id: string; ok: false; error: { message: string } },
+  ): void => {
+    try {
+      target.stdin?.write(
+        encodeKbDaemonMessage({
+          type: KB_DAEMON_PARENT_RESPONSE_MESSAGE,
+          ...message,
+        }),
+      );
+    } catch (error: unknown) {
+      log(`[kb-daemon] failed to write parent response: ${formatError(error)}`);
+    }
+  };
+
+  const parentRequestKey = (requestGeneration: number, id: string): string => `${requestGeneration}:${id}`;
+
+  const abortActiveParentRequests = (reason: string, activeGeneration?: number): void => {
+    for (const [key, entry] of activeParentRequests) {
+      if (activeGeneration !== undefined && entry.generation !== activeGeneration) {
+        continue;
+      }
+      entry.controller.abort(new Error(reason));
+      activeParentRequests.delete(key);
+    }
+  };
+
+  const handleParentRequest = (
+    request: KbDaemonParentRequestMessage,
+    target: DaemonProcessLike,
+    requestGeneration: number,
+  ): void => {
+    switch (request.method) {
+      case 'curate.assistant.complete': {
+        if (!isKbDaemonCurateAssistantCompleteRequest(request.params)) {
+          writeParentResponse(target, {
+            id: request.id,
+            ok: false,
+            error: { message: 'Malformed KB daemon curate assistant request.' },
+          });
+          return;
+        }
+        if (parentCurateAssistant === undefined) {
+          writeParentResponse(target, {
+            id: request.id,
+            ok: false,
+            error: { message: 'KB daemon curate assistant parent handler is not configured.' },
+          });
+          return;
+        }
+        const params = request.params;
+        const controller = new AbortController();
+        const key = parentRequestKey(requestGeneration, request.id);
+        activeParentRequests.set(key, { generation: requestGeneration, controller });
+        void Promise.resolve()
+          .then(() => parentCurateAssistant(params, { signal: controller.signal }))
+          .then((result) => {
+            if (activeParentRequests.get(key)?.controller !== controller) {
+              return;
+            }
+            writeParentResponse(target, { id: request.id, ok: true, result });
+          })
+          .catch((error: unknown) => {
+            if (activeParentRequests.get(key)?.controller !== controller) {
+              return;
+            }
+            writeParentResponse(target, { id: request.id, ok: false, error: { message: errorMessage(error) } });
+          })
+          .finally(() => {
+            if (activeParentRequests.get(key)?.controller === controller) {
+              activeParentRequests.delete(key);
+            }
+          });
+        return;
+      }
+      case 'curate.assistant.cancel': {
+        if (!isKbDaemonCurateAssistantCancelRequest(request.params)) {
+          writeParentResponse(target, {
+            id: request.id,
+            ok: false,
+            error: { message: 'Malformed KB daemon curate assistant cancel request.' },
+          });
+          return;
+        }
+        const key = parentRequestKey(requestGeneration, request.params.requestId);
+        const active = activeParentRequests.get(key);
+        if (active !== undefined) {
+          activeParentRequests.delete(key);
+          active.controller.abort(
+            new Error(request.params.reason ?? 'KB daemon canceled parent curate assistant request.'),
+          );
+        }
+        writeParentResponse(target, { id: request.id, ok: true, result: { canceled: active !== undefined } });
+        return;
+      }
+    }
   };
 
   const probeNow = async (): Promise<KbDaemonHealthSnapshot> => {
@@ -702,7 +815,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
               }
               runtime.time.clearTimeout(timeout);
               settle('ready');
-              return;
+              continue;
             }
             if (isKbDaemonResponseMessage(parsed)) {
               const pending = pendingRequests.get(parsed.id);
@@ -719,6 +832,10 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
               } catch (error: unknown) {
                 log(`[kb-daemon] event callback failed: ${formatError(error)}`);
               }
+              continue;
+            }
+            if (isKbDaemonParentRequestMessage(parsed)) {
+              handleParentRequest(parsed, spawned, activeGeneration);
               continue;
             }
           } catch {
@@ -750,6 +867,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           pid = null;
           readyAt = null;
           rejectPendingRequests('KB daemon exited', activeGeneration);
+          abortActiveParentRequests('KB daemon exited', activeGeneration);
           if (phase === 'stopping') {
             phase = 'stopped';
           } else {
