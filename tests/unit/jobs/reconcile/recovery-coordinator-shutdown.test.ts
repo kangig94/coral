@@ -87,7 +87,6 @@ function createStoreServicesHarness(progressStore: { getDb(): { close(): void } 
   const services = {
     storeDb: progressStore.getDb(),
     progressStore,
-    expansionManifestCatalog: null,
     consumerDriver: null,
   };
   let current: typeof services | null = null;

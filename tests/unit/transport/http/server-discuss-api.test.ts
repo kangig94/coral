@@ -41,7 +41,6 @@ function createStoreServices(progressStore: JobStore): CoordinatorStoreServices 
   return {
     storeDb: progressStore.getDb(),
     progressStore,
-    expansionManifestCatalog: {} as never,
     consumerDriver: null,
   };
 }

@@ -132,21 +132,16 @@ const FORBIDDEN_PREFIXES = [
   'src/workflow/recover.ts',
   'src/jobs/reconcile/',
 ] as const;
-const KB_CHILD_OWNED_TARGETS = new Set([
-  'src/kb/runtime.ts',
-  'src/kb/subsystem.ts',
+const KB_RUNTIME_IMPLEMENTATION_TARGETS = new Set(['src/kb/runtime.ts', 'src/kb/subsystem.ts']);
+const KB_CHILD_IMPLEMENTATION_TARGETS = new Set([
   'src/coordinator/kb-child/child-main.ts',
-  'src/coordinator/kb-child/expansion/host-factory.ts',
-  'src/coordinator/kb-child/expansion/lifecycle.ts',
-  'src/coordinator/kb-child/expansion/rpc.ts',
-  'src/coordinator/kb-child/expansion/state.ts',
   'src/coordinator/kb-child/read-handler.ts',
-  'src/coordinator/kb-child/services/readiness.ts',
-  'src/coordinator/kb-child/services/reindex.ts',
-  'src/coordinator/kb-child/services/shell.ts',
-  'src/coordinator/kb-child/services/source-import.ts',
   'src/coordinator/kb-child/write-runtime.ts',
 ]);
+const KB_CHILD_IMPLEMENTATION_PREFIXES = [
+  'src/coordinator/kb-child/expansion/',
+  'src/coordinator/kb-child/services/',
+] as const;
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
@@ -228,7 +223,11 @@ describe('coordinator topology invariants', () => {
       if (source === 'src/coordinator/bootstrap.ts' && target === 'src/coordinator/kb-child/child-main.ts') {
         return false;
       }
-      return KB_CHILD_OWNED_TARGETS.has(target);
+      return (
+        KB_RUNTIME_IMPLEMENTATION_TARGETS.has(target) ||
+        KB_CHILD_IMPLEMENTATION_TARGETS.has(target) ||
+        startsWithAny(target, KB_CHILD_IMPLEMENTATION_PREFIXES)
+      );
     }).map(({ source, target }) => `${source} -> ${target}`);
 
     expect(violations).toEqual([]);

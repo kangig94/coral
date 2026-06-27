@@ -69,10 +69,10 @@ Resource-oriented API. Sessions and jobs are first-class resources. Each endpoin
 | --- | --- | --- |
 | `POST /sessions` | 201 | Create session (with optional `agent` for coral dispatch) |
 | `POST /workflow` | 202 | Workflow launch (camelCase body mapped to snake_case internally) |
-| `POST /coordinator/expansion` | 200 | Equip a named expansion via `ExpansionLifecycleService` (binds the expansion's runtime cells under a fresh scope) |
-| `DELETE /coordinator/expansion/:name` | 200 | Unequip a named expansion (disposes its scope, releasing every binding it held) |
-| `DELETE /coordinator/expansion/:name/catalog` | 200 | Remove a manifest entry from `expansion_manifest_catalog` (catalog-only purge; does not unequip live bindings) |
-| `GET /coordinator/expansion` | 200 | List currently-equipped expansions via `expansion_state` |
+| `POST /coordinator/expansion` | 200 | Forward equip to the KB child expansion lifecycle |
+| `DELETE /coordinator/expansion/:name` | 200 | Forward unequip to the KB child expansion lifecycle |
+| `DELETE /coordinator/expansion/:name/catalog` | 200 | Ask the KB child to remove a manifest catalog entry |
+| `GET /coordinator/expansion` | 200 | List expansions from the KB child expansion state |
 | `GET /coordinator/bindings/:binding` | 200 | Read a single capability binding's current owner and metadata |
 | `GET /jobs` / `GET /jobs/:id` | 200 | Job summaries and detailed progress history |
 | `POST /jobs/abort` | 200 | Abort one or more jobs |

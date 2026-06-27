@@ -37,7 +37,6 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 
@@ -76,10 +75,6 @@ function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: s
       db,
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
-    }),
-    expansionManifestCatalog: createExpansionManifestCatalog({
-      db,
-      now: () => new Date(runtime.time.now()).toISOString(),
     }),
     consumerDriver: null,
   };

@@ -36,7 +36,6 @@ import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
 import { ConsumerDrainTimeout, ConsumerDriver } from './consumer-driver/index.js';
 import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
-import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
@@ -286,10 +285,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       providers: providerLookupPortFromCatalog(providerRegistry),
       observer: lifecycleReactor.observe,
     });
-    const expansionManifestCatalog = createExpansionManifestCatalog({
-      db: storeDb,
-      now: () => nowDate(runtime.time).toISOString(),
-    });
     const consumerDriver = new ConsumerDriver({
       db: storeDb,
       now: () => nowDate(runtime.time),
@@ -301,7 +296,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return {
       storeDb,
       progressStore,
-      expansionManifestCatalog,
       consumerDriver,
     };
   };
