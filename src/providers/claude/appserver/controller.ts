@@ -902,6 +902,11 @@ export class SingleSessionController {
       return;
     }
 
+    if (row.type === 'queue-operation') {
+      this.handleQueueOperationTranscriptRow(turn, row, lineStartOffset, sessionId);
+      return;
+    }
+
     if (row.type === 'assistant') {
       this.handleAssistantTranscriptRow(turn, row, sessionId);
       return;
@@ -919,6 +924,18 @@ export class SingleSessionController {
     sessionId: string | null,
   ): void {
     if (!this.isCurrentTurnPromptRegistration(turn, row, lineStartOffset, sessionId)) {
+      return;
+    }
+    this.transitionTurnPhase(turn, 'registered');
+  }
+
+  private handleQueueOperationTranscriptRow(
+    turn: ActiveTurnState,
+    row: Record<string, unknown>,
+    lineStartOffset: number,
+    sessionId: string | null,
+  ): void {
+    if (!this.isCurrentTurnQueuedPromptRegistration(turn, row, lineStartOffset, sessionId)) {
       return;
     }
     this.transitionTurnPhase(turn, 'registered');
@@ -948,6 +965,31 @@ export class SingleSessionController {
       return false;
     }
     return hashPromptText(text) === turn.promptTextHash;
+  }
+
+  private isCurrentTurnQueuedPromptRegistration(
+    turn: ActiveTurnState,
+    row: Record<string, unknown>,
+    lineStartOffset: number,
+    sessionId: string | null,
+  ): boolean {
+    if (turn.phase !== 'sent') {
+      return false;
+    }
+    if (lineStartOffset < turn.promptTranscriptOffset) {
+      return false;
+    }
+    if (sessionId !== null && sessionId !== this.currentConversationRef()) {
+      return false;
+    }
+    if (row.operation !== 'enqueue') {
+      return false;
+    }
+    const content = readString(row.content);
+    if (content === undefined) {
+      return false;
+    }
+    return hashPromptText(content) === turn.promptTextHash;
   }
 
   private handleAssistantTranscriptRow(

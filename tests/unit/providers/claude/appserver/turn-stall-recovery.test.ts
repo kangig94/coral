@@ -140,6 +140,15 @@ function userPromptLine(text: string): string {
   });
 }
 
+function queueOperationLine(content: string): string {
+  return JSON.stringify({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    sessionId: TEST_SESSION_ID,
+    content,
+  });
+}
+
 type TranscriptFixture = {
   transcriptPath: string;
   cleanup: () => void;
@@ -237,6 +246,24 @@ describe('Claude phase-specific turn-stall recovery', () => {
     expect(harness.children).toHaveLength(1);
     expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual(['original sent prompt', 'original sent prompt']);
     expect(harness.startedTurns).toEqual(['turn-1']);
+  });
+
+  it('treats Claude queue-operation enqueue as registration so sent recovery does not duplicate queued prompts', async () => {
+    const prompt = 'queued prompt must not duplicate';
+    const harness = await startController(prompt);
+    processLine(harness.internals, queueOperationLine(prompt));
+    const turn = activeTurn(harness.internals);
+    expect(turn.phase).toBe('registered');
+
+    const terminated = await harness.internals.recoverStalledTurn(
+      turn,
+      turn.lastPromptSentAt + DEFAULT_TURN_RECOVERY_BUDGET.registration.promptAckMs,
+    );
+
+    expect(terminated).toBe(false);
+    expect(harness.children).toHaveLength(1);
+    expect(harness.children[0]?.writes.map(unwrapPaste)).toEqual([prompt]);
+    expect(harness.notifications.some((notification) => notification.method === 'turn/failed')).toBe(false);
   });
 
   it('recovers a registered stall by respawning with resume and continuing the unanswered message', async () => {

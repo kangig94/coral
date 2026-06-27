@@ -98,6 +98,22 @@ function userToolResultLine(): string {
   });
 }
 
+function queueOperationLine(
+  content: string,
+  overrides: {
+    sessionId?: string;
+    operation?: string;
+    content?: unknown;
+  } = {},
+): string {
+  return JSON.stringify({
+    type: 'queue-operation',
+    operation: overrides.operation ?? 'enqueue',
+    sessionId: overrides.sessionId ?? TEST_SESSION_ID,
+    content: overrides.content ?? content,
+  });
+}
+
 function assistantLine(options: { sessionId?: string; stopReason?: string } = {}): string {
   return JSON.stringify({
     type: 'assistant',
@@ -169,6 +185,15 @@ describe('Claude turn phase state machine', () => {
 
     expect(activeTurn(internals).phase).toBe('sent');
     processLine(internals, userPromptLine('hello\r\nworld'));
+
+    expect(activeTurn(internals).phase).toBe('registered');
+  });
+
+  it('advances sent to registered for a Claude queue-operation enqueue row', async () => {
+    const { internals } = await startController('hello\nworld');
+
+    expect(activeTurn(internals).phase).toBe('sent');
+    processLine(internals, queueOperationLine('hello\r\nworld'));
 
     expect(activeTurn(internals).phase).toBe('registered');
   });
@@ -267,6 +292,21 @@ describe('Claude turn phase state machine', () => {
     expect(activeTurn(internals).phase).toBe('sent');
 
     processLine(internals, userToolResultLine());
+    expect(activeTurn(internals).phase).toBe('sent');
+
+    processLine(internals, queueOperationLine('hello'), turn.promptTranscriptOffset - 1);
+    expect(activeTurn(internals).phase).toBe('sent');
+
+    processLine(internals, queueOperationLine('different prompt'));
+    expect(activeTurn(internals).phase).toBe('sent');
+
+    processLine(internals, queueOperationLine('hello', { sessionId: 'other-session' }));
+    expect(activeTurn(internals).phase).toBe('sent');
+
+    processLine(internals, queueOperationLine('hello', { operation: 'dequeue' }));
+    expect(activeTurn(internals).phase).toBe('sent');
+
+    processLine(internals, queueOperationLine('hello', { content: { text: 'hello' } }));
     expect(activeTurn(internals).phase).toBe('sent');
   });
 
