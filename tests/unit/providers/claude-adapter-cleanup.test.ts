@@ -6,14 +6,17 @@ import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
 function makeRuntime(): {
   runtime: ArtifactCleanupRuntime;
   unlinkSync: ReturnType<typeof vi.fn>;
+  existsSync: ReturnType<typeof vi.fn>;
 } {
   const unlinkSync = vi.fn();
+  const existsSync = vi.fn(() => false);
   return {
     runtime: {
-      storage: { unlinkSync },
+      storage: { unlinkSync, existsSync },
       env: { homedir: () => '/home/user' },
     } as unknown as ArtifactCleanupRuntime,
     unlinkSync,
+    existsSync,
   };
 }
 
@@ -49,5 +52,34 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     ).resolves.toEqual({ kind: 'discarded' });
 
     expect(unlinkSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('removes a native log recreated during cleanup settling', async () => {
+    vi.useFakeTimers();
+    try {
+      const handle = '/tmp/ref-a.jsonl';
+      let exists = true;
+      const unlinkSync = vi.fn(() => {
+        exists = false;
+      });
+      const existsSync = vi.fn(() => exists);
+      const runtime = {
+        storage: { unlinkSync, existsSync },
+        env: { homedir: () => '/home/user' },
+      } as unknown as ArtifactCleanupRuntime;
+
+      setTimeout(() => {
+        exists = true;
+      }, 250);
+      const discard = claudeArtifactCapability.discardArtifacts([handle], runtime);
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      await expect(discard).resolves.toEqual({ kind: 'discarded' });
+      expect(unlinkSync.mock.calls).toEqual([[handle], [handle]]);
+      expect(exists).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

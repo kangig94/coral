@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
@@ -32,7 +34,7 @@ import { decodeEventBody } from '#src/store/body-codec.js';
 import type { Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import type { DiscardOutcome } from '#src/providers/contract.js';
+import type { ArtifactCleanupRuntime, DiscardOutcome } from '#src/providers/contract.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -71,7 +73,7 @@ function createHarness(
   options: {
     artifactMode?: ProviderArtifactMode;
     autoObserveCoordinator?: boolean;
-    discardArtifacts?: (handles: readonly string[]) => Promise<DiscardOutcome>;
+    discardArtifacts?: (handles: readonly string[], runtime: ArtifactCleanupRuntime) => Promise<DiscardOutcome>;
     locateArtifact?: (conversationRef: string) => string | null;
     afterCommit?: (appended: readonly AppendedEvent[], commitEvents: CommitEventsFn) => void;
   } = {},
@@ -91,10 +93,10 @@ function createHarness(
       .artifacts(
         artifactMode === 'managed'
           ? managed({
-              discardArtifacts: async (handles) => {
+              discardArtifacts: async (handles, cleanupRuntime) => {
                 discardCalls.push([...handles]);
                 if (options.discardArtifacts) {
-                  return options.discardArtifacts(handles);
+                  return options.discardArtifacts(handles, cleanupRuntime);
                 }
                 return { kind: 'discarded' };
               },
@@ -373,6 +375,86 @@ describe('LifecycleReactor retention enforcement', () => {
 
     expect(readRetentionEvents(harness, sessionId)).toHaveLength(2);
     expect(harness.discardCalls).toHaveLength(1);
+  });
+
+  it('archives provider artifacts into the job export before deleting native logs', async () => {
+    const harness = createHarness({
+      discardArtifacts: async (handles, cleanupRuntime) => {
+        for (const handle of handles) {
+          cleanupRuntime.storage.unlinkSync(handle);
+        }
+        return { kind: 'discarded' };
+      },
+    });
+    const jobId = 'job-archive-native-log';
+    const nativeLog = '/tmp/provider/rollout-archive.jsonl';
+    const content = '{"type":"session","message":"hello"}\n';
+    const lateContent = '{"type":"session","message":"late-exit-snapshot"}\n';
+    harness.runtime.storage.mkdirSync('/tmp/provider', { recursive: true });
+    harness.runtime.storage.writeFileSync(nativeLog, content, { encoding: 'utf-8' });
+    const lateAppend = setTimeout(() => {
+      harness.runtime.storage.writeFileSync(nativeLog, `${content}${lateContent}`, { encoding: 'utf-8' });
+    }, 100);
+    const sessionId = await openClaimedSession(harness, jobId);
+    await recordArtifact(harness, sessionId, jobId, nativeLog);
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await expectRetentionEvents(harness, sessionId, [
+      {
+        type: 'session.retention.discard.requested',
+        attempt: 1,
+        handles: [nativeLog],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: [nativeLog],
+        outcome: 'discarded',
+      },
+    ]);
+
+    const archiveDir = join(harness.runtime.paths.coral.exports.jobsRoot, jobId, 'provider-artifacts', 'codex');
+    const archivedLog = join(archiveDir, '0001-rollout-archive.jsonl');
+    const manifestPath = join(archiveDir, 'manifest.json');
+    expect(harness.runtime.storage.existsSync(nativeLog)).toBe(false);
+    expect(harness.runtime.storage.readFileSync(archivedLog, 'utf-8')).toBe(`${content}${lateContent}`);
+    clearTimeout(lateAppend);
+    const manifest = JSON.parse(harness.runtime.storage.readFileSync(manifestPath, 'utf-8')) as {
+      schemaVersion: number;
+      jobId: string;
+      sessionId: string;
+      provider: string;
+      artifacts: Array<{
+        sourceHandle: string;
+        archivePath: string;
+        bytes: number;
+        sha256: string;
+        status: string;
+        identity: { kind: string; handle: string };
+        sourceJobId: string;
+      }>;
+    };
+    expect(manifest).toMatchObject({
+      schemaVersion: 1,
+      jobId,
+      sessionId,
+      provider: 'codex',
+      artifacts: [
+        {
+          sourceHandle: nativeLog,
+          archivePath: archivedLog,
+          bytes: Buffer.byteLength(`${content}${lateContent}`, 'utf-8'),
+          status: 'archived',
+          identity: { kind: 'test-artifact', handle: nativeLog },
+          sourceJobId: jobId,
+        },
+      ],
+    });
+    expect(manifest.artifacts[0]?.sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(harness.discardCalls).toEqual([[nativeLog]]);
   });
 
   it('does not discard stale-aborted session artifacts until the resumed job releases', async () => {

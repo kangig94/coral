@@ -997,8 +997,18 @@ export class SingleSessionController {
     row: Record<string, unknown>,
     sessionId: string | null,
   ): void {
-    if (turn.phase === 'ending' || turn.phase === 'terminal') {
+    if (turn.phase === 'terminal') {
       return;
+    }
+    const wasEnding = turn.phase === 'ending';
+    if (wasEnding) {
+      if (turn.lastAssistantText.length > 0) {
+        return;
+      }
+      const conversationRef = this.currentConversationRef();
+      if (sessionId !== null && conversationRef !== null && sessionId !== conversationRef) {
+        return;
+      }
     }
 
     this.maybeUpdateSessionId(sessionId);
@@ -1006,7 +1016,7 @@ export class SingleSessionController {
     if (message === null) {
       return;
     }
-    if (turn.phase === 'sent' || turn.phase === 'registered' || turn.phase === 'responding') {
+    if (!wasEnding && (turn.phase === 'sent' || turn.phase === 'registered' || turn.phase === 'responding')) {
       this.transitionTurnPhase(turn, 'responding');
     }
 
@@ -1029,20 +1039,22 @@ export class SingleSessionController {
       if (!isRecord(block)) {
         continue;
       }
-      if (block.type === 'tool_use' && typeof block.name === 'string' && isRecord(block.input)) {
+      if (!wasEnding && block.type === 'tool_use' && typeof block.name === 'string' && isRecord(block.input)) {
         this.emitTurnProgress(turn.brokerTurnId, formatToolProgress(block.name, block.input, this.currentCwd()));
       }
       if (block.type === 'text' && typeof block.text === 'string') {
         textParts.push(block.text);
       }
     }
-    if (textParts.length > 0) {
+    if (textParts.length > 0 && (!wasEnding || turn.lastAssistantText.length === 0)) {
       turn.lastAssistantText = textParts.join('');
     }
 
     if (readString(message.stop_reason) === 'end_turn') {
-      this.transitionTurnPhase(turn, 'ending');
-    } else {
+      if (!wasEnding) {
+        this.transitionTurnPhase(turn, 'ending');
+      }
+    } else if (!wasEnding) {
       this.recordSemanticProgress(turn);
     }
   }

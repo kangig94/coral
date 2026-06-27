@@ -364,7 +364,7 @@ export interface ProviderRecoveryContract {
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
-export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env'>;
+export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths'>;
 
 export type ProviderArtifactHandle = string;
 

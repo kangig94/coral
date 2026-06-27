@@ -29,7 +29,7 @@ export type TurnRecoveryBudget = Readonly<{
 
 export const DEFAULT_TURN_RECOVERY_BUDGET = {
   registration: {
-    promptAckMs: 2_500,
+    promptAckMs: 5_000,
     promptResends: 3,
   },
   'assistant-start': {

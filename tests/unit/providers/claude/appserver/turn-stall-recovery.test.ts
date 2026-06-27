@@ -196,6 +196,37 @@ function assistantLine(text: string, stopReason?: string, sessionId = TEST_SESSI
   });
 }
 
+function assistantContentLine(
+  content: Array<Record<string, unknown>>,
+  stopReason?: string,
+  sessionId = TEST_SESSION_ID,
+): string {
+  return JSON.stringify({
+    type: 'assistant',
+    session_id: sessionId,
+    message: {
+      role: 'assistant',
+      model: TEST_MODEL,
+      content,
+      ...(stopReason === undefined ? {} : { stop_reason: stopReason }),
+    },
+  });
+}
+
+function assistantErrorLine(text: string, sessionId = TEST_SESSION_ID): string {
+  return JSON.stringify({
+    type: 'assistant',
+    session_id: sessionId,
+    error: 'late error',
+    message: {
+      role: 'assistant',
+      model: 'late-model',
+      usage: { costUSD: 999 },
+      content: [{ type: 'text', text }],
+    },
+  });
+}
+
 function durationLine(durationMs: number): string {
   return JSON.stringify({
     type: 'system',
@@ -405,11 +436,39 @@ describe('Claude phase-specific turn-stall recovery', () => {
     );
   });
 
+  it('captures a text row that follows a thinking-only end_turn row', async () => {
+    const harness = await startController('ending prompt');
+    processLine(harness.internals, userPromptLine('ending prompt'));
+    processLine(harness.internals, assistantContentLine([{ type: 'thinking', thinking: 'internal' }], 'end_turn'));
+    processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
+    processLine(harness.internals, durationLine(123));
+    const turn = activeTurn(harness.internals);
+    expect(turn.phase).toBe('ending');
+
+    const terminated = await harness.internals.recoverStalledTurn(
+      turn,
+      turn.phaseEnteredAt + DEFAULT_TURN_RECOVERY_BUDGET['finalization-grace'].finalizationGraceMs,
+    );
+
+    expect(terminated).toBe(true);
+    expect(harness.notifications).toContainEqual(
+      expect.objectContaining({
+        method: 'turn/completed',
+        params: expect.objectContaining({
+          brokerTurnId: 'turn-1',
+          result: 'parsed final answer',
+          durationMs: 123,
+        }),
+      }),
+    );
+  });
+
   it('does not let a late assistant row after end_turn overwrite the completed result', async () => {
     const otherSessionId = '00000000-0000-4000-8000-000000000202';
     const harness = await startController('ending prompt');
     processLine(harness.internals, userPromptLine('ending prompt'));
     processLine(harness.internals, assistantLine('parsed final answer', 'end_turn'));
+    processLine(harness.internals, assistantErrorLine('late same-session overwrite'));
     processLine(harness.internals, assistantLine('late overwrite', undefined, otherSessionId));
     const turn = activeTurn(harness.internals);
     expect(turn.phase).toBe('ending');
@@ -427,6 +486,8 @@ describe('Claude phase-specific turn-stall recovery', () => {
           brokerTurnId: 'turn-1',
           conversationRef: TEST_SESSION_ID,
           result: 'parsed final answer',
+          isError: false,
+          costUsd: null,
         }),
       }),
     );

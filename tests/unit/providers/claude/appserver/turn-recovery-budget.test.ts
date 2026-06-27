@@ -17,7 +17,7 @@ function isBelowWorkflowStaleTimeout(budget: TurnRecoveryBudget): boolean {
 
 describe('turn recovery budget', () => {
   it('keeps the default no-progress recovery window below workflow stale recovery', () => {
-    expect(totalNoProgressRecoveryWindowMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(316_500);
+    expect(totalNoProgressRecoveryWindowMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(326_500);
     expect(budgetUpperBoundMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBe(600_000);
     expect(totalNoProgressRecoveryWindowMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
     expect(budgetUpperBoundMs(DEFAULT_TURN_RECOVERY_BUDGET)).toBeLessThan(DEFAULT_STALE_TIMEOUT_MS);
@@ -33,7 +33,7 @@ describe('turn recovery budget', () => {
       },
     } as const satisfies TurnRecoveryBudget;
 
-    expect(totalNoProgressRecoveryWindowMs(oversizedHardCapBudget)).toBe(316_500);
+    expect(totalNoProgressRecoveryWindowMs(oversizedHardCapBudget)).toBe(326_500);
     expect(budgetUpperBoundMs(oversizedHardCapBudget)).toBe(DEFAULT_STALE_TIMEOUT_MS);
     expect(isBelowWorkflowStaleTimeout(oversizedHardCapBudget)).toBe(false);
   });
@@ -47,8 +47,8 @@ describe('turn recovery budget', () => {
       },
     } as const satisfies TurnRecoveryBudget;
 
-    expect(totalNoProgressRecoveryWindowMs(oversizedPhaseBudget)).toBe(1_036_500);
-    expect(budgetUpperBoundMs(oversizedPhaseBudget)).toBe(1_036_500);
+    expect(totalNoProgressRecoveryWindowMs(oversizedPhaseBudget)).toBe(1_046_500);
+    expect(budgetUpperBoundMs(oversizedPhaseBudget)).toBe(1_046_500);
     expect(isBelowWorkflowStaleTimeout(oversizedPhaseBudget)).toBe(false);
   });
 });

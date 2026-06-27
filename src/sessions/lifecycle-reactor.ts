@@ -8,6 +8,7 @@ import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { collectArtifactHandles } from './artifact-discard.js';
 import { sessionContinuationLeaseExpiredEvent } from './continuation-lease-events.js';
+import { archiveProviderArtifactsForJob } from './provider-artifact-archive.js';
 import { listProjectionSessionEntries, readProjectionSessionEntriesById } from './projections.js';
 import {
   appendRetentionDiscardCompleted,
@@ -174,6 +175,7 @@ export class LifecycleReactor {
     }
     const handles = collectArtifactHandles(entry, provider, this.options.runtime);
     if (handles.length === 0) return;
+    await this.archiveArtifactsBeforeDiscard(entry, handles);
     try {
       await provider.artifacts.discardArtifacts(handles, this.options.runtime);
     } catch (error: unknown) {
@@ -245,6 +247,7 @@ export class LifecycleReactor {
     }
 
     try {
+      await this.archiveArtifactsBeforeDiscard(preDeleteEntry, recordedHandles, jobId);
       const outcome = await provider.artifacts.discardArtifacts(recordedHandles, this.options.runtime);
       this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);
     } catch (error: unknown) {
@@ -255,6 +258,45 @@ export class LifecycleReactor {
         errorMessage(error),
         this.readTerminalCauseRef(sessionId, jobId),
       );
+    }
+  }
+
+  private async archiveArtifactsBeforeDiscard(
+    entry: SessionEntry,
+    handles: readonly string[],
+    jobId?: string,
+  ): Promise<void> {
+    const byJobId = new Map<string, string[]>();
+    if (jobId !== undefined) {
+      byJobId.set(jobId, [...handles]);
+    } else {
+      const artifactByHandle = new Map(entry.artifactHandles.map((artifact) => [artifact.handle, artifact]));
+      for (const handle of handles) {
+        const sourceJobId = artifactByHandle.get(handle)?.sourceJobId;
+        if (sourceJobId === undefined) {
+          continue;
+        }
+        const group = byJobId.get(sourceJobId) ?? [];
+        group.push(handle);
+        byJobId.set(sourceJobId, group);
+      }
+    }
+
+    for (const [artifactJobId, artifactHandles] of byJobId) {
+      try {
+        await archiveProviderArtifactsForJob({
+          runtime: this.options.runtime,
+          entry,
+          provider: entry.provider,
+          jobId: artifactJobId,
+          handles: artifactHandles,
+          archivedAt: new Date(this.options.time.now()).toISOString(),
+        });
+      } catch (error: unknown) {
+        this.log(
+          `Provider artifact archive failed for session ${entry.sessionId} job ${artifactJobId}: ${errorMessage(error)}`,
+        );
+      }
     }
   }
 

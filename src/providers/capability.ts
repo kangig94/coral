@@ -1,3 +1,5 @@
+import { setTimeout as delay } from 'node:timers/promises';
+
 import type {
   ArtifactCleanupRuntime,
   DiscardOutcome,
@@ -5,6 +7,9 @@ import type {
   ProviderManagedArtifactCapability,
   ProviderNoArtifactCapability,
 } from './contract.js';
+
+const FINAL_UNLINK_ATTEMPTS = 6;
+const FINAL_UNLINK_SETTLE_MS = 500;
 
 export function managed(
   impl: Pick<ProviderManagedArtifactCapability, 'discardArtifacts' | 'locateArtifact'>,
@@ -30,6 +35,20 @@ export async function discardRecordedArtifacts(
   if (handles.length === 0) {
     return { kind: 'skipped_no_handles' };
   }
+  for (let attempt = 1; attempt <= FINAL_UNLINK_ATTEMPTS; attempt += 1) {
+    unlinkAll(handles, runtime);
+    if (attempt === FINAL_UNLINK_ATTEMPTS) {
+      break;
+    }
+    await delay(FINAL_UNLINK_SETTLE_MS);
+    if (!handles.some((handle) => safeExists(handle, runtime))) {
+      break;
+    }
+  }
+  return { kind: 'discarded' };
+}
+
+function unlinkAll(handles: readonly ProviderArtifactHandle[], runtime: ArtifactCleanupRuntime): void {
   for (const handle of handles) {
     try {
       runtime.storage.unlinkSync(handle);
@@ -37,5 +56,12 @@ export async function discardRecordedArtifacts(
       /* best-effort */
     }
   }
-  return { kind: 'discarded' };
+}
+
+function safeExists(handle: ProviderArtifactHandle, runtime: ArtifactCleanupRuntime): boolean {
+  try {
+    return runtime.storage.existsSync(handle);
+  } catch {
+    return false;
+  }
 }
