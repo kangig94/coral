@@ -276,10 +276,7 @@ export async function runKbChildMain(options: KbChildMainOptions = {}): Promise<
           continue;
         }
       } catch {
-        // Plain-text shutdown remains supported for direct smoke tests and old supervisors.
-      }
-      if (trimmed.includes('shutdown')) {
-        stop(0);
+        continue;
       }
     }
   });

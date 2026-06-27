@@ -44,6 +44,9 @@ const DEBUG_SIMULATION_SCENARIOS_ROOT = ['tools', 'simulation', 'scenarios'].joi
 const RETIRED_PROVIDERS_CONTINUITY_MUTATION = ['src', 'providers', 'continuity-mutation.ts'].join('/');
 const RETIRED_STATUS_SCHEMA_FAULT = ['stale', 'status', 'schema'].join('_');
 const RETIRED_TEXT_ARTIFACT_LOCK_METHOD = ['ensureTextArtifacts', 'FreshUnderLock'].join('');
+const RETIRED_KB_CHILD_ARG = '--kb-child';
+const RETIRED_KB_CHILD_PLAINTEXT_SHUTDOWN = 'Plain-text shutdown remains supported';
+const RETIRED_KB_CHILD_OLD_SUPERVISORS = 'old supervisors';
 const PROVIDERS_ROOT = 'src/providers';
 const SESSIONS_SHELL_ROOT = 'src/sessions/shell';
 const STORE_QUERIES_ROOT = 'src/store/queries';
@@ -533,9 +536,15 @@ describe('architecture boundary guard', () => {
     assertNoViolations(violations);
   });
   it('removed-vocabulary residue must stay out of production sources', () => {
-    expect(collectProductionStringResidue([RETIRED_STATUS_SCHEMA_FAULT, RETIRED_TEXT_ARTIFACT_LOCK_METHOD])).toEqual(
-      [],
-    );
+    expect(
+      collectProductionStringResidue([
+        RETIRED_STATUS_SCHEMA_FAULT,
+        RETIRED_TEXT_ARTIFACT_LOCK_METHOD,
+        RETIRED_KB_CHILD_ARG,
+        RETIRED_KB_CHILD_PLAINTEXT_SHUTDOWN,
+        RETIRED_KB_CHILD_OLD_SUPERVISORS,
+      ]),
+    ).toEqual([]);
   });
   it('kb corpus rescan does not construct real runtime ports', () => {
     const violations = PARSED_IMPORT_EDGES.filter(
