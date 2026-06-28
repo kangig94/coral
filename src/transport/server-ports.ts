@@ -166,6 +166,11 @@ export interface HealthSnapshotPort {
   read(): HealthSnapshot;
 }
 
+export type RemoteHttpAccessPolicy = {
+  readonly mode: 'loopback' | 'address_allowlist' | 'unrestricted';
+  readonly allowedRemoteAddresses?: readonly string[];
+};
+
 export interface EventStreamHandlers {
   onJobCreated: (payload: { jobId: string; sessionId: string; provider: string; projectRoot: string }) => void;
   onPhaseChanged: (payload: { jobId: string; phase: JobPhase; previousPhase: JobPhase }) => void;
@@ -222,6 +227,7 @@ export interface HttpHandlerPorts extends RpcPorts {
   readonly identity: HandlerIdentity;
   readonly time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
+  readonly remoteAccess?: RemoteHttpAccessPolicy;
   readonly admin: AdminControlPort;
   readonly health: HealthSnapshotPort;
   readonly events: EventStreamPort;

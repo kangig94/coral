@@ -758,6 +758,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     identity,
     time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
+    remoteAccess: world.remoteAccess,
     admin: {
       getLifecycleState: () => runtimeState.getLifecycle(),
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',

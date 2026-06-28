@@ -9,6 +9,7 @@ import {
 } from '../../jobs/wait.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
+import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
 import { executeCatalogRequest } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
 import { formatZodError } from '../validation.js';
@@ -320,21 +321,6 @@ function isLoopbackHostname(hostname: string): boolean {
   return isLoopbackIpv4Literal(normalized);
 }
 
-function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
-  if (remoteAddress === undefined) {
-    return false;
-  }
-
-  const normalized = remoteAddress.trim().toLowerCase();
-  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
-    return true;
-  }
-  if (normalized.startsWith('::ffff:')) {
-    return isLoopbackIpv4Literal(normalized.slice('::ffff:'.length));
-  }
-  return isLoopbackIpv4Literal(normalized);
-}
-
 function resolveAllowedCorsOrigin(origin: string): string | null {
   try {
     const parsed = new URL(origin);
@@ -420,6 +406,50 @@ function rejectRestrictedRemoteTransportOption(
     code: 'remote_transport_option_forbidden',
     message: blocked.message,
     detail: { option: blocked.option },
+  });
+  return true;
+}
+
+function rejectDisallowedRemoteAddress(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): boolean {
+  const allowedRemoteAddresses = deps.remoteAccess?.allowedRemoteAddresses;
+  if (allowedRemoteAddresses === undefined || allowedRemoteAddresses.length === 0) {
+    return false;
+  }
+
+  const socket = req.socket as IncomingMessage['socket'] | undefined;
+  const remoteAddress = socket?.remoteAddress;
+  if (isLoopbackRemoteAddress(remoteAddress)) {
+    return false;
+  }
+
+  const normalizedRemoteAddress =
+    remoteAddress === undefined ? undefined : normalizeRemoteAddressLiteral(remoteAddress);
+  if (
+    normalizedRemoteAddress !== undefined &&
+    allowedRemoteAddresses.some(
+      (allowedAddress) => normalizeRemoteAddressLiteral(allowedAddress) === normalizedRemoteAddress,
+    )
+  ) {
+    return false;
+  }
+
+  writeAuditEvent(
+    'remote_address_blocked',
+    {
+      transport: 'http',
+      method: req.method,
+      path: req.url,
+      instanceId: deps.identity.instanceId,
+      remoteAddress,
+      normalizedRemoteAddress,
+      allowlistCount: allowedRemoteAddresses.length,
+    },
+    'warn',
+  );
+  sendJson(res, 403, {
+    code: 'remote_address_forbidden',
+    message: 'Remote address is not allowed',
+    detail: { remoteAddress },
   });
   return true;
 }
@@ -979,6 +1009,11 @@ export function createHttpHandler(
   const localRoutes = buildTransportLocalRouteTable(deps);
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (rejectDisallowedRemoteAddress(req, res, deps)) {
+      req.resume();
+      return;
+    }
+
     setCorsHeaders(req, res);
 
     if (req.method === 'OPTIONS') {

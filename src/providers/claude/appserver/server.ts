@@ -5,6 +5,7 @@ import { basename } from 'node:path';
 import process, { env as processEnv } from 'node:process';
 import type * as ClaudePty from '@lydell/node-pty';
 
+import { shouldUseWindowsCommandShell, windowsCommandName } from '../../../infra/windows-shell.js';
 import {
   CLAUDE_BROKER_BUSY_RPC_CODE,
   type BrokerShutdownResult,
@@ -286,10 +287,11 @@ export function createNodeClaudePrintChildFactory(
   errorOutput: NodeJS.WritableStream = process.stderr,
 ): (options: SpawnClaudePrintChildOptions) => ClaudePrintChild {
   return (options: SpawnClaudePrintChildOptions): ClaudePrintChild => {
-    const child = spawn('claude', buildClaudePrintChildArgs(options), {
+    const command = windowsCommandName('claude');
+    const child = spawn(command, buildClaudePrintChildArgs(options), {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options.cwd || undefined,
-      shell: process.platform === 'win32',
+      shell: shouldUseWindowsCommandShell(command),
       env: buildClaudeChildEnv(options.env),
     });
 

@@ -21,6 +21,7 @@ export const SOURCE_IMPORT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 export const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS';
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_CONVERSION_TIMEOUT_MAX_MS';
+export const SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV = 'CORAL_KB_IMPORT_CONVERSION_WORKER_MAX_OLD_MB';
 export const SOURCE_IMPORT_MARKER_DEVICE_ENV = 'CORAL_KB_IMPORT_MARKER_DEVICE';
 export const SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV = 'CORAL_KB_IMPORT_MARKER_INSTALL_TIMEOUT_MS';
 export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS';
@@ -38,6 +39,7 @@ export const SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS = 2_000;
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS = 2 * 60 * 1000;
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS = 10 * 1000;
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS = 30 * 60 * 1000;
+export const SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB = 512;
 
 const BYTES_PER_MIB = 1024 * 1024;
 
@@ -656,12 +658,24 @@ export function sourceImportConversionTimeoutMs(env: Readonly<Record<string, str
   return Math.min(maxMs, SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS + sizeMiB * perMiBMs);
 }
 
+export function sourceImportConversionWorkerMaxOldMb(env: Readonly<Record<string, string>>): number {
+  return readPositiveIntegerEnv(
+    env,
+    SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV,
+    SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB,
+  );
+}
+
 function sourceImportConversionWorkerOptions(
   ctx: SourceImportContext,
   fileSizeBytes: number,
 ): Parameters<typeof convertSourceInWorker>[1] {
+  const env = ctx.runtime.env.fullSnapshot();
   return {
-    timeoutMs: sourceImportConversionTimeoutMs(ctx.runtime.env.fullSnapshot(), fileSizeBytes),
+    timeoutMs: sourceImportConversionTimeoutMs(env, fileSizeBytes),
+    resourceLimits: {
+      maxOldGenerationSizeMb: sourceImportConversionWorkerMaxOldMb(env),
+    },
     ...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
   };
 }

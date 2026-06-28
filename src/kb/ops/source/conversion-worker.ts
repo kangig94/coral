@@ -1,5 +1,5 @@
 import * as timers from 'node:timers';
-import { Worker } from 'node:worker_threads';
+import { Worker, type WorkerOptions } from 'node:worker_threads';
 
 import { AbortError } from '../../../runtime/abort.js';
 
@@ -22,6 +22,7 @@ export type SourceConversionWorkerRequest =
 export type SourceConversionWorkerOptions = {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  readonly resourceLimits?: WorkerOptions['resourceLimits'];
 };
 
 export type SourceConversionResult = {
@@ -283,6 +284,7 @@ export async function convertSourceInWorker(
 
   const worker = new Worker(SOURCE_CONVERSION_WORKER_SOURCE, {
     eval: true,
+    resourceLimits: options.resourceLimits,
     workerData: request,
   });
   const timeoutMs = options.timeoutMs ?? SOURCE_IMPORT_CONVERSION_WORKER_TIMEOUT_MS;

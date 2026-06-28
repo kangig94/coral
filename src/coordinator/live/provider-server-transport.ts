@@ -2,6 +2,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { MAX_BUFFER } from '../../infra/process-constants.js';
+import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { appendBuffer, gracefulKill, requirePipedHandles } from './process-supervision.js';
@@ -87,11 +88,12 @@ export async function spawnProviderServerTransport(params: {
   generation: number;
 }): Promise<ProviderServerHandle> {
   const { runtime, options, generation } = params;
+  const command = windowsCommandName(options.command, runtime.env.platform());
   const child = runtime.process.spawn({
-    command: options.command,
+    command,
     args: options.args,
     cwd: options.cwd === '' ? undefined : options.cwd,
-    shell: runtime.env.platform() === 'win32',
+    shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
     envAdditions: options.extraEnv,
   });
   const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);

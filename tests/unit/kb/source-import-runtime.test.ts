@@ -12,6 +12,8 @@ import {
   SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV,
   SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
   SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV,
+  SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB,
+  SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV,
   SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS,
   SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV,
   SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS,
@@ -29,6 +31,7 @@ import {
   resolveAdminSourceImportCap,
   resolveSourceImportFile,
   sourceImportConversionTimeoutMs,
+  sourceImportConversionWorkerMaxOldMb,
   sourceImportAdminLimitExceededHint,
   type SourceImportReadPolicy,
   type SourceImportRuntime,
@@ -334,6 +337,14 @@ describe('source import runtime isolation', () => {
         20 * 1024 * 1024,
       ),
     ).toBe(130000);
+  });
+
+  it('configures source conversion worker old-generation memory limits from env', () => {
+    expect(sourceImportConversionWorkerMaxOldMb({})).toBe(SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB);
+    expect(sourceImportConversionWorkerMaxOldMb({ [SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV]: '768' })).toBe(768);
+    expect(sourceImportConversionWorkerMaxOldMb({ [SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV]: '0' })).toBe(
+      SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB,
+    );
   });
 
   it('rejects HTML converter worker output above the markdown byte cap', async () => {

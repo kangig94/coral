@@ -2196,6 +2196,7 @@ describe('execution backend server', () => {
         listDiscussSessions?: any['listDiscussSessions'];
         loadDiscussDetail?: any['loadDiscussDetail'];
         workflowExecute?: any['workflowExecute'];
+        remoteAccess?: any['remoteAccess'];
       } = {},
     ) {
       const { runtimeState, setKbOnline } = createRuntimeStateMock();
@@ -2238,6 +2239,7 @@ describe('execution backend server', () => {
           log: () => {},
         },
         coralEnvSnapshot,
+        remoteAccess: options.remoteAccess,
         runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
         idleTimer: idleTimer as never,
@@ -3864,6 +3866,81 @@ describe('execution backend server', () => {
             detail: { option: 'bypassPermissions' },
           });
           expect(fakeService.start).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects authenticated remote HTTP requests outside the configured address allowlist', async () => {
+      await withBaseCoralEnv(async () => {
+        const { deps } = createHttpHandlerDeps({
+          remoteAccess: { mode: 'address_allowlist', allowedRemoteAddresses: ['198.51.100.8'] },
+        });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/health`, {
+            headers: { 'X-Coral-Backend-Token': 'test-token' },
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_address_forbidden',
+            message: 'Remote address is not allowed',
+            detail: { remoteAddress: '203.0.113.10' },
+          });
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects disallowed remote HTTP preflight requests before granting CORS', async () => {
+      await withBaseCoralEnv(async () => {
+        const { deps } = createHttpHandlerDeps({
+          remoteAccess: { mode: 'address_allowlist', allowedRemoteAddresses: ['198.51.100.8'] },
+        });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/health`, {
+            method: 'OPTIONS',
+            headers: {
+              Origin: 'http://127.0.0.1:8787',
+              'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
+            },
+          });
+
+          expect(response.status).toBe(403);
+          expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+          expect(await response.json()).toEqual({
+            code: 'remote_address_forbidden',
+            message: 'Remote address is not allowed',
+            detail: { remoteAddress: '203.0.113.10' },
+          });
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('accepts authenticated remote HTTP requests from the configured address allowlist', async () => {
+      await withBaseCoralEnv(async () => {
+        const { deps } = createHttpHandlerDeps({
+          remoteAccess: {
+            mode: 'address_allowlist',
+            allowedRemoteAddresses: ['::ffff:203.0.113.10', '2001:0db8:0000:0000:0000:ff00:0042:8329'],
+          },
+        });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/health`, {
+            headers: { 'X-Coral-Backend-Token': 'test-token' },
+          });
+
+          expect(response.status).toBe(200);
         } finally {
           await _closeHttpServer(started.server);
         }
