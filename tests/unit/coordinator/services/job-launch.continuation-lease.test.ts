@@ -6,12 +6,13 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-project',
   pluginRoot: '/tmp/coral-plugin',
   coralEnv: {},
-  authority: 'admin',
+  principal: testProjectPrincipal('/tmp/coral-project'),
 };
 
 function sessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {

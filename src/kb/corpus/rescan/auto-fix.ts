@@ -23,8 +23,8 @@ import { stripMdExt } from '../../paths.js';
 import type { GitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, readCurateRetryQueue, upsertCurateRetryEntry } from '../../curate/retry.js';
 import { writeFileAtomic } from '../file-atomic.js';
-import { commitIndexUpdate, recordContentAndMetadataMutation, recordMetadataMutation } from '../index-mutations.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index-records.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation, recordMetadataMutation } from '../index/mutations.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '../index/records.js';
 import { sortedMarkdownEntries } from '../markdown-entries.js';
 import {
   extractBody,
@@ -132,7 +132,9 @@ export async function applyDetectedIncidentFixesLocked(
   // Snapshot the existing retry queue once so a rebuild can tell a freshly-recorded
   // incident apart from an unchanged one already queued — the latter is re-detected
   // on every rescan and must not re-log as 'enqueued'.
-  const existingByEntryId = new Map(readCurateRetryQueue(curateDb(kb)).map((row) => [String(row.entryId), row] as const));
+  const existingByEntryId = new Map(
+    readCurateRetryQueue(curateDb(kb)).map((row) => [String(row.entryId), row] as const),
+  );
 
   for (const incident of incidents) {
     let result: RepairResult;
@@ -153,7 +155,11 @@ export async function applyDetectedIncidentFixesLocked(
           gitSync.scheduleDeferredCommit();
           result = createRepairResult(incident, 'fixed', nowIsoString(kb.time));
         } else if (outcome.kind === 'manual') {
-          result = createRepairResult(incident, enqueueManualRepairLocked(kb, incident, existing), nowIsoString(kb.time));
+          result = createRepairResult(
+            incident,
+            enqueueManualRepairLocked(kb, incident, existing),
+            nowIsoString(kb.time),
+          );
         } else {
           result = createRepairResult(incident, 'skipped', nowIsoString(kb.time));
         }

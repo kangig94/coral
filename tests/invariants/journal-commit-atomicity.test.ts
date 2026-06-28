@@ -5,7 +5,7 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { KbJobRecorder } from '#src/coordinator/services/kb/recorder.js';
+import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
 import { WorkflowExecutionService } from '#src/coordinator/services/workflow-execution.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
@@ -27,15 +27,16 @@ import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
 const TEST_NAMESPACE = 'test-ns';
 const PROJECT_ROOT = '/workspace/coral';
-const KB_RECORDER_PATH = 'src/coordinator/services/kb/recorder.ts';
-const KB_SHELL_PATH = 'src/coordinator/services/kb/shell.ts';
-const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/coordinator/services/kb/source-import.ts';
-const KB_REINDEX_SERVICE_PATH = 'src/coordinator/services/kb/reindex.ts';
+const KB_RECORDER_PATH = 'src/jobs/kb/recorder.ts';
+const KB_SHELL_PATH = 'src/kb-daemon/services/shell.ts';
+const KB_SOURCE_IMPORT_SERVICE_PATH = 'src/kb-daemon/services/source-import.ts';
+const KB_REINDEX_SERVICE_PATH = 'src/kb-daemon/services/reindex.ts';
 const WORKFLOW_EXECUTOR_PATH = 'src/workflow/executor.ts';
 const WORKFLOW_RECOVER_PATH = 'src/workflow/recover.ts';
 const WORKFLOW_EXECUTION_SERVICE_PATH = 'src/coordinator/services/workflow-execution.ts';
@@ -489,7 +490,7 @@ function createRecoveryInvocationContext(projectRoot: string): InvocationContext
     projectRoot,
     pluginRoot: '/workspace/coral-plugin',
     coralEnv: {},
-    authority: 'admin',
+    principal: testProjectPrincipal(projectRoot),
   };
 }
 
@@ -615,7 +616,7 @@ describe('journal commit atomicity invariant', () => {
       expect(progress).toBeDefined();
       expect(terminal).toBeDefined();
       if (progress === undefined || terminal === undefined) {
-        throw new Error('Expected migrated KB recorder to append progress and terminal rows.');
+        throw new Error('Expected KB recorder to append progress and terminal rows.');
       }
       const progressBody = decodeEventBody(progress.body);
       const terminalBody = decodeEventBody(terminal.body);

@@ -1,7 +1,8 @@
 import { createServer, type Server } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { createMockKbDaemonSupervisor, createOnlineKbDaemonHealth } from '#tools/testing/kb-daemon-supervisor.js';
 
 const openServers = new Set<Server>();
 
@@ -105,8 +106,20 @@ afterEach(async () => {
 });
 
 describe('expansion RPC before store services exist', () => {
-  it('returns documented startup_not_ready through transport on a never-started server', async () => {
+  it('routes through the KB daemon supervisor on a never-started server', async () => {
     const token = 'test-token';
+    const bootToken = 'test-boot-token';
+    const expansionRpc = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        status: 'equipped',
+        expansion: {
+          name: 'needle',
+          tier: 'installed',
+          status: 'equipped',
+        },
+      },
+    }));
     const core = createCoordinatorCore({
       runtime: makeRuntime(),
       bootSnapshot: {
@@ -115,13 +128,14 @@ describe('expansion RPC before store services exist', () => {
         flavor: 'prod',
         instanceId: 'test-instance',
         token,
+        bootToken,
         now: () => 1_000,
         log: () => {},
       },
       createServerFn: (handler) => createServer(handler),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
     });
 
     const port = await listen(core.server);
@@ -135,11 +149,126 @@ describe('expansion RPC before store services exist', () => {
     });
     const body = (await response.json()) as Record<string, unknown>;
 
-    expect(response.status).toBe(500);
-    expect(body).toMatchObject({
-      code: 'startup_not_ready',
-      message: 'Coral backend is still starting.',
-      remediation: 'The Coral backend is still starting; retry shortly.',
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      status: 'equipped',
+      expansion: {
+        name: 'needle',
+        tier: 'installed',
+        status: 'equipped',
+      },
     });
+    expect(expansionRpc).toHaveBeenCalledWith({
+      method: 'equipExpansion',
+      args: { name: 'needle' },
+      ctx: expect.objectContaining({
+        principal: expect.objectContaining({
+          subject: 'operator',
+          binding: { kind: 'unbound' },
+        }),
+      }),
+    });
+  });
+
+  it.each([
+    {
+      code: 'kb_unavailable',
+      statusCode: 503,
+      message: 'KB daemon expansion request skipped: recovery ended in failed.',
+      remediation: 'Wait for the KB daemon runtime to become available.',
+      detail: { reason: 'kb_daemon_unavailable' },
+    },
+    {
+      code: 'unknown_expansion',
+      statusCode: 500,
+      message: 'The expansion needle is not registered in the Coral catalog.',
+      remediation: "Run 'coral-cli expansion list' to see available expansions.",
+      detail: { name: 'needle' },
+    },
+  ])('surfaces child expansion $code failures without collapsing to internal_error', async (failure) => {
+    const token = 'test-token';
+    const expansionRpc = vi.fn(async () => ({
+      ok: false as const,
+      code: failure.code,
+      message: failure.message,
+      remediation: failure.remediation,
+      detail: failure.detail,
+    }));
+    const core = createCoordinatorCore({
+      runtime: makeRuntime(),
+      bootSnapshot: {
+        version: 'test-version',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+        instanceId: 'test-instance',
+        token,
+        now: () => 1_000,
+        log: () => {},
+      },
+      createServerFn: (handler) => createServer(handler),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({ expansionRpc }),
+      runStartupRecoveryFn: async () => [],
+      getConsumerStuck: () => [],
+    });
+
+    const port = await listen(core.server);
+    const response = await fetch(`http://127.0.0.1:${port}/coordinator/expansion`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-coral-backend-token': token,
+      },
+      body: JSON.stringify({ name: 'needle' }),
+    });
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(failure.statusCode);
+    expect(body).toMatchObject({
+      code: failure.code,
+      message: failure.message,
+      userMessage: failure.message,
+      remediation: failure.remediation,
+      context: failure.detail,
+    });
+  });
+
+  it('surfaces daemon-owned mutation lock diagnostics through health without parent KB runtime access', async () => {
+    const token = 'test-token';
+    const bootToken = 'test-boot-token';
+    const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
+    const core = createCoordinatorCore({
+      runtime: makeRuntime(),
+      bootSnapshot: {
+        version: 'test-version',
+        bundleHash: 'test-bundle',
+        flavor: 'prod',
+        instanceId: 'test-instance',
+        token,
+        bootToken,
+        now: () => 1_000,
+        log: () => {},
+      },
+      createServerFn: (handler) => createServer(handler),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({
+        health: createOnlineKbDaemonHealth({
+          kbWrite: { phase: 'ready', mutationBlocked },
+        }),
+      }),
+      runStartupRecoveryFn: async () => [],
+      getConsumerStuck: () => [],
+    });
+
+    const port = await listen(core.server);
+    const response = await fetch(`http://127.0.0.1:${port}/health?detailed=1`, {
+      headers: { 'x-coral-boot-token': bootToken },
+    });
+    const body = (await response.json()) as {
+      diagnostics?: { mutationBlocked?: unknown };
+      kbDaemon?: { kbWrite?: { mutationBlocked?: unknown } };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.kbDaemon?.kbWrite?.mutationBlocked).toEqual(mutationBlocked);
+    expect(body.diagnostics?.mutationBlocked).toEqual(mutationBlocked);
   });
 });

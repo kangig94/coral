@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
-import { parseEntityMetaMap } from '#src/kb/corpus/index-store.js';
+import { parseEntityMetaMap } from '#src/kb/corpus/index/store.js';
 import type { EntityGraph } from '#src/kb/entry-types.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';

@@ -128,10 +128,10 @@ function allSourcePaths(): string[] {
 
 describe('store reset discipline invariants', () => {
   // Note: these invariants check direct call sites within the named function
-  // body — transitive calls (helper-of-helper invoking a forbidden symbol)
+  // body - transitive calls (helper-of-helper invoking a forbidden symbol)
   // are not flagged. The import-list check provides a coarser net catching
   // module-level introduction of the forbidden symbols.
-  it('keeps the read-only opener free of schema execution, reset authority, and store-file unlinking', () => {
+  it('keeps the read-only opener free of schema execution, reset authority, and store-file quarantine', () => {
     const source = sourceFile(READ_PORT_PATH);
     const calls = collectCalls(READ_PORT_PATH).filter((call) =>
       call.enclosingFunctions.includes('openReadOnlyStoreDatabase'),
@@ -142,7 +142,7 @@ describe('store reset discipline invariants', () => {
           'applyBundledStoreSchema',
           'openOrResetBackendStoreDb',
           'createBackendStoreResetAuthority',
-          'unlinkStoreFiles',
+          'quarantineStoreFiles',
           'rmSync',
           'unlinkSync',
         ].includes(call.callee),
@@ -152,7 +152,7 @@ describe('store reset discipline invariants', () => {
       .filter(ts.isImportDeclaration)
       .map((statement) => statement.getText(source))
       .filter((text) =>
-        /openOrResetBackendStoreDb|createBackendStoreResetAuthority|unlinkStoreFiles|applyBundledStoreSchema/.test(
+        /openOrResetBackendStoreDb|createBackendStoreResetAuthority|quarantineStoreFiles|applyBundledStoreSchema/.test(
           text,
         ),
       );
@@ -161,39 +161,40 @@ describe('store reset discipline invariants', () => {
     expect(forbiddenCalls).toEqual([]);
   });
 
-  it('keeps store file unlinking in openOrResetBackendStoreDb behind BackendStoreResetAuthority', () => {
+  it('keeps store file quarantine in openOrResetBackendStoreDb behind BackendStoreResetAuthority', () => {
     const resetFunction = findFunction(STORE_DB_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
     const calls = collectCalls(STORE_DB_PATH);
-    const unlinkStoreFileCalls = calls
-      .filter((call) => call.callee === 'unlinkStoreFiles')
+    const quarantineStoreFileCalls = calls
+      .filter((call) => call.callee === 'quarantineStoreFiles')
       .map((call) => `${call.relativePath}:${call.line}:${call.enclosingFunctions[0] ?? '<top>'}`);
     const directStoreUnlinks = allSourcePaths()
       .flatMap((relativePath) =>
         collectCalls(relativePath)
           .filter((call) => call.callee === 'rmSync' || call.callee === 'unlinkSync')
           .filter((call) => /store\.db|walFile|shmFile|coral\.store/.test(call.text))
-          .filter((call) => !(relativePath === STORE_DB_PATH && call.enclosingFunctions.includes('unlinkStoreFiles')))
           .map((call) => `${call.relativePath}:${call.line} ${call.text}`),
       )
       .sort();
 
     expect(authorityParam?.name.getText(sourceFile(STORE_DB_PATH))).toBe('authority');
     expect(authorityParam?.type?.getText(sourceFile(STORE_DB_PATH))).toBe('BackendStoreResetAuthority');
-    expect(unlinkStoreFileCalls).toEqual([expect.stringMatching(/^src\/store\/db\.ts:\d+:openOrResetBackendStoreDb$/)]);
+    expect(quarantineStoreFileCalls).toEqual([
+      expect.stringMatching(/^src\/store\/db\.ts:\d+:openOrResetBackendStoreDb$/),
+    ]);
     expect(directStoreUnlinks).toEqual([]);
   });
 
-  it('keeps unlinkStoreFiles ordered after reset-lock acquisition', () => {
+  it('keeps quarantineStoreFiles ordered after reset-lock acquisition', () => {
     const source = sourceFile(STORE_DB_PATH);
     const resetFunction = findFunction(STORE_DB_PATH, 'openOrResetBackendStoreDb');
     const body = resetFunction.body;
     expect(body).toBeDefined();
     const bodyText = body?.getText(source) ?? '';
     const lockIndex = bodyText.indexOf('acquireDirectoryLockSync(');
-    const unlinkIndex = bodyText.indexOf('unlinkStoreFiles(');
+    const quarantineIndex = bodyText.indexOf('quarantineStoreFiles(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
-    expect(unlinkIndex).toBeGreaterThan(lockIndex);
+    expect(quarantineIndex).toBeGreaterThan(lockIndex);
   });
 });

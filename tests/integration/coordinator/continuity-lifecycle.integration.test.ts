@@ -40,6 +40,7 @@ import type { AgentConfig } from '#src/discuss/shell/types.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -128,7 +129,12 @@ describe('coordinator continuity lifecycle integration', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-continuity-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
+    ctx = {
+      projectRoot,
+      pluginRoot: join(projectRoot, 'plugin'),
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    };
     mkdirSync(ctx.pluginRoot, { recursive: true });
     runtime = createRealRuntime('prod');
     eventBus = new TypedEventBus();

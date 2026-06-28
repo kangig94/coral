@@ -2,7 +2,7 @@ import oramaExpansion from '#src/engines/orama/expansion.js';
 import { needleInstaller } from '#src/engines/needle/install.js';
 import { KIWI_INSTALLER_VERSION, kiwiInstaller } from '#src/engines/kiwi/install.js';
 import type { EngineManifest, Expansion, ExpansionHost, InstallOnlyManifest } from './contract.js';
-import { parseEngineManifests } from './manifest-schema.js';
+import { parseEngineManifests } from './manifest/schema.js';
 
 const PACKAGE_VERSION = '0.5.2';
 

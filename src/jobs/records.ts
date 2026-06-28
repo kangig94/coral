@@ -124,12 +124,14 @@ export interface AppServerRuntime {
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
     providerContinuity?: ProviderContinuityBlob;
+    claudeTransport?: string;
   };
 }
 
 export interface InternalJobRuntime {
   transport: 'internal';
   operation: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
+  owner?: 'parent' | 'kb-daemon';
   startTime: string;
 }
 

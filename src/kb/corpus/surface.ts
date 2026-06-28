@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { noteEntryId, sourceEntryId, wikiEntryId } from '../entry-types.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry } from './index-records.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry } from './index/records.js';
 import type { KbIndexMutationLane } from '../contract.js';
 import { mergeMutationLane } from './lanes.js';
 import {

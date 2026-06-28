@@ -224,7 +224,14 @@ export interface FtsHit {
 
 export interface FtsSearchResult {
   readonly hits: readonly FtsHit[];
-  /** True when the engine has no more results past the requested topK. */
+  /**
+   * `true` means widening cannot surface more results — the KB-tier widening
+   * loop (`kb/search/text-retrieval.ts`) stops and re-querying with a larger
+   * `topK` is pointless. Any path that returns early on a hard cap, an empty
+   * index, or a truncated scan MUST set this to `true`: reporting `false` with
+   * no hits invites the loop to double `topK` forever against a limit it cannot
+   * raise.
+   */
   readonly exhausted: boolean;
 }
 

@@ -10,7 +10,7 @@ import {
   isGitSyncResult,
   type InboundSyncMutationDiff,
 } from './inbound-sync.js';
-import type { KbIndexStore } from './index-store.js';
+import type { KbIndexStore } from './index/store.js';
 import type { ManifestAuthority } from './manifest-authority.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockController } from './mutation-lock.js';

@@ -41,6 +41,8 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -76,7 +78,7 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
         inflightRequests: 0,
         textProjectionState: 'idle',
         env: {},
-        subsystems: [{ id: 'kb', phase: 'online' as const }],
+        components: [{ id: 'kb', phase: 'online' as const }],
       }),
     },
     events: {
@@ -191,15 +193,15 @@ describe('subscription carriage', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      const subscription = await createIpcClient(socketPath).subscribe<ReturnType<typeof makeWaitEvents>[number]>(
-        'jobs.wait',
-        {
-          jobIds: ['job-1'],
-          projectRoot: '/tmp/project',
-          timeoutSeconds: 30,
-          cursor: expectedCursor,
-        },
-      );
+      const subscription = await createIpcClient(socketPath, undefined, {
+        kind: 'boot',
+        token: 'test-boot-token',
+      }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
+        jobIds: ['job-1'],
+        projectRoot: '/tmp/project',
+        timeoutSeconds: 30,
+        cursor: expectedCursor,
+      });
       const received: Array<ReturnType<typeof makeWaitEvents>[number]> = [];
 
       for await (const event of subscription) {
@@ -239,14 +241,14 @@ describe('subscription carriage', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      const subscription = await createIpcClient(socketPath).subscribe<ReturnType<typeof makeWaitEvents>[number]>(
-        'jobs.wait',
-        {
-          jobIds: ['job-1'],
-          projectRoot: '/tmp/project',
-          timeoutSeconds: 30,
-        },
-      );
+      const subscription = await createIpcClient(socketPath, undefined, {
+        kind: 'boot',
+        token: 'test-boot-token',
+      }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
+        jobIds: ['job-1'],
+        projectRoot: '/tmp/project',
+        timeoutSeconds: 30,
+      });
 
       expect(listener.sockets.size).toBe(1);
       const serverSocket = Array.from(listener.sockets)[0];
@@ -270,15 +272,15 @@ describe('subscription carriage', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      const ipcSubscription = await createIpcClient(socketPath).subscribe<ReturnType<typeof makeWaitEvents>[number]>(
-        'jobs.wait',
-        {
-          jobIds: ['job-1'],
-          projectRoot: '/tmp/project',
-          timeoutSeconds: 30,
-          cursor: expectedCursor,
-        },
-      );
+      const ipcSubscription = await createIpcClient(socketPath, undefined, {
+        kind: 'boot',
+        token: 'test-boot-token',
+      }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
+        jobIds: ['job-1'],
+        projectRoot: '/tmp/project',
+        timeoutSeconds: 30,
+        cursor: expectedCursor,
+      });
       const ipcEvents: Array<ReturnType<typeof makeWaitEvents>[number]> = [];
       for await (const event of ipcSubscription) {
         ipcEvents.push(event);

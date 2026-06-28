@@ -16,6 +16,7 @@ import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { JobStore } from '#src/jobs/store.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import {
   appendPersistedEvents,
@@ -24,6 +25,7 @@ import {
   createExecutionServiceStub,
   persistSession,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type HttpStream = {
   response: ClientIncomingMessage;
@@ -40,9 +42,6 @@ function createStoreServices(progressStore: JobStore): CoordinatorStoreServices 
   return {
     storeDb: progressStore.getDb(),
     progressStore,
-    expansionManifestCatalog: {} as never,
-    expansionStateStore: {} as never,
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
 }
@@ -187,6 +186,7 @@ describe('server discuss API', () => {
         bootSnapshot: {
           instanceId: 'server-discuss-api-test',
           token: 'test-token',
+          bootToken: 'test-boot-token',
           version: '9.9.9',
           bundleHash: 'test-hash',
           flavor: 'prod',
@@ -198,9 +198,9 @@ describe('server discuss API', () => {
         closeServerFn: async (server) => {
           await new Promise<void>((resolve) => server.close(() => resolve()));
         },
+        kbDaemonSupervisor: createMockKbDaemonSupervisor(),
         runStartupRecoveryFn: async () => [],
         getConsumerStuck: () => [],
-        getMutationBlocked: () => ({ blocked: false }),
       });
       setStoreServicesForTest(core.storeServicesRef, createStoreServices(progressStore), { storeDbPath: ':memory:' });
       const liveSessions = [...registry.contexts.entries()].flatMap(([projectRoot, context]) =>
@@ -217,7 +217,7 @@ describe('server discuss API', () => {
           projectRoot: session.projectRoot,
           pluginRoot: core.identity.pluginRoot,
           coralEnv: {},
-          authority: 'admin',
+          principal: testProjectPrincipal(session.projectRoot),
         });
         attachSession(ctx, session.snapshot, session.watchBuffer, session.abortEnded);
       }
@@ -242,6 +242,8 @@ describe('server discuss API', () => {
           port,
           host: '127.0.0.1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
+          shutdownToken: 'test-shutdown-token',
           socketPath: '',
           version: '9.9.9',
           bundleHash: 'test-hash',
@@ -267,6 +269,7 @@ describe('server discuss API', () => {
       bootSnapshot: {
         instanceId: 'server-discuss-api-test',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         version: '9.9.9',
         bundleHash: 'test-hash',
         flavor: 'prod',
@@ -274,17 +277,7 @@ describe('server discuss API', () => {
       },
       discussRegistry: registry,
       createExecutionService: () => service as never,
-      createKbSubsystemFn: async () => ({
-        kb: {} as never,
-        readDb: {} as never,
-        curateScheduler: {
-          start: async () => {},
-          schedule: () => {},
-          scheduleDeferredCommit: () => {},
-          isRunning: () => false,
-          stop: async () => {},
-        },
-      }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
     });
     const started = await controller.start();
     return {

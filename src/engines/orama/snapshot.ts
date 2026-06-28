@@ -1,11 +1,15 @@
+import { setImmediate as waitImmediate } from 'node:timers/promises';
+
 import { load, save, type RawData } from '@orama/orama';
 
+import { backendLog } from '../../infra/backend-log.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import type { KbCorpusSnapshot, KbProjectionArtifactFilePort } from '../../kb/contract.js';
 import {
   computeOramaArtifactDigest,
   createOramaEntryManifestFromArtifact,
   createOramaProjectionMetadata,
+  createOramaProjectionMetadataBase,
   oramaProjectionTokenizerTier,
   readOramaProjectionArtifact,
   readOramaProjectionMetadata,
@@ -15,6 +19,9 @@ import {
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb, type OramaTokenizerAnalyzer } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
+import { serializeOramaProjectionArtifactInWorker } from './snapshot-worker.js';
+
+export const ORAMA_SNAPSHOT_SAVE_WARN_MS = 250;
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;
@@ -24,7 +31,8 @@ export interface KbCachedOramaIndex {
 }
 
 export type OramaSnapshotPorts = {
-  files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'>;
+  files: Pick<KbProjectionArtifactFilePort, 'existsSync' | 'readFileSync' | 'rmSync' | 'writeJsonAtomic'> &
+    Partial<Pick<KbProjectionArtifactFilePort, 'writeTextAtomic'>>;
 };
 
 export type OramaSnapshotLoadOptions = {
@@ -130,7 +138,45 @@ export class OramaSnapshotStore {
     db: KbOramaDb,
     identityInput: OramaProjectionIdentityInput = {},
   ): OramaProjectionMetadata {
+    const snapshot = this.saveSnapshotWithTiming(db);
+    return this.persistSavedSnapshot(projected, snapshot, identityInput);
+  }
+
+  async persistAsync(
+    projected: KbCorpusSnapshot,
+    db: KbOramaDb,
+    identityInput: OramaProjectionIdentityInput = {},
+  ): Promise<OramaProjectionMetadata> {
+    await waitImmediate();
+    const snapshot = this.saveSnapshotWithTiming(db);
+    if (this.ports.files.writeTextAtomic === undefined) {
+      return this.persistSavedSnapshot(projected, snapshot, identityInput);
+    }
+
+    const artifact = await serializeOramaProjectionArtifactInWorker(
+      snapshot,
+      createOramaProjectionMetadataBase(projected, identityInput),
+    );
+    this.ports.files.writeTextAtomic(oramaIndexPath(this.runtimeDir), artifact.artifactRaw);
+    this.ports.files.writeTextAtomic(oramaIndexMetadataPath(this.runtimeDir), artifact.metadataRaw);
+    return artifact.metadata;
+  }
+
+  private saveSnapshotWithTiming(db: KbOramaDb): RawData {
+    const startedAt = Date.now();
     const snapshot = save(db) as unknown as RawData;
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= ORAMA_SNAPSHOT_SAVE_WARN_MS) {
+      backendLog.warn(`[orama] snapshot save took ${elapsedMs}ms on the daemon thread`);
+    }
+    return snapshot;
+  }
+
+  private persistSavedSnapshot(
+    projected: KbCorpusSnapshot,
+    snapshot: RawData,
+    identityInput: OramaProjectionIdentityInput,
+  ): OramaProjectionMetadata {
     const artifactPath = oramaIndexPath(this.runtimeDir);
     this.ports.files.writeJsonAtomic(artifactPath, snapshot);
     const artifactRaw = this.ports.files.readFileSync(artifactPath, 'utf-8');

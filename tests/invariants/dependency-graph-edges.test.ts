@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
-import { initializeCapabilityCatalog } from '#src/expansion/manifest-fills-validation.js';
+import { ExpansionLifecycleService } from '#src/kb-daemon/expansion/lifecycle.js';
+import type { ExpansionStateRow, ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
+import { initializeCapabilityCatalog } from '#src/expansion/manifest/fills-validation.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,

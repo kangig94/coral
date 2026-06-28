@@ -1,6 +1,8 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { dirname, join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { basename, dirname, join, resolve } from 'node:path';
 
+import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import type { StoragePort } from '../infra/port-types.js';
@@ -116,13 +118,13 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
 
 type StoreSchemaClassification =
   | { kind: 'fresh'; userVersion: 0; storedVersion: 0 }
-  | { kind: 'legacy'; userVersion: 0; storedVersion: number }
+  | { kind: 'retired'; userVersion: 0; storedVersion: number }
   | { kind: 'current'; userVersion: number; storedVersion: number }
   | { kind: 'mismatch'; userVersion: number; storedVersion: number };
 
 const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
 
-const CORAL_LEGACY_TABLES = [
+const CORAL_RETIRED_TABLES = [
   'events',
   'projection_jobs',
   'projection_sessions',
@@ -151,7 +153,7 @@ function hasUserTable(db: Database): boolean {
   return db.prepare(USER_TABLE_EXISTS_SQL).get() !== undefined;
 }
 
-function readLegacyMetaSchemaVersion(db: Database): number | null {
+function readRetiredMetaSchemaVersion(db: Database): number | null {
   try {
     const row = db
       .prepare<[], { value?: unknown }>("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1")
@@ -169,8 +171,8 @@ function readLegacyMetaSchemaVersion(db: Database): number | null {
   }
 }
 
-function hasCoralLegacyTable(db: Database): boolean {
-  const quotedNames = CORAL_LEGACY_TABLES.map((name) => `'${name}'`).join(', ');
+function hasCoralRetiredTable(db: Database): boolean {
+  const quotedNames = CORAL_RETIRED_TABLES.map((name) => `'${name}'`).join(', ');
   return (
     db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name IN (${quotedNames}) LIMIT 1`).get() !==
     undefined
@@ -191,9 +193,9 @@ function classifyStoreSchema(db: Database): StoreSchemaClassification {
     if (!hasUserTable(db)) {
       return { kind: 'fresh', userVersion: 0, storedVersion: 0 };
     }
-    const legacyMetaVersion = readLegacyMetaSchemaVersion(db);
-    if (legacyMetaVersion !== null || hasCoralLegacyTable(db)) {
-      return { kind: 'legacy', userVersion: 0, storedVersion: legacyMetaVersion ?? 0 };
+    const retiredMetaVersion = readRetiredMetaSchemaVersion(db);
+    if (retiredMetaVersion !== null || hasCoralRetiredTable(db)) {
+      return { kind: 'retired', userVersion: 0, storedVersion: retiredMetaVersion ?? 0 };
     }
   }
 
@@ -308,6 +310,30 @@ type StoreFileSet = {
   readonly shmFile: string;
 };
 
+type StoreResetQuarantineFile = {
+  readonly name: string;
+  readonly source: string;
+  readonly quarantinedPath: string;
+  readonly sizeBytes: number;
+  readonly mtimeMs: number;
+  readonly sha256: string;
+};
+
+type StoreResetQuarantineManifest = {
+  readonly schemaVersion: 1;
+  readonly resetAt: string;
+  readonly pid: number;
+  readonly reason: StoreSchemaClassification['kind'];
+  readonly userVersion: number;
+  readonly storedVersion: number;
+  readonly expectedVersion: number;
+  readonly dbFile: string;
+  readonly quarantineDir: string;
+  readonly files: StoreResetQuarantineFile[];
+};
+
+const STORE_RESET_QUARANTINE_MANIFEST = 'reset-manifest.json';
+
 function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): string {
   if (options.path === ':memory:') {
     return ':memory:';
@@ -404,18 +430,132 @@ function assertResetAuthority(
   }
 }
 
-function warnBackendStoreReset(classification: StoreSchemaClassification): void {
+function warnBackendStoreReset(classification: StoreSchemaClassification, quarantineDir: string | undefined): void {
   backendLog.warn(
     `Backend store schema mismatch (stored marker ${classification.storedVersion}, expected ${EXPECTED_SCHEMA_MARKER}); ` +
-      'resetting backend store. In-flight job, discuss, and workflow state will be ' +
+      'resetting backend store. ' +
+      (quarantineDir === undefined ? '' : `Previous store files were quarantined at ${quarantineDir}. `) +
+      'In-flight job, discuss, and workflow state will be ' +
       'lost (KB markdown corpus is unaffected).',
   );
 }
 
-function unlinkStoreFiles(storage: StoragePort, files: StoreFileSet): void {
-  storage.rmSync(files.dbFile, { force: true });
-  storage.rmSync(files.walFile, { force: true });
-  storage.rmSync(files.shmFile, { force: true });
+function fileDigestSha256(storage: StoragePort, path: string): string {
+  const fd = storage.openSync(path, 'r');
+  try {
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    while (true) {
+      const bytesRead = storage.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    return hash.digest('hex');
+  } finally {
+    storage.closeSync(fd);
+  }
+}
+
+function describeQuarantineFile(
+  storage: StoragePort,
+  source: string,
+  name: string,
+  quarantinedPath: string,
+): StoreResetQuarantineFile {
+  const stat = storage.statSync(source);
+  return {
+    name,
+    source,
+    quarantinedPath,
+    sizeBytes: stat.size,
+    mtimeMs: stat.mtimeMs,
+    sha256: fileDigestSha256(storage, source),
+  };
+}
+
+function writeStoreResetManifest(
+  storage: StoragePort,
+  manifestPath: string,
+  manifest: StoreResetQuarantineManifest,
+): void {
+  storage.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+}
+
+function quarantineStoreFiles(
+  storage: StoragePort,
+  files: StoreFileSet,
+  classification: StoreSchemaClassification,
+  identity: { nowMs: number; pid: number },
+): string | undefined {
+  const candidates = [
+    { source: files.dbFile, name: basename(files.dbFile) },
+    { source: files.walFile, name: basename(files.walFile) },
+    { source: files.shmFile, name: basename(files.shmFile) },
+  ].filter((entry) => storage.existsSync(entry.source));
+
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const resetAt = new Date(identity.nowMs).toISOString();
+  const stamp = resetAt.replace(/[:.]/g, '-');
+  const quarantineDir = join(
+    files.dbDir,
+    'store-reset-quarantine',
+    `${stamp}-pid-${identity.pid}-stored-${classification.storedVersion}-expected-${EXPECTED_SCHEMA_MARKER}`,
+  );
+
+  try {
+    const manifestFiles = candidates.map((entry) =>
+      describeQuarantineFile(storage, entry.source, entry.name, join(quarantineDir, entry.name)),
+    );
+    storage.mkdirSync(quarantineDir, { recursive: true });
+    for (const entry of candidates) {
+      storage.renameSync(entry.source, join(quarantineDir, entry.name));
+    }
+    writeStoreResetManifest(storage, join(quarantineDir, STORE_RESET_QUARANTINE_MANIFEST), {
+      schemaVersion: 1,
+      resetAt,
+      pid: identity.pid,
+      reason: classification.kind,
+      userVersion: classification.userVersion,
+      storedVersion: classification.storedVersion,
+      expectedVersion: EXPECTED_SCHEMA_MARKER,
+      dbFile: files.dbFile,
+      quarantineDir,
+      files: manifestFiles,
+    });
+    writeAuditEvent(
+      'store_reset_quarantine',
+      {
+        resetAt,
+        pid: identity.pid,
+        reason: classification.kind,
+        userVersion: classification.userVersion,
+        storedVersion: classification.storedVersion,
+        expectedVersion: EXPECTED_SCHEMA_MARKER,
+        dbFile: files.dbFile,
+        quarantineDir,
+        fileCount: manifestFiles.length,
+        files: manifestFiles,
+      },
+      'warn',
+    );
+  } catch (error: unknown) {
+    throw documentedCoralSetupError({
+      code: 'store_reset_quarantine_failed',
+      quarantineDir,
+      dbFile: files.dbFile,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return quarantineDir;
 }
 
 function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'>): StoreSchemaClassification {
@@ -434,7 +574,7 @@ function classifyStoreFile(path: string, storage: Pick<StoragePort, 'existsSync'
 }
 
 export function openOrResetBackendStoreDb(
-  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'paths' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   options: OpenOrResetBackendStoreOptions = {},
 ): Database {
@@ -463,9 +603,12 @@ export function openOrResetBackendStoreDb(
     }
 
     const classification = classifyStoreFile(files.dbFile, runtime.storage);
-    if (classification.kind === 'legacy' || classification.kind === 'mismatch') {
-      warnBackendStoreReset(classification);
-      unlinkStoreFiles(runtime.storage, files);
+    if (classification.kind === 'retired' || classification.kind === 'mismatch') {
+      const quarantineDir = quarantineStoreFiles(runtime.storage, files, classification, {
+        nowMs: runtime.time.now(),
+        pid: runtime.env.pid(),
+      });
+      warnBackendStoreReset(classification, quarantineDir);
     }
 
     return openStoreDatabase({

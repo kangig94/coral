@@ -50,6 +50,8 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -586,7 +588,7 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+  return { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) };
 }
 
 function _isoAt(ms: number): string {
@@ -612,6 +614,8 @@ function createSessionTransportPorts(service: ExecutionService, pluginRoot: stri
     identity: {
       pluginRoot,
       token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -686,7 +690,12 @@ describe('ExecutionService launch', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
+    ctx = {
+      projectRoot,
+      pluginRoot: join(projectRoot, 'plugin'),
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
@@ -776,7 +785,7 @@ describe('ExecutionService launch', () => {
       spec,
       request,
       createSessionTransportPorts(service, ctx.pluginRoot),
-      'admin',
+      testProjectPrincipal(ctx.projectRoot),
     );
 
     expect(response.kind).toBe('unary');
@@ -894,6 +903,7 @@ describe('ExecutionService launch', () => {
         emit({
           kind: 'artifact_handle',
           handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
+          identity: { kind: 'test-artifact', threadId: 'thread-1' },
         });
         emit(
           providerContinuityEvent({
@@ -1061,6 +1071,7 @@ describe('ExecutionService launch', () => {
       command: process.execPath,
       args: ['broker.js'],
       cwd: process.cwd(),
+      env: { [CONTEXT_ENV_KEY.claudeTransport]: 'print' },
       shared: true as const,
     };
     const requestGate = createDeferred<void>();
@@ -1158,6 +1169,7 @@ describe('ExecutionService launch', () => {
         provider: 'claude',
         leaseState: 'acquired',
         serverGeneration: 41,
+        claudeTransport: 'print',
       },
     });
 

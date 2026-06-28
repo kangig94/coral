@@ -54,7 +54,7 @@ export class SimulationRuntime implements Runtime {
       return child;
     };
     simulationProcess.kill = (pid, signal) => {
-      this.spawner.kill(pid, signal);
+      return this.spawner.kill(pid, signal);
     };
     simulationProcess.isAlive = (pid) => this.spawner.isAlive(pid);
     simulationProcess.durable = this.spawner.durable;
@@ -71,6 +71,7 @@ export class SimulationRuntime implements Runtime {
         timeoutMs: execOptions.timeout,
         maxBuffer: execOptions.maxBuffer,
         encoding: execOptions.encoding ?? 'utf-8',
+        killProcessGroup: this.env.platform() !== 'win32',
         spawn: simulationProcess.spawn,
         kill: simulationProcess.kill,
         setTimeout: (fn, ms) => this.time.setTimeout(fn, ms),

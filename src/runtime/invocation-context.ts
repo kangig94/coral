@@ -1,8 +1,8 @@
-export type Authority = 'admin' | 'user';
+import type { Principal } from '../security/principal.js';
 
 export type InvocationContext = {
   projectRoot: string;
   pluginRoot: string;
   coralEnv: Record<string, string>;
-  authority: Authority;
+  principal: Principal;
 };

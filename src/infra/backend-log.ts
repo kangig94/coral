@@ -15,7 +15,7 @@
 let _tag = '';
 
 // Per-prefix capture of the most recent message starting with `[<prefix>...]`.
-// Subsystems (e.g. KB) populate `lastLogLine` on `offline` status by reading
+// Runtime Components (e.g. KB) populate `lastLogLine` on `offline` status by reading
 // the slot for their bracket prefix — avoids a 21MB log grep at status time.
 const _lastByPrefix = new Map<string, string>();
 

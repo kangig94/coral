@@ -55,9 +55,12 @@ type ClaudeOneShotState = {
 
 export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
   const state = createOneShotState();
-  const lease = await deps.acquireServer(buildClaudeProviderServerSpec({ cwd: request.cwd }, deps.storage), {
-    signal: request.signal,
-  });
+  const lease = await deps.acquireServer(
+    buildClaudeProviderServerSpec({ cwd: request.cwd, coralEnv: request.controllerEnv }, deps.storage),
+    {
+      signal: request.signal,
+    },
+  );
   const unsubscribe = lease.subscribe((message) => {
     applyOneShotNotification(state, message);
   });

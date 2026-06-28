@@ -3,8 +3,8 @@
  * interface. Owned by the `expansion` domain so transport and CLI can
  * import the contract without crossing into `coordinator/`.
  *
- * Coordinator-side wiring (factories that bind the port to
- * `ExpansionLifecycleService`) lives at `src/coordinator/expansion/rpc.ts`.
+ * KB daemon-side wiring (factories that bind the port to
+ * `ExpansionLifecycleService`) lives at `src/kb-daemon/expansion/rpc.ts`.
  */
 import { z } from 'zod';
 import { retrievalRoleDescriptorSchema } from '../kb/search/contract.js';
@@ -13,6 +13,7 @@ import {
   kbCapabilityNameSchema,
   type KbCapabilityStatus,
 } from '../kb/capability/contract.js';
+import type { Principal } from '../security/principal.js';
 import type { EngineManifestProvides } from './contract.js';
 
 const expansionCatalogStatusLiterals = [
@@ -298,11 +299,14 @@ export const readBindingResultSchema = z
 export type ReadBindingResult = z.infer<typeof readBindingResultSchema>;
 
 export interface ExpansionRequestPort {
-  equipExpansion(request: EquipExpansionRequest): Promise<EquipExpansionResult>;
-  unequipExpansion(request: UnequipExpansionRequest): Promise<UnequipExpansionResult>;
-  removeExpansionCatalog(request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult>;
-  listExpansion(request: ListExpansionRequest): Promise<ListExpansionResult>;
-  readBinding(request: ReadBindingRequest): Promise<ReadBindingResult>;
+  equipExpansion(request: EquipExpansionRequest, principal: Principal): Promise<EquipExpansionResult>;
+  unequipExpansion(request: UnequipExpansionRequest, principal: Principal): Promise<UnequipExpansionResult>;
+  removeExpansionCatalog(
+    request: RemoveExpansionCatalogRequest,
+    principal: Principal,
+  ): Promise<RemoveExpansionCatalogResult>;
+  listExpansion(request: ListExpansionRequest, principal: Principal): Promise<ListExpansionResult>;
+  readBinding(request: ReadBindingRequest, principal: Principal): Promise<ReadBindingResult>;
 }
 
 const installedResultSchema = z

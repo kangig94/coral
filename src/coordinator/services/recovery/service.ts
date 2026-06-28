@@ -26,6 +26,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
+import { CONTEXT_ENV_KEY } from '../../../transport/context-profile.js';
 import {
   FINALIZE_CONTINUITY_MAX_RETRIES,
   buildInterruptedAppServerReport,
@@ -50,6 +51,14 @@ function requireProviderLaunchRecord(
   if (launchRecord.jobKind === 'kb' || launchRecord.sessionId === null || launchRecord.provider === null) {
     throw new Error(`${operation} requires a provider launch record.`);
   }
+}
+
+function readClaudeTransportMode(spec: ProviderServerSpec): string | undefined {
+  if (spec.provider !== 'claude') {
+    return undefined;
+  }
+  const value = spec.env?.[CONTEXT_ENV_KEY.claudeTransport];
+  return value === undefined || value.length === 0 ? undefined : value;
 }
 
 function interruptedContinuityState(
@@ -104,8 +113,12 @@ export class RecoveryService {
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
+    const claudeTransport = readClaudeTransportMode(spec);
     if (options?.jobId) {
-      this.writeAppServerRuntimeRecord(options.jobId, spec.provider, { leaseState: 'waiting' });
+      this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
+        leaseState: 'waiting',
+        ...(claudeTransport === undefined ? {} : { claudeTransport }),
+      });
     }
 
     const lease = await this.deps.providerHostManager.acquireServer(spec, { signal: options?.signal });
@@ -113,6 +126,7 @@ export class RecoveryService {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
         leaseState: 'acquired',
         serverGeneration: lease.generation,
+        ...(claudeTransport === undefined ? {} : { claudeTransport }),
       });
     }
     return lease;
@@ -352,7 +366,7 @@ export class RecoveryService {
         expectedVersion,
         provider: input.provider,
         handle: artifact.handle,
-        ...(artifact.identity === undefined ? {} : { identity: artifact.identity }),
+        identity: artifact.identity,
         sourceJobId: artifact.sourceJobId ?? input.jobId,
       });
       if (!recorded.ok) {
@@ -478,6 +492,7 @@ export class RecoveryService {
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
         providerContinuity: update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
+        claudeTransport: update.claudeTransport ?? appRuntime?.providerMeta.claudeTransport,
       },
     };
     this.deps.progressStore.appendRuntimeStarted(jobId, record);

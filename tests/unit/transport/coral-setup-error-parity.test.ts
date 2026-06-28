@@ -64,6 +64,8 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -99,7 +101,7 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
         inflightRequests: 0,
         textProjectionState: 'idle',
         env: {},
-        subsystems: [{ id: 'kb', phase: 'online' as const }],
+        components: [{ id: 'kb', phase: 'online' as const }],
       }),
     },
     events: {
@@ -184,7 +186,8 @@ async function startHttpServer(ports: HttpHandlerPorts): Promise<{ baseUrl: stri
   const server = createServer((req, res) => {
     void handler(req, res).catch((error) => {
       if (!res.headersSent) {
-        sendJson(res, 500, buildTransportErrorResponse(error).body);
+        const response = buildTransportErrorResponse(error);
+        sendJson(res, response.statusCode, response.body);
         return;
       }
       res.destroy();
@@ -217,7 +220,14 @@ async function requestIpcErrorPayload(
   expected: SerializedCoralSetupError,
 ): Promise<SerializedCoralSetupError> {
   try {
-    await requestIpcMethod(socketPath, 'coordinator.equipExpansion', { name: 'needle' });
+    await requestIpcMethod(
+      socketPath,
+      'coordinator.equipExpansion',
+      { name: 'needle' },
+      {
+        auth: { kind: 'boot', token: 'test-boot-token' },
+      },
+    );
   } catch (error: unknown) {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(expected.userMessage);

@@ -83,10 +83,10 @@ describe('cleanupStaleJobs', () => {
 
   it('prunes an aged terminal job that carries no bundleHash', () => {
     const { pruned, purged } = runCleanup({
-      legacy: status({ phase: 'aborted', updatedAt: ago(20) }),
+      retired: status({ phase: 'aborted', updatedAt: ago(20) }),
     });
-    expect(pruned).toEqual(['legacy']);
-    expect(purged).toEqual(['legacy']);
+    expect(pruned).toEqual(['retired']);
+    expect(purged).toEqual(['retired']);
   });
 
   it('keeps a recent terminal job that carries no bundleHash', () => {

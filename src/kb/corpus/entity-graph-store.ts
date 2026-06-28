@@ -5,7 +5,7 @@ import { isRecord } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { EntityGraph } from '../entry-types.js';
 import type { FileAtomicHost } from './file-atomic.js';
-import { parseEntityMetaMap, parseEntityRelationships, writeJsonAtomic } from './index-store.js';
+import { parseEntityMetaMap, parseEntityRelationships, writeJsonAtomic } from './index/store.js';
 
 export function parseEntityGraph(value: unknown): EntityGraph {
   if (!isRecord(value) || !('entityMeta' in value) || !('relationships' in value)) {

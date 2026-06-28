@@ -326,7 +326,7 @@ describe('planRecovery', () => {
     ]);
   });
 
-  it('marks live internal KB jobs as wrapper_lost instead of provider recovery', () => {
+  it('marks stale daemon-owned internal KB jobs as wrapper_lost instead of provider recovery', () => {
     const status = makeStatus('kb-reindex-job', 'running', {
       sessionId: null,
       provider: null,
@@ -340,6 +340,7 @@ describe('planRecovery', () => {
       runtime: {
         transport: 'internal',
         operation: 'kb.reindex',
+        owner: 'kb-daemon',
         startTime: NOW,
       },
     });

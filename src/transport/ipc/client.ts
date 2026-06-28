@@ -2,7 +2,7 @@ import { createConnection, type Socket } from 'node:net';
 import { errorMessage } from '../../infra/error-format.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { createRealTimePort } from '../../infra/time.js';
-import { encode, decode, type JsonRpcEnvelope, type JsonRpcRequestEnvelope } from './json-rpc.js';
+import { encode, decode, type IpcAuthMetadata, type JsonRpcEnvelope, type JsonRpcRequestEnvelope } from './json-rpc.js';
 import { createLineFramer } from '../line-framing.js';
 import type { TimePort } from '../../infra/port-types.js';
 
@@ -19,13 +19,18 @@ const IPC_RETRY_BACKOFF_MS = 100;
 export type IpcRequestOptions = {
   timeoutMs?: number;
   time?: TimePort;
+  auth?: IpcAuthMetadata | IpcAuthProvider | null;
 };
 
 export type IpcSubscriptionOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   time?: TimePort;
+  auth?: IpcAuthMetadata | IpcAuthProvider | null;
 };
+
+export type IpcAuthProvider = () => IpcAuthMetadata | undefined;
+export type IpcClientAuth = IpcAuthMetadata | IpcAuthProvider;
 
 export type IpcSubscription<TResult> = AsyncIterable<TResult> & {
   close(): Promise<void>;
@@ -39,6 +44,7 @@ export type IpcClient = {
     params?: unknown,
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>>;
+  ping<TResult>(options?: IpcRequestOptions): Promise<TResult>;
   health<TResult>(options?: IpcRequestOptions): Promise<TResult>;
   shutdown<TResult>(options?: IpcRequestOptions): Promise<TResult>;
 };
@@ -145,6 +151,10 @@ function isSubscriptionAck(value: unknown, method: string): boolean {
   return record.status === 'subscribed' && record.method === method;
 }
 
+function resolveAuthMetadata(auth: IpcAuthMetadata | IpcAuthProvider | null | undefined): IpcAuthMetadata | undefined {
+  return typeof auth === 'function' ? auth() : (auth ?? undefined);
+}
+
 export async function requestIpcMethod<TResult>(
   socketPath: string,
   method: string,
@@ -152,6 +162,7 @@ export async function requestIpcMethod<TResult>(
   options?: IpcRequestOptions,
 ): Promise<TResult> {
   const timePort = options?.time ?? createRealTimePort();
+  const auth = resolveAuthMetadata(options?.auth);
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   // Convert to absolute deadline at call entry so connect+request share one budget.
@@ -241,6 +252,7 @@ export async function requestIpcMethod<TResult>(
       id: requestId,
       method,
       ...(params === undefined ? {} : { params }),
+      ...(auth === undefined ? {} : { auth }),
     };
     socket.write(`${encode(envelope)}\n`);
   });
@@ -253,6 +265,7 @@ export async function subscribeIpcMethod<TResult>(
   options?: IpcSubscriptionOptions,
 ): Promise<IpcSubscription<TResult>> {
   const timePort = options?.time ?? createRealTimePort();
+  const auth = resolveAuthMetadata(options?.auth);
   const requestId = nextRequestId++;
   const timeoutMs = options?.timeoutMs;
   const deadlineMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timePort.now() + timeoutMs : null;
@@ -445,6 +458,7 @@ export async function subscribeIpcMethod<TResult>(
     id: requestId,
     method,
     ...(params === undefined ? {} : { params }),
+    ...(auth === undefined ? {} : { auth }),
   };
   socket.write(`${encode(envelope)}\n`);
   await handshakePromise;
@@ -493,22 +507,37 @@ export async function subscribeIpcMethod<TResult>(
   };
 }
 
-export function createIpcClient(socketPath: string, timePort: TimePort = createRealTimePort()): IpcClient {
+export function createIpcClient(
+  socketPath: string,
+  timePort: TimePort = createRealTimePort(),
+  auth?: IpcClientAuth,
+): IpcClient {
+  const withRequestOptions = (options?: IpcRequestOptions): IpcRequestOptions => ({
+    ...options,
+    time: options?.time ?? timePort,
+    auth: options && 'auth' in options ? options.auth : auth,
+  });
+  const withSubscriptionOptions = (options?: IpcSubscriptionOptions): IpcSubscriptionOptions => ({
+    ...options,
+    time: options?.time ?? timePort,
+    auth: options && 'auth' in options ? options.auth : auth,
+  });
+
   return {
     socketPath,
     request: <TResult>(method: string, params?: unknown, options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, method, params, { ...options, time: options?.time ?? timePort }),
+      requestIpcMethod<TResult>(socketPath, method, params, withRequestOptions(options)),
     subscribe: <TResult>(method: string, params?: unknown, options?: IpcSubscriptionOptions) =>
-      subscribeIpcMethod<TResult>(socketPath, method, params, { ...options, time: options?.time ?? timePort }),
+      subscribeIpcMethod<TResult>(socketPath, method, params, withSubscriptionOptions(options)),
+    ping: <TResult>(options?: IpcRequestOptions) =>
+      requestIpcMethod<TResult>(socketPath, 'transport.ping', undefined, {
+        ...options,
+        auth: null,
+        time: options?.time ?? timePort,
+      }),
     health: <TResult>(options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, 'transport.health', undefined, {
-        ...options,
-        time: options?.time ?? timePort,
-      }),
+      requestIpcMethod<TResult>(socketPath, 'transport.health', undefined, withRequestOptions(options)),
     shutdown: <TResult>(options?: IpcRequestOptions) =>
-      requestIpcMethod<TResult>(socketPath, 'transport.shutdown', undefined, {
-        ...options,
-        time: options?.time ?? timePort,
-      }),
+      requestIpcMethod<TResult>(socketPath, 'transport.shutdown', {}, withRequestOptions(options)),
   };
 }

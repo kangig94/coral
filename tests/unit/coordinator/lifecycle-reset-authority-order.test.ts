@@ -5,8 +5,8 @@ import {
   createStoreServicesRef,
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
-import { createLifecycle, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
-import { KB_ID } from '#src/coordinator/subsystems/contract.js';
+import { createLifecycle, STARTUP_STORE_BUSY_TIMEOUT_MS, type LifecycleDeps } from '#src/coordinator/lifecycle.js';
+import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
 import type * as StoreDbMod from '#src/store/db.js';
@@ -148,12 +148,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
     getDb: () => mockState.fakeDb,
     liveJobCountByNamespace: () => 0,
   };
-  const expansionLifecycleService = {
-    shutdownActiveExpansions: vi.fn(async () => {
-      expect(mockState.fakeDb.closed).toBe(false);
-      mockState.events.push('expansion:live-store');
-    }),
-  };
   const consumerDriver = {
     shutdown: vi.fn(async () => {
       mockState.events.push('consumerDriver:shutdown');
@@ -162,9 +156,6 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
   const services = {
     storeDb: mockState.fakeDb,
     progressStore: fakeProgressStore,
-    expansionManifestCatalog: {},
-    expansionStateStore: {},
-    expansionLifecycleService,
     consumerDriver,
   } as unknown as CoordinatorStoreServices;
   let lifecycleState: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped' = 'starting';
@@ -180,6 +171,8 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         flavor: 'prod',
         instanceId: 'test-instance',
         token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
         now: () => 1_000,
         log: (message) => {
           mockState.events.push(`log:${message.trim()}`);
@@ -191,18 +184,16 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         getLifecycle: () => lifecycleState,
         getStartedAt: () => 1_000,
         getLaunchFenceActive: () => false,
-        subsystems: {
+        components: {
           register: vi.fn(() => {
-            mockState.events.push('subsystems:register');
+            mockState.events.push('components:register');
           }),
           initAll: vi.fn(() => {
-            mockState.events.push('subsystems:initAll');
+            mockState.events.push('components:initAll');
           }),
           disposeAll: vi.fn(async () => {
-            mockState.events.push('subsystems:disposeAll');
+            mockState.events.push('components:disposeAll');
           }),
-          run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
-          runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
           list: vi.fn(() => []),
           status: vi.fn(() => null),
         } as never,
@@ -260,19 +251,12 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
         drainForHandoff: vi.fn(),
       } as never,
       handoffQuiescePorts: () => [],
-      createKbSubsystemFn: vi.fn(() => ({
-        id: KB_ID,
-        status: { id: KB_ID, phase: 'initializing', attempt: 0 },
+      createKbHealthComponentFn: vi.fn(() => ({
+        id: KB_COMPONENT_ID,
+        status: { id: KB_COMPONENT_ID, phase: 'initializing', attempt: 0 },
         init: vi.fn(async () => {}),
         dispose: vi.fn(async () => {}),
-        resource: vi.fn(() => ({
-          kb: {},
-          readDb: {},
-          curateScheduler: { isRunning: () => false, stop: vi.fn() },
-        })),
-        onStatusChange: vi.fn(() => () => {}),
       })) as never,
-      createCurateAssistant: () => ({ complete: async () => '' }),
       registerBuiltInProvidersFn: vi.fn(),
       recoverPersistedDiscussFn: vi.fn(async () => []),
       runStartupRecoveryFn: vi.fn(async () => []),
@@ -316,19 +300,68 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
   });
 
-  it('registers subsystems before exposing the running lifecycle', async () => {
+  it('opens the startup store with a short busy timeout', async () => {
+    const { deps } = makeLifecycleDeps();
+    const lifecycle = createLifecycle(deps);
+    const storeDb = await import('#src/store/db.js');
+
+    await lifecycle.start();
+
+    expect(storeDb.openOrResetBackendStoreDb).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
+    );
+  });
+
+  it('registers components before exposing the running lifecycle', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);
 
     await lifecycle.start();
 
-    expect(mockState.events.indexOf('subsystems:register')).toBeGreaterThan(-1);
-    expect(mockState.events.indexOf('subsystems:register')).toBeLessThan(
+    expect(mockState.events.indexOf('components:register')).toBeGreaterThan(-1);
+    expect(mockState.events.indexOf('components:register')).toBeLessThan(
       mockState.events.indexOf('setLifecycle:running'),
     );
     expect(mockState.events.indexOf('setLifecycle:running')).toBeLessThan(
-      mockState.events.indexOf('subsystems:initAll'),
+      mockState.events.indexOf('components:initAll'),
     );
+  });
+
+  it('does not report passive idle while the KB daemon curate scheduler is running', async () => {
+    const { deps } = makeLifecycleDeps();
+    const childHealth = {
+      enabled: true,
+      phase: 'online' as const,
+      generation: 1,
+      pid: 123,
+      startedAt: 1_000,
+      readyAt: 1_001,
+      kbWrite: { phase: 'ready' as const, curateRunning: true },
+    };
+    (deps as { kbDaemonSupervisor: LifecycleDeps['kbDaemonSupervisor'] }).kbDaemonSupervisor = {
+      read: () => childHealth,
+      start: async () => childHealth,
+      probe: async () => childHealth,
+      warmup: async () => childHealth,
+      readKb: vi.fn(),
+      mutateKb: vi.fn(),
+      expansionRpc: vi.fn(),
+      stop: async () => childHealth,
+      restart: async () => childHealth,
+      dispose: async () => undefined,
+    } as never;
+    const lifecycle = createLifecycle(deps);
+
+    await lifecycle.start();
+
+    const checkIdle = vi.mocked(deps.idleTimer.startWatching).mock.calls[0]?.[0];
+    expect(checkIdle).toBeDefined();
+    expect(checkIdle?.()).toBe(false);
+
+    childHealth.kbWrite.curateRunning = false;
+    expect(checkIdle?.()).toBe(true);
   });
 
   it('keeps storeDb live through shutdown sequence and closes it only in the finalizer', async () => {
@@ -341,7 +374,6 @@ describe('lifecycle reset authority and finalizer order', () => {
     await finalizeStoreServices(servicesRef);
 
     expect(mockState.events.indexOf('markJobsAsError:live-store')).toBeGreaterThan(-1);
-    expect(mockState.events.indexOf('expansion:live-store')).toBeGreaterThan(-1);
     expect(mockState.events.indexOf('runShutdownSequence:return')).toBeLessThan(
       mockState.events.indexOf('storeDb.close'),
     );

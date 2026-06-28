@@ -3,7 +3,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-import { HANDOFF_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -44,13 +44,7 @@ function buildHarness(opts: {
   } as unknown as Server;
 
   const ipcServer = { server: {}, sockets: new Set(), socketPath: '/tmp/x' } as unknown as IpcListener;
-  const storeServices = {
-    expansionLifecycleService: {
-      shutdownActiveExpansions: async () => {
-        callLog.push('shutdownActiveExpansions');
-      },
-    },
-  };
+  const storeServices = {};
 
   let closeIpcResolved = false;
   const closeIpcServerFn =
@@ -72,14 +66,12 @@ function buildHarness(opts: {
       setLifecycle: (s) => {
         callLog.push(`setLifecycle:${s}`);
       },
-      subsystems: {
+      components: {
         register: () => {},
         initAll: () => {},
         disposeAll: async () => {
-          callLog.push('subsystems.disposeAll');
+          callLog.push('components.disposeAll');
         },
-        run: () => ({ ok: false, code: 'kb_initializing', message: '' }),
-        runAsync: async () => ({ ok: false, code: 'kb_initializing', message: '' }),
         list: () => [],
         status: () => null,
       },
@@ -123,10 +115,10 @@ function buildHarness(opts: {
       callLog.push('lifecycleReactor.dispose');
     },
     hooks: {
-      onShutdown: async () => {
+      onShutdown: async (_mode, signal) => {
         // Default: hangs forever. Tests override per case.
         if (opts.hooksOnShutdown) {
-          await opts.hooksOnShutdown(new AbortController().signal);
+          await opts.hooksOnShutdown(signal);
         }
       },
     },
@@ -154,8 +146,12 @@ describe('runShutdownSequence drain budget', () => {
   it('returns within drainTimeout + small slack when an async-cooperative finalizer hangs', async () => {
     // Hooks.onShutdown never resolves and ignores the abort signal — the
     // budget timer must end the race for `runShutdownSequence` to return.
+    let hookSignal: AbortSignal | null = null;
     const harness = buildHarness({
-      hooksOnShutdown: () => new Promise<void>(() => {}),
+      hooksOnShutdown: (signal) => {
+        hookSignal = signal;
+        return new Promise<void>(() => {});
+      },
     });
     const startedAt = harness.time.now();
 
@@ -182,8 +178,41 @@ describe('runShutdownSequence drain budget', () => {
     // Warn line for the hanging hooks.onShutdown finalizer must be present.
     const warnedHooks = harness.logLines.some((line) => line.includes('hooks.onShutdown: exceeded drain budget'));
     expect(warnedHooks).toBe(true);
+    expect(hookSignal).not.toBeNull();
+    expect((hookSignal as unknown as AbortSignal).aborted).toBe(true);
 
     // Socket release happens regardless.
+    expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('bounds hard-mode provider host shutdown before terminating children', async () => {
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+    });
+    harness.ctx.reason = 'test-cleanup';
+    let providerSignal: AbortSignal | undefined;
+    harness.ctx.providerHostManager = {
+      drainForHandoff: async () => {},
+      shutdown: (signal?: AbortSignal) => {
+        providerSignal = signal;
+        return new Promise<void>(() => {});
+      },
+    } as never;
+    harness.ctx.terminateAllFn = () => {
+      harness.callLog.push('terminateAllFn');
+    };
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let i = 0; i <= SHUTDOWN_DRAIN_TIMEOUT_MS + 100; i += 100) {
+      harness.time.tick(100);
+      await flush();
+    }
+    await sequence;
+
+    const sawExceeded = harness.logLines.some((l) => l.includes('provider host shutdown: exceeded drain budget'));
+    expect(sawExceeded).toBe(true);
+    expect(providerSignal?.aborted).toBe(true);
+    expect(harness.callLog).toContain('terminateAllFn');
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
@@ -231,9 +260,9 @@ describe('runShutdownSequence drain budget', () => {
 
     const origHooks = harness.ctx.hooks.onShutdown;
     harness.ctx.hooks = {
-      onShutdown: async () => {
+      onShutdown: async (_mode, signal) => {
         order.push('hooks:start');
-        await origHooks('hard');
+        await origHooks('hard', signal);
         order.push('hooks:resolved'); // unreachable — hangs
       },
     };
@@ -245,15 +274,6 @@ describe('runShutdownSequence drain budget', () => {
         order.push('drainForHandoff:resolved');
       },
       shutdown: async () => {},
-    } as never;
-    const storeServices = harness.ctx.storeServicesRef.get();
-    const origExpansion = storeServices.expansionLifecycleService!.shutdownActiveExpansions;
-    storeServices.expansionLifecycleService = {
-      shutdownActiveExpansions: async () => {
-        order.push('expansion:start');
-        await origExpansion.call(storeServices.expansionLifecycleService);
-        order.push('expansion:resolved');
-      },
     } as never;
     harness.ctx.closeIpcServerFn = async (_l: IpcListener) => {
       order.push('closeIpc');

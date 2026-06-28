@@ -27,6 +27,7 @@ export const jobRuntimeStartedBodySchema = z
   .object({
     transport: z.enum(['durable-cli', 'app-server', 'internal']).optional(),
     operation: z.enum(['kb.source_import', 'kb.reindex', 'kb.community_summary']).optional(),
+    owner: z.enum(['parent', 'kb-daemon']).optional(),
     pid: z.number().finite().optional(),
     stdoutPath: z.string().optional(),
     stderrPath: z.string().optional(),

@@ -6,7 +6,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { deleteNote } from '#src/kb/ops/delete.js';
 import { update } from '#src/kb/ops/update.js';
-import { persistPreparedSource } from '#src/kb/ops/source-store.js';
+import { persistPreparedSource } from '#src/kb/ops/source/store.js';
 import { promote } from '#src/kb/ops/promote.js';
 import { reindex } from '#src/kb/ops/reindex.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
@@ -22,7 +22,7 @@ import {
   readCurateState,
   writeCurateState,
 } from '#src/kb/curate/state/index.js';
-import { recordMetadataMutation } from '#src/kb/corpus/index-mutations.js';
+import { recordMetadataMutation } from '#src/kb/corpus/index/mutations.js';
 import { computeCorpusSurfaceManifestHash } from '#src/kb/corpus/surface.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';

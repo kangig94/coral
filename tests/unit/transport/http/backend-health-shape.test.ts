@@ -1,6 +1,6 @@
-// AC10a: `/health.subsystems` is an array of transport subsystem-status entries
+// AC10a: `/health.components` is an array of transport component-status entries
 // (4-phase tagged union per `id`). `mutationBlocked` and `consumerStuck`
-// move from `subsystems.kb` to top-level `diagnostics`. The validator
+// move from `components.kb` to top-level `diagnostics`. The validator
 // pins this shape so external consumers can rely on the structure.
 
 import { describe, expect, it } from 'vitest';
@@ -21,30 +21,30 @@ const HEALTHY_BASE: BackendHealth = {
   inflightRequests: 0,
   queueDepth: 0,
   textProjectionState: 'idle',
-  subsystems: [{ id: 'kb', phase: 'online' }],
+  components: [{ id: 'kb', phase: 'online' }],
 };
 
 describe('/health typed shape (AC10a)', () => {
-  it('accepts a healthy shape with one online subsystem and no diagnostics', () => {
+  it('accepts a healthy shape with one online component and no diagnostics', () => {
     expect(isBackendHealth(HEALTHY_BASE)).toBe(true);
   });
 
-  it('accepts an empty subsystems array', () => {
-    expect(isBackendHealth({ ...HEALTHY_BASE, subsystems: [] })).toBe(true);
+  it('accepts an empty components array', () => {
+    expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
-  it('accepts an initializing subsystem with attempt count', () => {
+  it('accepts an initializing component with attempt count', () => {
     const initializing: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [{ id: 'kb', phase: 'initializing', attempt: 2 }],
+      components: [{ id: 'kb', phase: 'initializing', attempt: 2 }],
     };
     expect(isBackendHealth(initializing)).toBe(true);
   });
 
-  it('accepts a degraded subsystem with curate-publish reason', () => {
+  it('accepts a degraded component with curate-publish reason', () => {
     const degraded: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [
+      components: [
         {
           id: 'kb',
           phase: 'degraded',
@@ -55,11 +55,31 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(degraded)).toBe(true);
   });
 
-  it('accepts an offline subsystem with reason and last log line', () => {
+  it('accepts an offline component with reason and last log line', () => {
     const offline: BackendHealth = {
       ...HEALTHY_BASE,
-      subsystems: [
-        { id: 'kb', phase: 'offline', reason: 'init failed', lastLogLine: '[subsystem:kb] catalog scan failed' },
+      components: [
+        { id: 'kb', phase: 'offline', reason: 'init failed', lastLogLine: '[component:kb] catalog scan failed' },
+      ],
+    };
+    expect(isBackendHealth(offline)).toBe(true);
+  });
+
+  it('accepts an offline component diagnostic with boot failure context', () => {
+    const offline: BackendHealth = {
+      ...HEALTHY_BASE,
+      components: [
+        {
+          id: 'kb',
+          phase: 'offline',
+          reason: 'frontmatter parse failed',
+          diagnostic: {
+            attempts: 4,
+            failedStep: 'I2 corpus freshness rescan',
+            retry: 'restart-daemon',
+            lastErrorStack: 'Error: frontmatter parse failed',
+          },
+        },
       ],
     };
     expect(isBackendHealth(offline)).toBe(true);
@@ -79,7 +99,15 @@ describe('/health typed shape (AC10a)', () => {
       diagnostics: {
         consumerStuck: [
           { id: 'orama-base', elapsedSinceStopMs: 2500 },
-          { id: 'needle-base', elapsedSinceStopMs: 100 },
+          { id: 'needle-base', authority: 'journal', cursor: 42, elapsedSinceStopMs: 100 },
+          {
+            id: 'corpus-projection',
+            authority: 'corpus',
+            snapshotId: 'snapshot-a',
+            contentSeq: 12,
+            metadataSeq: 34,
+            elapsedSinceStopMs: 500,
+          },
         ],
       },
     };
@@ -100,6 +128,86 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, textProjectionState: 'reindexing' })).toBe(true);
   });
 
+  it('accepts resource counters for daemon liveness diagnostics', () => {
+    const withResources: BackendHealth = {
+      ...HEALTHY_BASE,
+      resources: {
+        rssBytes: 1024,
+        heapUsedBytes: 512,
+        eventLoopLagMs: 3,
+        ipcOpenSockets: 2,
+        eventStreamResponses: 1,
+        fdCount: 20,
+      },
+    };
+    expect(isBackendHealth(withResources)).toBe(true);
+  });
+
+  it('accepts KB daemon supervisor health', () => {
+    const withKbDaemon: BackendHealth = {
+      ...HEALTHY_BASE,
+      kbDaemon: {
+        enabled: true,
+        phase: 'online',
+        generation: 2,
+        pid: 12345,
+        startedAt: 1_700_000_000_010,
+        readyAt: 1_700_000_000_050,
+        entrypoint: '/plugin/bridge/coral-backend.cjs',
+        pendingRequests: 0,
+        lastHeartbeatAt: 1_700_000_000_060,
+        lastHeartbeatLatencyMs: 3,
+        daemonUptimeMs: 50,
+        kbRead: {
+          phase: 'ready',
+          initializedAt: 1_700_000_000_055,
+        },
+        kbWrite: {
+          phase: 'disposed',
+          initializedAt: 1_700_000_000_056,
+          curateRunning: false,
+          mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1_700_000_000_057 },
+        },
+        lastExit: {
+          code: 0,
+          signal: null,
+          at: 1_700_000_000_000,
+          uptimeMs: 500,
+        },
+      },
+    };
+    expect(isBackendHealth(withKbDaemon)).toBe(true);
+  });
+
+  it('rejects malformed KB daemon supervisor health', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      kbDaemon: {
+        enabled: true,
+        phase: 'online',
+        generation: '2',
+        pid: 12345,
+        startedAt: 1_700_000_000_010,
+        readyAt: 1_700_000_000_050,
+      },
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects malformed resource counters', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      resources: {
+        rssBytes: '1024',
+        heapUsedBytes: 512,
+        eventLoopLagMs: 3,
+        ipcOpenSockets: 2,
+        eventStreamResponses: 1,
+      },
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
   it('rejects a `mutationBlocked` shape missing required diagnostic fields', () => {
     const malformed = {
       ...HEALTHY_BASE,
@@ -116,24 +224,54 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects the legacy `subsystems.kb.kind` object shape (clean-slate cost)', () => {
-    // Pre-AC10a responses returned `subsystems` as a record with `kb.kind`.
+  it('rejects the retired `components.kb.kind` object shape (clean-slate cost)', () => {
+    // Pre-AC10a responses returned `components` as a record with `kb.kind`.
     // The validator must fail-loud on that shape so the contract change
     // surfaces rather than silently parsing as a degenerate structure.
-    const legacy = {
+    const retired = {
       ...HEALTHY_BASE,
-      subsystems: { kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' },
+      components: { kb: { kind: 'ok' }, kbCurate: 'ok', discuss: 'ok' },
     };
-    expect(isBackendHealth(legacy)).toBe(false);
+    expect(isBackendHealth(retired)).toBe(false);
   });
 
   it('rejects an unknown phase string', () => {
-    const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'unavailable' }] };
+    const malformed = { ...HEALTHY_BASE, components: [{ id: 'kb', phase: 'unavailable' }] };
     expect(isBackendHealth(malformed)).toBe(false);
   });
 
-  it('rejects a degraded subsystem missing the reason object', () => {
-    const malformed = { ...HEALTHY_BASE, subsystems: [{ id: 'kb', phase: 'degraded' }] };
+  it('rejects a degraded component missing the reason object', () => {
+    const malformed = { ...HEALTHY_BASE, components: [{ id: 'kb', phase: 'degraded' }] };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects a malformed offline component diagnostic', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      components: [
+        {
+          id: 'kb',
+          phase: 'offline',
+          reason: 'init failed',
+          diagnostic: { attempts: '4', retry: 'later' },
+        },
+      ],
+    };
+    expect(isBackendHealth(malformed)).toBe(false);
+  });
+
+  it('rejects a negative offline component diagnostic attempt count', () => {
+    const malformed = {
+      ...HEALTHY_BASE,
+      components: [
+        {
+          id: 'kb',
+          phase: 'offline',
+          reason: 'init failed',
+          diagnostic: { attempts: -1, retry: 'restart-daemon' },
+        },
+      ],
+    };
     expect(isBackendHealth(malformed)).toBe(false);
   });
 

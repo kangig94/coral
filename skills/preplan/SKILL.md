@@ -1,7 +1,7 @@
 ---
 name: preplan
-description: "Use when a problem needs clarification and agreement before planning begins. Supports --deep and --delegate."
-argument-hint: "[--deep] [--delegate] <issue or topic>"
+description: 'Use when a problem needs clarification and agreement before planning begins. Supports --deep and --delegate.'
+argument-hint: '[--deep] [--delegate] <issue or topic>'
 ---
 
 # Pre-plan
@@ -10,23 +10,23 @@ Structured problem-definition conversation with the user before planning begins.
 
 ## Argument Routing
 
-| Argument | Mode |
-|----------|------|
-| `<prompt>` | Self-execute on current host (default) |
-| `--deep` | Enable pioneer review for elegant alternatives |
+| Argument     | Mode                                                                                                                                                    |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`   | Self-execute on current host (default)                                                                                                                  |
+| `--deep`     | Enable pioneer review for elegant alternatives                                                                                                          |
 | `--delegate` | Delegate pioneer to the other host (Codex when current is Claude, Claude when current is Codex; from SessionStart `Current host:`). Activates `--deep`. |
 
 Strip `--deep` and `--delegate` flags before passing the prompt to the execution path.
 
 <Preplan_Protocol>
-  <Role>
-    You are the **Problem Definer**: gather context, fill a structured agreement, refine through conversation, propose transition to planning.
-    Not responsible for: plans (plan), implementation (ralph), architecture (architect).
-    NEVER implement. NEVER write source code. Problem definition only.
-  </Role>
-  <Structure>
-    The agreement consists of 7 items. Fill autonomously where possible, mark uncertain
-    items with the "unconfirmed" marker, then seek user feedback.
+<Role>
+You are the **Problem Definer**: gather context, fill a structured agreement, refine through conversation, propose transition to planning.
+Not responsible for: plans (plan), implementation (ralph), architecture (architect).
+NEVER implement. NEVER write source code. Problem definition only.
+</Role>
+<Structure>
+The agreement consists of 7 items. Fill autonomously where possible, mark uncertain
+items with the "unconfirmed" marker, then seek user feedback.
 
     ### Required Items
 
@@ -34,7 +34,7 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     |---|------|-------------|-------------------|
     | 1 | **Problem Statement** | Current state vs desired state. What is wrong? | Conversation context |
     | 2 | **Success Criteria** | Testable, verifiable conditions for "done" | Reverse-infer from problem (unconfirmed) |
-    | 3 | **Scope** | What is included / excluded. Must include a **Legacy** sub-item when the change touches existing APIs, data formats, or public interfaces: preserve backward compatibility vs full deprecation. Always mark Legacy as `[unconfirmed]` with default/minimal/elegant alternatives — never auto-confirm. | Codebase analysis (unconfirmed) |
+    | 3 | **Scope** | What is included / excluded. Must include a **Compatibility** sub-item when the change touches existing APIs, data formats, or public interfaces: preserve backward compatibility vs full deprecation. Always mark Compatibility as `[unconfirmed]` with default/minimal/elegant alternatives — never auto-confirm. | Codebase analysis (unconfirmed) |
     | 4 | **Assumptions** | What we assume to be true | Code analysis, project rules |
     | 5 | **Affected Systems** | Existing systems affected by this change | Dependency analysis |
 
@@ -47,6 +47,7 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
 
     Optional items: fill if information is available, mark N/A otherwise. Do not ask the user
     to fill items that have no applicable content.
+
   </Structure>
   <Protocol>
     ### 0. Q&A Gate
@@ -172,6 +173,7 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     ### 5. Completion
 
     All items confirmed and user approved transition.
+
   </Protocol>
   <Constraints>
     | DO | DON'T |
@@ -214,7 +216,7 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     ## Scope
     - Included: ...
     - Excluded: ...
-    - Legacy: ... [unconfirmed]
+    - Compatibility: ... [unconfirmed]
       - default: preserve backward compatibility, deprecation warnings
       - minimal: break immediately, no migration path
       - elegant: versioned migration with adapter layer
@@ -278,5 +280,6 @@ Strip `--deep` and `--delegate` flags before passing the prompt to the execution
     - **ralph** → `Skill({ skill: "coral:ralph", args: "[--delegate] implement CORAL_PROJECT/plans/pre-{topic}.md — satisfy its Success Criteria" })` — prompt mode; skips the separate plan step.
     - **Continue discussion** → return to step 4 (refinement loop).
     For `coral:plan`, do NOT pass `--no-handoff` — plan owns the implementation handoff.
-  </Output_Format>
+
+</Output_Format>
 </Preplan_Protocol>

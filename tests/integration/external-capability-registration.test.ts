@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
+import { ExpansionLifecycleService } from '#src/kb-daemon/expansion/lifecycle.js';
+import type { ExpansionStateRow, ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 import type { Expansion } from '#src/expansion/contract.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
-import { initializeCapabilityCatalog } from '#src/expansion/manifest-fills-validation.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
+import { initializeCapabilityCatalog } from '#src/expansion/manifest/fills-validation.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,

@@ -1,10 +1,10 @@
 import { Command } from 'commander';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
   request: vi.fn(),
   subscribe: vi.fn(),
-  health: vi.fn(async () => ({ subsystems: [] as Array<Record<string, unknown>> })),
+  health: vi.fn(async () => ({ components: [] as Array<Record<string, unknown>> })),
   shutdownAndAwaitRelease: vi.fn(async () => {}),
   readStore: {
     discuss: {
@@ -57,7 +57,18 @@ function buildProgram(): Command {
   return program;
 }
 
+function stubNonChildInvocationEnv(): void {
+  vi.stubEnv('CORAL_CHILD', '');
+  vi.stubEnv('CORAL_CHILD_PRINCIPAL_HANDLE', '');
+  vi.stubEnv('CORAL_JOB_ID', '');
+  vi.stubEnv('CORAL_SESSION_ID', '');
+}
+
 describe('command client routing', () => {
+  beforeEach(() => {
+    stubNonChildInvocationEnv();
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -249,6 +260,10 @@ describe('command client routing', () => {
 describe('kb lazy reconcile', () => {
   const prevKbEnabled = process.env.CORAL_KB_ENABLE;
 
+  beforeEach(() => {
+    stubNonChildInvocationEnv();
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     if (prevKbEnabled === undefined) {
@@ -256,12 +271,13 @@ describe('kb lazy reconcile', () => {
     } else {
       process.env.CORAL_KB_ENABLE = prevKbEnabled;
     }
+    vi.unstubAllEnvs();
   });
 
   it('restarts the daemon when a kb command runs with KB enabled against a KB-disabled daemon', async () => {
     process.env.CORAL_KB_ENABLE = '1';
     mockState.health.mockResolvedValueOnce({
-      subsystems: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
+      components: [{ id: 'kb', phase: 'offline', reason: KB_DISABLED_REASON }],
     });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
@@ -273,7 +289,7 @@ describe('kb lazy reconcile', () => {
 
   it('does not restart when the daemon already has KB online', async () => {
     process.env.CORAL_KB_ENABLE = '1';
-    mockState.health.mockResolvedValueOnce({ subsystems: [{ id: 'kb', phase: 'online' }] });
+    mockState.health.mockResolvedValueOnce({ components: [{ id: 'kb', phase: 'online' }] });
     mockState.request.mockResolvedValueOnce({ status: 'running' });
     const client = makeClient('/tmp/project', findCommand(buildProgram(), 'kb', 'reindex'));
 

@@ -7,9 +7,10 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
+import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { probeProcessStartedAtSeconds } from '#src/infra/node-process.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
-import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Database } from '#src/store/db.js';
@@ -176,25 +177,8 @@ function createStoreServices(storeDb: Database): CoordinatorStoreServices {
       getDb: () => storeDb,
       liveJobCountByNamespace: () => 0,
     },
-    expansionManifestCatalog: {},
-    expansionStateStore: {},
-    expansionLifecycleService: null,
     consumerDriver: null,
   } as unknown as CoordinatorStoreServices;
-}
-
-function createKbSubsystemStub(): KnowledgeBaseRuntime {
-  return {
-    kb: {},
-    readDb: {},
-    curateScheduler: {
-      isRunning: () => false,
-      start: async () => {},
-      stop: async () => {},
-      schedule: () => {},
-      scheduleDeferredCommit: () => {},
-    },
-  } as unknown as KnowledgeBaseRuntime;
 }
 
 afterEach(async () => {
@@ -229,13 +213,32 @@ describe('incumbent handoff reset authority', () => {
   it('serves pre-service health/errors and waits for incumbent handoff before resetting the old store', async () => {
     const runtime = createRuntime();
     const token = 'test-token';
+    const bootToken = 'test-boot-token';
+    const shutdownToken = 'test-shutdown-token';
     const dbPath = runtime.paths.coral.store.dbFile;
     createMismatchStore(dbPath);
     const incumbentStore = new DatabaseSync(dbPath);
     let shutdownReceived = false;
+    const processStartedAt = probeProcessStartedAtSeconds(process.pid, runtime.env.platform() as NodeJS.Platform) ?? 1;
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 1,
+        socketPath: runtime.paths.coral.coordinator.socketPath,
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+        namespace: 'ns',
+        startedAt: Date.now(),
+        token,
+        bootToken,
+        shutdownToken,
+        processStartedAt,
+      },
+      { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+    );
 
     const incumbent = await startScriptedIncumbent(runtime.paths.coral.coordinator.socketPath, async (request) => {
-      if (request.method === 'transport.health') {
+      if (request.method === 'transport.ping') {
         return {
           kind: 'response',
           id: request.id,
@@ -245,12 +248,14 @@ describe('incumbent handoff reset authority', () => {
             namespace: 'ns',
             status: 'ok',
             pid: process.pid,
-            processStartedAt: 1,
+            processStartedAt,
           } satisfies IncumbentHealth,
         };
       }
       if (request.method === 'transport.shutdown') {
         shutdownReceived = true;
+        expect(request.auth).toEqual({ kind: 'boot', token: bootToken });
+        expect(request.params).toEqual({});
         return { kind: 'response', id: request.id, result: { status: 'draining' } };
       }
       return { kind: 'response', id: request.id, result: null };
@@ -265,6 +270,8 @@ describe('incumbent handoff reset authority', () => {
         flavor: 'prod',
         instanceId: 'replacement',
         token,
+        bootToken: 'replacement-boot-token',
+        shutdownToken: 'replacement-shutdown-token',
         now: () => Date.now(),
         log: () => {},
       },
@@ -277,7 +284,7 @@ describe('incumbent handoff reset authority', () => {
         return result;
       },
       createStoreServicesFromDbFn: createStoreServices,
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => createKbSubsystemStub()),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       runStartupRecoveryFn: async () => [],
       cleanupStaleJobsFn: () => {},
       markJobsAsErrorFn: () => {},
@@ -285,9 +292,6 @@ describe('incumbent handoff reset authority', () => {
       registerBuiltInProvidersFn: () => {},
       getConsumerStuck: () => {
         throw new Error('getConsumerStuck must not run before store services exist');
-      },
-      getMutationBlocked: () => {
-        throw new Error('getMutationBlocked must not run before store services exist');
       },
     });
 
@@ -309,10 +313,10 @@ describe('incumbent handoff reset authority', () => {
         body: JSON.stringify({ name: 'needle' }),
       });
       const rpcBody = (await rpcResponse.json()) as Record<string, unknown>;
-      expect(rpcResponse.status).toBe(500);
+      expect(rpcResponse.status).toBe(200);
       expect(rpcBody).toMatchObject({
-        code: 'startup_not_ready',
-        message: 'Coral backend is still starting.',
+        servedBy: 'kb-daemon',
+        method: 'equipExpansion',
       });
 
       const startPromise = core.lifecycleController.start();

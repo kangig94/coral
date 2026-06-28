@@ -28,7 +28,7 @@ import { readCurateRetryQueue } from './curate/retry.js';
 import { readCurateConflictQuarantine } from './curate/conflict-quarantine.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
-import { listSources } from './ops/source-store.js';
+import { listSources } from './ops/source/store.js';
 import { listWikis } from './ops/wiki/list.js';
 import { generateWakeUpPacket } from './ops/wake-up.js';
 

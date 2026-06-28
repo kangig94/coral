@@ -38,6 +38,7 @@ const transportContext = {
   owner: 'session-abc.123',
   effort: 'high',
   claudeModelCap: 'sonnet',
+  claudeTransport: 'print',
   networkEnv: { HTTPS_PROXY: 'http://proxy:8443' },
 };
 

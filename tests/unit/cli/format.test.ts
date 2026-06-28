@@ -20,7 +20,13 @@ import {
   formatPersonaSeed,
 } from '#src/cli/format/discuss.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
-import { formatAbortResult, formatLaunch, renderJobsList, type JobsListItem } from '#src/cli/format/jobs.js';
+import {
+  formatAbortResult,
+  formatLaunch,
+  formatLaunchWaitHint,
+  renderJobsList,
+  type JobsListItem,
+} from '#src/cli/format/jobs.js';
 import {
   formatKbDelete,
   formatKbMemo,
@@ -172,6 +178,12 @@ describe('cli format', () => {
     });
   });
 
+  describe('formatLaunchWaitHint', () => {
+    it('formats the wait command for a detached launch', () => {
+      expect(formatLaunchWaitHint(runningDecision)).toBe('Run coral-cli wait jobs job-1 to wait for completion.');
+    });
+  });
+
   describe('formatAbortResult', () => {
     it('formats aborted jobs when all requested jobs were found', () => {
       expect(formatAbortResult(abortOnlyResult)).toBe('Aborted jobs: job-1, job-2');
@@ -283,12 +295,12 @@ describe('cli format', () => {
       kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
     };
 
-    it('formats a running backend status with online subsystems', () => {
+    it('formats a running backend status with online components', () => {
       const status = {
         status: 'ok',
         health: {
           ...baseHealth,
-          subsystems: [{ id: 'kb', phase: 'online' as const }],
+          components: [{ id: 'kb', phase: 'online' as const }],
           queueDepth: 0,
         },
       } satisfies BackendStatusFull;
@@ -300,7 +312,7 @@ describe('cli format', () => {
           'Uptime: 4m12s',
           'Kernel: running since 2026-05-05T12:00:00.000Z',
           '',
-          'Subsystems:',
+          'Runtime Components:',
           '  kb: online',
           '',
           'Active jobs: 1',
@@ -315,7 +327,7 @@ describe('cli format', () => {
         health: {
           ...baseHealth,
           kernel: { phase: 'starting' as const, readyAt: null },
-          subsystems: [{ id: 'kb', phase: 'initializing' as const, attempt: 2 }],
+          components: [{ id: 'kb', phase: 'initializing' as const, attempt: 2 }],
         },
       } satisfies BackendStatusFull;
 
@@ -325,12 +337,12 @@ describe('cli format', () => {
       expect(output).toContain('  kb: initializing\n    attempt: 2');
     });
 
-    it('formats a degraded subsystem with reason kind, details, and last error', () => {
+    it('formats a degraded component with reason kind, details, and last error', () => {
       const status = {
         status: 'ok',
         health: {
           ...baseHealth,
-          subsystems: [
+          components: [
             {
               id: 'kb',
               phase: 'degraded' as const,
@@ -351,12 +363,12 @@ describe('cli format', () => {
       expect(output).toContain('    hint: free disk space, then coral-cli backend shutdown to reset');
     });
 
-    it('omits the last-error line for a degraded subsystem when lastError is empty', () => {
+    it('omits the last-error line for a degraded component when lastError is empty', () => {
       const status = {
         status: 'ok',
         health: {
           ...baseHealth,
-          subsystems: [
+          components: [
             {
               id: 'kb',
               phase: 'degraded' as const,
@@ -373,17 +385,23 @@ describe('cli format', () => {
       expect(formatBackendStatus(status)).not.toContain('last error:');
     });
 
-    it('formats an offline subsystem with reason, last log, and shutdown hint', () => {
+    it('formats an offline component with reason, last log, and shutdown hint', () => {
       const status = {
         status: 'ok',
         health: {
           ...baseHealth,
-          subsystems: [
+          components: [
             {
               id: 'kb',
               phase: 'offline' as const,
               reason: 'binding_empty after 3 attempts',
-              lastLogLine: '[subsystem:kb] catalog scan failed',
+              lastLogLine: '[component:kb] catalog scan failed',
+              diagnostic: {
+                attempts: 4,
+                failedStep: 'I2 corpus freshness rescan',
+                retry: 'restart-daemon' as const,
+                lastErrorStack: 'Error: binding_empty after 3 attempts',
+              },
             },
           ],
         },
@@ -392,23 +410,50 @@ describe('cli format', () => {
       const output = formatBackendStatus(status);
       expect(output).toContain('  kb: offline');
       expect(output).toContain('    reason: binding_empty after 3 attempts');
-      expect(output).toContain('    last log: [subsystem:kb] catalog scan failed');
-      expect(output).toContain('    hint: coral-cli backend shutdown');
+      expect(output).toContain('    last log: [component:kb] catalog scan failed');
+      expect(output).toContain('    failed step: I2 corpus freshness rescan');
+      expect(output).toContain('    attempts: 4');
+      expect(output).toContain('    retry: daemon restart required');
+      expect(output).not.toContain('lastErrorStack');
+      expect(output).toContain('    hint: restart the daemon: coral-cli backend shutdown');
     });
 
-    it('omits the last-log line for an offline subsystem when lastLogLine is absent', () => {
+    it('omits the last-log line for an offline component when lastLogLine is absent', () => {
       const status = {
         status: 'ok',
         health: {
           ...baseHealth,
-          subsystems: [{ id: 'kb', phase: 'offline' as const, reason: 'binding_empty' }],
+          components: [{ id: 'kb', phase: 'offline' as const, reason: 'binding_empty' }],
         },
       } satisfies BackendStatusFull;
 
       const output = formatBackendStatus(status);
       expect(output).toContain('  kb: offline');
       expect(output).not.toContain('last log:');
-      expect(output).toContain('    hint: coral-cli backend shutdown');
+      expect(output).toContain('    hint: restart the daemon: coral-cli backend shutdown');
+    });
+
+    it('points a non-retryable offline component at the failure details and reindex recovery', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [
+            {
+              id: 'kb',
+              phase: 'offline' as const,
+              reason: 'binding_empty',
+              diagnostic: { retry: 'none' as const },
+            },
+          ],
+        },
+      } satisfies BackendStatusFull;
+
+      const output = formatBackendStatus(status);
+      expect(output).toContain('    retry: not retryable');
+      expect(output).toContain(
+        '    hint: review the failure details above; coral-cli kb reindex can rebuild a corrupt KB index',
+      );
     });
 
     it('omits the queue-depth line when queueDepth is absent', () => {
@@ -416,7 +461,7 @@ describe('cli format', () => {
         status: 'ok',
         health: {
           ...baseHealth,
-          subsystems: [{ id: 'kb', phase: 'online' as const }],
+          components: [{ id: 'kb', phase: 'online' as const }],
         },
       } satisfies BackendStatusFull;
 

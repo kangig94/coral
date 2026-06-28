@@ -19,6 +19,12 @@ const EXPLICIT_ALLOWLIST = new Set([
   // CLI install path persists the installed-expansion manifest catalog after
   // installer success using the no-reset catalog writer.
   'src/cli/expansion/install.ts:openWritableStoreDbNoReset',
+  // KB daemon is a separate process that OWNS Corpus writes (post KB-daemon
+  // separation); its write runtime opens the writable backend store directly.
+  // Previously this was a variable `await import()` that evaded the static scan
+  // here (and broke at runtime in the prod bundle); it is now a static call so
+  // the open is explicit and invariant-tracked.
+  'src/kb-daemon/runtime-host.ts:openWritableStoreDbNoReset',
 ]);
 
 function listSourceFiles(dir: string): string[] {

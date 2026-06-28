@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { initializeCapabilityCatalog, validateManifestFills } from '#src/expansion/manifest-fills-validation.js';
+import { initializeCapabilityCatalog, validateManifestFills } from '#src/expansion/manifest/fills-validation.js';
 import type { EngineManifest } from '#src/expansion/contract.js';
 import { canonicalizeCapabilityName, type KbCapabilityDescriptor } from '#src/kb/capability/contract.js';
 import { createCapabilityRegistry } from '#src/kb/capability/registry.js';

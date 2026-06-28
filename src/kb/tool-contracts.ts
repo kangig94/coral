@@ -10,23 +10,81 @@ import { networkEnvSchema } from '../infra/network-env.js';
 // the cross-domain dependency graph.
 const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vector', 'all-equipped']);
 
+export const KB_SEARCH_QUERY_MAX_CODE_POINTS = 512;
+export const KB_SEARCH_QUERY_MAX_BYTES = 2 * 1024;
+export const KB_TEXT_FILTER_MAX_CODE_POINTS = 512;
+export const KB_TEXT_FILTER_MAX_BYTES = 2 * 1024;
+export const KB_SLUG_MAX_BYTES = 512;
+
+function hasAtMostCodePoints(value: string, max: number): boolean {
+  let count = 0;
+  for (const _char of value) {
+    count += 1;
+    if (count > max) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function boundedString(
+  schema: z.ZodString,
+  label: string,
+  limits: { maxCodePoints?: number; maxBytes: number },
+): z.ZodEffects<z.ZodString, string, string> {
+  return schema.superRefine((value, ctx) => {
+    const byteLength = Buffer.byteLength(value, 'utf-8');
+    if (byteLength > limits.maxBytes) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${label} must be at most ${limits.maxBytes} UTF-8 bytes`,
+      });
+      return;
+    }
+    if (limits.maxCodePoints !== undefined && !hasAtMostCodePoints(value, limits.maxCodePoints)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${label} must be at most ${limits.maxCodePoints} characters`,
+      });
+    }
+  });
+}
+
+const searchQueryTextSchema = boundedString(z.string().min(1), 'Search query', {
+  maxCodePoints: KB_SEARCH_QUERY_MAX_CODE_POINTS,
+  maxBytes: KB_SEARCH_QUERY_MAX_BYTES,
+});
+const optionalSearchQueryTextSchema = boundedString(z.string(), 'Search query', {
+  maxCodePoints: KB_SEARCH_QUERY_MAX_CODE_POINTS,
+  maxBytes: KB_SEARCH_QUERY_MAX_BYTES,
+}).optional();
+const textFilterSchema = boundedString(z.string().min(1), 'Text filter', {
+  maxCodePoints: KB_TEXT_FILTER_MAX_CODE_POINTS,
+  maxBytes: KB_TEXT_FILTER_MAX_BYTES,
+});
+const optionalTextFilterSchema = boundedString(z.string(), 'Text filter', {
+  maxCodePoints: KB_TEXT_FILTER_MAX_CODE_POINTS,
+  maxBytes: KB_TEXT_FILTER_MAX_BYTES,
+}).optional();
+const slugSchema = boundedString(z.string().min(1), 'Slug', { maxBytes: KB_SLUG_MAX_BYTES });
 const projectRootSchema = z.string().min(1, 'Project root is required');
-const slugSchema = z.string().min(1);
 const sourceImportFilePathSchema = z.string().min(1);
 const transportContextFieldsShape = {
   projectRoot: projectRootSchema,
-  owner: z.string().optional(),
+  owner: optionalTextFilterSchema,
   effort: z.string().optional(),
   claudeModelCap: z.string().optional(),
+  claudeTransport: z.string().optional(),
   jobId: z.string().optional(),
   sessionId: z.string().optional(),
   networkEnv: networkEnvSchema.optional(),
 } satisfies z.ZodRawShape;
 const optionalTransportContextFieldsShape = {
   projectRoot: projectRootSchema.optional(),
-  owner: z.string().optional(),
+  owner: optionalTextFilterSchema,
   effort: z.string().optional(),
   claudeModelCap: z.string().optional(),
+  claudeTransport: z.string().optional(),
   jobId: z.string().optional(),
   sessionId: z.string().optional(),
   networkEnv: networkEnvSchema.optional(),
@@ -34,7 +92,7 @@ const optionalTransportContextFieldsShape = {
 
 export const kbSearchSchema = z
   .object({
-    query: z.string().min(1),
+    query: searchQueryTextSchema,
     scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
     top_k: z.number().int().positive().optional(),
     mode: z.enum(['text', 'vector', 'hybrid']).optional(),
@@ -43,7 +101,7 @@ export const kbSearchSchema = z
 
 export const kbSearchQuerySchema = z
   .object({
-    q: z.string().min(1),
+    q: searchQueryTextSchema,
     scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
     top_k: z.coerce.number().int().positive().optional(),
     mode: z.enum(['text', 'vector', 'hybrid']).optional(),
@@ -52,7 +110,7 @@ export const kbSearchQuerySchema = z
 
 export const kbReadSchema = z
   .object({
-    note: z.string().min(1),
+    note: slugSchema,
   })
   .strict();
 
@@ -68,7 +126,7 @@ export const kbPromoteSchema = z
 
 export const kbUpdateSchema = z
   .object({
-    note: z.string().min(1),
+    note: slugSchema,
     title: z.string().optional(),
     content: z.string().optional(),
   })
@@ -76,7 +134,7 @@ export const kbUpdateSchema = z
 
 export const kbDeleteSchema = z
   .object({
-    note: z.string().min(1),
+    note: slugSchema,
   })
   .strict();
 
@@ -137,7 +195,7 @@ export const kbWakeUpSchema = z
 export const kbSourceImportSchema = z
   .object({
     filePath: sourceImportFilePathSchema,
-    slug: z.string().min(1).optional(),
+    slug: slugSchema.optional(),
     readiness: sourceImportReadinessSchema.default('base-search'),
     async: z.boolean().default(false),
   })
@@ -147,7 +205,7 @@ export const kbSourceListSchema = z.object({}).strict();
 
 export const kbSourceDeleteSchema = z
   .object({
-    slug: z.string().min(1),
+    slug: slugSchema,
   })
   .strict();
 
@@ -155,40 +213,40 @@ export const kbMemoSchema = z
   .object({
     topic: z.string().min(1),
     content: z.string(),
-    owner: z.string().min(1),
+    owner: textFilterSchema,
   })
   .strict();
 
 export const kbMemoListSchema = z
   .object({
-    owner: z.string().optional(),
+    owner: optionalTextFilterSchema,
   })
   .strict();
 
 export const kbMemoListQuerySchema = z
   .object({
     projectRoot: projectRootSchema,
-    owner: z.string().optional(),
+    owner: optionalTextFilterSchema,
   })
   .strict();
 
 export const kbMemoDeleteSchema = z
   .object({
-    pattern: z.string().min(1),
-    owner: z.string().optional(),
+    pattern: textFilterSchema,
+    owner: optionalTextFilterSchema,
   })
   .strict();
 
 export const kbMemoPurgeSchema = z
   .object({
-    owner: z.string().optional(),
+    owner: optionalTextFilterSchema,
   })
   .strict();
 
 export const kbMemoDeleteConsolidatedSchema = z
   .object({
-    pattern: z.string().min(1).optional(),
-    owner: z.string().optional(),
+    pattern: textFilterSchema.optional(),
+    owner: optionalTextFilterSchema,
     all: z.boolean().optional(),
   })
   .strict();
@@ -196,7 +254,7 @@ export const kbMemoDeleteConsolidatedSchema = z
 export const kbMemoDeleteQuerySchema = z
   .object({
     ...transportContextFieldsShape,
-    pattern: z.string().optional(),
+    pattern: optionalTextFilterSchema,
     all: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
   })
   .strict()
@@ -206,7 +264,7 @@ export const kbMemoDeleteQuerySchema = z
 
 export const kbPrinciplesSchema = z
   .object({
-    query: z.string().optional(),
+    query: optionalSearchQueryTextSchema,
     verbose: z.boolean().optional(),
     top_k: z.number().int().positive().optional(),
   })
@@ -214,7 +272,7 @@ export const kbPrinciplesSchema = z
 
 export const kbPrinciplesQuerySchema = z
   .object({
-    q: z.string().optional(),
+    q: optionalSearchQueryTextSchema,
     top_k: z.coerce.number().int().positive().optional(),
     verbose: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
   })

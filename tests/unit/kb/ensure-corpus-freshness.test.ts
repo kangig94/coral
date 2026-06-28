@@ -20,15 +20,16 @@ interface RescanGate {
 }
 
 function installGatedRescan(): RescanGate {
-  const calls: Array<{ resolve: (counts: rescanModule.RescanCounts) => void }> = [];
+  const calls: Array<{
+    kb: KbRuntime;
+    startState: Parameters<typeof rescanModule.performRescan>[2];
+    resolve: (counts: rescanModule.RescanCounts) => void;
+  }> = [];
   const signals: Array<AbortSignal | undefined> = [];
   vi.spyOn(rescanModule, 'performRescan').mockImplementation(async (kb, _mutation, startState, options) => {
-    void startState;
     signals.push(options?.signal);
-    // Mark the index state as fresh so subsequent freshness checks short-circuit.
-    kb.recordReindexSuccess(startState);
     return new Promise((resolve) => {
-      calls.push({ resolve });
+      calls.push({ kb, startState, resolve });
     });
   });
   return {
@@ -37,6 +38,8 @@ function installGatedRescan(): RescanGate {
       if (next === undefined) {
         throw new Error('No pending rescan to release.');
       }
+      // Mark fresh at completion time, matching the real rescan commit boundary.
+      next.kb.recordReindexSuccess(next.startState);
       next.resolve(counts ?? emptyCounts());
     },
     wasInvoked: () => calls.length > 0,
@@ -101,9 +104,7 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
 
     expect(elapsed).toBeLessThan(50);
     expect(index).toBeDefined();
-    // Yield once so the dispatched rebuild reaches the gated mock.
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitForGateInvocation(gate);
     expect(gate.wasInvoked()).toBe(true);
 
     gate.release();
@@ -116,9 +117,7 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     await kb.ensureCorpusFreshness({ wait: false });
     await kb.ensureCorpusFreshness({ wait: false });
     await kb.ensureCorpusFreshness({ wait: false });
-    // Yield to let the rebuild dispatch land.
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitForGateInvocation(gate);
 
     expect(gate.callCount()).toBe(1);
 
@@ -131,7 +130,7 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
 
     // Kick a background rebuild first.
     await kb.ensureCorpusFreshness({ wait: false });
-    await Promise.resolve();
+    await waitForGateInvocation(gate);
     expect(gate.callCount()).toBe(1);
 
     let waitResolved = false;
@@ -169,8 +168,7 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
     // A fresh (un-aborted) call afterwards must dispatch a rebuild — the
     // rebuildInFlight slot was never set, so the next boot proceeds normally.
     await kb.ensureCorpusFreshness({ wait: false });
-    await Promise.resolve();
-    await Promise.resolve();
+    await waitForGateInvocation(gate);
     expect(gate.callCount()).toBe(1);
 
     gate.release();

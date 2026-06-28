@@ -183,7 +183,7 @@ argument-hint: "[existing|new]"
          - ARCHITECTURE.md: layer diagram (from the analysis document's Scan Report — dependency graph section), dependency rules,
            modification policy per directory, domain Architecture Sections. Directory tree: key files only
            (5-15 entries, not exhaustive). Dependency graph: layer-level, not per-file imports.
-         - Module docs (core-modules.md): role tables by subsystem — `module | responsibility` rows,
+         - Module docs (core-modules.md): role tables by component — `module | responsibility` rows,
            not per-file sections with export catalogs. See writing-guide Module Doc Requirements.
          - DEV_GUIDE.md: exact build/test/lint commands (from the analysis document's Scan Report — build/test config section), workflow phases, conventions
          - Domain docs (api-reference, database-schema, etc.): architecture-level content - design

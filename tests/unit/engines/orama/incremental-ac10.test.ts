@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { OramaBaseProjection, createOramaBaseProjection } from '#src/engines/orama/backend.js';
+import { OramaBaseProjection, createOramaBaseProjection } from '#src/engines/orama/base-projection.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { type OramaEntryManifest, type OramaProjectionMetadata } from '#src/engines/orama/artifact-port.js';
-import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '#src/kb/corpus/index-records.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } from '#src/kb/corpus/index/records.js';
 import { communityEntryId, noteEntryId, sourceEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbCorpusSnapshot, KbEngineRuntimeBase, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
@@ -313,8 +313,8 @@ const INITIAL_CORPUS: CorpusSpec = {
       entrySeq: 1,
     },
     {
-      slug: 'legacy-delete',
-      title: 'Legacy Delete',
+      slug: 'retired-delete',
+      title: 'Retired Delete',
       body: 'This note contains the deleteonly sunset deletion marker.',
       entrySeq: 2,
     },
@@ -419,7 +419,7 @@ describe('orama AC10 incremental projection', () => {
     const snapshotV2 = seedCorpus(
       kb,
       {
-        notes: INITIAL_CORPUS.notes?.filter((note) => note.slug !== 'legacy-delete'),
+        notes: INITIAL_CORPUS.notes?.filter((note) => note.slug !== 'retired-delete'),
         sources: INITIAL_CORPUS.sources,
       },
       'delete one note',
@@ -432,7 +432,7 @@ describe('orama AC10 incremental projection', () => {
     expect(fullInstallSpy).not.toHaveBeenCalled();
     expect(readMetadata(kb).snapshotId).toBe(snapshotV2.snapshotId);
     expectManifestEntryIds(kb, [noteEntryId('graph-rag'), sourceEntryId('sqlite-planner')]);
-    expect(readMetadata(kb).entryManifest[noteEntryId('legacy-delete')]).toBeUndefined();
+    expect(readMetadata(kb).entryManifest[noteEntryId('retired-delete')]).toBeUndefined();
     await expectSearchDocumentIds(restarted, 'deleteonly sunset deletion', []);
     await expectSearchDocumentIds(restarted, 'graph retrieval', [noteEntryId('graph-rag')]);
   });

@@ -18,6 +18,7 @@ import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js'
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 // NOTE: "running" and "queued" branches today share the same code path
 // (both hit waitForAtoms). We retain two tests so that if phase-differentiated
@@ -188,7 +189,7 @@ function createHarness(options: {
     projectRoot,
     pluginRoot: '/tmp/coral-workflow-plugin',
     coralEnv: {},
-    authority: 'admin',
+    principal: testProjectPrincipal(projectRoot),
   });
 
   return { db, plan, progressStore, executionSvc, createInvocationContext, waitRequests };

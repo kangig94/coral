@@ -18,9 +18,9 @@ import { loadBundledEngine } from '../expansion/bundled.js';
 import { createExpansionHost, disposeExpansionScope } from '../expansion/host.js';
 import { createScope } from '../expansion/scope.js';
 import type { ExpansionHost } from '../expansion/contract.js';
-import { validateManifestCompleteness } from '../expansion/manifest-completeness.js';
-import { createExpansionManifestCatalog } from '../expansion/manifest-catalog.js';
-import { initializeCapabilityCatalog } from '../expansion/manifest-fills-validation.js';
+import { validateManifestCompleteness } from '../expansion/manifest/completeness.js';
+import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
+import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
 import { serializeCoralSetupError } from '../runtime/errors.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,

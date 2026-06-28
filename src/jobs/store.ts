@@ -80,6 +80,7 @@ function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
     return {
       transport: 'internal',
       operation: runtime.operation,
+      ...(runtime.owner === undefined ? {} : { owner: runtime.owner }),
       startedAt: runtime.startTime,
     };
   }

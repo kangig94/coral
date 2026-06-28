@@ -2,7 +2,7 @@
 // `bindWithHandoff` (`src/coordinator/handoff.ts`) and CLI-side `ensure()`.
 // Carries no coordinator vocabulary: any caller that wants to ask a peer
 // daemon to step down uses this helper. Lives in transport because the
-// shutdown contract is exactly two existing IPC methods (`transport.health`
+// shutdown contract is exactly two IPC methods (`transport.ping`
 // and `transport.shutdown`); there is no coordinator policy here.
 
 import { createRealTimePort } from '../../infra/time.js';
@@ -19,6 +19,10 @@ export type IncumbentIdentity = {
   pid: number;
   processStartedAt: number;
   source: 'health' | 'discovery';
+  instanceId?: string;
+  token?: string;
+  bootToken?: string;
+  shutdownToken?: string;
 };
 
 export type DesiredIncumbentIdentity = {
@@ -39,6 +43,7 @@ export type IncumbentHealth = {
   status?: 'starting' | 'ok' | 'draining';
   pid?: number;
   processStartedAt?: number;
+  instanceId?: string;
 };
 
 /**
@@ -82,8 +87,15 @@ function remainingBudget(deadlineMs: number, timePort: TimePort): number {
   return Math.max(0, deadlineMs - timePort.now());
 }
 
+function isShutdownUnauthorizedError(error: unknown): boolean {
+  if (!(error instanceof Error) || error.cause === null || typeof error.cause !== 'object') {
+    return false;
+  }
+  return (error.cause as Record<string, unknown>).code === 'shutdown_unauthorized';
+}
+
 /**
- * One round-trip with the incumbent over its IPC socket: read `transport.health`,
+ * One round-trip with the incumbent over its IPC socket: read `transport.ping`,
  * then if the incumbent is mismatched (or unreachable) request `transport.shutdown`.
  * The whole call is bounded by a single absolute deadline; a connect that
  * succeeds just before the deadline does NOT receive a fresh full timeout.
@@ -99,17 +111,31 @@ function remainingBudget(deadlineMs: number, timePort: TimePort): number {
 export async function requestIncumbentShutdown(opts: {
   socketPath: string;
   desired: DesiredIncumbentIdentity;
+  bootToken?: string;
   timeoutMs: number;
   timePort?: TimePort;
-}): Promise<{ health: IncumbentHealth | null; verifiedIdentity: IncumbentIdentity | null }> {
+}): Promise<{
+  health: IncumbentHealth | null;
+  verifiedIdentity: IncumbentIdentity | null;
+  shutdownAttempted: boolean;
+  shutdownUnauthorized: boolean;
+}> {
   const timePort = opts.timePort ?? createRealTimePort();
-  const client = createIpcClient(opts.socketPath, timePort);
+  const client = createIpcClient(
+    opts.socketPath,
+    timePort,
+    typeof opts.bootToken === 'string' && opts.bootToken.length > 0
+      ? { kind: 'boot', token: opts.bootToken }
+      : undefined,
+  );
   const deadlineMs = timePort.now() + opts.timeoutMs;
   let health: IncumbentHealth | null = null;
+  let shutdownAttempted = false;
+  let shutdownUnauthorized = false;
 
   if (remainingBudget(deadlineMs, timePort) > 0) {
     try {
-      health = await client.health<IncumbentHealth | null>({
+      health = await client.ping<IncumbentHealth | null>({
         timeoutMs: remainingBudget(deadlineMs, timePort),
       });
     } catch {
@@ -121,18 +147,29 @@ export async function requestIncumbentShutdown(opts: {
     throw new IncumbentMatchesError(opts.desired);
   }
 
-  if (remainingBudget(deadlineMs, timePort) > 0) {
+  if (typeof opts.bootToken === 'string' && opts.bootToken.length > 0 && remainingBudget(deadlineMs, timePort) > 0) {
+    shutdownAttempted = true;
     try {
       await client.shutdown<unknown>({ timeoutMs: remainingBudget(deadlineMs, timePort) });
-    } catch {
+    } catch (error: unknown) {
+      if (isShutdownUnauthorizedError(error)) {
+        shutdownUnauthorized = true;
+      }
       // ignore; incumbent may already be draining or unresponsive
     }
   }
 
   const verifiedIdentity: IncumbentIdentity | null =
     health && typeof health.pid === 'number' && typeof health.processStartedAt === 'number'
-      ? { pid: health.pid, processStartedAt: health.processStartedAt, source: 'health' }
+      ? {
+          pid: health.pid,
+          processStartedAt: health.processStartedAt,
+          source: 'health',
+          ...(typeof health.instanceId === 'string' && health.instanceId.length > 0
+            ? { instanceId: health.instanceId }
+            : {}),
+        }
       : null;
 
-  return { health, verifiedIdentity };
+  return { health, verifiedIdentity, shutdownAttempted, shutdownUnauthorized };
 }

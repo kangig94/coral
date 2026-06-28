@@ -66,11 +66,30 @@ const stderrPath = join(jobDir, 'stderr');
 const stdoutFd = openSync(stdoutPath, 'w');
 const stderrFd = openSync(stderrPath, 'w');
 
-const child = spawn(command, args, {
+function isBareCommandName(value) {
+  return !/[\\\\/]/.test(value);
+}
+
+function windowsCommandName(value) {
+  const trimmed = value.trim();
+  if (process.platform !== 'win32' || !isBareCommandName(trimmed)) return value;
+  const normalized = trimmed.toLowerCase();
+  if (normalized === 'codex' || normalized === 'claude') return trimmed + '.cmd';
+  return trimmed;
+}
+
+function shouldUseWindowsCommandShell(value) {
+  if (process.platform !== 'win32') return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized.endsWith('.cmd') || normalized.endsWith('.bat');
+}
+
+const spawnCommand = windowsCommandName(command);
+const child = spawn(spawnCommand, args, {
   stdio: ['pipe', stdoutFd, stderrFd],
   cwd,
   env,
-  shell: process.platform === 'win32',
+  shell: shouldUseWindowsCommandShell(spawnCommand),
 });
 
 const runtimeRecord = {
@@ -298,6 +317,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: options.cwd,
         shell: options.shell,
+        detached: options.detached,
         env: spawnEnv,
       });
       return child as unknown as ChildProcessLike;
@@ -305,8 +325,10 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     kill: (pid, signal) => {
       try {
         process.kill(pid, signal);
+        return true;
       } catch {
         /* already dead */
+        return false;
       }
     },
     isAlive: (pid) => processIsAlive(pid),
@@ -325,6 +347,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       timeoutMs: execOptions.timeout,
       maxBuffer: execOptions.maxBuffer,
       encoding: execOptions.encoding ?? 'utf-8',
+      killProcessGroup: capturedEnv.platform !== 'win32',
       spawn: runtimeProcess.spawn,
       kill: runtimeProcess.kill,
       setTimeout: time.setTimeout,

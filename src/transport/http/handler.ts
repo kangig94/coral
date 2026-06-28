@@ -7,13 +7,26 @@ import {
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../jobs/wait.js';
+import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
-import { executeCatalogRequest } from '../dispatch.js';
-import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
+import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
+import { CAPABILITIES, type Capability } from '../../security/capability.js';
+import type { Principal } from '../../security/principal.js';
+import { authorize, type AuthorizationFailureReason } from '../../security/policy/authorize.js';
+import { executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
+import {
+  rpcCatalog,
+  transportOperationalCarveouts,
+  type RequestBindingRule,
+  type RpcMethodSpec,
+} from '../rpc/catalog.js';
+import { operationalRouteSpecs, type HttpOperationalSpec } from '../rpc/operational-catalog.js';
 import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';
 import { subscribeAll } from './sse-subscribe.js';
+import type { TimePort } from '../../infra/port-types.js';
+import { createRealTimePort } from '../../infra/time.js';
 
 // ---------------------------------------------------------------------------
 // HTTP utilities
@@ -31,11 +44,54 @@ export function sendJson(res: ServerResponse, statusCode: number, body: unknown)
 }
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10 MB
+export const HTTP_MAX_CONCURRENT_BODY_READS = 32;
+export const HTTP_BODY_READ_TIMEOUT_MS = 15_000;
 const INVALID_JSON_RESPONSE = {
   code: 'invalid_request',
   message: 'Invalid JSON body',
 };
+const BODY_TOO_LARGE_RESPONSE = {
+  code: 'request_body_too_large',
+  message: 'Request body too large',
+};
+const BODY_READ_TIMEOUT_RESPONSE = {
+  code: 'request_body_timeout',
+  message: 'Request body timed out',
+};
+const BODY_READ_CAPACITY_RESPONSE = {
+  code: 'too_many_request_bodies',
+  message: 'Too many concurrent request bodies',
+};
+const CORS_ALLOWED_HEADERS = 'X-Coral-Backend-Token, X-Coral-Boot-Token, X-Coral-Shutdown-Token, Content-Type';
+const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
+const KB_DAEMON_HEALTH_PROBE_TTL_MS = 5_000;
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
+const HTTP_UNAUTHORIZED_RESPONSE = {
+  code: 'unauthorized',
+  message: 'Unauthorized',
+};
+const HTTP_SHUTDOWN_UNAUTHORIZED_RESPONSE = {
+  code: 'shutdown_unauthorized',
+  message: 'Manual shutdown required: shutdown capability missing or invalid',
+};
+const HTTP_KB_RESTART_UNAUTHORIZED_RESPONSE = {
+  code: 'shutdown_unauthorized',
+  message: 'Manual KB daemon restart requires shutdown capability',
+};
+const HTTP_BACKEND_TOKEN_CAPABILITIES: ReadonlySet<Capability> = new Set(
+  CAPABILITIES.filter((capability) => !capability.startsWith('system:')),
+);
+const HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL: Principal = {
+  subject: 'agent',
+  transport: 'http',
+  credential: { kind: 'bootstrap-liveness', id: 'http-health' },
+  binding: { kind: 'unbound' },
+  attenuatedCaps: new Set<Capability>(['liveness']),
+};
+type RestrictedRemoteTransportOption = {
+  option: 'bypassPermissions' | 'networkEnv';
+  message: string;
+};
 const eventStreamQuerySchema = z
   .object({
     projectRoot: z.string().min(1, 'Project root is required').optional(),
@@ -46,6 +102,17 @@ const eventStreamQuerySchema = z
   })
   .passthrough();
 
+function shouldProbeKbDaemonHealth(health: ReturnType<HttpHandlerPorts['health']['read']>, now: number): boolean {
+  const kbDaemon = health.kbDaemon;
+  if (kbDaemon?.enabled !== true || kbDaemon.phase !== 'online') {
+    return false;
+  }
+  if ((kbDaemon.pendingRequests ?? 0) > 0) {
+    return false;
+  }
+  return kbDaemon.lastHeartbeatAt === undefined || now - kbDaemon.lastHeartbeatAt >= KB_DAEMON_HEALTH_PROBE_TTL_MS;
+}
+
 /**
  * Constant-time token comparison. Required for the network gateway because a
  * length-aware byte-by-byte `===` leaks token prefix information through
@@ -53,51 +120,188 @@ const eventStreamQuerySchema = z
  * length is acceptable here (tokens are uniform-length identity strings).
  * Spec §11.3.
  */
-function tokensEqual(a: string, b: string): boolean {
+function constantTimeCredentialMatch(a: string, b: string): boolean {
   const aBuf = Buffer.from(a, 'utf-8');
   const bBuf = Buffer.from(b, 'utf-8');
   if (aBuf.length !== bBuf.length) return false;
   return timingSafeEqual(aBuf, bBuf);
 }
 
-export function readJsonBody(req: IncomingMessage): Promise<unknown> {
+function headerValue(value: string | string[] | undefined): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function credentialMatches(candidate: string | null, expected: string): boolean {
+  return candidate !== null && constantTimeCredentialMatch(candidate, expected);
+}
+
+function httpBackendTokenPrincipal(binding: Principal['binding']): Principal {
+  return {
+    subject: 'operator',
+    transport: 'http',
+    credential: { kind: 'backend-token', id: 'http-backend' },
+    binding,
+    attenuatedCaps: HTTP_BACKEND_TOKEN_CAPABILITIES,
+  };
+}
+
+function httpOperationalTokenPrincipal(
+  kind: 'boot-token' | 'shutdown-token',
+  binding: Principal['binding'],
+): Principal {
+  return {
+    subject: 'operator',
+    transport: 'http',
+    credential: { kind, id: `http-${kind}` },
+    binding,
+  };
+}
+
+function authenticateHttpBackendPrincipal(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  binding: Principal['binding'],
+): Principal | null {
+  const token = headerValue(req.headers['x-coral-backend-token']);
+  if (!credentialMatches(token, deps.identity.token)) {
+    return null;
+  }
+  return httpBackendTokenPrincipal(binding);
+}
+
+function authenticateHttpOperationalPrincipal(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  binding: Principal['binding'],
+): Principal | null {
+  const bootToken = headerValue(req.headers['x-coral-boot-token']);
+  if (credentialMatches(bootToken, deps.identity.bootToken)) {
+    return httpOperationalTokenPrincipal('boot-token', binding);
+  }
+
+  const shutdownToken = headerValue(req.headers['x-coral-shutdown-token']);
+  if (credentialMatches(shutdownToken, deps.identity.bootToken)) {
+    return httpOperationalTokenPrincipal('boot-token', binding);
+  }
+  if (credentialMatches(shutdownToken, deps.identity.shutdownToken)) {
+    return httpOperationalTokenPrincipal('shutdown-token', binding);
+  }
+
+  return authenticateHttpBackendPrincipal(req, deps, binding);
+}
+
+class HttpBodyReadError extends Error {
+  readonly statusCode: number;
+  readonly body: unknown;
+  readonly closeConnection: boolean;
+
+  constructor(
+    statusCode: number,
+    body: { code: string; message: string },
+    options: { closeConnection?: boolean } = {},
+  ) {
+    super(body.message);
+    this.name = 'HttpBodyReadError';
+    this.statusCode = statusCode;
+    this.body = body;
+    this.closeConnection = options.closeConnection === true;
+  }
+}
+
+export type ReadJsonBodyOptions = {
+  maxBytes?: number;
+  timeoutMs?: number;
+  timers?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
+};
+
+const DEFAULT_BODY_READ_TIMERS: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = createRealTimePort();
+
+let activeBodyReads = 0;
+
+function tryAcquireBodyRead(): (() => void) | null {
+  if (activeBodyReads >= HTTP_MAX_CONCURRENT_BODY_READS) {
+    return null;
+  }
+  activeBodyReads += 1;
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    activeBodyReads -= 1;
+  };
+}
+
+export function readJsonBody(req: IncomingMessage, options: ReadJsonBodyOptions = {}): Promise<unknown> {
+  const acquiredBodyRead = tryAcquireBodyRead();
+  if (acquiredBodyRead === null) {
+    req.resume();
+    return Promise.reject(new HttpBodyReadError(503, BODY_READ_CAPACITY_RESPONSE, { closeConnection: true }));
+  }
+  const releaseBodyRead = acquiredBodyRead;
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
+    const maxBytes = options.maxBytes ?? MAX_BODY_SIZE;
+    const timeoutMs = options.timeoutMs ?? HTTP_BODY_READ_TIMEOUT_MS;
+    const timers = options.timers ?? DEFAULT_BODY_READ_TIMERS;
     let totalSize = 0;
     let settled = false;
+    const timeout = timers.setTimeout(() => {
+      fail(new HttpBodyReadError(408, BODY_READ_TIMEOUT_RESPONSE, { closeConnection: true }), true);
+    }, timeoutMs);
+    timeout.unref?.();
+
+    function cleanup() {
+      timers.clearTimeout(timeout);
+      req.removeListener('data', onData);
+      req.removeListener('end', onEnd);
+      req.removeListener('error', onError);
+      releaseBodyRead();
+    }
+
+    function fail(error: Error, pauseRequest = false) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (pauseRequest) {
+        req.pause();
+      }
+      reject(error);
+    }
+
+    function succeed(value: unknown) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    }
 
     function onData(chunk: Buffer | string) {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalSize += buf.length;
-      if (totalSize > MAX_BODY_SIZE) {
-        settled = true;
-        req.removeListener('data', onData);
-        req.removeListener('end', onEnd);
-        req.removeListener('error', onError);
-        req.destroy();
-        reject(new Error('Request body too large'));
+      if (totalSize > maxBytes) {
+        fail(new HttpBodyReadError(413, BODY_TOO_LARGE_RESPONSE, { closeConnection: true }), true);
         return;
       }
       chunks.push(buf);
     }
 
     function onError(err: Error) {
-      if (settled) return;
-      settled = true;
-      reject(err);
+      fail(err);
     }
 
     function onEnd() {
       if (settled) return;
-      settled = true;
       if (chunks.length === 0) {
-        resolve({});
+        succeed({});
         return;
       }
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+        succeed(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
       } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
+        fail(error instanceof Error ? error : new Error(String(error)));
       }
     }
 
@@ -111,13 +315,16 @@ export function readJsonBody(req: IncomingMessage): Promise<unknown> {
 // SSE / streaming helpers
 // ---------------------------------------------------------------------------
 
-export function writeSseEvent(res: ServerResponse, event: string, data: unknown, cursorId?: string): void {
-  if (res.writableEnded) return;
-  if (cursorId) {
-    res.write(`event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`);
-    return;
+export function writeSseEvent(res: ServerResponse, event: string, data: unknown, cursorId?: string): boolean {
+  if (res.writableEnded || res.destroyed) return false;
+  const payload = cursorId
+    ? `event: ${event}\nid: ${cursorId}\ndata: ${JSON.stringify(data)}\n\n`
+    : `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const accepted = res.write(payload);
+  if (!accepted && !res.destroyed) {
+    res.destroy(new Error('SSE client backpressure exceeded'));
   }
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  return accepted;
 }
 
 function runOnResponseDone(res: ServerResponse, fn: () => void): void {
@@ -166,16 +373,179 @@ function sendInvalidJson(res: ServerResponse): void {
   sendJson(res, 400, INVALID_JSON_RESPONSE);
 }
 
+function sendBodyReadFailure(req: IncomingMessage, res: ServerResponse, error: unknown): void {
+  if (error instanceof HttpBodyReadError) {
+    if (error.closeConnection) {
+      if (!res.headersSent) {
+        res.setHeader('Connection', 'close');
+      }
+      runOnResponseDone(res, () => {
+        if (!req.destroyed) {
+          req.destroy();
+        }
+      });
+    }
+    sendJson(res, error.statusCode, error.body);
+    return;
+  }
+  sendInvalidJson(res);
+}
+
 function sendValidationFailure(res: ServerResponse, error: ZodError): void {
   const { message, detail } = formatZodError(error);
   const response = domainResultToHttp({ ok: false, code: 'invalid_request', message, detail });
   sendJson(res, response.statusCode, response.body);
 }
 
-function setCorsHeaders(_req: IncomingMessage, res: ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+function isLoopbackIpv4Literal(value: string): boolean {
+  const octets = value.split('.');
+  if (octets.length !== 4 || !octets.every((part) => /^\d+$/.test(part))) {
+    return false;
+  }
+  const [first, ...rest] = octets.map((part) => Number(part));
+  return first === 127 && rest.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255);
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  if (normalized === 'localhost' || normalized === '::1' || normalized === '[::1]') {
+    return true;
+  }
+
+  return isLoopbackIpv4Literal(normalized);
+}
+
+function resolveAllowedCorsOrigin(origin: string): string | null {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return isLoopbackHostname(parsed.hostname) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') {
+    return;
+  }
+
+  res.setHeader('Vary', 'Origin');
+  const allowedOrigin = resolveAllowedCorsOrigin(origin);
+  if (allowedOrigin === null) {
+    return;
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
+  res.setHeader('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
+}
+
+function findRestrictedRemoteTransportOption(request: unknown): RestrictedRemoteTransportOption | null {
+  if (!isRecord(request)) {
+    return null;
+  }
+  if (request.bypassPermissions === true) {
+    return {
+      option: 'bypassPermissions',
+      message: '`bypassPermissions` is only allowed from loopback HTTP clients',
+    };
+  }
+  if (Object.prototype.hasOwnProperty.call(request, 'networkEnv') && request.networkEnv !== undefined) {
+    return {
+      option: 'networkEnv',
+      message: '`networkEnv` forwarding is only allowed from loopback HTTP clients',
+    };
+  }
+  return null;
+}
+
+function rejectRestrictedRemoteTransportOption(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+  request: unknown,
+): boolean {
+  const socket = req.socket as IncomingMessage['socket'] | undefined;
+  if (socket === undefined) {
+    return false;
+  }
+
+  const remoteAddress = socket.remoteAddress;
+  if (isLoopbackRemoteAddress(remoteAddress)) {
+    return false;
+  }
+
+  const blocked = findRestrictedRemoteTransportOption(request);
+  if (blocked === null) {
+    return false;
+  }
+
+  writeAuditEvent(
+    'remote_transport_option_blocked',
+    {
+      transport: 'http',
+      option: blocked.option,
+      method: req.method,
+      path: req.url,
+      instanceId: deps.identity.instanceId,
+      remoteAddress,
+    },
+    'warn',
+  );
+  sendJson(res, 403, {
+    code: 'remote_transport_option_forbidden',
+    message: blocked.message,
+    detail: { option: blocked.option },
+  });
+  return true;
+}
+
+function rejectDisallowedRemoteAddress(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): boolean {
+  const allowedRemoteAddresses = deps.remoteAccess?.allowedRemoteAddresses;
+  if (allowedRemoteAddresses === undefined || allowedRemoteAddresses.length === 0) {
+    return false;
+  }
+
+  const socket = req.socket as IncomingMessage['socket'] | undefined;
+  const remoteAddress = socket?.remoteAddress;
+  if (isLoopbackRemoteAddress(remoteAddress)) {
+    return false;
+  }
+
+  const normalizedRemoteAddress =
+    remoteAddress === undefined ? undefined : normalizeRemoteAddressLiteral(remoteAddress);
+  if (
+    normalizedRemoteAddress !== undefined &&
+    allowedRemoteAddresses.some(
+      (allowedAddress) => normalizeRemoteAddressLiteral(allowedAddress) === normalizedRemoteAddress,
+    )
+  ) {
+    return false;
+  }
+
+  writeAuditEvent(
+    'remote_address_blocked',
+    {
+      transport: 'http',
+      method: req.method,
+      path: req.url,
+      instanceId: deps.identity.instanceId,
+      remoteAddress,
+      normalizedRemoteAddress,
+      allowlistCount: allowedRemoteAddresses.length,
+    },
+    'warn',
+  );
+  sendJson(res, 403, {
+    code: 'remote_address_forbidden',
+    message: 'Remote address is not allowed',
+    detail: { remoteAddress },
+  });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,15 +577,15 @@ type TransportLocalRoute = {
 
 type ProjectedTransportLocalRoute = TransportLocalRoute & {
   pattern: RegExp;
-  requiresRunningLifecycle: boolean;
-  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL) => Promise<void>;
+  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL, spec: HttpOperationalSpec) => Promise<void>;
 };
 
-const [healthPath, shutdownPath, eventsStreamPath] = transportOperationalCarveouts;
+const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
 
 export const transportLocalRoutes: readonly TransportLocalRoute[] = [
   { method: 'GET', path: healthPath },
   { method: 'POST', path: shutdownPath },
+  { method: 'POST', path: kbRestartPath },
   { method: 'GET', path: eventsStreamPath },
 ];
 
@@ -224,6 +594,35 @@ export const coordinatorHttpRoutes: readonly CatalogBackedHttpRoute[] = rpcCatal
   path: spec.http.path,
   spec,
 }));
+
+function isHttpOperationalSpec(spec: (typeof operationalRouteSpecs)[number]): spec is HttpOperationalSpec {
+  return spec.transport === 'http';
+}
+
+const HTTP_OPERATIONAL_SPECS: readonly HttpOperationalSpec[] = operationalRouteSpecs.filter(isHttpOperationalSpec);
+
+function readHttpOperationalSpec(
+  method: string | undefined,
+  pathname: string,
+  parsedUrl: URL,
+): HttpOperationalSpec | null {
+  if (method === undefined) {
+    return null;
+  }
+
+  const healthVariant = parsedUrl.searchParams.has('detailed') ? 'detailed' : 'default';
+  return (
+    HTTP_OPERATIONAL_SPECS.find((spec) => {
+      if (spec.http.method !== method || spec.http.path !== pathname) {
+        return false;
+      }
+      if (spec.http.path !== healthPath) {
+        return true;
+      }
+      return (spec.http.variant ?? 'default') === healthVariant;
+    }) ?? null
+  );
+}
 
 function escapeRegexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -275,6 +674,7 @@ async function parseCatalogRequest(
   res: ServerResponse,
   parsedUrl: URL,
   pathParams: Record<string, string>,
+  timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> | undefined,
 ): Promise<unknown | typeof REQUEST_PARSE_FAILED> {
   let candidate: unknown;
 
@@ -283,9 +683,9 @@ async function parseCatalogRequest(
     candidate = combineRouteInput(spec.http.method, Object.fromEntries(parsedUrl.searchParams), pathParams);
   } else {
     try {
-      candidate = combineRouteInput(spec.http.method, await readJsonBody(req), pathParams);
-    } catch {
-      sendInvalidJson(res);
+      candidate = combineRouteInput(spec.http.method, await readJsonBody(req, { timers }), pathParams);
+    } catch (error: unknown) {
+      sendBodyReadFailure(req, res, error);
       return REQUEST_PARSE_FAILED;
     }
   }
@@ -303,14 +703,54 @@ function sendCatalogResponse(res: ServerResponse, result: { statusCode?: number;
   sendJson(res, result.statusCode ?? 200, result.body);
 }
 
+function httpAuthorizationFailurePayload(spec: HttpOperationalSpec | null): {
+  readonly code: string;
+  readonly message: string;
+} {
+  if (spec?.dispatch.kind === 'shutdown') {
+    return HTTP_SHUTDOWN_UNAUTHORIZED_RESPONSE;
+  }
+  if (spec?.dispatch.kind === 'kb-restart') {
+    return HTTP_KB_RESTART_UNAUTHORIZED_RESPONSE;
+  }
+  return HTTP_UNAUTHORIZED_RESPONSE;
+}
+
+function sendAuthorizationFailure(
+  res: ServerResponse,
+  reason: AuthorizationFailureReason,
+  spec: HttpOperationalSpec | null = null,
+): void {
+  sendJson(res, reason === 'resource_unbound' ? 403 : 401, httpAuthorizationFailurePayload(spec));
+}
+
+function authenticateCatalogPrincipal(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  request: unknown,
+  bindingRule?: RequestBindingRule,
+): Principal | null {
+  return authenticateHttpBackendPrincipal(req, deps, resolveRequestBinding(bindingRule, request));
+}
+
 async function handleCatalogUnaryRoute(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
+  req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
 ): Promise<void> {
-  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
-  const result = await executeCatalogRequest(spec, request, deps, 'user');
+  if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
+    return;
+  }
+
+  const principal = authenticateCatalogPrincipal(req, deps, request, spec.requestBinding);
+  if (principal === null) {
+    sendAuthorizationFailure(res, 'unauthenticated');
+    return;
+  }
+
+  const result = await executeCatalogRequest(spec, request, deps, principal);
   if (result.kind !== 'unary') {
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
@@ -325,6 +765,10 @@ async function handleJobsWaitSubscription(
   deps: HttpHandlerPorts,
   request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
 ): Promise<void> {
+  if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
+    return;
+  }
+
   if (request.cursor !== undefined) {
     sendJson(res, 400, { code: 'invalid_request', message: 'Request body cursor is not supported for /jobs/wait' });
     return;
@@ -346,8 +790,13 @@ async function handleJobsWaitSubscription(
     ...request,
     cursor: inputCursor,
   };
-  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
-  const execution = await executeCatalogRequest(spec, waitRequest, deps, 'user', controller.signal);
+  const principal = authenticateCatalogPrincipal(req, deps, waitRequest, spec.requestBinding);
+  if (principal === null) {
+    controller.abort();
+    sendAuthorizationFailure(res, 'unauthenticated');
+    return;
+  }
+  const execution = await executeCatalogRequest(spec, waitRequest, deps, principal, controller.signal);
   if (execution.kind !== 'subscription') {
     controller.abort();
     sendCatalogResponse(res, execution);
@@ -391,23 +840,31 @@ async function handleJobsWaitSubscription(
       const event = next.value as WaitStreamEvent;
       if (event.type === 'progress') {
         currentCursor.afterSeq = event.seq;
-        writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor));
+        if (!writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor))) {
+          break;
+        }
         continue;
       }
 
       if (event.type === 'terminal') {
         currentCursor.afterSeq = event.seq;
-        writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor));
+        if (!writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor))) {
+          break;
+        }
         continue;
       }
 
       if (event.type === 'queued') {
         // No cursor update: queued events are synthetic and not Journal events.
-        writeSseEvent(res, 'queued', event);
+        if (!writeSseEvent(res, 'queued', event)) {
+          break;
+        }
         continue;
       }
 
-      writeSseEvent(res, 'waiting', event);
+      if (!writeSseEvent(res, 'waiting', event)) {
+        break;
+      }
     }
   } catch (error) {
     if (!closed && !controller.signal.aborted) {
@@ -457,7 +914,7 @@ export function httpAdapter(
     ...route,
     pattern: compilePathPattern(route.path),
     handle: async (req, res, parsedUrl, pathParams) => {
-      const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams);
+      const parsed = await parseCatalogRequest(spec, req, res, parsedUrl, pathParams, rpcPorts.time);
       if (parsed === REQUEST_PARSE_FAILED) {
         return;
       }
@@ -467,7 +924,7 @@ export function httpAdapter(
         return;
       }
 
-      await handleCatalogUnaryRoute(spec, parsed, res, rpcPorts);
+      await handleCatalogUnaryRoute(spec, parsed, req, res, rpcPorts);
     },
   };
 }
@@ -502,6 +959,87 @@ export function buildCoordinatorHttpDispatchTable(
   return buildRouteDispatchTable(rpcCatalog.map((spec) => httpAdapter(spec, rpcPorts)));
 }
 
+function readHttpPingSnapshot(deps: HttpHandlerPorts): {
+  status: string;
+  version: string;
+  bundleHash: string;
+  flavor: 'prod' | 'dev';
+  namespace: string;
+  instanceId: string;
+  pid: number;
+  processStartedAt?: number;
+} {
+  const health = deps.health.read();
+  return {
+    status: health.status,
+    version: health.version,
+    bundleHash: health.bundleHash,
+    flavor: health.flavor,
+    namespace: health.namespace,
+    instanceId: health.instanceId,
+    pid: health.pid,
+    ...(health.processStartedAt === undefined ? {} : { processStartedAt: health.processStartedAt }),
+  };
+}
+
+async function readDetailedHealthSnapshot(
+  deps: HttpHandlerPorts,
+): Promise<ReturnType<HttpHandlerPorts['health']['read']>> {
+  let health = deps.health.read();
+  if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
+    try {
+      await deps.admin.probeKbDaemon();
+      health = deps.health.read();
+    } catch {
+      // Detailed health must stay available even if the child probe path itself fails.
+    }
+  }
+  return health;
+}
+
+function localOperationalRequestBinding(spec: HttpOperationalSpec, parsedUrl: URL): Principal['binding'] | ZodError {
+  if (spec.dispatch.kind === 'event-stream') {
+    const request = parseEventStreamRequest(`${parsedUrl.pathname}${parsedUrl.search}`);
+    if (request instanceof Error) {
+      return request;
+    }
+    return resolveRequestBinding(spec.requestBinding, request);
+  }
+
+  return resolveRequestBinding(spec.requestBinding, {});
+}
+
+function principalForLocalOperation(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  spec: HttpOperationalSpec,
+  binding: Principal['binding'],
+): Principal | null {
+  if (spec.authentication === 'none') {
+    return HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL;
+  }
+  return authenticateHttpOperationalPrincipal(req, deps, binding);
+}
+
+function authorizeLocalOperation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+  spec: HttpOperationalSpec,
+  binding: Principal['binding'],
+): boolean {
+  const principal = principalForLocalOperation(req, deps, spec, binding);
+  const decision = authorize(principal, spec.requires, binding);
+  writeAuthorizationDecisionAudit(principal, spec.id, decision, binding);
+  if (decision.ok) {
+    return true;
+  }
+
+  req.resume();
+  sendAuthorizationFailure(res, decision.reason, spec);
+  return false;
+}
+
 async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
   const streamId = deps.events.createStreamId();
   const streamRequest = parseEventStreamRequest(req.url ?? '');
@@ -522,9 +1060,30 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders?.();
-  writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() });
+  if (!writeSseEvent(res, 'ready', { streamId, startedAt: deps.events.nowIsoString() })) {
+    deps.events.removeResponse(res);
+    return;
+  }
 
   let closed = false;
+  let cleanup: (() => void) | null = null;
+  let resolveClosed: () => void = () => undefined;
+  const closedPromise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const onClose = () => {
+    if (closed) return;
+    closed = true;
+    deps.events.removeResponse(res);
+    res.off('close', onClose);
+    cleanup?.();
+    resolveClosed();
+  };
+  const writeOrClose = (event: string, payload: unknown): void => {
+    if (!writeSseEvent(res, event, payload)) {
+      onClose();
+    }
+  };
   const matchesJobScope = (jobId: string, eventProjectRoot?: string): boolean => {
     // Streams without projectRoot are intentionally suppressed; job events must be project-scoped.
     if (projectRoot === null) return false;
@@ -538,48 +1097,34 @@ async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps
 
   const onCreated: EventStreamHandlers['onJobCreated'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId, payload.projectRoot)) return;
-    writeSseEvent(res, 'job:created', payload);
+    writeOrClose('job:created', payload);
   };
   const onPhaseChanged: EventStreamHandlers['onPhaseChanged'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId)) return;
-    writeSseEvent(res, 'job:phase_changed', payload);
+    writeOrClose('job:phase_changed', payload);
   };
   const onProgress: EventStreamHandlers['onProgress'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId)) return;
-    writeSseEvent(res, 'job:progress', payload);
+    writeOrClose('job:progress', payload);
   };
   const onCompleted: EventStreamHandlers['onCompleted'] = (payload) => {
     if (closed || !matchesJobScope(payload.jobId)) return;
-    writeSseEvent(res, 'job:completed', payload);
+    writeOrClose('job:completed', payload);
   };
   const onDiscussUpdated: EventStreamHandlers['onDiscussUpdated'] = (payload) => {
     if (closed || !matchesDiscussScope(payload.projectRoot)) return;
-    writeSseEvent(res, 'discuss:updated', payload);
+    writeOrClose('discuss:updated', payload);
   };
-  const cleanup = subscribeAll(deps.events.bus, {
+  cleanup = subscribeAll(deps.events.bus, {
     'job:created': onCreated,
     'job:phase_changed': onPhaseChanged,
     'job:progress': onProgress,
     'job:completed': onCompleted,
     'discuss:updated': onDiscussUpdated,
   });
-
-  const onClose = () => {
-    if (closed) return;
-    closed = true;
-    deps.events.removeResponse(res);
-    res.off('close', onClose);
-    cleanup();
-  };
   res.once('close', onClose);
 
-  await new Promise<void>((resolve) => {
-    if (closed) {
-      resolve();
-      return;
-    }
-    res.once('close', resolve);
-  });
+  await closedPromise;
 }
 
 function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTable<ProjectedTransportLocalRoute> {
@@ -587,25 +1132,65 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[0],
       pattern: compilePathPattern(transportLocalRoutes[0].path),
-      requiresRunningLifecycle: false,
-      handle: async (_req, res) => {
-        sendJson(res, 200, deps.health.read());
+      handle: async (req, res, _parsedUrl, spec) => {
+        req.resume();
+        if (spec.dispatch.kind === 'ping') {
+          sendJson(res, 200, readHttpPingSnapshot(deps));
+          return;
+        }
+        sendJson(res, 200, await readDetailedHealthSnapshot(deps));
       },
     },
     {
       ...transportLocalRoutes[1],
       pattern: compilePathPattern(transportLocalRoutes[1].path),
-      requiresRunningLifecycle: false,
       handle: async (req, res) => {
         req.resume();
-        deps.admin.requestDrain('replaced');
+        const reason = 'replaced';
+        writeAuditEvent(
+          'admin_shutdown_requested',
+          {
+            transport: 'http',
+            reason,
+            method: req.method,
+            path: shutdownPath,
+            instanceId: deps.identity.instanceId,
+            remoteAddress: req.socket.remoteAddress,
+          },
+          'warn',
+        );
+        deps.admin.requestDrain(reason);
         sendJson(res, 200, { status: 'draining', instanceId: deps.identity.instanceId });
       },
     },
     {
       ...transportLocalRoutes[2],
       pattern: compilePathPattern(transportLocalRoutes[2].path),
-      requiresRunningLifecycle: true,
+      handle: async (req, res) => {
+        req.resume();
+        if (!deps.admin.restartKbDaemon) {
+          sendJson(res, 501, { code: 'not_implemented', message: 'KB daemon supervisor is not available' });
+          return;
+        }
+        writeAuditEvent(
+          'admin_kb_daemon_restart_requested',
+          {
+            transport: 'http',
+            reason: 'admin',
+            method: req.method,
+            path: kbRestartPath,
+            instanceId: deps.identity.instanceId,
+            remoteAddress: req.socket.remoteAddress,
+          },
+          'warn',
+        );
+        const kbDaemon = await deps.admin.restartKbDaemon('http-admin');
+        sendJson(res, 200, { status: 'ok', instanceId: deps.identity.instanceId, kbDaemon });
+      },
+    },
+    {
+      ...transportLocalRoutes[3],
+      pattern: compilePathPattern(transportLocalRoutes[3].path),
       handle: async (req, res) => {
         req.resume();
         await handleEventStream(req, res, deps);
@@ -654,23 +1239,20 @@ function matchRoute<T extends { method: string; path: string; pattern: RegExp }>
 export function createHttpHandler(
   deps: HttpHandlerPorts,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { identity } = deps;
   const coordinatorRoutes = buildCoordinatorHttpDispatchTable(deps);
   const localRoutes = buildTransportLocalRouteTable(deps);
 
   return async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (rejectDisallowedRemoteAddress(req, res, deps)) {
+      req.resume();
+      return;
+    }
+
     setCorsHeaders(req, res);
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
-      return;
-    }
-
-    const authHeader = req.headers['x-coral-backend-token'];
-    if (typeof authHeader !== 'string' || !tokensEqual(authHeader, identity.token)) {
-      req.resume();
-      sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
       return;
     }
 
@@ -682,9 +1264,31 @@ export function createHttpHandler(
 
     const parsedUrl = new URL(req.url, 'http://localhost');
     const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
+    const localSpec = localMatch === null ? null : readHttpOperationalSpec(req.method, parsedUrl.pathname, parsedUrl);
+    if (localMatch !== null && localSpec === null) {
+      req.resume();
+      sendJson(res, 404, { code: 'not_found', message: 'Not found' });
+      return;
+    }
 
-    if (localMatch && !localMatch.route.requiresRunningLifecycle) {
-      await localMatch.route.handle(req, res, parsedUrl);
+    if (localMatch !== null && localSpec !== null) {
+      const binding = localOperationalRequestBinding(localSpec, parsedUrl);
+      if (binding instanceof Error) {
+        req.resume();
+        sendValidationFailure(res, binding);
+        return;
+      }
+      if (!authorizeLocalOperation(req, res, deps, localSpec, binding)) {
+        return;
+      }
+
+      if (!localSpec.requiresRunningLifecycle) {
+        await localMatch.route.handle(req, res, parsedUrl, localSpec);
+        return;
+      }
+    } else if (authenticateHttpBackendPrincipal(req, deps, { kind: 'unbound' }) === null) {
+      req.resume();
+      sendAuthorizationFailure(res, 'unauthenticated');
       return;
     }
 
@@ -696,8 +1300,8 @@ export function createHttpHandler(
       return;
     }
 
-    if (localMatch) {
-      await localMatch.route.handle(req, res, parsedUrl);
+    if (localMatch !== null && localSpec !== null) {
+      await localMatch.route.handle(req, res, parsedUrl, localSpec);
       return;
     }
 

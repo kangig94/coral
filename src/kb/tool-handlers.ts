@@ -3,7 +3,7 @@ import { deleteMemos, listMemos, purgeMemos, writeMemo } from './ops/memo.js';
 import { promote as kbPromote } from './ops/promote.js';
 import { listPrinciples } from './ops/principles-list.js';
 import { searchKb } from './ops/search.js';
-import { deleteSource, listSources } from './ops/source-store.js';
+import { deleteSource, listSources } from './ops/source/store.js';
 import { update as kbUpdate } from './ops/update.js';
 import { adoptIntoWiki } from './ops/wiki/adopt.js';
 import { citeWikiKnowledge } from './ops/wiki/cite.js';
@@ -27,7 +27,7 @@ import { readEntry, readEntryByKind, type KbReadOptions, type KbReadPathResolver
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { assertOwnerId } from '../infra/identifiers.js';
-import type { KbToolRuntime, KnowledgeBaseRuntime } from './subsystem.js';
+import type { KbToolRuntime, KnowledgeBaseRuntime } from './runtime-contract.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import {
   kbCommunitySetSummarySchema,
@@ -82,10 +82,10 @@ async function runKbAction(action: () => Promise<unknown> | unknown): Promise<Kb
   }
 }
 
-function runKbMutationAction(kbSubsystem: KnowledgeBaseRuntime, action: () => Promise<unknown>): Promise<KbToolResult> {
+function runKbMutationAction(kbRuntime: KnowledgeBaseRuntime, action: () => Promise<unknown>): Promise<KbToolResult> {
   return runKbAction(async () => {
     const result = await action();
-    kbSubsystem.curateScheduler.scheduleDeferredCommit();
+    kbRuntime.curateScheduler.scheduleDeferredCommit();
     return result;
   });
 }
@@ -143,15 +143,15 @@ function validateOwner(
   }
 }
 
-function requireKbSubsystem(kbSubsystem: KnowledgeBaseRuntime | undefined): KnowledgeBaseRuntime {
-  if (kbSubsystem === undefined) {
-    throw new Error('KB subsystem is required.');
+function requireKbRuntime(kbRuntime: KnowledgeBaseRuntime | undefined): KnowledgeBaseRuntime {
+  if (kbRuntime === undefined) {
+    throw new Error('KB runtime is required.');
   }
-  return kbSubsystem;
+  return kbRuntime;
 }
 
-function kbReadPaths(kbSubsystem: KnowledgeBaseRuntime | undefined): KbReadPathResolver {
-  const required = requireKbSubsystem(kbSubsystem);
+function kbReadPaths(kbRuntime: KnowledgeBaseRuntime | undefined): KbReadPathResolver {
+  const required = requireKbRuntime(kbRuntime);
   return {
     notePath: (slug) => required.kb.notePath(slug),
     wikiPath: (slug) => required.kb.wikiPath(slug),
@@ -165,13 +165,13 @@ function buildKbReadOptions(
   kind: KbReadKind,
   ctx: InvocationContext | undefined,
   runtime: KbToolRuntime,
-  kbSubsystem: KnowledgeBaseRuntime | undefined,
+  kbRuntime: KnowledgeBaseRuntime | undefined,
 ): KbReadOptions {
   const options: KbReadOptions = {
     ...(ctx?.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
     storage: runtime.storage,
   };
-  return kind === 'memo' ? options : { ...options, paths: kbReadPaths(kbSubsystem) };
+  return kind === 'memo' ? options : { ...options, paths: kbReadPaths(kbRuntime) };
 }
 
 function handleKbTypedRead(
@@ -179,7 +179,7 @@ function handleKbTypedRead(
   slug: string,
   ctx: InvocationContext | undefined,
   runtime: KbToolRuntime,
-  kbSubsystem?: KnowledgeBaseRuntime,
+  kbRuntime?: KnowledgeBaseRuntime,
 ): KbToolResult {
   const normalized = normalizeKbSlug(slug, kind);
   if (!normalized.ok) {
@@ -187,14 +187,14 @@ function handleKbTypedRead(
   }
 
   try {
-    const entry = readEntryByKind(kind, normalized.slug, buildKbReadOptions(kind, ctx, runtime, kbSubsystem));
+    const entry = readEntryByKind(kind, normalized.slug, buildKbReadOptions(kind, ctx, runtime, kbRuntime));
     return entry === null ? kbNotFoundResult(kind, normalized.slug) : kbSuccess(entry);
   } catch (error: unknown) {
     return kbErrorResult(error);
   }
 }
 
-export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbSearch(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSearchSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
@@ -202,7 +202,7 @@ export async function handleKbSearch(args: KbArgs, kbSubsystem: KnowledgeBaseRun
 
   return runKbAction(() =>
     searchKb(
-      kbSubsystem.kb,
+      kbRuntime.kb,
       parsed.data.query,
       parsed.data.top_k ?? 20,
       parsed.data.scope ?? 'all',
@@ -216,30 +216,30 @@ export function handleKbNoteRead(
   slug: string,
   ctx: InvocationContext,
   runtime: KbToolRuntime,
-  kbSubsystem?: KnowledgeBaseRuntime,
+  kbRuntime?: KnowledgeBaseRuntime,
 ): KbToolResult {
-  return handleKbTypedRead('note', slug, ctx, runtime, kbSubsystem);
+  return handleKbTypedRead('note', slug, ctx, runtime, kbRuntime);
 }
 
 export function handleKbSourceRead(
   slug: string,
-  kbSubsystem: KnowledgeBaseRuntime | undefined,
+  kbRuntime: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
-  return handleKbTypedRead('source', slug, undefined, runtime, kbSubsystem);
+  return handleKbTypedRead('source', slug, undefined, runtime, kbRuntime);
 }
 
 export function handleKbCommunityRead(
   slug: string,
-  kbSubsystem: KnowledgeBaseRuntime | undefined,
+  kbRuntime: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
-  return handleKbTypedRead('community', slug, undefined, runtime, kbSubsystem);
+  return handleKbTypedRead('community', slug, undefined, runtime, kbRuntime);
 }
 
 export function handleKbWikiRead(
   slugOrArgs: string | KbArgs,
-  kbSubsystem: KnowledgeBaseRuntime | undefined,
+  kbRuntime: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
   const parsed = kbWikiReadSchema.safeParse(typeof slugOrArgs === 'string' ? { slug: slugOrArgs } : slugOrArgs);
@@ -247,7 +247,7 @@ export function handleKbWikiRead(
     return kbValidationError(parsed.error);
   }
 
-  return handleKbTypedRead('wiki', parsed.data.slug, undefined, runtime, kbSubsystem);
+  return handleKbTypedRead('wiki', parsed.data.slug, undefined, runtime, kbRuntime);
 }
 
 export function handleKbMemoRead(slug: string, ctx: InvocationContext, runtime: KbToolRuntime): KbToolResult {
@@ -256,17 +256,17 @@ export function handleKbMemoRead(slug: string, ctx: InvocationContext, runtime: 
 
 export function handleKbPrincipleRead(
   slug: string,
-  kbSubsystem: KnowledgeBaseRuntime | undefined,
+  kbRuntime: KnowledgeBaseRuntime | undefined,
   runtime: KbToolRuntime,
 ): KbToolResult {
-  return handleKbTypedRead('principle', slug, undefined, runtime, kbSubsystem);
+  return handleKbTypedRead('principle', slug, undefined, runtime, kbRuntime);
 }
 
 export function handleKbRead(
   args: KbArgs,
   ctx: InvocationContext,
   runtime: KbToolRuntime,
-  kbSubsystem?: KnowledgeBaseRuntime,
+  kbRuntime?: KnowledgeBaseRuntime,
 ): KbToolResult {
   const parsed = kbReadSchema.safeParse(args);
   if (!parsed.success) {
@@ -278,7 +278,7 @@ export function handleKbRead(
       readEntry(parsed.data, {
         ...(ctx.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
         storage: runtime.storage,
-        paths: kbReadPaths(kbSubsystem),
+        paths: kbReadPaths(kbRuntime),
       }),
     );
   } catch (error: unknown) {
@@ -292,7 +292,7 @@ export function handleKbRead(
 
 export async function handleKbPromote(
   args: KbArgs,
-  kbSubsystem: KnowledgeBaseRuntime,
+  kbRuntime: KnowledgeBaseRuntime,
   ctx: InvocationContext,
   runtime: KbToolRuntime,
 ): Promise<KbToolResult> {
@@ -301,21 +301,21 @@ export async function handleKbPromote(
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () =>
-    kbPromote(kbSubsystem.kb, runtime.paths.projectData(ctx.projectRoot), parsed.data, () => {
-      kbSubsystem.curateScheduler.schedule();
+  return runKbMutationAction(kbRuntime, () =>
+    kbPromote(kbRuntime.kb, runtime.paths.projectData(ctx.projectRoot), parsed.data, () => {
+      kbRuntime.curateScheduler.schedule();
     }),
   );
 }
 
-export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbUpdate(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbUpdateSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () =>
-    kbUpdate(kbSubsystem.kb, {
+  return runKbMutationAction(kbRuntime, () =>
+    kbUpdate(kbRuntime.kb, {
       note: parsed.data.note,
       ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
       ...(parsed.data.content !== undefined ? { content: parsed.data.content } : {}),
@@ -323,63 +323,63 @@ export async function handleKbUpdate(args: KbArgs, kbSubsystem: KnowledgeBaseRun
   );
 }
 
-export async function handleKbDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbDelete(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbDeleteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => deleteNote(kbSubsystem.kb, { note: parsed.data.note }));
+  return runKbMutationAction(kbRuntime, () => deleteNote(kbRuntime.kb, { note: parsed.data.note }));
 }
 
-export async function handleKbWikiCreate(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiCreate(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiCreateSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => createWiki(kbSubsystem.kb, parsed.data));
+  return runKbMutationAction(kbRuntime, () => createWiki(kbRuntime.kb, parsed.data));
 }
 
-export async function handleKbWikiRewrite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiRewrite(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiRewriteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => rewriteWikiUnderstanding(kbSubsystem.kb, parsed.data));
+  return runKbMutationAction(kbRuntime, () => rewriteWikiUnderstanding(kbRuntime.kb, parsed.data));
 }
 
-export async function handleKbWikiLink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiLink(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiLinkSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => linkWikiKnowledge(kbSubsystem.kb, parsed.data));
+  return runKbMutationAction(kbRuntime, () => linkWikiKnowledge(kbRuntime.kb, parsed.data));
 }
 
-export async function handleKbWikiUnlink(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiUnlink(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiUnlinkSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => unlinkWikiKnowledge(kbSubsystem.kb, parsed.data));
+  return runKbMutationAction(kbRuntime, () => unlinkWikiKnowledge(kbRuntime.kb, parsed.data));
 }
 
-export async function handleKbWikiCite(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiCite(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiCiteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => citeWikiKnowledge(kbSubsystem.kb, parsed.data));
+  return runKbMutationAction(kbRuntime, () => citeWikiKnowledge(kbRuntime.kb, parsed.data));
 }
 
 export async function handleKbWikiAdopt(
   args: KbArgs,
-  kbSubsystem: KnowledgeBaseRuntime,
+  kbRuntime: KnowledgeBaseRuntime,
   ctx: InvocationContext,
   runtime: KbToolRuntime,
 ): Promise<KbToolResult> {
@@ -388,93 +388,93 @@ export async function handleKbWikiAdopt(
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () =>
-    adoptIntoWiki(kbSubsystem.kb, runtime.paths.projectData(ctx.projectRoot), parsed.data, () => {
-      kbSubsystem.curateScheduler.schedule();
+  return runKbMutationAction(kbRuntime, () =>
+    adoptIntoWiki(kbRuntime.kb, runtime.paths.projectData(ctx.projectRoot), parsed.data, () => {
+      kbRuntime.curateScheduler.schedule();
     }),
   );
 }
 
-export async function handleKbWikiDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiDelete(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiDeleteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => deleteWiki(kbSubsystem.kb, parsed.data));
+  return runKbMutationAction(kbRuntime, () => deleteWiki(kbRuntime.kb, parsed.data));
 }
 
-export async function handleKbWikiList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWikiList(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWikiListSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
-    return { wikis: await listWikis(kbSubsystem.kb) };
+    return { wikis: await listWikis(kbRuntime.kb) };
   });
 }
 
-export async function handleKbWakeUp(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbWakeUp(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbWakeUpSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => ({
-    content: await generateWakeUpPacket(kbSubsystem.kb, parsed.data.project),
+    content: await generateWakeUpPacket(kbRuntime.kb, parsed.data.project),
   }));
 }
 
-export function handleKbDiagnose(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
+export function handleKbDiagnose(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): KbToolResult {
   const parsed = kbDiagnoseSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
   return runKbSyncAction(() =>
-    buildKbDiagnoseResult(readCurateRetryQueue(kbSubsystem.readDb), readCurateConflictQuarantine(kbSubsystem.readDb)),
+    buildKbDiagnoseResult(readCurateRetryQueue(kbRuntime.readDb), readCurateConflictQuarantine(kbRuntime.readDb)),
   );
 }
 
-export async function handleKbSourceList(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbSourceList(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSourceListSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbAction(() => listSources(kbSubsystem.kb));
+  return runKbAction(() => listSources(kbRuntime.kb));
 }
 
-export async function handleKbSourceDelete(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbSourceDelete(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbSourceDeleteSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, () => deleteSource(kbSubsystem.kb, { slug: parsed.data.slug }));
+  return runKbMutationAction(kbRuntime, () => deleteSource(kbRuntime.kb, { slug: parsed.data.slug }));
 }
 
-export function handleKbCommunityListStale(kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
-  return runKbSyncAction(() => listStaleCommunities(kbSubsystem.kb));
+export function handleKbCommunityListStale(kbRuntime: KnowledgeBaseRuntime): KbToolResult {
+  return runKbSyncAction(() => listStaleCommunities(kbRuntime.kb));
 }
 
-export function handleKbCommunitySummaryInput(slug: string, kbSubsystem: KnowledgeBaseRuntime): KbToolResult {
-  const input = readCommunitySummaryInput(kbSubsystem.kb, slug);
+export function handleKbCommunitySummaryInput(slug: string, kbRuntime: KnowledgeBaseRuntime): KbToolResult {
+  const input = readCommunitySummaryInput(kbRuntime.kb, slug);
   return input === null ? kbNotFoundResult('community', slug) : kbSuccess(input);
 }
 
 export async function handleKbCommunitySetSummary(
   args: KbArgs,
-  kbSubsystem: KnowledgeBaseRuntime,
+  kbRuntime: KnowledgeBaseRuntime,
 ): Promise<KbToolResult> {
   const parsed = kbCommunitySetSummarySchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
-  return runKbMutationAction(kbSubsystem, async () => {
-    const { written } = await applyCommunitySummary(kbSubsystem.kb, parsed.data.slug, parsed.data.summary);
+  return runKbMutationAction(kbRuntime, async () => {
+    const { written } = await applyCommunitySummary(kbRuntime.kb, parsed.data.slug, parsed.data.summary);
     if (!written) {
       throw new Error(`KB community not found: ${parsed.data.slug}`);
     }
@@ -482,14 +482,14 @@ export async function handleKbCommunitySetSummary(
   });
 }
 
-export async function handleKbPrinciples(args: KbArgs, kbSubsystem: KnowledgeBaseRuntime): Promise<KbToolResult> {
+export async function handleKbPrinciples(args: KbArgs, kbRuntime: KnowledgeBaseRuntime): Promise<KbToolResult> {
   const parsed = kbPrinciplesSchema.safeParse(args);
   if (!parsed.success) {
     return kbValidationError(parsed.error);
   }
 
   return runKbAction(async () => {
-    return listPrinciples(kbSubsystem.kb, parsed.data);
+    return listPrinciples(kbRuntime.kb, parsed.data);
   });
 }
 

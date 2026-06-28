@@ -219,10 +219,10 @@ describe('sessions reducer equivalence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
-      const legacyEntry = {
-        sessionId: 'session-legacy-row',
+      const retiredEntry = {
+        sessionId: 'session-retired-row',
         provider: 'codex',
-        name: 'legacy',
+        name: 'retired',
         state: 'pending',
         cwd: '/tmp/project',
         projectRoot: '/tmp/project',
@@ -237,10 +237,10 @@ describe('sessions reducer equivalence', () => {
         `INSERT INTO projection_sessions (
            session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run('session-legacy-row', 'default', 'codex', 0, null, 'legacy-scope', JSON.stringify(legacyEntry), 1);
+      ).run('session-retired-row', 'default', 'codex', 0, null, 'retired-scope', JSON.stringify(retiredEntry), 1);
 
-      expect(readProjectionSessionEntry(db, 'session-legacy-row')).toMatchObject({
-        sessionId: 'session-legacy-row',
+      expect(readProjectionSessionEntry(db, 'session-retired-row')).toMatchObject({
+        sessionId: 'session-retired-row',
         retention: 'retain',
         artifactHandles: [],
         retentionDiscard: { attempts: [] },
@@ -309,10 +309,10 @@ describe('sessions reducer equivalence', () => {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
-      const legacyEntry = {
-        sessionId: 'session-legacy-opened',
+      const retiredEntry = {
+        sessionId: 'session-retired-opened',
         provider: 'claude',
-        name: 'legacy opened',
+        name: 'retired opened',
         state: 'pending',
         cwd: '/tmp/project',
         projectRoot: '/tmp/project',
@@ -328,14 +328,14 @@ describe('sessions reducer equivalence', () => {
         [
           {
             type: 'session.opened',
-            stream: { kind: 'session', id: 'session-legacy-opened' },
-            refs: { sessionId: 'session-legacy-opened' },
+            stream: { kind: 'session', id: 'session-retired-opened' },
+            refs: { sessionId: 'session-retired-opened' },
             bodyVersion: 1,
             body: {
-              entry: legacyEntry,
+              entry: retiredEntry,
               controller: 'default',
               provider: 'claude',
-              scope_key: 'legacy-scope',
+              scope_key: 'retired-scope',
             },
           },
         ],
@@ -349,8 +349,8 @@ describe('sessions reducer equivalence', () => {
         upcasters,
       });
 
-      expect(readProjectionSessionEntry(db, 'session-legacy-opened')).toMatchObject({
-        sessionId: 'session-legacy-opened',
+      expect(readProjectionSessionEntry(db, 'session-retired-opened')).toMatchObject({
+        sessionId: 'session-retired-opened',
         retention: 'retain',
         artifactHandles: [],
         retentionDiscard: { attempts: [] },

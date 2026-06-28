@@ -12,6 +12,7 @@ export const workflowRequestSchema = workflowCommandSchema
     projectRoot: projectRootSchema,
     effort: z.string().optional(),
     claudeModelCap: modelNameSchema.optional(),
+    claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
   })
   .strict();

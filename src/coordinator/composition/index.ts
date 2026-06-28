@@ -10,11 +10,14 @@
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
+import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
-import type { EventStreamHandlers, HttpHandlerPorts } from '../../transport/server-ports.js';
+import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
+import type { StoragePort } from '../../infra/port-types.js';
 import {
   knownDiscussSources,
   loadDiscussDetail,
@@ -29,49 +32,19 @@ import {
   handleDiscussStart,
   handleDiscussWatch,
 } from '../../discuss/shell/tools.js';
-import {
-  handleKbCommunityListStale,
-  handleKbCommunityRead,
-  handleKbCommunitySetSummary,
-  handleKbCommunitySummaryInput,
-  handleKbDiagnose,
-  handleKbMemo,
-  handleKbMemoDeleteConsolidated,
-  handleKbMemoList,
-  handleKbMemoRead,
-  handleKbNoteRead,
-  handleKbPrincipleRead,
-  handleKbPrinciples,
-  handleKbPromote,
-  handleKbSearch,
-  handleKbSourceDelete,
-  handleKbSourceList,
-  handleKbSourceRead,
-  handleKbUpdate,
-  handleKbDelete,
-  handleKbWakeUp,
-  handleKbWikiAdopt,
-  handleKbWikiCite,
-  handleKbWikiCreate,
-  handleKbWikiDelete,
-  handleKbWikiLink,
-  handleKbWikiList,
-  handleKbWikiRead,
-  handleKbWikiRewrite,
-  handleKbWikiUnlink,
-} from '../../kb/tool-handlers.js';
 import { createHttpHandler, sendJson } from '../../transport/http/handler.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '../../transport/ipc/server.js';
 import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { Principal } from '../../security/principal.js';
+import { principalToWire } from '../../security/principal-wire.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import { createRuntimeState, createLifecycle, type LifecycleController, type LifecycleDeps } from '../lifecycle.js';
-import { createSubsystemRegistry } from '../subsystems/registry.js';
-import { KB_ID } from '../subsystems/contract.js';
-import type { KnowledgeBaseRuntime } from '../../kb/subsystem.js';
+import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
 import { isWorkflowInputFailure, workflowCompiler } from '../../workflow/compile.js';
 import { workflowCommands } from '../../workflow/dispatch.js';
@@ -80,10 +53,9 @@ import { resolveCoordinatorDefaults } from './defaults.js';
 import { createDiscussRuntime } from '../../discuss/shell/runtime-services.js';
 import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld } from './world.js';
-import { storeServicesStartupNotReadyError, type StoreServicesRef } from './store-services-ref.js';
-import { isLivePhase } from '../../jobs/phase.js';
+import { storeServicesStartupNotReadyError } from './store-services-ref.js';
+import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
 import { belongsToNamespace } from '../../jobs/records.js';
-import { createExpansionRpc } from '../expansion/rpc.js';
 import type {
   EquipExpansionRequest,
   EquipExpansionResult,
@@ -97,37 +69,348 @@ import type {
   UnequipExpansionRequest,
   UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
-import { KbSourceImportService, parseKbSourceImportRequest } from '../services/kb/source-import.js';
-import { KbReindexService } from '../services/kb/reindex.js';
-import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../services/kb/recorder.js';
+import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
+import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
+import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
+import type { KbCorpusSnapshot } from '../../kb/contract.js';
+import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
+import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 
 export const MAX_EVENT_STREAM_CONNECTIONS = 100;
+const KB_DAEMON_JOB_ABORT_PROXY_TTL_MS = 24 * 60 * 60 * 1000;
+
+type KbReadRpcPort = Pick<
+  RpcPorts['kb'],
+  | 'readSearch'
+  | 'diagnose'
+  | 'readNote'
+  | 'readSource'
+  | 'readCommunity'
+  | 'listStaleCommunities'
+  | 'readCommunitySummaryInput'
+  | 'readWiki'
+  | 'readMemo'
+  | 'readPrinciple'
+  | 'listSources'
+  | 'listWikis'
+  | 'listMemos'
+  | 'listPrinciples'
+  | 'wakeUp'
+>;
 
 const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
   message: 'Too many event stream connections',
 };
 
-function createRefBackedExpansionRpc(storeServicesRef: StoreServicesRef): ExpansionRequestPort {
-  const getExpansionRpc = (): ExpansionRequestPort => {
-    const lifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
-    if (lifecycleService === null) {
-      throw storeServicesStartupNotReadyError();
+const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'error', 'failed', 'closed']);
+
+function isTerminalDiscussStatus(status: string): boolean {
+  return TERMINAL_DISCUSS_STATUSES.has(status);
+}
+
+const EMPTY_CORPUS_SNAPSHOT: KbCorpusSnapshot = {
+  snapshotId: '',
+  contentSeq: 0,
+  metadataSeq: 0,
+  contentManifestHash: '',
+  metadataManifestHash: '',
+};
+
+type CorpusSnapshotCursorRow = {
+  snapshot_id: string | null;
+  content_seq: number | null;
+  metadata_seq: number | null;
+  content_manifest_hash: string | null;
+  metadata_manifest_hash: string | null;
+};
+
+function readPersistedCorpusSnapshot(db: {
+  prepare(sql: string): { get(): CorpusSnapshotCursorRow | undefined };
+}): KbCorpusSnapshot {
+  const row = db
+    .prepare(
+      `
+        SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
+          FROM kb_corpus_state
+         WHERE id = 1
+      `,
+    )
+    .get();
+  if (row === undefined) {
+    return { ...EMPTY_CORPUS_SNAPSHOT };
+  }
+  return {
+    snapshotId: row.snapshot_id ?? '',
+    contentSeq: row.content_seq ?? 0,
+    metadataSeq: row.metadata_seq ?? 0,
+    contentManifestHash: row.content_manifest_hash ?? '',
+    metadataManifestHash: row.metadata_manifest_hash ?? '',
+  };
+}
+
+let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
+
+function readEventLoopLagMs(): number {
+  if (eventLoopDelayMonitor === null) {
+    eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
+    eventLoopDelayMonitor.enable();
+    return 0;
+  }
+
+  const meanNs = eventLoopDelayMonitor.mean;
+  if (!Number.isFinite(meanNs)) {
+    return 0;
+  }
+  return Math.max(0, Math.round(meanNs / 1_000_000));
+}
+
+function readFdCount(storage: Pick<StoragePort, 'readdirSync'>): number | undefined {
+  try {
+    return storage.readdirSync('/proc/self/fd').length;
+  } catch {
+    return undefined;
+  }
+}
+
+function readResourceSnapshot(
+  storage: Pick<StoragePort, 'readdirSync'>,
+  ipcOpenSockets: number,
+  eventStreamResponses: number,
+): NonNullable<HealthSnapshot['resources']> {
+  const memory = process.memoryUsage();
+  const fdCount = readFdCount(storage);
+  return {
+    rssBytes: memory.rss,
+    heapUsedBytes: memory.heapUsed,
+    eventLoopLagMs: readEventLoopLagMs(),
+    ipcOpenSockets,
+    eventStreamResponses,
+    ...(fdCount === undefined ? {} : { fdCount }),
+  };
+}
+
+function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadRpcPort {
+  const daemonCtx = (ctx: InvocationContext | Principal): KbDaemonRequestContextWire => toKbDaemonWireContext(ctx);
+
+  return {
+    readSearch: (args, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readSearch', args, ctx: daemonCtx(principal) }),
+    diagnose: (principal) => kbDaemonSupervisor.readKb({ method: 'diagnose', ctx: daemonCtx(principal) }),
+    readNote: (slug, principal) => kbDaemonSupervisor.readKb({ method: 'readNote', slug, ctx: daemonCtx(principal) }),
+    readSource: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readSource', slug, ctx: daemonCtx(principal) }),
+    readCommunity: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readCommunity', slug, ctx: daemonCtx(principal) }),
+    readWiki: (slug, principal) => kbDaemonSupervisor.readKb({ method: 'readWiki', slug, ctx: daemonCtx(principal) }),
+    readMemo: (slug, ctx) => kbDaemonSupervisor.readKb({ method: 'readMemo', slug, ctx: daemonCtx(ctx) }),
+    readPrinciple: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readPrinciple', slug, ctx: daemonCtx(principal) }),
+    listSources: (principal) => kbDaemonSupervisor.readKb({ method: 'listSources', ctx: daemonCtx(principal) }),
+    listWikis: (principal) => kbDaemonSupervisor.readKb({ method: 'listWikis', ctx: daemonCtx(principal) }),
+    listMemos: (args, ctx) => kbDaemonSupervisor.readKb({ method: 'listMemos', args, ctx: daemonCtx(ctx) }),
+    listPrinciples: (args, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'listPrinciples', args, ctx: daemonCtx(principal) }),
+    listStaleCommunities: (principal) =>
+      kbDaemonSupervisor.readKb({ method: 'listStaleCommunities', ctx: daemonCtx(principal) }),
+    readCommunitySummaryInput: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readCommunitySummaryInput', slug, ctx: daemonCtx(principal) }),
+    wakeUp: (args, principal) => kbDaemonSupervisor.readKb({ method: 'wakeUp', args, ctx: daemonCtx(principal) }),
+  };
+}
+
+function readStartedKbJobId(result: KbToolResult): string | null {
+  if (!result.ok || typeof result.data !== 'object' || result.data === null) {
+    return null;
+  }
+  const data = result.data as { status?: unknown; job?: unknown };
+  if ((data.status === 'running' || data.status === 'queued') && typeof data.job === 'string' && data.job.length > 0) {
+    return data.job;
+  }
+  return null;
+}
+
+function toKbDaemonWireContext(ctx: InvocationContext | Principal): KbDaemonRequestContextWire {
+  if (!('principal' in ctx)) {
+    return { principal: principalToWire(ctx) };
+  }
+  return {
+    ...(ctx.projectRoot.length === 0 ? {} : { projectRoot: ctx.projectRoot }),
+    ...(ctx.pluginRoot.length === 0 ? {} : { pluginRoot: ctx.pluginRoot }),
+    ...(Object.keys(ctx.coralEnv).length === 0 ? {} : { coralEnv: ctx.coralEnv }),
+    principal: principalToWire(ctx.principal),
+  };
+}
+
+function createKbDaemonMutationPort(
+  readPort: ReturnType<typeof createKbDaemonReadPort>,
+  kbDaemonSupervisor: KbDaemonSupervisor,
+  recordHostedKbFailure: (operation: string, ctx: InvocationContext | undefined, result: KbToolResult) => void,
+  notifyHostedCorpusMutation: () => void,
+  registerDaemonJobAbortProxy: (jobId: string) => void,
+  fallbackContext: InvocationContext,
+): RpcPorts['kb'] {
+  const recordAndNotify = (
+    operation: string,
+    ctx: InvocationContext | undefined,
+    result: KbToolResult,
+    options: { corpusMutation?: boolean } = {},
+  ): KbToolResult => {
+    recordHostedKbFailure(operation, ctx, result);
+    if (result.ok && options.corpusMutation === true) {
+      notifyHostedCorpusMutation();
     }
-    return createExpansionRpc(lifecycleService);
+    return result;
+  };
+  const daemonCtx = (ctx: InvocationContext | undefined): KbDaemonRequestContextWire =>
+    toKbDaemonWireContext(ctx ?? fallbackContext);
+  return {
+    ...readPort,
+    setCommunitySummary: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({
+        method: 'setCommunitySummary',
+        args,
+        ctx: daemonCtx(ctx),
+      });
+      return recordAndNotify('community_set_summary', ctx, result, { corpusMutation: true });
+    },
+    createNote: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createNote', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('promote', ctx, result, { corpusMutation: true });
+    },
+    updateNote: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'updateNote', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('update', ctx, result, { corpusMutation: true });
+    },
+    deleteNote: async (slug, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteNote', slug, ctx: daemonCtx(ctx) });
+      return recordAndNotify('delete', ctx, result, { corpusMutation: true });
+    },
+    createSource: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createSource', args, ctx: daemonCtx(ctx) });
+      const jobId = readStartedKbJobId(result);
+      if (jobId !== null) {
+        registerDaemonJobAbortProxy(jobId);
+      }
+      return recordAndNotify('source_import', ctx, result);
+    },
+    createWiki: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createWiki', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_create', ctx, result, { corpusMutation: true });
+    },
+    rewriteWiki: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_rewrite', ctx, result, { corpusMutation: true });
+    },
+    linkWiki: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'linkWiki', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_link', ctx, result, { corpusMutation: true });
+    },
+    unlinkWiki: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_unlink', ctx, result, { corpusMutation: true });
+    },
+    citeWiki: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'citeWiki', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_cite', ctx, result, { corpusMutation: true });
+    },
+    adoptWiki: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'adoptWiki', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_adopt', ctx, result, { corpusMutation: true });
+    },
+    deleteWiki: async (slug, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx: daemonCtx(ctx) });
+      return recordAndNotify('wiki_delete', ctx, result, { corpusMutation: true });
+    },
+    deleteSource: async (slug, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteSource', slug, ctx: daemonCtx(ctx) });
+      return recordAndNotify('source_delete', ctx, result, { corpusMutation: true });
+    },
+    createMemo: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createMemo', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('memo_create', ctx, result);
+    },
+    deleteMemos: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteMemos', args, ctx: daemonCtx(ctx) });
+      return recordAndNotify('memo_delete', ctx, result);
+    },
+    reindex: async (args, ctx) => {
+      const result = await kbDaemonSupervisor.mutateKb({
+        method: 'reindex',
+        args,
+        ctx: daemonCtx(ctx),
+      });
+      const jobId = readStartedKbJobId(result);
+      if (jobId !== null) {
+        registerDaemonJobAbortProxy(jobId);
+      }
+      return recordAndNotify('reindex', ctx, result);
+    },
+  };
+}
+
+function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): ExpansionRequestPort {
+  const errorContext = (detail: unknown): Record<string, unknown> | undefined => {
+    if (detail === undefined) {
+      return undefined;
+    }
+    return isRecord(detail) ? detail : { detail };
+  };
+  const errorRemediation = (code: string): string => {
+    switch (code) {
+      case 'invalid_request':
+        return "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
+      case 'kb_disabled':
+        return 'Enable the KB daemon runtime and restart Coral, then retry.';
+      case 'kb_initializing':
+      case 'kb_offline':
+      case 'kb_unavailable':
+        return 'Wait for the KB daemon runtime to become available or restart Coral, then retry.';
+      case 'kb_daemon_protocol_error':
+        return 'Restart Coral and retry. If this persists, check the coordinator logs.';
+      default:
+        return 'Retry the expansion command. If this persists, check the coordinator logs.';
+    }
+  };
+  const run = async <T>(
+    method: Parameters<KbDaemonSupervisor['expansionRpc']>[0]['method'],
+    args: unknown,
+    principal: Principal | undefined,
+  ): Promise<T> => {
+    if (principal === undefined) {
+      throw new CoralSetupError({
+        code: 'invalid_request',
+        userMessage: 'Expansion request requires principal context.',
+        remediation: "Retry the expansion command. If this persists, run 'coral-cli expansion --help'.",
+      });
+    }
+    const result = await kbDaemonSupervisor.expansionRpc({ method, args, ctx: toKbDaemonWireContext(principal) });
+    if (!result.ok) {
+      throw new CoralSetupError({
+        code: result.code,
+        userMessage: result.message,
+        remediation: result.remediation ?? errorRemediation(result.code),
+        context: errorContext(result.detail),
+      });
+    }
+    return result.data as T;
   };
 
   return {
-    equipExpansion: (request: EquipExpansionRequest): Promise<EquipExpansionResult> =>
-      getExpansionRpc().equipExpansion(request),
-    unequipExpansion: (request: UnequipExpansionRequest): Promise<UnequipExpansionResult> =>
-      getExpansionRpc().unequipExpansion(request),
-    removeExpansionCatalog: (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> =>
-      getExpansionRpc().removeExpansionCatalog(request),
-    listExpansion: (request: ListExpansionRequest): Promise<ListExpansionResult> =>
-      getExpansionRpc().listExpansion(request),
-    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> => getExpansionRpc().readBinding(request),
+    equipExpansion: (request: EquipExpansionRequest, principal?: Principal): Promise<EquipExpansionResult> =>
+      run('equipExpansion', request, principal),
+    unequipExpansion: (request: UnequipExpansionRequest, principal?: Principal): Promise<UnequipExpansionResult> =>
+      run('unequipExpansion', request, principal),
+    removeExpansionCatalog: (
+      request: RemoveExpansionCatalogRequest,
+      principal?: Principal,
+    ): Promise<RemoveExpansionCatalogResult> => run('removeExpansionCatalog', request, principal),
+    listExpansion: (request: ListExpansionRequest, principal?: Principal): Promise<ListExpansionResult> =>
+      run('listExpansion', request, principal),
+    readBinding: (request: ReadBindingRequest, principal?: Principal): Promise<ReadBindingResult> =>
+      run('readBinding', request, principal),
   };
 }
 
@@ -136,6 +419,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const world = createCoordinatorWorld(options, runtime, defaultsPlan);
+  const kbDaemonSupervisor = options.kbDaemonSupervisor;
   const identity = world.identity;
   const storeServicesRef = world.storeServicesRef;
   // Local indirection: callers in non-health/handoff paths use this to get
@@ -165,10 +449,11 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     (() => {
       throw storeServicesStartupNotReadyError();
     });
-  const subsystems = createSubsystemRegistry();
-  const runtimeState = createRuntimeState(world.now(), subsystems);
+  const components = createRuntimeComponentRegistry();
+  const runtimeState = createRuntimeState(world.now(), components);
   const streamResponses = new Set<ServerResponse>();
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
+  let readIpcOpenSockets = () => 0;
   const services = createExecutionServices({
     world,
     runtime,
@@ -202,36 +487,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     getProgressStore,
     internalJobAbortRegistry,
   });
-  let kbSourceImportService: KbSourceImportService | null = null;
-  const getKbSourceImportService = (): KbSourceImportService => {
-    const existing = kbSourceImportService;
-    if (existing) return existing;
-    const created = new KbSourceImportService({
-      runtime,
-      progressStore: getProgressStore(),
-      backendNamespace: world.namespace,
-      bundleHash: identity.bundleHash,
-      waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
-      abortRegistry: internalJobAbortRegistry,
-    });
-    kbSourceImportService = created;
-    return created;
-  };
-  let kbReindexService: KbReindexService | null = null;
-  const getKbReindexService = (): KbReindexService => {
-    const existing = kbReindexService;
-    if (existing) return existing;
-    const created = new KbReindexService({
-      runtime,
-      progressStore: getProgressStore(),
-      backendNamespace: world.namespace,
-      bundleHash: identity.bundleHash,
-      waitForReadiness: options.waitForKbSourceImportReadiness ?? (async () => {}),
-      abortRegistry: internalJobAbortRegistry,
-    });
-    kbReindexService = created;
-    return created;
-  };
   let kbJobRecorder: KbJobRecorder | null = null;
   const getKbJobRecorder = (): KbJobRecorder => {
     const existing = kbJobRecorder;
@@ -251,16 +506,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
     coralEnv: { ...world.coralEnvSnapshot },
-    authority: 'admin',
+    principal: {
+      subject: 'system',
+      transport: 'internal',
+      credential: { kind: 'internal', id: 'coordinator-readonly' },
+      binding: { kind: 'unbound' },
+    },
   };
-  // KB-tool handlers route through the subsystem registry. The registry
-  // returns a structured `kb_initializing` / `kb_offline` envelope whenever
-  // the subsystem is not online or degraded — handlers cascade that envelope
-  // up to the transport layer where it maps to HTTP 503.
-  const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
-    runtimeState.subsystems.run<KnowledgeBaseRuntime, T>(KB_ID, run);
-  const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
-    runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>(KB_ID, run);
   const recordHostedKbFailure = (operation: string, ctx: InvocationContext | undefined, result: KbToolResult): void => {
     if (result.ok || ctx === undefined) {
       return;
@@ -295,6 +547,194 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       detail,
     });
   };
+  const notifyHostedCorpusMutation = (): void => {
+    try {
+      const storeServices = getStoreServices();
+      const snapshot = readPersistedCorpusSnapshot(storeServices.storeDb);
+      storeServices.consumerDriver?.notifyCorpus(snapshot);
+    } catch (error) {
+      world.log(`[kb-daemon] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
+    }
+  };
+  const daemonOwnedKbJobs = new Map<string, { cleanupTimer: ReturnType<typeof runtime.time.setTimeout> }>();
+  const cleanupDaemonJobAbortProxy = (jobId: string): void => {
+    const tracked = daemonOwnedKbJobs.get(jobId);
+    if (tracked !== undefined) {
+      runtime.time.clearTimeout(tracked.cleanupTimer);
+      daemonOwnedKbJobs.delete(jobId);
+    }
+    internalJobAbortRegistry.remove(jobId);
+    if (daemonOwnedKbJobs.size === 0) {
+      disposeDaemonJobTerminalListeners();
+    }
+  };
+  const cleanupTerminalDaemonJobAbortProxy = (jobId: string, phase: string): void => {
+    if (!isTerminalPhase(phase) || !daemonOwnedKbJobs.has(jobId)) {
+      return;
+    }
+    cleanupDaemonJobAbortProxy(jobId);
+  };
+  const onDaemonJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
+    cleanupTerminalDaemonJobAbortProxy(event.jobId, event.phase);
+  };
+  const onDaemonJobCompleted = (event: { jobId: string }): void => {
+    if (!daemonOwnedKbJobs.has(event.jobId)) {
+      return;
+    }
+    cleanupDaemonJobAbortProxy(event.jobId);
+  };
+  let daemonJobTerminalListenersRegistered = false;
+  const ensureDaemonJobTerminalListeners = (): void => {
+    if (daemonJobTerminalListenersRegistered) {
+      return;
+    }
+    daemonJobTerminalListenersRegistered = true;
+    world.eventBus.on('job:phase_changed', onDaemonJobPhaseChanged);
+    world.eventBus.on('job:completed', onDaemonJobCompleted);
+  };
+  const disposeDaemonJobTerminalListeners = (): void => {
+    if (!daemonJobTerminalListenersRegistered) {
+      return;
+    }
+    daemonJobTerminalListenersRegistered = false;
+    world.eventBus.off('job:phase_changed', onDaemonJobPhaseChanged);
+    world.eventBus.off('job:completed', onDaemonJobCompleted);
+  };
+  const onChildPrincipalJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
+    if (isTerminalPhase(event.phase)) {
+      world.childPrincipalRegistry.revokeParentJob(event.jobId);
+    }
+  };
+  const onChildPrincipalJobCompleted = (event: { jobId: string }): void => {
+    world.childPrincipalRegistry.revokeParentJob(event.jobId);
+  };
+  const onChildPrincipalDiscussUpdated = (event: { sessionId: string; status: string }): void => {
+    if (isTerminalDiscussStatus(event.status)) {
+      world.childPrincipalRegistry.revokeParentSession(event.sessionId);
+    }
+  };
+  world.eventBus.on('job:phase_changed', onChildPrincipalJobPhaseChanged);
+  world.eventBus.on('job:completed', onChildPrincipalJobCompleted);
+  world.eventBus.on('discuss:updated', onChildPrincipalDiscussUpdated);
+  const disposeChildPrincipalTerminalListeners = (): void => {
+    world.eventBus.off('job:phase_changed', onChildPrincipalJobPhaseChanged);
+    world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
+    world.eventBus.off('discuss:updated', onChildPrincipalDiscussUpdated);
+  };
+  const describeKbDaemonExit = (snapshot: KbDaemonHealthSnapshot): string => {
+    const exit = snapshot.lastExit;
+    const suffix =
+      exit === undefined
+        ? ''
+        : ` (code=${String(exit.code)}, signal=${String(exit.signal)}, generation=${snapshot.generation})`;
+    return `KB daemon exited${suffix}: ${snapshot.lastError ?? snapshot.reason ?? snapshot.phase}`;
+  };
+  const listDurableDaemonOwnedKbJobs = (progressStore: JobProgressStore): string[] => {
+    const jobIds: string[] = [];
+    for (const jobId of progressStore.listJobIds()) {
+      const status = progressStore.readStatus(jobId);
+      if (
+        status === null ||
+        !isLivePhase(status.phase) ||
+        !belongsToNamespace(status, world.namespace) ||
+        status.jobKind !== 'kb'
+      ) {
+        continue;
+      }
+      const runtime = progressStore.readRuntimeProjection(jobId);
+      if (runtime?.transport === 'internal' && runtime.owner === 'kb-daemon') {
+        jobIds.push(jobId);
+      }
+    }
+    return jobIds;
+  };
+  const failTrackedDaemonJobs = (snapshot: KbDaemonHealthSnapshot): void => {
+    const message = describeKbDaemonExit(snapshot);
+    try {
+      const progressStore = getProgressStore();
+      const daemonOwnedJobIds = new Set([...daemonOwnedKbJobs.keys(), ...listDurableDaemonOwnedKbJobs(progressStore)]);
+      if (daemonOwnedJobIds.size === 0) {
+        return;
+      }
+      const failed: string[] = [];
+      for (const jobId of daemonOwnedJobIds) {
+        const status = progressStore.readStatus(jobId);
+        if (
+          status === null ||
+          !isLivePhase(status.phase) ||
+          !belongsToNamespace(status, world.namespace) ||
+          status.jobKind !== 'kb'
+        ) {
+          cleanupDaemonJobAbortProxy(jobId);
+          continue;
+        }
+        markJobAsError(progressStore, status, { kind: 'wrapper_crashed', cause: { message } }, (line) =>
+          world.log(`${line}\n`),
+        );
+        cleanupDaemonJobAbortProxy(jobId);
+        failed.push(jobId);
+      }
+      if (failed.length > 0) {
+        world.log(`[kb-daemon] marked ${failed.length} daemon-owned KB job(s) as error after daemon exit\n`);
+      }
+    } catch (error: unknown) {
+      world.log(`[kb-daemon] failed to reconcile daemon-owned KB jobs after daemon exit: ${formatError(error)}\n`);
+    }
+  };
+  const registerDaemonJobAbortProxy = (jobId: string): void => {
+    cleanupDaemonJobAbortProxy(jobId);
+    ensureDaemonJobTerminalListeners();
+    const cleanupTimer = runtime.time.setTimeout(() => {
+      cleanupDaemonJobAbortProxy(jobId);
+    }, KB_DAEMON_JOB_ABORT_PROXY_TTL_MS);
+    cleanupTimer.unref?.();
+    daemonOwnedKbJobs.set(jobId, { cleanupTimer });
+    internalJobAbortRegistry.register(jobId, () => {
+      const tracked = daemonOwnedKbJobs.get(jobId);
+      if (tracked !== undefined) {
+        runtime.time.clearTimeout(tracked.cleanupTimer);
+      }
+      const abortResult =
+        kbDaemonSupervisor.abortKbJobs?.([jobId]) ?? Promise.resolve({ aborted: [], notFound: [jobId] });
+      void abortResult.finally(() => {
+        cleanupDaemonJobAbortProxy(jobId);
+      });
+    });
+  };
+  const trackActiveDaemonKbJobs = async (reason: string, signal?: AbortSignal): Promise<void> => {
+    try {
+      const activeJobs = (await kbDaemonSupervisor.listActiveKbJobs?.({ signal }))?.active ?? [];
+      for (const jobId of activeJobs) {
+        registerDaemonJobAbortProxy(jobId);
+      }
+      if (activeJobs.length > 0) {
+        world.log(`[kb-daemon] tracking ${activeJobs.length} active KB job(s) before ${reason}\n`);
+      }
+    } catch (error: unknown) {
+      world.log(`[kb-daemon] failed to list active KB jobs before ${reason}: ${formatError(error)}\n`);
+    }
+  };
+  const kbDaemonSupervisorWithTrackedShutdown: KbDaemonSupervisor = {
+    ...kbDaemonSupervisor,
+    restart: async (reason) => {
+      await trackActiveDaemonKbJobs(reason ?? 'restart');
+      return kbDaemonSupervisor.restart(reason);
+    },
+    dispose: async (reason, disposeOptions) => {
+      await trackActiveDaemonKbJobs(reason ?? 'dispose', disposeOptions?.signal);
+      return kbDaemonSupervisor.dispose(reason, disposeOptions);
+    },
+  };
+  const disposeKbDaemonExitListener = kbDaemonSupervisor.onExit?.(failTrackedDaemonJobs) ?? (() => {});
+  const daemonKbReadPort = createKbDaemonReadPort(kbDaemonSupervisorWithTrackedShutdown);
+  const kbRpcPort = createKbDaemonMutationPort(
+    daemonKbReadPort,
+    kbDaemonSupervisorWithTrackedShutdown,
+    recordHostedKbFailure,
+    notifyHostedCorpusMutation,
+    registerDaemonJobAbortProxy,
+    readOnlyInvocationContext,
+  );
 
   const rpcPorts: RpcPorts = {
     sessions: {
@@ -376,120 +816,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         }
       },
     },
-    kb: {
-      readSearch: (args) => withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
-      diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
-      readNote: (slug) =>
-        withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, runtime, kbSubsystem)),
-      readSource: (slug) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, runtime)),
-      readCommunity: (slug) => withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, runtime)),
-      listStaleCommunities: () => withKb((kbSubsystem) => handleKbCommunityListStale(kbSubsystem)),
-      readCommunitySummaryInput: (slug) => withKb((kbSubsystem) => handleKbCommunitySummaryInput(slug, kbSubsystem)),
-      setCommunitySummary: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbCommunitySetSummary(args, kbSubsystem));
-        recordHostedKbFailure('community_set_summary', ctx, result);
-        return result;
-      },
-      readWiki: (slug) => withKb((kbSubsystem) => handleKbWikiRead(slug, kbSubsystem, runtime)),
-      readMemo: (slug, ctx) => withKb(() => handleKbMemoRead(slug, ctx, runtime)),
-      readPrinciple: (slug) => withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, runtime)),
-      listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
-      listWikis: () => withKbAsync((kbSubsystem) => handleKbWikiList({}, kbSubsystem)),
-      listMemos: (args, ctx) => withKb(() => handleKbMemoList(args, ctx, runtime)),
-      listPrinciples: (args) => withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
-      createNote: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx, runtime));
-        recordHostedKbFailure('promote', ctx, result);
-        return result;
-      },
-      updateNote: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem));
-        recordHostedKbFailure('update', ctx, result);
-        return result;
-      },
-      deleteNote: async (slug, ctx) => {
-        const args = { note: slug };
-        const result = await withKbAsync((kbSubsystem) => handleKbDelete(args, kbSubsystem));
-        recordHostedKbFailure('delete', ctx, result);
-        return result;
-      },
-      createWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiCreate(args, kbSubsystem));
-        recordHostedKbFailure('wiki_create', ctx, result);
-        return result;
-      },
-      rewriteWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiRewrite(args, kbSubsystem));
-        recordHostedKbFailure('wiki_rewrite', ctx, result);
-        return result;
-      },
-      linkWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiLink(args, kbSubsystem));
-        recordHostedKbFailure('wiki_link', ctx, result);
-        return result;
-      },
-      unlinkWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiUnlink(args, kbSubsystem));
-        recordHostedKbFailure('wiki_unlink', ctx, result);
-        return result;
-      },
-      citeWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiCite(args, kbSubsystem));
-        recordHostedKbFailure('wiki_cite', ctx, result);
-        return result;
-      },
-      adoptWiki: async (args, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiAdopt(args, kbSubsystem, ctx, runtime));
-        recordHostedKbFailure('wiki_adopt', ctx, result);
-        return result;
-      },
-      deleteWiki: async (slug, ctx) => {
-        const result = await withKbAsync((kbSubsystem) => handleKbWikiDelete({ slug }, kbSubsystem));
-        recordHostedKbFailure('wiki_delete', ctx, result);
-        return result;
-      },
-      wakeUp: (args) => withKbAsync((kbSubsystem) => handleKbWakeUp(args, kbSubsystem)),
-      createSource: async (args, ctx) => {
-        const parsed = parseKbSourceImportRequest(args);
-        if (!parsed.ok) {
-          return {
-            ok: false,
-            code: 'invalid_request',
-            message: parsed.message,
-          } satisfies KbToolResult;
-        }
-        const result = await withKbAsync((kbSubsystem) =>
-          Promise.resolve(getKbSourceImportService().start(parsed.data, ctx, kbSubsystem)),
-        );
-        recordHostedKbFailure('source_import', ctx, result);
-        return result;
-      },
-      deleteSource: async (slug, ctx) => {
-        const args = { slug };
-        const result = await withKbAsync((kbSubsystem) => handleKbSourceDelete(args, kbSubsystem));
-        recordHostedKbFailure('source_delete', ctx, result);
-        return result;
-      },
-      createMemo: (args, ctx) => {
-        const result = withKb(() => handleKbMemo(args, ctx, runtime));
-        recordHostedKbFailure('memo_create', ctx, result);
-        return result;
-      },
-      deleteMemos: (args, ctx) => {
-        const result = withKb(() => handleKbMemoDeleteConsolidated(args, ctx, runtime));
-        recordHostedKbFailure('memo_delete', ctx, result);
-        return result;
-      },
-      reindex: async (args, ctx) => {
-        const invocationContext = ctx ?? readOnlyInvocationContext;
-        const request = { async: args.async === true };
-        const result = await withKbAsync((kbSubsystem) =>
-          Promise.resolve(getKbReindexService().run(request, invocationContext, kbSubsystem)),
-        );
-        recordHostedKbFailure('reindex', ctx, result);
-        return result;
-      },
-    },
+    kb: kbRpcPort,
     discuss: {
       seed: handleDiscussSeed,
       start: (args, ctx) => handleDiscussStart(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
@@ -501,12 +828,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       speech: (args, ctx) => handleDiscussSpeech(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
       abort: (args, ctx) => handleDiscussAbort(args, ctx, { getDiscussContext: discuss.getDiscussContext }),
     },
-    expansion: createRefBackedExpansionRpc(storeServicesRef),
+    expansion: createKbDaemonExpansionRpc(kbDaemonSupervisorWithTrackedShutdown),
   };
-
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
+    time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
+    remoteAccess: world.remoteAccess,
+    childPrincipals: world.childPrincipalRegistry,
     admin: {
       getLifecycleState: () => runtimeState.getLifecycle(),
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
@@ -519,43 +848,42 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         world.idleTimer.endRequest();
       },
       requestDrain: control.requestDrain,
+      probeKbDaemon: () => kbDaemonSupervisor.probe(),
+      restartKbDaemon: (reason) => kbDaemonSupervisorWithTrackedShutdown.restart(reason),
     },
     health: {
       read: () => {
         const env = { ...world.coralEnvSnapshot };
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
-        // Legacy `status` field — older CLIs validate the strict
-        // `'starting' | 'ok' | 'draining'` enum. New consumers read
-        // `kernel.phase` for the full 5-state lifecycle.
-        let legacyStatus: 'starting' | 'ok' | 'draining';
+        // Coarse `status` field for clients that validate the strict
+        // `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
+        // lifecycle read `kernel.phase`.
+        let coarseStatus: 'starting' | 'ok' | 'draining';
         if (world.idleTimer.isDraining || lifecycleState === 'draining' || lifecycleState === 'stopped') {
-          legacyStatus = 'draining';
+          coarseStatus = 'draining';
         } else if (lifecycleState === 'running' && storeServices !== null) {
-          legacyStatus = 'ok';
+          coarseStatus = 'ok';
         } else {
-          legacyStatus = 'starting';
+          coarseStatus = 'starting';
         }
         const platform = runtime.env.platform() as NodeJS.Platform;
         const processStartedAt = probeProcessStartedAtSeconds(world.backendPid, platform) ?? undefined;
 
-        // Strip the branded `SubsystemId` to plain string at the wire boundary;
+        // Strip the branded `RuntimeComponentId` to plain string at the wire boundary;
         // transport types use `string` because the brand is enforced producer-side.
-        const subsystems = runtimeState.subsystems.list().map((entry) => ({ ...entry, id: entry.id as string }));
+        const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
+        const kbDaemon = kbDaemonSupervisor.read();
 
-        const consumerStuck = storeServices === null ? [] : options.getConsumerStuck();
-        const mutationBlockedSnapshot =
-          storeServices === null ? { blocked: false as const } : options.getMutationBlocked();
+        const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
+          storeServices === null ? [] : (options.getConsumerStuck() ?? []);
+        const mutationBlocked = kbDaemon.kbWrite?.mutationBlocked;
         const diagnostics: {
           mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
-          consumerStuck?: Array<{ id: string; elapsedSinceStopMs: number }>;
+          consumerStuck?: NonNullable<HealthSnapshot['diagnostics']>['consumerStuck'];
         } = {};
-        if (mutationBlockedSnapshot.blocked) {
-          diagnostics.mutationBlocked = {
-            owner: mutationBlockedSnapshot.owner,
-            ageMs: mutationBlockedSnapshot.ageMs,
-            signaledAtMs: mutationBlockedSnapshot.signaledAtMs,
-          };
+        if (mutationBlocked !== undefined) {
+          diagnostics.mutationBlocked = mutationBlocked;
         }
         if (consumerStuck.length > 0) {
           diagnostics.consumerStuck = consumerStuck;
@@ -563,7 +891,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         const hasDiagnostics = diagnostics.mutationBlocked !== undefined || diagnostics.consumerStuck !== undefined;
 
         return {
-          status: legacyStatus,
+          status: coarseStatus,
           kernel: {
             phase: lifecycleState,
             readyAt: lifecycleState === 'starting' ? null : runtimeState.getStartedAt(),
@@ -583,7 +911,9 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           queueDepth: world.launchCoordinator.queueDepth(),
           inflightRequests: world.idleTimer.inflightRequests,
           textProjectionState: options.getTextProjectionState?.() ?? 'idle',
-          subsystems,
+          resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
+          components,
+          kbDaemon,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
         };
@@ -639,12 +969,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const handleRequest = createHttpHandler(httpHandlerDeps);
   const ipcServer = createIpcServer(httpHandlerDeps);
+  readIpcOpenSockets = () => ipcServer.sockets.size;
 
   const server = defaults.createServerFn((req, res) => {
     void handleRequest(req, res).catch((error) => {
       world.log(`Backend request error: ${formatError(error)}\n`);
       if (!res.headersSent) {
-        sendJson(res, 500, buildTransportErrorResponse(error).body);
+        const response = buildTransportErrorResponse(error);
+        sendJson(res, response.statusCode, response.body);
         return;
       }
       res.destroy();
@@ -677,7 +1009,13 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     terminateAllFn: defaults.terminateAllFn,
     providerHostManager: world.providerHostManager,
-    disposeLifecycleReactor: options.disposeLifecycleReactor ?? (() => {}),
+    kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
+    disposeLifecycleReactor: () => {
+      disposeChildPrincipalTerminalListeners();
+      disposeKbDaemonExitListener();
+      disposeDaemonJobTerminalListeners();
+      options.disposeLifecycleReactor?.();
+    },
     handoffQuiescePorts: () =>
       services
         .listExecutionServices()
@@ -685,8 +1023,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
-    createKbSubsystemFn: defaults.createKbSubsystemFn,
-    createCurateAssistant: defaults.createCurateAssistant,
+    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisorWithTrackedShutdown),
     registerBuiltInProvidersFn: defaults.registerBuiltInProvidersFn,
     recoverPersistedDiscussFn: defaults.recoverPersistedDiscussFn,
     runStartupRecoveryFn: options.runStartupRecoveryFn,
@@ -726,7 +1063,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
-    expansionLifecycleService: null,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

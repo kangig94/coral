@@ -6,6 +6,7 @@ import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
 import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } from './process-supervision.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
@@ -51,11 +52,12 @@ export function spawnCliTransport(params: {
   return new Promise((resolve, reject) => {
     let settled = false;
     let abortedBySignal = false;
+    const command = windowsCommandName(options.command, runtime.env.platform());
     const child = runtime.process.spawn({
-      command: options.command,
+      command,
       args: options.args,
       cwd: options.cwd === '' ? undefined : options.cwd,
-      shell: runtime.env.platform() === 'win32',
+      shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
       envAdditions: options.extraEnv,
     });
     const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
@@ -185,7 +187,7 @@ export async function spawnDurableJobTransport(params: {
 
     const durable = await runtime.process.durable.launch({
       provider: options.provider,
-      command: options.command,
+      command: windowsCommandName(options.command, runtime.env.platform()),
       args: options.args,
       prompt: options.prompt,
       cwd: options.cwd,

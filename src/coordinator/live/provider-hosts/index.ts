@@ -21,8 +21,8 @@ export interface ProviderHostManager {
     spec: ProviderServerSpec,
     options: { serverGeneration?: number },
   ): Promise<ProviderServerAttachment | null>;
-  drainForHandoff(): Promise<void>;
-  shutdown(): Promise<void>;
+  drainForHandoff(signal?: AbortSignal): Promise<void>;
+  shutdown(signal?: AbortSignal): Promise<void>;
 }
 
 export { hostKeyFromSpec } from './state.js';
@@ -108,15 +108,21 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     return createProviderServerAttachment(handle);
   }
 
-  async drainForHandoff(): Promise<void> {
-    await closeAllProviderServerEntries(this.entries, 'drained', (entry, detail) =>
-      this.closeProviderServerEntry(entry, detail),
+  async drainForHandoff(signal?: AbortSignal): Promise<void> {
+    await closeAllProviderServerEntries(
+      this.entries,
+      'drained',
+      (entry, detail, options) => this.closeProviderServerEntry(entry, detail, options),
+      signal === undefined ? {} : { signal },
     );
   }
 
-  async shutdown(): Promise<void> {
-    await closeAllProviderServerEntries(this.entries, 'shut down', (entry, detail) =>
-      this.closeProviderServerEntry(entry, detail),
+  async shutdown(signal?: AbortSignal): Promise<void> {
+    await closeAllProviderServerEntries(
+      this.entries,
+      'shut down',
+      (entry, detail, options) => this.closeProviderServerEntry(entry, detail, options),
+      signal === undefined ? {} : { signal },
     );
   }
 
@@ -174,11 +180,16 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     clearIdleTimer(entry, this.runtime.time);
   }
 
-  private async closeProviderServerEntry(entry: ProviderHostEntry, detail: string): Promise<void> {
+  private async closeProviderServerEntry(
+    entry: ProviderHostEntry,
+    detail: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<void> {
     await closeProviderServerEntry(entry, detail, {
       runtime: this.runtime,
       entries: this.entries,
       shutdownHandle: (handle, spec) => this.shutdownHandle(handle, spec),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
   }
 

@@ -20,6 +20,7 @@ import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { attachSession, getSession } from '#src/discuss/shell/registry.js';
 import type { DiscussCreateInput } from '#src/discuss/session-types.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
 
@@ -42,7 +43,7 @@ function defaultAgentExecution(agents: ReturnType<typeof defaultAgents>) {
 }
 
 function makeInvocationContext(pluginRoot: string): InvocationContext {
-  return { projectRoot: PROJECT_ROOT, pluginRoot, coralEnv: {}, authority: 'admin' };
+  return { projectRoot: PROJECT_ROOT, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(PROJECT_ROOT) };
 }
 
 const harnesses: HandoffCoresHarness[] = [];

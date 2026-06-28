@@ -5,8 +5,6 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type {
   CoordinatorIdentity,
   MutableRuntimeState as MutableCoordinatorRuntimeState,
-  CreateKbSubsystemFn,
-  CurateAssistantFactory,
   LifecycleController,
   LifecycleHooks,
   RecoverPersistedDiscussFn,
@@ -25,12 +23,11 @@ import type { IdleTimer } from '../live/idle.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { IpcListener } from '../../transport/ipc/server.js';
-import type { ExpansionLifecycleService } from '../expansion/lifecycle.js';
-import type { KbSourceImportReadinessWaiter } from '../services/kb/source-import.js';
-import type { KbJobRecorder } from '../services/kb/recorder.js';
+import type { KbJobRecorder } from '../../jobs/kb/recorder.js';
 import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
+import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 
 export type CoordinatorBootSnapshot = {
   version?: string;
@@ -38,6 +35,8 @@ export type CoordinatorBootSnapshot = {
   flavor?: 'prod' | 'dev';
   instanceId?: string;
   token?: string;
+  bootToken?: string;
+  shutdownToken?: string;
   now?: () => number;
   log?: (message: string) => void;
   bindHost?: string;
@@ -67,20 +66,6 @@ export type CoordinatorCoreOptions = {
   markJobsAsErrorFn?: (namespace: string, message: string) => void;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
   terminateAllFn?: () => void;
-  /**
-   * Subsystem factory for KB. Coordinator wraps the user-facing legacy
-   * build factory into this shape; composition forwards it to
-   * `LifecycleDeps.createKbSubsystemFn`.
-   */
-  createKbSubsystemFn?: CreateKbSubsystemFn;
-  /**
-   * Builds the KB curate assistant. Injected so this composition layer never
-   * statically imports a provider runtime module — production wires the real
-   * Claude-backed factory through `createCoordinatorServer`; tests/simulation
-   * fall back to the idle stub. Keeps `tools/simulation` sealed from
-   * `src/providers/claude` (`tools/simulation/sealed-inventory.json`).
-   */
-  createCurateAssistant?: CurateAssistantFactory;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -88,20 +73,14 @@ export type CoordinatorCoreOptions = {
   launchCoordinator?: LaunchCoordinator;
   eventBus?: TypedEventBus;
   providerRegistry?: ProviderRegistry;
-  waitForKbSourceImportReadiness?: KbSourceImportReadinessWaiter;
+  kbDaemonSupervisor: KbDaemonSupervisor;
   /**
    * Reports apply-bearing consumers (journal-apply or corpus) whose stop
    * has been requested but whose `inFlight` hasn't settled. Surfaces in
    * `/health.diagnostics.consumerStuck`. Cursor-only and stateless
    * consumers never appear here (no inflight after stop).
    */
-  getConsumerStuck: () => Array<{ id: string; elapsedSinceStopMs: number }>;
-  /**
-   * Reports the mutation lock state when a deadline has aborted a
-   * mutation but `fn` has not yet settled. Wired against
-   * `kbRuntime.mutationLockDiagnostics()`.
-   */
-  getMutationBlocked: () => { blocked: false } | { blocked: true; owner: string; ageMs: number; signaledAtMs: number };
+  getConsumerStuck: () => NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']>;
   getTextProjectionState?: () => HealthSnapshot['textProjectionState'];
   disposeLifecycleReactor?: () => void;
   onStopped?: () => void;
@@ -128,7 +107,6 @@ export type CoordinatorCoreResult = {
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
-  expansionLifecycleService: ExpansionLifecycleService | null;
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];

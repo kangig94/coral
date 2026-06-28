@@ -6,7 +6,13 @@ import { join } from 'node:path';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { resolveCoordinatorDefaults } from '#src/coordinator/composition/defaults.js';
+import {
+  HTTP_SERVER_HEADERS_TIMEOUT_MS,
+  HTTP_SERVER_KEEP_ALIVE_TIMEOUT_MS,
+  HTTP_SERVER_REQUEST_TIMEOUT_MS,
+  resolveCoordinatorDefaults,
+} from '#src/coordinator/composition/defaults.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -42,7 +48,7 @@ function createHarness() {
       runtime,
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
     },
     runtime,
   );
@@ -53,6 +59,7 @@ function createHarness() {
     socketPath: '/tmp/coral-backend-defaults.sock',
     host: '127.0.0.1',
     token: 'backend-defaults-token',
+    bootToken: 'backend-defaults-boot-token',
     version: '9.9.9',
     bundleHash: 'backend-defaults-bundle',
     flavor: 'prod',
@@ -92,6 +99,15 @@ describe('resolveCoordinatorDefaults eager defaults', () => {
     expect(surface.acquireLockFn).toBeUndefined();
     expect(surface.removeLockIfOwnerFn).toBeUndefined();
     expect(surface.verifyBackendOwnershipFn).toBeUndefined();
+  });
+
+  it('sets explicit HTTP server timeout defaults', () => {
+    const { defaults } = createHarness();
+    const server = defaults.createServerFn(() => {});
+
+    expect(server.requestTimeout).toBe(HTTP_SERVER_REQUEST_TIMEOUT_MS);
+    expect(server.headersTimeout).toBe(HTTP_SERVER_HEADERS_TIMEOUT_MS);
+    expect(server.keepAliveTimeout).toBe(HTTP_SERVER_KEEP_ALIVE_TIMEOUT_MS);
   });
 
   it('writeBackendInfoFn persists discovery and removeBackendInfoIfOwnerFn clears it for the owner', () => {

@@ -8,6 +8,7 @@ describe('session wire schemas', () => {
       'agent',
       'bypassPermissions',
       'claudeModelCap',
+      'claudeTransport',
       'effort',
       'model',
       'networkEnv',

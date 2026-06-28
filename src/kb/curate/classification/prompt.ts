@@ -22,7 +22,7 @@ const ENTITY_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [EntityType, string]> 
   ['pattern', 'a reusable design or implementation approach'],
   ['concept', 'an abstract idea, model, or mental frame'],
   ['library', 'a package, framework, SDK, or API surface'],
-  ['component', 'a bounded module, service, or subsystem'],
+  ['component', 'a bounded module, service, or component'],
   ['domain', 'a business, product, or problem-space area'],
   ['operation', 'a workflow, procedure, or runtime activity'],
   ['quality', 'a non-functional property, constraint, or attribute'],

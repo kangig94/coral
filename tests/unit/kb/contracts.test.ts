@@ -25,7 +25,7 @@ describe('kb contracts boundary', () => {
     for (const [fileName, contractImport] of [
       ['curate/state/bootstrap.ts', "from '../../contract.js'"],
       ['curate/state/store.ts', null],
-      ['corpus/index-mutations.ts', "from '../contract.js'"],
+      ['corpus/index/mutations.ts', "from '../../contract.js'"],
       ['corpus/rescan/index.ts', "from '../../contract.js'"],
     ] as const) {
       const source = readKbFile(fileName);

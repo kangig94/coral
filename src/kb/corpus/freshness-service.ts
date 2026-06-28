@@ -7,13 +7,13 @@ import type {
   KbRuntime,
 } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
-import { emptyIndex, isFreshTextSnapshot, type KbIndexStore } from './index-store.js';
+import { emptyIndex, isFreshTextSnapshot, type KbIndexStore } from './index/store.js';
 import { captureIndexStateSnapshot } from './lanes.js';
 import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockController } from './mutation-lock.js';
 import { detectRescanInfo } from './rescan/drift.js';
 import { performRescan } from './rescan/index.js';
-import { buildCorpusScanView } from './rescan/scan.js';
+import { buildCorpusScanViewInWorker } from './rescan/scan-worker.js';
 
 export interface CorpusFreshnessServiceOptions {
   indexStore: KbIndexStore;
@@ -102,7 +102,7 @@ export class CorpusFreshnessService {
 
   private async indexNeedsRebuild(): Promise<boolean> {
     const runtime = this.options.getRuntime();
-    return (await detectRescanInfo(runtime, buildCorpusScanView(runtime))).needsRebuild;
+    return (await detectRescanInfo(runtime, await buildCorpusScanViewInWorker(runtime))).needsRebuild;
   }
 
   private async textArtifactsNeedRebuild(state?: KbIndexState | null): Promise<boolean> {

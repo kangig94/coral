@@ -82,7 +82,8 @@ function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
       info: { ...entry.info },
     })),
     removeBackendInfoCalls: hooks.removeBackendInfoCalls.map((entry) => ({ ...entry })),
-    createKbSubsystemCalls: hooks.createKbSubsystemCalls.map((entry) => ({ ...entry })),
+    kbDaemonStartCalls: hooks.kbDaemonStartCalls.map((entry) => ({ ...entry })),
+    kbDaemonWarmupCalls: hooks.kbDaemonWarmupCalls.map((entry) => ({ ...entry })),
     recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
   };
 }

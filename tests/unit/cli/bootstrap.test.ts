@@ -29,9 +29,8 @@ describe('cli bootstrap', () => {
 
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
 
-    await import('#src/cli/bootstrap.js');
-    await Promise.resolve();
-    await Promise.resolve();
+    const { bootstrapCompletion } = await import('#src/cli/bootstrap.js');
+    await bootstrapCompletion;
 
     return { emitError, parseAsync };
   }
@@ -85,9 +84,8 @@ describe('cli bootstrap', () => {
     vi.doMock('#src/cli/emit.js', () => ({ emitError }));
     vi.spyOn(process, 'exit').mockImplementation(((_code?: number) => undefined) as typeof process.exit);
 
-    await import('#src/cli/bootstrap.js');
-    await Promise.resolve();
-    await Promise.resolve();
+    const { bootstrapCompletion } = await import('#src/cli/bootstrap.js');
+    await bootstrapCompletion;
 
     expect(parseAsync).toHaveBeenCalledWith(process.argv);
     expect(emitError).toHaveBeenCalledTimes(1);

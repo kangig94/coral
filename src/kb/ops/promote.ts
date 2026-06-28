@@ -5,8 +5,8 @@ import { memoPathFromContext } from '../paths.js';
 import { noteEntryId, setEntry, type KbPromoteInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug, assertSlug } from '../validation.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index-mutations.js';
-import { buildNoteIndexEntry } from '../corpus/index-records.js';
+import { commitIndexUpdate, recordContentAndMetadataMutation } from '../corpus/index/mutations.js';
+import { buildNoteIndexEntry } from '../corpus/index/records.js';
 import type { KbRuntime } from '../contract.js';
 import { currentEntrySeq } from '../index-state.js';
 

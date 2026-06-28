@@ -25,6 +25,8 @@ const DOMAIN_ROOTS = [
   'src/engines/',
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
+const SECURITY_ROOT = 'src/security/';
+const SECURITY_ALLOWED_TARGETS = new Set(['src/infra/port-types.ts', 'src/runtime/ports.ts']);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
@@ -54,14 +56,13 @@ const COORDINATOR_GLUE_EXEMPT = new Set([
   'src/coordinator/event-bus.ts',
   'src/coordinator/execution-service.ts',
   'src/coordinator/shutdown.ts',
-  'src/coordinator/live/curate-scheduler.ts',
   'src/coordinator/live/durable-transport.ts',
+  'src/coordinator/live/kb-daemon-supervisor.ts',
 ]);
 const COORDINATOR_EXEMPT_PREFIXES = [
   'src/coordinator/composition/',
-  'src/coordinator/expansion/',
   'src/coordinator/services/',
-  'src/coordinator/subsystems/',
+  'src/coordinator/runtime-components/',
 ] as const;
 const COORDINATOR_ALLOWED = new Set([
   'src/jobs/contracts/admission.ts',
@@ -110,6 +111,22 @@ describe('architecture layering invariants', () => {
         (source.startsWith('src/runtime/') || source.startsWith('src/infra/')) &&
         startsWithAny(target, RUNTIME_INFRA_FORBIDDEN),
     );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('security imports only security-local modules and runtime/infra port types', () => {
+    const violations = collectViolations((source, target) => {
+      if (!source.startsWith(SECURITY_ROOT)) {
+        return false;
+      }
+
+      if (target.startsWith(SECURITY_ROOT) || SECURITY_ALLOWED_TARGETS.has(target)) {
+        return false;
+      }
+
+      return target.startsWith('src/');
+    });
 
     expect(violations).toEqual([]);
   });
@@ -177,6 +194,7 @@ describe('architecture layering invariants', () => {
       (source, target) =>
         target === 'src/kb/tool-contracts.ts' &&
         !source.startsWith('src/transport/') &&
+        source !== 'src/kb-daemon/request-service.ts' &&
         source !== 'src/kb/tool-handlers.ts',
     );
 

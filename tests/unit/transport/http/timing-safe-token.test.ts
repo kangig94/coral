@@ -15,6 +15,8 @@ function createPorts(): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'test-token-with-many-bytes',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -50,7 +52,7 @@ function createPorts(): HttpHandlerPorts {
         inflightRequests: 0,
         textProjectionState: 'idle',
         env: {},
-        subsystems: [{ id: 'kb', phase: 'online' as const }],
+        components: [{ id: 'kb', phase: 'online' as const }],
       }),
     },
     events: {

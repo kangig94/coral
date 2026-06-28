@@ -62,7 +62,7 @@ The runtime is anchored by two primary entry points:
 | `src/coordinator/bootstrap.ts` | `build/coral-backend.cjs` | Backend daemon |
 | `src/cli/bootstrap.ts` | `build/coral-cli.cjs` | CLI entrypoint |
 
-The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude PTY broker helper runtime. The filename is retained for bridge compatibility; the helper starts the interactive Claude CLI through `@lydell/node-pty` and observes Claude's JSONL transcript instead of using `claude -p`.
+The build script also emits `build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude broker helper runtime. The filename is retained for bridge compatibility; the helper defaults to `claude -p` stream-json and can use the PTY TUI transport when `CORAL_CLAUDE_TRANSPORT=tui`.
 
 ## Build Script Responsibilities
 
@@ -76,7 +76,7 @@ the current `src/` tree.
 1. Runs simulation compatibility verification (`check-simulation.mjs`), which typechecks `tools/simulation` against `src` and verifies sealing.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
-4. Bundles the backend, CLI, and Claude PTY broker helper to `build/`.
+4. Bundles the backend, CLI, and Claude broker helper to `build/`.
 5. Rewrites `build/manifest.json` atomically with `{ bundleHash, flavor }` for change detection and flavor identity.
 
 When `--release` is passed, it additionally copies all artifacts from `build/` to `bridge/`.

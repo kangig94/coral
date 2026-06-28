@@ -11,7 +11,7 @@ import type { KbDeclaredAnalyzer } from '../../kb/extra-langs.js';
 import { ORAMA_SCHEMA } from './schema.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 
-const ORAMA_PROJECTION_SCHEMA_VERSION = 3;
+const ORAMA_PROJECTION_SCHEMA_VERSION = 4;
 export const ORAMA_PROJECTION_IDENTITY_SCHEMA_VERSION = 1;
 export const ORAMA_INTL_TOKENIZER_IDENTITY = 'intl-baseline';
 export const ORAMA_KIWI_TOKENIZER_IDENTITY = 'intl-baseline+kiwi:0.23.0:0.23.0:cong-global';
@@ -114,6 +114,8 @@ export type OramaProjectionMetadata = EngineArtifactProjectedSnapshot & {
   readonly artifactDigest: string;
   readonly entryManifest: OramaEntryManifest;
 };
+
+export type OramaProjectionMetadataBase = Omit<OramaProjectionMetadata, 'artifactDigest' | 'entryManifest'>;
 
 export type OramaProjectionTokenizerTier = 'intl' | 'kiwi' | 'unknown';
 export type OramaProjectionMismatchClassification = 'match' | 'tier-only-upgrade' | 'incompatible';
@@ -282,12 +284,10 @@ export function classifyProjectionMismatch(
   return 'incompatible';
 }
 
-export function createOramaProjectionMetadata(
+export function createOramaProjectionMetadataBase(
   snapshot: KbCorpusSnapshot,
-  artifactDigest: string,
-  entryManifest: OramaEntryManifest,
   identityInput: OramaProjectionIdentityInput = {},
-): OramaProjectionMetadata {
+): OramaProjectionMetadataBase {
   const normalizedIdentity = normalizeProjectionIdentityInput(identityInput);
   return {
     snapshotId: snapshot.snapshotId,
@@ -303,6 +303,17 @@ export function createOramaProjectionMetadata(
     icuVersion: normalizedIdentity.icuVersion,
     tokenizerIdentity: normalizedIdentity.tokenizerIdentity,
     declaredAnalyzers: normalizedIdentity.declaredAnalyzers,
+  };
+}
+
+export function createOramaProjectionMetadata(
+  snapshot: KbCorpusSnapshot,
+  artifactDigest: string,
+  entryManifest: OramaEntryManifest,
+  identityInput: OramaProjectionIdentityInput = {},
+): OramaProjectionMetadata {
+  return {
+    ...createOramaProjectionMetadataBase(snapshot, identityInput),
     artifactDigest,
     entryManifest,
   };

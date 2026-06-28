@@ -5,6 +5,7 @@ import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { Principal } from '../../security/principal.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
@@ -56,22 +57,24 @@ export interface WorkflowRequestPort {
   execute(request: WorkflowPortInput, ctx: InvocationContext): Promise<WorkflowPortResult>;
 }
 
+type MaybePromise<T> = T | Promise<T>;
+
 export interface KbRequestPort {
-  readSearch(args: Record<string, unknown>): Promise<KbToolResult>;
-  diagnose(): KbToolResult;
-  readNote(slug: string): KbToolResult;
-  readSource(slug: string): KbToolResult;
-  readCommunity(slug: string): KbToolResult;
-  listStaleCommunities(): KbToolResult;
-  readCommunitySummaryInput(slug: string): KbToolResult;
+  readSearch(args: Record<string, unknown>, principal: Principal): Promise<KbToolResult>;
+  diagnose(principal: Principal): MaybePromise<KbToolResult>;
+  readNote(slug: string, principal: Principal): MaybePromise<KbToolResult>;
+  readSource(slug: string, principal: Principal): MaybePromise<KbToolResult>;
+  readCommunity(slug: string, principal: Principal): MaybePromise<KbToolResult>;
+  listStaleCommunities(principal: Principal): MaybePromise<KbToolResult>;
+  readCommunitySummaryInput(slug: string, principal: Principal): MaybePromise<KbToolResult>;
   setCommunitySummary(args: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
-  readWiki(slug: string): KbToolResult;
-  readMemo(slug: string, ctx: InvocationContext): KbToolResult;
-  readPrinciple(slug: string): KbToolResult;
-  listSources(): Promise<KbToolResult>;
-  listWikis(): Promise<KbToolResult>;
-  listMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
-  listPrinciples(args: Record<string, unknown>): Promise<KbToolResult>;
+  readWiki(slug: string, principal: Principal): MaybePromise<KbToolResult>;
+  readMemo(slug: string, ctx: InvocationContext): MaybePromise<KbToolResult>;
+  readPrinciple(slug: string, principal: Principal): MaybePromise<KbToolResult>;
+  listSources(principal: Principal): Promise<KbToolResult>;
+  listWikis(principal: Principal): Promise<KbToolResult>;
+  listMemos(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
+  listPrinciples(args: Record<string, unknown>, principal: Principal): Promise<KbToolResult>;
   createNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   updateNote(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   deleteNote(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
@@ -82,11 +85,11 @@ export interface KbRequestPort {
   citeWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   adoptWiki(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   deleteWiki(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
-  wakeUp(args: Record<string, unknown>): Promise<KbToolResult>;
+  wakeUp(args: Record<string, unknown>, principal: Principal): Promise<KbToolResult>;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   deleteSource(slug: string, ctx?: InvocationContext): Promise<KbToolResult>;
-  createMemo(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
-  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): KbToolResult;
+  createMemo(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
+  deleteMemos(args: Record<string, unknown>, ctx: InvocationContext): MaybePromise<KbToolResult>;
   reindex(request: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
 }
 

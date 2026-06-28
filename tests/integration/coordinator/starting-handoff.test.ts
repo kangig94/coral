@@ -48,12 +48,14 @@ function buildPorts(opts: {
     inflightRequests: 0,
     textProjectionState: 'idle',
     env: {},
-    subsystems: [{ id: 'kb', phase: 'offline', reason: 'test' }],
+    components: [{ id: 'kb', phase: 'offline', reason: 'test' }],
   };
   return {
     identity: {
       pluginRoot: '/p',
       token: 't',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
       version: '0.0.0',
       bundleHash: 'h',
       flavor: 'prod',
@@ -132,7 +134,7 @@ describe('starting-incumbent transport.shutdown handoff', () => {
     liveListeners.push(ipcServer);
 
     // Contender sends transport.shutdown.
-    const client = createIpcClient(socketPath);
+    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
     const result = await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
     expect(result).toMatchObject({ status: 'draining' });
     // The callback ran synchronously alongside requestDrain.
@@ -159,7 +161,7 @@ describe('starting-incumbent transport.shutdown handoff', () => {
     await listenIpcServer(ipcServer, socketPath);
     liveListeners.push(ipcServer);
 
-    const client = createIpcClient(socketPath);
+    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
     await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
     expect(onShutdownCalled).toBe(true);
   });

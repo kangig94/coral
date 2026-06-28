@@ -1,32 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
-import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
-import { createExpansionRpc } from '#src/coordinator/expansion/rpc.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
+import { ExpansionLifecycleService } from '#src/kb-daemon/expansion/lifecycle.js';
+import { createExpansionRpc } from '#src/kb-daemon/expansion/rpc.js';
+import type { ExpansionStateRow, ExpansionStateStore } from '#src/kb-daemon/expansion/state.js';
 import type { Expansion } from '#src/expansion/contract.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
-import { JobStore } from '#src/jobs/store.js';
 import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { Disposable, Runtime } from '#src/runtime/ports.js';
-import type { Database } from '#src/store/db.js';
-import { createRealRuntime } from '#src/runtime/real.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { requestIpcMethod } from '#src/transport/ipc/client.js';
-import { discussRegistry } from '#src/discuss/event-registry.js';
-import { jobsRegistry } from '#src/jobs/events.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import { workflowRegistry } from '#src/workflow/events.js';
+import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testPrincipal } from '../../helpers/principal.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
 
@@ -132,29 +114,6 @@ function heldBy(kb: KbRuntime, name: typeof KB_FTS_CAPABILITY | typeof KB_VECTOR
   return kb.capabilityRegistry.runtimeView().status(name)?.heldBy;
 }
 
-function createStoreServices(
-  runtime: Runtime,
-  db: Database,
-  lifecycle: ExpansionLifecycleService,
-  state: ExpansionStateStore,
-): CoordinatorStoreServices {
-  return {
-    storeDb: db,
-    progressStore: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
-      db,
-      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
-      providers: permissiveProviderLookupPort,
-    }),
-    expansionManifestCatalog: createExpansionManifestCatalog({
-      db,
-      now: () => FIXED_NOW,
-    }),
-    expansionStateStore: state,
-    expansionLifecycleService: lifecycle,
-    consumerDriver: null,
-  };
-}
-
 describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
   it('aggregates a single failure into a thrown Error', async () => {
     const { makeHost } = createTestRuntime();
@@ -209,7 +168,9 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
         status: 'active',
       },
     ]);
-    await expect(createExpansionRpc(lifecycle).listExpansion({})).resolves.toMatchObject({
+    await expect(
+      createExpansionRpc(lifecycle).listExpansion({}, testPrincipal({ transport: 'kb-daemon' })),
+    ).resolves.toMatchObject({
       expansions: [{ name: 'success-engine', tier: 'bundled', status: 'equipped' }],
     });
     expect(state.list().filter((row) => row.id === 'success-engine')).toEqual([]);
@@ -234,118 +195,5 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
     expect(heldBy(kb, KB_FTS_CAPABILITY)).toBeUndefined();
     expect(lifecycleScopes(lifecycle).get('partial-bundled')).toBeUndefined();
     expect(lifecycle.isActive('partial-bundled')).toBe(false);
-  });
-});
-
-describe('coordinator degraded-KB propagation for bundled fallback failures', () => {
-  it('sets kb init error and keeps non-KB IPC online when recoverOnBoot fallback throws', async () => {
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const originalHome = process.env.HOME;
-    const originalUserProfile = process.env.USERPROFILE;
-    const tempHome = mkdtempSync(join(tmpdir(), 'coral-bundled-equip-home-'));
-    process.env.HOME = tempHome;
-    process.env.USERPROFILE = tempHome;
-    const { kb, makeHost, runtime } = createTestRuntime({ runtime: createRealRuntime('prod') });
-    const state = createMemoryState();
-    const lifecycle = new ExpansionLifecycleService({
-      makeHost,
-      state,
-      bundledLoaders: TEST_BUNDLED_LOADERS,
-      manifest: [THROWING_BUNDLED_ENTRY],
-      now: () => FIXED_NOW,
-      resolveKbRuntime: () => kb,
-    });
-    const core = createCoordinatorCore({
-      runtime,
-      bootSnapshot: {
-        version: 'test-version',
-        bundleHash: 'test-bundle',
-        flavor: 'prod',
-        instanceId: 'test-instance',
-        token: 'test-token',
-        now: () => 1_000,
-        log: () => {},
-      },
-      createStoreServicesFromDbFn: (storeDb) => createStoreServices(runtime, storeDb, lifecycle, state),
-      createKbSubsystemFn: adaptLegacyKbFactory(async (): Promise<never> => {
-        await lifecycle.recoverOnBoot();
-        throw new Error('recoverOnBoot unexpectedly resolved');
-      }),
-      createServerFn: (handler) => createServer(handler),
-      listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
-      closeServerFn: async () => {},
-      writeBackendInfoFn: () => {},
-      removeBackendInfoIfOwnerFn: () => {},
-      cleanupStaleJobsFn: () => {},
-      markJobsAsErrorFn: () => {},
-      terminateAllFn: () => {},
-      registerBuiltInProvidersFn: () => {},
-      recoverPersistedDiscussFn: async () => [],
-      runStartupRecoveryFn: async () => [],
-      getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
-    });
-
-    try {
-      const info = await core.lifecycleController.start();
-      expect(core.runtimeState.getLifecycle()).toBe('running');
-
-      // The KB subsystem is in Era III — it starts initialization after
-      // setLifecycle('running'). Each retry attempt fails immediately
-      // (broken-orama throws), then sleeps 1s/4s/16s before the next try.
-      // We wait briefly so the FIRST attempt has surfaced an `initializing`
-      // status; non-`online` phases produce the same `kb_initializing` /
-      // `kb_offline` envelope on KB-routed IPC.
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Health endpoint reports per-subsystem phase via the array. While
-      // retries are running, KB is `initializing` between attempts; once
-      // exhausted it transitions to `offline`.
-      const health = await requestIpcMethod<{
-        subsystems: Array<{ id: string; phase: string }>;
-      }>(info.socketPath, 'transport.health', undefined, {
-        timeoutMs: 1_000,
-      });
-      const kb = health.subsystems.find((s) => s.id === 'kb');
-      expect(kb).toBeDefined();
-      expect(['initializing', 'offline']).toContain(kb!.phase);
-
-      // KB-routed calls during not-online phases ride a JSON-RPC error
-      // envelope. The new wording is "Knowledge base is starting up" while
-      // KB is initializing or "Knowledge base is offline" once exhausted.
-      await expect(
-        requestIpcMethod<Record<string, unknown>>(
-          info.socketPath,
-          'kb.entries.search',
-          { q: 'hello' },
-          {
-            timeoutMs: 1_000,
-          },
-        ),
-      ).rejects.toThrow(/Knowledge base is (starting up|offline)/);
-
-      await expect(
-        requestIpcMethod(info.socketPath, 'jobs.list', { all: true }, { timeoutMs: 1_000 }),
-      ).resolves.toEqual({
-        jobs: [],
-      });
-    } finally {
-      if (core.runtimeState.getLifecycle() !== 'stopped') {
-        await core.lifecycleController.shutdown('test-cleanup');
-        await core.lifecycleController.waitForShutdown();
-      }
-      stderrSpy.mockRestore();
-      if (originalHome === undefined) {
-        delete process.env.HOME;
-      } else {
-        process.env.HOME = originalHome;
-      }
-      if (originalUserProfile === undefined) {
-        delete process.env.USERPROFILE;
-      } else {
-        process.env.USERPROFILE = originalUserProfile;
-      }
-      rmSync(tempHome, { recursive: true, force: true });
-    }
   });
 });

@@ -82,7 +82,7 @@ const claudeSessionProvider = compose(
 
 For provider-server-backed providers, `sessionContinuity` is the **outermost** middleware so that a single continuity authority observes the full downstream stream — including transport-close events from `appServerSession` via `runtime.continuityBridge`. `appServerSession` surfaces typed close-state through the bridge but never emits `continuity` itself and never rewrites downstream terminal outcome.
 
-Claude is one of these provider-server-backed providers. The broker helper is intentionally PTY-based: it starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. This keeps Coral aligned with terminal Claude behavior as it diverges from `claude -p`.
+Claude is one of these provider-server-backed providers. The broker helper supports two transports under the same broker RPC surface. The default `print` transport starts `claude -p` with stream-json input/output and drives turns over JSONL. The opt-in `tui` transport starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. `CORAL_CLAUDE_TRANSPORT` is part of provider-server identity, so the two transports never reuse the same broker process.
 
 Adding a new provider is declaring its middleware stack. Provider implementations stay pure: they emit bodies only. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the Journal. Providers never touch envelopes, seqs, or the Journal directly.
 
@@ -206,7 +206,7 @@ The `.claude/rules/design-philosophy.md` §7 summarizes load-bearing naming rule
 
 Discipline is on *content/size*, not *name*:
 
-- `index.ts` — conventional entry/orchestrator for a cohesive subsystem dir. Allowed at any depth. Don't use it as a barrel that re-exports everything; it's the public surface, not a hiding mechanism.
+- `index.ts` — conventional entry/orchestrator for a cohesive component dir. Allowed at any depth. Don't use it as a barrel that re-exports everything; it's the public surface, not a hiding mechanism.
 - `types.ts` — type vocabulary for the parent dir. Allowed at any depth; the directory provides scope. If unrelated types accumulate, MUST split.
 - Domain canonicals like `events.ts`, `reducer.ts`, `projections.ts`, `read-queries.ts`, `paths.ts`, `errors.ts`, `contracts.ts`, `protocol.ts`, `client.ts`, `server.ts` — the directory provides scope (`kb/contracts.ts` ≠ `coordinator/contracts.ts`).
 - Domain-prefixed siblings like `exec-types.ts`, `manifest-types.ts`, `driver-types.ts` — the prefix declares scope independent of dir.
@@ -245,8 +245,8 @@ The pattern to look for: any non-`index.ts` module that contains both `import { 
 
 Promote an implicit prefix cluster to an explicit subdirectory when:
 
-1. ≥4 sibling files share a prefix and form a cohesive subsystem (one bounded responsibility split into facets), AND
-2. The cohesion is real (each file owns a distinct facet of the same subsystem; the prefix isn't just "files involved in the same general topic"), AND
+1. ≥4 sibling files share a prefix and form a cohesive component (one bounded responsibility split into facets), AND
+2. The cohesion is real (each file owns a distinct facet of the same component; the prefix isn't just "files involved in the same general topic"), AND
 3. The shared prefix becomes redundant under the subdir (`community-detection.ts` → `community/detection.ts` reads identically).
 
 When subdividing:
@@ -260,7 +260,7 @@ Counts: 3 files = borderline (subdivide only if cohesion is unmistakable and the
 ### 9.7 Subdivision rejection (cases where subdividing makes the tree worse)
 
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
-  - **Exception**: `infra/path/` is permitted as a cohesive path-composition subsystem (5 files: `compose`, `coordinator`, `engine`, `root`, `store`). The exception applies to subsystems where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
+  - **Exception**: `infra/path/` is permitted as a cohesive path-composition component (5 files: `compose`, `coordinator`, `engine`, `root`, `store`). The exception applies to components where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
 - The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a *minimum* shape — `events.ts` and `read-queries.ts` at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
   - `projections.ts` exists when the domain projects events to SQL tables (sessions/discuss/workflow).
   - `reducer.ts` exists only when the domain reconstructs in-memory state from events (currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.
@@ -276,26 +276,26 @@ When a directory owns a pipeline, name files for the stage they sit at so the di
 
 When a file *does* drift (unrelated logic absorbed, file grows large, cohesion lost), the response is to split it, not to invent a new mechanical naming rule. Per-file line-count caps were a rewrite-time scaffold and were removed once the rewrite landed; growth discipline now lives in code review.
 
-## 10. Boot Eras and Subsystem Lifecycle
+## 10. Boot Eras and Runtime Health Components
 
-0.7.1 split backend boot into three sequential eras and extracted KB into a first-class `Subsystem<R>`. The shape is load-bearing — a flat boot would push KB's variable init time onto the CLI's critical path, and a one-shot KB init would leave the daemon dead on transient KB failures (orama interest mismatch, embedding provider hiccups, etc.).
+0.7.1 split backend boot into three sequential eras. The current shape keeps KB in a separate KB daemon and leaves only a parent-side health component in Era III. That separation is load-bearing: a flat boot would push KB's variable init time onto the CLI's critical path, and a parent-owned KB init would blur daemon readiness with KB runtime readiness.
 
 ### 10.1 Why three eras
 
-Era I (Kernel) and Era II (Recovery) are sequenced because their outputs are prerequisites for everything that follows: the IPC socket must be bound and the Journal must be at-head before the CLI can do anything useful, and recovery must finish before live work can be admitted without colliding with in-flight reconcile decisions. Era III (Subsystems) is parallel/fire-and-forget because subsystems are *consumers* of kernel/recovery state, not contributors to it — making them block the kernel was a 0.7.0 mistake that turned a transient KB failure into a multi-minute CLI hang.
+Era I (Kernel) and Era II (Recovery) are sequenced because their outputs are prerequisites for everything that follows: the IPC socket must be bound and the Journal must be at-head before the CLI can do anything useful, and recovery must finish before live work can be admitted without colliding with in-flight reconcile decisions. Era III (Runtime Health Components) is parallel/fire-and-forget because these components are *observers/consumers* of kernel/recovery state, not contributors to it. Making KB block the kernel was a 0.7.0 mistake that turned a transient KB failure into a multi-minute CLI hang.
 
-### 10.2 Why Subsystem as a contract, not a bespoke branch
+### 10.2 Why RuntimeComponent as a health contract, not a bespoke branch
 
-Before 0.7.1, KB boot lived inline in `coordinator/index.ts` with ad-hoc retry counters and a custom `KbStatus` accessor. Each new long-init service would have repeated the pattern with subtle drift. `Subsystem<R>` makes the contract explicit:
+Before 0.7.1, KB boot lived inline in `coordinator/index.ts` with ad-hoc retry counters and a custom `KbStatus` accessor. The separated design keeps execution in the KB daemon and keeps parent visibility in a small `RuntimeComponent` contract:
 
-- A 5-state phase machine (`pending → initializing → online | degraded | offline`) replaces ad-hoc booleans.
-- A registry owns retry, status, error envelopes, and `/health` projection — the subsystem itself only writes init/dispose/resource.
-- `SubsystemErrorEnvelope` carries `remediation`, so transient failures (`kb_initializing`) and terminal failures (`kb_offline`) carry actionable hints to the CLI without per-callsite glue.
-- Enforced by 5 invariants (`subsystem-contract-singleton`, `subsystem-error-envelope`, `lifecycle-phase-monotonic`, `abort-signal-threading`, `no-kb-status-accessors`) so future subsystems cannot diverge.
+- A phase machine (`initializing → online | degraded | offline`) replaces ad-hoc booleans.
+- A registry owns registration, init/dispose dispatch, status listing, and `/health` projection.
+- KB request error envelopes (`kb_initializing`, `kb_offline`, `kb_disabled`) are produced by the KB daemon request/supervisor path, not by the parent health registry.
+- Enforced by invariants (`runtime-component-contract-singleton`, `kb-daemon-error-codes`, `lifecycle-phase-monotonic`, `abort-signal-threading`, `no-kb-status-accessors`) so future components cannot drift.
 
 ### 10.3 Why CLI fail-fast deadlines on Eras I and II only
 
-The CLI's deadline contract is "tell me whether the kernel is alive within 5s and whether the daemon is ready within 15s." Stretching either deadline to accommodate a slow KB init would conflate "daemon won't start" with "subsystem retry in progress" — two failures with different remediation. Subsystems instead surface their own state through `/health` and `503 kb_initializing | kb_offline` for callers that actually need KB, while the CLI's status / non-KB paths return immediately.
+The CLI's deadline contract is "tell me whether the kernel is alive within 5s and whether the daemon is ready within 15s." Stretching either deadline to accommodate a slow KB init would conflate "daemon won't start" with "KB daemon runtime not ready" — two failures with different remediation. Runtime health components surface state through `/health`, while KB callers receive `503 kb_initializing | kb_offline` from the KB daemon request path.
 
 ### 10.4 Why AbortSignal as the cancellation primitive
 
@@ -303,9 +303,9 @@ The CLI's deadline contract is "tell me whether the kernel is alive within 5s an
 
 A subtle gotcha drove a memo: `state.startupAbort?.abort('shutdown')` (string reason) loses the `name: 'AbortError'` discriminator on the thrown reason — Node throws the bare string. Always call `abort()` with no arguments so a real `DOMException` with `name === 'AbortError'` propagates. Enforced by `abort-signal-threading`.
 
-### 10.5 Discuss is not a Subsystem (deliberately)
+### 10.5 Discuss is not a RuntimeComponent (deliberately)
 
-Discuss has one-shot recovery on boot (`workflowRecover.resumeAll`), no retry, no self-heal. Forcing it into the 5-state machine would create dead states (`degraded` and `offline` that mean nothing). Discuss recovery stays in Era II as a one-shot; only services with a meaningful retry/self-heal lifecycle should register as subsystems.
+Discuss has one-shot recovery on boot (`workflowRecover.resumeAll`), no retry, no self-heal. Forcing it into the runtime health phase machine would create dead states (`degraded` and `offline` that mean nothing). Discuss recovery stays in Era II as a one-shot; only daemon-visible health surfaces with meaningful phase transitions should register as runtime components.
 
 ## 11. Value Semantics and Local Abstraction
 

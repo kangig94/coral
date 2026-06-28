@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
-import { OramaBaseProjection } from '#src/engines/orama/backend.js';
+import { OramaBaseProjection } from '#src/engines/orama/base-projection.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';

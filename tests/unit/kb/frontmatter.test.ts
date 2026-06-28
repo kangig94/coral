@@ -70,7 +70,7 @@ source:
 createdAt: 2026-03-23
 updatedAt: 2026-03-23
 ---
-# Legacy Note
+# Retired Note
 `;
 
     expect(parseFrontmatter(content)).toEqual({
@@ -197,7 +197,7 @@ Keep the body stable.
   });
 
   it('markTextIndexStale logs to stderr on double failure instead of silently swallowing', async () => {
-    const { markTextIndexStale } = await import('#src/kb/corpus/index-mutations.js');
+    const { markTextIndexStale } = await import('#src/kb/corpus/index/mutations.js');
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
     const alwaysThrows = () => {
@@ -267,7 +267,7 @@ Keep the body stable.
     const [{ parseFrontmatter: dynamicParseFrontmatter }, { buildNoteIndexEntry }, { assertNonEmptyText }] =
       await Promise.all([
         import('#src/kb/corpus/frontmatter.js'),
-        import('#src/kb/corpus/index-records.js'),
+        import('#src/kb/corpus/index/records.js'),
         import('#src/kb/validation.js'),
       ]);
 

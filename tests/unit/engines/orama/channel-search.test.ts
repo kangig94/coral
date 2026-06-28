@@ -1,11 +1,15 @@
 import { insertMultiple } from '@orama/orama';
 import { describe, expect, it } from 'vitest';
 
-import { fuzzyDocumentScore, OramaSearchPort } from '#src/engines/orama/backend.js';
+import { OramaSearchPort } from '#src/engines/orama/search-port.js';
+import { collectOramaDocumentsForFuzzyScan, fuzzyDocumentScore } from '#src/engines/orama/ranking.js';
 import { createOramaDb, toOramaDocument, type KbOramaDocument } from '#src/engines/orama/document-builder.js';
 import {
   ORAMA_BODY_NGRAM_TERM_LIMIT,
   ORAMA_BODY_SURFACE_TERM_LIMIT,
+  ORAMA_QUERY_NGRAM_TERM_LIMIT,
+  ORAMA_QUERY_SOURCE_CHAR_LIMIT,
+  analyzeOramaSearchQuery,
   surfaceSearchTerms,
 } from '#src/engines/orama/search-channels.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
@@ -77,6 +81,19 @@ describe('Orama channel search', () => {
     expect(result.hits[0]?.documentId).toBe('note:policy-learning');
   });
 
+  it('still considers ngram candidates when primary body matches fill topK', async () => {
+    const port = await createSearchPort([
+      note('policy-learning', '정책 학습', '별도 개요.'),
+      note('body-hit-a', '본문 후보 A', '정책학습'),
+      note('body-hit-b', '본문 후보 B', '정책학습'),
+      note('body-hit-c', '본문 후보 C', '정책학습'),
+    ]);
+
+    const result = await port.search('정책학습', 3, 'all');
+
+    expect(result.hits[0]?.documentId).toBe('note:policy-learning');
+  });
+
   it('uses a narrow fuzzy fallback for long Latin typos when strict channels miss', async () => {
     const port = await createSearchPort([note('retrieval-pipeline', 'Retrieval Pipeline', 'Lexical search path.')]);
 
@@ -94,12 +111,39 @@ describe('Orama channel search', () => {
     expect(fuzzyDocumentScore(lateMatch, ['retrievel'])).toBe(0);
   });
 
+  it('bounds fuzzy fallback document scans before scoring', async () => {
+    const created = await createOramaDb();
+    await insertMultiple(created.db, [
+      note('fuzzy-scan-one', 'Fuzzy Scan One', 'retrieval alpha'),
+      note('fuzzy-scan-two', 'Fuzzy Scan Two', 'retrieval beta'),
+    ]);
+
+    const scan = collectOramaDocumentsForFuzzyScan(created.db, 1);
+
+    expect(scan.truncated).toBe(true);
+    expect(scan.documents).toHaveLength(1);
+  });
+
   it('does not fuzzy-match only the Latin part of a mixed-script query', async () => {
     const port = await createSearchPort([note('retrieval-pipeline', 'Retrieval Pipeline', 'Lexical search path.')]);
 
     const result = await port.search('retrievel 정책', 5, 'all');
 
     expect(result.hits).toEqual([]);
+  });
+
+  it('limits body ngram indexing to headings and the leading paragraph', () => {
+    const doc = note(
+      'body-ngram-scope',
+      '본문 ngram 범위',
+      ['# 핵심 신호', '', '초반 문단은 검색 품질을 설명한다.', '', '후반고유 후반고유 후반고유'].join('\n'),
+    );
+    const bodyNgrams = new Set(doc.bodyNgram.split(/\s+/u).filter(Boolean));
+
+    expect(bodyNgrams).toContain('핵심');
+    expect(bodyNgrams).toContain('검색');
+    expect(bodyNgrams).not.toContain('후반');
+    expect(bodyNgrams).not.toContain('반고');
   });
 
   it('caps body surface and ngram channel fields while leaving morph body intact', () => {
@@ -120,5 +164,20 @@ describe('Orama channel search', () => {
     expect(singleTokenDoc.bodyNgram.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(
       ORAMA_BODY_NGRAM_TERM_LIMIT,
     );
+  });
+
+  it('caps ngram analysis for large search queries before tokenization', () => {
+    const query = Array.from({ length: ORAMA_QUERY_SOURCE_CHAR_LIMIT + 20 }, (_, index) =>
+      String.fromCodePoint(0xac00 + index),
+    ).join('');
+    const outsideCapBigram = Array.from(query)
+      .slice(ORAMA_QUERY_SOURCE_CHAR_LIMIT, ORAMA_QUERY_SOURCE_CHAR_LIMIT + 2)
+      .join('');
+
+    const analysis = analyzeOramaSearchQuery(query, []);
+
+    expect(analysis.ngram.length).toBeLessThanOrEqual(ORAMA_QUERY_NGRAM_TERM_LIMIT);
+    expect(analysis.ngram).not.toContain(outsideCapBigram);
+    expect(analysis.surface.join('')).not.toContain(outsideCapBigram);
   });
 });

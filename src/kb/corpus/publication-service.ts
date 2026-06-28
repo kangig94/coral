@@ -1,6 +1,6 @@
 import type { KbCorpusPublication, KbCorpusPublishCallbacks, KbCorpusSnapshot } from '../contract.js';
 import { buildCurrentCorpusSnapshot as buildRuntimeCorpusSnapshot } from '../state/corpus-snapshot-builder.js';
-import type { KbIndexStore } from './index-store.js';
+import type { KbIndexStore } from './index/store.js';
 import { captureIndexStateSnapshot, mutationLanesFromDiff, type KbIndexStateSnapshot } from './lanes.js';
 import type { ManifestAuthority } from './manifest-authority.js';
 import { mergePublication } from './publication.js';

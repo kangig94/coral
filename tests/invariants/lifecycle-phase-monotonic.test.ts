@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { createRuntimeState } from '#src/coordinator/lifecycle.js';
-import { createSubsystemRegistry } from '#src/coordinator/subsystems/registry.js';
+import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 
 function runtimeState() {
-  return createRuntimeState(1_000, createSubsystemRegistry());
+  return createRuntimeState(1_000, createRuntimeComponentRegistry());
 }
 
 describe('lifecycle-phase-monotonic invariant', () => {

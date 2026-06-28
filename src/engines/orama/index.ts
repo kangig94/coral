@@ -1,5 +1,6 @@
 import type { Backed, FtsRetrieval } from '../../kb/contract.js';
-import type { OramaBaseProjection, OramaSearchPort } from './backend.js';
+import type { OramaBaseProjection } from './base-projection.js';
+import type { OramaSearchPort } from './search-port.js';
 
 function asFtsRetrieval(searchPort: OramaSearchPort): FtsRetrieval {
   return {

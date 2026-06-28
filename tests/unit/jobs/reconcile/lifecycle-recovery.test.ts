@@ -8,7 +8,8 @@ import type { JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -18,6 +19,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -100,9 +102,6 @@ function createStoreServicesHarness(progressStore: { getDb(): { close(): void } 
   const services = {
     storeDb: progressStore.getDb(),
     progressStore,
-    expansionManifestCatalog: null,
-    expansionStateStore: null,
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
   let current: typeof services | null = null;
@@ -145,20 +144,6 @@ function createFakeProviderHostManager() {
   };
 }
 
-function createMockKbSubsystem() {
-  return {
-    kb: {} as never,
-    readDb: {} as never,
-    curateScheduler: {
-      start: vi.fn(async () => {}),
-      schedule: vi.fn(),
-      scheduleDeferredCommit: vi.fn(),
-      isRunning: () => false,
-      stop: vi.fn(async () => {}),
-    },
-  };
-}
-
 function createFakeIdleTimer() {
   let inflight = 0;
   return {
@@ -182,14 +167,12 @@ function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
   let launchFenceActive = false;
-  // Stub subsystem registry: tests in this file don't exercise KB-routed
+  // Stub component registry: tests in this file don't exercise KB-routed
   // calls; an always-initializing registry is sufficient.
-  const subsystems = {
+  const components = {
     register: vi.fn(),
     initAll: vi.fn(),
     disposeAll: vi.fn(async () => {}),
-    run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
-    runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
     list: vi.fn(() => []),
     status: vi.fn(() => null),
   };
@@ -198,7 +181,7 @@ function createRuntimeStateMock() {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
     getLaunchFenceActive: () => launchFenceActive,
-    subsystems: subsystems as never,
+    components: components as never,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
     }),
@@ -430,6 +413,7 @@ function createLifecycleHarness(
   const getRecoveryService = options.getRecoveryService ?? getExecutionService;
   const storeServices = createStoreServicesHarness(options.progressStore);
 
+  const kbDaemonSupervisor = createMockKbDaemonSupervisor();
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
       pluginRoot: options.pluginRoot,
@@ -439,6 +423,8 @@ function createLifecycleHarness(
       flavor: 'prod',
       instanceId: `lifecycle-${Math.random()}`,
       token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       now: () => 1,
       log: () => {},
     },
@@ -470,9 +456,9 @@ function createLifecycleHarness(
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
+    kbDaemonSupervisor,
     handoffQuiescePorts: () => [],
-    createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
-    createCurateAssistant: () => ({ complete: async () => '' }),
+    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
     registerBuiltInProvidersFn: () => {},
     recoverPersistedDiscussFn: async () => [],
     runStartupRecoveryFn:
@@ -537,7 +523,7 @@ function createActualRecoveryService(
       projectRoot: options.projectRoot,
       pluginRoot: options.pluginRoot,
       coralEnv: {},
-      authority: 'admin',
+      principal: testProjectPrincipal(options.projectRoot),
     },
     {
       runtime,
@@ -632,6 +618,8 @@ describe('lifecycle recovery', () => {
             identity: {
               pluginRoot,
               token: 'test-token',
+              bootToken: 'test-boot-token',
+              shutdownToken: 'test-shutdown-token',
               version: '9.9.9',
               bundleHash: 'testhash1234',
               flavor: 'prod',
@@ -654,7 +642,7 @@ describe('lifecycle recovery', () => {
               start: sessionStart,
             },
           } as never,
-          'admin',
+          testProjectPrincipal(projectRoot),
         );
 
         expect(result).toEqual({
@@ -732,7 +720,12 @@ describe('lifecycle recovery', () => {
         },
         diagnostics: {},
       },
-      artifactHandles: [{ handle: '/tmp/provider-artifact.jsonl' }],
+      artifactHandles: [
+        {
+          handle: '/tmp/provider-artifact.jsonl',
+          identity: { kind: 'test-artifact', path: '/tmp/provider-artifact.jsonl' },
+        },
+      ],
       continuity: {
         conversationRef: 'thread-from-runtime-meta',
         resumable: true,
@@ -797,7 +790,12 @@ describe('lifecycle recovery', () => {
     expect(service.recordRecoveredArtifactHandles).toHaveBeenCalledWith(sessionId, {
       jobId,
       provider: 'fakeprovider',
-      handles: [{ handle: '/tmp/provider-artifact.jsonl' }],
+      handles: [
+        {
+          handle: '/tmp/provider-artifact.jsonl',
+          identity: { kind: 'test-artifact', path: '/tmp/provider-artifact.jsonl' },
+        },
+      ],
     });
     expect(callOrder).toEqual(['handles', 'complete']);
   });

@@ -106,6 +106,10 @@ export function formatLaunch(result: AcceptedLaunchResponse): string {
   return `Job ${result.job} ${result.launchState} (session ${result.session})`;
 }
 
+export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'job'>): string {
+  return `Run coral-cli wait jobs ${result.job} to wait for completion.`;
+}
+
 export function formatAbortResult(result: AbortResult): string {
   return joinLines([
     result.aborted.length > 0 ? `Aborted jobs: ${result.aborted.join(', ')}` : 'No jobs aborted',

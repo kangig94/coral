@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   PROVIDER_PREFLIGHT_TIMEOUT_MS,
+  buildEffectiveCoralEnv,
+  buildSessionControllerProfile,
   runProviderPreflight,
   toPreflightRuntime,
 } from '#src/coordinator/services/execution-policies.js';
 import type { ProviderSpec } from '#src/providers/contract.js';
+import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 describe('execution policies', () => {
@@ -28,5 +31,23 @@ describe('execution policies', () => {
 
     await expect(result).resolves.toContain('codex preflight timed out after 30000ms');
     expect(provider.preflight).toHaveBeenCalledOnce();
+  });
+
+  it('keeps Claude transport in request env but not the stored session controller profile', () => {
+    const coralEnv = {
+      [CONTEXT_ENV_KEY.owner]: 'alice',
+      [CONTEXT_ENV_KEY.effort]: 'high',
+      [CONTEXT_ENV_KEY.claudeModelCap]: 'opus',
+      [CONTEXT_ENV_KEY.claudeTransport]: 'print',
+    };
+
+    expect(buildEffectiveCoralEnv(coralEnv)).toMatchObject({
+      [CONTEXT_ENV_KEY.claudeTransport]: 'print',
+    });
+    expect(buildSessionControllerProfile(coralEnv)).toEqual({
+      owner: 'alice',
+      effort: 'high',
+      claudeModelCap: 'opus',
+    });
   });
 });

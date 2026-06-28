@@ -1,201 +1,201 @@
-# KB 다국어 FTS 토크나이저 설계
+# KB Multilingual FTS Tokenizer Design
 
-> **Status: IMPLEMENTED.** 현재 Orama FTS 구현 기준 문서다.
-> 작성: 2026-06-19. 업데이트: 2026-06-20. 근거가 된 실측은 §2 참조.
+> **Status: IMPLEMENTED.** This document describes the current Orama FTS implementation.
+> Created: 2026-06-19. Updated: 2026-06-20. The measurements that motivated the design are summarized in section 2.
 
-## 1. 배경 / 문제
+## 1. Background / Problem
 
-- **기존 문제**: Orama FTS가 영어 전용 토크나이저(`src/engines/orama/document-builder.ts`의 과거 `ORAMA_LANGUAGE='english'` + `SPLITTERS` 정규식)를 사용했다. 영어 splitter `/[^A-Za-z…0-9_'-]+/`는 한글을 "구분자"로 취급해, **한국어/CJK 텍스트가 토큰화 시 빈 배열이 되어 인덱스에서 침묵 누락**됐다. 한국어 검색은 에러 없이 0건이었다.
-- **제약**: 벡터 검색(`kb.vector`)은 기본 OFF(API 키/equip 필요). 따라서 **기본 검색 품질 = FTS 품질**이며, 다국어 FTS가 중요하다.
-- **현재 목표/동작**: ① 어떤 언어도 침묵 누락하지 않음 ② opt-in 시 고정확 한국어 ③ 필수 비용·번들 0 ④ 의미 유사도는 비범위(벡터 담당) ⑤ 토크나이저 tier 전환 중에도 검색 읽기 경로는 full rebuild로 막히지 않음.
+- **Original failure mode**: Orama FTS used an English-only tokenizer, formerly `ORAMA_LANGUAGE='english'` plus the `SPLITTERS` regex in `src/engines/orama/document-builder.ts`. The splitter treated Hangul as a separator, so Korean and CJK text could tokenize to an empty array and silently disappear from the index. Korean search returned zero results without an error.
+- **Constraint**: Vector search (`kb.vector`) is off by default and requires an API key or equipped capability. Default search quality therefore depends on FTS quality, which makes multilingual FTS a core requirement.
+- **Current behavior goals**: no language should silently disappear, Korean morphology should be high-accuracy when explicitly enabled, the baseline path should add no required bundle or runtime cost, semantic similarity remains a vector-search concern, and tokenizer-tier changes must not block reads on full rebuilds.
 
-## 2. 핵심 실측 (의사결정 근거)
+## 2. Key Measurements
 
-Node 25 / 이 머신 기준 스파이크 결과:
+Spike results on Node 25 on the development machine:
 
-| 항목                          | 값                                                                                                                                                                             |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Intl.Segmenter 다국어 분절    | 한·중(무공백)·일·라틴 정상 (`["한국어","검색을",…]`, `["中文","分词","测试"]`)                                                                                                 |
-| Intl 색인 처리량 / 쿼리       | 37.6 MB/s / 13 µs                                                                                                                                                              |
-| `Intl.Segmenter` 최소 Node    | 16+ (full-ICU는 Node 13+ 기본). coral 요구사항 `>=24`로 보장                                                                                                                   |
-| Kiwi WASM(kiwi-nlp) Node 구동 | ✅ (`ENVIRONMENT_IS_NODE`), WASM이라 Win/WSL/Ubuntu/Mac 자동 이식                                                                                                              |
-| Kiwi `cong` 모델              | 다운로드 88MB / 해제 ~110MB, 모델은 Node에서 Uint8Array 주입(fetch 불필요)                                                                                                     |
-| Kiwi cong 품질                | 조사·활용·ㄹ불규칙·파생 정규화 (`검색을→검색+을`, `골라→고르+어`, `재검색→재/XPN+검색`)                                                                                        |
-| **Kiwi 상주 메모리**          | **~1.0–1.1 GB** (비양자화 신경망 + WASM 힙)                                                                                                                                    |
-| **Kiwi 처리량**               | **~0.07–0.18 MB/s** (kiwi-nlp JSON 마샬링 병목; 모델 무관)                                                                                                                     |
-| knlm/sbg                      | 여전히 ~640MB + 더 느림 + 품질 하락(knlm 54% < MeCab 58.55%) → **미채택**. 0.23 WASM은 cong 전용이기도 함                                                                      |
-| MeCab(네이티브)               | Windows 빌드/사전 관리 문제 → coral 배포모델과 충돌 → **배제**                                                                                                                 |
-| 현재 Orama projection         | sidecar `entryManifest` 기반 델타(`insert/update/remove`) 적용 + full-install fallback. 토크나이저 identity가 바뀌는 tier reconcile은 스냅샷 내용이 같아도 full install로 수렴 |
+| Topic | Result |
+| --- | --- |
+| `Intl.Segmenter` multilingual segmentation | Korean, no-space Chinese, Japanese, and Latin text segment correctly, for example `["한국어","검색을",...]` and `["中文","分词","测试"]`. |
+| Intl indexing throughput / query latency | 37.6 MB/s / 13 us |
+| Minimum Node support for `Intl.Segmenter` | Node 16+; full ICU is present by default from Node 13. Coral requires `>=24`, so this is covered. |
+| Kiwi WASM (`kiwi-nlp`) on Node | Works through `ENVIRONMENT_IS_NODE`; WASM keeps Windows, WSL, Ubuntu, and macOS portable. |
+| Kiwi `cong` model | 88 MB download, about 110 MB unpacked. Node injects the model as a `Uint8Array`, so no runtime fetch is needed after install. |
+| Kiwi `cong` quality | Handles particles, conjugation, irregular forms, and derivational normalization, for example `검색을 -> 검색+을`, `골라 -> 고르+어`, `재검색 -> 재/XPN+검색`. |
+| **Kiwi resident memory** | **~1.0-1.1 GB**, dominated by the non-quantized neural model and WASM heap. |
+| **Kiwi throughput** | **~0.07-0.18 MB/s**, dominated by kiwi-nlp JSON marshaling rather than model choice. |
+| knlm/sbg | Still about 640 MB, slower, and lower quality, so it is not adopted. WASM 0.23 is also `cong`-only. |
+| Native MeCab | Excluded because Windows builds and dictionary management do not fit Coral's distribution model. |
+| Current Orama projection | Applies `insert/update/remove` deltas from the sidecar `entryManifest`, with full-install fallback when the manifest is insufficient. Tokenizer-identity tier reconciles converge through full install even when snapshot content is unchanged. |
 
-결론: 다국어 기본은 `Intl.Segmenter`(0비용)가 정답. 한국어 고정확은 Kiwi `cong`이 압도적이나 ~1GB·저속이라 **opt-in + 증분 + 메모리 회수**가 전제. MeCab/knlm/sbg는 부적합.
+Conclusion: the baseline should be `Intl.Segmenter` because it has zero extra cost. Kiwi `cong` is the best high-accuracy Korean option, but its memory and throughput require opt-in enablement, incremental projection, and idle memory release.
 
-## 3. 아키텍처
+## 3. Architecture
 
-### 3.1 2층 토크나이저
+### 3.1 Two-Layer Tokenizer
 
-- **Layer 0 — 기본 (항상, 0비용, 설정 불필요)**: 범용 `Intl.Segmenter(undefined,{granularity:'word'})` + ASCII 토큰 영어 stemming. 모든 스크립트를 단어/어절 단위로 분절. 영어=주 언어(stemming).
-- **Layer 1 — 언어별 형태소 격상 (opt-in)**: `CORAL_KB_EXTRA_LANGS`로 선언한 언어를 전용 분석기로 라우팅. 현재 `ko → Kiwi cong`.
+- **Layer 0 - baseline, always on, zero extra cost**: `Intl.Segmenter(undefined, { granularity: 'word' })` plus English stemming for ASCII tokens. Every script is segmented into word-like units. English remains the primary stemmed language.
+- **Layer 1 - language-specific morphology, opt-in**: languages declared through `CORAL_KB_EXTRA_LANGS` are routed to a dedicated analyzer. Today the only dedicated analyzer is `ko -> Kiwi cong`.
 
-### 3.2 스크립트 라우팅 (단일 인덱스, 이중 검색 아님)
+### 3.2 Script Routing
 
-하나의 라우터가 텍스트를 스크립트 run으로 쪼개 각 run을 해당 분석기로 토큰화하고 **하나의 토큰 스트림으로 합친다**. 색인·쿼리가 동일 라우터를 통과한다.
+A single router splits text into script runs, tokenizes each run with the selected analyzer, and merges the result into one token stream. Indexing and query text go through the same router.
 
-```
-색인: "코랄 검색 hello world"
-  [코랄 검색](한글)→Kiwi→ 코랄/NNP, 검색/NNG
-  [hello world](라틴)→Intl+stem→ hello, world
-  문서 토큰 = {코랄, 검색, hello, world} → 단일 인덱스 삽입
+```text
+Index: "코랄 검색 hello world"
+  [코랄 검색](Hangul) -> Kiwi -> 코랄/NNP, 검색/NNG
+  [hello world](Latin) -> Intl+stem -> hello, world
+  document tokens = {코랄, 검색, hello, world} -> one index insert
 
-검색: "검색 hello" → 같은 라우터 → {검색, hello} → 단일 Orama 검색 1회
-```
-
-- 인덱스 1개, 토크나이저(라우터) 1개, 검색 1회. **별도 패스/점수 aggregate 없음.**
-- 한글 토큰은 한글끼리, 영어 토큰은 영어끼리 같은 인덱스 안에서 자연 매칭(BM25 통합).
-- 혼합 무공백(`검색API`)은 스크립트 경계로 `검색`+`API` 분리.
-- coral 검색은 이미 prefix 매칭(`exact:false`)이라, Kiwi 미활성(Intl 어절)에서도 `검색`→`검색을`이 잡힌다.
-
-### 3.3 설정
-
-```
-CORAL_KB_EXTRA_LANGS=ko        # 기본 위에 ko를 형태소로 격상
-CORAL_KB_EXTRA_LANGS=ko,ja     # 향후 확장
-# 미설정 = 영어 기본 + 범용 Intl (한국어도 어절+prefix로 검색됨)
+Search: "검색 hello" -> same router -> {검색, hello} -> one Orama search
 ```
 
-- 파싱: `trim().toLowerCase()` 후 콤마 분리, 빈 토큰 제거 → `ko`/`KO`/`Ko` 모두 허용.
-- 전용 엔진 없는 코드 → 무시(+경고), 기본 Intl이 커버.
+- There is one index, one tokenizer router, and one search call. There is no secondary pass or score aggregation.
+- Korean tokens match Korean tokens, English tokens match English tokens, and BM25 scores them together inside the same index.
+- Mixed-script no-space text such as `검색API` splits at the script boundary into `검색` and `API`.
+- Coral search already uses prefix matching (`exact: false`), so an Intl-only Korean token can still match forms like `검색 -> 검색을` when Kiwi is not active.
 
-### 3.4 Kiwi 엔진 (Layer 1, ko)
+### 3.3 Configuration
 
-- 모델 `cong`(`modelType:'cong-global'`), kiwi-nlp WASM. 모델 파일은 Node `fs`로 읽어 Uint8Array로 주입.
-- **전달**: 설치형 아티팩트(needle/onnx 패턴). `equip` 또는 lazy 자동 fetch.
-- **lazy load + idle eviction**:
-  - 기본 미로드 → 검색/색인이 한글 형태소를 처음 필요로 할 때 로드(~1.5s build).
-  - **검색·색인 활동이 N분(기본 5분) 없으면 dispose → ~1GB 회수.** 디스크 모델(88MB)은 유지.
-  - 재로드: 디스크 캐시에서 ~1.5s(재fetch 없음). 첫 콜드 쿼리만 지연.
-  - **eviction 중 검색은 Intl로 폴백 금지** — 인덱스가 Kiwi 토큰이라 폴백 시 결과 불일치. eviction = "다음 검색이 재로드를 대기".
-- **사전 옵션은 끄지 않음**: `loadDefaultDict/loadMultiDict/loadTypoDict`(기본 true)를 꺼도 ~15MB만 절감(1GB는 신경망이 지배) → 정확도만 잃으므로 기본값 유지.
+```text
+CORAL_KB_EXTRA_LANGS=ko        # promote ko to morphological analysis on top of the baseline
+CORAL_KB_EXTRA_LANGS=ko,ja     # reserved for future expansion
+# unset = English baseline + universal Intl; Korean still searches through word-like segmentation and prefix matching
+```
 
-### 3.5 증분 projection (full-rebuild 폐기)
+- Parsing trims input, lowercases it, splits on commas, and drops empty tokens. `ko`, `KO`, and `Ko` are equivalent.
+- Language codes without a dedicated analyzer are ignored with a warning; the Intl baseline still covers the text.
 
-- 콘텐츠 변경 시 **변경/삭제 엔트리만** 재토큰화하여 영속 Orama db에 insert/update/remove 델타를 적용한다. manifest가 델타 적용에 충분하지 않은 경우 full install로 fallback한다.
-- 효과: 문서 1개 수정 → 그 문서만 Kiwi 1회. Kiwi 실용화의 전제. **Intl 기본도 대형 KB에서 빨라짐**.
-- 설치된 artifact sidecar의 `entryManifest`가 델타 기준이다. `snapshotStore.persist`는 실제 기록한 `OramaProjectionMetadata`를 반환하고, write path는 그 metadata를 cache에 같이 설치한다.
-- 이전에 검토한 "토큰 메모이즈 캐시"는 불필요하다. 엔트리 manifest 기반 증분 projection이 정공법이다.
+### 3.4 Kiwi Engine
 
-### 3.6 인덱스 정체성 / mismatch classifier
+- The model is `cong` (`modelType: 'cong-global'`) through kiwi-nlp WASM. Node reads the model file from `fs` and injects it as a `Uint8Array`.
+- Delivery uses an installable artifact, following the needle/onnx pattern. The artifact can be equipped explicitly or fetched lazily.
+- Lazy load and idle eviction:
+  - The model is not loaded by default. It loads when search or indexing first needs Korean morphology, with a roughly 1.5s build cost.
+  - If search and indexing are idle for the configured window, currently 5 minutes by default, the analyzer is disposed and about 1 GB can be released. The 88 MB model remains on disk.
+  - Reloading from the disk cache costs about 1.5s and does not fetch again. Only the first cold query waits.
+  - During eviction, search must not fall back to Intl for a Kiwi-built index because the query tokenizer would no longer match the index tokenizer. The next search waits for reload instead.
+- Dictionary options stay enabled. Disabling `loadDefaultDict`, `loadMultiDict`, or `loadTypoDict` saves only about 15 MB while harming accuracy; the neural model dominates memory.
 
-- `ORAMA_PROJECTION_IDENTITY_HASH`(`src/engines/orama/artifact-port.ts`)에 **identity schema version + schema version/digest + Node/ICU version + 토크나이저 정체성 + 선언 분석기 집합(`declaredAnalyzers`)**을 포함한다.
-- `OramaProjectionMetadata` sidecar도 같은 판별 입력(`identitySchemaVersion`, `schemaVersion`, `schemaDigest`, `nodeVersion`, `icuVersion`, `tokenizerIdentity`, `declaredAnalyzers`)을 저장한다. 새 필드는 old sidecar 파싱을 위해 optional이지만, 누락 metadata는 `classifyProjectionMismatch`에서 `incompatible`이다.
-- `classifyProjectionMismatch(persistedMetadata, currentExpectedInput)` 결과:
-  - `match`: identity 판별 입력이 모두 일치.
-  - `tier-only-upgrade`: schema/Node/ICU는 같고 토크나이저/선언 분석기만 다르며, persisted tier가 Intl이고 expected tier가 Kiwi.
-  - `incompatible`: schema/Node/ICU drift, 누락 metadata, old sidecar, persisted Kiwi tier를 Intl로 낮춰야 하는 degrade 방향, 또는 알 수 없는 tier.
-- `identitySchemaVersion`은 metadata에만 쓰는 값이 아니라 hash 입력이다. old sidecar는 우연히 legacy hash가 같아도 boot repair에서 projection-artifact lag로 잡힌다.
-- Orama-only old-sidecar boot repair가 `FreshnessTimeout`으로 끝나면 KB readiness는 non-fatal로 계속된다. FTS는 stale/uninitialized warning을 노출하고, 이미 시작된 background reconcile이 계속 진행한다. 비-Orama lag, 구조적 오류, apply failure는 기존 readiness 규칙대로 fatal이다.
-- Lost-update guard는 freshness-safe + identity-aware다. persist 직전 현재 disk/cache metadata를 다시 보고, persisted snapshot이 Orama 관심사 기준으로 **strictly fresher**면 identity와 무관하게 skip한다. snapshot이 같거나 충분히 같은 경우에는 target `projectionIdentityHash`까지 같을 때만 idempotent skip한다. 따라서 같은 snapshot에서 Intl↔Kiwi tier identity만 바뀌는 reconcile은 skip하지 않고 수렴한다.
+### 3.5 Incremental Projection
 
-### 3.7 읽기 경로: pure consumer + serve-stale
+- Content edits re-tokenize only changed or deleted entries and apply `insert/update/remove` deltas to the persistent Orama database. If the manifest is insufficient for deltas, the system falls back to full install.
+- This makes one-document edits cost one Kiwi pass for that document. It is the prerequisite that makes Kiwi practical, and it also speeds up large Intl-only KBs.
+- The installed artifact sidecar's `entryManifest` is the delta baseline. `snapshotStore.persist` returns the actual `OramaProjectionMetadata` that it wrote, and the write path installs that metadata into the cache with the database.
+- A separate token memoization cache is unnecessary. Entry-manifest-based incremental projection is the authoritative path.
 
-- `OramaSearchPort` 읽기 경로(`ensureLoaded`, `search`, `tokenize`, `tokenizeBatch`)는 `OramaSnapshotStore`의 pure consumer다. 읽기 중 full corpus rebuild, `persist`, `installFullSnapshot`, `forceCorpusApply`를 동기 실행하지 않는다.
-- 읽기 경로는 cache/load 결과를 `classifyProjectionMismatch`로 분류한 뒤, metadata + `servedTokenizerIdentity` + DB tokenizer + snippet tokenizer를 가진 served-index record를 활성화한다. Orama query tokenizer와 snippet/query tokenization은 항상 이 served record에서 온다.
-- `match`: artifact tier와 served tokenizer가 맞을 때만 serve한다. Intl tier는 Intl tokenizer로 serve한다. Kiwi tier는 live Kiwi analyzer lease 안에서 tokenizer를 bind할 수 있을 때만 serve한다.
-- `tier-only-upgrade`: Kiwi가 expected여도 persisted artifact가 valid Intl tier이면 즉시 Intl tokenizer로 serve한다. 이때 `fts_index_stale_tier` warning을 노출하고 `requestProjectionReconcile('stale-tier')`를 fire-and-forget으로 호출한다.
-- `incompatible`: structurally incompatible artifact, old sidecar, 누락 metadata, persisted Kiwi tier를 Intl tokenizer로 읽어야 하는 상황, 또는 Kiwi tier인데 live lease가 없는 cold-load는 serve하지 않는다. 기존 degraded/uninitialized FTS path로 내려가고 non-blocking reconcile만 요청한다.
-- 이 gate의 핵심은 "served-tokenizer invariant"다. Intl-built index는 Intl tokenizer로만 query하고, Kiwi-built index는 live Kiwi lease가 있을 때만 query한다. Degrade 중 Kiwi index를 Intl query tokenizer로 조용히 검색하지 않는다.
+### 3.6 Index Identity / Mismatch Classifier
 
-### 3.8 Reconcile ownership + degrade trigger
+- `ORAMA_PROJECTION_IDENTITY_HASH` includes identity schema version, schema version and digest, Node and ICU versions, tokenizer identity, and declared analyzers.
+- `OramaProjectionMetadata` stores the same classifier inputs: `identitySchemaVersion`, `schemaVersion`, `schemaDigest`, `nodeVersion`, `icuVersion`, `tokenizerIdentity`, and `declaredAnalyzers`. Newly added fields are optional for sidecar parsing compatibility, but missing metadata classifies as `incompatible`.
+- `classifyProjectionMismatch(persistedMetadata, currentExpectedInput)` returns:
+  - `match`: every identity input matches.
+  - `tier-only-upgrade`: schema, Node, and ICU match; only tokenizer/analyzer identity differs; persisted tier is Intl and expected tier is Kiwi.
+  - `incompatible`: schema, Node, or ICU drift; missing metadata; obsolete sidecar shape; persisted Kiwi tier would need to be read with Intl; or the tier is unknown.
+- `identitySchemaVersion` is part of the hash input, not just metadata. Even if an obsolete sidecar accidentally has a retired hash, boot repair treats it as projection-artifact lag.
+- If Orama-only sidecar repair hits `FreshnessTimeout`, KB readiness remains non-fatal. FTS exposes a stale or uninitialized warning while the already-started background reconcile continues. Non-Orama lag, structural errors, and apply failures remain fatal under the normal readiness rules.
+- The lost-update guard is freshness-safe and identity-aware. Before persisting, it rechecks disk/cache metadata. If the persisted snapshot is strictly fresher for Orama's concern set, it skips regardless of identity. If the snapshot is equal or sufficiently equal, it skips only when the target `projectionIdentityHash` also matches. A reconcile that changes only Intl/Kiwi tier identity therefore still converges.
 
-- Reconcile ownership은 coordinator/`ConsumerDriver`에 있다. Orama read path는 주입된 `requestProjectionReconcile?: (reason: OramaReconcileReason) => void` callback만 호출한다.
-- coordinator는 `createOramaProjectionReconcileRequester`를 만들고 하나의 `OramaBaseProjection`에 전달한다. 이 projection의 single read port가 registered CorpusConsumer와 bound FTS capability 양쪽으로 노출된다. requester는 coordinator layer에서 single-flight하며, 현재 Corpus snapshot에 대해 `driver.forceCorpusApply(snapshot, { reason: 'projection-artifact-lag', consumers: [ORAMA_BASE_CONSUMER_ID] })`를 호출한다.
-- degrade 방향도 coordinator trigger가 primary다. `KiwiAnalyzerManager.markDegraded`는 degraded state를 기록하고 `observeDegraded` observer를 fire-and-forget microtask로 schedule한 뒤 terminal load error를 던진다. observer는 throw가 전파된 뒤 비동기로 실행된다. bundled Orama loader는 이 observer를 `host.scope`에 등록한다. scope dispose 시 observer가 process-singleton manager에서 제거되어 disposed coordinator driver를 붙잡지 않는다.
-- degraded observer는 exception-isolated/fire-and-forget이다. observer가 throw하거나 늦어져도 Kiwi terminal-error path를 망가뜨리지 않는다.
-- degraded observer는 `createOramaProjectionReconcileRequester.requestKiwiDegradedReconcile`로 연결된다. 이 경로는 `invalidateTextSnapshot('kiwi-degraded')` 후 Orama consumer를 force apply해서, corpus edit이나 restart 없이 persisted index가 Intl tier로 수렴하게 한다. `OramaBaseProjection.onApplyFailure`는 supplemental coverage일 뿐 primary degrade signal이 아니다.
+### 3.7 Read Path: Pure Consumer + Serve-Stale
 
-### 3.9 Statusline 인디케이터
+- `OramaSearchPort` reads (`ensureLoaded`, `search`, `tokenize`, `tokenizeBatch`) are pure consumers of `OramaSnapshotStore`. Reads do not synchronously run full corpus rebuilds, `persist`, `installFullSnapshot`, or `forceCorpusApply`.
+- The read path classifies cache/load output with `classifyProjectionMismatch`, then activates a served-index record containing metadata, `servedTokenizerIdentity`, database tokenizer, and snippet tokenizer. Orama query tokenization and snippet/query tokenization always come from that served record.
+- `match`: serve only when the artifact tier and served tokenizer agree. Intl artifacts use the Intl tokenizer. Kiwi artifacts serve only when a live Kiwi analyzer lease can bind the tokenizer.
+- `tier-only-upgrade`: when Kiwi is expected but the persisted artifact is a valid Intl tier, serve immediately with the Intl tokenizer, expose `fts_index_stale_tier`, and fire `requestProjectionReconcile('stale-tier')`.
+- `incompatible`: do not serve structurally incompatible artifacts, missing metadata, Kiwi artifacts that would require an Intl query tokenizer, or cold Kiwi artifacts without a live lease. The system falls back to the degraded/uninitialized FTS path and requests non-blocking reconcile.
+- The core invariant is served-tokenizer consistency: Intl-built indexes are queried only with the Intl tokenizer, and Kiwi-built indexes are queried only with a live Kiwi tokenizer lease.
 
-- 위치: 톱니바퀴 + discuss 개수 라인 **맨 오른쪽**.
-- 상태: ① 한국어 모델 백그라운드 fetch 중 ② 재색인 진행 중 ③ idle(숨김).
-- 데이터: projection rebuild 진행 + 모델 fetch 상태를 데몬이 이벤트/IPC로 노출 → statusline이 구독.
-- 표기 예: `⬇ 한국어 모델 받는 중` / `⟳ KB 재색인 12%` / 평소 숨김.
+### 3.8 Reconcile Ownership + Degrade Trigger
 
-## 4. 동작 결정 (확정)
+- Reconcile ownership lives in the KB daemon expansion lifecycle and the shared `ConsumerDriver`. The Orama read path only calls the injected `requestProjectionReconcile?: (reason: OramaReconcileReason) => void` callback.
+- The KB daemon creates `createOramaProjectionReconcileRequester` and passes it to a single `OramaBaseProjection`. That projection exposes one read port both as the registered `CorpusConsumer` and the bound FTS capability. The requester is single-flight inside the KB daemon and calls `driver.forceCorpusApply(snapshot, { reason: 'projection-artifact-lag', consumers: [ORAMA_BASE_CONSUMER_ID] })` for the current corpus snapshot.
+- Kiwi degrade is primarily a KB daemon trigger. `KiwiAnalyzerManager.markDegraded` records degraded state, schedules `observeDegraded` observers in a fire-and-forget microtask, then throws the terminal load error. Bundled Orama loading registers this observer in `host.scope`, so scope disposal removes it from the process-singleton manager and does not retain a disposed daemon driver.
+- Degraded observers are exception-isolated and fire-and-forget. A throwing or slow observer must not break the Kiwi terminal-error path.
+- The observer calls `createOramaProjectionReconcileRequester.requestKiwiDegradedReconcile`. That path runs `invalidateTextSnapshot('kiwi-degraded')` and force-applies the Orama consumer, allowing the persisted index to converge back to the Intl tier without a corpus edit or restart. `OramaBaseProjection.onApplyFailure` is supplemental coverage, not the primary degrade signal.
 
-- 다이아크리틱: **라틴 전용 폴딩**(Orama `replaceDiacritics`). 전체 NFKD 금지(한글 자모 분해됨).
-- 영어 stemming: ASCII 토큰에만.
-- 언더스코어/식별자: Intl이 분리 — 수용(산문 KB).
-- 로케일: 중립 단일 segmenter(혼합 스크립트).
-- 커스텀 `tokenize`는 `language` 인자 무시(현재 불일치 시 throw 동작 제거).
-- `create()`에 `language` 미전달 유지(`NO_LANGUAGE_WITH_CUSTOM_TOKENIZER` 회피).
+### 3.9 Statusline Indicator
 
-## 5. 비목표
+- Location: the far right of the gear/discuss-count statusline segment.
+- States: Korean model background fetch, reindex in progress, and idle hidden state.
+- Data source: the daemon exposes projection rebuild progress and model fetch state through events/IPC; the statusline subscribes to those signals.
+- Display examples: `Korean model downloading`, `KB reindex 12%`, or hidden while idle.
 
-- 의미 유사도 → 임베딩/벡터 담당(별개 축).
-- 중/일 형태소 → Intl 사전 분절로 충분(전용 엔진 미도입).
-- knlm/sbg, 네이티브 mecab.
+## 4. Behavior Decisions
 
-## 6. 비용·트레이드오프 요약
+- Diacritics: fold only Latin diacritics through Orama `replaceDiacritics`. Do not run global NFKD normalization because it decomposes Hangul jamo.
+- English stemming applies only to ASCII tokens.
+- Underscores and identifiers are split by Intl. This is acceptable for prose-oriented KB content.
+- Locale selection uses one neutral segmenter for mixed-script text.
+- Custom `tokenize` ignores Orama's `language` argument; the previous mismatch throw behavior is removed.
+- `create()` still omits `language` to avoid `NO_LANGUAGE_WITH_CUSTOM_TOKENIZER`.
 
-|             | Layer 0 (Intl) | Layer 1 (Kiwi cong, ko)                  |
-| ----------- | -------------- | ---------------------------------------- |
-| 의존성/번들 | 0 (Node 내장)  | 설치형 88MB 모델(lazy-fetch)             |
-| 상주 메모리 | ~0             | ~1GB (idle 5분 후 회수)                  |
-| 처리량      | 37.6 MB/s      | ~0.18 MB/s (증분이라 변경분만)           |
-| 품질        | 어절+prefix    | 형태소(최상)                             |
-| 활성        | 항상           | `CORAL_KB_EXTRA_LANGS=ko` + 모델 가용 시 |
+## 5. Non-Goals
 
-## 7. 단계 구분 (구현 상태)
+- Semantic similarity belongs to embeddings/vector search.
+- Dedicated Chinese or Japanese morphology is not introduced; Intl dictionary segmentation is sufficient for the current scope.
+- knlm/sbg and native MeCab are not adopted.
 
-### Phase 1 — 다국어 기본 (Intl 라우터) _[구현 완료]_
+## 6. Cost / Tradeoff Summary
 
-- `createOramaTokenizer`를 **범용 Intl.Segmenter + 영어 stemmer(ASCII)** 커스텀 토크나이저로 교체했다.
-- 라우터(스크립트 분할 → run별 토큰화 → 단일 스트림). ko가 effective analyzer로 활성화되지 않은 run은 Intl(+라틴 stemmer)을 사용한다.
-- `KbOramaTokenizer` 타입을 `DefaultTokenizer`→최소 `Tokenizer`로.
-- `ORAMA_PROJECTION_SCHEMA_VERSION`/projection identity drift → 기존 사용자 자동 재색인.
-- **성과**: 한국어/CJK가 즉시 검색 가능(기존 "0건" 버그 해결). 신규 의존성·메모리 0.
-- 위험: 낮음. 영어 동작은 사실상 동등(Intl 분절 + stemming).
+| | Layer 0 (Intl) | Layer 1 (Kiwi cong, ko) |
+| --- | --- | --- |
+| Dependency / bundle | 0; built into Node | Installable 88 MB model with lazy fetch |
+| Resident memory | ~0 | ~1 GB, releasable after 5 idle minutes |
+| Throughput | 37.6 MB/s | ~0.18 MB/s, but only changed entries are processed |
+| Quality | Word-like segmentation plus prefix matching | High-accuracy morphology |
+| Activation | Always on | `CORAL_KB_EXTRA_LANGS=ko` plus model availability |
 
-### Phase 2 — 증분 projection _[구현 완료, Phase 3의 전제]_
+## 7. Implementation Phases
 
-- full-rebuild 중심 동작을 델타(insert/update/remove) 적용으로 전환했다.
-- 설치 스냅샷 대비 엔트리 `contentHash` 델타 산출 → 영속 Orama db에 적용 → 커서/freshness 전진.
-- **성과**: 편집당 변경분만 재토큰화. Intl 대형 KB 재빌드 비용↓, 그리고 **Kiwi가 실용 가능해지는 핵심 조건**.
-- 위험: 중–상. 핵심 authority(projection) 변경 → 광범위 테스트 필요. Phase 1과 독립적으로도 Intl에 이득이지만, 단독으로는 사용자 체감이 작음.
+### Phase 1 - Multilingual Baseline (Intl Router) _[implemented]_
 
-### Phase 3 — 한국어 형태소(Kiwi) opt-in _[구현 완료]_
+- Replaced `createOramaTokenizer` with a custom tokenizer using universal `Intl.Segmenter` plus English stemming for ASCII tokens.
+- Added script routing: split by script, tokenize each run, then merge into one token stream. Runs without an effective dedicated analyzer use Intl plus Latin stemming.
+- Changed `KbOramaTokenizer` from `DefaultTokenizer` to the narrower `Tokenizer` contract.
+- Used `ORAMA_PROJECTION_SCHEMA_VERSION` and projection identity drift to reindex existing users automatically.
+- Result: Korean and CJK are immediately searchable, fixing the previous zero-result behavior with no new dependency or memory cost.
+- Risk: low. English behavior remains effectively equivalent through Intl segmentation plus stemming.
 
-- `CORAL_KB_EXTRA_LANGS` 파싱(소문자 정규화) + 게이트.
-- Kiwi `cong`을 설치형 아티팩트로(equip 또는 ko 선언 + 한글 코퍼스 감지 시 백그라운드 fetch).
-- 논블로킹 부팅: fetch 동안 Intl 서빙 → 모델 준비 → 백그라운드 (증분) 재색인 → 준비되면 한글 run을 Kiwi로 스왑.
-- lazy load + 5분 idle eviction(검색·색인 활동이 타이머 리셋; eviction 중 검색은 재로드 대기, Intl 폴백 금지).
-- identity 해시에 tokenizer identity와 선언 분석기 집합 포함(토글 시 재색인).
-- read path는 pure consumer다. tier mismatch를 읽기 중 rebuild하지 않고, served-tokenizer invariant를 지키며 §3.7의 serve-stale gate를 적용한다.
-- reconcile은 coordinator-owned다. `requestProjectionReconcile`은 single-flight requester를 거쳐 `ConsumerDriver.forceCorpusApply`로 들어가고, Kiwi terminal degrade는 §3.8의 scoped `observeDegraded` registration이 primary trigger다.
-- statusline fetch/재색인 인디케이터.
-- **성과**: 한국어 검색 정확도/랭킹 대폭 향상(opt-in). 미설정 사용자엔 영향 0.
-- 위험: 중. WASM 메모리 회수 검증, 콜드 재로드 UX, 백그라운드 재색인 진행 표시.
+### Phase 2 - Incremental Projection _[implemented, prerequisite for Phase 3]_
 
-**의존성**: Phase 1은 독립 가치가 있었고, Phase 3는 Phase 2가 필요했다(Kiwi+full-rebuild는 매 편집 분 단위라 비실용). 현재 구현은 Phase 1–3과 serve-stale/reconcile 보강을 함께 포함한다.
+- Replaced full-rebuild-centered behavior with delta application through `insert/update/remove`.
+- Computes entry `contentHash` deltas against the installed snapshot, applies them to the persistent Orama database, and advances cursor/freshness.
+- Result: each edit re-tokenizes only changed entries. This reduces large-KB Intl rebuild cost and is the key prerequisite for practical Kiwi use.
+- Risk: medium-high because it changes projection authority behavior and requires broad test coverage.
 
-## 8. 운영/향후 검증
+### Phase 3 - Korean Morphology Opt-In (Kiwi) _[implemented]_
 
-- Emscripten WASM 힙이 dispose 후 실제 GC 회수되는지(잔존 참조 제거, eviction–재로드 경합).
-- 대형 KB 최초 Kiwi 재색인(분 단위) 진행 표시 UX와 statusline 표현 고도화.
-- 장기 운영에서 모델 fetch 실패/terminal degrade 반복 시 사용자 메시지 품질.
-- 회귀 테스트 축: 다국어 tokenize, 색인=쿼리 대칭, identity 변경 재색인, 스크립트 라우팅, 증분 델타, serve-stale tier gate, degrade reconcile, old-sidecar boot repair, lost-update guard.
+- Parses `CORAL_KB_EXTRA_LANGS`, normalizes to lowercase, and gates dedicated analyzers.
+- Delivers Kiwi `cong` as an installable artifact, either through explicit equip or background fetch when `ko` is declared and Korean corpus text is detected.
+- Keeps boot non-blocking: serve Intl while the model fetches, prepare the model, reindex in the background, then swap Korean runs to Kiwi when ready.
+- Adds lazy load and 5-minute idle eviction. Search or indexing activity resets the timer; search during eviction waits for reload and never falls back to Intl for a Kiwi-built index.
+- Includes tokenizer identity and declared analyzers in the projection identity hash so toggles trigger reindex.
+- Keeps reads as pure consumers. Tier mismatch does not rebuild during reads; the serve-stale gate in section 3.7 preserves the served-tokenizer invariant.
+- Makes reconcile KB-daemon-owned. `requestProjectionReconcile` goes through the single-flight requester to `ConsumerDriver.forceCorpusApply`, and Kiwi terminal degrade uses the scoped `observeDegraded` registration in section 3.8 as its primary trigger.
+- Adds statusline indicators for model fetch and reindex progress.
+- Result: Korean search accuracy and ranking improve substantially for opt-in users, with no impact when the setting is unset.
+- Risk: medium. Memory release, cold reload UX, and background reindex progress presentation require ongoing validation.
 
-## 9. 영향 코드 영역
+Phase 1 had standalone value. Phase 3 required Phase 2 because Kiwi plus full rebuild on every edit would be impractical. The current implementation includes Phases 1-3 plus the serve-stale and reconcile hardening described above.
 
-- `src/engines/orama/document-builder.ts` — 토크나이저/라우터.
-- `src/engines/orama/schema.ts` — `KbOramaTokenizer` 타입.
-- `src/engines/orama/backend.ts` — served-index read path, pure-consumer reconcile request, projection apply, lost-update guard.
-- `src/engines/orama/artifact-port.ts` — projection identity metadata, identity hash, `classifyProjectionMismatch`.
-- `src/engines/orama/snapshot.ts` — metadata-bearing load/persist/cache and tier-appropriate analyzer getter.
-- `src/coordinator/expansion/lifecycle.ts` — `createOramaProjectionReconcileRequester`, Kiwi fetch-triggered reindex, degrade reconcile wiring.
-- `src/coordinator/index.ts` — coordinator wiring and Orama-only boot `FreshnessTimeout` fallback.
-- `src/engines/kiwi/analyzer-manager.ts` — lazy lease lifecycle, idle eviction, `observeDegraded` registration.
-- 코퍼스 델타/스냅샷 측(`src/kb/corpus/…`) — projection input/freshness source.
-- coordinator/env 결선 — `CORAL_KB_EXTRA_LANGS` → declared/effective analyzers.
-- Kiwi 엔진 모듈 + installer(설치형 아티팩트).
-- statusline — fetch/재색인 인디케이터.
-- 테스트(`tests/unit/…`, 통합).
+## 8. Operational Follow-Up
+
+- Verify that the Emscripten WASM heap is actually reclaimed after dispose, including stale reference cleanup and eviction/reload races.
+- Improve progress UX for first large-KB Kiwi reindex runs.
+- Keep improving user-facing messages for repeated model-fetch failures and terminal degrade.
+- Regression axes: multilingual tokenization, index/query symmetry, identity-change reindex, script routing, incremental deltas, serve-stale tier gates, degrade reconcile, sidecar boot repair, and lost-update guarding.
+
+## 9. Impacted Code Areas
+
+- `src/engines/orama/document-builder.ts` - tokenizer/router.
+- `src/engines/orama/schema.ts` - `KbOramaTokenizer` type.
+- `src/engines/orama/backend.ts` - served-index read path, pure-consumer reconcile request, projection apply, lost-update guard.
+- `src/engines/orama/artifact-port.ts` - projection identity metadata, identity hash, `classifyProjectionMismatch`.
+- `src/engines/orama/snapshot.ts` - metadata-bearing load/persist/cache and tier-appropriate analyzer getter.
+- `src/kb-daemon/expansion/lifecycle.ts` - `createOramaProjectionReconcileRequester`, Kiwi fetch-triggered reindex, degrade reconcile wiring.
+- `src/coordinator/index.ts` - coordinator wiring and Orama-only boot `FreshnessTimeout` fallback.
+- `src/engines/kiwi/analyzer-manager.ts` - lazy lease lifecycle, idle eviction, `observeDegraded` registration.
+- `src/kb/corpus/...` - projection input and freshness source.
+- Coordinator/env wiring - `CORAL_KB_EXTRA_LANGS` to declared/effective analyzers.
+- Kiwi engine modules and installer - installable artifact delivery.
+- Statusline - fetch/reindex indicators.
+- Tests - unit and integration coverage for the paths above.

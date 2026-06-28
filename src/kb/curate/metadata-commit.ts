@@ -11,7 +11,7 @@ import {
   replaceSourceFrontmatter,
 } from '../corpus/frontmatter.js';
 import { writeFileAtomic } from '../corpus/file-atomic.js';
-import { recordMetadataMutation } from '../corpus/index-mutations.js';
+import { recordMetadataMutation } from '../corpus/index/mutations.js';
 import { computeBodySurfaceHash } from '../corpus/snapshot.js';
 import {
   buildNoteIndexEntry,
@@ -19,7 +19,7 @@ import {
   cloneEntityMetaRecord,
   cloneEntityRelationship,
   cloneKbIndex,
-} from '../corpus/index-records.js';
+} from '../corpus/index/records.js';
 import {
   isNoteEntry,
   isSourceEntry,

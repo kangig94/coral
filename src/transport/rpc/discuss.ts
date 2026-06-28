@@ -33,6 +33,7 @@ export const discussSessionCreateRequestSchema = discussStartSchema
     owner: z.string().optional(),
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
+    claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
   })
   .strict();
@@ -57,6 +58,7 @@ export const discussSessionBidRequestSchema = discussBidSchema
     owner: z.string().optional(),
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
+    claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
   })
   .strict();
@@ -69,6 +71,7 @@ export const discussSessionSpeechRequestSchema = discussSpeechSchema
     owner: z.string().optional(),
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
+    claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
   })
   .strict();

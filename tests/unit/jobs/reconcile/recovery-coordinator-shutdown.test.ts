@@ -5,7 +5,8 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
@@ -86,9 +87,6 @@ function createStoreServicesHarness(progressStore: { getDb(): { close(): void } 
   const services = {
     storeDb: progressStore.getDb(),
     progressStore,
-    expansionManifestCatalog: null,
-    expansionStateStore: null,
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
   let current: typeof services | null = null;
@@ -155,13 +153,11 @@ function createRuntimeStateMock() {
   let lifecycle = 'starting';
   let startedAt = 0;
   let launchFenceActive = false;
-  // Stub subsystem registry. KB-routed handlers are not exercised here.
-  const subsystems = {
+  // Stub component registry. KB-routed handlers are not exercised here.
+  const components = {
     register: vi.fn(),
     initAll: vi.fn(),
     disposeAll: vi.fn(async () => {}),
-    run: vi.fn(() => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
-    runAsync: vi.fn(async () => ({ ok: false, code: 'kb_initializing', message: 'kb is initializing' })),
     list: vi.fn(() => []),
     status: vi.fn(() => null),
   };
@@ -170,7 +166,7 @@ function createRuntimeStateMock() {
     getLifecycle: () => lifecycle,
     getStartedAt: () => startedAt,
     getLaunchFenceActive: () => launchFenceActive,
-    subsystems: subsystems as never,
+    components: components as never,
     setLifecycle: vi.fn((state: string) => {
       lifecycle = state;
     }),
@@ -183,20 +179,6 @@ function createRuntimeStateMock() {
   };
 
   return { runtimeState, setLifecycle: runtimeState.setLifecycle };
-}
-
-function createMockKbSubsystem() {
-  return {
-    kb: {} as never,
-    readDb: {} as never,
-    curateScheduler: {
-      start: vi.fn(async () => {}),
-      schedule: vi.fn(),
-      scheduleDeferredCommit: vi.fn(),
-      isRunning: () => false,
-      stop: vi.fn(async () => {}),
-    },
-  };
 }
 
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
@@ -304,6 +286,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     }
   });
   const storeServices = createStoreServicesHarness(progressStore);
+  const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
   const controller = modules.lifecycleModule.createLifecycle({
     identity: {
@@ -314,6 +297,8 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       flavor: 'prod',
       instanceId: `recovery-shutdown-${Math.random()}`,
       token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       now: () => 1,
       log: () => {},
     },
@@ -345,9 +330,9 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
     providerHostManager: createFakeProviderHostManager() as never,
+    kbDaemonSupervisor,
     handoffQuiescePorts: () => [],
-    createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
-    createCurateAssistant: () => ({ complete: async () => '' }),
+    createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
     registerBuiltInProvidersFn: () => {},
     // Required by createLifecycle's contract but unused: the custom runStartupRecoveryFn below
     // calls its own closure-captured spy (recoverPersistedDiscussSpy) so the tail-cut assertion

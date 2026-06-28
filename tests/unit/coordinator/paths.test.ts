@@ -62,6 +62,7 @@ describe('composeCoralPaths', () => {
       socketPath: join('/tmp/coral-root', 'run', 'coordinator.sock'),
       infoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
       startupErrorFile: join('/tmp/coral-root', 'run', 'startup-error.json'),
+      startupDiagnosticFile: join('/tmp/coral-root', 'run', 'startup-diagnostic.json'),
     });
   });
 

@@ -1,5 +1,6 @@
-import type { Authority, InvocationContext } from '../runtime/invocation-context.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '../infra/network-env.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { Principal } from '../security/principal.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from './context-profile.js';
 
 export function buildControllerEnv(
@@ -42,7 +43,7 @@ export function buildInvocationContext(
   body: Record<string, unknown>,
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
-  authority: Authority,
+  principal: Principal,
 ): InvocationContext | null {
   if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
     return null;
@@ -51,7 +52,7 @@ export function buildInvocationContext(
     projectRoot: body.projectRoot,
     pluginRoot,
     coralEnv: buildControllerEnv(body, coralEnvSnapshot),
-    authority,
+    principal,
   };
 }
 
@@ -59,7 +60,7 @@ export function buildInvocationContextFromQuery(
   projectRoot: string,
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
-  authority: Authority,
+  principal: Principal,
 ): InvocationContext {
-  return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot }, authority };
+  return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot }, principal };
 }

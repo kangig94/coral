@@ -79,7 +79,7 @@ describe('Claude turn failure diagnostics', () => {
     expect(sessionProviderFailureDiagnosticPhaseSchema.options).toEqual(turnFailureDiagnosticPhaseSchema.options);
   });
 
-  it('replaces the legacy stderr tail with a structured diagnostic payload', async () => {
+  it('replaces the retired stderr tail with a structured diagnostic payload', async () => {
     const fixture = createTranscriptFixture();
     const child = new FakeClaudeChild();
     const notifications: ControllerNotification[] = [];

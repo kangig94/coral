@@ -57,6 +57,7 @@ function buildEscalationHarness(opts: {
     process: {
       kill: (pid: number, signal: NodeJS.Signals | 0) => {
         killCalls.push({ pid, signal, at: time.now() - start });
+        return true;
       },
       isAlive,
     } as unknown as Runtime['process'],
@@ -96,7 +97,15 @@ function buildEscalationHarness(opts: {
 
 describe('handoff escalation (AC7)', () => {
   it('hung incumbent: SIGTERM after budget, SIGKILL after grace, bind succeeds when process exits', async () => {
-    const identity: IncumbentIdentity = { pid: 5555, processStartedAt: 100, source: 'discovery' };
+    const identity: IncumbentIdentity = {
+      pid: 5555,
+      processStartedAt: 100,
+      source: 'discovery',
+      instanceId: 'hung-incumbent',
+      token: 'token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
     const totalBudgetMs = 1_000;
     // Incumbent exits at T=12000 (after SIGTERM grace+SIGKILL grace fully elapse).
     const incumbentExitsAt = totalBudgetMs + SIGTERM_GRACE_MS + 2_000;
@@ -143,7 +152,15 @@ describe('handoff escalation (AC7)', () => {
   }, 15_000);
 
   it('process exited before SIGTERM: helper observes "gone", retries bind without signaling', async () => {
-    const identity: IncumbentIdentity = { pid: 1234, processStartedAt: 555, source: 'discovery' };
+    const identity: IncumbentIdentity = {
+      pid: 1234,
+      processStartedAt: 555,
+      source: 'discovery',
+      instanceId: 'gone-incumbent',
+      token: 'token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
     const totalBudgetMs = 500;
     // Incumbent exits at T=600, just after the budget expires.
     const harness = buildEscalationHarness({
@@ -173,7 +190,15 @@ describe('handoff escalation (AC7)', () => {
     // we assert bindAttempt continues to return 'incumbent' until the
     // incumbent is observed gone — i.e. bindWithHandoff blocks on the
     // socket, and only resolves when the incumbent has actually exited.
-    const identity: IncumbentIdentity = { pid: 8888, processStartedAt: 222, source: 'discovery' };
+    const identity: IncumbentIdentity = {
+      pid: 8888,
+      processStartedAt: 222,
+      source: 'discovery',
+      instanceId: 'finalizer-incumbent',
+      token: 'token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
     const totalBudgetMs = 1_000;
     const exitAtMs = totalBudgetMs / 2; // incumbent gracefully exits within budget
     const harness = buildEscalationHarness({

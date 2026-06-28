@@ -3,15 +3,14 @@ import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { isProcessAlive } from '../../../infra/node-process.js';
 import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
-import { isBackendHealth, type BackendHealth } from './health.js';
+import { isBackendHealth, isBackendPing, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
 export type BackendStatus =
   | {
-      // CLI-level verdict. The daemon-side legacy lifecycle field (which
-      // can be `'starting' | 'ok' | 'draining'`) is preserved as
-      // `health.status` inside the nested `BackendHealth` payload via
-      // `BackendStatusFull`.
+      // CLI-level verdict. The daemon-side coarse lifecycle field
+      // (`'starting' | 'ok' | 'draining'`) is preserved as `health.status`
+      // inside the nested `BackendHealth` payload via `BackendStatusFull`.
       status: 'ok';
       version: string;
       bundleHash: string;
@@ -23,7 +22,7 @@ export type BackendStatus =
       queueDepth?: number;
       kernel: BackendHealth['kernel'];
       textProjectionState: BackendHealth['textProjectionState'];
-      subsystems: BackendHealth['subsystems'];
+      components: BackendHealth['components'];
       diagnostics?: BackendHealth['diagnostics'];
     }
   | {
@@ -44,27 +43,44 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   if (!info || !isProcessAlive(info.pid)) return { status: 'not_running' };
 
   try {
-    const response = await fetch(`http://${info.host}:${info.port}/health`, {
+    const pingResponse = await fetch(`http://${info.host}:${info.port}/health`, {
       method: 'GET',
-      headers: { 'X-Coral-Backend-Token': info.token },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
-    const body = await parseJsonResponse(response);
-    if (response.status === 200) {
+    const pingBody = await parseJsonResponse(pingResponse);
+    if (pingResponse.status === 200) {
+      if (!isBackendPing(pingBody) || pingBody.namespace !== info.namespace || pingBody.flavor !== info.flavor) {
+        return { status: 'not_running' };
+      }
+      if (pingBody.status === 'draining') {
+        return { status: 'shutting_down' };
+      }
+    } else if (pingResponse.status === 503 || TransientHttpError.isTransientStatus(pingResponse.status)) {
+      return { status: 'shutting_down' };
+    } else {
+      return { status: 'not_running' };
+    }
+
+    const healthResponse = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
+      method: 'GET',
+      headers: { 'X-Coral-Boot-Token': info.bootToken },
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+    const body = await parseJsonResponse(healthResponse);
+    if (healthResponse.status === 200) {
       if (!isBackendHealth(body) || body.namespace !== info.namespace || body.flavor !== info.flavor) {
         return { status: 'not_running' };
       }
       if (body.status === 'draining') {
         return { status: 'shutting_down' };
       }
-
       const { namespace: _namespace, status: _status, ...rest } = body;
       return { status: 'ok', health: { ...rest, status: 'ok' as const } };
     }
-    if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
+    if (healthResponse.status === 503 || TransientHttpError.isTransientStatus(healthResponse.status)) {
       return { status: 'shutting_down' };
     }
-    if (response.status === 401) return { status: 'unauthorized' };
+    if (healthResponse.status === 401) return { status: 'unauthorized' };
     return { status: 'not_running' };
   } catch {
     return { status: 'not_running' };

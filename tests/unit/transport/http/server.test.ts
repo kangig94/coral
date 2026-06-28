@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import {
   createServer,
   request as httpRequest,
   type IncomingMessage as ClientIncomingMessage,
+  ServerResponse,
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
@@ -15,7 +16,7 @@ import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 import { makeEvent } from '#src/discuss/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -34,47 +35,17 @@ import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from '#src/jobs/paths.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { resolveProjectSource } from '#src/infra/project-source.js';
 import type { CoordinatorServerController } from '#src/coordinator/index.js';
 import type { LifecycleState } from '#src/coordinator/lifecycle.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { Backed, EmbeddingService, FtsRetrieval } from '#src/kb/contract.js';
-import type { VectorRetrieval } from '#src/kb/search/contract.js';
-import { createCapabilityRegistry } from '#src/kb/capability/registry.js';
-import {
-  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-  KB_EMBEDDING_CAPABILITY,
-  KB_FTS_CAPABILITY,
-  KB_VECTOR_CAPABILITY,
-} from '#src/kb/capability/constants.js';
-import { EngineArtifactRegistry } from '#src/kb/corpus/artifact-registry.js';
-import { createRoleRegistry } from '#src/kb/search/role-registry.js';
-import { createRuntimeBinding } from '#src/runtime/binding.js';
 import { domainError, domainSuccess, type ToolDomainResult } from '#src/transport/tool-result.js';
-import {
-  handleKbCommunityRead,
-  handleKbDelete,
-  handleKbDiagnose,
-  handleKbMemo,
-  handleKbMemoDeleteConsolidated,
-  handleKbMemoList,
-  handleKbMemoRead,
-  handleKbNoteRead,
-  handleKbPrincipleRead,
-  handleKbPrinciples,
-  handleKbPromote,
-  handleKbSearch,
-  handleKbSourceDelete,
-  handleKbSourceList,
-  handleKbSourceRead,
-  handleKbUpdate,
-} from '#src/kb/tool-handlers.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { MutableRuntimeState as MutableCoordinatorRuntimeState } from '#src/coordinator/lifecycle.js';
 import {
@@ -82,9 +53,9 @@ import {
   type CoordinatorStoreServices,
 } from '#src/coordinator/composition/store-services-ref.js';
 import { MAX_EVENT_STREAM_CONNECTIONS } from '#src/coordinator/composition/index.js';
-import type { KnowledgeBaseRuntime } from '#src/kb/subsystem.js';
-import { asReadonlyDatabase } from '#src/store/read-port.js';
+import type { KbDaemonHealthSnapshot, KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
@@ -100,9 +71,8 @@ import {
 } from '#src/discuss/shell/tools.js';
 import { ZodError, ZodIssueCode } from 'zod';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
-import { ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
+import type { KbRequestPort } from '#src/transport/rpc/ports.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
@@ -113,6 +83,34 @@ function commaHeaderTokens(value: string | null): string[] {
     .map((token) => token.trim().toLowerCase())
     .filter(Boolean)
     .sort();
+}
+
+function expectedDaemonProjectContext(projectRoot: string) {
+  return expect.objectContaining({
+    projectRoot,
+    principal: expect.objectContaining({
+      subject: 'operator',
+      binding: { kind: 'project', root: projectRoot },
+    }),
+  });
+}
+
+function expectedDaemonPrincipalContext() {
+  return expect.objectContaining({
+    principal: expect.objectContaining({
+      subject: 'operator',
+      binding: { kind: 'unbound' },
+    }),
+  });
+}
+
+function expectedDaemonSystemContext() {
+  return expect.objectContaining({
+    principal: expect.objectContaining({
+      subject: 'system',
+      binding: { kind: 'unbound' },
+    }),
+  });
 }
 
 const mockState = vi.hoisted(() => ({
@@ -144,12 +142,6 @@ function createStoreServicesForProgressStore(progressStore: JobStore): Coordinat
   return {
     storeDb: db,
     progressStore,
-    expansionManifestCatalog: createExpansionManifestCatalog({
-      db,
-      now: () => new Date(runtime.time.now()).toISOString(),
-    }),
-    expansionStateStore: new ExpansionStateStore(db),
-    expansionLifecycleService: null,
     consumerDriver: null,
   };
 }
@@ -534,6 +526,11 @@ describe('execution backend server', () => {
       } catch {
         /* best effort */
       }
+      try {
+        await controller.waitForShutdown();
+      } catch {
+        /* best effort */
+      }
     }
     controller = null;
     for (const jobId of createdJobIds) {
@@ -555,136 +552,23 @@ describe('execution backend server', () => {
     mockState.tmpHome = '';
   });
 
-  function createMockKbSubsystem() {
-    const capabilityRegistry = createCapabilityRegistry();
-    capabilityRegistry.registerBuiltin(
-      BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-      createRuntimeBinding<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY),
-    );
-    capabilityRegistry.registerBuiltin(
-      BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-      createRuntimeBinding<Backed<VectorRetrieval>>(KB_VECTOR_CAPABILITY),
-    );
-    capabilityRegistry.registerBuiltin(
-      BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-      createRuntimeBinding<Backed<EmbeddingService>>(KB_EMBEDDING_CAPABILITY),
-    );
-    const roleRegistry = createRoleRegistry();
-    const engineArtifactRegistry = new EngineArtifactRegistry();
-    const runtimeDir = join(mockState.tmpHome, 'kb-runtime');
-    mkdirSync(runtimeDir, { recursive: true });
-    const emptyIndex = {
-      entries: {},
-      principles: {},
-      entityMeta: {},
-      relationships: [],
-    };
-    return {
-      kb: {
-        runtimeDir,
-        projectionArtifacts: {
-          runtimeDir,
-          files: {
-            existsSync: vi.fn(() => false),
-            readFileSync: vi.fn(() => '{}'),
-            rmSync: vi.fn(),
-            mkdirSync: vi.fn(),
-            renameSync: vi.fn(),
-            writeTextAtomic: vi.fn(),
-            writeJsonAtomic: vi.fn(),
-          },
-        },
-        // Promote-recovery preflight (boot step 0) probes
-        // `runtimeDir/promote-recovery/` — return false so the worker skips
-        // the empty-marker-dir scan without invoking the rest of StoragePort.
-        storagePort: {
-          existsSync: vi.fn(() => false),
-        },
-        corpusProjectionReader: {
-          resolveCurrentIndex: vi.fn(() => emptyIndex),
-          prepareCurrentProjectionInput: vi.fn(async () => ({
-            index: emptyIndex,
-            records: [],
-            communityFresh: false,
-          })),
-        },
-        capabilityRegistry,
-        capabilities: capabilityRegistry.catalogView(),
-        roleRegistry,
-        roleCatalog: roleRegistry.catalogView(),
-        engineArtifactRegistry,
-        corpusAuthorityBaseline: {
-          ensure: vi.fn(() => ({ baseline: new Map(), rebuilt: false })),
-          rebuild: vi.fn(() => new Map()),
-          read: vi.fn(() => new Map()),
-          replace: vi.fn(),
-        },
-        retryPendingCorpusPublication: vi.fn(async () => {}),
-        withMutationLock: vi.fn(async (fn: () => Promise<unknown> | unknown) => fn()),
-        mutationLockDiagnostics: vi.fn(() => ({ blocked: false })),
-        recordIndexSyncSuccess: vi.fn(() => ({
-          contentSeq: 0,
-          metadataSeq: 0,
-        })),
-        ensureOramaIndex: vi.fn(async () => ({
-          db: {} as never,
-          tokenizer: {} as never,
-          index: emptyIndex,
-        })),
-        ensureCorpusFreshness: vi.fn(async () => emptyIndex),
-        getCorpusStateSnapshot: vi.fn(() => ({
-          snapshotId: '',
-          contentSeq: 0,
-          metadataSeq: 0,
-          contentManifestHash: '',
-          metadataManifestHash: '',
-        })),
-      } as never,
-      readDb: asReadonlyDatabase({} as never),
-      curateScheduler: {
-        start: vi.fn(async () => {}),
-        schedule: vi.fn(),
-        scheduleDeferredCommit: vi.fn(),
-        isRunning: () => false,
-        stop: vi.fn(async () => {}),
-      },
-    } satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime;
-  }
-
-  function readKbSubsystem(state: MutableCoordinatorRuntimeState): unknown {
-    const result = state.subsystems.run<KnowledgeBaseRuntime, KnowledgeBaseRuntime>('kb' as never, (kb) => kb);
-    return result instanceof Object && 'ok' in result && (result as { ok: false }).ok === false ? null : result;
-  }
-
   function createRuntimeStateMock(): {
     runtimeState: MutableCoordinatorRuntimeState;
     setLifecycle: ReturnType<typeof vi.fn>;
-    setKbSubsystem: (sub: KnowledgeBaseRuntime | null) => void;
+    setKbOnline: (online: boolean) => void;
   } {
     let lifecycle: LifecycleState = 'starting';
     let startedAt = 0;
-    let kbSubsystem: KnowledgeBaseRuntime | null = null;
+    let kbOnline = true;
     let launchFenceActive = false;
 
-    const subsystems = {
+    const components = {
       register: vi.fn(),
       initAll: vi.fn(),
       disposeAll: vi.fn(async () => {}),
-      run: vi.fn(<T>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => T) => {
-        if (kbSubsystem === null) {
-          return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
-        }
-        return fn(kbSubsystem);
-      }),
-      runAsync: vi.fn(async <T>(_id: unknown, fn: (sub: KnowledgeBaseRuntime) => Promise<T>) => {
-        if (kbSubsystem === null) {
-          return { ok: false as const, code: 'kb_initializing', message: 'Knowledge base is starting up' };
-        }
-        return await fn(kbSubsystem);
-      }),
-      list: vi.fn(() => (kbSubsystem === null ? [] : [{ id: 'kb' as never, phase: 'online' as const }])),
+      list: vi.fn(() => (kbOnline ? [{ id: 'kb' as never, phase: 'online' as const }] : [])),
       status: vi.fn(() =>
-        kbSubsystem === null
+        !kbOnline
           ? { id: 'kb' as never, phase: 'initializing' as const, attempt: 0 }
           : { id: 'kb' as never, phase: 'online' as const },
       ),
@@ -694,7 +578,7 @@ describe('execution backend server', () => {
       getLifecycle: () => lifecycle,
       getStartedAt: () => startedAt,
       getLaunchFenceActive: () => launchFenceActive,
-      subsystems: subsystems as never,
+      components: components as never,
       setLifecycle: vi.fn((state: LifecycleState) => {
         lifecycle = state;
       }),
@@ -709,27 +593,41 @@ describe('execution backend server', () => {
     return {
       runtimeState,
       setLifecycle: runtimeState.setLifecycle,
-      setKbSubsystem: (sub) => {
-        kbSubsystem = sub;
+      setKbOnline: (online) => {
+        kbOnline = online;
       },
     };
+  }
+
+  function createUnexpectedExpansionRpc(): KbDaemonSupervisor['expansionRpc'] {
+    return vi.fn(async () => ({
+      ok: false as const,
+      code: 'unexpected_expansion_rpc',
+      message: 'unexpected expansion RPC',
+    }));
   }
 
   async function startBackendServer(overrides: Parameters<ServerModule['createCoordinatorServer']>[0] = {}) {
     const { serverModule, backendInfo } = await loadExecutionModules();
     const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
+    const defaultKbDaemonSupervisor =
+      process.env.CORAL_KB_ENABLE === '0' || restOverrides.kbDaemonSupervisor !== undefined
+        ? {}
+        : { kbDaemonSupervisor: createMockKbDaemonSupervisor() };
     controller = serverModule.createCoordinatorServer({
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
         flavor: 'prod',
         log: () => {},
         ...bootOverrides,
       },
-      createKbSubsystemFn: async () => createMockKbSubsystem(),
       cleanupStaleJobsFn: () => {},
+      ...defaultKbDaemonSupervisor,
       ...restOverrides,
     });
     const started = await controller.start();
@@ -739,6 +637,8 @@ describe('execution backend server', () => {
       started,
       baseUrl: `http://127.0.0.1:${started.port}`,
       token: started.token,
+      bootToken: started.bootToken,
+      shutdownToken: started.shutdownToken,
     };
   }
 
@@ -761,6 +661,7 @@ describe('execution backend server', () => {
         socketPath: '/tmp/coral-dev.sock',
         host: '127.0.0.1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
         flavor: 'dev',
@@ -797,8 +698,8 @@ describe('execution backend server', () => {
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -817,39 +718,947 @@ describe('execution backend server', () => {
       queueDepth: 0,
     });
     expect(typeof body.uptimeMs).toBe('number');
-    expect(Array.isArray(body.subsystems)).toBe(true);
-    const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
-    expect(subsystems.find((s) => s.id === 'kb')?.phase).toBe('online');
+    expect(Array.isArray(body.components)).toBe(true);
+    const components = body.components as Array<{ id: string; phase: string }>;
+    expect(components.find((s) => s.id === 'kb')?.phase).toBe('online');
   });
 
-  it('starts in degraded mode when KB init fails and reports kb unavailable in health', async () => {
-    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    const backend = await startBackendServer({
-      createKbSubsystemFn: async () => {
-        throw new Error('simulated KB init failure');
-      },
+  it('probes an online KB daemon before returning /health', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+      pendingRequests: 0,
+    };
+    const probedHealth: KbDaemonHealthSnapshot = {
+      ...daemonHealth,
+      lastHeartbeatAt: 30,
+      lastHeartbeatLatencyMs: 2,
+      daemonUptimeMs: 20,
+    };
+    let currentHealth = daemonHealth;
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => currentHealth),
+      start: vi.fn(async () => currentHealth),
+      probe: vi.fn(async () => {
+        currentHealth = probedHealth;
+        return currentHealth;
+      }),
+      warmup: vi.fn(async () => currentHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      stop: vi.fn(async () => currentHealth),
+      restart: vi.fn(async () => currentHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    await vi.waitFor(() => {
+      expect(kbDaemonSupervisor.warmup).toHaveBeenCalledTimes(1);
     });
 
-    // Under the 3-era boot, KB init runs in Era III (fire-and-forget) with
-    // its own retry loop. The first attempt fails; subsequent attempts back
-    // off [1s, 4s, 16s]. Health reports `kind: 'initializing'` while
-    // retries are in flight and `kind: 'unavailable'` after exhaustion.
-    // Either is acceptable here — both surface as HTTP 503 on KB tool calls.
-    const response = await fetch(`${backend.baseUrl}/health`, {
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
+    });
+    const body = (await response.json()) as { kbDaemon?: KbDaemonHealthSnapshot };
+
+    expect(response.status).toBe(200);
+    expect(kbDaemonSupervisor.probe).toHaveBeenCalledTimes(1);
+    expect(body.kbDaemon).toMatchObject({
+      phase: 'online',
+      lastHeartbeatAt: 30,
+      lastHeartbeatLatencyMs: 2,
+      daemonUptimeMs: 20,
+    });
+  });
+
+  it('does not probe an online KB daemon when recent heartbeat health is cached', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+      pendingRequests: 0,
+      lastHeartbeatAt: 1_000,
+      lastHeartbeatLatencyMs: 2,
+      daemonUptimeMs: 20,
+    };
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({
+      bootSnapshot: { now: () => 2_000 },
+      kbDaemonSupervisor,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
+    });
+
+    expect(response.status).toBe(200);
+    expect(kbDaemonSupervisor.probe).not.toHaveBeenCalled();
+  });
+
+  it('uses a KB daemon health component for coordinator health', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({ health: daemonHealth });
+    const backend = await startBackendServer({
+      kbDaemonSupervisor,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
+    });
+    const body = (await response.json()) as { components?: Array<{ id: string; phase: string }> };
+
+    expect(response.status).toBe(200);
+    expect(body.components?.find((component) => component.id === 'kb')?.phase).toBe('online');
+    expect(kbDaemonSupervisor.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes KB memo mutations through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-daemon', method: request.method },
+    }));
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
+      mutateKb,
+    });
+    const backend = await startBackendServer({
+      kbDaemonSupervisor,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot: '/workspace/project-a',
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mutateKb).toHaveBeenCalledWith({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+      ctx: expectedDaemonProjectContext('/workspace/project-a'),
+    });
+  });
+
+  it('uses the daemon supervisor in the standard server path', async () => {
+    const { serverModule } = await loadExecutionModules();
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-daemon', method: request.method },
+    }));
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
+      mutateKb,
+    });
+    controller = serverModule.createCoordinatorServer({
+      bootSnapshot: {
+        instanceId: 'execution-backend-instance-1',
+        token: 'test-token',
+        bootToken: 'test-boot-token',
+        shutdownToken: 'test-shutdown-token',
+        version: '9.9.9',
+        bundleHash: 'testhash1234',
+        flavor: 'prod',
+        log: () => {},
+      },
+      cleanupStaleJobsFn: () => {},
+      kbDaemonSupervisor,
+    });
+    const started = await controller.start();
+
+    const response = await fetch(`http://127.0.0.1:${started.port}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': started.token,
+      },
+      body: JSON.stringify({
+        projectRoot: '/workspace/project-a',
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mutateKb).toHaveBeenCalledWith({
+      method: 'createMemo',
+      args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+      ctx: expectedDaemonProjectContext('/workspace/project-a'),
+    });
+  });
+
+  it('reports the KB daemon proxy offline when the daemon is disabled', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: false,
+      phase: 'disabled',
+      generation: 0,
+      pid: null,
+      startedAt: null,
+      readyAt: null,
+      reason: 'disabled for test',
+    };
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
+      readKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'kb_unavailable',
+        message: 'KB daemon supervisor is disabled',
+        detail: { reason: 'kb_daemon_disabled' },
+      })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'kb_unavailable',
+        message: 'KB daemon supervisor is disabled',
+        detail: { reason: 'kb_daemon_disabled' },
+      })),
+    });
+    const backend = await startBackendServer({
+      kbDaemonSupervisor,
+    });
+
+    const healthResponse = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
+    });
+    const health = (await healthResponse.json()) as { components?: Array<{ id: string; phase: string }> };
+
+    expect(healthResponse.status).toBe(200);
+    expect(health.components?.find((component) => component.id === 'kb')?.phase).toBe('offline');
+
+    const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(kbResponse.status).toBe(503);
+    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith({
+      method: 'readSearch',
+      args: { query: 'alpha' },
+      ctx: expectedDaemonPrincipalContext(),
+    });
+  });
+
+  it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB daemon runtime path', async () => {
+    const previousKbEnabled = process.env.CORAL_KB_ENABLE;
+    process.env.CORAL_KB_ENABLE = '0';
+    try {
+      const backend = await startBackendServer();
+
+      const healthResponse = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+        headers: { 'X-Coral-Boot-Token': backend.bootToken },
+      });
+      const health = (await healthResponse.json()) as {
+        components?: Array<{ id: string; phase: string; reason?: string }>;
+      };
+
+      expect(healthResponse.status).toBe(200);
+      expect(health.components?.find((component) => component.id === 'kb')).toMatchObject({
+        phase: 'offline',
+        reason: KB_DISABLED_REASON,
+      });
+
+      const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+
+      expect(kbResponse.status).toBe(503);
+      await expect(kbResponse.json()).resolves.toMatchObject({ code: 'kb_disabled' });
+    } finally {
+      if (previousKbEnabled === undefined) {
+        delete process.env.CORAL_KB_ENABLE;
+      } else {
+        process.env.CORAL_KB_ENABLE = previousKbEnabled;
+      }
+    }
+  });
+
+  it('routes read-only KB RPCs through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const readKb = vi.fn<KbDaemonSupervisor['readKb']>(async (_request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-daemon' },
+    }));
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb,
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const projectRoot = '/workspace/project-a';
+    const projectRootQuery = encodeURIComponent(projectRoot);
+    const getJson = async (path: string): Promise<unknown> => {
+      const response = await fetch(`${backend.baseUrl}${path}`, {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      });
+
+      expect(response.status).toBe(200);
+      return await response.json();
+    };
+
+    await expect(getJson('/kb/entries?q=alpha')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/diagnose')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/notes/alpha-note')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/sources')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/sources/alpha-source')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/wikis')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/wikis/alpha-wiki')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/wake-up?project=kangig94-coral')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/communities/alpha-community')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/communities-stale')).resolves.toEqual({ servedBy: 'kb-daemon' });
+    await expect(getJson('/kb/communities/alpha-community/summary-input')).resolves.toEqual({
+      servedBy: 'kb-daemon',
+    });
+    await expect(getJson(`/kb/memos?projectRoot=${projectRootQuery}&owner=kang`)).resolves.toEqual({
+      servedBy: 'kb-daemon',
+    });
+    await expect(getJson(`/kb/memos/alpha-memo?projectRoot=${projectRootQuery}`)).resolves.toEqual({
+      servedBy: 'kb-daemon',
+    });
+    await expect(getJson('/kb/principles?q=alpha&top_k=2&verbose=1')).resolves.toEqual({
+      servedBy: 'kb-daemon',
+    });
+    await expect(getJson('/kb/principles/alpha-principle')).resolves.toEqual({ servedBy: 'kb-daemon' });
+
+    expect(readKb.mock.calls.map(([request]) => request)).toEqual([
+      { method: 'readSearch', args: { query: 'alpha' }, ctx: expectedDaemonPrincipalContext() },
+      { method: 'diagnose', ctx: expectedDaemonPrincipalContext() },
+      { method: 'readNote', slug: 'alpha-note', ctx: expectedDaemonPrincipalContext() },
+      { method: 'listSources', ctx: expectedDaemonPrincipalContext() },
+      { method: 'readSource', slug: 'alpha-source', ctx: expectedDaemonPrincipalContext() },
+      { method: 'listWikis', ctx: expectedDaemonPrincipalContext() },
+      { method: 'readWiki', slug: 'alpha-wiki', ctx: expectedDaemonPrincipalContext() },
+      { method: 'wakeUp', args: { project: 'kangig94-coral' }, ctx: expectedDaemonPrincipalContext() },
+      { method: 'readCommunity', slug: 'alpha-community', ctx: expectedDaemonPrincipalContext() },
+      { method: 'listStaleCommunities', ctx: expectedDaemonPrincipalContext() },
+      {
+        method: 'readCommunitySummaryInput',
+        slug: 'alpha-community',
+        ctx: expectedDaemonPrincipalContext(),
+      },
+      {
+        method: 'listMemos',
+        args: { owner: 'kang' },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      {
+        method: 'readMemo',
+        slug: 'alpha-memo',
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      {
+        method: 'listPrinciples',
+        args: { query: 'alpha', top_k: 2, verbose: true },
+        ctx: expectedDaemonPrincipalContext(),
+      },
+      { method: 'readPrinciple', slug: 'alpha-principle', ctx: expectedDaemonPrincipalContext() },
+    ]);
+  });
+
+  it('routes KB memo mutations through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (_request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-daemon' },
+    }));
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb,
+      expansionRpc: createUnexpectedExpansionRpc(),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const projectRoot = '/workspace/project-a';
+
+    const response = await fetch(`${backend.baseUrl}/kb/memos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        topic: 'alpha',
+        content: 'memo body',
+        owner: 'kang',
+      }),
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ servedBy: 'kb-daemon' });
+    expect(mutateKb.mock.calls.map(([request]) => request)).toEqual([
+      {
+        method: 'createMemo',
+        args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+    ]);
+  });
+
+  it('routes KB corpus mutations through the daemon supervisor', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (_request) => ({
+      ok: true as const,
+      data: { servedBy: 'kb-daemon' },
+    }));
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb,
+      expansionRpc: createUnexpectedExpansionRpc(),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const projectRoot = '/workspace/project-a';
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Coral-Backend-Token': backend.token,
+    };
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/wikis`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          slug: 'alpha-wiki',
+          title: 'Alpha',
+          tags: ['daemon'],
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-daemon' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/sources/alpha-source`, {
+        method: 'DELETE',
+        headers,
+        body: JSON.stringify({ projectRoot }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-daemon' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/sources`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          filePath: '/workspace/project-a/source.md',
+          slug: 'alpha-source',
+          readiness: 'base-search',
+          async: true,
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 201, body: { servedBy: 'kb-daemon' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/index`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          async: true,
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-daemon' } });
+
+    await expect(
+      fetch(`${backend.baseUrl}/kb/communities/alpha-community/summary`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          summary: 'Community summary from daemon.',
+        }),
+      }).then(async (response) => ({ status: response.status, body: await response.json() })),
+    ).resolves.toEqual({ status: 200, body: { servedBy: 'kb-daemon' } });
+
+    expect(mutateKb.mock.calls.map(([request]) => request)).toEqual([
+      {
+        method: 'createWiki',
+        args: { slug: 'alpha-wiki', title: 'Alpha', tags: ['daemon'] },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      {
+        method: 'deleteSource',
+        slug: 'alpha-source',
+        ctx: expectedDaemonSystemContext(),
+      },
+      {
+        method: 'createSource',
+        args: {
+          filePath: '/workspace/project-a/source.md',
+          slug: 'alpha-source',
+          readiness: 'base-search',
+          async: true,
+        },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      {
+        method: 'reindex',
+        args: { async: true },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+      {
+        method: 'setCommunitySummary',
+        args: { summary: 'Community summary from daemon.', slug: 'alpha-community' },
+        ctx: expectedDaemonProjectContext(projectRoot),
+      },
+    ]);
+  });
+
+  it('marks tracked daemon-owned KB jobs as error when the KB daemon exits', async () => {
+    const jobId = 'kb-daemon-import-job-1';
+    const projectRoot = '/workspace/project-a';
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const exit = { listener: null as ((snapshot: KbDaemonHealthSnapshot) => void) | null };
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      onExit: vi.fn((listener) => {
+        exit.listener = listener;
+        return vi.fn();
+      }),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({ ok: true as const, data: { status: 'running', job: jobId } })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      startTime: new Date().toISOString(),
+    });
+
+    const response = await fetch(`${backend.baseUrl}/kb/sources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+        async: true,
+      }),
+    });
+    expect(response.status).toBe(202);
+    expect(exit.listener).not.toBeNull();
+
+    if (exit.listener === null) {
+      throw new Error('expected KB daemon exit listener');
+    }
+    exit.listener({
+      ...daemonHealth,
+      phase: 'failed',
+      pid: null,
+      readyAt: null,
+      lastExit: { code: 1, signal: null, at: 30, uptimeMs: 20 },
+      lastError: 'marker worker crashed',
+    });
+
+    const detailResponse = await fetch(
+      `${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
+    const detailBody = (await detailResponse.json()) as {
+      status: { phase?: string };
+      events: Array<{ type?: string; result?: { outcome?: { kind?: string; fault?: { kind?: string } } } }>;
+    };
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.status.phase).toBe('error');
+    expect(detailBody.events).toContainEqual(
+      expect.objectContaining({
+        type: 'terminal',
+        result: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'wrapper_crashed' }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('marks durable daemon-owned KB jobs as error when the daemon exits before proxy registration', async () => {
+    const jobId = 'kb-daemon-unproxied-import-job-1';
+    const projectRoot = '/workspace/project-a';
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const exit = { listener: null as ((snapshot: KbDaemonHealthSnapshot) => void) | null };
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      onExit: vi.fn((listener) => {
+        exit.listener = listener;
+        return vi.fn();
+      }),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      owner: 'kb-daemon',
+      startTime: new Date().toISOString(),
+    });
+
+    expect(exit.listener).not.toBeNull();
+    if (exit.listener === null) {
+      throw new Error('expected KB daemon exit listener');
+    }
+    exit.listener({
+      ...daemonHealth,
+      phase: 'failed',
+      pid: null,
+      readyAt: null,
+      lastExit: { code: 1, signal: null, at: 30, uptimeMs: 20 },
+      lastError: 'daemon crashed before returning job id',
+    });
+
+    const detailResponse = await fetch(
+      `${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
+    const detailBody = (await detailResponse.json()) as {
+      status: { phase?: string };
+      events: Array<{ type?: string; result?: { outcome?: { kind?: string; fault?: { kind?: string } } } }>;
+    };
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.status.phase).toBe('error');
+    expect(detailBody.events).toContainEqual(
+      expect.objectContaining({
+        type: 'terminal',
+        result: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'wrapper_crashed' }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('removes daemon-owned KB abort proxies when the daemon-owned KB job reaches terminal state', async () => {
+    const jobId = 'kb-daemon-import-job-terminal';
+    const projectRoot = '/workspace/project-a';
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const abortKbJobs = vi.fn(async () => ({ aborted: [jobId], notFound: [] }));
+    const eventBus = new TypedEventBus();
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      onExit: vi.fn(() => vi.fn()),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({ ok: true as const, data: { status: 'running', job: jobId } })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      abortKbJobs,
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ eventBus, kbDaemonSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      startTime: new Date().toISOString(),
+    });
+
+    const createResponse = await fetch(`${backend.baseUrl}/kb/sources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        projectRoot,
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+        async: true,
+      }),
+    });
+    expect(createResponse.status).toBe(202);
+
+    commitJobTerminal(
+      progressStore,
+      jobId,
+      null,
+      { content: 'Imported source.', outcome: { kind: 'completed' } },
+      'completed',
+    );
+    eventBus.emit('job:completed', {
+      jobId,
+      result: { content: 'Imported source.', outcome: { kind: 'completed' } },
+    });
+
+    const abortResponse = await fetch(`${backend.baseUrl}/jobs/abort`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobs: [jobId],
+        projectRoot,
+      }),
+    });
+
+    expect(abortResponse.status).toBe(200);
+    await expect(abortResponse.json()).resolves.toEqual({
+      aborted: [],
+      notFound: [jobId],
+    });
+    expect(abortKbJobs).not.toHaveBeenCalled();
+  });
+
+  it('reports KB unavailable when the daemon supervisor is failed', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'failed',
+      generation: 1,
+      pid: null,
+      startedAt: 10,
+      readyAt: null,
+      lastError: 'simulated KB daemon failure',
+    };
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+      health: daemonHealth,
+      readKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'kb_unavailable',
+        message: 'KB daemon supervisor is failed',
+        detail: { reason: 'kb_daemon_failed' },
+      })),
+    });
+    const backend = await startBackendServer({
+      kbDaemonSupervisor,
+    });
+
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
-    // KB init runs in Era III (fire-and-forget) so the kernel reaches
-    // `running` regardless of KB outcome; the per-subsystem entry carries
-    // the failure state.
     expect(body.status).toBe('ok');
-    const subsystems = body.subsystems as Array<{ id: string; phase: string }>;
-    const kb = subsystems.find((s) => s.id === 'kb');
+    const components = body.components as Array<{ id: string; phase: string }>;
+    const kb = components.find((s) => s.id === 'kb');
     expect(kb).toBeDefined();
-    expect(['initializing', 'offline']).toContain(kb!.phase);
-    stderrSpy.mockRestore();
+    expect(kb!.phase).toBe('offline');
+
+    const kbResponse = await fetch(`${backend.baseUrl}/kb/entries?q=alpha`, {
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+    expect(kbResponse.status).toBe(503);
+    await expect(kbResponse.json()).resolves.toMatchObject({
+      code: 'kb_unavailable',
+      detail: { reason: 'kb_daemon_failed' },
+    });
   });
 
   it('includes active launches in active count', async () => {
@@ -861,8 +1670,8 @@ describe('execution backend server', () => {
     launchCoordinator.restoreActiveLaunch('job-2', 'codex');
 
     try {
-      const response = await fetch(`${backend.baseUrl}/health`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+      const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+        headers: { 'X-Coral-Boot-Token': backend.bootToken },
       });
       const body = (await response.json()) as Record<string, unknown>;
 
@@ -957,12 +1766,13 @@ describe('execution backend server', () => {
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
         flavor: 'prod',
         log: () => {},
       },
-      createKbSubsystemFn: async () => createMockKbSubsystem(),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       cleanupStaleJobsFn: () => {},
       providerHostManager,
       createExecutionService: (ctx, deps) => {
@@ -1076,8 +1886,8 @@ describe('execution backend server', () => {
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -1086,88 +1896,6 @@ describe('execution backend server', () => {
       status: 'ok',
       activeJobs: 1,
     });
-  });
-
-  it('runs KB initialization during startup before idle watching begins', async () => {
-    const fakeIdleTimer = createFakeIdleTimer();
-    type KbRuntimeThreadOptions = {
-      processPort: { exec: unknown };
-      storagePort: { writeAtomicSync: unknown };
-      envPort: { get: unknown };
-    };
-    let receivedKbOptions: KbRuntimeThreadOptions | null = null;
-    const createKbSubsystemFn = vi.fn(async (options) => {
-      receivedKbOptions = options;
-      return {
-        kb: {} as never,
-        readDb: asReadonlyDatabase({} as never),
-        curateScheduler: {
-          start: vi.fn(async () => {}),
-          schedule: vi.fn(),
-          scheduleDeferredCommit: vi.fn(),
-          isRunning: () => false,
-          stop: vi.fn(async () => {}),
-        },
-      } satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime;
-    });
-
-    await startBackendServer({
-      createIdleTimer: () => fakeIdleTimer as never,
-      createKbSubsystemFn,
-    });
-
-    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
-    expect(receivedKbOptions).not.toBeNull();
-    const kbOptions = receivedKbOptions as unknown as KbRuntimeThreadOptions;
-    expect(typeof kbOptions.processPort.exec).toBe('function');
-    expect(typeof kbOptions.storagePort.writeAtomicSync).toBe('function');
-    expect(typeof kbOptions.envPort.get).toBe('function');
-    // Under the 3-era boot, idle watching starts in Era II BEFORE KB
-    // (Era III) is registered with the subsystems registry. The KB factory
-    // is still invoked during start() (synchronously inside Era III) — but
-    // ordering relative to `idleTimer.startWatching` flips:
-    const initOrder = createKbSubsystemFn.mock.invocationCallOrder.at(0);
-    const watchOrder = fakeIdleTimer.startWatching.mock.invocationCallOrder.at(0);
-    expect(initOrder).toBeDefined();
-    expect(watchOrder).toBeDefined();
-    expect(watchOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(initOrder ?? Number.POSITIVE_INFINITY);
-  });
-
-  it('sets the settled build flavor before KB initialization starts', async () => {
-    const { serverModule } = await loadExecutionModules();
-    const pluginRoot = createProjectRoot('kb-init-build-flavor');
-    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
-    writeFileSync(
-      join(pluginRoot, 'bridge', 'manifest.json'),
-      JSON.stringify({ bundleHash: 'testhash1234', flavor: 'dev' }),
-      'utf-8',
-    );
-
-    let observedRuntimeDir = '';
-    const createKbSubsystemFn = vi.fn(async (ctx) => {
-      observedRuntimeDir = ctx.paths.runtimeDir;
-      return createMockKbSubsystem();
-    });
-
-    controller = serverModule.createCoordinatorServer({
-      pluginRoot,
-      bootSnapshot: {
-        instanceId: 'execution-backend-instance-1',
-        token: 'test-token',
-        version: '9.9.9',
-        bundleHash: 'testhash1234',
-        log: () => {},
-      },
-      createKbSubsystemFn,
-      cleanupStaleJobsFn: () => {},
-    });
-
-    const started = await controller.start();
-
-    expect(started.flavor).toBe('dev');
-    expect(createKbSubsystemFn).toHaveBeenCalledTimes(1);
-    // Flavor settles before KB init: dev runtimeDir lives under data-dev/.
-    expect(observedRuntimeDir).toMatch(/data-dev\b/);
   });
 
   it('recovers discuss-only sources from the durable source registry before idle watching starts', async () => {
@@ -1264,73 +1992,6 @@ describe('execution backend server', () => {
     }
   });
 
-  it('routes KB tool calls through direct handlers and catches errors', async () => {
-    const kbSubsystem = createMockKbSubsystem();
-    const ensureCorpusFreshness = vi.fn(async () => ({
-      entries: {},
-      principles: {},
-      entityMeta: {},
-      relationships: [],
-    }));
-    const backend = await startBackendServer({
-      createKbSubsystemFn: async () =>
-        ({
-          kb: {
-            ...(kbSubsystem.kb as unknown as Record<string, unknown>),
-            projectionArtifacts: {
-              ...(kbSubsystem.kb as unknown as { projectionArtifacts: Record<string, unknown> }).projectionArtifacts,
-              files: {
-                ...(kbSubsystem.kb as unknown as { projectionArtifacts: { files: Record<string, unknown> } })
-                  .projectionArtifacts.files,
-                existsSync: vi.fn(() => true),
-              },
-            },
-            ensureCorpusFreshness,
-            readIndex: vi.fn(() => {
-              throw new Error('mock KB runtime unavailable');
-            }),
-            ensureOramaIndex: vi.fn(async () => ({
-              db: {} as never,
-              tokenizer: {} as never,
-              index: {
-                entries: {
-                  'note:broken-entry': {
-                    kind: 'note',
-                    slug: 'broken-entry',
-                    title: 'Broken Entry',
-                    tags: [],
-                    principles: [],
-                    source: ['kangig94/coral'],
-                    createdAt: '2026-03-20T00:00:00.000Z',
-                    updatedAt: '2026-03-20T00:00:00.000Z',
-                    related: [],
-                    entrySeq: 1,
-                  },
-                },
-                principles: {},
-              },
-            })),
-          } as never,
-          readDb: kbSubsystem.readDb,
-          curateScheduler: kbSubsystem.curateScheduler,
-        }) satisfies KnowledgeBaseRuntime as unknown as KnowledgeBaseRuntime,
-    });
-    ensureCorpusFreshness.mockRejectedValue(new Error('mock KB runtime unavailable'));
-
-    const response = await fetch(`${backend.baseUrl}/kb/entries?q=test`, {
-      headers: {
-        'X-Coral-Backend-Token': backend.token,
-      },
-    });
-
-    expect(response.status).toBe(500);
-    const body = (await response.json()) as Record<string, unknown>;
-    // Mock KB subsystem has no real runtime, so the handler catches the error
-    expect(body).toMatchObject({
-      code: 'kb_error',
-    });
-  });
-
   it('returns verbose kb principles rows with deterministic note order and orphan warnings', async () => {
     const { handleKbPrinciples } = await import('#src/kb/tool-handlers.js');
 
@@ -1399,18 +2060,31 @@ describe('execution backend server', () => {
     });
   });
 
-  it('routes kb memo list and consolidated delete through the backend tool handlers', async () => {
-    const backend = await startBackendServer();
+  it('routes kb memo list and consolidated delete through the KB daemon RPC port', async () => {
     const projectRoot = join(mockState.tmpHome, 'project');
-    const memoRoot = join(runtime.paths.projectData(projectRoot), 'memo');
-    mkdirSync(projectRoot, { recursive: true });
-    mkdirSync(memoRoot, { recursive: true });
-    const aMemo = join(memoRoot, 'a.md');
-    const bMemo = join(memoRoot, 'b.md');
-    writeFileSync(aMemo, 'Alpha summary\n', 'utf-8');
-    writeFileSync(bMemo, 'Bravo summary\n', 'utf-8');
-    utimesSync(aMemo, new Date('2026-03-24T00:00:00.000Z'), new Date('2026-03-24T00:00:00.000Z'));
-    utimesSync(bMemo, new Date('2026-03-25T00:00:00.000Z'), new Date('2026-03-25T00:00:00.000Z'));
+    const readKb = vi.fn<KbDaemonSupervisor['readKb']>(async (request) => {
+      expect(request.method).toBe('listMemos');
+      return {
+        ok: true,
+        data: {
+          memos: [
+            { filename: 'b.md', summary: 'Bravo summary', createdAt: '2026-03-25T00:00:00.000Z' },
+            { filename: 'a.md', summary: 'Alpha summary', createdAt: '2026-03-24T00:00:00.000Z' },
+          ],
+        },
+      };
+    });
+    const mutateKb = vi.fn<KbDaemonSupervisor['mutateKb']>(async (request) => {
+      expect(request.method).toBe('deleteMemos');
+      const args = request.args as Record<string, unknown>;
+      if (args.all === true) {
+        return { ok: true, data: { deleted: 1 } };
+      }
+      return { ok: true, data: { deleted: ['a.md'], count: 1 } };
+    });
+    const backend = await startBackendServer({
+      kbDaemonSupervisor: createMockKbDaemonSupervisor({ readKb, mutateKb }),
+    });
 
     const listResponse = await fetch(`${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}`, {
       headers: {
@@ -1422,9 +2096,14 @@ describe('execution backend server', () => {
     const listBody = (await listResponse.json()) as Record<string, unknown>;
     expect(listBody).toEqual({
       memos: [
-        { filename: 'b.md', summary: 'Bravo summary', createdAt: expect.any(String) },
-        { filename: 'a.md', summary: 'Alpha summary', createdAt: expect.any(String) },
+        { filename: 'b.md', summary: 'Bravo summary', createdAt: '2026-03-25T00:00:00.000Z' },
+        { filename: 'a.md', summary: 'Alpha summary', createdAt: '2026-03-24T00:00:00.000Z' },
       ],
+    });
+    expect(readKb).toHaveBeenCalledWith({
+      method: 'listMemos',
+      args: {},
+      ctx: expectedDaemonProjectContext(projectRoot),
     });
 
     const deleteResponse = await fetch(
@@ -1443,6 +2122,11 @@ describe('execution backend server', () => {
       deleted: ['a.md'],
       count: 1,
     });
+    expect(mutateKb).toHaveBeenCalledWith({
+      method: 'deleteMemos',
+      args: { pattern: 'a*' },
+      ctx: expectedDaemonProjectContext(projectRoot),
+    });
 
     const purgeResponse = await fetch(
       `${backend.baseUrl}/kb/memos?projectRoot=${encodeURIComponent(projectRoot)}&all=true`,
@@ -1457,6 +2141,11 @@ describe('execution backend server', () => {
     expect(purgeResponse.status).toBe(200);
     const purgeBody = (await purgeResponse.json()) as Record<string, unknown>;
     expect(purgeBody).toEqual({ deleted: 1 });
+    expect(mutateKb).toHaveBeenLastCalledWith({
+      method: 'deleteMemos',
+      args: { all: true },
+      ctx: expectedDaemonProjectContext(projectRoot),
+    });
   });
 
   describe('resource-oriented HTTP routes', () => {
@@ -1469,9 +2158,82 @@ describe('execution backend server', () => {
       );
     }
 
+    function createKbInitializingPort(): KbRequestPort {
+      const unavailable = () => domainError('kb_initializing', 'Knowledge base is starting up');
+      return {
+        readSearch: async () => unavailable(),
+        diagnose: unavailable,
+        readNote: unavailable,
+        readSource: unavailable,
+        readCommunity: unavailable,
+        listStaleCommunities: unavailable,
+        readCommunitySummaryInput: unavailable,
+        setCommunitySummary: async () => unavailable(),
+        readWiki: unavailable,
+        readMemo: unavailable,
+        readPrinciple: unavailable,
+        listSources: async () => unavailable(),
+        listWikis: async () => unavailable(),
+        listMemos: unavailable,
+        listPrinciples: async () => unavailable(),
+        createNote: async () => unavailable(),
+        updateNote: async () => unavailable(),
+        deleteNote: async () => unavailable(),
+        createWiki: async () => unavailable(),
+        rewriteWiki: async () => unavailable(),
+        linkWiki: async () => unavailable(),
+        unlinkWiki: async () => unavailable(),
+        citeWiki: async () => unavailable(),
+        adoptWiki: async () => unavailable(),
+        deleteWiki: async () => unavailable(),
+        wakeUp: async () => unavailable(),
+        createSource: async () => unavailable(),
+        deleteSource: async () => unavailable(),
+        createMemo: unavailable,
+        deleteMemos: unavailable,
+        reindex: async () => unavailable(),
+      };
+    }
+
+    function createDefaultKbPort(): KbRequestPort {
+      return {
+        readSearch: async (args) => domainSuccess({ route: 'kb:search', args }),
+        diagnose: () => domainSuccess({ route: 'kb:diagnose', args: {} }),
+        readNote: (slug) => domainSuccess({ route: 'kb:note-read', slug }),
+        readSource: (slug) => domainSuccess({ route: 'kb:source-read', slug }),
+        readCommunity: (slug) => domainSuccess({ route: 'kb:community-read', slug }),
+        listStaleCommunities: () => domainSuccess({ route: 'kb:community-list-stale' }),
+        readCommunitySummaryInput: (slug) => domainSuccess({ route: 'kb:community-summary-input', slug }),
+        setCommunitySummary: async (args) => domainSuccess({ route: 'kb:community-set-summary', args }),
+        readWiki: (slug) => domainSuccess({ route: 'kb:wiki-read', slug }),
+        readMemo: (slug) => domainSuccess({ route: 'kb:memo-read', slug }),
+        readPrinciple: (slug) => domainSuccess({ route: 'kb:principle-read', slug }),
+        listSources: async () => domainSuccess({ route: 'kb:source-list', args: {} }),
+        listWikis: async () => domainSuccess({ route: 'kb:wiki-list' }),
+        listMemos: (args) => domainSuccess({ route: 'kb:memo-list', args }),
+        listPrinciples: async (args) => domainSuccess({ route: 'kb:principles', args }),
+        createNote: async (args) => domainSuccess({ route: 'kb:promote', args }),
+        updateNote: async (args) => domainSuccess({ route: 'kb:update', args }),
+        deleteNote: async (slug) => domainSuccess({ route: 'kb:delete', args: { note: slug } }),
+        createWiki: async (args) => domainSuccess({ route: 'kb:wiki-create', args }),
+        rewriteWiki: async (args) => domainSuccess({ route: 'kb:wiki-rewrite', args }),
+        linkWiki: async (args) => domainSuccess({ route: 'kb:wiki-link', args }),
+        unlinkWiki: async (args) => domainSuccess({ route: 'kb:wiki-unlink', args }),
+        citeWiki: async (args) => domainSuccess({ route: 'kb:wiki-cite', args }),
+        adoptWiki: async (args) => domainSuccess({ route: 'kb:wiki-adopt', args }),
+        deleteWiki: async (slug) => domainSuccess({ route: 'kb:wiki-delete', args: { slug } }),
+        wakeUp: async (args) => domainSuccess({ route: 'kb:wake-up', args }),
+        createSource: async (args) => domainSuccess({ status: 'running', route: 'kb:source-import', args }),
+        deleteSource: async (slug) => domainSuccess({ route: 'kb:source-delete', args: { slug } }),
+        createMemo: (args) => domainSuccess({ route: 'kb:memo', args }),
+        deleteMemos: (args) => domainSuccess({ route: 'kb:memo-delete', args }),
+        reindex: async (args) => domainSuccess({ route: 'kb:reindex', args }),
+      };
+    }
+
     function createHttpHandlerDeps(
       options: {
-        kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
+        kbRuntime?: unknown | null;
         launchFenceActive?: boolean;
         executionService?: FakeExecutionService;
         abortJobs?: any['abortJobs'];
@@ -1479,9 +2241,10 @@ describe('execution backend server', () => {
         listDiscussSessions?: any['listDiscussSessions'];
         loadDiscussDetail?: any['loadDiscussDetail'];
         workflowExecute?: any['workflowExecute'];
+        remoteAccess?: any['remoteAccess'];
       } = {},
     ) {
-      const { runtimeState, setKbSubsystem } = createRuntimeStateMock();
+      const { runtimeState, setKbOnline } = createRuntimeStateMock();
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register(
         toProviderSpec({
@@ -1504,19 +2267,8 @@ describe('execution backend server', () => {
 
       runtimeState.setLifecycle('running');
       runtimeState.setLaunchFenceActive(options.launchFenceActive ?? false);
-      const kbForOptions = options.kbSubsystem === undefined ? createMockKbSubsystem() : options.kbSubsystem;
-      setKbSubsystem(kbForOptions === null ? null : (kbForOptions as never));
-
-      const readOnlyInvocationContext = {
-        projectRoot: '',
-        pluginRoot: '/tmp/plugin',
-        coralEnv: coralEnvSnapshot,
-        authority: 'admin' as const,
-      };
-      const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
-        runtimeState.subsystems.run<KnowledgeBaseRuntime, T>('kb' as never, run);
-      const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
-        runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>('kb' as never, run);
+      const kbAvailable = options.kbRuntime !== null;
+      setKbOnline(kbAvailable);
       const service = executionService as any;
 
       const deps: any = {
@@ -1528,10 +2280,13 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
+          shutdownToken: 'test-shutdown-token',
           now: () => Date.now(),
           log: () => {},
         },
         coralEnvSnapshot,
+        remoteAccess: options.remoteAccess,
         runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
         idleTimer: idleTimer as never,
@@ -1566,7 +2321,7 @@ describe('execution backend server', () => {
         },
         health: {
           read: () => {
-            const kb = runtimeState.subsystems.status('kb' as never);
+            const kb = runtimeState.components.status('kb' as never);
             return {
               status: 'ok' as const,
               kernel: { phase: 'running' as const, readyAt: 0 },
@@ -1583,7 +2338,7 @@ describe('execution backend server', () => {
               queueDepth: 0,
               inflightRequests: idleTimer.inflightRequests,
               env: coralEnvSnapshot,
-              subsystems: kb === null ? [] : [{ ...kb, id: kb.id as string }],
+              components: kb === null ? [] : [{ ...kb, id: kb.id as string }],
             };
           },
         },
@@ -1641,41 +2396,7 @@ describe('execution backend server', () => {
               }
             }),
         },
-        kb: {
-          readSearch: (args: Record<string, unknown>) =>
-            withKbAsync((kbSubsystem) => handleKbSearch(args, kbSubsystem)),
-          diagnose: () => withKb((kbSubsystem) => handleKbDiagnose({}, kbSubsystem)),
-          readNote: (slug: string) =>
-            withKb((kbSubsystem) => handleKbNoteRead(slug, readOnlyInvocationContext, deps.runtime, kbSubsystem)),
-          readSource: (slug: string) => withKb((kbSubsystem) => handleKbSourceRead(slug, kbSubsystem, deps.runtime)),
-          readCommunity: (slug: string) =>
-            withKb((kbSubsystem) => handleKbCommunityRead(slug, kbSubsystem, deps.runtime)),
-          readMemo: (slug: string, ctx: unknown) => withKb(() => handleKbMemoRead(slug, ctx as never, deps.runtime)),
-          readPrinciple: (slug: string) =>
-            withKb((kbSubsystem) => handleKbPrincipleRead(slug, kbSubsystem, deps.runtime)),
-          listSources: () => withKbAsync((kbSubsystem) => handleKbSourceList({}, kbSubsystem)),
-          listMemos: (args: Record<string, unknown>, ctx: unknown) =>
-            withKb(() => handleKbMemoList(args, ctx as never, deps.runtime)),
-          listPrinciples: (args: Record<string, unknown>) =>
-            withKbAsync((kbSubsystem) => handleKbPrinciples(args, kbSubsystem)),
-          createNote: (args: Record<string, unknown>, ctx: unknown) =>
-            withKbAsync((kbSubsystem) => handleKbPromote(args, kbSubsystem, ctx as never, deps.runtime)),
-          updateNote: (args: Record<string, unknown>) =>
-            withKbAsync((kbSubsystem) => handleKbUpdate(args, kbSubsystem)),
-          deleteNote: (slug: string) => withKbAsync((kbSubsystem) => handleKbDelete({ note: slug }, kbSubsystem)),
-          createSource: async () =>
-            domainError(
-              'source_import_requires_coordinator_service',
-              'KB source import must run through the coordinator source-import job service.',
-            ),
-          deleteSource: (slug: string) => withKbAsync((kbSubsystem) => handleKbSourceDelete({ slug }, kbSubsystem)),
-          createMemo: (args: Record<string, unknown>, ctx: unknown) =>
-            withKb(() => handleKbMemo(args, ctx as never, deps.runtime)),
-          deleteMemos: (args: Record<string, unknown>, ctx: unknown) =>
-            withKb(() => handleKbMemoDeleteConsolidated(args, ctx as never, deps.runtime)),
-          reindex: async () =>
-            domainError('reindex_requires_coordinator_service', 'KB reindex must run through the coordinator service.'),
-        },
+        kb: kbAvailable ? createDefaultKbPort() : createKbInitializingPort(),
         discuss: {
           seed: handleDiscussSeed,
           start: (args: Record<string, unknown>, ctx: unknown) =>
@@ -1697,11 +2418,21 @@ describe('execution backend server', () => {
       return { deps, runtimeState, executionService };
     }
 
-    async function startHttpHandlerServer(deps: any, createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler) {
+    async function startHttpHandlerServer(
+      deps: any,
+      createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler,
+      options: { remoteAddress?: string | null } = {},
+    ) {
       const importedHandlerModule = await import('#src/transport/http/handler.js');
       const importedCreateHttpHandler = createHttpHandlerFn ?? importedHandlerModule.createHttpHandler;
       const handler = importedCreateHttpHandler(deps);
       const server = createServer((req, res) => {
+        if (Object.prototype.hasOwnProperty.call(options, 'remoteAddress')) {
+          Object.defineProperty(req.socket, 'remoteAddress', {
+            configurable: true,
+            value: options.remoteAddress ?? undefined,
+          });
+        }
         void handler(req, res).catch(() => {
           if (!res.headersSent) {
             importedHandlerModule.sendJson(res, 500, {
@@ -1728,7 +2459,7 @@ describe('execution backend server', () => {
 
     async function startMockedRouteServer(
       options: {
-        kbSubsystem?: ReturnType<typeof createMockKbSubsystem> | null;
+        kbRuntime?: unknown | null;
         launchFenceActive?: boolean;
         executionService?: FakeExecutionService;
         abortJobs?: any['abortJobs'];
@@ -1758,6 +2489,23 @@ describe('execution backend server', () => {
         handleKbCommunityRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:community-read', slug })),
         handleKbMemoRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:memo-read', slug })),
         handleKbPrincipleRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:principle-read', slug })),
+        handleKbCommunityListStale: vi.fn(() => domainSuccess({ route: 'kb:community-list-stale' })),
+        handleKbCommunitySummaryInput: vi.fn((slug: unknown) =>
+          domainSuccess({ route: 'kb:community-summary-input', slug }),
+        ),
+        handleKbCommunitySetSummary: vi.fn(async (args: unknown) =>
+          domainSuccess({ route: 'kb:community-set-summary', args }),
+        ),
+        handleKbWikiRead: vi.fn((slug: unknown) => domainSuccess({ route: 'kb:wiki-read', slug })),
+        handleKbWikiList: vi.fn(async () => domainSuccess({ route: 'kb:wiki-list' })),
+        handleKbWikiCreate: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-create', args })),
+        handleKbWikiRewrite: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-rewrite', args })),
+        handleKbWikiLink: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-link', args })),
+        handleKbWikiUnlink: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-unlink', args })),
+        handleKbWikiCite: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-cite', args })),
+        handleKbWikiAdopt: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-adopt', args })),
+        handleKbWikiDelete: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wiki-delete', args })),
+        handleKbWakeUp: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:wake-up', args })),
         handleKbPromote: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:promote', args })),
         handleKbUpdate: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:update', args })),
         handleKbDelete: vi.fn(async (args: unknown) => domainSuccess({ route: 'kb:delete', args })),
@@ -1778,16 +2526,6 @@ describe('execution backend server', () => {
 
       const { createHttpHandler } = await import('#src/transport/http/handler.js');
       const created = createHttpHandlerDeps(options);
-      const readOnlyInvocationContext = {
-        projectRoot: '',
-        pluginRoot: '/tmp/plugin',
-        coralEnv: created.deps.coralEnvSnapshot,
-        authority: 'admin' as const,
-      };
-      const withKb = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => T) =>
-        created.runtimeState.subsystems.run<KnowledgeBaseRuntime, T>('kb' as never, run);
-      const withKbAsync = <T>(run: (kbSubsystem: KnowledgeBaseRuntime) => Promise<T>) =>
-        created.runtimeState.subsystems.runAsync<KnowledgeBaseRuntime, T>('kb' as never, run);
       created.deps.discuss = {
         seed: (args: unknown) => mockDiscussTools.handleDiscussSeed(args),
         start: (args: Record<string, unknown>, ctx: unknown) =>
@@ -1805,41 +2543,39 @@ describe('execution backend server', () => {
           mockDiscussTools.handleDiscussAbort(args, ctx, { getDiscussContext: created.deps.getDiscussContext }),
       };
       created.deps.kb = {
-        readSearch: (args: Record<string, unknown>) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbSearch(args, kbSubsystem)),
-        diagnose: () => withKb((kbSubsystem) => mockKbTools.handleKbDiagnose({}, kbSubsystem)),
-        readNote: (slug: string) =>
-          withKb((kbSubsystem) =>
-            mockKbTools.handleKbNoteRead(slug, readOnlyInvocationContext, created.deps.runtime, kbSubsystem),
-          ),
-        readSource: (slug: string) =>
-          withKb((kbSubsystem) => mockKbTools.handleKbSourceRead(slug, kbSubsystem, created.deps.runtime)),
-        readCommunity: (slug: string) =>
-          withKb((kbSubsystem) => mockKbTools.handleKbCommunityRead(slug, kbSubsystem, created.deps.runtime)),
-        readMemo: (slug: string, ctx: unknown) =>
-          withKb(() => mockKbTools.handleKbMemoRead(slug, ctx, created.deps.runtime)),
-        readPrinciple: (slug: string) =>
-          withKb((kbSubsystem) => mockKbTools.handleKbPrincipleRead(slug, kbSubsystem, created.deps.runtime)),
-        listSources: () => withKbAsync((kbSubsystem) => mockKbTools.handleKbSourceList({}, kbSubsystem)),
-        listMemos: (args: Record<string, unknown>, ctx: unknown) =>
-          withKb(() => mockKbTools.handleKbMemoList(args, ctx)),
-        listPrinciples: (args: Record<string, unknown>) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbPrinciples(args, kbSubsystem)),
-        createNote: (args: Record<string, unknown>, ctx: unknown) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbPromote(args, kbSubsystem, ctx)),
-        updateNote: (args: Record<string, unknown>) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbUpdate(args, kbSubsystem)),
-        deleteNote: (slug: string) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbDelete({ note: slug }, kbSubsystem)),
-        createSource: (args: Record<string, unknown>) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbSourceImport(args, kbSubsystem)),
-        deleteSource: (slug: string) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbSourceDelete({ slug }, kbSubsystem)),
-        createMemo: (args: Record<string, unknown>, ctx: unknown) => withKb(() => mockKbTools.handleKbMemo(args, ctx)),
+        readSearch: (args: Record<string, unknown>) => mockKbTools.handleKbSearch(args),
+        diagnose: () => mockKbTools.handleKbDiagnose({}),
+        readNote: (slug: string) => mockKbTools.handleKbNoteRead(slug),
+        readSource: (slug: string) => mockKbTools.handleKbSourceRead(slug),
+        readCommunity: (slug: string) => mockKbTools.handleKbCommunityRead(slug),
+        listStaleCommunities: () => mockKbTools.handleKbCommunityListStale(),
+        readCommunitySummaryInput: (slug: string) => mockKbTools.handleKbCommunitySummaryInput(slug),
+        setCommunitySummary: (args: Record<string, unknown>, ctx: unknown) =>
+          mockKbTools.handleKbCommunitySetSummary(args, ctx),
+        readWiki: (slug: string) => mockKbTools.handleKbWikiRead(slug),
+        readMemo: (slug: string, ctx: unknown) => mockKbTools.handleKbMemoRead(slug, ctx),
+        readPrinciple: (slug: string) => mockKbTools.handleKbPrincipleRead(slug),
+        listSources: () => mockKbTools.handleKbSourceList({}),
+        listWikis: () => mockKbTools.handleKbWikiList(),
+        listMemos: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbMemoList(args, ctx),
+        listPrinciples: (args: Record<string, unknown>) => mockKbTools.handleKbPrinciples(args),
+        createNote: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbPromote(args, ctx),
+        updateNote: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbUpdate(args, ctx),
+        deleteNote: (slug: string, ctx: unknown) => mockKbTools.handleKbDelete({ note: slug }, ctx),
+        createWiki: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbWikiCreate(args, ctx),
+        rewriteWiki: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbWikiRewrite(args, ctx),
+        linkWiki: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbWikiLink(args, ctx),
+        unlinkWiki: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbWikiUnlink(args, ctx),
+        citeWiki: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbWikiCite(args, ctx),
+        adoptWiki: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbWikiAdopt(args, ctx),
+        deleteWiki: (slug: string, ctx: unknown) => mockKbTools.handleKbWikiDelete({ slug }, ctx),
+        wakeUp: (args: Record<string, unknown>) => mockKbTools.handleKbWakeUp(args),
+        createSource: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbSourceImport(args, ctx),
+        deleteSource: (slug: string, ctx: unknown) => mockKbTools.handleKbSourceDelete({ slug }, ctx),
+        createMemo: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbMemo(args, ctx),
         deleteMemos: (args: Record<string, unknown>, ctx: unknown) =>
-          withKb(() => mockKbTools.handleKbMemoDeleteConsolidated(args, ctx)),
-        reindex: (args: Record<string, unknown>) =>
-          withKbAsync((kbSubsystem) => mockKbTools.handleKbReindex(args, kbSubsystem)),
+          mockKbTools.handleKbMemoDeleteConsolidated(args, ctx),
+        reindex: (args: Record<string, unknown>, ctx: unknown) => mockKbTools.handleKbReindex(args, ctx),
       };
       const started = await startHttpHandlerServer(created.deps, createHttpHandler);
       return {
@@ -1865,6 +2601,72 @@ describe('execution backend server', () => {
     }
 
     afterEach(() => {});
+
+    it('cleans up passive SSE subscriptions when an event write hits backpressure', async () => {
+      type TestServerResponseWrite = (this: ServerResponse, ...args: unknown[]) => boolean;
+      const originalWrite = ServerResponse.prototype.write as TestServerResponseWrite;
+      const writeSpy = vi.spyOn(ServerResponse.prototype, 'write').mockImplementation(function (
+        this: ServerResponse,
+        ...args: unknown[]
+      ) {
+        const chunk = args[0];
+        const text = Buffer.isBuffer(chunk) ? chunk.toString('utf-8') : String(chunk);
+        if (text.startsWith('event: job:progress')) {
+          return false;
+        }
+        return originalWrite.call(this, ...args);
+      } as TestServerResponseWrite);
+      const started = await startMockedRouteServer();
+      let stream: Awaited<ReturnType<typeof openHttpStream>> | null = null;
+
+      try {
+        stream = await openHttpStream(
+          `${started.baseUrl}/events/stream?projectRoot=${encodeURIComponent('/tmp/project')}`,
+          {
+            'X-Coral-Backend-Token': 'test-token',
+          },
+        );
+
+        await stream.waitForText((text) => text.includes('event: ready'));
+        expect(started.deps.streamResponses.size).toBe(1);
+
+        expect(
+          started.deps.events.bus.emit('job:progress', {
+            jobId: 'job-backpressure',
+            seq: 1,
+            message: 'slow client',
+          }),
+        ).toBe(true);
+
+        await new Promise<void>((resolve, reject) => {
+          const deadline = Date.now() + 1_000;
+          const poll = () => {
+            if (started.deps.streamResponses.size === 0) {
+              resolve();
+              return;
+            }
+            if (Date.now() > deadline) {
+              reject(new Error('Timed out waiting for SSE cleanup after backpressure'));
+              return;
+            }
+            setTimeout(poll, 5);
+          };
+          poll();
+        });
+        expect(
+          started.deps.events.bus.emit('job:progress', {
+            jobId: 'job-backpressure',
+            seq: 2,
+            message: 'should be unsubscribed',
+          }),
+        ).toBe(false);
+        expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('event: job:progress'));
+      } finally {
+        stream?.close();
+        await _closeHttpServer(started.server);
+        writeSpy.mockRestore();
+      }
+    });
 
     it('routes POST /discuss/persona-sets without requiring project context', async () => {
       const started = await startMockedRouteServer();
@@ -2119,7 +2921,6 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/entries with typed query coercion', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&scope=notes&top_k=5`, {
@@ -2132,10 +2933,11 @@ describe('execution backend server', () => {
           args: { query: 'contracts', scope: 'notes', top_k: 5 },
         });
         expect(started.kbTools.handleKbSearch).toHaveBeenCalledTimes(1);
-        expect(started.kbTools.handleKbSearch).toHaveBeenCalledWith(
-          { query: 'contracts', scope: 'notes', top_k: 5 },
-          kbSubsystem,
-        );
+        expect(started.kbTools.handleKbSearch).toHaveBeenCalledWith({
+          query: 'contracts',
+          scope: 'notes',
+          top_k: 5,
+        });
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2152,7 +2954,6 @@ describe('execution backend server', () => {
           ),
         },
       });
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/entries?q=contracts&mode=vector`, {
@@ -2165,10 +2966,7 @@ describe('execution backend server', () => {
           mode: 'vector',
         });
         expect(started.kbTools.handleKbSearch).toHaveBeenCalledTimes(1);
-        expect(started.kbTools.handleKbSearch).toHaveBeenCalledWith(
-          { query: 'contracts', mode: 'vector' },
-          kbSubsystem,
-        );
+        expect(started.kbTools.handleKbSearch).toHaveBeenCalledWith({ query: 'contracts', mode: 'vector' });
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2176,7 +2974,6 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/diagnose through KB diagnose reads', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/diagnose`, {
@@ -2189,7 +2986,7 @@ describe('execution backend server', () => {
           args: {},
         });
         expect(started.kbTools.handleKbDiagnose).toHaveBeenCalledTimes(1);
-        expect(started.kbTools.handleKbDiagnose).toHaveBeenCalledWith({}, kbSubsystem);
+        expect(started.kbTools.handleKbDiagnose).toHaveBeenCalledWith({});
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2210,18 +3007,7 @@ describe('execution backend server', () => {
             slug: 'contracts/overview',
           });
           expect(started.kbTools.handleKbNoteRead).toHaveBeenCalledTimes(1);
-          expect(started.kbTools.handleKbNoteRead).toHaveBeenCalledWith(
-            'contracts/overview',
-            expect.objectContaining({
-              projectRoot: '',
-              pluginRoot: '/tmp/plugin',
-              coralEnv: expect.objectContaining({
-                CORAL_TEST_HTTP_BASE: 'daemon-base',
-              }),
-            }),
-            started.deps.runtime,
-            readKbSubsystem(started.deps.runtimeState),
-          );
+          expect(started.kbTools.handleKbNoteRead).toHaveBeenCalledWith('contracts/overview');
         } finally {
           await _closeHttpServer(started.server);
         }
@@ -2246,7 +3032,6 @@ describe('execution backend server', () => {
       },
     ])('routes GET $path through per-kind KB readers', async ({ path, expectedBody, handlerName }) => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
@@ -2257,7 +3042,7 @@ describe('execution backend server', () => {
         expect(await response.json()).toEqual(expectedBody);
         const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
         expect(handler).toHaveBeenCalledTimes(1);
-        expect(handler).toHaveBeenCalledWith(expectedBody.slug, kbSubsystem, started.deps.runtime);
+        expect(handler).toHaveBeenCalledWith(expectedBody.slug);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2290,7 +3075,6 @@ describe('execution backend server', () => {
                 CORAL_TEST_HTTP_BASE: 'daemon-base',
               }),
             }),
-            started.deps.runtime,
           );
         } finally {
           await _closeHttpServer(started.server);
@@ -2328,7 +3112,6 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/sources through source list', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/sources`, {
@@ -2341,7 +3124,7 @@ describe('execution backend server', () => {
           args: {},
         });
         expect(started.kbTools.handleKbSourceList).toHaveBeenCalledTimes(1);
-        expect(started.kbTools.handleKbSourceList).toHaveBeenCalledWith({}, kbSubsystem);
+        expect(started.kbTools.handleKbSourceList).toHaveBeenCalledWith({});
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2349,7 +3132,6 @@ describe('execution backend server', () => {
 
     it('routes GET /kb/principles with typed query coercion', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/principles?q=contract&top_k=5&verbose=true`, {
@@ -2362,10 +3144,11 @@ describe('execution backend server', () => {
           args: { query: 'contract', top_k: 5, verbose: true },
         });
         expect(started.kbTools.handleKbPrinciples).toHaveBeenCalledTimes(1);
-        expect(started.kbTools.handleKbPrinciples).toHaveBeenCalledWith(
-          { query: 'contract', top_k: 5, verbose: true },
-          kbSubsystem,
-        );
+        expect(started.kbTools.handleKbPrinciples).toHaveBeenCalledWith({
+          query: 'contract',
+          top_k: 5,
+          verbose: true,
+        });
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2416,7 +3199,6 @@ describe('execution backend server', () => {
           args: { memo: 'memo-1', title: 'Title', content: 'Body', domain: 'eng', topic: 'routing' },
         },
         handlerName: 'handleKbPromote',
-        callShape: 'args-kb-context',
       },
       {
         name: 'source create',
@@ -2438,7 +3220,6 @@ describe('execution backend server', () => {
           },
         },
         handlerName: 'handleKbSourceImport',
-        callShape: 'args-kb',
       },
       {
         name: 'reindex',
@@ -2450,59 +3231,49 @@ describe('execution backend server', () => {
           args: { async: true },
         },
         handlerName: 'handleKbReindex',
-        callShape: 'args-kb',
       },
-    ])(
-      'routes KB write routes for $name',
-      async ({ path, args, expectedStatus, expectedBody, handlerName, callShape }) => {
-        await withBaseCoralEnv(async () => {
-          const started = await startMockedRouteServer();
-          const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
+    ])('routes KB write routes for $name', async ({ path, args, expectedStatus, expectedBody, handlerName }) => {
+      await withBaseCoralEnv(async () => {
+        const started = await startMockedRouteServer();
 
-          try {
-            const response = await fetch(`${started.baseUrl}${path}`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Coral-Backend-Token': 'test-token',
-              },
-              body: JSON.stringify({
-                ...args,
-                projectRoot: '/tmp/project',
-                owner: 'team-a',
-                effort: 'high',
-                claudeModelCap: 'sonnet',
-              }),
-            });
-
-            expect(response.status).toBe(expectedStatus);
-            expect(await response.json()).toEqual(expectedBody);
-
-            const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
-            const call = handler.mock.calls[0] as unknown[] | undefined;
-            expect(handler).toHaveBeenCalledTimes(1);
-            expect(call?.[0]).toEqual(expectedBody.args);
-            if (callShape === 'args-kb') {
-              expect(call?.[1]).toBe(kbSubsystem);
-              return;
-            }
-            expect(call?.[1]).toBe(kbSubsystem);
-            expect(call?.[2]).toMatchObject({
+        try {
+          const response = await fetch(`${started.baseUrl}${path}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              ...args,
               projectRoot: '/tmp/project',
-              pluginRoot: '/tmp/plugin',
-              coralEnv: expect.objectContaining({
-                CORAL_TEST_HTTP_BASE: 'daemon-base',
-                CORAL_OWNER: 'team-a',
-                CORAL_EFFORT: 'high',
-                CORAL_CLAUDE_MODEL_CAP: 'sonnet',
-              }),
-            });
-          } finally {
-            await _closeHttpServer(started.server);
-          }
-        });
-      },
-    );
+              owner: 'team-a',
+              effort: 'high',
+              claudeModelCap: 'sonnet',
+            }),
+          });
+
+          expect(response.status).toBe(expectedStatus);
+          expect(await response.json()).toEqual(expectedBody);
+
+          const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
+          const call = handler.mock.calls[0] as unknown[] | undefined;
+          expect(handler).toHaveBeenCalledTimes(1);
+          expect(call?.[0]).toEqual(expectedBody.args);
+          expect(call?.[1]).toMatchObject({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+            coralEnv: expect.objectContaining({
+              CORAL_TEST_HTTP_BASE: 'daemon-base',
+              CORAL_OWNER: 'team-a',
+              CORAL_EFFORT: 'high',
+              CORAL_CLAUDE_MODEL_CAP: 'sonnet',
+            }),
+          });
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
 
     it('routes POST /kb/memos with owner preserved for the memo handler', async () => {
       await withBaseCoralEnv(async () => {
@@ -2552,7 +3323,6 @@ describe('execution backend server', () => {
 
     it('routes PUT /kb/notes/:slug with the slug from the URL', async () => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}/kb/notes/contracts%2Foverview`, {
@@ -2575,7 +3345,10 @@ describe('execution backend server', () => {
         expect(started.kbTools.handleKbUpdate).toHaveBeenCalledTimes(1);
         expect(started.kbTools.handleKbUpdate).toHaveBeenCalledWith(
           { note: 'contracts/overview', title: 'Updated' },
-          kbSubsystem,
+          expect.objectContaining({
+            projectRoot: '/tmp/project',
+            pluginRoot: '/tmp/plugin',
+          }),
         );
       } finally {
         await _closeHttpServer(started.server);
@@ -2595,7 +3368,6 @@ describe('execution backend server', () => {
       },
     ])('routes DELETE $path through the matching KB delete handler', async ({ path, expectedBody, handlerName }) => {
       const started = await startMockedRouteServer();
-      const kbSubsystem = readKbSubsystem(started.deps.runtimeState);
 
       try {
         const response = await fetch(`${started.baseUrl}${path}`, {
@@ -2607,7 +3379,7 @@ describe('execution backend server', () => {
         expect(await response.json()).toEqual(expectedBody);
         const handler = started.kbTools[handlerName as keyof typeof started.kbTools];
         expect(handler).toHaveBeenCalledTimes(1);
-        expect(handler).toHaveBeenCalledWith(expectedBody.args, kbSubsystem);
+        expect(handler).toHaveBeenCalledWith(expectedBody.args, undefined);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2682,6 +3454,31 @@ describe('execution backend server', () => {
         } else {
           expect(started.kbTools[handlerName as keyof typeof started.kbTools]).not.toHaveBeenCalled();
         }
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('returns a typed 413 response for oversized request bodies before closing the connection', async () => {
+      const started = await startMockedRouteServer();
+
+      try {
+        const response = await fetch(`${started.baseUrl}/discuss/persona-sets`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: 'x'.repeat(10 * 1024 * 1024 + 1),
+        });
+
+        expect(response.status).toBe(413);
+        expect(response.headers.get('connection')).toBe('close');
+        expect(await response.json()).toEqual({
+          code: 'request_body_too_large',
+          message: 'Request body too large',
+        });
+        expect(started.discussTools.handleDiscussSeed).not.toHaveBeenCalled();
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -2791,8 +3588,8 @@ describe('execution backend server', () => {
       }
     });
 
-    it('returns kb_initializing when the KB subsystem is not initialized', async () => {
-      const { deps } = createHttpHandlerDeps({ kbSubsystem: null });
+    it('returns kb_initializing when the KB daemon runtime is not initialized', async () => {
+      const { deps } = createHttpHandlerDeps({ kbRuntime: null });
       const started = await startHttpHandlerServer(deps);
 
       try {
@@ -2803,10 +3600,8 @@ describe('execution backend server', () => {
         });
 
         expect(response.status).toBe(503);
-        // The KB subsystem registry returns `kb_initializing` while the
-        // subsystem hasn't yet transitioned to `online`. AC10a will rewrite
-        // the registry-side stub to differentiate `kb_initializing` from
-        // `kb_offline` based on retry exhaustion.
+        // The KB request port returns a startup/offline code while the daemon
+        // runtime has not reached a serving state.
         expect(await response.json()).toMatchObject({
           code: expect.stringMatching(/^kb_(initializing|offline)$/),
         });
@@ -2818,7 +3613,7 @@ describe('execution backend server', () => {
     it('keeps KB IPC ops flowing when curate health is degraded but kbStatus is ok (§16(a))', async () => {
       const started = await startMockedRouteServer();
       // No-op: under the new model, curate degradation is reported through
-      // the subsystem's `degraded` phase. KB tool calls flow when phase is
+      // the component's `degraded` phase. KB tool calls flow when phase is
       // `online | degraded`. The mock registry's online-by-default state
       // is sufficient to verify that flow.
 
@@ -3088,6 +3883,153 @@ describe('execution backend server', () => {
       });
     });
 
+    it('rejects remote POST /sessions requests that bypass provider permissions', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hello',
+              projectRoot: '/tmp/project',
+              bypassPermissions: true,
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`bypassPermissions` is only allowed from loopback HTTP clients',
+            detail: { option: 'bypassPermissions' },
+          });
+          expect(fakeService.start).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects authenticated remote HTTP requests outside the configured address allowlist', async () => {
+      await withBaseCoralEnv(async () => {
+        const { deps } = createHttpHandlerDeps({
+          remoteAccess: { mode: 'address_allowlist', allowedRemoteAddresses: ['198.51.100.8'] },
+        });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/health`, {
+            headers: { 'X-Coral-Backend-Token': 'test-token' },
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_address_forbidden',
+            message: 'Remote address is not allowed',
+            detail: { remoteAddress: '203.0.113.10' },
+          });
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects disallowed remote HTTP preflight requests before granting CORS', async () => {
+      await withBaseCoralEnv(async () => {
+        const { deps } = createHttpHandlerDeps({
+          remoteAccess: { mode: 'address_allowlist', allowedRemoteAddresses: ['198.51.100.8'] },
+        });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/health`, {
+            method: 'OPTIONS',
+            headers: {
+              Origin: 'http://127.0.0.1:8787',
+              'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
+            },
+          });
+
+          expect(response.status).toBe(403);
+          expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+          expect(await response.json()).toEqual({
+            code: 'remote_address_forbidden',
+            message: 'Remote address is not allowed',
+            detail: { remoteAddress: '203.0.113.10' },
+          });
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('accepts authenticated remote HTTP requests from the configured address allowlist', async () => {
+      await withBaseCoralEnv(async () => {
+        const { deps } = createHttpHandlerDeps({
+          remoteAccess: {
+            mode: 'address_allowlist',
+            allowedRemoteAddresses: ['::ffff:203.0.113.10', '2001:0db8:0000:0000:0000:ff00:0042:8329'],
+          },
+        });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/health`, {
+            headers: { 'X-Coral-Backend-Token': 'test-token' },
+          });
+
+          expect(response.status).toBe(200);
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects permission bypass requests when the peer address is unavailable', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: null });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hello',
+              projectRoot: '/tmp/project',
+              bypassPermissions: true,
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`bypassPermissions` is only allowed from loopback HTTP clients',
+            detail: { option: 'bypassPermissions' },
+          });
+          expect(fakeService.start).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
     it('accepts POST /sessions with namespaced coral agents', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
@@ -3259,6 +4201,41 @@ describe('execution backend server', () => {
             }),
             '/tmp/workflow',
           );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects remote POST /workflow requests that forward caller network env', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService();
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/workflow`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              expression: 'architect',
+              startPrompt: 'Begin',
+              provider: 'codex',
+              projectRoot: '/tmp/project',
+              networkEnv: { HTTPS_PROXY: 'http://proxy.example:8443' },
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`networkEnv` forwarding is only allowed from loopback HTTP clients',
+            detail: { option: 'networkEnv' },
+          });
+          expect(fakeService.executeWorkflow).not.toHaveBeenCalled();
         } finally {
           await _closeHttpServer(started.server);
         }
@@ -4422,22 +5399,231 @@ describe('execution backend server', () => {
   it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
     const pluginRoot = createProjectRoot('plugin-root');
     const backend = await startBackendServer({ pluginRoot });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+        method: 'POST',
+        headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+      });
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as Record<string, unknown>;
+      expect(body.status).toBe('draining');
+      expect(typeof body.instanceId).toBe('string');
+
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
+        ),
+      ).toBe(true);
+      expect(messages.some((message) => message.includes('"transport":"http"'))).toBe(true);
+
+      // Backend is idle (no active jobs in test), so drain fires promptly
+      await backend.controller.waitForShutdown();
+
+      expect(backend.controller.getLifecycle()).toBe('stopped');
+      expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects /admin/shutdown when only the general backend token is provided', async () => {
+    const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
       headers: { 'X-Coral-Backend-Token': backend.token },
     });
 
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      code: 'shutdown_unauthorized',
+      message: 'Manual shutdown required: shutdown capability missing or invalid',
+    });
+    expect(backend.controller.getLifecycle()).toBe('running');
+  });
+
+  it('restarts the KB daemon supervisor through the shutdown-token admin route', async () => {
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 2,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      stop: vi.fn(async () => daemonHealth),
+      restart: vi.fn(async () => daemonHealth),
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const response = await fetch(`${backend.baseUrl}/admin/kb/restart`, {
+        method: 'POST',
+        headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        status: 'ok',
+        instanceId: 'execution-backend-instance-1',
+        kbDaemon: daemonHealth,
+      });
+      expect(kbDaemonSupervisor.restart).toHaveBeenCalledWith('http-admin');
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_kb_daemon_restart_requested"'),
+        ),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('tracks active daemon KB jobs before admin restart reconciliation', async () => {
+    const jobId = 'kb-daemon-restart-active-job-1';
+    const projectRoot = '/workspace/project-a';
+    const daemonHealth: KbDaemonHealthSnapshot = {
+      enabled: true,
+      phase: 'online',
+      generation: 2,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const exit = { listener: null as ((snapshot: KbDaemonHealthSnapshot) => void) | null };
+    const listActiveKbJobs = vi.fn(async () => ({ active: [jobId] }));
+    const restart = vi.fn(async () => daemonHealth);
+    const kbDaemonSupervisor: KbDaemonSupervisor = {
+      read: vi.fn(() => daemonHealth),
+      onExit: vi.fn((listener) => {
+        exit.listener = listener;
+        return vi.fn();
+      }),
+      start: vi.fn(async () => daemonHealth),
+      probe: vi.fn(async () => daemonHealth),
+      warmup: vi.fn(async () => daemonHealth),
+      readKb: vi.fn(async () => ({ ok: false as const, code: 'unexpected_read', message: 'unexpected read' })),
+      mutateKb: vi.fn(async () => ({
+        ok: false as const,
+        code: 'unexpected_mutation',
+        message: 'unexpected mutation',
+      })),
+      expansionRpc: createUnexpectedExpansionRpc(),
+      abortKbJobs: vi.fn(async () => ({ aborted: [], notFound: [] })),
+      listActiveKbJobs,
+      stop: vi.fn(async () => daemonHealth),
+      restart,
+      dispose: vi.fn(async () => undefined),
+    };
+    const backend = await startBackendServer({ kbDaemonSupervisor });
+    const progressStore = createProgressStore();
+    createdJobIds.add(jobId);
+    progressStore.appendLaunchRequested(jobId, {
+      jobId,
+      sessionId: null,
+      provider: null,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      bundleHash: 'testhash1234',
+      jobKind: 'kb',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      operation: 'kb.source_import',
+      request: {
+        filePath: '/workspace/project-a/source.md',
+        slug: 'alpha-source',
+        readiness: 'base-search',
+      },
+      createdAt: new Date().toISOString(),
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'internal',
+      operation: 'kb.source_import',
+      startTime: new Date().toISOString(),
+    });
+
+    const response = await fetch(`${backend.baseUrl}/admin/kb/restart`, {
+      method: 'POST',
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
+    });
+
     expect(response.status).toBe(200);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(body.status).toBe('draining');
-    expect(typeof body.instanceId).toBe('string');
+    expect(listActiveKbJobs).toHaveBeenCalledTimes(1);
+    expect(restart).toHaveBeenCalledWith('http-admin');
+    expect(listActiveKbJobs.mock.invocationCallOrder[0]).toBeLessThan(restart.mock.invocationCallOrder[0]);
+    expect(exit.listener).not.toBeNull();
 
-    // Backend is idle (no active jobs in test), so drain fires promptly
-    await backend.controller.waitForShutdown();
+    if (exit.listener === null) {
+      throw new Error('expected KB daemon exit listener');
+    }
+    exit.listener({
+      ...daemonHealth,
+      phase: 'failed',
+      pid: null,
+      readyAt: null,
+      lastExit: { code: null, signal: 'SIGTERM', at: 30, uptimeMs: 20 },
+      lastError: 'restart interrupted active import',
+    });
 
-    expect(backend.controller.getLifecycle()).toBe('stopped');
-    expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+    const detailResponse = await fetch(
+      `${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectRoot)}`,
+      {
+        headers: { 'X-Coral-Backend-Token': backend.token },
+      },
+    );
+    const detailBody = (await detailResponse.json()) as {
+      status: { phase?: string };
+      events: Array<{ type?: string; result?: { outcome?: { kind?: string; fault?: { kind?: string } } } }>;
+    };
+
+    expect(detailResponse.status).toBe(200);
+    expect(detailBody.status.phase).toBe('error');
+    expect(detailBody.events).toContainEqual(
+      expect.objectContaining({
+        type: 'terminal',
+        result: expect.objectContaining({
+          outcome: expect.objectContaining({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'wrapper_crashed' }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('rejects /admin/kb/restart when only the general backend token is provided', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/admin/kb/restart`, {
+      method: 'POST',
+      headers: { 'X-Coral-Backend-Token': backend.token },
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({
+      code: 'shutdown_unauthorized',
+      message: 'Manual KB daemon restart requires shutdown capability',
+    });
+    expect(backend.controller.getLifecycle()).toBe('running');
   });
 
   it('drains shutdown when only foreign namespace live jobs remain', async () => {
@@ -4474,7 +5660,7 @@ describe('execution backend server', () => {
 
     const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
 
     expect(response.status).toBe(200);
@@ -4508,7 +5694,7 @@ describe('execution backend server', () => {
 
     await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
 
     const response = await fetch(`${backend.baseUrl}/health`, {
@@ -4530,14 +5716,14 @@ describe('execution backend server', () => {
 
     const first = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
     expect(first.status).toBe(200);
     expect(((await first.json()) as Record<string, unknown>).status).toBe('draining');
 
     const second = await fetch(`${backend.baseUrl}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': backend.token },
+      headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
     });
     expect(second.status).toBe(200);
     expect(((await second.json()) as Record<string, unknown>).status).toBe('draining');
@@ -4546,33 +5732,45 @@ describe('execution backend server', () => {
     await backend.controller.waitForShutdown();
   });
 
-  it('returns 401 for unauthorized requests', async () => {
+  it('returns unauthenticated liveness from /health', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/health`);
+    const body = (await response.json()) as Record<string, unknown>;
 
-    expect(response.status).toBe(401);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
-    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(body).toMatchObject({
+      status: 'ok',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      flavor: 'prod',
+      instanceId: 'execution-backend-instance-1',
+    });
+    expect(body.components).toBeUndefined();
+    expect(body.kbDaemon).toBeUndefined();
+    expect(body.queueDepth).toBeUndefined();
   });
 
-  it('returns CORS headers for preflight requests without requiring a token', async () => {
+  it('returns CORS headers for loopback preflight requests without requiring a token', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       method: 'OPTIONS',
       headers: {
-        Origin: 'https://example.test',
+        Origin: 'http://127.0.0.1:8787',
         'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
         'Access-Control-Request-Private-Network': 'true',
       },
     });
 
     expect(response.status).toBe(204);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:8787');
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Headers'))).toEqual([
       'content-type',
       'x-coral-backend-token',
+      'x-coral-boot-token',
+      'x-coral-shutdown-token',
     ]);
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Methods'))).toEqual([
       'delete',
@@ -4582,6 +5780,24 @@ describe('execution backend server', () => {
       'put',
     ]);
     expect(response.headers.get('Access-Control-Allow-Private-Network')).toBeNull();
+  });
+
+  it('does not grant CORS to non-loopback preflight origins', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://example.test',
+        'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(response.headers.get('Access-Control-Allow-Headers')).toBeNull();
+    expect(response.headers.get('Access-Control-Allow-Methods')).toBeNull();
+    expect(response.headers.get('Vary')).toBe('Origin');
   });
 
   describe('shutdown policy', () => {
@@ -4650,6 +5866,7 @@ describe('execution backend server', () => {
       });
       runtimeState.setLifecycle('running');
 
+      const kbDaemonSupervisor = createMockKbDaemonSupervisor();
       const controller = lifecycleModule.createLifecycle({
         identity: {
           pluginRoot,
@@ -4659,6 +5876,8 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'handoff-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
+          shutdownToken: 'test-shutdown-token',
           now: () => 1,
           log: () => {},
         },
@@ -4692,9 +5911,9 @@ describe('execution backend server', () => {
         markJobsAsErrorFn: vi.fn(),
         terminateAllFn: vi.fn(),
         providerHostManager: providerHostManager as never,
+        kbDaemonSupervisor,
         handoffQuiescePorts: () => [fakeService as never],
-        createKbSubsystemFn: adaptLegacyKbFactory(async () => createMockKbSubsystem()),
-        createCurateAssistant: () => ({ complete: async () => '' }),
+        createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
         registerBuiltInProvidersFn: () => {},
         recoverPersistedDiscussFn: async () => [],
         runStartupRecoveryFn: async () => [],
@@ -4834,21 +6053,25 @@ describe('execution backend server', () => {
       const startupBlocked = createDeferred();
       const releaseStartup = createDeferred();
       const startupRegistry = createDiscussContextRegistry();
+      const kbDaemonSupervisor = createMockKbDaemonSupervisor({
+        start: vi.fn(async () => {
+          startupBlocked.resolve();
+          await releaseStartup.promise;
+          throw new Error('startup interrupted for shutdown test');
+        }),
+      });
 
       controller = serverModule.createCoordinatorServer({
         bootSnapshot: {
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
           version: '9.9.9',
           bundleHash: 'testhash1234',
           flavor: 'prod',
           log: () => {},
         },
-        createKbSubsystemFn: async () => {
-          startupBlocked.resolve();
-          await releaseStartup.promise;
-          throw new Error('startup interrupted for shutdown test');
-        },
+        kbDaemonSupervisor,
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
       });
@@ -4883,12 +6106,9 @@ describe('execution backend server', () => {
 
       releaseStartup.resolve();
       const startResult = await startPromise;
-      // Under the 3-era boot, KB init runs in Era III (fire-and-forget)
-      // AFTER Era II completes and `setLifecycle('running')` returns. Even
-      // when KB init fails (or is interrupted by shutdown), start() resolves
-      // successfully with a CoordinatorServerInfo. The shutdown's abort
-      // signal propagates to KB init's retry sleep, but does not bubble
-      // back into start()'s return path.
+      // The KB daemon starts after `running` and does not gate start()'s return
+      // path. A daemon start failure during shutdown is contained by the
+      // supervisor path, so the server info still resolves.
       expect(startResult).toMatchObject({ port: expect.any(Number) });
 
       const restartRegistry = createDiscussContextRegistry();
@@ -4933,6 +6153,8 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
+          shutdownToken: 'test-shutdown-token',
           now: () => Date.now(),
           log: () => {},
         },
@@ -4966,7 +6188,7 @@ describe('execution backend server', () => {
             queueDepth: 0,
             inflightRequests: idleTimer.inflightRequests,
             env: coralEnvSnapshot,
-            subsystems: [{ id: 'kb', phase: 'online' as const }],
+            components: [{ id: 'kb', phase: 'online' as const }],
           }),
         },
         events: {

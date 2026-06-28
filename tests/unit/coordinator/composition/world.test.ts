@@ -4,8 +4,11 @@ import { createCoordinatorWorld } from '#src/coordinator/composition/world.js';
 import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
+const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
+const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
 
 function envSnapshot(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
   const snapshot: Record<string, string> = {};
@@ -90,7 +93,7 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
       backendNamespace: 'world-test-namespace',
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       launchCoordinator: {} as never,
       providerHostManager: {
         acquireServer: async () => {
@@ -111,6 +114,7 @@ describe('createCoordinatorWorld bind host guard', () => {
     const world = createWorld({});
 
     expect(world.bindHost).toBe('127.0.0.1');
+    expect(world.remoteAccess).toEqual({ mode: 'loopback' });
   });
 
   it.each(['127.0.0.0', '127.0.0.1', '127.255.255.255', '::1', 'localhost'])(
@@ -119,6 +123,7 @@ describe('createCoordinatorWorld bind host guard', () => {
       const world = createWorld({ CORAL_BACKEND_BIND: bindHost });
 
       expect(world.bindHost).toBe(bindHost);
+      expect(world.remoteAccess).toEqual({ mode: 'loopback' });
     },
   );
 
@@ -140,9 +145,63 @@ describe('createCoordinatorWorld bind host guard', () => {
     expect(setupError.context).toEqual({ bindHost: '0.0.0.0', optInEnv: REMOTE_BIND_OPT_IN_ENV });
   });
 
-  it('allows a non-loopback bind host with explicit remote opt-in', () => {
-    const world = createWorld({ CORAL_BACKEND_BIND: '0.0.0.0', [REMOTE_BIND_OPT_IN_ENV]: '1' });
+  it('refuses a non-loopback bind host with remote opt-in but no access policy', () => {
+    let thrown: unknown;
+
+    try {
+      createWorld({ CORAL_BACKEND_BIND: '0.0.0.0', [REMOTE_BIND_OPT_IN_ENV]: '1' });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CoralSetupError);
+    const setupError = thrown as CoralSetupError;
+    expect(setupError.code).toBe('backend_remote_bind_requires_access_policy');
+    expect(setupError.remediation).toContain(REMOTE_BIND_ADDRESS_ALLOWLIST_ENV);
+    expect(setupError.remediation).toContain(REMOTE_BIND_UNRESTRICTED_ENV);
+  });
+
+  it('allows a non-loopback bind host with explicit remote opt-in and address allowlist', () => {
+    const world = createWorld({
+      CORAL_BACKEND_BIND: '0.0.0.0',
+      [REMOTE_BIND_OPT_IN_ENV]: '1',
+      [REMOTE_BIND_ADDRESS_ALLOWLIST_ENV]:
+        '203.0.113.10, ::ffff:198.51.100.8, 2001:0db8:0000:0000:0000:ff00:0042:8329, 203.0.113.10',
+    });
 
     expect(world.bindHost).toBe('0.0.0.0');
+    expect(world.remoteAccess).toEqual({
+      mode: 'address_allowlist',
+      allowedRemoteAddresses: ['203.0.113.10', '198.51.100.8', '2001:db8::ff00:42:8329'],
+    });
+  });
+
+  it('allows an explicitly unrestricted non-loopback bind host', () => {
+    const world = createWorld({
+      CORAL_BACKEND_BIND: '0.0.0.0',
+      [REMOTE_BIND_OPT_IN_ENV]: '1',
+      [REMOTE_BIND_UNRESTRICTED_ENV]: '1',
+    });
+
+    expect(world.bindHost).toBe('0.0.0.0');
+    expect(world.remoteAccess).toEqual({ mode: 'unrestricted' });
+  });
+
+  it('rejects malformed remote address allowlist entries', () => {
+    let thrown: unknown;
+
+    try {
+      createWorld({
+        CORAL_BACKEND_BIND: '0.0.0.0',
+        [REMOTE_BIND_OPT_IN_ENV]: '1',
+        [REMOTE_BIND_ADDRESS_ALLOWLIST_ENV]: '203.0.113.0/24',
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CoralSetupError);
+    const setupError = thrown as CoralSetupError;
+    expect(setupError.code).toBe('backend_remote_bind_invalid_allowlist');
   });
 });

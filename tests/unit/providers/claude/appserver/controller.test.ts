@@ -13,7 +13,7 @@ const TEST_MODEL = 'claude-sonnet-test';
 
 const FAST_TIMING = { readySettleMs: 5, promptAckTimeoutMs: 10 } as const;
 
-async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate() && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));

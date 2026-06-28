@@ -5,14 +5,19 @@ import {
   discussEventsQuerySchema,
 } from '#src/transport/rpc/discuss.js';
 import {
+  KB_SEARCH_QUERY_MAX_CODE_POINTS,
+  KB_SLUG_MAX_BYTES,
+  KB_TEXT_FILTER_MAX_CODE_POINTS,
   kbMemoDeleteQuerySchema,
   kbMemoListQuerySchema,
+  kbNoteReadRequestSchema,
   kbPrinciplesQuerySchema,
   kbSearchSchema,
   kbSearchQuerySchema,
 } from '#src/kb/tool-contracts.js';
 import { parseBooleanQuery } from '#src/infra/json.js';
 import { buildInvocationContextFromQuery } from '#src/transport/invocation-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 describe('transport HTTP query parsing', () => {
   it('parses boolean query values safely', () => {
@@ -132,6 +137,23 @@ describe('transport HTTP query parsing', () => {
     ).toThrow();
   });
 
+  it('rejects oversized KB search queries and text filters before route handlers run', () => {
+    const oversizedSearchQuery = 'q'.repeat(KB_SEARCH_QUERY_MAX_CODE_POINTS + 1);
+    const oversizedFilter = 'f'.repeat(KB_TEXT_FILTER_MAX_CODE_POINTS + 1);
+    const oversizedSlug = 's'.repeat(KB_SLUG_MAX_BYTES + 1);
+
+    expect(kbSearchSchema.safeParse({ query: oversizedSearchQuery }).success).toBe(false);
+    expect(kbSearchQuerySchema.safeParse({ q: oversizedSearchQuery }).success).toBe(false);
+    expect(kbPrinciplesQuerySchema.safeParse({ q: oversizedSearchQuery }).success).toBe(false);
+    expect(kbMemoListQuerySchema.safeParse({ projectRoot: '/repo/project', owner: oversizedFilter }).success).toBe(
+      false,
+    );
+    expect(kbMemoDeleteQuerySchema.safeParse({ projectRoot: '/repo/project', pattern: oversizedFilter }).success).toBe(
+      false,
+    );
+    expect(kbNoteReadRequestSchema.safeParse({ slug: oversizedSlug }).success).toBe(false);
+  });
+
   it('enforces exactly one memo delete mode in the transport schema', () => {
     expect(
       kbMemoDeleteQuerySchema.parse({
@@ -173,6 +195,7 @@ describe('transport HTTP query parsing', () => {
   });
 
   it('rebuilds InvocationContext from query params using the injected CORAL env snapshot only', () => {
+    const principal = testProjectPrincipal('/repo/project');
     const context = buildInvocationContextFromQuery(
       '/repo/project',
       '/plugin/root',
@@ -180,12 +203,12 @@ describe('transport HTTP query parsing', () => {
         CORAL_OWNER: 'transport-owner',
         CORAL_EFFORT: 'high',
       },
-      'admin',
+      principal,
     );
 
     expect(context.projectRoot).toBe('/repo/project');
     expect(context.pluginRoot).toBe('/plugin/root');
-    expect(context.authority).toBe('admin');
+    expect(context.principal).toBe(principal);
     expect(context.coralEnv).toEqual(
       expect.objectContaining({
         CORAL_OWNER: 'transport-owner',

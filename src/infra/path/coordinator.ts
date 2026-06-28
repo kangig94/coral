@@ -10,6 +10,7 @@ export interface CoordinatorPaths {
   socketPath: string;
   infoFile: string;
   startupErrorFile: string;
+  startupDiagnosticFile: string;
 }
 
 export interface CoordinatorPathOptions {
@@ -46,5 +47,6 @@ export function coordinatorPaths(
     socketPath,
     infoFile: join(runDir, 'coordinator.json'),
     startupErrorFile: join(runDir, 'startup-error.json'),
+    startupDiagnosticFile: join(runDir, 'startup-diagnostic.json'),
   };
 }

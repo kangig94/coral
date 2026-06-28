@@ -22,12 +22,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
-import { adaptLegacyKbFactory } from '#tools/testing/kb-subsystem-adapter.js';
+import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from '#src/coordinator/composition/types.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
 import type { CoordinatorServerInfo } from '#src/coordinator/lifecycle.js';
-import { ExpansionLifecycleService } from '#src/coordinator/expansion/lifecycle.js';
-import type { ExpansionStateRow, ExpansionStateStore } from '#src/coordinator/expansion/state.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -39,7 +37,6 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 
@@ -71,27 +68,7 @@ export interface BootedCore {
   shutdown(reason: string): Promise<void>;
 }
 
-function createMemoryExpansionState(rows: readonly ExpansionStateRow[] = []): ExpansionStateStore {
-  const map = new Map(rows.map((row) => [row.id, row]));
-  return {
-    insert: (row: ExpansionStateRow) => {
-      map.set(row.id, row);
-    },
-    delete: (id: string) => {
-      map.delete(id);
-    },
-    list: () => [...map.values()],
-    get: (id: string) => map.get(id),
-  } as ExpansionStateStore;
-}
-
-function createHarnessStoreServices(
-  runtime: Runtime,
-  db: Database,
-  namespace: string,
-  expansionLifecycleService: ExpansionLifecycleService,
-  expansionStateStore: ExpansionStateStore,
-): CoordinatorStoreServices {
+function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: string): CoordinatorStoreServices {
   return {
     storeDb: db,
     progressStore: new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
@@ -99,12 +76,6 @@ function createHarnessStoreServices(
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
     }),
-    expansionManifestCatalog: createExpansionManifestCatalog({
-      db,
-      now: () => new Date(runtime.time.now()).toISOString(),
-    }),
-    expansionStateStore,
-    expansionLifecycleService,
     consumerDriver: null,
   };
 }
@@ -136,23 +107,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   const liveCores: BootedCore[] = [];
 
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
-    const expansionStateStore = createMemoryExpansionState();
-    const expansionLifecycle = new ExpansionLifecycleService({
-      makeHost: () => {
-        throw new Error('expansion makeHost should not be invoked in the handoff harness');
-      },
-      state: expansionStateStore,
-      bundledLoaders: {},
-      manifest: [],
-      now: () => new Date('2026-04-27T00:00:00.000Z').toISOString(),
-    });
-    const storeServices = createHarnessStoreServices(
-      runtime,
-      db,
-      backendNamespace,
-      expansionLifecycle,
-      expansionStateStore,
-    );
+    const storeServices = createHarnessStoreServices(runtime, db, backendNamespace);
 
     const core = createCoordinatorCore({
       runtime,
@@ -172,9 +127,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         }
         return storeServices;
       },
-      createKbSubsystemFn: adaptLegacyKbFactory(async () => {
-        throw new Error('handoff-cores harness runs without a KB subsystem');
-      }),
+      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},
@@ -205,7 +158,6 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
           });
         }),
       getConsumerStuck: () => [],
-      getMutationBlocked: () => ({ blocked: false }),
     });
     setStoreServicesForTest(core.storeServicesRef, storeServices, { storeDbPath: ':memory:' });
 

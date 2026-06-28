@@ -175,8 +175,9 @@ describe('codexArtifactCapability', () => {
   it('discards only the recorded handles it is given', async () => {
     const unlinkSync = vi.fn();
     const runtime = {
-      storage: { unlinkSync },
+      storage: { unlinkSync, existsSync: () => false },
       env: { homedir: () => '/home/user' },
+      time: { sleep: async () => {} },
     } as unknown as ArtifactCleanupRuntime;
 
     await expect(

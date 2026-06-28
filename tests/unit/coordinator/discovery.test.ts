@@ -65,6 +65,8 @@ describe('coordinator discovery', () => {
         namespace: 'ns-a',
         startedAt: 1_713_456_789_000,
         token: 'token-a',
+        bootToken: 'boot-token-a',
+        shutdownToken: 'shutdown-token-a',
         version: '1.2.3',
         instanceId: 'instance-a',
       },
@@ -80,6 +82,8 @@ describe('coordinator discovery', () => {
       namespace: 'ns-a',
       startedAt: 1_713_456_789_000,
       token: 'token-a',
+      bootToken: 'boot-token-a',
+      shutdownToken: 'shutdown-token-a',
       version: '1.2.3',
       instanceId: 'instance-a',
     });
@@ -101,6 +105,7 @@ describe('coordinator discovery', () => {
         namespace: 'ns-b',
         startedAt: Date.now(),
         token: 'token-b',
+        bootToken: 'boot-token-b',
         processStartedAt: probeProcessStartedAtSeconds(process.pid) ?? undefined,
       },
       runtime,
@@ -113,6 +118,7 @@ describe('coordinator discovery', () => {
       flavor: 'dev',
       namespace: 'ns-b',
       token: 'token-b',
+      bootToken: 'boot-token-b',
     });
   });
 
@@ -132,6 +138,7 @@ describe('coordinator discovery', () => {
         namespace: 'ns-c',
         startedAt: Date.now(),
         token: 'token-c',
+        bootToken: 'boot-token-c',
         processStartedAt: (probeProcessStartedAtSeconds(process.pid) ?? 0) + 1,
       },
       runtime,

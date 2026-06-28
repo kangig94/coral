@@ -1,5 +1,5 @@
 // Unit coverage for the transport-owned `requestIncumbentShutdown` helper:
-// absolute deadline behavior across connect+health+shutdown, compatible-incumbent
+// absolute deadline behavior across connect+ping+shutdown, compatible-incumbent
 // detection, and the IpcDeadlineExceededError surface.
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -88,7 +88,7 @@ describe('requestIncumbentShutdown', () => {
   it('throws IncumbentMatchesError on compatible non-draining incumbent', async () => {
     const socketPath = makeSocketPath('compat');
     await startScriptedServer(socketPath, async (request) => {
-      if (request.method === 'transport.health') {
+      if (request.method === 'transport.ping') {
         return {
           kind: 'response',
           id: request.id,
@@ -111,7 +111,7 @@ describe('requestIncumbentShutdown', () => {
     const socketPath = makeSocketPath('mismatch');
     let receivedShutdown = false;
     await startScriptedServer(socketPath, async (request) => {
-      if (request.method === 'transport.health') {
+      if (request.method === 'transport.ping') {
         return {
           kind: 'response',
           id: request.id,
@@ -127,7 +127,46 @@ describe('requestIncumbentShutdown', () => {
       }
       if (request.method === 'transport.shutdown') {
         receivedShutdown = true;
+        expect(request.auth).toEqual({ kind: 'boot', token: 'boot-token' });
+        expect(request.params).toEqual({});
         return { kind: 'response', id: request.id, result: { status: 'draining' } };
+      }
+      return { kind: 'response', id: request.id, result: null };
+    });
+
+    const result = await requestIncumbentShutdown({
+      socketPath,
+      desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
+      bootToken: 'boot-token',
+      timeoutMs: 1_000,
+    });
+    expect(receivedShutdown).toBe(true);
+    expect(result.shutdownAttempted).toBe(true);
+    expect(result.shutdownUnauthorized).toBe(false);
+    expect(result.health?.bundleHash).toBe('old');
+    expect(result.verifiedIdentity).toEqual({ pid: 4242, processStartedAt: 9_999, source: 'health' });
+  });
+
+  it('skips transport.shutdown when no boot token is available', async () => {
+    const socketPath = makeSocketPath('no-token');
+    let receivedShutdown = false;
+    await startScriptedServer(socketPath, async (request) => {
+      if (request.method === 'transport.ping') {
+        return {
+          kind: 'response',
+          id: request.id,
+          result: {
+            bundleHash: 'old',
+            flavor: 'prod',
+            namespace: 'ns',
+            status: 'ok',
+            pid: 4242,
+            processStartedAt: 9_999,
+          } satisfies IncumbentHealth,
+        };
+      }
+      if (request.method === 'transport.shutdown') {
+        receivedShutdown = true;
       }
       return { kind: 'response', id: request.id, result: null };
     });
@@ -137,15 +176,15 @@ describe('requestIncumbentShutdown', () => {
       desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
       timeoutMs: 1_000,
     });
-    expect(receivedShutdown).toBe(true);
-    expect(result.health?.bundleHash).toBe('old');
+    expect(receivedShutdown).toBe(false);
+    expect(result.shutdownAttempted).toBe(false);
     expect(result.verifiedIdentity).toEqual({ pid: 4242, processStartedAt: 9_999, source: 'health' });
   });
 
   it('compatible draining incumbent does NOT throw IncumbentMatchesError', async () => {
     const socketPath = makeSocketPath('draining');
     await startScriptedServer(socketPath, async (request) => {
-      if (request.method === 'transport.health') {
+      if (request.method === 'transport.ping') {
         return {
           kind: 'response',
           id: request.id,

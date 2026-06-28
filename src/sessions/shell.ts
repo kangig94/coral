@@ -12,7 +12,7 @@ import type { TimePort } from '../infra/port-types.js';
 import type { Runtime, IdPort } from '../runtime/ports.js';
 import { composeReducers } from '../store/reducers.js';
 import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
-import { legacyProviderArtifactIdentity, providerArtifactIdentityKey } from '../providers/artifact-identity.js';
+import { providerArtifactIdentityKey } from '../providers/artifact-identity.js';
 import {
   claimContinuationLeaseInputSchema,
   clearContinuationLeaseInputSchema,
@@ -703,7 +703,7 @@ export class SessionManager {
     if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
     if (currentEntry.version !== expectedVersion) return { ok: false };
 
-    const identity = options.identity ?? legacyProviderArtifactIdentity(handle);
+    const identity = options.identity;
     const identityKey = providerArtifactIdentityKey(provider, identity);
     if (
       currentEntry.artifactHandles.some(

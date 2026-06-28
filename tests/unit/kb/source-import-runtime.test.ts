@@ -1,21 +1,45 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV,
   ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT,
   PdfMarkerConverter,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+  SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV,
+  SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB,
+  SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV,
+  SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS,
+  SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV,
+  SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS,
+  SOURCE_IMPORT_MARKER_DEVICE_ENV,
+  SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS,
+  SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS,
+  SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS,
+  SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS,
+  SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV,
+  SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES,
   USER_SOURCE_IMPORT_MAX_BYTES,
+  cleanupSourceImportRuntimeArtifacts,
   deriveSourceImportReadPolicy,
   prepareSourceImport,
   resolveAdminSourceImportCap,
   resolveSourceImportFile,
+  sourceImportConversionTimeoutMs,
+  sourceImportConversionWorkerMaxOldMb,
+  sourceImportAdminLimitExceededHint,
   type SourceImportReadPolicy,
   type SourceImportRuntime,
-} from '#src/kb/ops/source-import.js';
+} from '#src/kb/ops/source/import.js';
+import { convertSourceInWorker } from '#src/kb/ops/source/conversion-worker.js';
 import { kbSourceImportSchema } from '#src/kb/tool-contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { ResourceBinding } from '#src/security/principal.js';
 
 const tempRoots: string[] = [];
 
@@ -49,6 +73,22 @@ function fakeRuntime(overrides: Partial<SourceImportRuntime> = {}): SourceImport
 function envWith(value?: string): { get(key: string): string | undefined } {
   return {
     get: (key) => (key === 'CORAL_KB_IMPORT_MAX_BYTES' ? value : undefined),
+  };
+}
+
+function projectBinding(root: string): ResourceBinding {
+  return { kind: 'project', root };
+}
+
+function unboundBinding(): ResourceBinding {
+  return { kind: 'unbound' };
+}
+
+function runtimeEnv(snapshot: Record<string, string>, platform = 'linux'): SourceImportRuntime['env'] {
+  return {
+    fullSnapshot: () => snapshot,
+    homedir: () => '/isolated-home',
+    platform: () => platform,
   };
 }
 
@@ -89,19 +129,21 @@ describe('source import runtime isolation', () => {
     expect(kbSourceImportSchema.safeParse({ filePath: '../outside.md' }).success).toBe(true);
   });
 
-  it('derives source import read policies and admin caps from authority and env', () => {
+  it('derives source import read policies and admin caps from principal binding and env', () => {
     expect(resolveAdminSourceImportCap(envWith())).toBe(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT);
     expect(resolveAdminSourceImportCap(envWith('4096'))).toBe(4096);
     expect(resolveAdminSourceImportCap(envWith('0'))).toBeNull();
     expect(resolveAdminSourceImportCap(envWith('unlimited'))).toBeNull();
     expect(resolveAdminSourceImportCap(envWith('abc'))).toBe(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT);
+    expect(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT).toBe(USER_SOURCE_IMPORT_MAX_BYTES);
+    expect(SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES).toBe(USER_SOURCE_IMPORT_MAX_BYTES);
 
-    expect(deriveSourceImportReadPolicy('user', '/project', envWith('4096'))).toEqual({
+    expect(deriveSourceImportReadPolicy(projectBinding('/project'), '/project', envWith('4096'))).toEqual({
       kind: 'sandboxed',
       root: '/project',
       maxBytes: USER_SOURCE_IMPORT_MAX_BYTES,
     });
-    expect(deriveSourceImportReadPolicy('admin', '/project', envWith('4096'))).toEqual({
+    expect(deriveSourceImportReadPolicy(unboundBinding(), '/project', envWith('4096'))).toEqual({
       kind: 'unrestricted',
       resolveBase: '/project',
       maxBytes: 4096,
@@ -114,7 +156,7 @@ describe('source import runtime isolation', () => {
     const runtimeRoot = join(root, 'runtime');
     const { storage, readFile } = storageWithReadSpy();
     const runtime = fakeRuntime({ storage });
-    const policy = deriveSourceImportReadPolicy('user', root, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(root), root, envWith());
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(input, '# Runtime Isolated\n\nBody\n', 'utf8');
     const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
@@ -134,11 +176,28 @@ describe('source import runtime isolation', () => {
     expect(readFile).toHaveBeenCalledWith(input, 'utf-8');
   });
 
+  it('cleans orphaned source import runtime artifacts on boot recovery', () => {
+    const root = tempRoot('coral-source-import-cleanup-');
+    const runtimeRoot = join(root, 'runtime');
+    const runtime = fakeRuntime();
+    const stagedDir = join(runtimeRoot, 'source-import-staging');
+    const pdfDir = join(runtimeRoot, 'source-import-pdf');
+    mkdirSync(stagedDir, { recursive: true });
+    mkdirSync(pdfDir, { recursive: true });
+    writeFileSync(join(stagedDir, 'orphan.md'), '# Orphan\n', 'utf8');
+    writeFileSync(join(pdfDir, 'marker-output.md'), '# Temp\n', 'utf8');
+
+    cleanupSourceImportRuntimeArtifacts(runtimeRoot, runtime);
+
+    expect(existsSync(stagedDir)).toBe(false);
+    expect(existsSync(pdfDir)).toBe(false);
+  });
+
   it('rejects traversal and root escapes under a user sandboxed policy', () => {
     const root = tempRoot('coral-source-import-traversal-');
     const projectRoot = join(root, 'project');
     const outside = join(root, 'outside.md');
-    const policy = deriveSourceImportReadPolicy('user', projectRoot, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(projectRoot), projectRoot, envWith());
     mkdirSync(projectRoot, { recursive: true });
     writeFileSync(outside, '# Outside\n\nSecret\n', 'utf8');
 
@@ -150,15 +209,19 @@ describe('source import runtime isolation', () => {
 
   it('allows an admin unrestricted policy to resolve an out-of-tree absolute path', () => {
     const storage = coherentSizeStorage(1);
-    const policy = deriveSourceImportReadPolicy('admin', '/project', envWith());
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), '/project', envWith());
 
     expect(resolveSourceImportFile('/outside/source.md', policy, storage)).toEqual({ path: '/outside/source.md' });
   });
 
   it('enforces user and admin source import caps through the read policy', () => {
     const adminReadableSize = USER_SOURCE_IMPORT_MAX_BYTES + 1;
-    const adminPolicy = deriveSourceImportReadPolicy('admin', '/project', envWith(String(adminReadableSize + 1)));
-    const userPolicy = deriveSourceImportReadPolicy('user', '/project', envWith());
+    const adminPolicy = deriveSourceImportReadPolicy(
+      unboundBinding(),
+      '/project',
+      envWith(String(adminReadableSize + 1)),
+    );
+    const userPolicy = deriveSourceImportReadPolicy(projectBinding('/project'), '/project', envWith());
 
     expect(resolveSourceImportFile('/outside/large.md', adminPolicy, coherentSizeStorage(adminReadableSize))).toEqual({
       path: '/outside/large.md',
@@ -168,11 +231,11 @@ describe('source import runtime isolation', () => {
     ).toThrow(/exceeds maximum source import size/);
     expect(() =>
       resolveSourceImportFile('/outside/too-big.md', adminPolicy, coherentSizeStorage(adminReadableSize + 2)),
-    ).toThrow(/exceeds maximum source import size/);
+    ).toThrow(new RegExp(`exceeds maximum source import size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes>`));
   });
 
   it('skips byte comparison for admin-unlimited imports but still rejects non-files', () => {
-    const policy = deriveSourceImportReadPolicy('admin', '/project', envWith('0'));
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), '/project', envWith('0'));
 
     expect(policy).toEqual({ kind: 'unrestricted', resolveBase: '/project', maxBytes: null });
     expect(
@@ -203,7 +266,7 @@ describe('source import runtime isolation', () => {
     const runtimeRoot = join(root, 'runtime');
     const input = join(projectRoot, 'paper.md');
     const runtime = fakeRuntime();
-    const policy = deriveSourceImportReadPolicy('user', projectRoot, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(projectRoot), projectRoot, envWith());
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(input, '# In Scope\n\nBody\n', 'utf8');
@@ -222,13 +285,30 @@ describe('source import runtime isolation', () => {
     expect(readFileSync(prepared.stagedPath, 'utf8')).toContain('# In Scope\n\nBody');
   });
 
+  it('rejects converted markdown output above the import byte cap with an admin override hint', async () => {
+    const root = tempRoot('coral-source-import-output-cap-');
+    const input = join(root, 'paper.md');
+    const runtimeRoot = join(root, 'runtime');
+    const runtime = fakeRuntime();
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), root, envWith('16'));
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, '# A\n', 'utf8');
+    const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
+
+    await expect(
+      prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {
+        limitExceededHint: sourceImportAdminLimitExceededHint(),
+      }),
+    ).rejects.toThrow(new RegExp(`markdown output exceeds maximum size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}=<bytes>`));
+  });
+
   it('stages HTML imports through async storage reads', async () => {
     const root = tempRoot('coral-source-import-html-');
     const input = join(root, 'paper.html');
     const runtimeRoot = join(root, 'runtime');
     const { storage, readFile } = storageWithReadSpy();
     const runtime = fakeRuntime({ storage });
-    const policy = deriveSourceImportReadPolicy('user', root, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(root), root, envWith());
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(
       input,
@@ -253,19 +333,91 @@ describe('source import runtime isolation', () => {
     expect(readFile).toHaveBeenCalledWith(input, 'utf-8');
   });
 
-  it('parses marker output through async storage reads', async () => {
+  it('scales source conversion worker timeouts by input size with env overrides', () => {
+    expect(sourceImportConversionTimeoutMs({}, 1)).toBe(
+      SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS + SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+    );
+    expect(sourceImportConversionTimeoutMs({}, 5 * 1024 * 1024)).toBe(
+      SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS + 5 * SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS,
+    );
+    expect(sourceImportConversionTimeoutMs({}, 1024 * 1024 * 1024)).toBe(SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS);
+    expect(
+      sourceImportConversionTimeoutMs(
+        {
+          [SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV]: '1000',
+          [SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV]: '130000',
+        },
+        20 * 1024 * 1024,
+      ),
+    ).toBe(130000);
+  });
+
+  it('configures source conversion worker old-generation memory limits from env', () => {
+    expect(sourceImportConversionWorkerMaxOldMb({})).toBe(SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB);
+    expect(sourceImportConversionWorkerMaxOldMb({ [SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV]: '768' })).toBe(768);
+    expect(sourceImportConversionWorkerMaxOldMb({ [SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV]: '0' })).toBe(
+      SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB,
+    );
+  });
+
+  it('rejects HTML converter worker output above the markdown byte cap', async () => {
+    const root = tempRoot('coral-source-import-html-worker-cap-');
+    const input = join(root, 'paper.html');
+    const runtimeRoot = join(root, 'runtime');
+    const runtime = fakeRuntime();
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), root, envWith('0'));
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(
+      input,
+      '<html><head><title>HTML Import</title></head><body><h1>HTML Import</h1><p>Body body body body body body body body body body</p></body></html>',
+      'utf8',
+    );
+    const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
+
+    await expect(
+      prepareSourceImport(sourceFile, undefined, policy.maxBytes, () => {}, runtimeRoot, runtime, {
+        maxMarkdownOutputBytes: 16,
+        limitExceededHint: sourceImportAdminLimitExceededHint(),
+      }),
+    ).rejects.toThrow(
+      new RegExp(`HTML converter output exceeds maximum markdown output size.*${ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV}`),
+    );
+  });
+
+  it('aborts source conversion workers before launch', async () => {
+    const controller = new AbortController();
+    controller.abort('user_abort');
+
+    await expect(
+      convertSourceInWorker(
+        { kind: 'html', html: '<title>Ignored</title><p>Body</p>', outputMaxBytes: USER_SOURCE_IMPORT_MAX_BYTES },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({
+      name: 'AbortError',
+      code: 'aborted',
+      stage: 'convert',
+      reason: 'user_abort',
+    });
+  });
+
+  it('parses marker output through async storage reads with a CPU-conservative timeout by default', async () => {
     const root = tempRoot('coral-source-import-marker-');
     const runtimeRoot = join(root, 'runtime');
     const input = join(root, 'paper.pdf');
     const { storage, readFile } = storageWithReadSpy();
+    const markerExecArgs: string[][] = [];
+    const markerExecOptions: Array<{ timeout?: number; maxBuffer?: number }> = [];
     const runtime = fakeRuntime({
       storage,
       process: {
-        exec: async (command, args) => {
+        exec: async (command, args, options) => {
           if (command === 'which' && args[0] === 'marker_single') {
             return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
           }
           if (command === '/usr/bin/marker_single') {
+            markerExecArgs.push(args);
+            markerExecOptions.push(options ?? {});
             const outputDirFlagIndex = args.indexOf('--output_dir');
             const outputDir = args[outputDirFlagIndex + 1];
             mkdirSync(outputDir, { recursive: true });
@@ -287,10 +439,335 @@ describe('source import runtime isolation', () => {
     });
 
     expect(result).toEqual({ title: 'PDF Import', markdown: 'Marker body' });
+    expect(markerExecArgs).toEqual([[input, '--output_dir', expect.any(String), '--disable_tqdm']]);
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        maxBuffer: 20 * 1024 * 1024,
+        timeout: SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS + SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS,
+      }),
+    ]);
     expect(readFile).toHaveBeenCalledWith(
       join(runtimeRoot, 'source-import-pdf', 'marker-fixed-source-import-id', 'output.md'),
       'utf-8',
     );
+  });
+
+  it('explains the marker timeout override when PDF conversion times out', async () => {
+    const root = tempRoot('coral-source-import-marker-timeout-');
+    const runtimeRoot = join(root, 'runtime');
+    const input = join(root, 'paper.pdf');
+    const markerExecOptions: Array<{ timeout?: number }> = [];
+    const runtime = fakeRuntime({
+      env: runtimeEnv({ PATH: '/usr/bin', [SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV]: '1234' }),
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
+            return {
+              stdout: '',
+              stderr: '',
+              status: null,
+              error: new Error('timeout: /usr/bin/marker_single'),
+            };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, '%PDF test fixture\n', 'utf8');
+
+    await expect(
+      new PdfMarkerConverter().convert(input, {
+        runtime,
+        runtimeRoot,
+        fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+      }),
+    ).rejects.toThrow(
+      'marker_single timed out after 2s. For large or scanned PDFs, retry as an async import, split the file, or increase CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS. Set CORAL_KB_IMPORT_MARKER_DEVICE=cuda or CORAL_KB_IMPORT_MARKER_DEVICE=mps before starting the Coral daemon to force GPU conversion when enough VRAM is available.',
+    );
+
+    expect(markerExecOptions).toEqual([expect.objectContaining({ timeout: 1234 })]);
+  });
+
+  it('auto-selects CUDA when nvidia-smi reports a GPU', async () => {
+    const root = tempRoot('coral-source-import-marker-auto-gpu-');
+    const runtimeRoot = join(root, 'runtime');
+    const input = join(root, 'paper.pdf');
+    const detectExecOptions: Array<{ timeout?: number }> = [];
+    const markerExecOptions: Array<{ timeout?: number; env?: Record<string, string> }> = [];
+    const runtime = fakeRuntime({
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          if (command === 'nvidia-smi') {
+            detectExecOptions.push(options ?? {});
+            return { stdout: '0\n', stderr: '', status: 0 };
+          }
+          if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
+            const outputDirFlagIndex = args.indexOf('--output_dir');
+            const outputDir = args[outputDirFlagIndex + 1];
+            mkdirSync(outputDir, { recursive: true });
+            writeFileSync(join(outputDir, 'output.md'), '# PDF Import\n\nMarker body\n', 'utf8');
+            return { stdout: '', stderr: '', status: 0 };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, Buffer.alloc(2 * 1024 * 1024));
+
+    await new PdfMarkerConverter().convert(input, {
+      runtime,
+      runtimeRoot,
+      fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+    });
+
+    expect(detectExecOptions).toEqual([
+      expect.objectContaining({ timeout: SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS }),
+    ]);
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TORCH_DEVICE: 'cuda',
+          CUDA_VISIBLE_DEVICES: '0',
+          PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True',
+        }),
+        timeout: SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS + 2 * SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS,
+      }),
+    ]);
+  });
+
+  it('auto-selects MPS on Apple Silicon when CUDA is unavailable', async () => {
+    const root = tempRoot('coral-source-import-marker-auto-mps-');
+    const runtimeRoot = join(root, 'runtime');
+    const input = join(root, 'paper.pdf');
+    const detectCommands: string[] = [];
+    const markerExecOptions: Array<{ timeout?: number; env?: Record<string, string> }> = [];
+    const runtime = fakeRuntime({
+      env: runtimeEnv({ PATH: '/usr/bin' }, 'darwin'),
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          if (command === 'nvidia-smi') {
+            detectCommands.push(command);
+            return { stdout: '', stderr: 'not found', status: 1 };
+          }
+          if (command === 'sysctl' && args.join(' ') === '-n hw.optional.arm64') {
+            detectCommands.push(command);
+            expect(options).toEqual(expect.objectContaining({ timeout: SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS }));
+            return { stdout: '1\n', stderr: '', status: 0 };
+          }
+          if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
+            const outputDirFlagIndex = args.indexOf('--output_dir');
+            const outputDir = args[outputDirFlagIndex + 1];
+            mkdirSync(outputDir, { recursive: true });
+            writeFileSync(join(outputDir, 'output.md'), '# PDF Import\n\nMarker body\n', 'utf8');
+            return { stdout: '', stderr: '', status: 0 };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, Buffer.alloc(2 * 1024 * 1024));
+
+    await new PdfMarkerConverter().convert(input, {
+      runtime,
+      runtimeRoot,
+      fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+    });
+
+    expect(detectCommands).toEqual(['nvidia-smi', 'sysctl']);
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TORCH_DEVICE: 'mps',
+        }),
+        timeout: SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS + 2 * SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS,
+      }),
+    ]);
+    expect(markerExecOptions[0]?.env?.CUDA_VISIBLE_DEVICES).toBeUndefined();
+  });
+
+  it('accepts metal as an alias for marker MPS conversion', async () => {
+    const root = tempRoot('coral-source-import-marker-metal-');
+    const runtimeRoot = join(root, 'runtime');
+    const input = join(root, 'paper.pdf');
+    const markerExecOptions: Array<{ timeout?: number; env?: Record<string, string> }> = [];
+    const runtime = fakeRuntime({
+      env: runtimeEnv({ PATH: '/usr/bin', [SOURCE_IMPORT_MARKER_DEVICE_ENV]: 'metal' }, 'darwin'),
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          if (command === 'nvidia-smi' || command === 'sysctl') {
+            throw new Error('explicit metal should not probe device availability');
+          }
+          if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
+            const outputDirFlagIndex = args.indexOf('--output_dir');
+            const outputDir = args[outputDirFlagIndex + 1];
+            mkdirSync(outputDir, { recursive: true });
+            writeFileSync(join(outputDir, 'output.md'), '# PDF Import\n\nMarker body\n', 'utf8');
+            return { stdout: '', stderr: '', status: 0 };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, Buffer.alloc(2 * 1024 * 1024));
+
+    await new PdfMarkerConverter().convert(input, {
+      runtime,
+      runtimeRoot,
+      fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+    });
+
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TORCH_DEVICE: 'mps',
+        }),
+        timeout: SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS + 2 * SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS,
+      }),
+    ]);
+  });
+
+  it('forces marker CPU conversion when requested by environment', async () => {
+    const root = tempRoot('coral-source-import-marker-cpu-');
+    const runtimeRoot = join(root, 'runtime');
+    const input = join(root, 'paper.pdf');
+    const markerExecOptions: Array<{ timeout?: number; env?: Record<string, string> }> = [];
+    const runtime = fakeRuntime({
+      env: runtimeEnv({ PATH: '/usr/bin', [SOURCE_IMPORT_MARKER_DEVICE_ENV]: 'cpu', CUDA_VISIBLE_DEVICES: '0' }),
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
+            const outputDirFlagIndex = args.indexOf('--output_dir');
+            const outputDir = args[outputDirFlagIndex + 1];
+            mkdirSync(outputDir, { recursive: true });
+            writeFileSync(join(outputDir, 'output.md'), '# PDF Import\n\nMarker body\n', 'utf8');
+            return { stdout: '', stderr: '', status: 0 };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, '%PDF test fixture\n', 'utf8');
+
+    await new PdfMarkerConverter().convert(input, {
+      runtime,
+      runtimeRoot,
+      fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+    });
+
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TORCH_DEVICE: 'cpu',
+          CUDA_VISIBLE_DEVICES: '',
+        }),
+        timeout: SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS + SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS,
+      }),
+    ]);
+  });
+
+  it('uses marker GPU timeout and CUDA env when requested by environment', async () => {
+    const root = tempRoot('coral-source-import-marker-gpu-');
+    const runtimeRoot = join(root, 'runtime');
+    const input = join(root, 'paper.pdf');
+    const markerExecOptions: Array<{ timeout?: number; env?: Record<string, string> }> = [];
+    const runtime = fakeRuntime({
+      env: runtimeEnv({
+        PATH: '/usr/bin',
+        [SOURCE_IMPORT_MARKER_DEVICE_ENV]: 'cuda',
+        CUDA_VISIBLE_DEVICES: '2',
+      }),
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          if (command === '/usr/bin/marker_single') {
+            markerExecOptions.push(options ?? {});
+            const outputDirFlagIndex = args.indexOf('--output_dir');
+            const outputDir = args[outputDirFlagIndex + 1];
+            mkdirSync(outputDir, { recursive: true });
+            writeFileSync(join(outputDir, 'output.md'), '# PDF Import\n\nMarker body\n', 'utf8');
+            return { stdout: '', stderr: '', status: 0 };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+    mkdirSync(runtimeRoot, { recursive: true });
+    writeFileSync(input, Buffer.alloc(2 * 1024 * 1024));
+
+    await new PdfMarkerConverter().convert(input, {
+      runtime,
+      runtimeRoot,
+      fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+    });
+
+    expect(markerExecOptions).toEqual([
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TORCH_DEVICE: 'cuda',
+          CUDA_VISIBLE_DEVICES: '2',
+          PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True',
+        }),
+        timeout: SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS + 2 * SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS,
+      }),
+    ]);
+  });
+
+  it('uses a longer marker install timeout for uv tool install', async () => {
+    const installExecOptions: Array<{ timeout?: number }> = [];
+    const runtime = fakeRuntime({
+      env: runtimeEnv({ PATH: '/usr/bin', [SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV]: '123456' }),
+      process: {
+        exec: async (command, args, options) => {
+          if (command === 'which' && args[0] === 'uv') {
+            return { stdout: '/usr/bin/uv\n', stderr: '', status: 0 };
+          }
+          if (command === '/usr/bin/uv') {
+            installExecOptions.push(options ?? {});
+            return { stdout: '', stderr: '', status: 0 };
+          }
+          if (command === 'which' && args[0] === 'marker_single') {
+            return { stdout: '/usr/bin/marker_single\n', stderr: '', status: 0 };
+          }
+          return { stdout: '', stderr: 'missing command', status: 1 };
+        },
+      },
+    });
+
+    await new PdfMarkerConverter().install(() => {}, {
+      runtime,
+      runtimeRoot: '/isolated-runtime',
+      fileSizeLimitBytes: USER_SOURCE_IMPORT_MAX_BYTES,
+    });
+
+    expect(SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS).toBe(15 * 60 * 1000);
+    expect(installExecOptions).toEqual([expect.objectContaining({ timeout: 123456 })]);
   });
 
   it('resolves PDF converter commands with the injected home and env snapshot', async () => {

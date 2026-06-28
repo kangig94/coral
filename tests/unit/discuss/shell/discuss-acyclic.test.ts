@@ -12,7 +12,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename), '../../../..');
 const SRC_ROOT = resolve(REPO_ROOT, 'src');
 
-const SUBSYSTEM_PREFIXES = [
+const DOMAIN_BUCKET_PREFIXES = [
   'execution/discuss',
   'execution',
   'discuss',
@@ -24,8 +24,11 @@ const SUBSYSTEM_PREFIXES = [
   'types',
   'providers',
   'workflow',
+  'kb-daemon',
   'kb',
+  'projection-consumers',
   'runtime',
+  'security',
   'causality',
   'read-model',
   'coral',
@@ -43,7 +46,7 @@ const SUBSYSTEM_PREFIXES = [
   'expansion',
 ] as const;
 
-type Subsystem = (typeof SUBSYSTEM_PREFIXES)[number];
+type DomainBucket = (typeof DOMAIN_BUCKET_PREFIXES)[number];
 
 type EdgeAccumulator = {
   source: string;
@@ -53,8 +56,8 @@ type EdgeAccumulator = {
 };
 
 type ParsedEdge = EdgeAccumulator & {
-  sourceSubsystem: Subsystem;
-  targetSubsystem: Subsystem;
+  sourceBucket: DomainBucket;
+  targetBucket: DomainBucket;
 };
 
 const ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES = new Set([
@@ -68,19 +71,19 @@ const ALLOWED_PROVIDER_SESSION_RUNTIME_EDGES = new Set([
   'src/sessions/shell.ts -> src/providers/catalog.ts',
 ]);
 
-function classifySubsystem(canonicalPath: string): Subsystem {
+function classifyDomainBucket(canonicalPath: string): DomainBucket {
   const sourceRelativePath = canonicalPath.slice('src/'.length);
   if (sourceRelativePath === 'engines' || sourceRelativePath.startsWith('engines/')) {
     return 'kb';
   }
 
-  for (const prefix of SUBSYSTEM_PREFIXES) {
+  for (const prefix of DOMAIN_BUCKET_PREFIXES) {
     if (sourceRelativePath === prefix || sourceRelativePath.startsWith(`${prefix}/`)) {
       return prefix;
     }
   }
 
-  throw new Error(`No subsystem bucket matched ${canonicalPath}`);
+  throw new Error(`No component bucket matched ${canonicalPath}`);
 }
 
 function buildParsedEdges(productionFilePaths: string[]): ParsedEdge[] {
@@ -109,8 +112,8 @@ function buildParsedEdges(productionFilePaths: string[]): ParsedEdge[] {
   return [...parsedEdgesByTarget.values()]
     .map((edge) => ({
       ...edge,
-      sourceSubsystem: classifySubsystem(edge.source),
-      targetSubsystem: classifySubsystem(edge.target),
+      sourceBucket: classifyDomainBucket(edge.source),
+      targetBucket: classifyDomainBucket(edge.target),
     }))
     .sort((left, right) => {
       if (left.source !== right.source) {
@@ -121,37 +124,40 @@ function buildParsedEdges(productionFilePaths: string[]): ParsedEdge[] {
         return left.target.localeCompare(right.target);
       }
 
-      return left.sourceSubsystem.localeCompare(right.sourceSubsystem);
+      return left.sourceBucket.localeCompare(right.sourceBucket);
     });
 }
 
-function buildRuntimeSubsystemGraph(nodes: Iterable<Subsystem>, edges: ParsedEdge[]): Map<Subsystem, Set<Subsystem>> {
-  const graph = new Map<Subsystem, Set<Subsystem>>();
+function buildRuntimeDomainGraph(
+  nodes: Iterable<DomainBucket>,
+  edges: ParsedEdge[],
+): Map<DomainBucket, Set<DomainBucket>> {
+  const graph = new Map<DomainBucket, Set<DomainBucket>>();
 
   for (const node of nodes) {
-    graph.set(node, new Set<Subsystem>());
+    graph.set(node, new Set<DomainBucket>());
   }
 
   for (const edge of edges) {
-    if (edge.sourceSubsystem === edge.targetSubsystem || edge.runtimeVia.size === 0) {
+    if (edge.sourceBucket === edge.targetBucket || edge.runtimeVia.size === 0) {
       continue;
     }
 
-    graph.get(edge.sourceSubsystem)?.add(edge.targetSubsystem);
+    graph.get(edge.sourceBucket)?.add(edge.targetBucket);
   }
 
   return graph;
 }
 
-function findStronglyConnectedComponents(graph: Map<Subsystem, Set<Subsystem>>): Subsystem[][] {
-  const indexByNode = new Map<Subsystem, number>();
-  const lowlinkByNode = new Map<Subsystem, number>();
-  const stack: Subsystem[] = [];
-  const onStack = new Set<Subsystem>();
-  const components: Subsystem[][] = [];
+function findStronglyConnectedComponents(graph: Map<DomainBucket, Set<DomainBucket>>): DomainBucket[][] {
+  const indexByNode = new Map<DomainBucket, number>();
+  const lowlinkByNode = new Map<DomainBucket, number>();
+  const stack: DomainBucket[] = [];
+  const onStack = new Set<DomainBucket>();
+  const components: DomainBucket[][] = [];
   let nextIndex = 0;
 
-  function strongConnect(node: Subsystem): void {
+  function strongConnect(node: DomainBucket): void {
     const currentIndex = nextIndex++;
     indexByNode.set(node, currentIndex);
     lowlinkByNode.set(node, currentIndex);
@@ -172,8 +178,8 @@ function findStronglyConnectedComponents(graph: Map<Subsystem, Set<Subsystem>>):
       return;
     }
 
-    const component: Subsystem[] = [];
-    let current: Subsystem;
+    const component: DomainBucket[] = [];
+    let current: DomainBucket;
 
     do {
       current = stack.pop()!;
@@ -215,15 +221,15 @@ function formatEdge(edge: ParsedEdge): string {
   return `${edgeKey(edge)} (${formatViaKinds(edge)})`;
 }
 
-function formatScc(scc: Subsystem[]): string {
+function formatScc(scc: DomainBucket[]): string {
   return scc.join(' <-> ');
 }
 
 function isProviderSessionRuntimeEdge(edge: ParsedEdge): boolean {
   return (
     edge.runtimeVia.size > 0 &&
-    ((edge.sourceSubsystem === 'providers' && edge.targetSubsystem === 'sessions') ||
-      (edge.sourceSubsystem === 'sessions' && edge.targetSubsystem === 'providers'))
+    ((edge.sourceBucket === 'providers' && edge.targetBucket === 'sessions') ||
+      (edge.sourceBucket === 'sessions' && edge.targetBucket === 'providers'))
   );
 }
 
@@ -232,63 +238,63 @@ function isAllowedProviderSessionRuntimeEdge(edge: ParsedEdge): boolean {
 }
 
 describe('discuss architecture guard', () => {
-  it('enforces discuss domain boundary (runtime + type-only) with a TypeScript-aware subsystem graph', () => {
+  it('enforces discuss domain boundary (runtime + type-only) with a TypeScript-aware component graph', () => {
     const productionFilePaths = listProductionSourceFiles(SRC_ROOT);
     const parsedEdges = buildParsedEdges(productionFilePaths);
-    const subsystemNodes = new Set<Subsystem>(
-      productionFilePaths.map((filePath) => classifySubsystem(toCanonicalSrcPath(REPO_ROOT, filePath))),
+    const domainBucketNodes = new Set<DomainBucket>(
+      productionFilePaths.map((filePath) => classifyDomainBucket(toCanonicalSrcPath(REPO_ROOT, filePath))),
     );
-    const crossSubsystemEdges = parsedEdges.filter((edge) => edge.sourceSubsystem !== edge.targetSubsystem);
-    const unexpectedProviderSessionRuntimeEdges = crossSubsystemEdges.filter((edge) => {
+    const crossDomainEdges = parsedEdges.filter((edge) => edge.sourceBucket !== edge.targetBucket);
+    const unexpectedProviderSessionRuntimeEdges = crossDomainEdges.filter((edge) => {
       return isProviderSessionRuntimeEdge(edge) && !isAllowedProviderSessionRuntimeEdge(edge);
     });
-    const runtimeSubsystemGraph = buildRuntimeSubsystemGraph(
-      subsystemNodes,
-      crossSubsystemEdges.filter((edge) => !isAllowedProviderSessionRuntimeEdge(edge)),
+    const runtimeDomainGraph = buildRuntimeDomainGraph(
+      domainBucketNodes,
+      crossDomainEdges.filter((edge) => !isAllowedProviderSessionRuntimeEdge(edge)),
     );
-    const runtimeSubsystemSccs = findStronglyConnectedComponents(runtimeSubsystemGraph).filter((scc) => scc.length > 1);
+    const runtimeDomainSccs = findStronglyConnectedComponents(runtimeDomainGraph).filter((scc) => scc.length > 1);
 
-    const discussRuntimeImports = crossSubsystemEdges.filter((edge) => {
+    const discussRuntimeImports = crossDomainEdges.filter((edge) => {
       return (
-        edge.sourceSubsystem === 'discuss' &&
+        edge.sourceBucket === 'discuss' &&
         edge.runtimeVia.size > 0 &&
-        (edge.targetSubsystem === 'client' ||
-          edge.targetSubsystem === 'execution' ||
-          edge.targetSubsystem === 'execution/discuss')
+        (edge.targetBucket === 'client' ||
+          edge.targetBucket === 'execution' ||
+          edge.targetBucket === 'execution/discuss')
       );
     });
 
-    const invalidDiscussExecutionTypeOnlyImports = crossSubsystemEdges.filter((edge) => {
+    const invalidDiscussExecutionTypeOnlyImports = crossDomainEdges.filter((edge) => {
       return (
-        edge.sourceSubsystem === 'discuss' &&
+        edge.sourceBucket === 'discuss' &&
         edge.runtimeVia.size === 0 &&
         edge.typeOnlyVia.size > 0 &&
-        edge.targetSubsystem === 'execution'
+        edge.targetBucket === 'execution'
       );
     });
 
-    const deferredDiscussDebt = crossSubsystemEdges.filter((edge) => {
+    const deferredDiscussDebt = crossDomainEdges.filter((edge) => {
       return (
-        edge.sourceSubsystem === 'discuss' &&
+        edge.sourceBucket === 'discuss' &&
         edge.runtimeVia.size === 0 &&
         edge.typeOnlyVia.size > 0 &&
-        (edge.targetSubsystem === 'client' || edge.targetSubsystem === 'execution/discuss')
+        (edge.targetBucket === 'client' || edge.targetBucket === 'execution/discuss')
       );
     });
 
     console.info(
-      runtimeSubsystemSccs.length === 0
-        ? 'Runtime subsystem SCCs: none'
-        : `Runtime subsystem SCCs:\n${runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
+      runtimeDomainSccs.length === 0
+        ? 'Runtime domain SCCs: none'
+        : `Runtime domain SCCs:\n${runtimeDomainSccs.map((scc) => `- ${formatScc(scc)}`).join('\n')}`,
     );
 
     const failures: string[] = [];
 
-    if (runtimeSubsystemSccs.length > 0) {
+    if (runtimeDomainSccs.length > 0) {
       failures.push(
         [
-          'production runtime subsystem graph must be acyclic outside explicitly listed provider/session schema edges:',
-          ...runtimeSubsystemSccs.map((scc) => `- ${formatScc(scc)}`),
+          'production runtime domain graph must be acyclic outside explicitly listed provider/session schema edges:',
+          ...runtimeDomainSccs.map((scc) => `- ${formatScc(scc)}`),
         ].join('\n'),
       );
     }

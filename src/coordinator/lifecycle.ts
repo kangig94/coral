@@ -6,6 +6,7 @@ import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { Principal } from '../security/principal.js';
 import type { DiscussContext } from '../discuss/shell/types.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
@@ -17,12 +18,10 @@ import { createReplacementBackendOwnershipChecker } from './ownership-checker.js
 import { listLiveJobs, markJobAsError } from '../jobs/reconcile/recovery-effects.js';
 import { writeResultArtifact } from '../jobs/terminal/export.js';
 import type { JobStore } from '../jobs/store.js';
-import type { CreateKbSubsystemOptions, KnowledgeBaseRuntime } from '../kb/subsystem.js';
-import { kbRuntimeDir } from '../kb/paths.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { Runtime } from '../runtime/ports.js';
-import { KB_ID, type Subsystem } from './subsystems/contract.js';
-import type { SubsystemRegistry } from './subsystems/registry.js';
+import type { RuntimeComponent } from './runtime-components/contract.js';
+import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
 import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
@@ -32,7 +31,12 @@ import {
 } from './shutdown.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
-import { bindWithHandoff, BackendAlreadyRunningError, HandoffEscalationError } from './handoff.js';
+import {
+  bindWithHandoff,
+  BackendAlreadyRunningError,
+  createFileHandoffSignalLedger,
+  HandoffEscalationError,
+} from './handoff.js';
 import { IncumbentMatchesError } from '../transport/ipc/handoff.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
@@ -41,15 +45,19 @@ import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
+
+export const STARTUP_STORE_BUSY_TIMEOUT_MS = 750;
 
 export type CoordinatorServerInfo = {
   port: number;
   host: string;
   socketPath: string;
   token: string;
+  bootToken: string;
+  shutdownToken: string;
   version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
@@ -66,6 +74,8 @@ export interface CoordinatorIdentity {
   readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
   readonly token: string;
+  readonly bootToken: string;
+  readonly shutdownToken: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
 }
@@ -74,7 +84,7 @@ export interface ReadonlyRuntimeState {
   getLifecycle(): LifecycleState;
   getStartedAt(): number;
   getLaunchFenceActive(): boolean;
-  readonly subsystems: SubsystemRegistry;
+  readonly components: RuntimeComponentRegistry;
 }
 
 export interface MutableRuntimeState extends ReadonlyRuntimeState {
@@ -83,7 +93,7 @@ export interface MutableRuntimeState extends ReadonlyRuntimeState {
   setLaunchFenceActive(active: boolean): void;
 }
 
-export function createRuntimeState(startedAt: number, subsystems: SubsystemRegistry): MutableRuntimeState {
+export function createRuntimeState(startedAt: number, components: RuntimeComponentRegistry): MutableRuntimeState {
   let lifecycle: LifecycleState = 'starting';
   let currentStartedAt = startedAt;
   let launchFenceActive = false;
@@ -101,7 +111,7 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
     getLifecycle: () => lifecycle,
     getStartedAt: () => currentStartedAt,
     getLaunchFenceActive: () => launchFenceActive,
-    subsystems,
+    components,
     setLifecycle: (state) => {
       if (state === lifecycle) {
         return;
@@ -121,29 +131,14 @@ export function createRuntimeState(startedAt: number, subsystems: SubsystemRegis
 }
 
 /**
- * Factory for the KB subsystem. Returns a `Subsystem<KnowledgeBaseRuntime>`
- * to register with the runtime-state registry. The registered subsystem
- * owns its own retry loop and curate-scheduler bridge; lifecycle.ts merely
+ * Factory for the KB health component registered with the runtime-state
+ * registry. Production supplies a KB daemon health component; lifecycle.ts only
  * registers it and triggers `initAll` after Era II completes.
  */
-export type CreateKbSubsystemFn = (options: CreateKbSubsystemOptions) => Subsystem<KnowledgeBaseRuntime>;
-
-/**
- * Builds the curate assistant the KB subsystem uses to drive provider-backed
- * curation. Injected (not imported) so this lower composition layer never
- * statically reaches a provider runtime module — the production assembly wires
- * the real Claude-backed factory; the simulation/idle paths use a stub. Keeps
- * `tools/simulation` sealed off from `src/providers/claude` (see
- * `tools/simulation/sealed-inventory.json`).
- */
-export type CurateAssistantFactory = (deps: {
-  readonly runtime: Runtime;
-  readonly launchCoordinator: Pick<LaunchCoordinator, 'withInternalPermit'>;
-  readonly providerHostManager: Pick<ProviderHostManager, 'acquireServer'>;
-}) => CurateAssistantPort;
+export type CreateKbHealthComponentFn = () => RuntimeComponent;
 
 export interface LifecycleHooks {
-  onShutdown(mode: ShutdownMode): Promise<void>;
+  onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void>;
   onIdleCheck(): boolean;
   onRecoveryComplete(resumes: RecoveredDiscussResume[]): Promise<void>;
 }
@@ -362,10 +357,10 @@ export type LifecycleDeps = {
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
   readonly providerHostManager: ProviderHostManager;
+  readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void;
-  readonly createKbSubsystemFn: CreateKbSubsystemFn;
-  readonly createCurateAssistant: CurateAssistantFactory;
+  readonly createKbHealthComponentFn: CreateKbHealthComponentFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
   readonly recoverPersistedDiscussFn: RecoverPersistedDiscussFn;
   readonly runStartupRecoveryFn: RunStartupRecoveryFn;
@@ -417,7 +412,7 @@ async function runLifecycleStartup({
     storeServicesRef,
     createStoreServicesFromDbFn,
     launchCoordinator,
-    providerHostManager,
+    kbDaemonSupervisor,
     providerRegistry,
     server,
     getRecoveryService,
@@ -427,8 +422,7 @@ async function runLifecycleStartup({
     writeBackendInfoFn,
     removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn,
-    createKbSubsystemFn,
-    createCurateAssistant,
+    createKbHealthComponentFn,
     registerBuiltInProvidersFn,
     recoverPersistedDiscussFn,
     runStartupRecoveryFn,
@@ -505,8 +499,16 @@ async function runLifecycleStartup({
             pid: info.pid,
             processStartedAt: info.processStartedAt,
             source: 'discovery',
+            instanceId: info.instanceId,
+            token: info.token,
+            bootToken: info.bootToken,
+            shutdownToken: info.shutdownToken,
           };
         },
+        signalLedger: createFileHandoffSignalLedger({
+          storage: runtime.storage,
+          runDir: runtime.paths.coral.coordinator.runDir,
+        }),
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
       socketAuthorityAcquired = true;
@@ -521,7 +523,11 @@ async function runLifecycleStartup({
       { acquiredViaHandoff: socketAuthorityAcquired },
       { bundleHash, namespace },
     );
-    const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, { bundleHash, namespace });
+    const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
+      bundleHash,
+      namespace,
+      busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+    });
     let storeServices: CoordinatorStoreServices;
     try {
       storeServices = createStoreServicesFromDbFn(storeDb);
@@ -552,8 +558,8 @@ async function runLifecycleStartup({
     registerBuiltInProvidersFn(providerRegistry);
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
-    // recovery work. KB is a subsystem (Era III); its boot work cannot gate
-    // daemon liveness. The CLI's `waitForBackendReady` resolves on
+    // recovery work. KB daemon startup cannot gate daemon liveness. The CLI's
+    // `waitForBackendReady` resolves on
     // `kernel.phase ∈ { 'kernel-ready', 'running' }` so once we reach this
     // point the CLI returns within `KERNEL_READY_DEADLINE_MS`.
     const { port, host } = await listenFn(server);
@@ -566,6 +572,8 @@ async function runLifecycleStartup({
       host,
       socketPath,
       token: identity.token,
+      bootToken: identity.bootToken,
+      shutdownToken: identity.shutdownToken,
       version,
       bundleHash,
       flavor,
@@ -605,45 +613,34 @@ async function runLifecycleStartup({
       runtimeState.setLaunchFenceActive(false);
     }
 
-    let registeredSubsystems = false;
+    let registeredComponents = false;
     try {
-      const kbSubsystem = createKbSubsystemFn({
-        db: progressStore.getDb(),
-        version,
-        paths: {
-          markdownRoot: runtime.paths.coral.corpus.kbRoot,
-          runtimeDir: kbRuntimeDir(flavor, runtime.paths.configSlot),
-        },
-        curateAssistant: createCurateAssistant({
-          runtime,
-          launchCoordinator,
-          providerHostManager,
-        }),
-        processPort: runtime.process,
-        storagePort: runtime.storage,
-        envPort: runtime.env,
-        timePort: runtime.time,
-        idsPort: runtime.ids,
-      });
-      runtimeState.subsystems.register(kbSubsystem);
-      registeredSubsystems = true;
+      const kbHealthComponent = createKbHealthComponentFn();
+      runtimeState.components.register(kbHealthComponent);
+      registeredComponents = true;
     } catch (error: unknown) {
-      backendLog.error('Subsystem registration failed — KB will be offline until restart', error);
+      backendLog.error('Runtime component registration failed — KB will be offline until restart', error);
     }
 
     runtimeState.setLifecycle('running');
     state.started = true;
+    void kbDaemonSupervisor
+      ?.start()
+      .then((health) => {
+        if (health.phase !== 'online') {
+          return;
+        }
+        void kbDaemonSupervisor.warmup().catch((error: unknown) => {
+          backendLog.warn(`KB daemon supervisor warmup failed: ${formatError(error)}`);
+        });
+      })
+      .catch((error: unknown) => {
+        backendLog.warn(`KB daemon supervisor start failed: ${formatError(error)}`);
+      });
 
     idleTimer.startWatching(
       () => {
-        // Probe the curate scheduler through the registry. While KB is still
-        // initializing/offline, the registry returns an error envelope; treat
-        // that as "not running" so idle-shutdown can fire under those phases
-        // (when no actual curate work can be in flight).
-        const curateProbe = runtimeState.subsystems.run<KnowledgeBaseRuntime, boolean>(KB_ID, (kb) =>
-          kb.curateScheduler.isRunning(),
-        );
-        const curateRunning = typeof curateProbe === 'boolean' ? curateProbe : false;
+        const daemonCurateRunning = kbDaemonSupervisor?.read().kbWrite?.curateRunning === true;
         return (
           runtimeState.getLifecycle() === 'running' &&
           launchCoordinator.active === 0 &&
@@ -651,7 +648,7 @@ async function runLifecycleStartup({
           progressStore.liveJobCountByNamespace(namespace) === 0 &&
           idleTimer.inflightRequests === 0 &&
           !hooks.onIdleCheck() &&
-          (idleTimer.isDraining || !curateRunning)
+          !daemonCurateRunning
         );
       },
       (reason) => {
@@ -662,20 +659,16 @@ async function runLifecycleStartup({
     state.ownershipCheckerTeardown = ownershipChecker.install();
     await hooks.onRecoveryComplete(recoveredDiscussResumes);
 
-    // ===== Era III (subsystems — fire-and-forget) =====
-    // Subsystems were registered before `running` became externally visible
-    // and are now kicked off in the background. The KB subsystem owns its own
-    // retry loop and curate-scheduler bridge; the registry surfaces its phase
-    // via `runtimeState.subsystems.status('kb')`.
-    // KB-routed handlers consult the registry through `subsystems.run`/
-    // `runAsync` and receive a structured `kb_initializing` / `kb_offline`
-    // envelope while the subsystem is not online.
+    // ===== Era III (components — fire-and-forget) =====
+    // The KB daemon health component is a daemon-health mirror; init is intentionally a no-op
+    // and the daemon supervisor owns actual KB process startup. The registry
+    // surfaces child phase via `runtimeState.components.status('kb')`.
     try {
-      if (registeredSubsystems) {
-        runtimeState.subsystems.initAll(signal);
+      if (registeredComponents) {
+        runtimeState.components.initAll(signal);
       }
     } catch (error: unknown) {
-      backendLog.error('Subsystem initialization dispatch failed — KB will be offline until restart', error);
+      backendLog.error('Runtime component initialization dispatch failed — KB will be offline until restart', error);
     }
 
     return {
@@ -683,6 +676,8 @@ async function runLifecycleStartup({
       host,
       socketPath,
       token: identity.token,
+      bootToken: identity.bootToken,
+      shutdownToken: identity.shutdownToken,
       version,
       bundleHash,
       flavor,
@@ -746,6 +741,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     markJobsAsErrorFn,
     terminateAllFn,
     providerHostManager,
+    kbDaemonSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
     closeServerFn,
@@ -773,7 +769,13 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     instanceId,
   });
   function createInvocationContext(projectRoot: string): InvocationContext {
-    return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+    const principal: Principal = {
+      subject: 'system',
+      transport: 'internal',
+      credential: { kind: 'internal', id: 'lifecycle' },
+      binding: { kind: 'project', root: projectRoot },
+    };
+    return { projectRoot, pluginRoot, coralEnv: {}, principal };
   }
 
   async function shutdown(reason: string): Promise<void> {
@@ -806,6 +808,7 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
         namespace,
         markJobsAsErrorFn,
         providerHostManager,
+        kbDaemonSupervisor,
         storeServicesRef,
         terminateAllFn,
         handoffQuiescePorts: deps.handoffQuiescePorts,

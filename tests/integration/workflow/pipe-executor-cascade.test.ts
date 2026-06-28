@@ -29,6 +29,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type RecordedLaunchRequest = ProviderRequest & {
   instruction?: ProviderInstruction;
@@ -113,7 +114,7 @@ describe('pipe executor coral cascade invariant', () => {
         providers: permissiveProviderLookupPort,
       });
       const executionSvc = new ExecutionService(
-        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' },
+        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
         {
           runtime,
           progressStore,
@@ -133,7 +134,12 @@ describe('pipe executor coral cascade invariant', () => {
         },
       );
 
-      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' };
+      const ctx: InvocationContext = {
+        projectRoot,
+        pluginRoot: coralPluginRoot,
+        coralEnv: {},
+        principal: testProjectPrincipal(projectRoot),
+      };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',
@@ -196,7 +202,11 @@ describe('pipe executor coral cascade invariant', () => {
         name: 'stub-provider',
         execute: () =>
           streamProviderEvents((emit) => {
-            emit({ kind: 'artifact_handle', handle: artifactPath });
+            emit({
+              kind: 'artifact_handle',
+              handle: artifactPath,
+              identity: { kind: 'test-artifact', path: artifactPath },
+            });
             emit({
               kind: 'terminal',
               terminal: { content: 'artifact-cleaned', outcome: { kind: 'completed' } },
@@ -241,7 +251,7 @@ describe('pipe executor coral cascade invariant', () => {
       });
       reactorRef.current = reactor;
       const executionSvc = new ExecutionService(
-        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' },
+        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
         {
           runtime,
           progressStore,
@@ -262,7 +272,12 @@ describe('pipe executor coral cascade invariant', () => {
         },
       );
 
-      const ctx: InvocationContext = { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, authority: 'admin' };
+      const ctx: InvocationContext = {
+        projectRoot,
+        pluginRoot: coralPluginRoot,
+        coralEnv: {},
+        principal: testProjectPrincipal(projectRoot),
+      };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',

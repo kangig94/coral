@@ -4,8 +4,8 @@ import { serializeNote } from '../corpus/frontmatter.js';
 import { loadKbNote } from '../read.js';
 import { noteEntryId, setEntry, type KbUpdateInput } from '../entry-types.js';
 import { assertNonEmptyText, assertNoteSlug } from '../validation.js';
-import { commitCorpusEntryLocked } from '../corpus/index-mutations.js';
-import { buildNoteIndexEntry } from '../corpus/index-records.js';
+import { commitCorpusEntryLocked } from '../corpus/index/mutations.js';
+import { buildNoteIndexEntry } from '../corpus/index/records.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
 
 export async function applyNoteUpdateLocked(

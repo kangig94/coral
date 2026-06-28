@@ -1,11 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
-import { createExpansionManifestCatalog } from '#src/expansion/manifest-catalog.js';
+import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { readDefaultExpansionCatalog, readExpansionCatalog } from '#src/cli/expansion/catalog.js';
 import { openReadCoralStore } from '#src/cli/read-store.js';
 import {
@@ -83,7 +93,7 @@ function tableExists(dbPath: string, name: string): boolean {
   }
 }
 
-function legacySchemaVersionRow(dbPath: string): string | null {
+function retiredSchemaVersionRow(dbPath: string): string | null {
   const db = new DatabaseSync(dbPath);
   try {
     const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1").get() as
@@ -95,7 +105,7 @@ function legacySchemaVersionRow(dbPath: string): string | null {
   }
 }
 
-function createLegacyStore(dbPath: string): void {
+function createRetiredStore(dbPath: string): void {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
@@ -122,6 +132,10 @@ function createMismatchStore(dbPath: string, marker = 1): void {
   } finally {
     db.close();
   }
+}
+
+function sha256(data: Buffer | string): string {
+  return createHash('sha256').update(data).digest('hex');
 }
 
 function createCorruptStore(dbPath: string): void {
@@ -205,19 +219,22 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(join(dbDir, 'store.db.reset.lock'))).toBe(false);
   });
 
-  it('resets a legacy v0.6.2 store, warns, and removes the old meta schema marker', () => {
+  it('resets a retired v0.6.2 store, warns, and removes the old meta schema marker', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-legacy-'), 'store.db');
-    createLegacyStore(dbPath);
+    const dbPath = join(makeTempRoot('coral-store-retired-'), 'store.db');
+    createRetiredStore(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     const db = openReset(runtime, dbPath);
     db.close();
 
     expect(readUserVersion(dbPath)).not.toBe(0);
-    expect(legacySchemaVersionRow(dbPath)).toBeNull();
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0][0])).toContain('will be lost');
+    expect(retiredSchemaVersionRow(dbPath)).toBeNull();
+    const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+    expect(messages.some((message) => message.includes('will be lost'))).toBe(true);
+    expect(
+      messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
+    ).toBe(true);
   });
 
   it('leaves an already-current store in place without warning', () => {
@@ -248,6 +265,74 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
+  it('quarantines mismatched store files before creating the replacement store', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-mismatch-quarantine-');
+    const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
+    const originalDbBytes = readFileSync(dbPath);
+    writeFileSync(`${dbPath}-wal`, 'dummy wal', 'utf-8');
+    writeFileSync(`${dbPath}-shm`, 'dummy shm', 'utf-8');
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    const quarantineRoot = join(dbDir, 'store-reset-quarantine');
+    const quarantineEntries = readdirSync(quarantineRoot);
+    expect(quarantineEntries).toHaveLength(1);
+    const quarantineDir = join(quarantineRoot, quarantineEntries[0]);
+    expect(readFileSync(join(quarantineDir, 'store.db-wal'), 'utf-8')).toBe('dummy wal');
+    expect(existsSync(join(quarantineDir, 'store.db-shm'))).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(quarantineDir, 'reset-manifest.json'), 'utf-8')) as {
+      schemaVersion?: unknown;
+      reason?: unknown;
+      userVersion?: unknown;
+      storedVersion?: unknown;
+      expectedVersion?: unknown;
+      dbFile?: unknown;
+      quarantineDir?: unknown;
+      files?: Array<{
+        name?: unknown;
+        source?: unknown;
+        quarantinedPath?: unknown;
+        sizeBytes?: unknown;
+        sha256?: unknown;
+      }>;
+    };
+    expect(manifest).toMatchObject({
+      schemaVersion: 1,
+      reason: 'mismatch',
+      userVersion: 1,
+      storedVersion: 1,
+      dbFile: dbPath,
+      quarantineDir,
+    });
+    expect(typeof manifest.expectedVersion).toBe('number');
+    expect(manifest.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'store.db',
+          source: dbPath,
+          quarantinedPath: join(quarantineDir, 'store.db'),
+          sizeBytes: originalDbBytes.length,
+          sha256: sha256(originalDbBytes),
+        }),
+        expect.objectContaining({
+          name: 'store.db-wal',
+          source: `${dbPath}-wal`,
+          quarantinedPath: join(quarantineDir, 'store.db-wal'),
+          sizeBytes: 'dummy wal'.length,
+          sha256: sha256('dummy wal'),
+        }),
+      ]),
+    );
+    rmSync(join(quarantineDir, 'store.db-wal'), { force: true });
+    rmSync(join(quarantineDir, 'store.db-shm'), { force: true });
+    expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
   it('logs the live-work-loss warning for mismatched stores', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-mismatch-warning-'), 'store.db');
@@ -257,9 +342,13 @@ describe('openOrResetBackendStoreDb', () => {
     const db = openReset(runtime, dbPath);
     db.close();
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    expect(String(warnSpy.mock.calls[0][0])).toContain('resetting backend store');
-    expect(String(warnSpy.mock.calls[0][0])).toContain('will be lost');
+    const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+    expect(
+      messages.some((message) => message.includes('resetting backend store') && message.includes('will be lost')),
+    ).toBe(true);
+    expect(
+      messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
+    ).toBe(true);
   });
 
   it('cleans up stale WAL and SHM siblings during mismatch reset', () => {
@@ -367,21 +456,21 @@ describe('openOrResetBackendStoreDb', () => {
 });
 
 describe('read-only store access', () => {
-  it('throws store_schema_outdated for legacy and mismatched stores without changing the file', () => {
+  it('throws store_schema_outdated for retired and mismatched stores without changing the file', () => {
     const runtime = createRuntime();
-    const legacyPath = join(makeTempRoot('coral-store-readonly-legacy-'), 'store.db');
+    const retiredPath = join(makeTempRoot('coral-store-readonly-retired-'), 'store.db');
     const mismatchPath = join(makeTempRoot('coral-store-readonly-mismatch-'), 'store.db');
-    createLegacyStore(legacyPath);
+    createRetiredStore(retiredPath);
     createMismatchStore(mismatchPath);
-    const legacyBefore = readFileSync(legacyPath);
+    const retiredBefore = readFileSync(retiredPath);
     const mismatchBefore = readFileSync(mismatchPath);
 
-    const legacyError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: legacyPath }));
+    const retiredError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: retiredPath }));
     const mismatchError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: mismatchPath }));
 
-    expectSetupCode(legacyError, 'store_schema_outdated');
+    expectSetupCode(retiredError, 'store_schema_outdated');
     expectSetupCode(mismatchError, 'store_schema_outdated');
-    expect(readFileSync(legacyPath)).toEqual(legacyBefore);
+    expect(readFileSync(retiredPath)).toEqual(retiredBefore);
     expect(readFileSync(mismatchPath)).toEqual(mismatchBefore);
   });
 
@@ -467,15 +556,15 @@ describe('openWritableStoreDbNoReset', () => {
     expect(readUserVersion(dbPath)).toBe(marker);
   });
 
-  it('never unlinks legacy or mismatched stores and surfaces store_schema_outdated', () => {
+  it('never unlinks retired or mismatched stores and surfaces store_schema_outdated', () => {
     const runtime = createRuntime();
-    const legacyPath = join(makeTempRoot('coral-store-no-reset-legacy-'), 'store.db');
+    const retiredPath = join(makeTempRoot('coral-store-no-reset-retired-'), 'store.db');
     const mismatchPath = join(makeTempRoot('coral-store-no-reset-mismatch-'), 'store.db');
-    createLegacyStore(legacyPath);
+    createRetiredStore(retiredPath);
     createMismatchStore(mismatchPath);
 
     expectSetupCode(
-      captureError(() => openWritableStoreDbNoReset(runtime, { path: legacyPath })),
+      captureError(() => openWritableStoreDbNoReset(runtime, { path: retiredPath })),
       'store_schema_outdated',
     );
     expectSetupCode(
@@ -483,7 +572,7 @@ describe('openWritableStoreDbNoReset', () => {
       'store_schema_outdated',
     );
 
-    expect(legacySchemaVersionRow(legacyPath)).toBe('1');
+    expect(retiredSchemaVersionRow(retiredPath)).toBe('1');
     expect(tableExists(mismatchPath, 'sentinel_before_reset')).toBe(true);
   });
 

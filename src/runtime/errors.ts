@@ -24,6 +24,7 @@ export type DocumentedCoralSetupErrorCode =
   | 'startup_not_ready'
   | 'store_schema_outdated'
   | 'store_reset_lock_contended'
+  | 'store_reset_quarantine_failed'
   | 'expansion_binary_corrupt'
   | 'installer_payload_invalid'
   | 'unknown_expansion'
@@ -102,6 +103,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: 'Another Coral process is initializing the backend store.',
     remediation:
       'Retry shortly. If this persists after 30 seconds, stop the other Coral process or remove the stale store.db.reset.lock directory.',
+  },
+  store_reset_quarantine_failed: {
+    userMessage: 'Coral could not quarantine the old backend store before reset.',
+    remediation:
+      'Check permissions and free disk space in the Coral store directory, then retry after preserving or removing the old store files manually.',
   },
   expansion_binary_corrupt: {
     userMessage: (context) =>

@@ -16,11 +16,25 @@ import type { JsonRpcErrorObject } from '../../infra/json-rpc.js';
 
 export type JsonRpcEnvelopeId = string | number;
 
+export type IpcAuthMetadata =
+  | {
+      readonly kind: 'boot';
+      readonly token: string;
+    }
+  | {
+      readonly kind: 'child';
+      readonly handle: string;
+      readonly token: string;
+      readonly jobId: string;
+      readonly sessionId: string;
+    };
+
 export interface JsonRpcRequestEnvelope<TParams = unknown> {
   readonly kind: 'request';
   readonly id: JsonRpcEnvelopeId;
   readonly method: string;
   readonly params?: TParams;
+  readonly auth?: IpcAuthMetadata;
 }
 
 export interface JsonRpcResponseEnvelope<TResult = unknown> {
@@ -49,12 +63,31 @@ export type JsonRpcEnvelope<TRequestParams = unknown, TResponseResult = unknown,
 
 const jsonRpcEnvelopeIdSchema = z.union([z.string().min(1), z.number()]);
 
-const jsonRpcRequestEnvelopeSchema = z
+export const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('boot'),
+      token: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('child'),
+      handle: z.string().min(1),
+      token: z.string().min(1),
+      jobId: z.string().min(1),
+      sessionId: z.string().min(1),
+    })
+    .strict(),
+]);
+
+export const jsonRpcRequestEnvelopeSchema = z
   .object({
     kind: z.literal('request'),
     id: jsonRpcEnvelopeIdSchema,
     method: z.string().min(1),
     params: z.unknown().optional(),
+    auth: ipcAuthMetadataSchema.optional(),
   })
   .strict();
 

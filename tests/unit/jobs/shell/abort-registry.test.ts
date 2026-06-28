@@ -15,8 +15,10 @@ describe('jobs AbortRegistry', () => {
     const registry = new AbortRegistry(runtime.ids);
     const jobId = registry.register();
     expect(registry.has(jobId)).toBe(true);
+    expect(registry.listActive()).toEqual([jobId]);
     registry.remove(jobId);
     expect(registry.has(jobId)).toBe(false);
+    expect(registry.listActive()).toEqual([]);
   });
 
   it('abort aborts the correct jobs and reports notFound correctly', () => {
@@ -32,6 +34,7 @@ describe('jobs AbortRegistry', () => {
     });
     expect(registry.getSignal(firstJobId)?.aborted).toBe(true);
     expect(registry.getSignal(secondJobId)?.aborted).toBe(false);
+    expect(registry.listActive()).toEqual([firstJobId, secondJobId]);
   });
 
   it('register with onAbort fires callback when job is aborted', () => {

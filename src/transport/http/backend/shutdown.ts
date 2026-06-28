@@ -11,6 +11,10 @@ export function isShuttingDownError(value: unknown): value is { code: 'backend_s
   return isRecord(value) && value.code === 'backend_shutting_down';
 }
 
+function isShutdownAccepted(value: unknown): boolean {
+  return isRecord(value) && (value.status === 'draining' || value.status === 'shutting_down');
+}
+
 export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResult> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const info = readBackendInfo({
@@ -25,18 +29,18 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
   try {
     const response = await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
-      headers: { 'X-Coral-Backend-Token': info.token },
+      headers: { 'X-Coral-Boot-Token': info.bootToken },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);
-    if (response.status === 200 && isRecord(body) && body.status === 'shutting_down') {
+    if (response.status === 200 && isShutdownAccepted(body)) {
       return { ok: true };
     }
     if (response.status === 503 && isShuttingDownError(body)) {
       return { ok: true, alreadyDraining: true };
     }
     if (response.status === 401) {
-      return { ok: false, reason: 'unauthorized' };
+      return { ok: false, reason: 'manual shutdown required: shutdown capability was rejected' };
     }
     return { ok: false, reason: `${response.status} ${response.statusText}` };
   } catch {

@@ -193,6 +193,7 @@ describe('contract schemas', () => {
     const artifactHandle = providerArtifactHandleEventBodySchema.parse({
       kind: 'artifact_handle',
       handle: '/tmp/provider.jsonl',
+      identity: { kind: 'test-artifact', path: '/tmp/provider.jsonl' },
     });
     const continuityMutation = sessionContinuityMutationSchema.parse({
       kind: 'set_resumable',
@@ -224,6 +225,7 @@ describe('contract schemas', () => {
     expect(artifactHandle).toEqual({
       kind: 'artifact_handle',
       handle: '/tmp/provider.jsonl',
+      identity: { kind: 'test-artifact', path: '/tmp/provider.jsonl' },
     });
     expect(continuityMutation).toEqual({
       kind: 'set_resumable',

@@ -12,6 +12,7 @@ const projectRootSchema = z.string().min(1, 'Project root is required');
 const ownerSchema = z.string().regex(identPattern, 'Owner must be token-safe');
 const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const claudeModelCapSchema = modelNameSchema.optional();
+const claudeTransportSchema = z.string().optional();
 
 export const providerNameSchema = z
   .string()
@@ -35,6 +36,7 @@ export const sessionCreateSchema = z
     owner: ownerSchema.optional(),
     effort: effortLevelSchema.optional(),
     claudeModelCap: claudeModelCapSchema,
+    claudeTransport: claudeTransportSchema,
     bypassPermissions: z.boolean().optional(),
     systemPrompt: z.string().optional(),
     retention: retentionPolicySchema.optional(),

@@ -4,7 +4,7 @@ import type { StoragePort } from '../../infra/port-types.js';
 import type { GitSyncPathChange, GitSyncResult } from '../curate/git-sync.js';
 import { noteEntryId, sourceEntryId, wikiEntryId, type KbIndex } from '../entry-types.js';
 import { loadKbNote, loadKbSource } from '../read.js';
-import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry, cloneKbIndex } from './index-records.js';
+import { buildNoteIndexEntry, buildSourceIndexEntry, buildWikiIndexEntry, cloneKbIndex } from './index/records.js';
 import { extractKnowledgeLinks } from './wiki-links.js';
 import { extractBody, extractTitle, parseWikiBody, parseWikiFrontmatter } from './frontmatter.js';
 import {

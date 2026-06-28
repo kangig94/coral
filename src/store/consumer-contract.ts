@@ -109,7 +109,9 @@ export type JournalConsumerRegistration = JournalCursorRegistration | JournalApp
 
 export type CorpusLaneHint = 'content' | 'metadata';
 export type CorpusInterest = CorpusLaneHint | 'both';
-export type CorpusApplyResult = { readonly advance: false; readonly reason: 'stale-snapshot' };
+export type CorpusApplyResult =
+  | { readonly advance: false; readonly reason: 'stale-snapshot' }
+  | { readonly advanceTo: CorpusSnapshot };
 
 export interface JournalConsumerReadPort {
   readCursor(consumerId: string): number;

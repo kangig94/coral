@@ -22,6 +22,7 @@ export class FrameTooLargeError extends Error {
 export type LineFramer = {
   push(chunk: Buffer | string): string[];
   flush(): string;
+  pendingBytes(): number;
 };
 
 export function createLineFramer(): LineFramer {
@@ -40,6 +41,9 @@ export function createLineFramer(): LineFramer {
     },
     flush(): string {
       return buffer;
+    },
+    pendingBytes(): number {
+      return Buffer.byteLength(buffer, 'utf-8');
     },
   };
 }

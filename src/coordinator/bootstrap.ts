@@ -1,20 +1,17 @@
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import { dirname } from 'node:path';
-
+import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
 import { BackendAlreadyRunningError } from './handoff.js';
 import { createCoordinatorServer } from './index.js';
+import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
-import { readBundleHash } from '../infra/bundle-manifest.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
-import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { nowDate } from '../infra/time.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
-import { serializeCoralSetupError } from '../runtime/errors.js';
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -76,41 +73,15 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   }
 }
 
-function writeStartupErrorSentinel(pluginRoot: string, error: unknown): void {
-  const setupError = serializeCoralSetupError(error);
-  if (!setupError) return;
-
-  const attemptId = process.env.CORAL_STARTUP_ATTEMPT_ID;
-  if (!attemptId) return;
-
-  try {
-    const flavor = resolveBuildFlavor(process.env);
-    const runtime = createRealRuntime(flavor);
-    const startupErrorFile = runtime.paths.coral.coordinator.startupErrorFile;
-    const startedAt = Number(process.env.CORAL_STARTUP_STARTED_AT);
-    const sentinel = {
-      version: 1,
-      attemptId,
-      pid: process.pid,
-      startedAt: Number.isFinite(startedAt) && startedAt > 0 ? startedAt : Date.now(),
-      socketPath: runtime.paths.coral.coordinator.socketPath,
-      bundleHash: readBundleHash(pluginRoot),
-      flavor,
-      namespace: pluginRootNamespace(pluginRoot),
-      error: setupError,
-    };
-    const tmp = `${startupErrorFile}.tmp-${process.pid}-${attemptId}`;
-    runtime.storage.mkdirSync(dirname(startupErrorFile), { recursive: true });
-    runtime.storage.writeFileSync(tmp, JSON.stringify(sentinel) + '\n');
-    runtime.storage.renameSync(tmp, startupErrorFile);
-  } catch (sentinelError: unknown) {
-    backendLog.error('Failed to write startup setup-error sentinel', sentinelError);
-  }
-}
-
 export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
+
+  if (process.env.CORAL_KB_DAEMON === '1') {
+    return runKbDaemonMain({
+      pluginRoot: typeof __PLUGIN_ROOT__ === 'string' ? __PLUGIN_ROOT__ : process.cwd(),
+    });
+  }
 
   if (process.argv.includes('--smoke-open-store')) {
     return handleSmokeOpenStore(process.argv);
@@ -127,6 +98,15 @@ export async function main(): Promise<number> {
     },
     onFatalShutdownError: (error) => {
       backendLog.error('Fatal shutdown error', error);
+      const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'fatal_shutdown_error', error, 1);
+      auditBootstrapFailure(
+        'bootstrap_fatal_shutdown',
+        __PLUGIN_ROOT__,
+        'fatal_shutdown_error',
+        error,
+        1,
+        diagnosticFile,
+      );
       process.exit(1);
     },
   });
@@ -160,7 +140,9 @@ export async function main(): Promise<number> {
     }
 
     backendLog.error('Fatal startup error', error);
-    writeStartupErrorSentinel(__PLUGIN_ROOT__, error);
+    const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'startup_failed', error, 1);
+    writeStartupErrorSentinel(__PLUGIN_ROOT__, error, diagnosticFile);
+    auditBootstrapFailure('bootstrap_startup_failed', __PLUGIN_ROOT__, 'startup_failed', error, 1, diagnosticFile);
     return 1;
   } finally {
     clearInterval(startupKeepalive);
@@ -176,6 +158,17 @@ if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN_
     })
     .catch((error: unknown) => {
       backendLog.error('Fatal startup error', error);
+      if (typeof __PLUGIN_ROOT__ === 'string') {
+        const diagnosticFile = writeBootstrapDiagnostic(__PLUGIN_ROOT__, 'bootstrap_unhandled_rejection', error, 1);
+        auditBootstrapFailure(
+          'bootstrap_unhandled_rejection',
+          __PLUGIN_ROOT__,
+          'bootstrap_unhandled_rejection',
+          error,
+          1,
+          diagnosticFile,
+        );
+      }
       process.exit(1);
     });
 }

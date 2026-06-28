@@ -241,7 +241,8 @@ describe('KB read port shape', () => {
     const violations = reachable.flatMap(collectForbiddenSymbolHits);
 
     expect(reachable).not.toContain('src/kb/runtime.ts');
-    expect(reachable).not.toContain('src/engines/orama/backend.ts');
+    expect(reachable).not.toContain('src/engines/orama/base-projection.ts');
+    expect(reachable).not.toContain('src/engines/orama/insert-batching.ts');
     expect(reachable).not.toContain('src/engines/orama/snapshot.ts');
     expect(violations).toEqual([]);
   });

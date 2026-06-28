@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { ZodError } from 'zod';
 
-import { engineManifestSchema, parseEngineManifest } from '#src/expansion/manifest-schema.js';
+import { engineManifestSchema, parseEngineManifest } from '#src/expansion/manifest/schema.js';
 import type { KbCapabilityName } from '#src/kb/capability/contract.js';
 
 const roleDescriptor = {

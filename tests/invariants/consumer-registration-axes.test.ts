@@ -19,7 +19,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { ConsumerRegistration } from '#src/store/consumer-contract.js';
 function createDb(): Database {

@@ -8,7 +8,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const KB_DIRECT_LIST_READ_FILES = [
   'src/kb/queries.ts',
   'src/kb/tool-handlers.ts',
-  'src/kb/ops/source-store.ts',
+  'src/kb/ops/source/store.ts',
   'src/kb/ops/principles-list.ts',
   'src/kb/direct-read-index.ts',
 ] as const;

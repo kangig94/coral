@@ -18,7 +18,7 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';

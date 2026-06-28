@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
-import { engineManifestSchema, parseEngineManifest, parseEngineManifests } from '#src/expansion/manifest-schema.js';
+import { engineManifestSchema, parseEngineManifest, parseEngineManifests } from '#src/expansion/manifest/schema.js';
 
 const validDescriptor = {
   id: 'dummy',

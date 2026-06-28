@@ -17,7 +17,9 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 
 const mockState = vi.hoisted(() => ({
-  spawn: vi.fn(() => ({ pid: 12_345, unref: vi.fn() })),
+  spawn: vi.fn<(command: string, args?: readonly string[], options?: unknown) => { pid: number; unref: () => void }>(
+    () => ({ pid: 12_345, unref: vi.fn() }),
+  ),
   health: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   shutdown: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   bindSocket: vi.fn<() => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>>(),
@@ -42,6 +44,7 @@ vi.mock('#src/transport/ipc/client.js', () => ({
   createIpcClient: (socketPath: string) => ({
     socketPath,
     request: vi.fn(),
+    ping: (options?: unknown) => mockState.health(socketPath, options),
     health: (options?: unknown) => mockState.health(socketPath, options),
     shutdown: (options?: unknown) => mockState.shutdown(socketPath, options),
   }),
@@ -85,6 +88,8 @@ function writeDiscovery(
     port: number;
     host: string;
     token: string;
+    bootToken: string | null;
+    shutdownToken: string | null;
     version: string;
     bundleHash: string;
     flavor: 'prod' | 'dev';
@@ -106,6 +111,8 @@ function writeDiscovery(
       host: overrides.host ?? '127.0.0.1',
       socketPath: overrides.socketPath ?? socketPath(root, flavor),
       token: overrides.token ?? 'test-token',
+      ...(overrides.bootToken === null ? {} : { bootToken: overrides.bootToken ?? 'test-boot-token' }),
+      ...(overrides.shutdownToken === null ? {} : { shutdownToken: overrides.shutdownToken ?? 'test-shutdown-token' }),
       version: overrides.version ?? '0.5.2',
       bundleHash: overrides.bundleHash ?? 'test-hash',
       flavor,
@@ -140,6 +147,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete (globalThis as { __BUNDLE_DIR__?: string }).__BUNDLE_DIR__;
   if (savedClaudeConfigDir === undefined) {
     delete process.env.CLAUDE_CONFIG_DIR;
   } else {
@@ -347,6 +355,33 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
   });
 
+  it('fails fast when mismatched incumbent has no verified shutdown capability', async () => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, {
+      port: 4240,
+      token: 'old-token',
+      bootToken: null,
+      instanceId: 'old-coordinator',
+      bundleHash: 'old-hash',
+    });
+
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'old-hash',
+      flavor: 'prod',
+      instanceId: 'old-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensure } = await importEnsure();
+
+    await expect(ensure(root)).rejects.toThrow('Manual shutdown required');
+    expect(mockState.shutdown).not.toHaveBeenCalled();
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
   it('spawns fresh when health is unreachable and no coordinator is present', async () => {
     makeHome();
     vi.useFakeTimers();
@@ -385,7 +420,54 @@ describe('ipc ensure', () => {
 
     expect(ensured.instanceId).toBe('replacement-coordinator');
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([join(root, 'bridge', 'coral-backend.cjs')]);
     expect(mockState.shutdown).not.toHaveBeenCalled();
+  });
+
+  it('spawns backend from the active bundle directory when bundled', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const bundleDir = mkdtempSync(join(tmpdir(), 'coral-ipc-ensure-bundle-'));
+    tempRoots.push(bundleDir);
+    writeFileSync(
+      join(bundleDir, 'manifest.json'),
+      JSON.stringify({ bundleHash: 'bundle-dir-hash', flavor: 'prod' }),
+      'utf-8',
+    );
+    (globalThis as { __BUNDLE_DIR__?: string }).__BUNDLE_DIR__ = bundleDir;
+
+    let spawned = false;
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        throw createErrnoError('ECONNREFUSED');
+      }
+      return {
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'bundle-dir-hash',
+        flavor: 'prod',
+        instanceId: 'bundle-dir-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, {
+        bundleHash: 'bundle-dir-hash',
+        instanceId: 'bundle-dir-coordinator',
+      });
+      return { pid: 12_345, unref: vi.fn() };
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    await vi.advanceTimersByTimeAsync(800);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('bundle-dir-coordinator');
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+    expect(mockState.spawn.mock.calls[0]?.[1]).toEqual([join(bundleDir, 'coral-backend.cjs')]);
   });
 
   it('uses the bind deadline while a freshly spawned coordinator has not answered health', async () => {

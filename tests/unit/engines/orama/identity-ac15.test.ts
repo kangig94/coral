@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createOramaBaseProjection } from '#src/engines/orama/backend.js';
+import { createOramaBaseProjection } from '#src/engines/orama/base-projection.js';
 import { oramaIndexMetadataPath } from '#src/engines/orama/paths.js';
 import {
   ORAMA_INTL_TOKENIZER_IDENTITY,
@@ -15,7 +15,7 @@ import {
 import { KiwiAnalyzerManager, __setKiwiAnalyzerManagerForTests } from '#src/engines/kiwi/analyzer-manager.js';
 import type { KiwiAnalyzer } from '#src/engines/kiwi/loader.js';
 import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
-import { buildNoteIndexEntry } from '#src/kb/corpus/index-records.js';
+import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
 import { noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';

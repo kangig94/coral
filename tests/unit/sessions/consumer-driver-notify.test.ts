@@ -12,7 +12,7 @@ import { commit } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';

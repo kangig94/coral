@@ -8,7 +8,8 @@ import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
-import type { SubsystemRegistry } from './subsystems/registry.js';
+import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
+import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
@@ -32,7 +33,7 @@ export type LifecycleWiringState = {
 
 export interface ShutdownRuntimeState {
   setLifecycle(state: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped'): void;
-  readonly subsystems: SubsystemRegistry;
+  readonly components: RuntimeComponentRegistry;
 }
 
 type RunShutdownSequenceContext = {
@@ -55,11 +56,12 @@ type RunShutdownSequenceContext = {
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
   providerHostManager: ProviderHostManager;
+  kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
   handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   disposeLifecycleReactor: () => void;
-  hooks: { onShutdown(mode: ShutdownMode): Promise<void> };
+  hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   log: (message: string) => void;
 };
@@ -67,13 +69,10 @@ type RunShutdownSequenceContext = {
 /**
  * Run an async finalizer against the remaining drain budget.
  *
- * The `signal` passed to `task` aborts when the budget timer wins the race;
- * callers MUST honor it on every suspension point if they want real
- * cancellation. Legacy finalizers (`curateScheduler.stop`,
- * `shutdownActiveExpansions`, `hooks.onShutdown`) ignore the signal — for
- * those, `taskAbort.abort()` is a no-op and the orphan task continues running
- * until `process.exit(0)` terminates the process. AC5's "returns within
- * budget" guarantee holds because the race resolves on the timeout symbol.
+ * The `signal` passed to `task` aborts when the budget timer wins the race.
+ * Finalizers must honor it at suspension points: the timeout race makes the
+ * shutdown sequence return within budget, while signal cooperation prevents
+ * the finalizer from continuing as orphan async work until process exit.
  *
  * The timeout sleep uses `time.sleep(ms, { signal })` and is aborted in
  * `finally` so a finalizer that wins the race leaves no pending timer behind
@@ -126,6 +125,7 @@ export async function runShutdownSequence({
   namespace,
   markJobsAsErrorFn,
   providerHostManager,
+  kbDaemonSupervisor,
   storeServicesRef,
   terminateAllFn,
   handoffQuiescePorts,
@@ -158,11 +158,29 @@ export async function runShutdownSequence({
   state.ownershipCheckerTeardown?.();
   state.ownershipCheckerTeardown = null;
 
+  if (kbDaemonSupervisor !== undefined) {
+    await withBudget(
+      'kb child shutdown',
+      async (signal) => {
+        await kbDaemonSupervisor.dispose(reason, { signal });
+      },
+      remainingDrain,
+      runtime.time,
+      log,
+    );
+  }
+
   if (mode === 'hard') {
     if (storeServicesRef.tryGet() !== null) {
       markJobsAsErrorFn(namespace, 'Backend shutting down');
     }
-    await providerHostManager.shutdown();
+    await withBudget(
+      'provider host shutdown',
+      async (signal) => providerHostManager.shutdown(signal),
+      remainingDrain,
+      runtime.time,
+      log,
+    );
     terminateAllFn();
   } else {
     // Phase A2: detach durable terminal/completion side effects for active
@@ -189,7 +207,7 @@ export async function runShutdownSequence({
     );
     await withBudget(
       'provider host drain for handoff',
-      async () => providerHostManager.drainForHandoff(),
+      async (signal) => providerHostManager.drainForHandoff(signal),
       remainingDrain,
       runtime.time,
       log,
@@ -197,26 +215,19 @@ export async function runShutdownSequence({
   }
 
   await withBudget(
-    'subsystems disposeAll',
-    async (signal) => runtimeState.subsystems.disposeAll(signal),
+    'components disposeAll',
+    async (signal) => runtimeState.components.disposeAll(signal),
     remainingDrain,
     runtime.time,
     log,
   );
-  const expansionLifecycleService = storeServicesRef.tryGet()?.expansionLifecycleService ?? null;
-  if (expansionLifecycleService) {
-    await withBudget(
-      'expansion shutdown',
-      async () =>
-        expansionLifecycleService.shutdownActiveExpansions().catch((error: unknown) => {
-          log(`expansion shutdown failed: ${formatError(error)}\n`);
-        }),
-      remainingDrain,
-      runtime.time,
-      log,
-    );
-  }
-  await withBudget('hooks.onShutdown', async () => hooks.onShutdown(mode), remainingDrain, runtime.time, log);
+  await withBudget(
+    'hooks.onShutdown',
+    async (signal) => hooks.onShutdown(mode, signal),
+    remainingDrain,
+    runtime.time,
+    log,
+  );
   for (const store of discussStores.values()) {
     store.dispose();
   }

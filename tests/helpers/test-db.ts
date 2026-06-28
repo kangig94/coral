@@ -3,9 +3,9 @@ import type { Database } from '#src/store/db.js';
 
 /**
  * Open a raw SQLite handle for tests. No schemas, no pragmas — callers that
- * need them apply the matching helpers explicitly. Equivalent to the legacy
+ * need them apply the matching helpers explicitly. Equivalent to the retired
  * `new BetterSqlite3(':memory:')` test idiom under `node:sqlite`. Normalizes
- * the legacy `readonly` option name to node:sqlite's `readOnly`.
+ * the retired `readonly` option name to node:sqlite's `readOnly`.
  */
 export function newRawDatabase(path: string = ':memory:', options?: { readonly?: boolean }): Database {
   if (options?.readonly === true) {
@@ -15,7 +15,7 @@ export function newRawDatabase(path: string = ':memory:', options?: { readonly?:
 }
 
 /**
- * Read a PRAGMA value with the legacy `simple: true` semantics: returns the
+ * Read a PRAGMA value with the retired `simple: true` semantics: returns the
  * single value column without caring about its actual column name. node:sqlite
  * names the column after the pragma's first output (e.g. `busy_timeout` →
  * `timeout`), so projecting the first value is the only stable extraction.

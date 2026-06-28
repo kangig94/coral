@@ -1,6 +1,6 @@
 # 🪸 Coral
 
-[한국어](README.ko.md)
+[Korean](README.ko.md)
 
 Claude Code already knows how to code. Coral teaches it how _you_ work.
 
@@ -233,7 +233,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | `CORAL_MAX_WORKERS`        | `10`                | Max concurrent workers (1–10)                                                                                                                                                                                                                                   |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2`                 | Max epochs before discussion auto-ends (1–10)                                                                                                                                                                                                                   |
 | `CORAL_KB_GIT_SYNC`        | `0`                 | Enable KB git sync — auto push/pull with remote (`1` = enabled)                                                                                                                                                                                                 |
-| `CORAL_KB_ENABLE`          | _(unset → enabled)_ | Set `0` to boot the daemon without the KB subsystem — no indexing, curate, or KB content injected. Flipping back to `1` and running a `kb …` command auto-restarts the daemon to re-enable ([details](docs/configuration.md))                                   |
+| `CORAL_KB_ENABLE`          | _(unset → enabled)_ | Set `0` to boot the daemon without the KB daemon runtime — no indexing, curate, or KB content injected. Flipping back to `1` and running a `kb …` command auto-restarts the daemon to re-enable ([details](docs/configuration.md))                              |
 | `CORAL_KB_EXTRA_LANGS`     | _(none)_            | Extra KB language analyzers on top of the always-on `Intl.Segmenter` baseline; lowercase comma-separated codes such as `ko`. `ko` enables the Kiwi morphological analyzer (~1 GB resident when loaded)                                                          |
 | `CLAUDE_CONFIG_DIR`        | `~/.claude`         | Claude Code's config dir — Coral isolates its backend daemon and state per config dir, so multiple Claude configs run independently ([details](docs/configuration.md))                                                                                          |
 
@@ -243,7 +243,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 
 ### KB Language Analyzers
 
-Coral always indexes KB text with `Intl.Segmenter` as the baseline. **No configuration is required for multilingual search** — non-Latin scripts such as Korean, Chinese, and Japanese are searchable at word/어절 level out of the box. `CORAL_KB_EXTRA_LANGS` opts extra languages into a dedicated morphological analyzer on top of that always-on baseline. Use lowercase, comma-separated language codes, for example `ko`; today only `ko` has an engine.
+Coral always indexes KB text with `Intl.Segmenter` as the baseline. **No configuration is required for multilingual search** — non-Latin scripts such as Korean, Chinese, and Japanese are searchable at word-like units out of the box. `CORAL_KB_EXTRA_LANGS` opts extra languages into a dedicated morphological analyzer on top of that always-on baseline. Use lowercase, comma-separated language codes, for example `ko`; today only `ko` has an engine.
 
 The Korean engine is Kiwi `cong`. Opting into it can add about 1 GB of resident memory while loaded; it is lazy-loaded and idle-evicted, and Coral auto-fetches an approximately 88 MB model when needed.
 

@@ -1,4 +1,4 @@
-import { cloneEntityMetaRecord, cloneEntityRelationship, cloneKbIndex } from '../../corpus/index-records.js';
+import { cloneEntityMetaRecord, cloneEntityRelationship, cloneKbIndex } from '../../corpus/index/records.js';
 import { assertNonEmptyText, compareLocale } from '../../validation.js';
 import {
   getEntry,

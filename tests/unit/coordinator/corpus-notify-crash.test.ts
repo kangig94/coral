@@ -14,7 +14,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { persistCorpusState, readCorpusState } from '#src/kb/state/corpus-state.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
-import { ConsumerDriver } from '#src/coordinator/consumer-driver/index.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import type { CorpusConsumerRegistration } from '#src/store/consumer-contract.js';
 

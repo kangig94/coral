@@ -4,6 +4,7 @@ import { resolveInjectMd } from '../inject.js';
 import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../../infra/kb-toggle.js';
 import type { ProviderRequest, EffortLevel } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
+import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { z } from 'zod';
@@ -30,11 +31,11 @@ export interface ClaudeBootstrapSignature {
 const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 const OPUS_RANK = ABSTRACT_MODEL_TIERS.opus;
 
-/** SHA-256 hash of sorted env entries (excluding CORAL_CHILD). Shared by adapter and broker. */
+/** SHA-256 hash of sorted env entries (excluding ephemeral child-boundary credentials). Shared by adapter and broker. */
 export function hashSortedEnv(env: Record<string, string>): string {
   const sortedEntries: [string, string][] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (key !== 'CORAL_CHILD') {
+    if (key !== 'CORAL_CHILD' && key !== CORAL_CHILD_PRINCIPAL_HANDLE) {
       sortedEntries.push([key, value]);
     }
   }
@@ -92,7 +93,7 @@ export function normalizeControllerEnv(env?: Record<string, string>): Record<str
  *
  * Precedence: an explicit per-request `model` wins outright; else
  * `CORAL_CLAUDE_MODEL` is the launch default; else `undefined`, which leaves the
- * model unspecified so the Claude TUI uses its own default (Coral states no
+ * model unspecified so Claude uses its own default (Coral states no
  * opinion). Empty string is treated as unset.
  *
  * The control flow deliberately differs from the Codex analog

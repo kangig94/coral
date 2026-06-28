@@ -1,4 +1,5 @@
 declare const __PLUGIN_ROOT__: string;
+declare const __BUNDLE_DIR__: string | undefined;
 declare const __VERSION__: string;
 
 import { spawn } from 'node:child_process';
@@ -18,7 +19,7 @@ import { createIpcClient, type IpcClient } from './client.js';
 import { bindSocket } from './server.js';
 import { IncumbentMatchesError, requestIncumbentShutdown, type DesiredIncumbentIdentity } from './handoff.js';
 import { shutdownBackend } from '../http/backend/shutdown.js';
-import type { TransportSubsystemStatus } from '../server-ports.js';
+import type { TransportRuntimeComponentStatus } from '../server-ports.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { CoralSetupError, type SerializedCoralSetupError } from '../../runtime/errors.js';
 export const STARTUP_POLL_MS = 200;
@@ -51,7 +52,7 @@ export type RawCoordinatorHealth = {
   namespace: string;
   pid?: number;
   processStartedAt?: number;
-  subsystems?: TransportSubsystemStatus[];
+  components?: TransportRuntimeComponentStatus[];
 };
 
 export type VerifiedBackendInfo = {
@@ -63,6 +64,8 @@ export type VerifiedBackendInfo = {
   namespace: string;
   startedAt: number;
   token: string;
+  bootToken: string;
+  shutdownToken?: string;
   host: string;
   version: string;
   instanceId: string;
@@ -95,6 +98,11 @@ type StartupErrorSentinel = {
   readonly attemptId: string;
   readonly pid: number;
   readonly startedAt: number;
+  readonly recordedAt?: number;
+  readonly phase?: string;
+  readonly state?: string;
+  readonly exitCode?: number;
+  readonly diagnosticFile?: string;
   readonly socketPath: string;
   readonly bundleHash: string;
   readonly flavor: 'prod' | 'dev';
@@ -103,7 +111,7 @@ type StartupErrorSentinel = {
 };
 
 function summarizeBackend(info: VerifiedBackendInfo, timePort: TimePort): EnsuredIpcClient {
-  return Object.assign(createIpcClient(info.socketPath, timePort), {
+  return Object.assign(createIpcClient(info.socketPath, timePort, { kind: 'boot', token: info.bootToken }), {
     instanceId: info.instanceId,
     bundleHash: info.bundleHash,
     flavor: info.flavor,
@@ -140,15 +148,15 @@ function isRawCoordinatorHealth(value: unknown): value is RawCoordinatorHealth {
     value.instanceId.length > 0 &&
     typeof value.namespace === 'string' &&
     value.namespace.length > 0 &&
-    (value.subsystems === undefined || Array.isArray(value.subsystems))
+    (value.components === undefined || Array.isArray(value.components))
   );
 }
 
 /**
- * Treat both legacy `'ok'` and the new lifecycle phases (`'kernel-ready'`,
- * `'running'`) as "the daemon is ready to serve requests". Older composition
- * layers may map kernel-ready/running to legacy `'ok'`; newer ones report the
- * lifecycle phase directly.
+ * Treat both coarse `'ok'` and lifecycle phases (`'kernel-ready'`,
+ * `'running'`) as "the daemon is ready to serve requests". Some composition
+ * layers map kernel-ready/running to `'ok'`; others report the lifecycle phase
+ * directly.
  */
 function isReadyStatus(status: RawCoordinatorHealth['status']): boolean {
   return status === 'ok' || status === 'kernel-ready' || status === 'running';
@@ -167,6 +175,10 @@ function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
     (record.host === undefined || (typeof record.host === 'string' && record.host.length > 0)) &&
     typeof record.token === 'string' &&
     record.token.length > 0 &&
+    typeof record.bootToken === 'string' &&
+    record.bootToken.length > 0 &&
+    (record.shutdownToken === undefined ||
+      (typeof record.shutdownToken === 'string' && record.shutdownToken.length > 0)) &&
     typeof record.version === 'string' &&
     record.version.length > 0 &&
     typeof record.bundleHash === 'string' &&
@@ -211,7 +223,7 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
 
 async function readRawCoordinatorHealth(client: IpcClient): Promise<RawCoordinatorHealth | null> {
   try {
-    const health = await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
+    const health = await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
     return isRawCoordinatorHealth(health) ? health : null;
   } catch {
     return null;
@@ -504,6 +516,13 @@ function resolvePluginRoot(pluginRoot?: string): string {
   return process.cwd();
 }
 
+function resolveBackendBin(root: string): string {
+  if (typeof __BUNDLE_DIR__ === 'string' && __BUNDLE_DIR__.length > 0) {
+    return join(__BUNDLE_DIR__, 'coral-backend.cjs');
+  }
+  return join(root, 'bridge', 'coral-backend.cjs');
+}
+
 /**
  * Ensure a Coral coordinator daemon is running and compatible with the calling
  * plugin bundle. The CLI side mirrors daemon-side `bindWithHandoff` — it
@@ -512,7 +531,7 @@ function resolvePluginRoot(pluginRoot?: string): string {
  * `requestIncumbentShutdown` helper for graceful cross-version handoff.
  *
  * Decision tree:
- *   1. Probe existing socket via `transport.health`.
+ *   1. Probe existing socket via unauthenticated `transport.ping`.
  *      - Compatible + ready  → return summary (or wait for `coordinator.json`
  *                              if `starting` or discovery missing).
  *      - Compatible + draining → wait for socket release, fall through to spawn.
@@ -536,7 +555,7 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
     namespace,
   };
   const desiredIdentity: DesiredIncumbentIdentity = { bundleHash, flavor, namespace };
-  const backendBin = join(root, 'bridge', 'coral-backend.cjs');
+  const backendBin = resolveBackendBin(root);
 
   const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, ipcTime));
 
@@ -560,12 +579,23 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
   } else if (health && !isCompatibleHealth(health, desired)) {
     // Mismatched bundle/flavor/namespace — same shutdown path as daemon-side.
     try {
-      await requestIncumbentShutdown({
+      const info = readDiscoverySnapshot(paths);
+      const shutdownCredential = info?.bootToken;
+      const shutdownResult = await requestIncumbentShutdown({
         socketPath: paths.socketPath,
         desired: desiredIdentity,
+        bootToken: shutdownCredential,
         timeoutMs: HEALTH_TIMEOUT_MS,
         timePort: ipcTime,
       });
+      if (shutdownResult.shutdownUnauthorized) {
+        throw new BackendUnreachableError('Manual shutdown required: incumbent rejected shutdown capability.');
+      }
+      if (!shutdownResult.shutdownAttempted && shutdownCredential === undefined) {
+        throw new BackendUnreachableError(
+          'Manual shutdown required: refusing handoff because verified shutdown capability was unavailable.',
+        );
+      }
     } catch (error) {
       if (error instanceof IncumbentMatchesError) {
         // Health classified the incumbent as incompatible but the helper
@@ -577,6 +607,9 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
             ipcTime,
           );
         }
+      }
+      if (error instanceof BackendUnreachableError && error.message.startsWith('Manual shutdown required:')) {
+        throw error;
       }
       // ignore other errors: bounded escalation happens via socket-release wait
     }

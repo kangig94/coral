@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { backendLog } from '#src/infra/backend-log.js';
+import type { Principal } from '#src/security/principal.js';
 
 const tempDirs: string[] = [];
 
@@ -14,6 +17,62 @@ function makeSocketPath(): string {
   return join(root, 'coordinator.sock');
 }
 
+async function withTestTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 1_000): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+async function waitForCondition(condition: () => boolean, label: string): Promise<void> {
+  await withTestTimeout(
+    new Promise<void>((resolve) => {
+      const poll = () => {
+        if (condition()) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, 5);
+      };
+      poll();
+    }),
+    label,
+  );
+}
+
+async function connectRawIpcSocket(socketPath: string): Promise<Socket> {
+  const socket = createConnection(socketPath);
+  return await withTestTimeout(
+    new Promise<Socket>((resolve, reject) => {
+      const onConnect = () => {
+        socket.off('error', onError);
+        socket.on('error', () => undefined);
+        resolve(socket);
+      };
+      const onError = (error: Error) => {
+        socket.off('connect', onConnect);
+        reject(error);
+      };
+      socket.once('connect', onConnect);
+      socket.once('error', onError);
+    }),
+    'raw IPC socket connect',
+  );
+}
+
+function hasLogLine(ports: HttpHandlerPorts, text: string): boolean {
+  return vi.mocked(ports.identity.log).mock.calls.some(([line]) => typeof line === 'string' && line.includes(text));
+}
+
 function createPorts(): HttpHandlerPorts {
   const requestDrain = vi.fn();
 
@@ -21,6 +80,8 @@ function createPorts(): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'unused-for-ipc',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -56,7 +117,7 @@ function createPorts(): HttpHandlerPorts {
         inflightRequests: 0,
         textProjectionState: 'idle',
         env: {},
-        subsystems: [{ id: 'kb', phase: 'online' as const }],
+        components: [{ id: 'kb', phase: 'online' as const }],
       }),
     },
     events: {
@@ -158,7 +219,9 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'discuss.session.list', {})).resolves.toEqual({
+      await expect(
+        requestIpcMethod(socketPath, 'discuss.session.list', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).resolves.toEqual({
         sessions: [
           {
             sessionId: 'session-1',
@@ -176,7 +239,137 @@ describe('ipc server', () => {
     }
   });
 
-  it('exposes transport-local health and shutdown methods outside rpcCatalog', async () => {
+  it('authenticates catalog requests through child principal handles and rejects over-cap/replayed requests', async () => {
+    const childPrincipal: Principal = {
+      subject: 'operator',
+      transport: 'ipc',
+      credential: { kind: 'child-principal', id: 'job-a:session-a' },
+      binding: { kind: 'unbound' },
+      attenuatedCaps: new Set(['jobs:read']),
+    };
+    const ports: HttpHandlerPorts = {
+      ...createPorts(),
+      childPrincipals: {
+        authenticate: vi.fn((auth, namespace, nowMs) => {
+          if (
+            namespace === 'test-namespace' &&
+            nowMs === 0 &&
+            auth.handle === 'handle-a' &&
+            auth.jobId === 'job-a' &&
+            auth.sessionId === 'session-a'
+          ) {
+            return childPrincipal;
+          }
+          return null;
+        }),
+      },
+    };
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'jobs.list',
+          {},
+          {
+            auth: {
+              kind: 'child',
+              handle: 'handle-a',
+              token: 'nonce-1',
+              jobId: 'job-a',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).resolves.toEqual({ jobs: [] });
+
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'coordinator.listExpansion',
+          {},
+          {
+            auth: {
+              kind: 'child',
+              handle: 'handle-a',
+              token: 'nonce-2',
+              jobId: 'job-a',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).rejects.toThrow('Missing required capability');
+
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'jobs.list',
+          {},
+          {
+            auth: {
+              kind: 'child',
+              handle: 'handle-a',
+              token: 'nonce-3',
+              jobId: 'job-b',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).rejects.toThrow('IPC boot token or child principal required');
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('exposes unauthenticated ping plus boot-token-authenticated health and shutdown methods', async () => {
+    const ports = createPorts();
+    const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(requestIpcMethod(socketPath, 'transport.ping')).resolves.toEqual({
+        status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        namespace: 'test-namespace',
+        instanceId: 'test-instance',
+        pid: 12345,
+      });
+      await expect(
+        requestIpcMethod(socketPath, 'transport.health', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).resolves.toMatchObject({
+        status: 'ok',
+        instanceId: 'test-instance',
+        components: [{ id: 'kb', phase: 'online' }],
+      });
+      await expect(
+        requestIpcMethod(socketPath, 'transport.shutdown', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).resolves.toEqual({
+        status: 'draining',
+        instanceId: 'test-instance',
+      });
+      expect(requestDrain).toHaveBeenCalledWith('replaced');
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
+        ),
+      ).toBe(true);
+      expect(messages.some((message) => message.includes('"transport":"ipc"'))).toBe(true);
+    } finally {
+      await closeIpcServer(listener);
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects transport.shutdown without the shutdown capability', async () => {
     const ports = createPorts();
     const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
     const listener = createIpcServer(ports);
@@ -184,16 +377,150 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'transport.health')).resolves.toMatchObject({
+      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow('Manual shutdown required');
+      expect(requestDrain).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('restarts the KB daemon supervisor through boot-token authenticated IPC', async () => {
+    const childHealth = {
+      enabled: true as const,
+      phase: 'online' as const,
+      generation: 2,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    };
+    const ports = createPorts();
+    ports.admin.restartKbDaemon = vi.fn(async () => childHealth);
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        requestIpcMethod(socketPath, 'transport.kb.restart', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).resolves.toEqual({
         status: 'ok',
         instanceId: 'test-instance',
+        kbDaemon: childHealth,
       });
-      await expect(requestIpcMethod(socketPath, 'transport.shutdown')).resolves.toEqual({
-        status: 'draining',
-        instanceId: 'test-instance',
-      });
-      expect(requestDrain).toHaveBeenCalledWith('replaced');
+      expect(ports.admin.restartKbDaemon).toHaveBeenCalledWith('ipc-admin');
+      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+      expect(
+        messages.some(
+          (message) => message.startsWith('audit ') && message.includes('"event":"admin_kb_daemon_restart_requested"'),
+        ),
+      ).toBe(true);
+      expect(messages.some((message) => message.includes('"transport":"ipc"'))).toBe(true);
     } finally {
+      await closeIpcServer(listener);
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects transport.kb.restart without the shutdown capability', async () => {
+    const ports = createPorts();
+    ports.admin.restartKbDaemon = vi.fn(async () => ({
+      enabled: true as const,
+      phase: 'online' as const,
+      generation: 1,
+      pid: 12345,
+      startedAt: 10,
+      readyAt: 20,
+    }));
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(requestIpcMethod(socketPath, 'transport.kb.restart', {})).rejects.toThrow(
+        'Manual KB daemon restart requires shutdown capability',
+      );
+      expect(ports.admin.restartKbDaemon).not.toHaveBeenCalled();
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('returns a JSON-RPC error when transport.kb.restart fails', async () => {
+    const ports = createPorts();
+    ports.admin.restartKbDaemon = vi.fn(async () => {
+      throw new Error('restart failed');
+    });
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        requestIpcMethod(socketPath, 'transport.kb.restart', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).rejects.toThrow('Internal error');
+      expect(ports.admin.restartKbDaemon).toHaveBeenCalledWith('ipc-admin');
+      expect(hasLogLine(ports, 'IPC request error (transport.kb.restart): Error: restart failed')).toBe(true);
+    } finally {
+      await closeIpcServer(listener);
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects IPC connections above the configured socket cap', async () => {
+    const ports = createPorts();
+    const listener = createIpcServer(ports, {
+      firstFrameTimeoutMs: 60_000,
+      maxOpenSockets: 1,
+      writeDrainTimeoutMs: 10,
+    });
+    const socketPath = makeSocketPath();
+    let first: Socket | null = null;
+    let second: Socket | null = null;
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      first = await connectRawIpcSocket(socketPath);
+      await waitForCondition(() => listener.sockets.size === 1, 'first IPC socket tracked');
+      second = await connectRawIpcSocket(socketPath);
+      await waitForCondition(() => hasLogLine(ports, 'IPC connection cap exceeded'), 'IPC connection cap log');
+
+      expect(listener.sockets.size).toBe(1);
+      expect(hasLogLine(ports, 'IPC connection cap exceeded')).toBe(true);
+    } finally {
+      first?.destroy();
+      second?.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('destroys sockets that exceed the aggregate pending frame budget', async () => {
+    const ports = createPorts();
+    const listener = createIpcServer(ports, {
+      firstFrameTimeoutMs: 60_000,
+      maxAggregatePendingFrameBytes: 8,
+      writeDrainTimeoutMs: 10,
+    });
+    const socketPath = makeSocketPath();
+    let first: Socket | null = null;
+    let second: Socket | null = null;
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      first = await connectRawIpcSocket(socketPath);
+      second = await connectRawIpcSocket(socketPath);
+      await waitForCondition(() => listener.sockets.size === 2, 'two IPC sockets tracked');
+
+      first.write('aaaaa');
+      second.write('bbbbb');
+      await waitForCondition(() => listener.sockets.size === 1, 'over-budget IPC socket removed');
+
+      expect(listener.sockets.size).toBe(1);
+      expect(hasLogLine(ports, 'IPC pending frame budget exceeded')).toBe(true);
+    } finally {
+      first?.destroy();
+      second?.destroy();
       await closeIpcServer(listener);
     }
   });

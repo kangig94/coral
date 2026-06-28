@@ -3,8 +3,11 @@ declare const __VERSION__: string;
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
+import { assertRemoteAddressLiteral } from '../../infra/remote-address.js';
+import type { RemoteHttpAccessPolicy } from '../../transport/server-ports.js';
 import type { CoordinatorIdentity } from '../lifecycle.js';
 import { TypedEventBus } from '../event-bus.js';
 import type { CoordinatorCoreOptions } from './types.js';
@@ -17,8 +20,11 @@ import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
+import { ChildPrincipalRegistry } from '../child-principal-registry.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
+const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
+const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
 
 function isLoopbackBindHost(bindHost: string): boolean {
   const host = bindHost.trim().toLowerCase();
@@ -43,11 +49,82 @@ function assertRemoteBindHostAllowed(bindHost: string, allowRemote: string | und
   });
 }
 
+function parseRemoteAddressAllowlist(raw: string | undefined): readonly string[] {
+  if (raw === undefined) {
+    return [];
+  }
+
+  const parsed: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw.split(',')) {
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    let normalized: string;
+    try {
+      normalized = assertRemoteAddressLiteral(trimmed, REMOTE_BIND_ADDRESS_ALLOWLIST_ENV);
+    } catch (error) {
+      throw new CoralSetupError({
+        code: 'backend_remote_bind_invalid_allowlist',
+        userMessage: `Invalid ${REMOTE_BIND_ADDRESS_ALLOWLIST_ENV} entry '${trimmed}'.`,
+        remediation: `${REMOTE_BIND_ADDRESS_ALLOWLIST_ENV} currently accepts comma-separated IP address literals only; use ${REMOTE_BIND_UNRESTRICTED_ENV}=1 only behind a trusted network boundary.`,
+        context: {
+          allowlistEnv: REMOTE_BIND_ADDRESS_ALLOWLIST_ENV,
+          invalidEntry: trimmed,
+          cause: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+    if (seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    parsed.push(normalized);
+  }
+  return parsed;
+}
+
+function resolveRemoteAccessPolicy(params: {
+  bindHost: string;
+  allowRemote: string | undefined;
+  allowlist: string | undefined;
+  unrestricted: string | undefined;
+}): RemoteHttpAccessPolicy {
+  const { bindHost, allowRemote, allowlist, unrestricted } = params;
+  if (isLoopbackBindHost(bindHost)) {
+    return { mode: 'loopback' };
+  }
+
+  assertRemoteBindHostAllowed(bindHost, allowRemote);
+  const allowedRemoteAddresses = parseRemoteAddressAllowlist(allowlist);
+  if (allowedRemoteAddresses.length > 0) {
+    return { mode: 'address_allowlist', allowedRemoteAddresses };
+  }
+
+  if (unrestricted === '1') {
+    return { mode: 'unrestricted' };
+  }
+
+  throw new CoralSetupError({
+    code: 'backend_remote_bind_requires_access_policy',
+    userMessage: `Refusing to bind Coral backend to non-loopback host '${bindHost}' without a remote access policy.`,
+    remediation: `Set ${REMOTE_BIND_ADDRESS_ALLOWLIST_ENV} to a comma-separated list of trusted client IP addresses, or set ${REMOTE_BIND_UNRESTRICTED_ENV}=1 only behind a trusted network boundary.`,
+    context: {
+      bindHost,
+      optInEnv: REMOTE_BIND_OPT_IN_ENV,
+      allowlistEnv: REMOTE_BIND_ADDRESS_ALLOWLIST_ENV,
+      unrestrictedEnv: REMOTE_BIND_UNRESTRICTED_ENV,
+    },
+  });
+}
+
 export interface CoordinatorWorld {
   readonly identity: CoordinatorIdentity;
   readonly namespace: string;
   readonly bindHost: string;
   readonly advertiseHost?: string;
+  readonly remoteAccess: RemoteHttpAccessPolicy;
   readonly backendPid: number;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
   readonly resolveProjectSource: (projectRoot: string) => string;
@@ -56,6 +133,7 @@ export interface CoordinatorWorld {
   readonly eventBus: TypedEventBus;
   readonly providerRegistry: ProviderRegistry;
   readonly pluginRegistry: PluginRegistry;
+  readonly childPrincipalRegistry: ChildPrincipalRegistry;
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
@@ -81,9 +159,28 @@ export function createCoordinatorWorld(
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
+  const bootToken = bootSnapshot.bootToken ?? runtime.ids.randomBytes(32).toString('hex');
+  const shutdownToken = bootSnapshot.shutdownToken ?? runtime.ids.randomBytes(32).toString('hex');
   const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
-  assertRemoteBindHostAllowed(bindHost, runtime.env.get(REMOTE_BIND_OPT_IN_ENV));
   const advertiseHost = bootSnapshot.advertiseHost ?? runtime.env.get('CORAL_BACKEND_ADVERTISE_HOST');
+  const remoteAccess = resolveRemoteAccessPolicy({
+    bindHost,
+    allowRemote: runtime.env.get(REMOTE_BIND_OPT_IN_ENV),
+    allowlist: runtime.env.get(REMOTE_BIND_ADDRESS_ALLOWLIST_ENV),
+    unrestricted: runtime.env.get(REMOTE_BIND_UNRESTRICTED_ENV),
+  });
+  if (remoteAccess.mode !== 'loopback') {
+    writeAuditEvent(
+      'remote_bind_enabled',
+      {
+        bindHost,
+        advertiseHost,
+        mode: remoteAccess.mode,
+        allowlistCount: remoteAccess.allowedRemoteAddresses?.length ?? 0,
+      },
+      remoteAccess.mode === 'unrestricted' ? 'warn' : 'info',
+    );
+  }
   const backendPid = bootSnapshot.pid ?? runtime.env.pid();
   const coralEnvSnapshot = runtime.env.coralSnapshot();
   const now = bootSnapshot.now ?? (() => runtime.time.now());
@@ -98,6 +195,7 @@ export function createCoordinatorWorld(
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
     env: runtime.env,
@@ -120,6 +218,8 @@ export function createCoordinatorWorld(
     flavor,
     instanceId,
     token,
+    bootToken,
+    shutdownToken,
     now,
     log,
   };
@@ -129,6 +229,7 @@ export function createCoordinatorWorld(
     namespace,
     bindHost,
     advertiseHost,
+    remoteAccess,
     backendPid,
     coralEnvSnapshot,
     resolveProjectSource,
@@ -136,6 +237,7 @@ export function createCoordinatorWorld(
     launchCoordinator,
     eventBus,
     providerRegistry,
+    childPrincipalRegistry,
     pluginRegistry,
     discussRegistry,
     storeServicesRef,
