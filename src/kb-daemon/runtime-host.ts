@@ -50,7 +50,7 @@ import {
 } from '../kb/capability/constants.js';
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
-import type { Database } from '../store/db.js';
+import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
 
 type KbDaemonWriteRuntimeOptions = {
@@ -91,10 +91,6 @@ type KbDaemonWriteRuntimeState = {
   abortRegistry: AbortRegistry;
 };
 
-const STORE_DB_MODULE = '../store/db.js';
-type StoreDbModule = {
-  openWritableStoreDbNoReset(runtime: Runtime): WritableDatabase;
-};
 
 const DEFAULT_DAEMON_CORPUS_READINESS_TIMEOUT_MS = 90_000;
 const DEFAULT_DAEMON_JOB_DRAIN_TIMEOUT_MS = 5_000;
@@ -252,7 +248,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     let daemonConsumerDriver: ConsumerDriver | null = null;
 
     try {
-      db = options.db ?? ((await import(STORE_DB_MODULE)) as StoreDbModule).openWritableStoreDbNoReset(runtime);
+      db = options.db ?? (openWritableStoreDbNoReset(runtime) as unknown as WritableDatabase);
       const activeDb = db;
       const flavor = readBuildFlavor(options.pluginRoot);
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
