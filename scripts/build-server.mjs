@@ -77,7 +77,7 @@ const sharedOpts = {
   platform: 'node',
   target: 'node22',
   format: 'cjs',
-  external: ['node:*', 'better-sqlite3', '@lydell/node-pty'],
+  external: ['node:*', '@lydell/node-pty'],
   loader: { '.sql': 'text' },
   minify: true,
   banner: {
