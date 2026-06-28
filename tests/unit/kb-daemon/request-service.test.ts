@@ -4,7 +4,37 @@ import { describe, expect, it, vi } from 'vitest';
 import { createKbDaemonRequestService } from '#src/kb-daemon/request-service.js';
 import { INDEX_FILE } from '#src/kb/corpus/index/store.js';
 import { communityPathFromName, kbRuntimeDir, memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
+import type { PrincipalWire } from '#src/security/principal-wire.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+function principalWire(projectRoot: string): PrincipalWire {
+  return {
+    subject: 'operator' as const,
+    binding: { kind: 'project' as const, root: projectRoot },
+  };
+}
+
+function daemonCtx(projectRoot = '/workspace/project-a', principal: PrincipalWire = principalWire(projectRoot)) {
+  return { projectRoot, pluginRoot: '/plugin', principal };
+}
+
+const deniedSourceImportPrincipals: Array<[string, PrincipalWire]> = [
+  [
+    'agent unbound principal',
+    {
+      subject: 'agent',
+      binding: { kind: 'unbound' },
+    },
+  ],
+  [
+    'attenuated operator without source import',
+    {
+      subject: 'operator',
+      binding: { kind: 'project', root: '/workspace/project-a' },
+      attenuatedCaps: ['liveness', 'kb:read', 'kb:write'],
+    },
+  ],
+];
 
 function writeNote(runtime: SimulationRuntime, slug: string): void {
   const path = notePathFromName(slug, runtime.paths.coral.corpus.kbRoot);
@@ -84,7 +114,7 @@ describe('KB daemon request service', () => {
     writeNote(runtime, 'alpha-note');
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
 
-    const result = await read({ method: 'readNote', slug: 'alpha-note' });
+    const result = await read({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
 
     expect(result).toMatchObject({
       ok: true,
@@ -104,7 +134,9 @@ describe('KB daemon request service', () => {
 
     expect(service.health()).toEqual({ phase: 'not_initialized' });
 
-    await expect(service.read({ method: 'readNote', slug: 'alpha-note' })).resolves.toMatchObject({ ok: true });
+    await expect(service.read({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() })).resolves.toMatchObject({
+      ok: true,
+    });
 
     expect(service.health()).toEqual({ phase: 'ready', initializedAt: 1234 });
   });
@@ -125,7 +157,7 @@ describe('KB daemon request service', () => {
     });
     const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime, now: () => 1234 });
 
-    const result = await service.read({ method: 'readNote', slug: 'alpha-note' });
+    const result = await service.read({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
 
     expect(result).toMatchObject({
       ok: false,
@@ -143,7 +175,39 @@ describe('KB daemon request service', () => {
     const runtime = new SimulationRuntime();
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
 
-    const result = await read({ method: 'readNote', slug: '../alpha-note' });
+    const result = await read({ method: 'readNote', slug: '../alpha-note', ctx: daemonCtx() });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_request',
+    });
+  });
+
+  it.each([
+    ['missing ctx', undefined],
+    ['missing principal', { projectRoot: '/workspace/project-a' }],
+    ['unknown subject', { projectRoot: '/workspace/project-a', principal: { subject: 'admin' } }],
+    [
+      'bad binding',
+      { projectRoot: '/workspace/project-a', principal: { subject: 'operator', binding: { kind: 'workspace' } } },
+    ],
+    [
+      'non-array attenuation',
+      {
+        projectRoot: '/workspace/project-a',
+        principal: {
+          subject: 'operator',
+          binding: { kind: 'project', root: '/workspace/project-a' },
+          attenuatedCaps: 'expansion:manage',
+        },
+      },
+    ],
+  ])('rejects read requests with %s instead of elevating', async (_label, ctx) => {
+    const runtime = new SimulationRuntime();
+    writeNote(runtime, 'alpha-note');
+    const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
+
+    const result = await read({ method: 'readNote', slug: 'alpha-note', ctx } as never);
 
     expect(result).toMatchObject({
       ok: false,
@@ -157,16 +221,20 @@ describe('KB daemon request service', () => {
     writeMemo(runtime, projectRoot);
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
 
-    const missingContext = await read({ method: 'listMemos', args: {} });
+    const missingContext = await read({
+      method: 'listMemos',
+      args: {},
+      ctx: { principal: principalWire(projectRoot) },
+    });
     expect(missingContext).toMatchObject({
       ok: false,
-      code: 'invalid_request',
+      code: 'unauthorized',
     });
 
     const result = await read({
       method: 'listMemos',
       args: { owner: 'kang' },
-      ctx: { projectRoot, pluginRoot: '/plugin' },
+      ctx: daemonCtx(projectRoot),
     });
     expect(result).toMatchObject({
       ok: true,
@@ -184,7 +252,7 @@ describe('KB daemon request service', () => {
     const missingContext = await service.mutate({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'daemon memo body', owner: 'kang' },
-    });
+    } as never);
     expect(missingContext).toMatchObject({
       ok: false,
       code: 'invalid_request',
@@ -194,12 +262,21 @@ describe('KB daemon request service', () => {
       service.mutate({
         method: 'createMemo',
         args: { topic: 'alpha', content: 'daemon memo body', owner: 'kang' },
-        ctx: { projectRoot, pluginRoot: '/plugin', authority: 'user', coralEnv: { CORAL_JOB_ID: 'job-1' } },
+        ctx: {
+          projectRoot,
+          pluginRoot: '/plugin',
+          principal: principalWire(projectRoot),
+          coralEnv: { CORAL_JOB_ID: 'job-1' },
+        },
       }),
     ).resolves.toMatchObject({ ok: true });
 
     await expect(
-      service.read({ method: 'listMemos', args: { owner: 'kang' }, ctx: { projectRoot } }),
+      service.read({
+        method: 'listMemos',
+        args: { owner: 'kang' },
+        ctx: daemonCtx(projectRoot),
+      }),
     ).resolves.toMatchObject({
       ok: true,
       data: {
@@ -218,12 +295,16 @@ describe('KB daemon request service', () => {
       service.mutate({
         method: 'deleteMemos',
         args: { pattern: '*alpha.md', owner: 'kang' },
-        ctx: { projectRoot, pluginRoot: '/plugin' },
+        ctx: daemonCtx(projectRoot),
       }),
     ).resolves.toMatchObject({ ok: true });
 
     await expect(
-      service.read({ method: 'listMemos', args: { owner: 'kang' }, ctx: { projectRoot } }),
+      service.read({
+        method: 'listMemos',
+        args: { owner: 'kang' },
+        ctx: daemonCtx(projectRoot),
+      }),
     ).resolves.toMatchObject({
       ok: true,
       data: { memos: [] },
@@ -250,7 +331,11 @@ describe('KB daemon request service', () => {
       service.mutate({
         method: 'updateNote',
         args: { note: 'alpha-note' },
-        ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+        ctx: {
+          projectRoot: '/workspace/project-a',
+          pluginRoot: '/plugin',
+          principal: principalWire('/workspace/project-a'),
+        },
       }),
     ).resolves.toMatchObject({
       ok: false,
@@ -260,12 +345,56 @@ describe('KB daemon request service', () => {
     expect(writeRuntime.withKb).not.toHaveBeenCalled();
   });
 
+  it.each(deniedSourceImportPrincipals)(
+    'denies createSource for %s before touching write runtime services',
+    async (_label, principal) => {
+      const runtime = new SimulationRuntime();
+      const projectRoot = '/workspace/project-a';
+      const insidePath = join(projectRoot, 'inside.md');
+      runtime.storage.mkdirSync(projectRoot, { recursive: true });
+      runtime.storage.writeFileSync(insidePath, '# Inside\n');
+      const withKb = vi.fn(async () => {
+        throw new Error('withKb should not be called');
+      });
+      const createSource = vi.fn(async () => {
+        throw new Error('source import should not be called');
+      });
+      const service = createKbDaemonRequestService({
+        pluginRoot: '/plugin',
+        runtime,
+        writeRuntime: {
+          withKb,
+          createSource,
+          reindex: vi.fn(async () => {
+            throw new Error('reindex should not be called');
+          }),
+          health: () => ({ phase: 'ready' as const, initializedAt: 1 }),
+        },
+      });
+
+      const result = await service.mutate({
+        method: 'createSource',
+        args: { filePath: insidePath, readiness: 'base-search', async: false },
+        ctx: daemonCtx(projectRoot, principal),
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        code: 'unauthorized',
+      });
+      expect(createSource).not.toHaveBeenCalled();
+      expect(withKb).not.toHaveBeenCalled();
+    },
+  );
+
   it('generates wake-up packets from the daemon request runtime', async () => {
     const runtime = new SimulationRuntime();
     writeWiki(runtime, 'kangig94-coral');
     const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime });
 
-    await expect(service.read({ method: 'wakeUp', args: { project: 'kangig94-coral' } })).resolves.toMatchObject({
+    await expect(
+      service.read({ method: 'wakeUp', args: { project: 'kangig94-coral' }, ctx: daemonCtx() }),
+    ).resolves.toMatchObject({
       ok: true,
       data: {
         content: expect.stringContaining('Daemon wake-up understanding.'),
@@ -281,13 +410,15 @@ describe('KB daemon request service', () => {
     runtime.storage.writeFileSync(indexPath, '{not-json');
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
 
-    await expect(read({ method: 'listStaleCommunities' })).resolves.toEqual({
+    await expect(read({ method: 'listStaleCommunities', ctx: daemonCtx() })).resolves.toEqual({
       ok: true,
       data: [{ slug: 'alpha-community', level: 0 }],
     });
     expect(runtime.storage.existsSync(indexPath)).toBe(true);
 
-    await expect(read({ method: 'readCommunitySummaryInput', slug: 'alpha-community' })).resolves.toMatchObject({
+    await expect(
+      read({ method: 'readCommunitySummaryInput', slug: 'alpha-community', ctx: daemonCtx() }),
+    ).resolves.toMatchObject({
       ok: true,
       data: {
         slug: 'alpha-community',
@@ -296,7 +427,9 @@ describe('KB daemon request service', () => {
       },
     });
 
-    await expect(read({ method: 'readCommunitySummaryInput', slug: 'missing-community' })).resolves.toMatchObject({
+    await expect(
+      read({ method: 'readCommunitySummaryInput', slug: 'missing-community', ctx: daemonCtx() }),
+    ).resolves.toMatchObject({
       ok: false,
       code: 'not_found',
     });

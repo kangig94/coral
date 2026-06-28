@@ -81,7 +81,10 @@ export function buildClaudeProviderServerSpec(
 }
 
 export function mapSessionEnsureParams(
-  request: Pick<ProviderRequest, 'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv' | 'model' | 'effort'>,
+  request: Pick<
+    ProviderRequest,
+    'cwd' | 'bypassPermissions' | 'conversationRef' | 'coralEnv' | 'secretEnv' | 'model' | 'effort'
+  >,
   ids: Pick<IdPort, 'sha256'>,
   derivedSystemPrompt?: string,
   persistedContinuity?: ProviderContinuityBlob,
@@ -92,7 +95,7 @@ export function mapSessionEnsureParams(
     ...bootstrapSignature,
     brokerSessionKey: continuity.brokerSessionKey,
     conversationRef: continuity.conversationRef ?? request.conversationRef,
-    controllerEnv: normalizeControllerEnv(request.coralEnv),
+    controllerEnv: normalizeControllerEnv({ ...request.coralEnv, ...request.secretEnv }),
     systemPrompt: derivedSystemPrompt,
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),

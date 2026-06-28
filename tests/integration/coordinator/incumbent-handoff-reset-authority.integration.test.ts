@@ -213,6 +213,7 @@ describe('incumbent handoff reset authority', () => {
   it('serves pre-service health/errors and waits for incumbent handoff before resetting the old store', async () => {
     const runtime = createRuntime();
     const token = 'test-token';
+    const bootToken = 'test-boot-token';
     const shutdownToken = 'test-shutdown-token';
     const dbPath = runtime.paths.coral.store.dbFile;
     createMismatchStore(dbPath);
@@ -229,6 +230,7 @@ describe('incumbent handoff reset authority', () => {
         namespace: 'ns',
         startedAt: Date.now(),
         token,
+        bootToken,
         shutdownToken,
         processStartedAt,
       },
@@ -236,7 +238,7 @@ describe('incumbent handoff reset authority', () => {
     );
 
     const incumbent = await startScriptedIncumbent(runtime.paths.coral.coordinator.socketPath, async (request) => {
-      if (request.method === 'transport.health') {
+      if (request.method === 'transport.ping') {
         return {
           kind: 'response',
           id: request.id,
@@ -252,7 +254,8 @@ describe('incumbent handoff reset authority', () => {
       }
       if (request.method === 'transport.shutdown') {
         shutdownReceived = true;
-        expect(request.params).toEqual({ shutdownToken });
+        expect(request.auth).toEqual({ kind: 'boot', token: bootToken });
+        expect(request.params).toEqual({});
         return { kind: 'response', id: request.id, result: { status: 'draining' } };
       }
       return { kind: 'response', id: request.id, result: null };
@@ -267,6 +270,7 @@ describe('incumbent handoff reset authority', () => {
         flavor: 'prod',
         instanceId: 'replacement',
         token,
+        bootToken: 'replacement-boot-token',
         shutdownToken: 'replacement-shutdown-token',
         now: () => Date.now(),
         log: () => {},

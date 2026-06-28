@@ -5,6 +5,8 @@ import { readDiscoveryRecord } from '../../infra/backend-discovery.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import { createIpcClient } from '../../transport/ipc/client.js';
+import type { IpcAuthMetadata } from '../../transport/ipc/json-rpc.js';
+import { childPrincipalAuthFromEnv } from '../../transport/ipc/child-principal-auth.js';
 import { ensure } from '../../transport/ipc/ensure.js';
 import {
   equipExpansionResultSchema,
@@ -167,12 +169,21 @@ function createNonInteractiveOnboardingContext(
 }
 
 export function createCliExpansionActivation(): CliExpansionActivation {
+  const ipcAuth = childPrincipalAuthFromEnv();
+  const ipcAuthOptions = (): { auth: NonNullable<typeof ipcAuth> } | undefined => {
+    if (ipcAuth === null) {
+      throw new Error('CORAL_CHILD_PRINCIPAL_HANDLE is required for IPC re-entry from a Coral child process.');
+    }
+    return ipcAuth === undefined ? undefined : { auth: ipcAuth };
+  };
   const lowLevel = {
     async activateExpansion(name: string) {
       const client = await ensure(resolvePluginRoot());
       const runtime = resolveRuntime();
       const catalog = readExpansionCatalog(runtime);
-      const result = equipExpansionResultSchema.parse(await client.request('coordinator.equipExpansion', { name }));
+      const result = equipExpansionResultSchema.parse(
+        await client.request('coordinator.equipExpansion', { name }, ipcAuthOptions()),
+      );
       return installResultSchema.parse({
         ...result,
         expansion: withManifestSlot(catalog, result.expansion),
@@ -181,14 +192,16 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async deactivateExpansion(name: string) {
       const client = await ensure(resolvePluginRoot());
-      const result = unequipExpansionResultSchema.parse(await client.request('coordinator.unequipExpansion', { name }));
+      const result = unequipExpansionResultSchema.parse(
+        await client.request('coordinator.unequipExpansion', { name }, ipcAuthOptions()),
+      );
       return installResultSchema.parse(result);
     },
 
     async removeExpansionCatalog(name: string) {
       const client = await ensure(resolvePluginRoot());
       return removeExpansionCatalogResultSchema.parse(
-        await client.request('coordinator.removeExpansionCatalog', { name }),
+        await client.request('coordinator.removeExpansionCatalog', { name }, ipcAuthOptions()),
       );
     },
 
@@ -209,8 +222,13 @@ export function createCliExpansionActivation(): CliExpansionActivation {
       }
 
       try {
+        const bootAuth: IpcAuthMetadata = { kind: 'boot', token: record.bootToken };
         const result = listExpansionResultSchema.parse(
-          await createIpcClient(record.socketPath).request('coordinator.listExpansion', {}),
+          await createIpcClient(record.socketPath, runtime.time, ipcAuth === undefined ? bootAuth : undefined).request(
+            'coordinator.listExpansion',
+            {},
+            ipcAuthOptions(),
+          ),
         );
         const catalog = readExpansionCatalog(runtime);
         const expansions = result.expansions.map((entry) => withManifestSlot(catalog, entry));
@@ -229,7 +247,9 @@ export function createCliExpansionActivation(): CliExpansionActivation {
 
     async readBinding(binding: string): Promise<ReadBindingResult> {
       const client = await ensure(resolvePluginRoot());
-      return readBindingResultSchema.parse(await client.request('coordinator.readBinding', { binding }));
+      return readBindingResultSchema.parse(
+        await client.request('coordinator.readBinding', { binding }, ipcAuthOptions()),
+      );
     },
   } satisfies Pick<
     CliExpansionActivation,

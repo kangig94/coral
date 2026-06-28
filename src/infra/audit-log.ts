@@ -1,7 +1,25 @@
 import { backendLog } from './backend-log.js';
+import type { Capability } from '../security/capability.js';
+import type { Principal, ResourceBinding } from '../security/principal.js';
+import type { AuthorizationFailureDetail, AuthorizationFailureReason, Decision } from '../security/policy/authorize.js';
 
 export type AuditLogLevel = 'info' | 'warn' | 'error';
 export type AuditPayload = Record<string, unknown>;
+
+export type PrincipalAuditDescriptor = {
+  readonly subject: Principal['subject'];
+  readonly transport: string;
+  readonly binding: ResourceBinding;
+  readonly attenuatedCaps: readonly Capability[] | null;
+};
+
+export type DecisionAuditDescriptor =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly reason: AuthorizationFailureReason;
+      readonly detail: AuthorizationFailureDetail;
+    };
 
 const REDACTED = '[redacted]';
 const MAX_DEPTH = 6;
@@ -79,6 +97,55 @@ function sanitizeAuditValue(value: unknown, depth: number, seen: WeakSet<object>
 function sanitizePayload(payload: AuditPayload): AuditPayload {
   const sanitized = sanitizeAuditValue(payload, 0, new WeakSet<object>());
   return sanitized && typeof sanitized === 'object' && !Array.isArray(sanitized) ? (sanitized as AuditPayload) : {};
+}
+
+function describePrincipal(principal: Principal | null | undefined): PrincipalAuditDescriptor | null {
+  if (!principal) {
+    return null;
+  }
+
+  return {
+    subject: principal.subject,
+    transport: principal.transport,
+    binding: principal.binding,
+    attenuatedCaps: principal.attenuatedCaps ? [...principal.attenuatedCaps].sort() : null,
+  };
+}
+
+function describeDecision(decision: Decision): DecisionAuditDescriptor {
+  if (decision.ok) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: decision.reason,
+    detail: decision.detail,
+  };
+}
+
+export function describeAuthorizationDecision(
+  principal: Principal | null | undefined,
+  method: string,
+  decision: Decision,
+  binding: ResourceBinding,
+): AuditPayload {
+  return {
+    principal: describePrincipal(principal),
+    method,
+    decision: describeDecision(decision),
+    binding,
+  };
+}
+
+export function writeAuthorizationDecisionAudit(
+  principal: Principal | null | undefined,
+  method: string,
+  decision: Decision,
+  binding: ResourceBinding,
+  level: AuditLogLevel = decision.ok ? 'info' : 'warn',
+): void {
+  writeAuditEvent('authorization_decision', describeAuthorizationDecision(principal, method, decision, binding), level);
 }
 
 export function formatAuditEvent(event: string, payload: AuditPayload = {}): string {

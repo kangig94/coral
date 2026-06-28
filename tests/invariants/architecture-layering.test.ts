@@ -25,6 +25,8 @@ const DOMAIN_ROOTS = [
   'src/engines/',
 ] as const;
 const RUNTIME_INFRA_FORBIDDEN = [...DOMAIN_ROOTS, 'src/transport/', 'src/coordinator/', 'src/cli/'] as const;
+const SECURITY_ROOT = 'src/security/';
+const SECURITY_ALLOWED_TARGETS = new Set(['src/infra/port-types.ts', 'src/runtime/ports.ts']);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
@@ -109,6 +111,22 @@ describe('architecture layering invariants', () => {
         (source.startsWith('src/runtime/') || source.startsWith('src/infra/')) &&
         startsWithAny(target, RUNTIME_INFRA_FORBIDDEN),
     );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('security imports only security-local modules and runtime/infra port types', () => {
+    const violations = collectViolations((source, target) => {
+      if (!source.startsWith(SECURITY_ROOT)) {
+        return false;
+      }
+
+      if (target.startsWith(SECURITY_ROOT) || SECURITY_ALLOWED_TARGETS.has(target)) {
+        return false;
+      }
+
+      return target.startsWith('src/');
+    });
 
     expect(violations).toEqual([]);
   });

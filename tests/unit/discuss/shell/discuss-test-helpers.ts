@@ -35,6 +35,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
@@ -228,7 +229,12 @@ export function createDiscussHarness(
     store,
     createDiscussContextOptions(runtime, progressStore),
   );
-  const ctx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+  const ctx: InvocationContext = {
+    projectRoot,
+    pluginRoot,
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+  };
   let cleaned = false;
 
   const harness: DiscussHarness = {

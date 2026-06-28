@@ -39,6 +39,7 @@ import {
 import { convertSourceInWorker } from '#src/kb/ops/source/conversion-worker.js';
 import { kbSourceImportSchema } from '#src/kb/tool-contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { ResourceBinding } from '#src/security/principal.js';
 
 const tempRoots: string[] = [];
 
@@ -73,6 +74,14 @@ function envWith(value?: string): { get(key: string): string | undefined } {
   return {
     get: (key) => (key === 'CORAL_KB_IMPORT_MAX_BYTES' ? value : undefined),
   };
+}
+
+function projectBinding(root: string): ResourceBinding {
+  return { kind: 'project', root };
+}
+
+function unboundBinding(): ResourceBinding {
+  return { kind: 'unbound' };
 }
 
 function runtimeEnv(snapshot: Record<string, string>, platform = 'linux'): SourceImportRuntime['env'] {
@@ -120,7 +129,7 @@ describe('source import runtime isolation', () => {
     expect(kbSourceImportSchema.safeParse({ filePath: '../outside.md' }).success).toBe(true);
   });
 
-  it('derives source import read policies and admin caps from authority and env', () => {
+  it('derives source import read policies and admin caps from principal binding and env', () => {
     expect(resolveAdminSourceImportCap(envWith())).toBe(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT);
     expect(resolveAdminSourceImportCap(envWith('4096'))).toBe(4096);
     expect(resolveAdminSourceImportCap(envWith('0'))).toBeNull();
@@ -129,12 +138,12 @@ describe('source import runtime isolation', () => {
     expect(ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT).toBe(USER_SOURCE_IMPORT_MAX_BYTES);
     expect(SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES).toBe(USER_SOURCE_IMPORT_MAX_BYTES);
 
-    expect(deriveSourceImportReadPolicy('user', '/project', envWith('4096'))).toEqual({
+    expect(deriveSourceImportReadPolicy(projectBinding('/project'), '/project', envWith('4096'))).toEqual({
       kind: 'sandboxed',
       root: '/project',
       maxBytes: USER_SOURCE_IMPORT_MAX_BYTES,
     });
-    expect(deriveSourceImportReadPolicy('admin', '/project', envWith('4096'))).toEqual({
+    expect(deriveSourceImportReadPolicy(unboundBinding(), '/project', envWith('4096'))).toEqual({
       kind: 'unrestricted',
       resolveBase: '/project',
       maxBytes: 4096,
@@ -147,7 +156,7 @@ describe('source import runtime isolation', () => {
     const runtimeRoot = join(root, 'runtime');
     const { storage, readFile } = storageWithReadSpy();
     const runtime = fakeRuntime({ storage });
-    const policy = deriveSourceImportReadPolicy('user', root, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(root), root, envWith());
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(input, '# Runtime Isolated\n\nBody\n', 'utf8');
     const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
@@ -188,7 +197,7 @@ describe('source import runtime isolation', () => {
     const root = tempRoot('coral-source-import-traversal-');
     const projectRoot = join(root, 'project');
     const outside = join(root, 'outside.md');
-    const policy = deriveSourceImportReadPolicy('user', projectRoot, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(projectRoot), projectRoot, envWith());
     mkdirSync(projectRoot, { recursive: true });
     writeFileSync(outside, '# Outside\n\nSecret\n', 'utf8');
 
@@ -200,15 +209,19 @@ describe('source import runtime isolation', () => {
 
   it('allows an admin unrestricted policy to resolve an out-of-tree absolute path', () => {
     const storage = coherentSizeStorage(1);
-    const policy = deriveSourceImportReadPolicy('admin', '/project', envWith());
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), '/project', envWith());
 
     expect(resolveSourceImportFile('/outside/source.md', policy, storage)).toEqual({ path: '/outside/source.md' });
   });
 
   it('enforces user and admin source import caps through the read policy', () => {
     const adminReadableSize = USER_SOURCE_IMPORT_MAX_BYTES + 1;
-    const adminPolicy = deriveSourceImportReadPolicy('admin', '/project', envWith(String(adminReadableSize + 1)));
-    const userPolicy = deriveSourceImportReadPolicy('user', '/project', envWith());
+    const adminPolicy = deriveSourceImportReadPolicy(
+      unboundBinding(),
+      '/project',
+      envWith(String(adminReadableSize + 1)),
+    );
+    const userPolicy = deriveSourceImportReadPolicy(projectBinding('/project'), '/project', envWith());
 
     expect(resolveSourceImportFile('/outside/large.md', adminPolicy, coherentSizeStorage(adminReadableSize))).toEqual({
       path: '/outside/large.md',
@@ -222,7 +235,7 @@ describe('source import runtime isolation', () => {
   });
 
   it('skips byte comparison for admin-unlimited imports but still rejects non-files', () => {
-    const policy = deriveSourceImportReadPolicy('admin', '/project', envWith('0'));
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), '/project', envWith('0'));
 
     expect(policy).toEqual({ kind: 'unrestricted', resolveBase: '/project', maxBytes: null });
     expect(
@@ -253,7 +266,7 @@ describe('source import runtime isolation', () => {
     const runtimeRoot = join(root, 'runtime');
     const input = join(projectRoot, 'paper.md');
     const runtime = fakeRuntime();
-    const policy = deriveSourceImportReadPolicy('user', projectRoot, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(projectRoot), projectRoot, envWith());
     mkdirSync(projectRoot, { recursive: true });
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(input, '# In Scope\n\nBody\n', 'utf8');
@@ -277,7 +290,7 @@ describe('source import runtime isolation', () => {
     const input = join(root, 'paper.md');
     const runtimeRoot = join(root, 'runtime');
     const runtime = fakeRuntime();
-    const policy = deriveSourceImportReadPolicy('admin', root, envWith('16'));
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), root, envWith('16'));
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(input, '# A\n', 'utf8');
     const sourceFile = resolveSourceImportFile(input, policy, runtime.storage);
@@ -295,7 +308,7 @@ describe('source import runtime isolation', () => {
     const runtimeRoot = join(root, 'runtime');
     const { storage, readFile } = storageWithReadSpy();
     const runtime = fakeRuntime({ storage });
-    const policy = deriveSourceImportReadPolicy('user', root, envWith());
+    const policy = deriveSourceImportReadPolicy(projectBinding(root), root, envWith());
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(
       input,
@@ -352,7 +365,7 @@ describe('source import runtime isolation', () => {
     const input = join(root, 'paper.html');
     const runtimeRoot = join(root, 'runtime');
     const runtime = fakeRuntime();
-    const policy = deriveSourceImportReadPolicy('admin', root, envWith('0'));
+    const policy = deriveSourceImportReadPolicy(unboundBinding(), root, envWith('0'));
     mkdirSync(runtimeRoot, { recursive: true });
     writeFileSync(
       input,

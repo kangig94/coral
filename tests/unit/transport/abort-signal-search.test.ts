@@ -7,7 +7,9 @@ import { searchKnowledgeBase, type KbQueryHost } from '#src/kb/queries.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
+import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { testPrincipal } from '#tests/helpers/principal.js';
 
 function descriptor(
   id: string,
@@ -172,10 +174,10 @@ describe('AbortSignal propagation for KB search', () => {
     } as unknown as HttpHandlerPorts;
 
     const response = await executeCatalogRequest(
-      { name: 'kb.entries.search' } as never,
+      rpcCatalog.find((entry) => entry.name === 'kb.entries.search')!,
       { q: 'abort query', scope: 'all', top_k: 3 },
       rpcPorts,
-      'admin',
+      testPrincipal(),
       controller.signal,
     );
 

@@ -7,11 +7,20 @@ import {
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../jobs/wait.js';
-import { writeAuditEvent } from '../../infra/audit-log.js';
+import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
 import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
-import { executeCatalogRequest } from '../dispatch.js';
-import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
+import { CAPABILITIES, type Capability } from '../../security/capability.js';
+import type { Principal } from '../../security/principal.js';
+import { authorize, type AuthorizationFailureReason } from '../../security/policy/authorize.js';
+import { executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
+import {
+  rpcCatalog,
+  transportOperationalCarveouts,
+  type RequestBindingRule,
+  type RpcMethodSpec,
+} from '../rpc/catalog.js';
+import { operationalRouteSpecs, type HttpOperationalSpec } from '../rpc/operational-catalog.js';
 import { formatZodError } from '../validation.js';
 import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';
@@ -53,10 +62,32 @@ const BODY_READ_CAPACITY_RESPONSE = {
   code: 'too_many_request_bodies',
   message: 'Too many concurrent request bodies',
 };
-const CORS_ALLOWED_HEADERS = 'X-Coral-Backend-Token, X-Coral-Shutdown-Token, Content-Type';
+const CORS_ALLOWED_HEADERS = 'X-Coral-Backend-Token, X-Coral-Boot-Token, X-Coral-Shutdown-Token, Content-Type';
 const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
 const KB_DAEMON_HEALTH_PROBE_TTL_MS = 5_000;
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
+const HTTP_UNAUTHORIZED_RESPONSE = {
+  code: 'unauthorized',
+  message: 'Unauthorized',
+};
+const HTTP_SHUTDOWN_UNAUTHORIZED_RESPONSE = {
+  code: 'shutdown_unauthorized',
+  message: 'Manual shutdown required: shutdown capability missing or invalid',
+};
+const HTTP_KB_RESTART_UNAUTHORIZED_RESPONSE = {
+  code: 'shutdown_unauthorized',
+  message: 'Manual KB daemon restart requires shutdown capability',
+};
+const HTTP_BACKEND_TOKEN_CAPABILITIES: ReadonlySet<Capability> = new Set(
+  CAPABILITIES.filter((capability) => !capability.startsWith('system:')),
+);
+const HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL: Principal = {
+  subject: 'agent',
+  transport: 'http',
+  credential: { kind: 'bootstrap-liveness', id: 'http-health' },
+  binding: { kind: 'unbound' },
+  attenuatedCaps: new Set<Capability>(['liveness']),
+};
 type RestrictedRemoteTransportOption = {
   option: 'bypassPermissions' | 'networkEnv';
   message: string;
@@ -89,11 +120,74 @@ function shouldProbeKbDaemonHealth(health: ReturnType<HttpHandlerPorts['health']
  * length is acceptable here (tokens are uniform-length identity strings).
  * Spec §11.3.
  */
-function tokensEqual(a: string, b: string): boolean {
+function constantTimeCredentialMatch(a: string, b: string): boolean {
   const aBuf = Buffer.from(a, 'utf-8');
   const bBuf = Buffer.from(b, 'utf-8');
   if (aBuf.length !== bBuf.length) return false;
   return timingSafeEqual(aBuf, bBuf);
+}
+
+function headerValue(value: string | string[] | undefined): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function credentialMatches(candidate: string | null, expected: string): boolean {
+  return candidate !== null && constantTimeCredentialMatch(candidate, expected);
+}
+
+function httpBackendTokenPrincipal(binding: Principal['binding']): Principal {
+  return {
+    subject: 'operator',
+    transport: 'http',
+    credential: { kind: 'backend-token', id: 'http-backend' },
+    binding,
+    attenuatedCaps: HTTP_BACKEND_TOKEN_CAPABILITIES,
+  };
+}
+
+function httpOperationalTokenPrincipal(
+  kind: 'boot-token' | 'shutdown-token',
+  binding: Principal['binding'],
+): Principal {
+  return {
+    subject: 'operator',
+    transport: 'http',
+    credential: { kind, id: `http-${kind}` },
+    binding,
+  };
+}
+
+function authenticateHttpBackendPrincipal(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  binding: Principal['binding'],
+): Principal | null {
+  const token = headerValue(req.headers['x-coral-backend-token']);
+  if (!credentialMatches(token, deps.identity.token)) {
+    return null;
+  }
+  return httpBackendTokenPrincipal(binding);
+}
+
+function authenticateHttpOperationalPrincipal(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  binding: Principal['binding'],
+): Principal | null {
+  const bootToken = headerValue(req.headers['x-coral-boot-token']);
+  if (credentialMatches(bootToken, deps.identity.bootToken)) {
+    return httpOperationalTokenPrincipal('boot-token', binding);
+  }
+
+  const shutdownToken = headerValue(req.headers['x-coral-shutdown-token']);
+  if (credentialMatches(shutdownToken, deps.identity.bootToken)) {
+    return httpOperationalTokenPrincipal('boot-token', binding);
+  }
+  if (credentialMatches(shutdownToken, deps.identity.shutdownToken)) {
+    return httpOperationalTokenPrincipal('shutdown-token', binding);
+  }
+
+  return authenticateHttpBackendPrincipal(req, deps, binding);
 }
 
 class HttpBodyReadError extends Error {
@@ -483,8 +577,7 @@ type TransportLocalRoute = {
 
 type ProjectedTransportLocalRoute = TransportLocalRoute & {
   pattern: RegExp;
-  requiresRunningLifecycle: boolean;
-  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL) => Promise<void>;
+  handle: (req: IncomingMessage, res: ServerResponse, parsedUrl: URL, spec: HttpOperationalSpec) => Promise<void>;
 };
 
 const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
@@ -501,6 +594,35 @@ export const coordinatorHttpRoutes: readonly CatalogBackedHttpRoute[] = rpcCatal
   path: spec.http.path,
   spec,
 }));
+
+function isHttpOperationalSpec(spec: (typeof operationalRouteSpecs)[number]): spec is HttpOperationalSpec {
+  return spec.transport === 'http';
+}
+
+const HTTP_OPERATIONAL_SPECS: readonly HttpOperationalSpec[] = operationalRouteSpecs.filter(isHttpOperationalSpec);
+
+function readHttpOperationalSpec(
+  method: string | undefined,
+  pathname: string,
+  parsedUrl: URL,
+): HttpOperationalSpec | null {
+  if (method === undefined) {
+    return null;
+  }
+
+  const healthVariant = parsedUrl.searchParams.has('detailed') ? 'detailed' : 'default';
+  return (
+    HTTP_OPERATIONAL_SPECS.find((spec) => {
+      if (spec.http.method !== method || spec.http.path !== pathname) {
+        return false;
+      }
+      if (spec.http.path !== healthPath) {
+        return true;
+      }
+      return (spec.http.variant ?? 'default') === healthVariant;
+    }) ?? null
+  );
+}
 
 function escapeRegexLiteral(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -581,6 +703,36 @@ function sendCatalogResponse(res: ServerResponse, result: { statusCode?: number;
   sendJson(res, result.statusCode ?? 200, result.body);
 }
 
+function httpAuthorizationFailurePayload(spec: HttpOperationalSpec | null): {
+  readonly code: string;
+  readonly message: string;
+} {
+  if (spec?.dispatch.kind === 'shutdown') {
+    return HTTP_SHUTDOWN_UNAUTHORIZED_RESPONSE;
+  }
+  if (spec?.dispatch.kind === 'kb-restart') {
+    return HTTP_KB_RESTART_UNAUTHORIZED_RESPONSE;
+  }
+  return HTTP_UNAUTHORIZED_RESPONSE;
+}
+
+function sendAuthorizationFailure(
+  res: ServerResponse,
+  reason: AuthorizationFailureReason,
+  spec: HttpOperationalSpec | null = null,
+): void {
+  sendJson(res, reason === 'resource_unbound' ? 403 : 401, httpAuthorizationFailurePayload(spec));
+}
+
+function authenticateCatalogPrincipal(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  request: unknown,
+  bindingRule?: RequestBindingRule,
+): Principal | null {
+  return authenticateHttpBackendPrincipal(req, deps, resolveRequestBinding(bindingRule, request));
+}
+
 async function handleCatalogUnaryRoute(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
@@ -592,8 +744,13 @@ async function handleCatalogUnaryRoute(
     return;
   }
 
-  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
-  const result = await executeCatalogRequest(spec, request, deps, 'user');
+  const principal = authenticateCatalogPrincipal(req, deps, request, spec.requestBinding);
+  if (principal === null) {
+    sendAuthorizationFailure(res, 'unauthenticated');
+    return;
+  }
+
+  const result = await executeCatalogRequest(spec, request, deps, principal);
   if (result.kind !== 'unary') {
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
@@ -633,8 +790,13 @@ async function handleJobsWaitSubscription(
     ...request,
     cursor: inputCursor,
   };
-  // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
-  const execution = await executeCatalogRequest(spec, waitRequest, deps, 'user', controller.signal);
+  const principal = authenticateCatalogPrincipal(req, deps, waitRequest, spec.requestBinding);
+  if (principal === null) {
+    controller.abort();
+    sendAuthorizationFailure(res, 'unauthenticated');
+    return;
+  }
+  const execution = await executeCatalogRequest(spec, waitRequest, deps, principal, controller.signal);
   if (execution.kind !== 'subscription') {
     controller.abort();
     sendCatalogResponse(res, execution);
@@ -797,6 +959,87 @@ export function buildCoordinatorHttpDispatchTable(
   return buildRouteDispatchTable(rpcCatalog.map((spec) => httpAdapter(spec, rpcPorts)));
 }
 
+function readHttpPingSnapshot(deps: HttpHandlerPorts): {
+  status: string;
+  version: string;
+  bundleHash: string;
+  flavor: 'prod' | 'dev';
+  namespace: string;
+  instanceId: string;
+  pid: number;
+  processStartedAt?: number;
+} {
+  const health = deps.health.read();
+  return {
+    status: health.status,
+    version: health.version,
+    bundleHash: health.bundleHash,
+    flavor: health.flavor,
+    namespace: health.namespace,
+    instanceId: health.instanceId,
+    pid: health.pid,
+    ...(health.processStartedAt === undefined ? {} : { processStartedAt: health.processStartedAt }),
+  };
+}
+
+async function readDetailedHealthSnapshot(
+  deps: HttpHandlerPorts,
+): Promise<ReturnType<HttpHandlerPorts['health']['read']>> {
+  let health = deps.health.read();
+  if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
+    try {
+      await deps.admin.probeKbDaemon();
+      health = deps.health.read();
+    } catch {
+      // Detailed health must stay available even if the child probe path itself fails.
+    }
+  }
+  return health;
+}
+
+function localOperationalRequestBinding(spec: HttpOperationalSpec, parsedUrl: URL): Principal['binding'] | ZodError {
+  if (spec.dispatch.kind === 'event-stream') {
+    const request = parseEventStreamRequest(`${parsedUrl.pathname}${parsedUrl.search}`);
+    if (request instanceof Error) {
+      return request;
+    }
+    return resolveRequestBinding(spec.requestBinding, request);
+  }
+
+  return resolveRequestBinding(spec.requestBinding, {});
+}
+
+function principalForLocalOperation(
+  req: IncomingMessage,
+  deps: HttpHandlerPorts,
+  spec: HttpOperationalSpec,
+  binding: Principal['binding'],
+): Principal | null {
+  if (spec.authentication === 'none') {
+    return HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL;
+  }
+  return authenticateHttpOperationalPrincipal(req, deps, binding);
+}
+
+function authorizeLocalOperation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+  spec: HttpOperationalSpec,
+  binding: Principal['binding'],
+): boolean {
+  const principal = principalForLocalOperation(req, deps, spec, binding);
+  const decision = authorize(principal, spec.requires, binding);
+  writeAuthorizationDecisionAudit(principal, spec.id, decision, binding);
+  if (decision.ok) {
+    return true;
+  }
+
+  req.resume();
+  sendAuthorizationFailure(res, decision.reason, spec);
+  return false;
+}
+
 async function handleEventStream(req: IncomingMessage, res: ServerResponse, deps: HttpHandlerPorts): Promise<void> {
   const streamId = deps.events.createStreamId();
   const streamRequest = parseEventStreamRequest(req.url ?? '');
@@ -889,24 +1132,18 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[0],
       pattern: compilePathPattern(transportLocalRoutes[0].path),
-      requiresRunningLifecycle: false,
-      handle: async (_req, res) => {
-        let health = deps.health.read();
-        if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
-          try {
-            await deps.admin.probeKbDaemon();
-            health = deps.health.read();
-          } catch {
-            // `/health` must stay available even if the child probe path itself fails.
-          }
+      handle: async (req, res, _parsedUrl, spec) => {
+        req.resume();
+        if (spec.dispatch.kind === 'ping') {
+          sendJson(res, 200, readHttpPingSnapshot(deps));
+          return;
         }
-        sendJson(res, 200, health);
+        sendJson(res, 200, await readDetailedHealthSnapshot(deps));
       },
     },
     {
       ...transportLocalRoutes[1],
       pattern: compilePathPattern(transportLocalRoutes[1].path),
-      requiresRunningLifecycle: false,
       handle: async (req, res) => {
         req.resume();
         const reason = 'replaced';
@@ -929,7 +1166,6 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[2],
       pattern: compilePathPattern(transportLocalRoutes[2].path),
-      requiresRunningLifecycle: true,
       handle: async (req, res) => {
         req.resume();
         if (!deps.admin.restartKbDaemon) {
@@ -955,7 +1191,6 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[3],
       pattern: compilePathPattern(transportLocalRoutes[3].path),
-      requiresRunningLifecycle: true,
       handle: async (req, res) => {
         req.resume();
         await handleEventStream(req, res, deps);
@@ -1004,7 +1239,6 @@ function matchRoute<T extends { method: string; path: string; pattern: RegExp }>
 export function createHttpHandler(
   deps: HttpHandlerPorts,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
-  const { identity } = deps;
   const coordinatorRoutes = buildCoordinatorHttpDispatchTable(deps);
   const localRoutes = buildTransportLocalRouteTable(deps);
 
@@ -1030,19 +1264,31 @@ export function createHttpHandler(
 
     const parsedUrl = new URL(req.url, 'http://localhost');
     const localMatch = matchRoute(localRoutes, req.method, parsedUrl.pathname);
-    const requiresShutdownToken = localMatch?.route.path === shutdownPath || localMatch?.route.path === kbRestartPath;
-    const authHeader = requiresShutdownToken
-      ? req.headers['x-coral-shutdown-token']
-      : req.headers['x-coral-backend-token'];
-    const expectedToken = requiresShutdownToken ? identity.shutdownToken : identity.token;
-    if (typeof authHeader !== 'string' || !tokensEqual(authHeader, expectedToken)) {
+    const localSpec = localMatch === null ? null : readHttpOperationalSpec(req.method, parsedUrl.pathname, parsedUrl);
+    if (localMatch !== null && localSpec === null) {
       req.resume();
-      sendJson(res, 401, { code: 'unauthorized', message: 'Unauthorized' });
+      sendJson(res, 404, { code: 'not_found', message: 'Not found' });
       return;
     }
 
-    if (localMatch && !localMatch.route.requiresRunningLifecycle) {
-      await localMatch.route.handle(req, res, parsedUrl);
+    if (localMatch !== null && localSpec !== null) {
+      const binding = localOperationalRequestBinding(localSpec, parsedUrl);
+      if (binding instanceof Error) {
+        req.resume();
+        sendValidationFailure(res, binding);
+        return;
+      }
+      if (!authorizeLocalOperation(req, res, deps, localSpec, binding)) {
+        return;
+      }
+
+      if (!localSpec.requiresRunningLifecycle) {
+        await localMatch.route.handle(req, res, parsedUrl, localSpec);
+        return;
+      }
+    } else if (authenticateHttpBackendPrincipal(req, deps, { kind: 'unbound' }) === null) {
+      req.resume();
+      sendAuthorizationFailure(res, 'unauthenticated');
       return;
     }
 
@@ -1054,8 +1300,8 @@ export function createHttpHandler(
       return;
     }
 
-    if (localMatch) {
-      await localMatch.route.handle(req, res, parsedUrl);
+    if (localMatch !== null && localSpec !== null) {
+      await localMatch.route.handle(req, res, parsedUrl, localSpec);
       return;
     }
 

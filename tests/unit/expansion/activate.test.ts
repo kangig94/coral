@@ -45,6 +45,7 @@ function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}
     namespace: 'ns-a',
     startedAt: 1_713_456_789_000,
     token: 'token-a',
+    bootToken: 'boot-token-a',
     ...overrides,
   };
 }
@@ -53,6 +54,10 @@ describe('expansion activation', () => {
   const originalFlavor = process.env.CORAL_FLAVOR;
   const originalHome = process.env.HOME;
   const originalUserProfile = process.env.USERPROFILE;
+  const originalChild = process.env.CORAL_CHILD;
+  const originalChildPrincipalHandle = process.env.CORAL_CHILD_PRINCIPAL_HANDLE;
+  const originalJobId = process.env.CORAL_JOB_ID;
+  const originalSessionId = process.env.CORAL_SESSION_ID;
   let testHome = '';
 
   beforeEach(() => {
@@ -63,6 +68,10 @@ describe('expansion activation', () => {
     process.env.HOME = testHome;
     process.env.USERPROFILE = testHome;
     delete process.env.CORAL_FLAVOR;
+    delete process.env.CORAL_CHILD;
+    delete process.env.CORAL_CHILD_PRINCIPAL_HANDLE;
+    delete process.env.CORAL_JOB_ID;
+    delete process.env.CORAL_SESSION_ID;
   });
 
   afterEach(() => {
@@ -84,6 +93,26 @@ describe('expansion activation', () => {
       delete process.env.CORAL_FLAVOR;
     } else {
       process.env.CORAL_FLAVOR = originalFlavor;
+    }
+    if (originalChild === undefined) {
+      delete process.env.CORAL_CHILD;
+    } else {
+      process.env.CORAL_CHILD = originalChild;
+    }
+    if (originalChildPrincipalHandle === undefined) {
+      delete process.env.CORAL_CHILD_PRINCIPAL_HANDLE;
+    } else {
+      process.env.CORAL_CHILD_PRINCIPAL_HANDLE = originalChildPrincipalHandle;
+    }
+    if (originalJobId === undefined) {
+      delete process.env.CORAL_JOB_ID;
+    } else {
+      process.env.CORAL_JOB_ID = originalJobId;
+    }
+    if (originalSessionId === undefined) {
+      delete process.env.CORAL_SESSION_ID;
+    } else {
+      process.env.CORAL_SESSION_ID = originalSessionId;
     }
   });
 
@@ -108,7 +137,7 @@ describe('expansion activation', () => {
         status: 'equipped',
       },
     });
-    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' }, undefined);
   });
 
   it('surfaces activation failures instead of collapsing them to unavailable', async () => {
@@ -118,7 +147,7 @@ describe('expansion activation', () => {
     mockState.ensure.mockResolvedValue({ request });
 
     await expect(activation.activateExpansion('needle')).rejects.toBe(error);
-    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' }, undefined);
   });
 
   it('runs onboarding before needle install or activation and reports missing binding candidates', async () => {
@@ -141,8 +170,8 @@ describe('expansion activation', () => {
       },
       suggestions: ['gemini', 'onnx'],
     });
-    expect(request).toHaveBeenCalledWith('coordinator.readBinding', { binding: 'kb.embedding' });
-    expect(request).not.toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.readBinding', { binding: 'kb.embedding' }, undefined);
+    expect(request).not.toHaveBeenCalledWith('coordinator.equipExpansion', { name: 'needle' }, undefined);
   });
 
   it('runs env-var onboarding before gemini activation', async () => {
@@ -175,7 +204,7 @@ describe('expansion activation', () => {
     mockState.ensure.mockResolvedValue({ request });
 
     await expect(activation.deactivateExpansion('needle')).resolves.toEqual({ status: 'uninstalled' });
-    expect(request).toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'needle' });
+    expect(request).toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'needle' }, undefined);
   });
 
   it('removes expansion catalog entries through coordinator IPC without deactivating first', async () => {
@@ -184,8 +213,8 @@ describe('expansion activation', () => {
     mockState.ensure.mockResolvedValue({ request });
 
     await expect(activation.removeCatalog('external-cache')).resolves.toEqual({ status: 'uninstalled' });
-    expect(request).toHaveBeenCalledWith('coordinator.removeExpansionCatalog', { name: 'external-cache' });
-    expect(request).not.toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'external-cache' });
+    expect(request).toHaveBeenCalledWith('coordinator.removeExpansionCatalog', { name: 'external-cache' }, undefined);
+    expect(request).not.toHaveBeenCalledWith('coordinator.unequipExpansion', { name: 'external-cache' }, undefined);
   });
 
   it('maps immutable catalog removal without exposing the internal status string', async () => {
@@ -244,8 +273,11 @@ describe('expansion activation', () => {
         status: 'available',
         expansions: [],
       });
-      expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-dev.sock');
-      expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {});
+      expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-dev.sock', expect.any(Object), {
+        kind: 'boot',
+        token: 'boot-token-a',
+      });
+      expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {}, undefined);
     } finally {
       rmSync(home, { recursive: true, force: true });
       vi.resetModules();
@@ -261,7 +293,10 @@ describe('expansion activation', () => {
     mockState.createIpcClient.mockReturnValue({ request });
 
     await expect(activation.readExpansionStatus()).resolves.toEqual({ status: 'unavailable' });
-    expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock');
-    expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {});
+    expect(mockState.createIpcClient).toHaveBeenCalledWith('/tmp/coral-passive.sock', expect.any(Object), {
+      kind: 'boot',
+      token: 'boot-token-a',
+    });
+    expect(request).toHaveBeenCalledWith('coordinator.listExpansion', {}, undefined);
   });
 });

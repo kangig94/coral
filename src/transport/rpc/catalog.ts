@@ -1,4 +1,5 @@
 import type { ZodType } from 'zod';
+import type { Capability } from '../../security/capability.js';
 import {
   equipExpansionRequestSchema,
   listExpansionRequestSchema,
@@ -57,6 +58,8 @@ import { workflowRequestSchema } from './workflow.js';
 export interface RpcMethodSpec<Req, _Res> {
   readonly name: string;
   readonly kind: 'unary' | 'subscription';
+  readonly requires: Capability;
+  readonly requestBinding?: RequestBindingRule;
   readonly requestSchema: ZodType<Req>;
   readonly responseKind: 'json' | 'notification-stream';
   readonly portKey: keyof RpcPorts;
@@ -66,6 +69,11 @@ export interface RpcMethodSpec<Req, _Res> {
     readonly queryShape?: 'bare' | 'keyed';
   };
 }
+
+export type RequestBindingRule = {
+  readonly kind: 'projectRoot';
+  readonly projectRoot: 'required' | 'optional-all-projects';
+};
 
 export const transportOperationalCarveouts = [
   '/health',
@@ -78,6 +86,7 @@ export const rpcCatalog = [
   {
     name: 'sessions.create',
     kind: 'unary',
+    requires: 'jobs:control',
     requestSchema: sessionCreateSchema,
     responseKind: 'json',
     portKey: 'sessions',
@@ -86,6 +95,7 @@ export const rpcCatalog = [
   {
     name: 'workflow.run',
     kind: 'unary',
+    requires: 'jobs:control',
     requestSchema: workflowRequestSchema,
     responseKind: 'json',
     portKey: 'workflows',
@@ -94,6 +104,7 @@ export const rpcCatalog = [
   {
     name: 'coordinator.equipExpansion',
     kind: 'unary',
+    requires: 'expansion:manage',
     requestSchema: equipExpansionRequestSchema,
     responseKind: 'json',
     portKey: 'expansion',
@@ -102,6 +113,7 @@ export const rpcCatalog = [
   {
     name: 'coordinator.unequipExpansion',
     kind: 'unary',
+    requires: 'expansion:manage',
     requestSchema: unequipExpansionRequestSchema,
     responseKind: 'json',
     portKey: 'expansion',
@@ -110,6 +122,7 @@ export const rpcCatalog = [
   {
     name: 'coordinator.removeExpansionCatalog',
     kind: 'unary',
+    requires: 'expansion:manage',
     requestSchema: removeExpansionCatalogRequestSchema,
     responseKind: 'json',
     portKey: 'expansion',
@@ -118,6 +131,7 @@ export const rpcCatalog = [
   {
     name: 'coordinator.listExpansion',
     kind: 'unary',
+    requires: 'expansion:manage',
     requestSchema: listExpansionRequestSchema,
     responseKind: 'json',
     portKey: 'expansion',
@@ -126,6 +140,7 @@ export const rpcCatalog = [
   {
     name: 'coordinator.readBinding',
     kind: 'unary',
+    requires: 'expansion:manage',
     requestSchema: readBindingRequestSchema,
     responseKind: 'json',
     portKey: 'expansion',
@@ -134,6 +149,7 @@ export const rpcCatalog = [
   {
     name: 'jobs.abort',
     kind: 'unary',
+    requires: 'jobs:control',
     requestSchema: jobAbortSchema,
     responseKind: 'json',
     portKey: 'jobs',
@@ -142,6 +158,8 @@ export const rpcCatalog = [
   {
     name: 'jobs.list',
     kind: 'unary',
+    requires: 'jobs:read',
+    requestBinding: { kind: 'projectRoot', projectRoot: 'optional-all-projects' },
     requestSchema: jobsListRequestSchema,
     responseKind: 'json',
     portKey: 'jobs',
@@ -150,6 +168,7 @@ export const rpcCatalog = [
   {
     name: 'jobs.detail',
     kind: 'unary',
+    requires: 'jobs:read',
     requestSchema: jobDetailRequestSchema,
     responseKind: 'json',
     portKey: 'jobs',
@@ -158,6 +177,7 @@ export const rpcCatalog = [
   {
     name: 'jobs.wait',
     kind: 'subscription',
+    requires: 'jobs:read',
     requestSchema: jobWaitSchema,
     responseKind: 'notification-stream',
     portKey: 'jobs',
@@ -166,6 +186,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.persona.generate',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSeedSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -174,6 +195,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.create',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionCreateRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -182,6 +204,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.list',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionListRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -190,6 +213,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.detail',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionDetailRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -198,6 +222,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.events',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionEventsRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -206,6 +231,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.bid',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionBidRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -214,6 +240,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.speech',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionSpeechRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -222,6 +249,7 @@ export const rpcCatalog = [
   {
     name: 'discuss.session.delete',
     kind: 'unary',
+    requires: 'discuss:participate',
     requestSchema: discussSessionDeleteRequestSchema,
     responseKind: 'json',
     portKey: 'discuss',
@@ -230,6 +258,7 @@ export const rpcCatalog = [
   {
     name: 'kb.entries.search',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbEntriesRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -238,6 +267,7 @@ export const rpcCatalog = [
   {
     name: 'kb.diagnose',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbDiagnoseRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -246,6 +276,7 @@ export const rpcCatalog = [
   {
     name: 'kb.note.read',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbNoteReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -254,6 +285,7 @@ export const rpcCatalog = [
   {
     name: 'kb.note.create',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbNoteCreateRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -262,6 +294,7 @@ export const rpcCatalog = [
   {
     name: 'kb.note.update',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbNoteUpdateRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -270,6 +303,7 @@ export const rpcCatalog = [
   {
     name: 'kb.note.delete',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbNoteDeleteRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -278,6 +312,7 @@ export const rpcCatalog = [
   {
     name: 'kb.source.list',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbSourceListRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -286,6 +321,7 @@ export const rpcCatalog = [
   {
     name: 'kb.source.read',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbSourceReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -294,6 +330,7 @@ export const rpcCatalog = [
   {
     name: 'kb.source.create',
     kind: 'unary',
+    requires: 'kb:source:import',
     requestSchema: kbSourceCreateRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -302,6 +339,7 @@ export const rpcCatalog = [
   {
     name: 'kb.source.delete',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbSourceDeleteRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -310,6 +348,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.list',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbWikiListRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -318,6 +357,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.read',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbWikiReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -326,6 +366,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.create',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiCreateRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -334,6 +375,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.rewrite',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiRewriteRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -342,6 +384,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.link',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiLinkRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -350,6 +393,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.unlink',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiUnlinkRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -358,6 +402,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.cite',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiCiteRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -366,6 +411,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.adopt',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiAdoptRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -374,6 +420,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wiki.delete',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbWikiDeleteRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -382,6 +429,7 @@ export const rpcCatalog = [
   {
     name: 'kb.wake_up',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbWakeUpRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -390,6 +438,7 @@ export const rpcCatalog = [
   {
     name: 'kb.community.read',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbCommunityReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -398,6 +447,7 @@ export const rpcCatalog = [
   {
     name: 'kb.community.list-stale',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbCommunityListStaleRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -406,6 +456,7 @@ export const rpcCatalog = [
   {
     name: 'kb.community.summary-input',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbCommunitySummaryInputRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -414,6 +465,7 @@ export const rpcCatalog = [
   {
     name: 'kb.community.set-summary',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbCommunitySetSummaryRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -422,6 +474,7 @@ export const rpcCatalog = [
   {
     name: 'kb.memo.list',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbMemoListQuerySchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -430,6 +483,7 @@ export const rpcCatalog = [
   {
     name: 'kb.memo.read',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbMemoReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -438,6 +492,7 @@ export const rpcCatalog = [
   {
     name: 'kb.memo.create',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbMemoCreateRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -446,6 +501,7 @@ export const rpcCatalog = [
   {
     name: 'kb.memo.delete',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbMemoDeleteRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -454,6 +510,7 @@ export const rpcCatalog = [
   {
     name: 'kb.principles.list',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbPrinciplesListRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -462,6 +519,7 @@ export const rpcCatalog = [
   {
     name: 'kb.principle.read',
     kind: 'unary',
+    requires: 'kb:read',
     requestSchema: kbPrincipleReadRequestSchema,
     responseKind: 'json',
     portKey: 'kb',
@@ -470,6 +528,7 @@ export const rpcCatalog = [
   {
     name: 'kb.reindex',
     kind: 'unary',
+    requires: 'kb:write',
     requestSchema: kbReindexRequestSchema,
     responseKind: 'json',
     portKey: 'kb',

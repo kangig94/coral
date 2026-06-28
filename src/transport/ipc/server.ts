@@ -9,6 +9,7 @@ import { formatZodError } from '../validation.js';
 import {
   encode,
   decode,
+  type IpcAuthMetadata,
   type JsonRpcEnvelope,
   type JsonRpcErrorEnvelope,
   type JsonRpcRequestEnvelope,
@@ -16,11 +17,15 @@ import {
 } from './json-rpc.js';
 import { createLineFramer, FrameTooLargeError } from '../line-framing.js';
 import { rpcCatalog, type RpcMethodSpec } from '../rpc/catalog.js';
-import { type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
-import { writeAuditEvent } from '../../infra/audit-log.js';
+import { operationalRouteSpecs, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
+import { type CatalogRequestExecution, executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
+import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import type { Capability } from '../../security/capability.js';
+import type { Principal } from '../../security/principal.js';
+import { authorize } from '../../security/policy/authorize.js';
 import { buildTransportErrorResponse } from '../error-response.js';
 
 const INVALID_JSON_RESPONSE = {
@@ -38,6 +43,24 @@ const SHUTDOWN_UNAUTHORIZED_RESPONSE = {
 const KB_RESTART_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
   message: 'Manual KB daemon restart requires shutdown capability',
+};
+const IPC_UNAUTHORIZED_RESPONSE = {
+  code: 'unauthorized',
+  message: 'IPC boot token or child principal required',
+};
+
+const IPC_OPERATOR_PRINCIPAL: Principal = {
+  subject: 'operator',
+  transport: 'ipc',
+  credential: { kind: 'boot-token', id: 'ipc-operator' },
+  binding: { kind: 'unbound' },
+};
+const IPC_BOOTSTRAP_LIVENESS_PRINCIPAL: Principal = {
+  subject: 'agent',
+  transport: 'ipc',
+  credential: { kind: 'bootstrap-liveness', id: 'ipc-ping' },
+  binding: { kind: 'unbound' },
+  attenuatedCaps: new Set<Capability>(['liveness']),
 };
 const KB_RESTART_UNAVAILABLE_RESPONSE = {
   code: 'not_implemented',
@@ -71,7 +94,7 @@ export type IpcListener = {
 export type IpcDispatchEntry = {
   readonly method: string;
   readonly spec: RpcMethodSpec<unknown, unknown>;
-  dispatch(request: unknown, abortSignal?: AbortSignal): Promise<CatalogRequestExecution>;
+  dispatch(request: unknown, principal: Principal, abortSignal?: AbortSignal): Promise<CatalogRequestExecution>;
 };
 
 function transportErrorResponse(message: string, data?: unknown): JsonRpcErrorEnvelope {
@@ -121,19 +144,11 @@ function invalidRequestResponse(id: JsonRpcRequestEnvelope['id'] | null): JsonRp
   };
 }
 
-function tokensEqual(a: string, b: string): boolean {
+function constantTimeCredentialMatch(a: string, b: string): boolean {
   const aBuf = Buffer.from(a, 'utf-8');
   const bBuf = Buffer.from(b, 'utf-8');
   if (aBuf.length !== bBuf.length) return false;
   return timingSafeEqual(aBuf, bBuf);
-}
-
-function readShutdownToken(params: unknown): string | null {
-  if (params === null || typeof params !== 'object') {
-    return null;
-  }
-  const token = (params as Record<string, unknown>).shutdownToken;
-  return typeof token === 'string' && token.length > 0 ? token : null;
 }
 
 function waitForSocketDrain(socket: Socket, timeoutMs: number): Promise<boolean> {
@@ -198,14 +213,103 @@ export function ipcAdapter(spec: RpcMethodSpec<unknown, unknown>, rpcPorts: Http
   return {
     method: spec.name,
     spec,
-    // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
-    dispatch: async (request, abortSignal) =>
-      await executeCatalogRequest(spec, request, rpcPorts, 'admin', abortSignal),
+    dispatch: async (request, principal, abortSignal) =>
+      await executeCatalogRequest(
+        spec,
+        request,
+        rpcPorts,
+        bindPrincipalForIpcDispatch(principal, spec, request),
+        abortSignal,
+      ),
   };
 }
 
 export function buildCoordinatorIpcDispatchTable(rpcPorts: HttpHandlerPorts): readonly IpcDispatchEntry[] {
   return rpcCatalog.map((spec) => ipcAdapter(spec, rpcPorts));
+}
+
+function isIpcOperationalSpec(spec: (typeof operationalRouteSpecs)[number]): spec is IpcOperationalSpec {
+  return spec.transport === 'ipc';
+}
+
+const IPC_OPERATIONAL_SPECS: readonly IpcOperationalSpec[] = operationalRouteSpecs.filter(isIpcOperationalSpec);
+
+function readIpcOperationalSpec(method: string): IpcOperationalSpec | null {
+  return IPC_OPERATIONAL_SPECS.find((spec) => spec.ipc.method === method) ?? null;
+}
+
+function authenticateIpcRequest(auth: IpcAuthMetadata | undefined, rpcPorts: HttpHandlerPorts): Principal | null {
+  if (auth?.kind === 'child') {
+    return rpcPorts.childPrincipals?.authenticate(auth, rpcPorts.identity.namespace, rpcPorts.identity.now()) ?? null;
+  }
+
+  if (auth?.kind !== 'boot') {
+    return null;
+  }
+  if (!constantTimeCredentialMatch(auth.token, rpcPorts.identity.bootToken)) {
+    return null;
+  }
+  return IPC_OPERATOR_PRINCIPAL;
+}
+
+function authorizationFailurePayload(spec: IpcOperationalSpec): typeof IPC_UNAUTHORIZED_RESPONSE {
+  if (spec.dispatch.kind === 'shutdown') {
+    return SHUTDOWN_UNAUTHORIZED_RESPONSE;
+  }
+  if (spec.dispatch.kind === 'kb-restart') {
+    return KB_RESTART_UNAUTHORIZED_RESPONSE;
+  }
+  return IPC_UNAUTHORIZED_RESPONSE;
+}
+
+function authorizeIpcOperation(
+  request: JsonRpcRequestEnvelope,
+  spec: IpcOperationalSpec,
+  principal: Principal | null,
+): JsonRpcErrorEnvelope | null {
+  const requestedBinding = { kind: 'unbound' } as const;
+  const authz = authorize(principal, spec.requires, requestedBinding);
+  writeAuthorizationDecisionAudit(principal, spec.id, authz, requestedBinding);
+  if (authz.ok) {
+    return null;
+  }
+  const payload = authorizationFailurePayload(spec);
+  return requestErrorResponse(request.id, payload.message, payload);
+}
+
+function bindPrincipalForIpcDispatch(
+  principal: Principal,
+  spec: RpcMethodSpec<unknown, unknown>,
+  request: unknown,
+): Principal {
+  const requestedBinding = resolveRequestBinding(spec.requestBinding, request);
+  if (principal.binding.kind !== 'unbound' || requestedBinding.kind !== 'project') {
+    return principal;
+  }
+  return { ...principal, binding: requestedBinding };
+}
+
+function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
+  status: string;
+  version: string;
+  bundleHash: string;
+  flavor: 'prod' | 'dev';
+  namespace: string;
+  instanceId: string;
+  pid: number;
+  processStartedAt?: number;
+} {
+  const health = rpcPorts.health.read();
+  return {
+    status: health.status,
+    version: health.version,
+    bundleHash: health.bundleHash,
+    flavor: health.flavor,
+    namespace: health.namespace,
+    instanceId: health.instanceId,
+    pid: health.pid,
+    ...(health.processStartedAt === undefined ? {} : { processStartedAt: health.processStartedAt }),
+  };
 }
 
 async function listenSocket(server: NetServer, socketPath: string): Promise<void> {
@@ -442,10 +546,17 @@ async function dispatchFrame(
   }
 
   const request = envelope;
-  if (request.method === 'transport.health') {
+  const operationalSpec = readIpcOperationalSpec(request.method);
+  if (operationalSpec?.dispatch.kind === 'ping') {
+    const authError = authorizeIpcOperation(request, operationalSpec, IPC_BOOTSTRAP_LIVENESS_PRINCIPAL);
+    if (authError) {
+      await writeEnvelope(socket, authError, { drainTimeoutMs: options.writeDrainTimeoutMs });
+      socket.end();
+      return;
+    }
     await writeEnvelope(
       socket,
-      { kind: 'response', id: request.id, result: rpcPorts.health.read() },
+      { kind: 'response', id: request.id, result: readPingSnapshot(rpcPorts) },
       {
         drainTimeoutMs: options.writeDrainTimeoutMs,
       },
@@ -454,61 +565,23 @@ async function dispatchFrame(
     return;
   }
 
-  if (request.method === 'transport.shutdown') {
-    const shutdownToken = readShutdownToken(request.params);
-    if (shutdownToken === null || !tokensEqual(shutdownToken, rpcPorts.identity.shutdownToken)) {
-      await writeEnvelope(
-        socket,
-        requestErrorResponse(request.id, SHUTDOWN_UNAUTHORIZED_RESPONSE.message, SHUTDOWN_UNAUTHORIZED_RESPONSE),
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
-      );
+  const principal = authenticateIpcRequest(request.auth, rpcPorts);
+  if (operationalSpec?.authentication === 'principal') {
+    const authError = authorizeIpcOperation(request, operationalSpec, principal);
+    if (authError) {
+      await writeEnvelope(socket, authError, { drainTimeoutMs: options.writeDrainTimeoutMs });
       socket.end();
       return;
     }
-    const reason = 'replaced';
-    writeAuditEvent(
-      'admin_shutdown_requested',
-      {
-        transport: 'ipc',
-        reason,
-        instanceId: rpcPorts.identity.instanceId,
-      },
-      'warn',
-    );
-    rpcPorts.admin.requestDrain(reason);
-    // `requestDrain` only flips the drain flag and notifies the idle timer;
-    // the idle timer is not installed until lifecycle reaches 'running'.
-    // To unblock contenders during a still-`starting` incumbent, lifecycle
-    // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
-    // directly. No-op when lifecycle is already running (drain handles it).
-    onShutdownRequest?.(reason);
-    await writeEnvelope(
-      socket,
-      {
-        kind: 'response',
-        id: request.id,
-        result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
-      },
-      { drainTimeoutMs: options.writeDrainTimeoutMs },
-    );
-    socket.end();
-    return;
   }
 
   const lifecycleState =
     rpcPorts.admin.getLifecycleState?.() ?? (rpcPorts.admin.isLifecycleRunning() ? 'running' : 'stopped');
-  if (request.method === 'transport.kb.restart') {
-    const shutdownToken = readShutdownToken(request.params);
-    if (shutdownToken === null || !tokensEqual(shutdownToken, rpcPorts.identity.shutdownToken)) {
-      await writeEnvelope(
-        socket,
-        requestErrorResponse(request.id, KB_RESTART_UNAUTHORIZED_RESPONSE.message, KB_RESTART_UNAUTHORIZED_RESPONSE),
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
-      );
-      socket.end();
-      return;
-    }
-    if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
+  const backendUnavailable =
+    lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested();
+
+  if (operationalSpec) {
+    if (operationalSpec.requiresRunningLifecycle && backendUnavailable) {
       await writeEnvelope(
         socket,
         {
@@ -521,50 +594,96 @@ async function dispatchFrame(
       socket.end();
       return;
     }
-    if (!rpcPorts.admin.restartKbDaemon) {
+
+    if (operationalSpec.dispatch.kind === 'health') {
       await writeEnvelope(
         socket,
-        requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
-        { drainTimeoutMs: options.writeDrainTimeoutMs },
+        { kind: 'response', id: request.id, result: rpcPorts.health.read() },
+        {
+          drainTimeoutMs: options.writeDrainTimeoutMs,
+        },
       );
       socket.end();
       return;
     }
-    writeAuditEvent(
-      'admin_kb_daemon_restart_requested',
-      {
-        transport: 'ipc',
-        reason: 'admin',
-        instanceId: rpcPorts.identity.instanceId,
-      },
-      'warn',
-    );
-    try {
-      const kbDaemon = await rpcPorts.admin.restartKbDaemon('ipc-admin');
+
+    if (operationalSpec.dispatch.kind === 'shutdown') {
+      const reason = 'replaced';
+      writeAuditEvent(
+        'admin_shutdown_requested',
+        {
+          transport: 'ipc',
+          reason,
+          instanceId: rpcPorts.identity.instanceId,
+        },
+        'warn',
+      );
+      rpcPorts.admin.requestDrain(reason);
+      // `requestDrain` only flips the drain flag and notifies the idle timer;
+      // the idle timer is not installed until lifecycle reaches 'running'.
+      // To unblock contenders during a still-`starting` incumbent, lifecycle
+      // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
+      // directly. No-op when lifecycle is already running (drain handles it).
+      onShutdownRequest?.(reason);
       await writeEnvelope(
         socket,
         {
           kind: 'response',
           id: request.id,
-          result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
+          result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
         },
         { drainTimeoutMs: options.writeDrainTimeoutMs },
       );
       socket.end();
-    } catch (error: unknown) {
-      rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
-      if (!socket.destroyed && !socket.writableEnded) {
-        const response = buildTransportErrorResponse(error);
-        await writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data), {
-          drainTimeoutMs: options.writeDrainTimeoutMs,
-        });
-        socket.end();
-      }
+      return;
     }
-    return;
+
+    if (operationalSpec.dispatch.kind === 'kb-restart') {
+      if (!rpcPorts.admin.restartKbDaemon) {
+        await writeEnvelope(
+          socket,
+          requestErrorResponse(request.id, KB_RESTART_UNAVAILABLE_RESPONSE.message, KB_RESTART_UNAVAILABLE_RESPONSE),
+          { drainTimeoutMs: options.writeDrainTimeoutMs },
+        );
+        socket.end();
+        return;
+      }
+      writeAuditEvent(
+        'admin_kb_daemon_restart_requested',
+        {
+          transport: 'ipc',
+          reason: 'admin',
+          instanceId: rpcPorts.identity.instanceId,
+        },
+        'warn',
+      );
+      try {
+        const kbDaemon = await rpcPorts.admin.restartKbDaemon('ipc-admin');
+        await writeEnvelope(
+          socket,
+          {
+            kind: 'response',
+            id: request.id,
+            result: { status: 'ok', instanceId: rpcPorts.identity.instanceId, kbDaemon },
+          },
+          { drainTimeoutMs: options.writeDrainTimeoutMs },
+        );
+        socket.end();
+      } catch (error: unknown) {
+        rpcPorts.identity.log(`IPC request error (${request.method}): ${formatError(error)}\n`);
+        if (!socket.destroyed && !socket.writableEnded) {
+          const response = buildTransportErrorResponse(error);
+          await writeEnvelope(socket, requestErrorResponse(request.id, response.message, response.data), {
+            drainTimeoutMs: options.writeDrainTimeoutMs,
+          });
+          socket.end();
+        }
+      }
+      return;
+    }
   }
 
-  if (lifecycleState === 'draining' || lifecycleState === 'stopped' || rpcPorts.admin.isDrainRequested()) {
+  if (backendUnavailable) {
     await writeEnvelope(
       socket,
       {
@@ -584,6 +703,17 @@ async function dispatchFrame(
     socket.end();
     return;
   }
+  if (!principal) {
+    await writeEnvelope(
+      socket,
+      requestErrorResponse(request.id, IPC_UNAUTHORIZED_RESPONSE.message, IPC_UNAUTHORIZED_RESPONSE),
+      {
+        drainTimeoutMs: options.writeDrainTimeoutMs,
+      },
+    );
+    socket.end();
+    return;
+  }
 
   const parsed = entry.spec.requestSchema.safeParse(request.params ?? {});
   if (!parsed.success) {
@@ -593,13 +723,14 @@ async function dispatchFrame(
     socket.end();
     return;
   }
+  const executionPrincipal = bindPrincipalForIpcDispatch(principal, entry.spec, parsed.data);
 
   startRequest();
 
   let subscriptionController: AbortController | null = null;
   try {
     subscriptionController = new AbortController();
-    const invocation = await entry.dispatch(parsed.data, subscriptionController.signal);
+    const invocation = await entry.dispatch(parsed.data, executionPrincipal, subscriptionController.signal);
     if (invocation.kind === 'unary') {
       // Domain-level errors (statusCode >= 400) ride a JSON-RPC `error`
       // envelope so the client rejects with a typed error instead of

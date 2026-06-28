@@ -108,6 +108,7 @@ afterEach(async () => {
 describe('expansion RPC before store services exist', () => {
   it('routes through the KB daemon supervisor on a never-started server', async () => {
     const token = 'test-token';
+    const bootToken = 'test-boot-token';
     const expansionRpc = vi.fn(async () => ({
       ok: true as const,
       data: {
@@ -127,6 +128,7 @@ describe('expansion RPC before store services exist', () => {
         flavor: 'prod',
         instanceId: 'test-instance',
         token,
+        bootToken,
         now: () => 1_000,
         log: () => {},
       },
@@ -156,7 +158,16 @@ describe('expansion RPC before store services exist', () => {
         status: 'equipped',
       },
     });
-    expect(expansionRpc).toHaveBeenCalledWith({ method: 'equipExpansion', args: { name: 'needle' } });
+    expect(expansionRpc).toHaveBeenCalledWith({
+      method: 'equipExpansion',
+      args: { name: 'needle' },
+      ctx: expect.objectContaining({
+        principal: expect.objectContaining({
+          subject: 'operator',
+          binding: { kind: 'unbound' },
+        }),
+      }),
+    });
   });
 
   it.each([
@@ -223,6 +234,7 @@ describe('expansion RPC before store services exist', () => {
 
   it('surfaces daemon-owned mutation lock diagnostics through health without parent KB runtime access', async () => {
     const token = 'test-token';
+    const bootToken = 'test-boot-token';
     const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
     const core = createCoordinatorCore({
       runtime: makeRuntime(),
@@ -232,6 +244,7 @@ describe('expansion RPC before store services exist', () => {
         flavor: 'prod',
         instanceId: 'test-instance',
         token,
+        bootToken,
         now: () => 1_000,
         log: () => {},
       },
@@ -246,8 +259,8 @@ describe('expansion RPC before store services exist', () => {
     });
 
     const port = await listen(core.server);
-    const response = await fetch(`http://127.0.0.1:${port}/health`, {
-      headers: { 'x-coral-backend-token': token },
+    const response = await fetch(`http://127.0.0.1:${port}/health?detailed=1`, {
+      headers: { 'x-coral-boot-token': bootToken },
     });
     const body = (await response.json()) as {
       diagnostics?: { mutationBlocked?: unknown };

@@ -657,21 +657,29 @@ export class LaunchOrchestrator {
     pool: LaunchPool,
   ): ProviderRuntime {
     const recoveryMeta = provider.recovery?.buildRecoveryMeta?.(request);
+    const runCli = bindProviderRunner(
+      this.deps.durableSpawner,
+      provider.name,
+      signal,
+      pool,
+      this.deps.progressStore.jobDir(jobId),
+      (record) => {
+        this.deps.progressStore.appendRuntimeStarted(jobId, {
+          ...record,
+          providerMeta: mergeProviderMeta(record.providerMeta, recoveryMeta),
+        });
+      },
+    );
     return {
       signal,
-      runCli: bindProviderRunner(
-        this.deps.durableSpawner,
-        provider.name,
-        signal,
-        pool,
-        this.deps.progressStore.jobDir(jobId),
-        (record) => {
-          this.deps.progressStore.appendRuntimeStarted(jobId, {
-            ...record,
-            providerMeta: mergeProviderMeta(record.providerMeta, recoveryMeta),
-          });
-        },
-      ),
+      runCli: (cliRequest) =>
+        runCli({
+          ...cliRequest,
+          extraEnv:
+            request.secretEnv === undefined
+              ? cliRequest.extraEnv
+              : { ...(cliRequest.extraEnv ?? {}), ...request.secretEnv },
+        }),
       time: this.deps.runtime.time,
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,

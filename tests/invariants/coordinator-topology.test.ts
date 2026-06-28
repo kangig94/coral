@@ -20,6 +20,7 @@ const COORDINATOR_EDGES = parseProductionImportEdges(REPO_ROOT, COORDINATOR_FILE
 const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/bootstrap-diagnostics.ts',
   'src/coordinator/bootstrap.ts',
+  'src/coordinator/child-principal-registry.ts',
   'src/coordinator/composition/job-control.ts',
   'src/coordinator/composition/store-services-ref.ts',
   'src/coordinator/composition/types.ts',
@@ -156,7 +157,8 @@ describe('coordinator topology invariants', () => {
         target.startsWith('src/coordinator/') ||
         target.startsWith('src/store/') ||
         target.startsWith('src/runtime/') ||
-        target.startsWith('src/infra/')
+        target.startsWith('src/infra/') ||
+        target.startsWith('src/security/')
       ) {
         return false;
       }

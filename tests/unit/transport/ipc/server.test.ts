@@ -7,6 +7,7 @@ import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import type { Principal } from '#src/security/principal.js';
 
 const tempDirs: string[] = [];
 
@@ -79,6 +80,7 @@ function createPorts(): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'unused-for-ipc',
+      bootToken: 'boot-token',
       shutdownToken: 'shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
@@ -217,7 +219,9 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'discuss.session.list', {})).resolves.toEqual({
+      await expect(
+        requestIpcMethod(socketPath, 'discuss.session.list', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).resolves.toEqual({
         sessions: [
           {
             sessionId: 'session-1',
@@ -235,7 +239,92 @@ describe('ipc server', () => {
     }
   });
 
-  it('exposes transport-local health and shutdown methods outside rpcCatalog', async () => {
+  it('authenticates catalog requests through child principal handles and rejects over-cap/replayed requests', async () => {
+    const childPrincipal: Principal = {
+      subject: 'operator',
+      transport: 'ipc',
+      credential: { kind: 'child-principal', id: 'job-a:session-a' },
+      binding: { kind: 'unbound' },
+      attenuatedCaps: new Set(['jobs:read']),
+    };
+    const ports: HttpHandlerPorts = {
+      ...createPorts(),
+      childPrincipals: {
+        authenticate: vi.fn((auth, namespace, nowMs) => {
+          if (
+            namespace === 'test-namespace' &&
+            nowMs === 0 &&
+            auth.handle === 'handle-a' &&
+            auth.jobId === 'job-a' &&
+            auth.sessionId === 'session-a'
+          ) {
+            return childPrincipal;
+          }
+          return null;
+        }),
+      },
+    };
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'jobs.list',
+          {},
+          {
+            auth: {
+              kind: 'child',
+              handle: 'handle-a',
+              token: 'nonce-1',
+              jobId: 'job-a',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).resolves.toEqual({ jobs: [] });
+
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'coordinator.listExpansion',
+          {},
+          {
+            auth: {
+              kind: 'child',
+              handle: 'handle-a',
+              token: 'nonce-2',
+              jobId: 'job-a',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).rejects.toThrow('Missing required capability');
+
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'jobs.list',
+          {},
+          {
+            auth: {
+              kind: 'child',
+              handle: 'handle-a',
+              token: 'nonce-3',
+              jobId: 'job-b',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).rejects.toThrow('IPC boot token or child principal required');
+    } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('exposes unauthenticated ping plus boot-token-authenticated health and shutdown methods', async () => {
     const ports = createPorts();
     const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
     const listener = createIpcServer(ports);
@@ -244,12 +333,24 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'transport.health')).resolves.toMatchObject({
+      await expect(requestIpcMethod(socketPath, 'transport.ping')).resolves.toEqual({
         status: 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        namespace: 'test-namespace',
         instanceId: 'test-instance',
+        pid: 12345,
       });
       await expect(
-        requestIpcMethod(socketPath, 'transport.shutdown', { shutdownToken: 'shutdown-token' }),
+        requestIpcMethod(socketPath, 'transport.health', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),
+      ).resolves.toMatchObject({
+        status: 'ok',
+        instanceId: 'test-instance',
+        components: [{ id: 'kb', phase: 'online' }],
+      });
+      await expect(
+        requestIpcMethod(socketPath, 'transport.shutdown', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
       ).resolves.toEqual({
         status: 'draining',
         instanceId: 'test-instance',
@@ -283,7 +384,7 @@ describe('ipc server', () => {
     }
   });
 
-  it('restarts the KB daemon supervisor through the shutdown-token IPC method', async () => {
+  it('restarts the KB daemon supervisor through boot-token authenticated IPC', async () => {
     const childHealth = {
       enabled: true as const,
       phase: 'online' as const,
@@ -301,7 +402,7 @@ describe('ipc server', () => {
     await listenIpcServer(listener, socketPath);
     try {
       await expect(
-        requestIpcMethod(socketPath, 'transport.kb.restart', { shutdownToken: 'shutdown-token' }),
+        requestIpcMethod(socketPath, 'transport.kb.restart', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
       ).resolves.toEqual({
         status: 'ok',
         instanceId: 'test-instance',
@@ -357,7 +458,7 @@ describe('ipc server', () => {
     await listenIpcServer(listener, socketPath);
     try {
       await expect(
-        requestIpcMethod(socketPath, 'transport.kb.restart', { shutdownToken: 'shutdown-token' }),
+        requestIpcMethod(socketPath, 'transport.kb.restart', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
       ).rejects.toThrow('Internal error');
       expect(ports.admin.restartKbDaemon).toHaveBeenCalledWith('ipc-admin');
       expect(hasLogLine(ports, 'IPC request error (transport.kb.restart): Error: restart failed')).toBe(true);

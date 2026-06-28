@@ -14,12 +14,13 @@ import { formatStepOutput, toSessionHandles } from '#src/workflow/command.js';
 import type { CompiledPlanSlot } from '#src/workflow/plan.js';
 import { recoverStaleAtom } from '#src/workflow/stale-recovery.js';
 import { waitForAtoms } from '#src/workflow/wait.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
-  authority: 'admin',
+  principal: testProjectPrincipal('/tmp/coral-workflow-project'),
 };
 // Monotonic deterministic clock — internal workflow logic compares
 // `time.now()` against absolute deadlines (e.g. `drainDeadline`), so fixed

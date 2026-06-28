@@ -17,6 +17,7 @@ import {
 } from '#src/kb/tool-contracts.js';
 import { parseBooleanQuery } from '#src/infra/json.js';
 import { buildInvocationContextFromQuery } from '#src/transport/invocation-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 describe('transport HTTP query parsing', () => {
   it('parses boolean query values safely', () => {
@@ -194,6 +195,7 @@ describe('transport HTTP query parsing', () => {
   });
 
   it('rebuilds InvocationContext from query params using the injected CORAL env snapshot only', () => {
+    const principal = testProjectPrincipal('/repo/project');
     const context = buildInvocationContextFromQuery(
       '/repo/project',
       '/plugin/root',
@@ -201,12 +203,12 @@ describe('transport HTTP query parsing', () => {
         CORAL_OWNER: 'transport-owner',
         CORAL_EFFORT: 'high',
       },
-      'admin',
+      principal,
     );
 
     expect(context.projectRoot).toBe('/repo/project');
     expect(context.pluginRoot).toBe('/plugin/root');
-    expect(context.authority).toBe('admin');
+    expect(context.principal).toBe(principal);
     expect(context.coralEnv).toEqual(
       expect.objectContaining({
         CORAL_OWNER: 'transport-owner',

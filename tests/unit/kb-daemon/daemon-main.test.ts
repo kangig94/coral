@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isProcessAlive, resolveKbDaemonParentPid, startKbDaemonParentWatchdog } from '#src/kb-daemon/daemon-main.js';
+import {
+  handleKbDaemonExpansionRpcRequest,
+  isProcessAlive,
+  resolveKbDaemonParentPid,
+  startKbDaemonParentWatchdog,
+} from '#src/kb-daemon/daemon-main.js';
 
 describe('KB daemon main parent watchdog', () => {
   it('parses a valid parent pid and rejects invalid or self pids', () => {
@@ -136,5 +141,90 @@ describe('KB daemon main parent watchdog', () => {
     tick?.();
     expect(clearIntervalFn).toHaveBeenCalledTimes(1);
     expect(onParentExit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('KB daemon expansion RPC authorization', () => {
+  it.each([
+    ['missing ctx', { method: 'equipExpansion', args: { name: 'needle' } }],
+    [
+      'unknown subject',
+      {
+        method: 'equipExpansion',
+        args: { name: 'needle' },
+        ctx: { principal: { subject: 'admin', binding: { kind: 'unbound' } } },
+      },
+    ],
+    [
+      'non-array attenuation',
+      {
+        method: 'equipExpansion',
+        args: { name: 'needle' },
+        ctx: {
+          principal: {
+            subject: 'operator',
+            binding: { kind: 'unbound' },
+            attenuatedCaps: 'expansion:manage',
+          },
+        },
+      },
+    ],
+  ])('rejects malformed expansion requests with %s before calling the runtime host', async (_label, params) => {
+    const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'equipped' } }));
+
+    await expect(handleKbDaemonExpansionRpcRequest(params, { expansionRpc })).resolves.toMatchObject({
+      ok: false,
+      code: 'invalid_request',
+    });
+    expect(expansionRpc).not.toHaveBeenCalled();
+  });
+
+  it.each(['equipExpansion', 'unequipExpansion', 'removeExpansionCatalog'] as const)(
+    'denies attenuated child principals without expansion:manage for %s',
+    async (method) => {
+      const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'ok' } }));
+
+      await expect(
+        handleKbDaemonExpansionRpcRequest(
+          {
+            method,
+            args: { name: 'needle' },
+            ctx: {
+              principal: {
+                subject: 'operator',
+                binding: { kind: 'unbound' },
+                attenuatedCaps: ['liveness', 'kb:read'],
+              },
+            },
+          },
+          { expansionRpc },
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        code: 'unauthorized',
+      });
+      expect(expansionRpc).not.toHaveBeenCalled();
+    },
+  );
+
+  it('calls the runtime host for principals with expansion:manage', async () => {
+    const expansionRpc = vi.fn(async () => ({ ok: true as const, data: { status: 'equipped' } }));
+    const request = {
+      method: 'equipExpansion' as const,
+      args: { name: 'needle' },
+      ctx: {
+        principal: {
+          subject: 'operator' as const,
+          binding: { kind: 'unbound' as const },
+          attenuatedCaps: ['liveness', 'expansion:manage'] as const,
+        },
+      },
+    };
+
+    await expect(handleKbDaemonExpansionRpcRequest(request, { expansionRpc })).resolves.toEqual({
+      ok: true,
+      data: { status: 'equipped' },
+    });
+    expect(expansionRpc).toHaveBeenCalledWith(request);
   });
 });

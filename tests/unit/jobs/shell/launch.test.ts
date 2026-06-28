@@ -51,6 +51,7 @@ import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -587,7 +588,7 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+  return { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) };
 }
 
 function _isoAt(ms: number): string {
@@ -613,6 +614,8 @@ function createSessionTransportPorts(service: ExecutionService, pluginRoot: stri
     identity: {
       pluginRoot,
       token: 'test-token',
+      bootToken: 'test-boot-token',
+      shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
       flavor: 'prod',
@@ -687,7 +690,12 @@ describe('ExecutionService launch', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
+    ctx = {
+      projectRoot,
+      pluginRoot: join(projectRoot, 'plugin'),
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
@@ -777,7 +785,7 @@ describe('ExecutionService launch', () => {
       spec,
       request,
       createSessionTransportPorts(service, ctx.pluginRoot),
-      'admin',
+      testProjectPrincipal(ctx.projectRoot),
     );
 
     expect(response.kind).toBe('unary');

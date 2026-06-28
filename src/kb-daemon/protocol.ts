@@ -1,3 +1,7 @@
+import { z } from 'zod';
+
+import { principalWireSchema, type PrincipalWire } from '../security/principal-wire.js';
+
 export const KB_DAEMON_READY_MESSAGE = 'coral.kb_daemon.ready';
 export const KB_DAEMON_REQUEST_MESSAGE = 'coral.kb_daemon.request';
 export const KB_DAEMON_RESPONSE_MESSAGE = 'coral.kb_daemon.response';
@@ -81,23 +85,40 @@ export const KB_DAEMON_EXPANSION_METHODS = [
 
 export type KbDaemonExpansionMethod = (typeof KB_DAEMON_EXPANSION_METHODS)[number];
 
+export type KbDaemonRequestContextWire = {
+  readonly projectRoot?: string;
+  readonly pluginRoot?: string;
+  readonly coralEnv?: Record<string, string>;
+  readonly principal: PrincipalWire;
+};
+
+export const kbDaemonRequestContextWireSchema = z
+  .object({
+    projectRoot: z.string().min(1).optional(),
+    pluginRoot: z.string().min(1).optional(),
+    coralEnv: z.record(z.string()).optional(),
+    principal: principalWireSchema,
+  })
+  .strict();
+
 export type KbDaemonKbReadRequest = {
   method: KbDaemonKbReadMethod;
   args?: unknown;
   slug?: string;
-  ctx?: unknown;
+  ctx: KbDaemonRequestContextWire;
 };
 
 export type KbDaemonKbMutationRequest = {
   method: KbDaemonKbMutationMethod;
   args?: unknown;
   slug?: string;
-  ctx?: unknown;
+  ctx: KbDaemonRequestContextWire;
 };
 
 export type KbDaemonExpansionRequest = {
   method: KbDaemonExpansionMethod;
   args?: unknown;
+  ctx: KbDaemonRequestContextWire;
 };
 
 export type KbDaemonCurateAssistantCompleteRequest = {
@@ -384,6 +405,10 @@ export function isKbDaemonExpansionMethod(value: unknown): value is KbDaemonExpa
   return typeof value === 'string' && KB_DAEMON_EXPANSION_METHODS.includes(value as KbDaemonExpansionMethod);
 }
 
+export function isKbDaemonRequestContextWire(value: unknown): value is KbDaemonRequestContextWire {
+  return kbDaemonRequestContextWireSchema.safeParse(value).success;
+}
+
 export function isKbDaemonCurateAssistantPurpose(value: unknown): value is KbDaemonCurateAssistantPurpose {
   return (
     typeof value === 'string' && KB_DAEMON_CURATE_ASSISTANT_PURPOSES.includes(value as KbDaemonCurateAssistantPurpose)
@@ -404,7 +429,11 @@ export function isKbDaemonKbReadRequest(value: unknown): value is KbDaemonKbRead
     return false;
   }
   const record = value as Record<string, unknown>;
-  return isKbDaemonKbReadMethod(record.method) && (record.slug === undefined || typeof record.slug === 'string');
+  return (
+    isKbDaemonKbReadMethod(record.method) &&
+    (record.slug === undefined || typeof record.slug === 'string') &&
+    isKbDaemonRequestContextWire(record.ctx)
+  );
 }
 
 export function isKbDaemonKbMutationRequest(value: unknown): value is KbDaemonKbMutationRequest {
@@ -412,7 +441,11 @@ export function isKbDaemonKbMutationRequest(value: unknown): value is KbDaemonKb
     return false;
   }
   const record = value as Record<string, unknown>;
-  return isKbDaemonKbMutationMethod(record.method) && (record.slug === undefined || typeof record.slug === 'string');
+  return (
+    isKbDaemonKbMutationMethod(record.method) &&
+    (record.slug === undefined || typeof record.slug === 'string') &&
+    isKbDaemonRequestContextWire(record.ctx)
+  );
 }
 
 export function isKbDaemonExpansionRequest(value: unknown): value is KbDaemonExpansionRequest {
@@ -420,7 +453,7 @@ export function isKbDaemonExpansionRequest(value: unknown): value is KbDaemonExp
     return false;
   }
   const record = value as Record<string, unknown>;
-  return isKbDaemonExpansionMethod(record.method);
+  return isKbDaemonExpansionMethod(record.method) && isKbDaemonRequestContextWire(record.ctx);
 }
 
 export function isKbDaemonCurateAssistantCompleteRequest(

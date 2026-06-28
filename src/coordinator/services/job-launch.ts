@@ -21,6 +21,11 @@ import {
   runProviderPreflight,
   toPreflightRuntime,
 } from './execution-policies.js';
+import {
+  CHILD_PRINCIPAL_CAPABILITIES,
+  CORAL_CHILD_PRINCIPAL_HANDLE,
+  type ChildPrincipalRegistry,
+} from '../child-principal-registry.js';
 
 export interface JobLaunchServiceDeps {
   runtime: Runtime;
@@ -33,6 +38,7 @@ export interface JobLaunchServiceDeps {
   };
   progressStore: JobProgressStore;
   launchOrchestrator: ProviderJobLaunchPort;
+  childPrincipalRegistry?: ChildPrincipalRegistry;
 }
 
 export class JobLaunchService {
@@ -111,6 +117,7 @@ export class JobLaunchService {
       systemPrompt: input.systemPrompt,
       instruction,
       coralEnv: effectiveCoralEnv,
+      secretEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:start'),
     };
 
     return this.launchProviderJob(spec, session.sessionId, admitted.jobId, request, admitted.admission, {
@@ -286,6 +293,7 @@ export class JobLaunchService {
       systemPrompt: continuation.systemPrompt,
       instruction: continuation.instruction,
       coralEnv: continuation.coralEnv,
+      secretEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:resume'),
     };
 
     return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
@@ -342,5 +350,28 @@ export class JobLaunchService {
     },
   ): LaunchDecision {
     return this.deps.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
+  }
+
+  private mintChildPrincipalSecretEnv(
+    ctx: InvocationContext,
+    sessionId: string,
+    jobId: string,
+    issuer: string,
+  ): Record<string, string> | undefined {
+    const registry = this.deps.childPrincipalRegistry;
+    if (registry === undefined) {
+      return undefined;
+    }
+
+    const credential = registry.register({
+      issuer,
+      parentPrincipal: ctx.principal,
+      namespace: this.deps.backendNamespace,
+      parentJobId: jobId,
+      parentSessionId: sessionId,
+      nowMs: this.deps.runtime.time.now(),
+      childCaps: CHILD_PRINCIPAL_CAPABILITIES,
+    });
+    return { [CORAL_CHILD_PRINCIPAL_HANDLE]: credential.handle };
   }
 }

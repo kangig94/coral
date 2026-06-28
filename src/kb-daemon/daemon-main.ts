@@ -12,6 +12,8 @@ import {
   isKbDaemonParentResponseMessage,
   isKbDaemonRequestMessage,
   type KbDaemonCurateAssistantCompleteRequest,
+  type KbDaemonExpansionRequest,
+  type KbDaemonExpansionResult,
   type KbDaemonHealthResult,
   type KbDaemonControlMessage,
   type KbDaemonRequestMessage,
@@ -19,9 +21,13 @@ import {
 } from './protocol.js';
 import { createKbDaemonRequestService } from './request-service.js';
 import { createKbDaemonWriteRuntimeHost } from './runtime-host.js';
+import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { AbortError } from '../runtime/abort.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import { parsePrincipalWire } from '../security/principal-wire.js';
+import { authorize } from '../security/policy/authorize.js';
+import type { ResourceBinding } from '../security/principal.js';
 
 const DEFAULT_PARENT_WATCHDOG_INTERVAL_MS = 1_000;
 
@@ -36,6 +42,14 @@ export type KbDaemonMainOptions = {
   pluginRoot?: string;
   parentPid?: number | null;
 };
+
+type KbDaemonExpansionRpcPort = {
+  expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
+};
+
+function requestedBindingFromExpansionRequest(params: KbDaemonExpansionRequest): ResourceBinding {
+  return params.ctx.projectRoot === undefined ? { kind: 'unbound' } : { kind: 'project', root: params.ctx.projectRoot };
+}
 
 function writeControlMessage(message: KbDaemonControlMessage): void {
   process.stdout.write(encodeKbDaemonMessage(message));
@@ -60,6 +74,45 @@ export function isProcessAlive(pid: number): boolean {
   } catch (error: unknown) {
     return (error as { code?: unknown }).code === 'EPERM';
   }
+}
+
+export async function handleKbDaemonExpansionRpcRequest(
+  params: unknown,
+  kbWriteHost: KbDaemonExpansionRpcPort,
+): Promise<KbDaemonExpansionResult> {
+  if (!isKbDaemonExpansionRequest(params)) {
+    return {
+      ok: false,
+      code: 'invalid_request',
+      message: 'Malformed KB daemon expansion request.',
+    };
+  }
+
+  const principal = parsePrincipalWire(params.ctx.principal, {
+    transport: 'kb-daemon',
+    credential: { kind: 'daemon-rpc', id: 'expansion-request' },
+  });
+  if (principal === null) {
+    return {
+      ok: false,
+      code: 'invalid_request',
+      message: 'Malformed KB daemon expansion principal.',
+    };
+  }
+
+  const requestedBinding = requestedBindingFromExpansionRequest(params);
+  const decision = authorize(principal, 'expansion:manage', requestedBinding);
+  writeAuthorizationDecisionAudit(principal, `kb-daemon.expansion.${params.method}`, decision, requestedBinding);
+  if (!decision.ok) {
+    return {
+      ok: false,
+      code: 'unauthorized',
+      message: 'KB daemon expansion request requires expansion:manage.',
+      detail: decision,
+    };
+  }
+
+  return kbWriteHost.expansionRpc(params);
 }
 
 export type KbDaemonParentWatchdogOptions = {
@@ -340,13 +393,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
           type: KB_DAEMON_RESPONSE_MESSAGE,
           id: request.id,
           ok: true,
-          result: isKbDaemonExpansionRequest(request.params)
-            ? await kbWriteHost.expansionRpc(request.params)
-            : {
-                ok: false,
-                code: 'invalid_request',
-                message: 'Malformed KB daemon expansion request.',
-              },
+          result: await handleKbDaemonExpansionRpcRequest(request.params, kbWriteHost),
         });
         return;
     }

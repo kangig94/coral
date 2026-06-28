@@ -41,6 +41,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const tempRoots: string[] = [];
 const openDbs: Array<{ close(): void }> = [];
@@ -329,7 +330,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
 
     const started = await importService.start(
       { filePath: stagedFile, readiness: 'base-search', async: true },
-      { projectRoot: world.markdownRoot, authority: 'admin' },
+      { projectRoot: world.markdownRoot, principal: testProjectPrincipal(world.markdownRoot) },
       world.kbRuntime,
     );
     expect(started.ok).toBe(true);
@@ -367,7 +368,7 @@ describe('KB pipeline checkpoint honor (AC9) — source-import', () => {
     // Async mode so the promise can finish via the abort path.
     const started = await importService.start(
       { filePath: stagedFile, readiness: 'base-search', async: true },
-      { projectRoot: world.markdownRoot, authority: 'admin' },
+      { projectRoot: world.markdownRoot, principal: testProjectPrincipal(world.markdownRoot) },
       world.kbRuntime,
     );
     expect(started.ok).toBe(true);

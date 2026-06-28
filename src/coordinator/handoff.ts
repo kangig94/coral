@@ -151,7 +151,7 @@ function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boole
   if (left.token !== undefined && left.token !== right.token) {
     return false;
   }
-  if (left.shutdownToken !== undefined && left.shutdownToken !== right.shutdownToken) {
+  if (left.bootToken !== undefined && left.bootToken !== right.bootToken) {
     return false;
   }
   return true;
@@ -207,8 +207,8 @@ function missingSignalCapabilityFields(incumbent: IncumbentIdentity): string[] {
   if (incumbent.token === undefined || incumbent.token.length === 0) {
     missing.push('token');
   }
-  if (incumbent.shutdownToken === undefined || incumbent.shutdownToken.length === 0) {
-    missing.push('shutdownToken');
+  if (incumbent.bootToken === undefined || incumbent.bootToken.length === 0) {
+    missing.push('bootToken');
   }
   return missing;
 }
@@ -389,12 +389,13 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
     sawIncumbent = true;
     let remaining = deadline - opts.runtime.time.now();
     if (remaining > 0) {
-      const shutdownIdentity = readFreshDiscovery(opts, lastHealth);
-      incumbent = mergeVerifiedDiscovery(incumbent, shutdownIdentity);
+      const shutdownCredentialIdentity = readFreshDiscovery(opts, lastHealth);
+      incumbent = mergeVerifiedDiscovery(incumbent, shutdownCredentialIdentity);
+      const shutdownCredential = shutdownCredentialIdentity?.bootToken;
       const shutdownResult = await requestIncumbentShutdown({
         socketPath: opts.socketPath,
         desired: opts.desired,
-        shutdownToken: shutdownIdentity?.shutdownToken,
+        bootToken: shutdownCredential,
         timeoutMs: Math.min(SHUTDOWN_RPC_TIMEOUT_MS, remaining),
         timePort: opts.runtime.time,
       });
@@ -410,7 +411,7 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           `Manual shutdown required: incumbent pid=${incumbent?.pid ?? 'unknown'} rejected shutdown capability`,
         );
       }
-      if (!shutdownResult.shutdownAttempted && incumbent !== null && incumbent.shutdownToken === undefined) {
+      if (!shutdownResult.shutdownAttempted && incumbent !== null && incumbent.bootToken === undefined) {
         throw new HandoffEscalationError(
           `Manual shutdown required: refusing handoff for pid=${incumbent.pid} because verified shutdown capability was unavailable`,
         );

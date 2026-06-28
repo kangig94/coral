@@ -27,6 +27,7 @@ import { resumeAll } from '#src/workflow/recover.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const REPO_ROOT = process.cwd();
 const NOW = '2026-04-19T00:00:00.000Z';
@@ -489,7 +490,7 @@ function createRecoveryInvocationContext(projectRoot: string): InvocationContext
     projectRoot,
     pluginRoot: '/workspace/coral-plugin',
     coralEnv: {},
-    authority: 'admin',
+    principal: testProjectPrincipal(projectRoot),
   };
 }
 

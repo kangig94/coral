@@ -40,6 +40,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { CauseRef } from '#src/causality/cause-ref.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const openDbs = new Set<Database>();
 
@@ -1050,7 +1051,7 @@ describe('LifecycleReactor retention enforcement', () => {
           projectRoot,
           pluginRoot: projectRoot,
           coralEnv: {},
-          authority: 'admin',
+          principal: testProjectPrincipal(projectRoot),
         }),
         getRecoveryService: () => {
           throw new Error('unexpected recovery service lookup');
@@ -1092,7 +1093,7 @@ describe('LifecycleReactor retention enforcement', () => {
           projectRoot,
           pluginRoot: projectRoot,
           coralEnv: {},
-          authority: 'admin',
+          principal: testProjectPrincipal(projectRoot),
         }),
         getRecoveryService: () => {
           throw new Error('unexpected recovery service lookup');

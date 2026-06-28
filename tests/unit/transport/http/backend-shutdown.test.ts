@@ -32,6 +32,7 @@ function backendInfo(overrides: Partial<BackendInfo> = {}): BackendInfo {
     host: '127.0.0.1',
     socketPath: '/tmp/coral.sock',
     token: 'backend-token',
+    bootToken: 'boot-token',
     shutdownToken: 'shutdown-token',
     version: '0.0.0',
     bundleHash: 'bundle-hash',
@@ -54,7 +55,7 @@ describe('shutdownBackend', () => {
     );
   });
 
-  it('uses the dedicated shutdown token when discovery provides one', async () => {
+  it('uses the boot token for shutdown authorization', async () => {
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
     await expect(shutdownBackend('/plugin-root')).resolves.toEqual({ ok: true });
@@ -63,12 +64,12 @@ describe('shutdownBackend', () => {
       'http://127.0.0.1:4321/admin/shutdown',
       expect.objectContaining({
         method: 'POST',
-        headers: { 'X-Coral-Shutdown-Token': 'shutdown-token' },
+        headers: { 'X-Coral-Boot-Token': 'boot-token' },
       }),
     );
   });
 
-  it('falls back to the backend token for retired discovery records', async () => {
+  it('does not fall back to the backend token when the retired shutdown token is absent', async () => {
     mockState.info = backendInfo({ shutdownToken: undefined });
     const { shutdownBackend } = await import('#src/transport/http/backend/shutdown.js');
 
@@ -78,7 +79,7 @@ describe('shutdownBackend', () => {
       'http://127.0.0.1:4321/admin/shutdown',
       expect.objectContaining({
         method: 'POST',
-        headers: { 'X-Coral-Backend-Token': 'backend-token' },
+        headers: { 'X-Coral-Boot-Token': 'boot-token' },
       }),
     );
   });

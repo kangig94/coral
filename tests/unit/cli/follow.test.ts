@@ -215,6 +215,10 @@ describe('cli follow', () => {
   let sigintHandler: (() => void) | null = null;
 
   beforeEach(() => {
+    vi.stubEnv('CORAL_CHILD', '');
+    vi.stubEnv('CORAL_CHILD_PRINCIPAL_HANDLE', '');
+    vi.stubEnv('CORAL_JOB_ID', '');
+    vi.stubEnv('CORAL_SESSION_ID', '');
     stdout = '';
     stderr = '';
     sigintHandler = null;
@@ -251,6 +255,7 @@ describe('cli follow', () => {
     process.exitCode = undefined;
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('writes launch output and a path-first terminal summary in text mode', async () => {

@@ -28,6 +28,7 @@ const DOMAIN_BUCKET_PREFIXES = [
   'kb',
   'projection-consumers',
   'runtime',
+  'security',
   'causality',
   'read-model',
   'coral',

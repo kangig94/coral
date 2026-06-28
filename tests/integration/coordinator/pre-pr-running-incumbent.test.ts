@@ -1,6 +1,6 @@
 // R6: cross-version handoff. The new daemon must:
 //   HAPPY: handle a pre-PR running incumbent that writes valid coordinator.json
-//          (with pid+processStartedAt) and answers transport.health/shutdown.
+//          (with pid+processStartedAt) and answers transport.ping/shutdown.
 //   DEGRADED: handle a journal that already contains a terminal record
 //             (pre-PR daemon crashed mid-finalizer) — finalizeInterruptedAppServerJob
 //             must early-return with a backendLog.warn rather than re-finalizing.
@@ -74,7 +74,7 @@ describe('pre-PR running incumbent (R6)', () => {
     let shutdownReceived = false;
     let server: NetServer | null = null;
     server = await startScriptedIncumbent(socketPath, async (req) => {
-      if (req.method === 'transport.health') {
+      if (req.method === 'transport.ping') {
         return {
           kind: 'response',
           id: req.id,
@@ -90,7 +90,8 @@ describe('pre-PR running incumbent (R6)', () => {
       }
       if (req.method === 'transport.shutdown') {
         shutdownReceived = true;
-        expect(req.params).toEqual({ shutdownToken: 'shutdown-token' });
+        expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
+        expect(req.params).toEqual({});
         // Schedule socket close on next tick — emulates daemon entering drain
         // and releasing the socket within budget.
         queueMicrotask(() => {
@@ -132,6 +133,7 @@ describe('pre-PR running incumbent (R6)', () => {
         source: 'discovery',
         instanceId: 'incumbent',
         token: 'token',
+        bootToken: 'boot-token',
         shutdownToken: 'shutdown-token',
       }),
       totalBudgetMs: 5_000,
@@ -152,7 +154,7 @@ describe('pre-PR running incumbent (R6)', () => {
   it('HAPPY: same bundle → IncumbentMatchesError (treat as redundant, not handoff)', async () => {
     const socketPath = makeSocketPath('compat');
     await startScriptedIncumbent(socketPath, async (req) => {
-      if (req.method === 'transport.health') {
+      if (req.method === 'transport.ping') {
         return {
           kind: 'response',
           id: req.id,

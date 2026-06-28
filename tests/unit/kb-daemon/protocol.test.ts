@@ -6,12 +6,24 @@ import {
   KB_DAEMON_REQUEST_MESSAGE,
   isKbDaemonCurateAssistantCancelRequest,
   isKbDaemonCurateAssistantCompleteRequest,
+  isKbDaemonExpansionRequest,
   isKbDaemonJobsResult,
   isKbDaemonKbReadHealth,
+  isKbDaemonKbMutationRequest,
+  isKbDaemonKbReadRequest,
   isKbDaemonParentRequestMessage,
   isKbDaemonParentResponseMessage,
   isKbDaemonRequestMessage,
 } from '#src/kb-daemon/protocol.js';
+
+const daemonCtx = {
+  projectRoot: '/workspace/project-a',
+  principal: {
+    subject: 'operator',
+    binding: { kind: 'project', root: '/workspace/project-a' },
+    attenuatedCaps: ['kb:read', 'kb:write'],
+  },
+} as const;
 
 describe('KB daemon protocol', () => {
   it('accepts active KB job list requests', () => {
@@ -28,6 +40,30 @@ describe('KB daemon protocol', () => {
     expect(isKbDaemonJobsResult({ active: ['job-a', 'job-b'] })).toBe(true);
     expect(isKbDaemonJobsResult({ active: ['job-a', 42] })).toBe(false);
     expect(isKbDaemonJobsResult({ active: 'job-a' })).toBe(false);
+  });
+
+  it('requires valid PrincipalWire context on read, mutation, and expansion requests', () => {
+    expect(isKbDaemonKbReadRequest({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx })).toBe(true);
+    expect(isKbDaemonKbMutationRequest({ method: 'createMemo', args: {}, ctx: daemonCtx })).toBe(true);
+    expect(isKbDaemonExpansionRequest({ method: 'equipExpansion', args: { name: 'needle' }, ctx: daemonCtx })).toBe(
+      true,
+    );
+
+    expect(isKbDaemonKbReadRequest({ method: 'readNote', slug: 'alpha-note' })).toBe(false);
+    expect(
+      isKbDaemonKbMutationRequest({
+        method: 'createMemo',
+        args: {},
+        ctx: { ...daemonCtx, principal: { ...daemonCtx.principal, attenuatedCaps: 'kb:read' } },
+      }),
+    ).toBe(false);
+    expect(
+      isKbDaemonExpansionRequest({
+        method: 'equipExpansion',
+        args: { name: 'needle' },
+        ctx: { principal: { subject: 'operator', binding: { kind: 'workspace' } } },
+      }),
+    ).toBe(false);
   });
 
   it('accepts daemon runtime health with curate scheduler state', () => {

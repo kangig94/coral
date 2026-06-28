@@ -2,7 +2,7 @@
 // `bindWithHandoff` (`src/coordinator/handoff.ts`) and CLI-side `ensure()`.
 // Carries no coordinator vocabulary: any caller that wants to ask a peer
 // daemon to step down uses this helper. Lives in transport because the
-// shutdown contract is exactly two existing IPC methods (`transport.health`
+// shutdown contract is exactly two IPC methods (`transport.ping`
 // and `transport.shutdown`); there is no coordinator policy here.
 
 import { createRealTimePort } from '../../infra/time.js';
@@ -21,6 +21,7 @@ export type IncumbentIdentity = {
   source: 'health' | 'discovery';
   instanceId?: string;
   token?: string;
+  bootToken?: string;
   shutdownToken?: string;
 };
 
@@ -94,7 +95,7 @@ function isShutdownUnauthorizedError(error: unknown): boolean {
 }
 
 /**
- * One round-trip with the incumbent over its IPC socket: read `transport.health`,
+ * One round-trip with the incumbent over its IPC socket: read `transport.ping`,
  * then if the incumbent is mismatched (or unreachable) request `transport.shutdown`.
  * The whole call is bounded by a single absolute deadline; a connect that
  * succeeds just before the deadline does NOT receive a fresh full timeout.
@@ -110,7 +111,7 @@ function isShutdownUnauthorizedError(error: unknown): boolean {
 export async function requestIncumbentShutdown(opts: {
   socketPath: string;
   desired: DesiredIncumbentIdentity;
-  shutdownToken?: string;
+  bootToken?: string;
   timeoutMs: number;
   timePort?: TimePort;
 }): Promise<{
@@ -120,7 +121,13 @@ export async function requestIncumbentShutdown(opts: {
   shutdownUnauthorized: boolean;
 }> {
   const timePort = opts.timePort ?? createRealTimePort();
-  const client = createIpcClient(opts.socketPath, timePort);
+  const client = createIpcClient(
+    opts.socketPath,
+    timePort,
+    typeof opts.bootToken === 'string' && opts.bootToken.length > 0
+      ? { kind: 'boot', token: opts.bootToken }
+      : undefined,
+  );
   const deadlineMs = timePort.now() + opts.timeoutMs;
   let health: IncumbentHealth | null = null;
   let shutdownAttempted = false;
@@ -128,7 +135,7 @@ export async function requestIncumbentShutdown(opts: {
 
   if (remainingBudget(deadlineMs, timePort) > 0) {
     try {
-      health = await client.health<IncumbentHealth | null>({
+      health = await client.ping<IncumbentHealth | null>({
         timeoutMs: remainingBudget(deadlineMs, timePort),
       });
     } catch {
@@ -140,17 +147,10 @@ export async function requestIncumbentShutdown(opts: {
     throw new IncumbentMatchesError(opts.desired);
   }
 
-  if (
-    typeof opts.shutdownToken === 'string' &&
-    opts.shutdownToken.length > 0 &&
-    remainingBudget(deadlineMs, timePort) > 0
-  ) {
+  if (typeof opts.bootToken === 'string' && opts.bootToken.length > 0 && remainingBudget(deadlineMs, timePort) > 0) {
     shutdownAttempted = true;
     try {
-      await client.shutdown<unknown>(
-        { shutdownToken: opts.shutdownToken },
-        { timeoutMs: remainingBudget(deadlineMs, timePort) },
-      );
+      await client.shutdown<unknown>({ timeoutMs: remainingBudget(deadlineMs, timePort) });
     } catch (error: unknown) {
       if (isShutdownUnauthorizedError(error)) {
         shutdownUnauthorized = true;

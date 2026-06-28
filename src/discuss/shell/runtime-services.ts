@@ -3,6 +3,7 @@ import { formatError } from '../../infra/error-format.js';
 import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { Principal } from '../../security/principal.js';
 import type { JobExit, JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
@@ -181,13 +182,20 @@ export function createDiscussRuntime({
       await discussRecovery.persistAbortEndForPersistedShutdownCandidates(
         discussSourcesAtShutdown,
         getDiscussStoreForSource,
-        (snapshot) =>
-          getDiscussContext({
+        (snapshot) => {
+          const principal: Principal = {
+            subject: 'system',
+            transport: 'internal',
+            credential: { kind: 'internal', id: 'discuss-shutdown' },
+            binding: { kind: 'project', root: snapshot.projectRoot },
+          };
+          return getDiscussContext({
             projectRoot: snapshot.projectRoot,
             pluginRoot: world.identity.pluginRoot,
             coralEnv: {},
-            authority: 'admin',
-          }),
+            principal,
+          });
+        },
         { signal },
       );
       world.discussRegistry.contexts.clear();

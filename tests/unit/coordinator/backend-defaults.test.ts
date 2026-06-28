@@ -59,6 +59,7 @@ function createHarness() {
     socketPath: '/tmp/coral-backend-defaults.sock',
     host: '127.0.0.1',
     token: 'backend-defaults-token',
+    bootToken: 'backend-defaults-boot-token',
     version: '9.9.9',
     bundleHash: 'backend-defaults-bundle',
     flavor: 'prod',

@@ -74,7 +74,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
     let socketReleased = false;
 
     incumbentServer = await startScriptedIncumbent(socketPath, async (req) => {
-      if (req.method === 'transport.health') {
+      if (req.method === 'transport.ping') {
         return {
           kind: 'response',
           id: req.id,
@@ -89,7 +89,8 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
         };
       }
       if (req.method === 'transport.shutdown') {
-        expect(req.params).toEqual({ shutdownToken: 'shutdown-token' });
+        expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
+        expect(req.params).toEqual({});
         // Schedule incumbent socket close — emulates incumbent entering drain.
         queueMicrotask(() => {
           incumbentServer?.close();
@@ -128,6 +129,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
           source: 'discovery',
           instanceId: 'incumbent',
           token: 'token',
+          bootToken: 'boot-token',
           shutdownToken: 'shutdown-token',
         }),
         totalBudgetMs: 5_000,

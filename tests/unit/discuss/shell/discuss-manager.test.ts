@@ -25,6 +25,7 @@ import {
   persistSession,
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -41,7 +42,7 @@ async function recoverSessions(harness: DiscussHarness) {
       projectRoot: snapshot.projectRoot,
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
-      authority: 'admin',
+      principal: testProjectPrincipal(snapshot.projectRoot),
     }),
   );
 }

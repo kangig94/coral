@@ -27,13 +27,9 @@ export async function shutdownBackend(pluginRoot: string): Promise<ShutdownResul
   }
 
   try {
-    const headers: Record<string, string> =
-      typeof info.shutdownToken === 'string' && info.shutdownToken.length > 0
-        ? { 'X-Coral-Shutdown-Token': info.shutdownToken }
-        : { 'X-Coral-Backend-Token': info.token };
     const response = await fetch(`http://${info.host}:${info.port}/admin/shutdown`, {
       method: 'POST',
-      headers,
+      headers: { 'X-Coral-Boot-Token': info.bootToken },
       signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await parseJsonResponse(response);

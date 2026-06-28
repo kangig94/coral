@@ -64,6 +64,7 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'test-token',
+      bootToken: 'test-boot-token',
       shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
@@ -219,7 +220,14 @@ async function requestIpcErrorPayload(
   expected: SerializedCoralSetupError,
 ): Promise<SerializedCoralSetupError> {
   try {
-    await requestIpcMethod(socketPath, 'coordinator.equipExpansion', { name: 'needle' });
+    await requestIpcMethod(
+      socketPath,
+      'coordinator.equipExpansion',
+      { name: 'needle' },
+      {
+        auth: { kind: 'boot', token: 'test-boot-token' },
+      },
+    );
   } catch (error: unknown) {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(expected.userMessage);

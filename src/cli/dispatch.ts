@@ -62,8 +62,10 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { HEALTH_TIMEOUT_MS, TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
+import { childPrincipalAuthFromEnv } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
+import type { Principal } from '../security/principal.js';
 import { classifyCommand, commandPath } from './classify.js';
 
 type SessionRequestOptions = {
@@ -334,11 +336,18 @@ function collectCoralEnv(): Record<string, string> {
 }
 
 function createDefaultInvocationContext(projectRoot: string): InvocationContext {
+  const principal: Principal = {
+    subject: 'operator',
+    transport: 'cli',
+    credential: { kind: 'placeholder', id: 'cli-default' },
+    binding: { kind: 'project', root: projectRoot },
+  };
+
   return {
     pluginRoot: resolvePluginRoot() ?? '',
     projectRoot,
     coralEnv: collectCoralEnv(),
-    authority: 'admin',
+    principal,
   };
 }
 
@@ -422,6 +431,13 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   const commandClass = resolution.commandClass;
   const defaultContext = createDefaultInvocationContext(projectRoot);
+  const ipcAuth = childPrincipalAuthFromEnv();
+  const ipcAuthOptions = (): { auth: NonNullable<typeof ipcAuth> } | undefined => {
+    if (ipcAuth === null) {
+      throw new Error('CORAL_CHILD_PRINCIPAL_HANDLE is required for IPC re-entry from a Coral child process.');
+    }
+    return ipcAuth === undefined ? undefined : { auth: ipcAuth };
+  };
 
   // Lazy KB re-enable: a `kb …` command run with CORAL_KB_ENABLE=1 against a
   // daemon that booted with KB disabled restarts the daemon so it respawns with
@@ -432,6 +448,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const reconcileKbBoot = async (): Promise<void> => {
     if (kbReconcileDone || !path.startsWith('kb ')) return;
     kbReconcileDone = true;
+    if (ipcAuth !== undefined) return;
     if (!resolveKbEnabled(process.env[CORAL_KB_ENABLE_ENV])) return;
     try {
       const client = await ensure(getPluginRoot());
@@ -454,7 +471,10 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
   const request = async <TResult>(method: string, params?: unknown): Promise<TResult> => {
     await reconcileKbBoot();
     const client = await ensure(resolvePluginRoot());
-    return client.request<TResult>(method, params, { timeoutMs: TOOL_TIMEOUT_MS });
+    return client.request<TResult>(method, params, {
+      timeoutMs: TOOL_TIMEOUT_MS,
+      ...ipcAuthOptions(),
+    });
   };
 
   const subscribe = async <TResult>(
@@ -471,6 +491,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     return client.subscribe<TResult>(method, params, {
       timeoutMs: HEALTH_TIMEOUT_MS,
       ...options,
+      ...ipcAuthOptions(),
     });
   };
 

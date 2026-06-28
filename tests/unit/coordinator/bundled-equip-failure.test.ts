@@ -8,6 +8,7 @@ import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/cons
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { Disposable } from '#src/runtime/ports.js';
 import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
+import { testPrincipal } from '../../helpers/principal.js';
 
 const FIXED_NOW = '2026-04-27T00:00:00.000Z';
 
@@ -167,7 +168,9 @@ describe('bundled-engine equip failure surfaces through recoverOnBoot', () => {
         status: 'active',
       },
     ]);
-    await expect(createExpansionRpc(lifecycle).listExpansion({})).resolves.toMatchObject({
+    await expect(
+      createExpansionRpc(lifecycle).listExpansion({}, testPrincipal({ transport: 'kb-daemon' })),
+    ).resolves.toMatchObject({
       expansions: [{ name: 'success-engine', tier: 'bundled', status: 'equipped' }],
     });
     expect(state.list().filter((row) => row.id === 'success-engine')).toEqual([]);

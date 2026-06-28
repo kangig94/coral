@@ -25,6 +25,7 @@ import {
   createExecutionServiceStub,
   persistSession,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type HttpStream = {
   response: ClientIncomingMessage;
@@ -185,6 +186,7 @@ describe('server discuss API', () => {
         bootSnapshot: {
           instanceId: 'server-discuss-api-test',
           token: 'test-token',
+          bootToken: 'test-boot-token',
           version: '9.9.9',
           bundleHash: 'test-hash',
           flavor: 'prod',
@@ -215,7 +217,7 @@ describe('server discuss API', () => {
           projectRoot: session.projectRoot,
           pluginRoot: core.identity.pluginRoot,
           coralEnv: {},
-          authority: 'admin',
+          principal: testProjectPrincipal(session.projectRoot),
         });
         attachSession(ctx, session.snapshot, session.watchBuffer, session.abortEnded);
       }
@@ -240,6 +242,7 @@ describe('server discuss API', () => {
           port,
           host: '127.0.0.1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
           shutdownToken: 'test-shutdown-token',
           socketPath: '',
           version: '9.9.9',
@@ -266,6 +269,7 @@ describe('server discuss API', () => {
       bootSnapshot: {
         instanceId: 'server-discuss-api-test',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         version: '9.9.9',
         bundleHash: 'test-hash',
         flavor: 'prod',

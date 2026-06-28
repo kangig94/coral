@@ -190,6 +190,97 @@ describe('bindWithHandoff', () => {
     expect(mockedShutdown).toHaveBeenCalled();
   });
 
+  it('cutover handoff: mismatched incumbent with discovery boot credential self-completes', async () => {
+    const discoveryIdentity: IncumbentIdentity = {
+      pid: 5252,
+      processStartedAt: 7_000,
+      source: 'discovery',
+      instanceId: 'cutover-incumbent',
+      token: 'backend-token',
+      bootToken: 'boot-token',
+      shutdownToken: 'shutdown-token',
+    };
+    const { options, time } = buildHarness({
+      bindSequence: [
+        { kind: 'incumbent', reason: 'live-listener' },
+        { kind: 'bound' },
+      ],
+      readDiscovery: () => discoveryIdentity,
+    });
+    mockedShutdown.mockResolvedValue(
+      shutdownResult({
+        health: {
+          bundleHash: 'old-hash',
+          flavor: 'prod',
+          namespace: 'ns',
+          status: 'ok',
+          pid: discoveryIdentity.pid,
+          processStartedAt: discoveryIdentity.processStartedAt,
+          instanceId: discoveryIdentity.instanceId,
+        },
+        verifiedIdentity: null,
+        shutdownAttempted: true,
+        shutdownUnauthorized: false,
+      }),
+    );
+
+    const promise = bindWithHandoff(options);
+    await flush();
+    time.tick(200);
+    await flush();
+
+    await expect(promise).resolves.toEqual({ acquiredViaHandoff: true });
+    expect(mockedShutdown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        socketPath: '/tmp/coral.sock',
+        desired: options.desired,
+        bootToken: 'boot-token',
+      }),
+    );
+  });
+
+  it('cutover handoff: mismatched incumbent without discovery boot credential requires manual shutdown', async () => {
+    const discoveryIdentity: IncumbentIdentity = {
+      pid: 5353,
+      processStartedAt: 7_100,
+      source: 'discovery',
+      instanceId: 'cutover-incumbent-no-credential',
+      token: 'backend-token',
+      shutdownToken: 'shutdown-token',
+    };
+    const { options } = buildHarness({
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
+      readDiscovery: () => discoveryIdentity,
+    });
+    mockedShutdown.mockResolvedValue(
+      shutdownResult({
+        health: {
+          bundleHash: 'old-hash',
+          flavor: 'prod',
+          namespace: 'ns',
+          status: 'ok',
+          pid: discoveryIdentity.pid,
+          processStartedAt: discoveryIdentity.processStartedAt,
+          instanceId: discoveryIdentity.instanceId,
+        },
+        verifiedIdentity: null,
+        shutdownAttempted: false,
+        shutdownUnauthorized: false,
+      }),
+    );
+
+    await expect(bindWithHandoff(options)).rejects.toThrow(
+      'Manual shutdown required: refusing handoff for pid=5353 because verified shutdown capability was unavailable',
+    );
+    expect(mockedShutdown).toHaveBeenCalledWith(
+      expect.objectContaining({
+        socketPath: '/tmp/coral.sock',
+        desired: options.desired,
+        bootToken: undefined,
+      }),
+    );
+  });
+
   it('budget exhausted with no verified pid → HandoffEscalationError', async () => {
     const { options, time } = buildHarness({
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
@@ -220,6 +311,7 @@ describe('bindWithHandoff', () => {
         source: 'discovery',
         instanceId: 'incumbent-a',
         token: 'token-a',
+        bootToken: 'boot-token-a',
         shutdownToken: 'shutdown-token-a',
       }),
     });
@@ -263,6 +355,7 @@ describe('bindWithHandoff', () => {
           source: 'discovery',
           instanceId: 'audit-incumbent',
           token: 'secret-admin-token',
+          bootToken: 'secret-boot-token',
           shutdownToken: 'secret-shutdown-token',
         }),
       });
@@ -283,6 +376,7 @@ describe('bindWithHandoff', () => {
       expect(auditMessages.length).toBeGreaterThan(0);
       expect(auditMessages.some((message) => message.includes('"instanceId":"audit-incumbent"'))).toBe(true);
       expect(auditMessages.join('\n')).not.toContain('secret-admin-token');
+      expect(auditMessages.join('\n')).not.toContain('secret-boot-token');
       expect(auditMessages.join('\n')).not.toContain('secret-shutdown-token');
     } finally {
       warnSpy.mockRestore();
@@ -301,7 +395,7 @@ describe('bindWithHandoff', () => {
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
       isAlive: () => alive,
       totalBudgetMs: 500,
-      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', shutdownToken: 'shutdown-token' }),
+      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', bootToken: 'boot-token' }),
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     mockedProbe.mockImplementation(() => {
@@ -332,7 +426,7 @@ describe('bindWithHandoff', () => {
       bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }],
       totalBudgetMs: 500,
       isAlive: () => true,
-      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', shutdownToken: 'shutdown-token' }),
+      readDiscovery: () => ({ ...verifiedIdentity, source: 'discovery', bootToken: 'boot-token' }),
     });
     mockedShutdown.mockResolvedValue(shutdownResult({ health: null, verifiedIdentity }));
     // Probe returns DIFFERENT start time → mismatch → HandoffEscalationError.
@@ -402,6 +496,7 @@ describe('bindWithHandoff', () => {
         source: 'discovery',
         instanceId: 'same-incumbent',
         token: 'same-token',
+        bootToken: 'same-boot-token',
         shutdownToken: 'same-shutdown-token',
       }),
     });
@@ -433,6 +528,7 @@ describe('bindWithHandoff', () => {
       readDiscovery: () => ({
         ...verifiedIdentity,
         source: 'discovery',
+        bootToken: 'boot-token',
         shutdownToken: 'shutdown-token',
       }),
     });
@@ -475,7 +571,9 @@ describe('bindWithHandoff', () => {
     }
     const outcome = await promise;
     expect(outcome).toBeInstanceOf(HandoffEscalationError);
-    expect(String((outcome as Error).message)).toContain('verified coordinator discovery lacked instanceId, token');
+    expect(String((outcome as Error).message)).toContain(
+      'verified coordinator discovery lacked instanceId, token, bootToken',
+    );
     expect(killCalls).toEqual([]);
   });
 
@@ -494,6 +592,7 @@ describe('bindWithHandoff', () => {
         source: 'discovery',
         instanceId: 'term-only-incumbent',
         token: 'token',
+        bootToken: 'boot-token',
         shutdownToken: 'shutdown-token',
       }),
     });
@@ -519,6 +618,7 @@ describe('bindWithHandoff', () => {
       source: 'discovery',
       instanceId: 'discovery-incumbent',
       token: 'token',
+      bootToken: 'boot-token',
       shutdownToken: 'shutdown-token',
     };
     const { options, time, killCalls } = buildHarness({

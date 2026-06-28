@@ -45,6 +45,7 @@ import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -535,7 +536,7 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+  return { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) };
 }
 
 function _isoAt(ms: number): string {
@@ -599,7 +600,12 @@ describe('ExecutionService abort', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
+    ctx = {
+      projectRoot,
+      pluginRoot: join(projectRoot, 'plugin'),
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');

@@ -20,6 +20,7 @@ import {
   type UnequipExpansionRequest,
   type UnequipExpansionResult,
 } from '../../expansion/rpc-contract.js';
+import type { Principal } from '../../security/principal.js';
 import type { ExpansionLifecycleService } from './lifecycle.js';
 
 function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): ExpansionView {
@@ -35,7 +36,10 @@ function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): E
 
 export function createExpansionRpc(lifecycleService: ExpansionLifecycleService): ExpansionRequestPort {
   return {
-    equipExpansion: async (request: EquipExpansionRequest): Promise<EquipExpansionResult> => {
+    equipExpansion: async (
+      request: EquipExpansionRequest,
+      _principal: Principal,
+    ): Promise<EquipExpansionResult> => {
       if (lifecycleService.isActive(request.name)) {
         return {
           status: 'already_equipped',
@@ -49,7 +53,10 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
         expansion: toExpansionView(lifecycleService.info(request.name)),
       };
     },
-    unequipExpansion: async (request: UnequipExpansionRequest): Promise<UnequipExpansionResult> => {
+    unequipExpansion: async (
+      request: UnequipExpansionRequest,
+      _principal: Principal,
+    ): Promise<UnequipExpansionResult> => {
       if (!lifecycleService.has(request.name)) {
         return { status: 'not_equipped' };
       }
@@ -57,12 +64,15 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
       await lifecycleService.unequip(request.name);
       return { status: 'uninstalled' };
     },
-    removeExpansionCatalog: async (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> =>
+    removeExpansionCatalog: async (
+      request: RemoveExpansionCatalogRequest,
+      _principal: Principal,
+    ): Promise<RemoveExpansionCatalogResult> =>
       lifecycleService.removeExpansionCatalog(request.name),
-    listExpansion: async (_request: ListExpansionRequest): Promise<ListExpansionResult> => ({
+    listExpansion: async (_request: ListExpansionRequest, _principal: Principal): Promise<ListExpansionResult> => ({
       expansions: lifecycleService.list().map(toExpansionView),
     }),
-    readBinding: async (request: ReadBindingRequest): Promise<ReadBindingResult> =>
+    readBinding: async (request: ReadBindingRequest, _principal: Principal): Promise<ReadBindingResult> =>
       lifecycleService.readBinding(request.binding),
   };
 }

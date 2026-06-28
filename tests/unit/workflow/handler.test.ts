@@ -7,12 +7,13 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { WorkflowCommand } from '#src/workflow/input.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
-  authority: 'admin',
+  principal: testProjectPrincipal('/tmp/coral-workflow-project'),
 };
 
 function createExecutionService(result = { status: 'running', job: 'job-1', session: 'session-1' } as const) {

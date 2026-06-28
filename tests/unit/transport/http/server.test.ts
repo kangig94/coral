@@ -85,6 +85,34 @@ function commaHeaderTokens(value: string | null): string[] {
     .sort();
 }
 
+function expectedDaemonProjectContext(projectRoot: string) {
+  return expect.objectContaining({
+    projectRoot,
+    principal: expect.objectContaining({
+      subject: 'operator',
+      binding: { kind: 'project', root: projectRoot },
+    }),
+  });
+}
+
+function expectedDaemonPrincipalContext() {
+  return expect.objectContaining({
+    principal: expect.objectContaining({
+      subject: 'operator',
+      binding: { kind: 'unbound' },
+    }),
+  });
+}
+
+function expectedDaemonSystemContext() {
+  return expect.objectContaining({
+    principal: expect.objectContaining({
+      subject: 'system',
+      binding: { kind: 'unbound' },
+    }),
+  });
+}
+
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
   tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-backend-test-tmp-${process.pid}-${Date.now()}`,
@@ -590,6 +618,7 @@ describe('execution backend server', () => {
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
@@ -608,6 +637,7 @@ describe('execution backend server', () => {
       started,
       baseUrl: `http://127.0.0.1:${started.port}`,
       token: started.token,
+      bootToken: started.bootToken,
       shutdownToken: started.shutdownToken,
     };
   }
@@ -631,6 +661,7 @@ describe('execution backend server', () => {
         socketPath: '/tmp/coral-dev.sock',
         host: '127.0.0.1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
         flavor: 'dev',
@@ -667,8 +698,8 @@ describe('execution backend server', () => {
   it('returns 200 from /health with execution metadata', async () => {
     const backend = await startBackendServer();
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -733,8 +764,8 @@ describe('execution backend server', () => {
       expect(kbDaemonSupervisor.warmup).toHaveBeenCalledTimes(1);
     });
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as { kbDaemon?: KbDaemonHealthSnapshot };
 
@@ -782,8 +813,8 @@ describe('execution backend server', () => {
       kbDaemonSupervisor,
     });
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
 
     expect(response.status).toBe(200);
@@ -804,8 +835,8 @@ describe('execution backend server', () => {
       kbDaemonSupervisor,
     });
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as { components?: Array<{ id: string; phase: string }> };
 
@@ -853,7 +884,7 @@ describe('execution backend server', () => {
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expect.objectContaining({ projectRoot: '/workspace/project-a', authority: 'user' }),
+      ctx: expectedDaemonProjectContext('/workspace/project-a'),
     });
   });
 
@@ -879,6 +910,7 @@ describe('execution backend server', () => {
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         shutdownToken: 'test-shutdown-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
@@ -908,7 +940,7 @@ describe('execution backend server', () => {
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-      ctx: expect.objectContaining({ projectRoot: '/workspace/project-a', authority: 'user' }),
+      ctx: expectedDaemonProjectContext('/workspace/project-a'),
     });
   });
 
@@ -941,8 +973,8 @@ describe('execution backend server', () => {
       kbDaemonSupervisor,
     });
 
-    const healthResponse = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const healthResponse = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const health = (await healthResponse.json()) as { components?: Array<{ id: string; phase: string }> };
 
@@ -954,7 +986,11 @@ describe('execution backend server', () => {
     });
 
     expect(kbResponse.status).toBe(503);
-    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith({ method: 'readSearch', args: { query: 'alpha' } });
+    expect(kbDaemonSupervisor.readKb).toHaveBeenCalledWith({
+      method: 'readSearch',
+      args: { query: 'alpha' },
+      ctx: expectedDaemonPrincipalContext(),
+    });
   });
 
   it('keeps CORAL_KB_ENABLE=0 on the explicit disabled KB daemon runtime path', async () => {
@@ -963,8 +999,8 @@ describe('execution backend server', () => {
     try {
       const backend = await startBackendServer();
 
-      const healthResponse = await fetch(`${backend.baseUrl}/health`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+      const healthResponse = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+        headers: { 'X-Coral-Boot-Token': backend.bootToken },
       });
       const health = (await healthResponse.json()) as {
         components?: Array<{ id: string; phase: string; reason?: string }>;
@@ -1057,29 +1093,37 @@ describe('execution backend server', () => {
     await expect(getJson('/kb/principles/alpha-principle')).resolves.toEqual({ servedBy: 'kb-daemon' });
 
     expect(readKb.mock.calls.map(([request]) => request)).toEqual([
-      { method: 'readSearch', args: { query: 'alpha' } },
-      { method: 'diagnose' },
-      { method: 'readNote', slug: 'alpha-note' },
-      { method: 'listSources' },
-      { method: 'readSource', slug: 'alpha-source' },
-      { method: 'listWikis' },
-      { method: 'readWiki', slug: 'alpha-wiki' },
-      { method: 'wakeUp', args: { project: 'kangig94-coral' } },
-      { method: 'readCommunity', slug: 'alpha-community' },
-      { method: 'listStaleCommunities' },
-      { method: 'readCommunitySummaryInput', slug: 'alpha-community' },
+      { method: 'readSearch', args: { query: 'alpha' }, ctx: expectedDaemonPrincipalContext() },
+      { method: 'diagnose', ctx: expectedDaemonPrincipalContext() },
+      { method: 'readNote', slug: 'alpha-note', ctx: expectedDaemonPrincipalContext() },
+      { method: 'listSources', ctx: expectedDaemonPrincipalContext() },
+      { method: 'readSource', slug: 'alpha-source', ctx: expectedDaemonPrincipalContext() },
+      { method: 'listWikis', ctx: expectedDaemonPrincipalContext() },
+      { method: 'readWiki', slug: 'alpha-wiki', ctx: expectedDaemonPrincipalContext() },
+      { method: 'wakeUp', args: { project: 'kangig94-coral' }, ctx: expectedDaemonPrincipalContext() },
+      { method: 'readCommunity', slug: 'alpha-community', ctx: expectedDaemonPrincipalContext() },
+      { method: 'listStaleCommunities', ctx: expectedDaemonPrincipalContext() },
+      {
+        method: 'readCommunitySummaryInput',
+        slug: 'alpha-community',
+        ctx: expectedDaemonPrincipalContext(),
+      },
       {
         method: 'listMemos',
         args: { owner: 'kang' },
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
       {
         method: 'readMemo',
         slug: 'alpha-memo',
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
-      { method: 'listPrinciples', args: { query: 'alpha', top_k: 2, verbose: true } },
-      { method: 'readPrinciple', slug: 'alpha-principle' },
+      {
+        method: 'listPrinciples',
+        args: { query: 'alpha', top_k: 2, verbose: true },
+        ctx: expectedDaemonPrincipalContext(),
+      },
+      { method: 'readPrinciple', slug: 'alpha-principle', ctx: expectedDaemonPrincipalContext() },
     ]);
   });
 
@@ -1131,7 +1175,7 @@ describe('execution backend server', () => {
       {
         method: 'createMemo',
         args: { topic: 'alpha', content: 'memo body', owner: 'kang' },
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
     ]);
   });
@@ -1229,12 +1273,12 @@ describe('execution backend server', () => {
       {
         method: 'createWiki',
         args: { slug: 'alpha-wiki', title: 'Alpha', tags: ['daemon'] },
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
       {
         method: 'deleteSource',
         slug: 'alpha-source',
-        ctx: undefined,
+        ctx: expectedDaemonSystemContext(),
       },
       {
         method: 'createSource',
@@ -1244,17 +1288,17 @@ describe('execution backend server', () => {
           readiness: 'base-search',
           async: true,
         },
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
       {
         method: 'reindex',
         args: { async: true },
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
       {
         method: 'setCommunitySummary',
         args: { summary: 'Community summary from daemon.', slug: 'alpha-community' },
-        ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+        ctx: expectedDaemonProjectContext(projectRoot),
       },
     ]);
   });
@@ -1595,8 +1639,8 @@ describe('execution backend server', () => {
       kbDaemonSupervisor,
     });
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -1626,8 +1670,8 @@ describe('execution backend server', () => {
     launchCoordinator.restoreActiveLaunch('job-2', 'codex');
 
     try {
-      const response = await fetch(`${backend.baseUrl}/health`, {
-        headers: { 'X-Coral-Backend-Token': backend.token },
+      const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+        headers: { 'X-Coral-Boot-Token': backend.bootToken },
       });
       const body = (await response.json()) as Record<string, unknown>;
 
@@ -1722,6 +1766,7 @@ describe('execution backend server', () => {
       bootSnapshot: {
         instanceId: 'execution-backend-instance-1',
         token: 'test-token',
+        bootToken: 'test-boot-token',
         version: '9.9.9',
         bundleHash: 'testhash1234',
         flavor: 'prod',
@@ -1841,8 +1886,8 @@ describe('execution backend server', () => {
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-foreign-health' });
 
-    const response = await fetch(`${backend.baseUrl}/health`, {
-      headers: { 'X-Coral-Backend-Token': backend.token },
+    const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': backend.bootToken },
     });
     const body = (await response.json()) as Record<string, unknown>;
 
@@ -2058,7 +2103,7 @@ describe('execution backend server', () => {
     expect(readKb).toHaveBeenCalledWith({
       method: 'listMemos',
       args: {},
-      ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      ctx: expectedDaemonProjectContext(projectRoot),
     });
 
     const deleteResponse = await fetch(
@@ -2080,7 +2125,7 @@ describe('execution backend server', () => {
     expect(mutateKb).toHaveBeenCalledWith({
       method: 'deleteMemos',
       args: { pattern: 'a*' },
-      ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      ctx: expectedDaemonProjectContext(projectRoot),
     });
 
     const purgeResponse = await fetch(
@@ -2099,7 +2144,7 @@ describe('execution backend server', () => {
     expect(mutateKb).toHaveBeenLastCalledWith({
       method: 'deleteMemos',
       args: { all: true },
-      ctx: expect.objectContaining({ authority: 'user', projectRoot }),
+      ctx: expectedDaemonProjectContext(projectRoot),
     });
   });
 
@@ -2235,6 +2280,8 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
+          shutdownToken: 'test-shutdown-token',
           now: () => Date.now(),
           log: () => {},
         },
@@ -5392,7 +5439,10 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+    expect(await response.json()).toEqual({
+      code: 'shutdown_unauthorized',
+      message: 'Manual shutdown required: shutdown capability missing or invalid',
+    });
     expect(backend.controller.getLifecycle()).toBe('running');
   });
 
@@ -5569,7 +5619,10 @@ describe('execution backend server', () => {
     });
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+    expect(await response.json()).toEqual({
+      code: 'shutdown_unauthorized',
+      message: 'Manual KB daemon restart requires shutdown capability',
+    });
     expect(backend.controller.getLifecycle()).toBe('running');
   });
 
@@ -5679,14 +5732,24 @@ describe('execution backend server', () => {
     await backend.controller.waitForShutdown();
   });
 
-  it('returns 401 for unauthorized requests', async () => {
+  it('returns unauthenticated liveness from /health', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/health`);
+    const body = (await response.json()) as Record<string, unknown>;
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(200);
     expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
-    expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
+    expect(body).toMatchObject({
+      status: 'ok',
+      version: '9.9.9',
+      bundleHash: 'testhash1234',
+      flavor: 'prod',
+      instanceId: 'execution-backend-instance-1',
+    });
+    expect(body.components).toBeUndefined();
+    expect(body.kbDaemon).toBeUndefined();
+    expect(body.queueDepth).toBeUndefined();
   });
 
   it('returns CORS headers for loopback preflight requests without requiring a token', async () => {
@@ -5706,6 +5769,7 @@ describe('execution backend server', () => {
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Headers'))).toEqual([
       'content-type',
       'x-coral-backend-token',
+      'x-coral-boot-token',
       'x-coral-shutdown-token',
     ]);
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Methods'))).toEqual([
@@ -5812,6 +5876,7 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'handoff-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
           shutdownToken: 'test-shutdown-token',
           now: () => 1,
           log: () => {},
@@ -6000,6 +6065,7 @@ describe('execution backend server', () => {
         bootSnapshot: {
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
           version: '9.9.9',
           bundleHash: 'testhash1234',
           flavor: 'prod',
@@ -6087,6 +6153,8 @@ describe('execution backend server', () => {
           flavor: 'prod',
           instanceId: 'execution-backend-instance-1',
           token: 'test-token',
+          bootToken: 'test-boot-token',
+          shutdownToken: 'test-shutdown-token',
           now: () => Date.now(),
           log: () => {},
         },

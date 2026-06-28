@@ -2,11 +2,15 @@ import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
-import type { Authority, InvocationContext } from '../runtime/invocation-context.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import { isCapability, type Capability } from '../security/capability.js';
+import type { Principal, ResourceBinding } from '../security/principal.js';
+import { authorize, type Decision } from '../security/policy/authorize.js';
+import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { domainError, type ToolDomainResult } from './tool-result.js';
 import { domainResultToHttp, launchToHttp } from './response.js';
 import type { HttpHandlerPorts } from './server-ports.js';
-import type { RpcMethodSpec } from './rpc/catalog.js';
+import type { RequestBindingRule, RpcMethodSpec } from './rpc/catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
 
@@ -46,21 +50,21 @@ function unaryDomain(result: ToolDomainResult, successStatusCode = 200): Catalog
 function buildBodyInvocationContext(
   request: Record<string, unknown>,
   rpcPorts: HttpHandlerPorts,
-  authority: Authority,
+  principal: Principal,
 ): InvocationContext | null {
-  return buildInvocationContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot, authority);
+  return buildInvocationContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot, principal);
 }
 
 function buildQueryContext(
   request: { projectRoot: string },
   rpcPorts: HttpHandlerPorts,
-  authority: Authority,
+  principal: Principal,
 ): InvocationContext {
   return buildInvocationContextFromQuery(
     request.projectRoot,
     rpcPorts.identity.pluginRoot,
     rpcPorts.coralEnvSnapshot,
-    authority,
+    principal,
   );
 }
 
@@ -96,12 +100,12 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
 function maybeBuildBodyInvocationContext(
   request: Record<string, unknown>,
   rpcPorts: HttpHandlerPorts,
-  authority: Authority,
+  principal: Principal,
 ): InvocationContext | undefined {
   if (typeof request.projectRoot !== 'string' || request.projectRoot.length === 0) {
     return undefined;
   }
-  return buildBodyInvocationContext(request, rpcPorts, authority) ?? undefined;
+  return buildBodyInvocationContext(request, rpcPorts, principal) ?? undefined;
 }
 
 function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: number; body: unknown } | null {
@@ -156,19 +160,75 @@ function withAbortSignal<T extends object>(request: T, abortSignal?: AbortSignal
   return request;
 }
 
+export function resolveRequestBinding(rule: RequestBindingRule | undefined, request: unknown): ResourceBinding {
+  const bindingRule = rule ?? ({ kind: 'projectRoot', projectRoot: 'required' } satisfies RequestBindingRule);
+
+  switch (bindingRule.kind) {
+    case 'projectRoot': {
+      if (request !== null && typeof request === 'object') {
+        const projectRoot = (request as { projectRoot?: unknown }).projectRoot;
+        if (typeof projectRoot === 'string' && projectRoot.length > 0) {
+          return { kind: 'project', root: projectRoot };
+        }
+      }
+      return { kind: 'unbound' };
+    }
+  }
+}
+
+function requestedBindingFor(spec: RpcMethodSpec<unknown, unknown>, request: unknown): ResourceBinding {
+  return resolveRequestBinding(spec.requestBinding, request);
+}
+
+function requiredCapability(spec: RpcMethodSpec<unknown, unknown>): Capability | null {
+  const requires = (spec as { readonly requires?: unknown }).requires;
+  return isCapability(requires) ? requires : null;
+}
+
+function authorizationFailure(decision: Extract<Decision, { ok: false }>): CatalogRequestExecution {
+  const statusCode = decision.reason === 'resource_unbound' ? 403 : 401;
+  const code = decision.reason === 'resource_unbound' ? 'scope_mismatch' : decision.reason;
+  const message =
+    decision.reason === 'unauthenticated'
+      ? 'Authentication required'
+      : decision.reason === 'missing_capability'
+        ? 'Missing required capability'
+        : 'Principal is not bound to the requested resource';
+
+  return unary({ code, message, detail: decision.detail }, statusCode);
+}
+
 export async function executeCatalogRequest(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
   rpcPorts: HttpHandlerPorts,
-  authority: Authority,
+  principal: Principal,
   abortSignal?: AbortSignal,
 ): Promise<CatalogRequestExecution> {
+  const requires = requiredCapability(spec);
+  if (requires === null) {
+    return unary(
+      {
+        code: 'authorization_misconfigured',
+        message: `RPC route ${spec.name} is missing an authorization capability.`,
+      },
+      500,
+    );
+  }
+
+  const requestedBinding = requestedBindingFor(spec, request);
+  const authz = authorize(principal, requires, requestedBinding);
+  writeAuthorizationDecisionAudit(principal, spec.name, authz, requestedBinding);
+  if (!authz.ok) {
+    return authorizationFailure(authz);
+  }
+
   switch (spec.name) {
     case 'sessions.create': {
       const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const decision = await rpcPorts.sessions.start(
@@ -187,7 +247,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       // Strip only the pure transport-context keys that are NOT workflow command
@@ -211,31 +271,31 @@ export async function executeCatalogRequest(
 
     case 'coordinator.equipExpansion': {
       const parsed = request as { name: string };
-      return unary(await rpcPorts.expansion.equipExpansion(parsed));
+      return unary(await rpcPorts.expansion.equipExpansion(parsed, principal));
     }
 
     case 'coordinator.unequipExpansion': {
       const parsed = request as { name: string };
       const name = decodePathSegment(parsed.name);
       if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid expansion name')));
-      return unary(await rpcPorts.expansion.unequipExpansion({ name }));
+      return unary(await rpcPorts.expansion.unequipExpansion({ name }, principal));
     }
 
     case 'coordinator.removeExpansionCatalog': {
       const parsed = request as { name: string };
       const name = decodePathSegment(parsed.name);
       if (name === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid expansion name')));
-      return unary(await rpcPorts.expansion.removeExpansionCatalog({ name }));
+      return unary(await rpcPorts.expansion.removeExpansionCatalog({ name }, principal));
     }
 
     case 'coordinator.listExpansion':
-      return unary(await rpcPorts.expansion.listExpansion({}));
+      return unary(await rpcPorts.expansion.listExpansion({}, principal));
 
     case 'coordinator.readBinding': {
       const parsed = request as { binding: string };
       const binding = decodePathSegment(parsed.binding);
       if (binding === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid binding name')));
-      return unary(await rpcPorts.expansion.readBinding({ binding }));
+      return unary(await rpcPorts.expansion.readBinding({ binding }, principal));
     }
 
     case 'jobs.abort': {
@@ -337,7 +397,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
@@ -348,7 +408,7 @@ export async function executeCatalogRequest(
 
     case 'discuss.session.detail': {
       const parsed = request as { projectRoot: string; sessionId: string; view?: 'control' | 'audit' };
-      const context = buildQueryContext(parsed, rpcPorts, authority);
+      const context = buildQueryContext(parsed, rpcPorts, principal);
       const detail = rpcPorts.discuss.loadDetail(context.projectRoot, parsed.sessionId, parsed.view ?? 'control');
       if (!detail) {
         return unary({ code: 'session_not_found', message: 'Session not found' }, 404);
@@ -361,7 +421,7 @@ export async function executeCatalogRequest(
 
     case 'discuss.session.events': {
       const parsed = request as { sessionId: string; projectRoot: string; cursor?: number };
-      const context = buildQueryContext(parsed, rpcPorts, authority);
+      const context = buildQueryContext(parsed, rpcPorts, principal);
       return unaryHttp(
         domainResultToHttp(
           rpcPorts.discuss.watch(
@@ -379,7 +439,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { sessionId } = parsed;
@@ -391,7 +451,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { sessionId: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { sessionId } = parsed;
@@ -401,7 +461,7 @@ export async function executeCatalogRequest(
 
     case 'discuss.session.delete': {
       const parsed = request as { sessionId: string; projectRoot: string };
-      const context = buildQueryContext(parsed, rpcPorts, authority);
+      const context = buildQueryContext(parsed, rpcPorts, principal);
       return unaryHttp(domainResultToHttp(await rpcPorts.discuss.abort({ session: parsed.sessionId }, context)));
     }
 
@@ -418,22 +478,24 @@ export async function executeCatalogRequest(
         ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
         ...(parsed.mode === undefined ? {} : { mode: parsed.mode }),
       };
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readSearch(withAbortSignal(searchRequest, abortSignal))));
+      return unaryHttp(
+        domainResultToHttp(await rpcPorts.kb.readSearch(withAbortSignal(searchRequest, abortSignal), principal)),
+      );
     }
 
     case 'kb.diagnose':
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.diagnose()));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.diagnose(principal)));
 
     case 'kb.note.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readNote(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readNote(slug, principal)));
     }
 
     case 'kb.note.create': {
       const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       return unaryDomain(await rpcPorts.kb.createNote(stripTransportContextKeys(parsed), ctx), 201);
@@ -443,7 +505,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
@@ -456,24 +518,24 @@ export async function executeCatalogRequest(
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
       return unaryHttp(
         domainResultToHttp(
-          await rpcPorts.kb.deleteNote(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts, authority)),
+          await rpcPorts.kb.deleteNote(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts, principal)),
         ),
       );
     }
 
     case 'kb.source.list':
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listSources()));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listSources(principal)));
 
     case 'kb.source.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readSource(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readSource(slug, principal)));
     }
 
     case 'kb.source.create': {
       const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const result = await rpcPorts.kb.createSource(stripTransportContextKeys(parsed), ctx);
@@ -495,24 +557,24 @@ export async function executeCatalogRequest(
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
       return unaryHttp(
         domainResultToHttp(
-          await rpcPorts.kb.deleteSource(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts, authority)),
+          await rpcPorts.kb.deleteSource(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts, principal)),
         ),
       );
     }
 
     case 'kb.wiki.list':
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listWikis()));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listWikis(principal)));
 
     case 'kb.wiki.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readWiki(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readWiki(slug, principal)));
     }
 
     case 'kb.wiki.create': {
       const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       return unaryDomain(await rpcPorts.kb.createWiki(stripTransportContextKeys(parsed), ctx), 201);
@@ -522,7 +584,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
@@ -533,7 +595,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
@@ -544,7 +606,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
@@ -555,7 +617,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
@@ -566,7 +628,7 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const { slug: _slug, ...args } = stripTransportContextKeys(parsed);
@@ -579,31 +641,31 @@ export async function executeCatalogRequest(
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
       return unaryHttp(
         domainResultToHttp(
-          await rpcPorts.kb.deleteWiki(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts, authority)),
+          await rpcPorts.kb.deleteWiki(slug, maybeBuildBodyInvocationContext(parsed, rpcPorts, principal)),
         ),
       );
     }
 
     case 'kb.wake_up': {
       const parsed = request as Record<string, unknown>;
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.wakeUp(parsed)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.wakeUp(parsed, principal)));
     }
 
     case 'kb.community.read': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readCommunity(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readCommunity(slug, principal)));
     }
 
     case 'kb.community.list-stale':
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listStaleCommunities()));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.listStaleCommunities(principal)));
 
     case 'kb.community.summary-input': {
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readCommunitySummaryInput(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readCommunitySummaryInput(slug, principal)));
     }
 
     case 'kb.community.set-summary': {
@@ -614,7 +676,7 @@ export async function executeCatalogRequest(
         domainResultToHttp(
           await rpcPorts.kb.setCommunitySummary(
             { ...stripTransportContextKeys(parsed), slug },
-            maybeBuildBodyInvocationContext(parsed, rpcPorts, authority),
+            maybeBuildBodyInvocationContext(parsed, rpcPorts, principal),
           ),
         ),
       );
@@ -626,7 +688,7 @@ export async function executeCatalogRequest(
         domainResultToHttp(
           await rpcPorts.kb.listMemos(
             parsed.owner === undefined ? {} : { owner: parsed.owner },
-            buildQueryContext(parsed, rpcPorts, authority),
+            buildQueryContext(parsed, rpcPorts, principal),
           ),
         ),
       );
@@ -637,13 +699,13 @@ export async function executeCatalogRequest(
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
       return unaryHttp(
-        domainResultToHttp(await rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts, authority))),
+        domainResultToHttp(await rpcPorts.kb.readMemo(slug, buildQueryContext(parsed, rpcPorts, principal))),
       );
     }
 
     case 'kb.memo.create': {
       const parsed = request as Record<string, unknown>;
-      const ctx = buildBodyInvocationContext(parsed, rpcPorts, authority);
+      const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
       const args = stripTransportContextKeys(parsed);
@@ -659,7 +721,7 @@ export async function executeCatalogRequest(
         all?: boolean;
       };
       const ctx =
-        buildBodyInvocationContext(parsed, rpcPorts, authority) ?? buildQueryContext(parsed, rpcPorts, authority);
+        buildBodyInvocationContext(parsed, rpcPorts, principal) ?? buildQueryContext(parsed, rpcPorts, principal);
       return unaryHttp(
         domainResultToHttp(
           await rpcPorts.kb.deleteMemos(
@@ -678,11 +740,14 @@ export async function executeCatalogRequest(
       const parsed = request as { q?: string; top_k?: number; verbose?: boolean };
       return unaryHttp(
         domainResultToHttp(
-          await rpcPorts.kb.listPrinciples({
-            ...(parsed.q === undefined ? {} : { query: parsed.q }),
-            ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
-            ...(parsed.verbose === undefined ? {} : { verbose: parsed.verbose }),
-          }),
+          await rpcPorts.kb.listPrinciples(
+            {
+              ...(parsed.q === undefined ? {} : { query: parsed.q }),
+              ...(parsed.top_k === undefined ? {} : { top_k: parsed.top_k }),
+              ...(parsed.verbose === undefined ? {} : { verbose: parsed.verbose }),
+            },
+            principal,
+          ),
         ),
       );
     }
@@ -691,7 +756,7 @@ export async function executeCatalogRequest(
       const parsed = request as { slug: string };
       const slug = decodePathSegment(parsed.slug);
       if (slug === null) return unaryHttp(domainResultToHttp(invalidRequestResult('Invalid KB slug')));
-      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readPrinciple(slug)));
+      return unaryHttp(domainResultToHttp(await rpcPorts.kb.readPrinciple(slug, principal)));
     }
 
     case 'kb.reindex': {
@@ -700,7 +765,7 @@ export async function executeCatalogRequest(
         domainResultToHttp(
           await rpcPorts.kb.reindex(
             { async: parsed.async === true },
-            maybeBuildBodyInvocationContext(parsed, rpcPorts, authority),
+            maybeBuildBodyInvocationContext(parsed, rpcPorts, principal),
           ),
         ),
       );

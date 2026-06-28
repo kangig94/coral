@@ -3,6 +3,8 @@ import type { TimePort } from '../infra/port-types.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
+import type { Principal } from '../security/principal.js';
+import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 
 export interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -213,6 +215,7 @@ export interface EventStreamPort {
 export type HandlerIdentity = {
   pluginRoot: string;
   token: string;
+  bootToken: string;
   shutdownToken: string;
   version: string;
   bundleHash: string;
@@ -223,6 +226,10 @@ export type HandlerIdentity = {
   log: (message: string) => void;
 };
 
+export interface ChildPrincipalRegistryPort {
+  authenticate(auth: Extract<IpcAuthMetadata, { kind: 'child' }>, namespace: string, nowMs: number): Principal | null;
+}
+
 export interface HttpHandlerPorts extends RpcPorts {
   readonly identity: HandlerIdentity;
   readonly time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
@@ -231,4 +238,5 @@ export interface HttpHandlerPorts extends RpcPorts {
   readonly admin: AdminControlPort;
   readonly health: HealthSnapshotPort;
   readonly events: EventStreamPort;
+  readonly childPrincipals?: ChildPrincipalRegistryPort;
 }

@@ -33,6 +33,7 @@ import { createSimulationBackend, type SimulationBackend } from '#tools/simulati
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';
@@ -152,7 +153,12 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       readExit: () => null,
     },
   });
-  const invocationCtx: InvocationContext = { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+  const invocationCtx: InvocationContext = {
+    projectRoot,
+    pluginRoot,
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+  };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
 

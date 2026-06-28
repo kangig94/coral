@@ -141,6 +141,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       pluginRegistry: deps.pluginRegistry,
       progressStore: this.progressStore,
       launchOrchestrator: this.launchOrchestrator,
+      childPrincipalRegistry: deps.childPrincipalRegistry,
     });
     this.waitService = new JobWaitService({
       runtime: this.runtime,

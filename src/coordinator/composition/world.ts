@@ -20,6 +20,7 @@ import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
+import { ChildPrincipalRegistry } from '../child-principal-registry.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
@@ -132,6 +133,7 @@ export interface CoordinatorWorld {
   readonly eventBus: TypedEventBus;
   readonly providerRegistry: ProviderRegistry;
   readonly pluginRegistry: PluginRegistry;
+  readonly childPrincipalRegistry: ChildPrincipalRegistry;
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
@@ -157,6 +159,7 @@ export function createCoordinatorWorld(
   const flavor = bootSnapshot.flavor ?? readBuildFlavor(pluginRoot);
   const instanceId = bootSnapshot.instanceId ?? runtime.ids.uuid();
   const token = bootSnapshot.token ?? runtime.ids.randomBytes(32).toString('hex');
+  const bootToken = bootSnapshot.bootToken ?? runtime.ids.randomBytes(32).toString('hex');
   const shutdownToken = bootSnapshot.shutdownToken ?? runtime.ids.randomBytes(32).toString('hex');
   const bindHost = bootSnapshot.bindHost ?? runtime.env.get('CORAL_BACKEND_BIND') ?? '127.0.0.1';
   const advertiseHost = bootSnapshot.advertiseHost ?? runtime.env.get('CORAL_BACKEND_ADVERTISE_HOST');
@@ -192,6 +195,7 @@ export function createCoordinatorWorld(
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
+  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
     env: runtime.env,
@@ -214,6 +218,7 @@ export function createCoordinatorWorld(
     flavor,
     instanceId,
     token,
+    bootToken,
     shutdownToken,
     now,
     log,
@@ -232,6 +237,7 @@ export function createCoordinatorWorld(
     launchCoordinator,
     eventBus,
     providerRegistry,
+    childPrincipalRegistry,
     pluginRegistry,
     discussRegistry,
     storeServicesRef,

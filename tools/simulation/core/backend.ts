@@ -14,6 +14,7 @@ import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../
 import { defineProvider, type ProviderDefinition } from '../../../src/providers/define.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
+import type { Principal } from '../../../src/security/principal.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
 import { providerRequestFailed } from '../../../src/providers/fault.js';
 import { formatError } from '../../../src/infra/error-format.js';
@@ -413,12 +414,20 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const createInvocationContext = (
     root = projectRoot,
     coralEnv = { ...runtime.env.coralSnapshot() },
-  ): InvocationContext => ({
-    projectRoot: root,
-    pluginRoot,
-    coralEnv: { ...coralEnv },
-    authority: 'admin',
-  });
+  ): InvocationContext => {
+    const principal: Principal = {
+      subject: 'operator',
+      transport: 'simulation',
+      credential: { kind: 'simulation', id: 'operator' },
+      binding: { kind: 'project', root },
+    };
+    return {
+      projectRoot: root,
+      pluginRoot,
+      coralEnv: { ...coralEnv },
+      principal,
+    };
+  };
 
   const createServerFn: CreateServerFn = (handler) => {
     hooks.createServerCalls.push(handler);

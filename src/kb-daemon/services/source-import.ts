@@ -11,7 +11,7 @@ import type { KnowledgeBaseRuntime } from '../../kb/runtime-contract.js';
 import { kbSuccess, kbValidationError, type KbToolResult } from '../../kb/result.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import { throwIfAborted } from '../../runtime/abort.js';
-import type { Authority } from '../../runtime/invocation-context.js';
+import type { Principal } from '../../security/principal.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -124,11 +124,11 @@ export class KbSourceImportService {
 
   start(
     request: KbSourceImportRequest,
-    ctx: { projectRoot: string; authority: Authority },
+    ctx: { projectRoot: string; principal: Principal },
     kbRuntime: KnowledgeBaseRuntime,
   ): KbToolResult | Promise<KbToolResult> {
     let resolvedFile: ResolvedSourceImportFile;
-    const policy = deriveSourceImportReadPolicy(ctx.authority, ctx.projectRoot, this.deps.runtime.env);
+    const policy = deriveSourceImportReadPolicy(ctx.principal.binding, ctx.projectRoot, this.deps.runtime.env);
     try {
       resolvedFile = resolveSourceImportFile(request.filePath, policy, this.deps.runtime.storage);
     } catch (error: unknown) {

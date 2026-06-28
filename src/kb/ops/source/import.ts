@@ -3,7 +3,7 @@ import { writeAuditEvent } from '../../../infra/audit-log.js';
 import { nowIsoString } from '../../../infra/time.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
 import type { EnvPort, StoragePort, TimePort } from '../../../infra/port-types.js';
-import type { Authority } from '../../../runtime/invocation-context.js';
+import type { ResourceBinding } from '../../../security/principal.js';
 import type { IdPort, ProcessPort } from '../../../runtime/ports.js';
 import { FRONTMATTER_BLOCK, serializeSourceFrontmatter } from '../../corpus/frontmatter.js';
 import { assertWithin, sourceImportStageDir } from '../../paths.js';
@@ -427,12 +427,12 @@ export function resolveAdminSourceImportCap(env: Pick<EnvPort, 'get'>): number |
 }
 
 export function deriveSourceImportReadPolicy(
-  authority: Authority,
+  binding: ResourceBinding,
   projectRoot: string,
   env: Pick<EnvPort, 'get'>,
 ): SourceImportReadPolicy {
-  if (authority === 'user') {
-    return { kind: 'sandboxed', root: projectRoot, maxBytes: USER_SOURCE_IMPORT_MAX_BYTES };
+  if (binding.kind === 'project') {
+    return { kind: 'sandboxed', root: binding.root, maxBytes: USER_SOURCE_IMPORT_MAX_BYTES };
   }
   return { kind: 'unrestricted', resolveBase: projectRoot, maxBytes: resolveAdminSourceImportCap(env) };
 }

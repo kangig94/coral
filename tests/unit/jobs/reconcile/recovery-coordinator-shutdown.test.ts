@@ -297,6 +297,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       flavor: 'prod',
       instanceId: `recovery-shutdown-${Math.random()}`,
       token: 'test-token',
+      bootToken: 'test-boot-token',
       shutdownToken: 'test-shutdown-token',
       now: () => 1,
       log: () => {},

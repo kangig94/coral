@@ -49,6 +49,7 @@ import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -574,7 +575,12 @@ describe('ExecutionService', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'coral-execution-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
+    ctx = {
+      projectRoot,
+      pluginRoot: join(projectRoot, 'plugin'),
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
@@ -2309,7 +2315,12 @@ describe('ExecutionService adversarial', () => {
     mockState.tmpHome = mkdtempSync(join(tmpdir(), 'red-exec-home-'));
     const projectRoot = join(mockState.tmpHome, 'project');
     mkdirSync(projectRoot, { recursive: true });
-    ctx = { projectRoot, pluginRoot: join(projectRoot, 'plugin'), coralEnv: {}, authority: 'admin' };
+    ctx = {
+      projectRoot,
+      pluginRoot: join(projectRoot, 'plugin'),
+      coralEnv: {},
+      principal: testProjectPrincipal(projectRoot),
+    };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');

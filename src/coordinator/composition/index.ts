@@ -38,6 +38,8 @@ import { probeProcessStartedAtSeconds } from '../../infra/node-process.js';
 import type { RpcPorts } from '../../transport/rpc/ports.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import type { Principal } from '../../security/principal.js';
+import { principalToWire } from '../../security/principal-wire.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
@@ -70,6 +72,7 @@ import type {
 import { KbJobRecorder, normalizeHostedKbFailureDetail } from '../../jobs/kb/recorder.js';
 import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import type { KbCorpusSnapshot } from '../../kb/contract.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
@@ -101,6 +104,12 @@ const EVENT_STREAM_CAPACITY_RESPONSE = {
   code: 'too_many_event_streams',
   message: 'Too many event stream connections',
 };
+
+const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'error', 'failed', 'closed']);
+
+function isTerminalDiscussStatus(status: string): boolean {
+  return TERMINAL_DISCUSS_STATUSES.has(status);
+}
 
 const EMPTY_CORPUS_SNAPSHOT: KbCorpusSnapshot = {
   snapshotId: '',
@@ -184,22 +193,31 @@ function readResourceSnapshot(
 }
 
 function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadRpcPort {
+  const daemonCtx = (ctx: InvocationContext | Principal): KbDaemonRequestContextWire => toKbDaemonWireContext(ctx);
+
   return {
-    readSearch: (args) => kbDaemonSupervisor.readKb({ method: 'readSearch', args }),
-    diagnose: () => kbDaemonSupervisor.readKb({ method: 'diagnose' }),
-    readNote: (slug) => kbDaemonSupervisor.readKb({ method: 'readNote', slug }),
-    readSource: (slug) => kbDaemonSupervisor.readKb({ method: 'readSource', slug }),
-    readCommunity: (slug) => kbDaemonSupervisor.readKb({ method: 'readCommunity', slug }),
-    readWiki: (slug) => kbDaemonSupervisor.readKb({ method: 'readWiki', slug }),
-    readMemo: (slug, ctx) => kbDaemonSupervisor.readKb({ method: 'readMemo', slug, ctx }),
-    readPrinciple: (slug) => kbDaemonSupervisor.readKb({ method: 'readPrinciple', slug }),
-    listSources: () => kbDaemonSupervisor.readKb({ method: 'listSources' }),
-    listWikis: () => kbDaemonSupervisor.readKb({ method: 'listWikis' }),
-    listMemos: (args, ctx) => kbDaemonSupervisor.readKb({ method: 'listMemos', args, ctx }),
-    listPrinciples: (args) => kbDaemonSupervisor.readKb({ method: 'listPrinciples', args }),
-    listStaleCommunities: () => kbDaemonSupervisor.readKb({ method: 'listStaleCommunities' }),
-    readCommunitySummaryInput: (slug) => kbDaemonSupervisor.readKb({ method: 'readCommunitySummaryInput', slug }),
-    wakeUp: (args) => kbDaemonSupervisor.readKb({ method: 'wakeUp', args }),
+    readSearch: (args, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readSearch', args, ctx: daemonCtx(principal) }),
+    diagnose: (principal) => kbDaemonSupervisor.readKb({ method: 'diagnose', ctx: daemonCtx(principal) }),
+    readNote: (slug, principal) => kbDaemonSupervisor.readKb({ method: 'readNote', slug, ctx: daemonCtx(principal) }),
+    readSource: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readSource', slug, ctx: daemonCtx(principal) }),
+    readCommunity: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readCommunity', slug, ctx: daemonCtx(principal) }),
+    readWiki: (slug, principal) => kbDaemonSupervisor.readKb({ method: 'readWiki', slug, ctx: daemonCtx(principal) }),
+    readMemo: (slug, ctx) => kbDaemonSupervisor.readKb({ method: 'readMemo', slug, ctx: daemonCtx(ctx) }),
+    readPrinciple: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readPrinciple', slug, ctx: daemonCtx(principal) }),
+    listSources: (principal) => kbDaemonSupervisor.readKb({ method: 'listSources', ctx: daemonCtx(principal) }),
+    listWikis: (principal) => kbDaemonSupervisor.readKb({ method: 'listWikis', ctx: daemonCtx(principal) }),
+    listMemos: (args, ctx) => kbDaemonSupervisor.readKb({ method: 'listMemos', args, ctx: daemonCtx(ctx) }),
+    listPrinciples: (args, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'listPrinciples', args, ctx: daemonCtx(principal) }),
+    listStaleCommunities: (principal) =>
+      kbDaemonSupervisor.readKb({ method: 'listStaleCommunities', ctx: daemonCtx(principal) }),
+    readCommunitySummaryInput: (slug, principal) =>
+      kbDaemonSupervisor.readKb({ method: 'readCommunitySummaryInput', slug, ctx: daemonCtx(principal) }),
+    wakeUp: (args, principal) => kbDaemonSupervisor.readKb({ method: 'wakeUp', args, ctx: daemonCtx(principal) }),
   };
 }
 
@@ -212,6 +230,18 @@ function readStartedKbJobId(result: KbToolResult): string | null {
     return data.job;
   }
   return null;
+}
+
+function toKbDaemonWireContext(ctx: InvocationContext | Principal): KbDaemonRequestContextWire {
+  if (!('principal' in ctx)) {
+    return { principal: principalToWire(ctx) };
+  }
+  return {
+    ...(ctx.projectRoot.length === 0 ? {} : { projectRoot: ctx.projectRoot }),
+    ...(ctx.pluginRoot.length === 0 ? {} : { pluginRoot: ctx.pluginRoot }),
+    ...(Object.keys(ctx.coralEnv).length === 0 ? {} : { coralEnv: ctx.coralEnv }),
+    principal: principalToWire(ctx.principal),
+  };
 }
 
 function createKbDaemonMutationPort(
@@ -234,28 +264,32 @@ function createKbDaemonMutationPort(
     }
     return result;
   };
-  const ctxOrFallback = (ctx: InvocationContext | undefined): InvocationContext => ctx ?? fallbackContext;
+  const daemonCtx = (ctx: InvocationContext | undefined): KbDaemonRequestContextWire =>
+    toKbDaemonWireContext(ctx ?? fallbackContext);
   return {
     ...readPort,
     setCommunitySummary: async (args, ctx) => {
-      const invocationCtx = ctxOrFallback(ctx);
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'setCommunitySummary', args, ctx: invocationCtx });
+      const result = await kbDaemonSupervisor.mutateKb({
+        method: 'setCommunitySummary',
+        args,
+        ctx: daemonCtx(ctx),
+      });
       return recordAndNotify('community_set_summary', ctx, result, { corpusMutation: true });
     },
     createNote: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createNote', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createNote', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('promote', ctx, result, { corpusMutation: true });
     },
     updateNote: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'updateNote', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'updateNote', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('update', ctx, result, { corpusMutation: true });
     },
     deleteNote: async (slug, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteNote', slug, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteNote', slug, ctx: daemonCtx(ctx) });
       return recordAndNotify('delete', ctx, result, { corpusMutation: true });
     },
     createSource: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createSource', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createSource', args, ctx: daemonCtx(ctx) });
       const jobId = readStartedKbJobId(result);
       if (jobId !== null) {
         registerDaemonJobAbortProxy(jobId);
@@ -263,48 +297,51 @@ function createKbDaemonMutationPort(
       return recordAndNotify('source_import', ctx, result);
     },
     createWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createWiki', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_create', ctx, result, { corpusMutation: true });
     },
     rewriteWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'rewriteWiki', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_rewrite', ctx, result, { corpusMutation: true });
     },
     linkWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'linkWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'linkWiki', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_link', ctx, result, { corpusMutation: true });
     },
     unlinkWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'unlinkWiki', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_unlink', ctx, result, { corpusMutation: true });
     },
     citeWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'citeWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'citeWiki', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_cite', ctx, result, { corpusMutation: true });
     },
     adoptWiki: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'adoptWiki', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'adoptWiki', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_adopt', ctx, result, { corpusMutation: true });
     },
     deleteWiki: async (slug, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteWiki', slug, ctx: daemonCtx(ctx) });
       return recordAndNotify('wiki_delete', ctx, result, { corpusMutation: true });
     },
     deleteSource: async (slug, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteSource', slug, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteSource', slug, ctx: daemonCtx(ctx) });
       return recordAndNotify('source_delete', ctx, result, { corpusMutation: true });
     },
     createMemo: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'createMemo', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'createMemo', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('memo_create', ctx, result);
     },
     deleteMemos: async (args, ctx) => {
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteMemos', args, ctx });
+      const result = await kbDaemonSupervisor.mutateKb({ method: 'deleteMemos', args, ctx: daemonCtx(ctx) });
       return recordAndNotify('memo_delete', ctx, result);
     },
     reindex: async (args, ctx) => {
-      const invocationCtx = ctxOrFallback(ctx);
-      const result = await kbDaemonSupervisor.mutateKb({ method: 'reindex', args, ctx: invocationCtx });
+      const result = await kbDaemonSupervisor.mutateKb({
+        method: 'reindex',
+        args,
+        ctx: daemonCtx(ctx),
+      });
       const jobId = readStartedKbJobId(result);
       if (jobId !== null) {
         registerDaemonJobAbortProxy(jobId);
@@ -340,8 +377,16 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
   const run = async <T>(
     method: Parameters<KbDaemonSupervisor['expansionRpc']>[0]['method'],
     args: unknown,
+    principal: Principal | undefined,
   ): Promise<T> => {
-    const result = await kbDaemonSupervisor.expansionRpc({ method, args });
+    if (principal === undefined) {
+      throw new CoralSetupError({
+        code: 'invalid_request',
+        userMessage: 'Expansion request requires principal context.',
+        remediation: "Retry the expansion command. If this persists, run 'coral-cli expansion --help'.",
+      });
+    }
+    const result = await kbDaemonSupervisor.expansionRpc({ method, args, ctx: toKbDaemonWireContext(principal) });
     if (!result.ok) {
       throw new CoralSetupError({
         code: result.code,
@@ -354,13 +399,18 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
   };
 
   return {
-    equipExpansion: (request: EquipExpansionRequest): Promise<EquipExpansionResult> => run('equipExpansion', request),
-    unequipExpansion: (request: UnequipExpansionRequest): Promise<UnequipExpansionResult> =>
-      run('unequipExpansion', request),
-    removeExpansionCatalog: (request: RemoveExpansionCatalogRequest): Promise<RemoveExpansionCatalogResult> =>
-      run('removeExpansionCatalog', request),
-    listExpansion: (request: ListExpansionRequest): Promise<ListExpansionResult> => run('listExpansion', request),
-    readBinding: (request: ReadBindingRequest): Promise<ReadBindingResult> => run('readBinding', request),
+    equipExpansion: (request: EquipExpansionRequest, principal?: Principal): Promise<EquipExpansionResult> =>
+      run('equipExpansion', request, principal),
+    unequipExpansion: (request: UnequipExpansionRequest, principal?: Principal): Promise<UnequipExpansionResult> =>
+      run('unequipExpansion', request, principal),
+    removeExpansionCatalog: (
+      request: RemoveExpansionCatalogRequest,
+      principal?: Principal,
+    ): Promise<RemoveExpansionCatalogResult> => run('removeExpansionCatalog', request, principal),
+    listExpansion: (request: ListExpansionRequest, principal?: Principal): Promise<ListExpansionResult> =>
+      run('listExpansion', request, principal),
+    readBinding: (request: ReadBindingRequest, principal?: Principal): Promise<ReadBindingResult> =>
+      run('readBinding', request, principal),
   };
 }
 
@@ -456,7 +506,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
     coralEnv: { ...world.coralEnvSnapshot },
-    authority: 'admin',
+    principal: {
+      subject: 'system',
+      transport: 'internal',
+      credential: { kind: 'internal', id: 'coordinator-readonly' },
+      binding: { kind: 'unbound' },
+    },
   };
   const recordHostedKbFailure = (operation: string, ctx: InvocationContext | undefined, result: KbToolResult): void => {
     if (result.ok || ctx === undefined) {
@@ -544,6 +599,27 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     daemonJobTerminalListenersRegistered = false;
     world.eventBus.off('job:phase_changed', onDaemonJobPhaseChanged);
     world.eventBus.off('job:completed', onDaemonJobCompleted);
+  };
+  const onChildPrincipalJobPhaseChanged = (event: { jobId: string; phase: string }): void => {
+    if (isTerminalPhase(event.phase)) {
+      world.childPrincipalRegistry.revokeParentJob(event.jobId);
+    }
+  };
+  const onChildPrincipalJobCompleted = (event: { jobId: string }): void => {
+    world.childPrincipalRegistry.revokeParentJob(event.jobId);
+  };
+  const onChildPrincipalDiscussUpdated = (event: { sessionId: string; status: string }): void => {
+    if (isTerminalDiscussStatus(event.status)) {
+      world.childPrincipalRegistry.revokeParentSession(event.sessionId);
+    }
+  };
+  world.eventBus.on('job:phase_changed', onChildPrincipalJobPhaseChanged);
+  world.eventBus.on('job:completed', onChildPrincipalJobCompleted);
+  world.eventBus.on('discuss:updated', onChildPrincipalDiscussUpdated);
+  const disposeChildPrincipalTerminalListeners = (): void => {
+    world.eventBus.off('job:phase_changed', onChildPrincipalJobPhaseChanged);
+    world.eventBus.off('job:completed', onChildPrincipalJobCompleted);
+    world.eventBus.off('discuss:updated', onChildPrincipalDiscussUpdated);
   };
   const describeKbDaemonExit = (snapshot: KbDaemonHealthSnapshot): string => {
     const exit = snapshot.lastExit;
@@ -759,6 +835,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
     remoteAccess: world.remoteAccess,
+    childPrincipals: world.childPrincipalRegistry,
     admin: {
       getLifecycleState: () => runtimeState.getLifecycle(),
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
@@ -934,6 +1011,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     providerHostManager: world.providerHostManager,
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: () => {
+      disposeChildPrincipalTerminalListeners();
       disposeKbDaemonExitListener();
       disposeDaemonJobTerminalListeners();
       options.disposeLifecycleReactor?.();

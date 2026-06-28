@@ -9,6 +9,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
+import { testPrincipal } from '../../helpers/principal.js';
 
 const tempDirs: string[] = [];
 const httpServers: Server[] = [];
@@ -24,6 +25,7 @@ function createPorts(): HttpHandlerPorts {
     identity: {
       pluginRoot: '/plugin-root',
       token: 'test-token',
+      bootToken: 'test-boot-token',
       shutdownToken: 'test-shutdown-token',
       version: '0.5.2',
       bundleHash: 'test-hash',
@@ -174,20 +176,24 @@ afterEach(async () => {
 });
 
 describe('http/ipc parity', () => {
-  it('derives invocation authority from the transport boundary', async () => {
+  it('derives invocation principal from the transport boundary', async () => {
     const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
     if (!spec) {
       throw new Error('sessions.create spec not found');
     }
 
-    const observedAuthorities: string[] = [];
+    const observedPrincipals: Array<{ subject: string; transport: string; binding: unknown }> = [];
     const ports = createPorts();
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
-      observedAuthorities.push(ctx.authority);
+      observedPrincipals.push({
+        subject: ctx.principal.subject,
+        transport: ctx.principal.transport,
+        binding: ctx.principal.binding,
+      });
       return {
         status: 'running' as const,
-        job: `job-${observedAuthorities.length}`,
-        session: `session-${observedAuthorities.length}`,
+        job: `job-${observedPrincipals.length}`,
+        session: `session-${observedPrincipals.length}`,
       };
     });
 
@@ -196,10 +202,12 @@ describe('http/ipc parity', () => {
       prompt: 'hello',
       projectRoot: '/project-root',
     };
-    const ipcResult = await ipcAdapter(spec, ports).dispatch(request);
+    const ipcResult = await ipcAdapter(spec, ports).dispatch(request, testPrincipal({ transport: 'ipc' }));
 
     expect(ipcResult.kind).toBe('unary');
-    expect(observedAuthorities).toEqual(['admin']);
+    expect(observedPrincipals).toEqual([
+      { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: '/project-root' } },
+    ]);
 
     const { baseUrl } = await startHttpServer(ports);
     const httpResponse = await fetch(`${baseUrl}/sessions`, {
@@ -217,10 +225,13 @@ describe('http/ipc parity', () => {
       job: 'job-2',
       session: 'session-2',
     });
-    expect(observedAuthorities).toEqual(['admin', 'user']);
+    expect(observedPrincipals).toEqual([
+      { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: '/project-root' } },
+      { subject: 'operator', transport: 'http', binding: { kind: 'project', root: '/project-root' } },
+    ]);
   });
 
-  it('rejects client-supplied source-import authority while deriving HTTP context as user', async () => {
+  it('rejects client-supplied source-import authority while deriving an HTTP project principal', async () => {
     const bypassRequest = {
       filePath: '../outside.md',
       projectRoot: '/project-root',
@@ -229,14 +240,22 @@ describe('http/ipc parity', () => {
     expect(kbSourceCreateRequestSchema.safeParse(bypassRequest).success).toBe(false);
 
     const ports = createPorts();
-    const observedAuthorities: string[] = [];
+    const observedPrincipals: Array<{ subject: string; transport: string; binding: unknown }> = [];
     ports.kb.createSource = vi.fn(async (_args, ctx) => {
-      observedAuthorities.push(ctx.authority);
+      observedPrincipals.push({
+        subject: ctx.principal.subject,
+        transport: ctx.principal.transport,
+        binding: ctx.principal.binding,
+      });
       return {
         ok: true as const,
         data: {
           status: 'completed',
-          observedAuthority: ctx.authority,
+          observedPrincipal: {
+            subject: ctx.principal.subject,
+            transport: ctx.principal.transport,
+            binding: ctx.principal.binding,
+          },
         },
       };
     });
@@ -266,13 +285,23 @@ describe('http/ipc parity', () => {
     expect(acceptedResponse.status).toBe(201);
     expect(await acceptedResponse.json()).toEqual({
       status: 'completed',
-      observedAuthority: 'user',
+      observedPrincipal: {
+        subject: 'operator',
+        transport: 'http',
+        binding: { kind: 'project', root: '/project-root' },
+      },
     });
-    expect(observedAuthorities).toEqual(['user']);
+    expect(observedPrincipals).toEqual([
+      { subject: 'operator', transport: 'http', binding: { kind: 'project', root: '/project-root' } },
+    ]);
     expect(ports.kb.createSource).toHaveBeenCalledWith(
       { filePath: '../outside.md', readiness: 'base-search', async: false },
       expect.objectContaining({
-        authority: 'user',
+        principal: expect.objectContaining({
+          subject: 'operator',
+          transport: 'http',
+          binding: { kind: 'project', root: '/project-root' },
+        }),
         projectRoot: '/project-root',
       }),
     );
@@ -290,7 +319,14 @@ describe('http/ipc parity', () => {
         headers: { 'X-Coral-Backend-Token': ports.identity.token },
       });
       const httpBody = await httpResponse.json();
-      const ipcBody = await requestIpcMethod(socketPath, 'discuss.session.list', {});
+      const ipcBody = await requestIpcMethod(
+        socketPath,
+        'discuss.session.list',
+        {},
+        {
+          auth: { kind: 'boot', token: 'test-boot-token' },
+        },
+      );
 
       expect(httpBody).toEqual(ipcBody);
     } finally {

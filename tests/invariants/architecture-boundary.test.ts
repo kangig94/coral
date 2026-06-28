@@ -33,6 +33,7 @@ const KB_ROOT = 'src/kb';
 const COORDINATOR_ROOT = 'src/coordinator';
 const COORDINATOR_SERVICES_ROOT = 'src/coordinator/services';
 const RUNTIME_ROOT = 'src/runtime';
+const SECURITY_POLICY_ROOT = 'src/security/policy';
 const EXECUTION_ROOT = ['src', 'execution'].join('/');
 const CLIENT_ROOT = ['src', 'client'].join('/');
 const SKILLS_ROOT = ['src', 'skills'].join('/');
@@ -438,6 +439,32 @@ describe('architecture boundary guard', () => {
   });
   it('domain/provider modules receive time env and randomness through ports', () => {
     expect(collectDomainAmbientRuntimeAccess()).toEqual([]);
+  });
+  it('security policy imports no I/O ports, domains, transport, or coordinator', () => {
+    const violations = collectViolations(
+      SECURITY_POLICY_ROOT,
+      'src/security/policy must stay pure authorization data',
+      'move I/O, domain, transport, and coordinator dependencies outside the pure security policy.',
+      (target) =>
+        target === 'src/infra/port-types.ts' ||
+        target === 'src/runtime/ports.ts' ||
+        target.startsWith('src/jobs/') ||
+        target.startsWith('src/sessions/') ||
+        target.startsWith('src/discuss/') ||
+        target.startsWith('src/workflow/') ||
+        target.startsWith('src/kb/') ||
+        target.startsWith('src/providers/') ||
+        target.startsWith('src/expansion/') ||
+        target.startsWith('src/engines/') ||
+        target.startsWith('src/store/') ||
+        target.startsWith('src/read-model/') ||
+        target.startsWith('src/projection-consumers/') ||
+        target.startsWith('src/kb-daemon/') ||
+        target.startsWith('src/transport/') ||
+        target.startsWith('src/coordinator/'),
+    );
+
+    assertNoViolations(violations);
   });
   it('kb paths and read-model reads do not silently choose ambient roots', () => {
     const kbPathSource = readFileSync(resolve(REPO_ROOT, KB_PATHS_MODULE), 'utf8');

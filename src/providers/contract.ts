@@ -57,6 +57,7 @@ export interface ProviderRequest {
   bypassPermissions: boolean;
   systemPrompt?: string;
   coralEnv: Record<string, string>;
+  secretEnv?: Record<string, string>;
   instruction?: ProviderInstruction;
 }
 

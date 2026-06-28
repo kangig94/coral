@@ -124,6 +124,17 @@ export interface BackendHealth {
   };
 }
 
+export type BackendPing = {
+  status: BackendHealth['status'];
+  version: string;
+  bundleHash: string;
+  flavor: 'prod' | 'dev';
+  namespace: string;
+  instanceId: string;
+  pid: number;
+  processStartedAt?: number;
+};
+
 function isMutationBlocked(value: unknown): value is { owner: string; ageMs: number; signaledAtMs: number } {
   return (
     isRecord(value) &&
@@ -353,5 +364,20 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     value.components.every(isRuntimeComponentStatus) &&
     (value.kbDaemon === undefined || isKbDaemonHealth(value.kbDaemon)) &&
     (value.diagnostics === undefined || isDiagnostics(value.diagnostics))
+  );
+}
+
+export function isBackendPing(value: unknown): value is BackendPing {
+  return (
+    isRecord(value) &&
+    (value.status === 'starting' || value.status === 'ok' || value.status === 'draining') &&
+    typeof value.version === 'string' &&
+    typeof value.bundleHash === 'string' &&
+    (value.flavor === 'prod' || value.flavor === 'dev') &&
+    typeof value.instanceId === 'string' &&
+    typeof value.namespace === 'string' &&
+    value.namespace.length > 0 &&
+    Number.isInteger(value.pid) &&
+    (value.processStartedAt === undefined || Number.isInteger(value.processStartedAt))
   );
 }

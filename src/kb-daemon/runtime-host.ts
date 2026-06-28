@@ -48,6 +48,7 @@ import {
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
   BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
 } from '../kb/capability/constants.js';
+import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
 import type { Database } from '../store/db.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
@@ -553,17 +554,24 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       try {
         const initialized = await init();
         const rpc = createExpansionRpc(initialized.expansionLifecycleService);
+        const principal = parsePrincipalWire(request.ctx.principal, {
+          transport: 'kb-daemon',
+          credential: { kind: 'daemon-rpc', id: 'expansion-runtime' },
+        });
+        if (principal === null) {
+          return kbError('invalid_request', 'Malformed KB daemon expansion principal.');
+        }
         switch (request.method) {
           case 'equipExpansion':
-            return { ok: true, data: await rpc.equipExpansion(request.args as never) };
+            return { ok: true, data: await rpc.equipExpansion(request.args as never, principal) };
           case 'unequipExpansion':
-            return { ok: true, data: await rpc.unequipExpansion(request.args as never) };
+            return { ok: true, data: await rpc.unequipExpansion(request.args as never, principal) };
           case 'removeExpansionCatalog':
-            return { ok: true, data: await rpc.removeExpansionCatalog(request.args as never) };
+            return { ok: true, data: await rpc.removeExpansionCatalog(request.args as never, principal) };
           case 'listExpansion':
-            return { ok: true, data: await rpc.listExpansion((request.args ?? {}) as never) };
+            return { ok: true, data: await rpc.listExpansion((request.args ?? {}) as never, principal) };
           case 'readBinding':
-            return { ok: true, data: await rpc.readBinding(request.args as never) };
+            return { ok: true, data: await rpc.readBinding(request.args as never, principal) };
           default:
             return kbError('invalid_request', `Unknown expansion method: ${String(request.method)}`);
         }

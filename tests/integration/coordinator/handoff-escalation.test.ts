@@ -103,6 +103,7 @@ describe('handoff escalation (AC7)', () => {
       source: 'discovery',
       instanceId: 'hung-incumbent',
       token: 'token',
+      bootToken: 'boot-token',
       shutdownToken: 'shutdown-token',
     };
     const totalBudgetMs = 1_000;
@@ -157,6 +158,7 @@ describe('handoff escalation (AC7)', () => {
       source: 'discovery',
       instanceId: 'gone-incumbent',
       token: 'token',
+      bootToken: 'boot-token',
       shutdownToken: 'shutdown-token',
     };
     const totalBudgetMs = 500;
@@ -194,6 +196,7 @@ describe('handoff escalation (AC7)', () => {
       source: 'discovery',
       instanceId: 'finalizer-incumbent',
       token: 'token',
+      bootToken: 'boot-token',
       shutdownToken: 'shutdown-token',
     };
     const totalBudgetMs = 1_000;

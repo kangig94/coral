@@ -15,7 +15,7 @@ import { isRecord, readString } from '../../infra/json.js';
 import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 
-type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
+type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv' | 'secretEnv'>;
 
 const CODEX_CONTINUITY_KEYS = ['cwd', 'threadId', 'turnId'] as const;
 const codexContinuityCwdScopes = new WeakMap<Record<string, unknown>, string>();
@@ -270,7 +270,7 @@ export function buildCodexProviderServerSpec(
     const continuity = readCodexPersistedContinuity(persistedContinuity, { cwdScope: projectRootOrRequest.cwd });
     return createCodexProviderServerSpec(
       continuity.cwd ?? projectRootOrRequest.cwd,
-      projectRootOrRequest.coralEnv,
+      { ...projectRootOrRequest.coralEnv, ...projectRootOrRequest.secretEnv },
       clientVersion,
     );
   }

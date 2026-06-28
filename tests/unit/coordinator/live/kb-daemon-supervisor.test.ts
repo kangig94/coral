@@ -71,6 +71,17 @@ function createRuntime(daemonProcesses: FakeDaemonProcess[], time = new VirtualT
   return { runtime, spawnCalls, time };
 }
 
+function daemonCtx(projectRoot = '/workspace/project-a') {
+  return {
+    projectRoot,
+    pluginRoot: '/plugin',
+    principal: {
+      subject: 'operator' as const,
+      binding: { kind: 'project' as const, root: projectRoot },
+    },
+  };
+}
+
 function writeReady(daemonProcess: FakeDaemonProcess, pid = daemonProcess.pid): void {
   (daemonProcess.stdout as unknown as PassThrough).write(
     `${JSON.stringify({ type: 'coral.kb_daemon.ready', pid, startedAt: 1_000_000, readyAt: 1_000_123 })}\n`,
@@ -287,11 +298,11 @@ describe('KB daemon supervisor', () => {
     writeReady(daemonProcess);
     await start;
 
-    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     await flushMicrotasks();
     const request = latestRequest(daemonProcess);
     expect(request.method).toBe('kb.read');
-    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     writeResponse(daemonProcess, request.id, {
       ok: true,
       data: { slug: 'alpha-note', source: 'daemon' },
@@ -321,7 +332,7 @@ describe('KB daemon supervisor', () => {
     const mutation = supervisor.mutateKb({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'body', owner: 'kang' },
-      ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+      ctx: daemonCtx(),
     });
     await flushMicrotasks();
     const request = latestRequest(daemonProcess);
@@ -329,7 +340,7 @@ describe('KB daemon supervisor', () => {
     expect(request.params).toEqual({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'body', owner: 'kang' },
-      ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+      ctx: daemonCtx(),
     });
     writeResponse(daemonProcess, request.id, {
       ok: true,
@@ -674,7 +685,7 @@ describe('KB daemon supervisor', () => {
       lastError: 'first daemon failed',
     });
 
-    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     await flushMicrotasks();
     expect(spawnCalls).toHaveLength(2);
 
@@ -682,7 +693,7 @@ describe('KB daemon supervisor', () => {
     await flushMicrotasks(12);
     const request = latestRequest(second);
     expect(request.method).toBe('kb.read');
-    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     writeResponse(second, request.id, {
       ok: true,
       data: { slug: 'alpha-note', source: 'recovered-daemon' },
@@ -708,7 +719,7 @@ describe('KB daemon supervisor', () => {
     const start = supervisor.start();
     await flushMicrotasks();
 
-    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     await flushMicrotasks();
     expect(spawnCalls).toHaveLength(1);
 
@@ -718,7 +729,7 @@ describe('KB daemon supervisor', () => {
 
     const request = latestRequest(daemonProcess);
     expect(request.method).toBe('kb.read');
-    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    expect(request.params).toEqual({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     writeResponse(daemonProcess, request.id, {
       ok: true,
       data: { slug: 'alpha-note', source: 'started-daemon' },
@@ -748,7 +759,7 @@ describe('KB daemon supervisor', () => {
     writeReady(first);
     await start;
 
-    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     await flushMicrotasks();
     const firstRequest = latestRequest(first);
     expect(firstRequest.method).toBe('kb.read');
@@ -767,7 +778,7 @@ describe('KB daemon supervisor', () => {
     await flushMicrotasks(12);
     const secondRequest = latestRequest(second);
     expect(secondRequest.method).toBe('kb.read');
-    expect(secondRequest.params).toEqual({ method: 'readNote', slug: 'alpha-note' });
+    expect(secondRequest.params).toEqual({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     writeResponse(second, secondRequest.id, {
       ok: true,
       data: { slug: 'alpha-note', source: 'timeout-recovered-daemon' },
@@ -800,7 +811,7 @@ describe('KB daemon supervisor', () => {
     const mutation = supervisor.mutateKb({
       method: 'createMemo',
       args: { topic: 'alpha', content: 'body', owner: 'kang' },
-      ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+      ctx: daemonCtx(),
     });
     await flushMicrotasks();
     expect(latestRequest(first).method).toBe('kb.mutate');
@@ -840,7 +851,7 @@ describe('KB daemon supervisor', () => {
       .mutateKb({
         method: 'createSource',
         args: { filePath: '/workspace/project-a/source.md', async: false },
-        ctx: { projectRoot: '/workspace/project-a', pluginRoot: '/plugin' },
+        ctx: daemonCtx(),
       })
       .finally(() => {
         settled = true;
@@ -878,7 +889,7 @@ describe('KB daemon supervisor', () => {
     writeReady(first);
     await start;
 
-    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note' });
+    const read = supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() });
     await flushMicrotasks();
     expect(latestRequest(first).method).toBe('kb.read');
 
@@ -947,7 +958,9 @@ describe('KB daemon supervisor', () => {
     second.emitClose(0, null);
     await dispose;
 
-    await expect(supervisor.readKb({ method: 'readNote', slug: 'alpha-note' })).resolves.toMatchObject({
+    await expect(
+      supervisor.readKb({ method: 'readNote', slug: 'alpha-note', ctx: daemonCtx() }),
+    ).resolves.toMatchObject({
       ok: false,
       code: 'kb_unavailable',
     });

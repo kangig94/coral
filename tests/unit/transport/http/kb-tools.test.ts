@@ -37,6 +37,7 @@ import {
   handleKbWikiUnlink,
 } from '#src/kb/tool-handlers.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const mockState = vi.hoisted(() => ({
   searchKb: vi.fn(),
@@ -126,7 +127,7 @@ const testContext: InvocationContext = {
   projectRoot: '/tmp/project',
   pluginRoot: '/tmp/plugin',
   coralEnv: {},
-  authority: 'admin',
+  principal: testProjectPrincipal('/tmp/project'),
 };
 
 const testRuntime = {

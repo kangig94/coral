@@ -6,6 +6,7 @@ import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { Principal } from '../security/principal.js';
 import type { DiscussContext } from '../discuss/shell/types.js';
 import type { RecoveredDiscussResume } from '../discuss/shell/recovery.js';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
@@ -55,6 +56,7 @@ export type CoordinatorServerInfo = {
   host: string;
   socketPath: string;
   token: string;
+  bootToken: string;
   shutdownToken: string;
   version: string;
   bundleHash: string;
@@ -72,6 +74,7 @@ export interface CoordinatorIdentity {
   readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
   readonly token: string;
+  readonly bootToken: string;
   readonly shutdownToken: string;
   readonly now: () => number;
   readonly log: (message: string) => void;
@@ -498,6 +501,7 @@ async function runLifecycleStartup({
             source: 'discovery',
             instanceId: info.instanceId,
             token: info.token,
+            bootToken: info.bootToken,
             shutdownToken: info.shutdownToken,
           };
         },
@@ -568,6 +572,7 @@ async function runLifecycleStartup({
       host,
       socketPath,
       token: identity.token,
+      bootToken: identity.bootToken,
       shutdownToken: identity.shutdownToken,
       version,
       bundleHash,
@@ -671,6 +676,7 @@ async function runLifecycleStartup({
       host,
       socketPath,
       token: identity.token,
+      bootToken: identity.bootToken,
       shutdownToken: identity.shutdownToken,
       version,
       bundleHash,
@@ -763,7 +769,13 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
     instanceId,
   });
   function createInvocationContext(projectRoot: string): InvocationContext {
-    return { projectRoot, pluginRoot, coralEnv: {}, authority: 'admin' };
+    const principal: Principal = {
+      subject: 'system',
+      transport: 'internal',
+      credential: { kind: 'internal', id: 'lifecycle' },
+      binding: { kind: 'project', root: projectRoot },
+    };
+    return { projectRoot, pluginRoot, coralEnv: {}, principal };
   }
 
   async function shutdown(reason: string): Promise<void> {

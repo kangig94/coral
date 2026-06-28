@@ -64,6 +64,7 @@ export type VerifiedBackendInfo = {
   namespace: string;
   startedAt: number;
   token: string;
+  bootToken: string;
   shutdownToken?: string;
   host: string;
   version: string;
@@ -110,7 +111,7 @@ type StartupErrorSentinel = {
 };
 
 function summarizeBackend(info: VerifiedBackendInfo, timePort: TimePort): EnsuredIpcClient {
-  return Object.assign(createIpcClient(info.socketPath, timePort), {
+  return Object.assign(createIpcClient(info.socketPath, timePort, { kind: 'boot', token: info.bootToken }), {
     instanceId: info.instanceId,
     bundleHash: info.bundleHash,
     flavor: info.flavor,
@@ -174,6 +175,8 @@ function isVerifiedBackendInfo(value: unknown): value is VerifiedBackendInfo {
     (record.host === undefined || (typeof record.host === 'string' && record.host.length > 0)) &&
     typeof record.token === 'string' &&
     record.token.length > 0 &&
+    typeof record.bootToken === 'string' &&
+    record.bootToken.length > 0 &&
     (record.shutdownToken === undefined ||
       (typeof record.shutdownToken === 'string' && record.shutdownToken.length > 0)) &&
     typeof record.version === 'string' &&
@@ -220,7 +223,7 @@ function isStartupErrorSentinel(value: unknown): value is StartupErrorSentinel {
 
 async function readRawCoordinatorHealth(client: IpcClient): Promise<RawCoordinatorHealth | null> {
   try {
-    const health = await client.health<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
+    const health = await client.ping<unknown>({ timeoutMs: HEALTH_TIMEOUT_MS });
     return isRawCoordinatorHealth(health) ? health : null;
   } catch {
     return null;
@@ -528,7 +531,7 @@ function resolveBackendBin(root: string): string {
  * `requestIncumbentShutdown` helper for graceful cross-version handoff.
  *
  * Decision tree:
- *   1. Probe existing socket via `transport.health`.
+ *   1. Probe existing socket via unauthenticated `transport.ping`.
  *      - Compatible + ready  → return summary (or wait for `coordinator.json`
  *                              if `starting` or discovery missing).
  *      - Compatible + draining → wait for socket release, fall through to spawn.
@@ -577,17 +580,18 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
     // Mismatched bundle/flavor/namespace — same shutdown path as daemon-side.
     try {
       const info = readDiscoverySnapshot(paths);
+      const shutdownCredential = info?.bootToken;
       const shutdownResult = await requestIncumbentShutdown({
         socketPath: paths.socketPath,
         desired: desiredIdentity,
-        shutdownToken: info?.shutdownToken,
+        bootToken: shutdownCredential,
         timeoutMs: HEALTH_TIMEOUT_MS,
         timePort: ipcTime,
       });
       if (shutdownResult.shutdownUnauthorized) {
         throw new BackendUnreachableError('Manual shutdown required: incumbent rejected shutdown capability.');
       }
-      if (!shutdownResult.shutdownAttempted && info?.shutdownToken === undefined) {
+      if (!shutdownResult.shutdownAttempted && shutdownCredential === undefined) {
         throw new BackendUnreachableError(
           'Manual shutdown required: refusing handoff because verified shutdown capability was unavailable.',
         );

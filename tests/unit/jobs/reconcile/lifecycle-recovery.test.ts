@@ -19,6 +19,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -422,6 +423,7 @@ function createLifecycleHarness(
       flavor: 'prod',
       instanceId: `lifecycle-${Math.random()}`,
       token: 'test-token',
+      bootToken: 'test-boot-token',
       shutdownToken: 'test-shutdown-token',
       now: () => 1,
       log: () => {},
@@ -521,7 +523,7 @@ function createActualRecoveryService(
       projectRoot: options.projectRoot,
       pluginRoot: options.pluginRoot,
       coralEnv: {},
-      authority: 'admin',
+      principal: testProjectPrincipal(options.projectRoot),
     },
     {
       runtime,
@@ -616,6 +618,8 @@ describe('lifecycle recovery', () => {
             identity: {
               pluginRoot,
               token: 'test-token',
+              bootToken: 'test-boot-token',
+              shutdownToken: 'test-shutdown-token',
               version: '9.9.9',
               bundleHash: 'testhash1234',
               flavor: 'prod',
@@ -638,7 +642,7 @@ describe('lifecycle recovery', () => {
               start: sessionStart,
             },
           } as never,
-          'admin',
+          testProjectPrincipal(projectRoot),
         );
 
         expect(result).toEqual({

@@ -47,8 +47,21 @@ import {
 import { kbWakeUpSchema } from '../kb/tool-contracts.js';
 import { generateWakeUpPacket } from '../kb/ops/wake-up.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../kb/validation.js';
-import type { Authority, InvocationContext } from '../runtime/invocation-context.js';
-import type { KbDaemonKbMutationRequest, KbDaemonKbReadHealth, KbDaemonKbReadRequest } from './protocol.js';
+import type { InvocationContext } from '../runtime/invocation-context.js';
+import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
+import type { Capability } from '../security/capability.js';
+import type { Principal, ResourceBinding } from '../security/principal.js';
+import { authorize, type Decision } from '../security/policy/authorize.js';
+import { capabilitiesFor } from '../security/policy/capabilities.js';
+import { parsePrincipalWire } from '../security/principal-wire.js';
+import {
+  kbDaemonRequestContextWireSchema,
+  type KbDaemonKbMutationMethod,
+  type KbDaemonKbMutationRequest,
+  type KbDaemonKbReadHealth,
+  type KbDaemonKbReadMethod,
+  type KbDaemonKbReadRequest,
+} from './protocol.js';
 
 type KbDaemonRequestServiceOptions = {
   pluginRoot: string;
@@ -58,10 +71,10 @@ type KbDaemonRequestServiceOptions = {
 };
 
 type KbDaemonRequestContext = {
-  projectRoot: string;
+  projectRoot?: string;
   pluginRoot?: string;
   coralEnv?: Record<string, string>;
-  authority?: Authority;
+  principal: Principal;
 };
 
 type KbDaemonRequestServiceState = {
@@ -78,6 +91,43 @@ type KbDaemonWriteRuntimeHost = {
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   health(): KbDaemonKbReadHealth;
 };
+
+const KB_DAEMON_READ_CAPABILITIES = {
+  readSearch: 'kb:read',
+  diagnose: 'kb:read',
+  readNote: 'kb:read',
+  readSource: 'kb:read',
+  readCommunity: 'kb:read',
+  listStaleCommunities: 'kb:read',
+  readCommunitySummaryInput: 'kb:read',
+  readWiki: 'kb:read',
+  readMemo: 'kb:read',
+  readPrinciple: 'kb:read',
+  listSources: 'kb:read',
+  listWikis: 'kb:read',
+  listMemos: 'kb:read',
+  listPrinciples: 'kb:read',
+  wakeUp: 'kb:read',
+} as const satisfies Record<KbDaemonKbReadMethod, Capability>;
+
+const KB_DAEMON_MUTATION_CAPABILITIES = {
+  setCommunitySummary: 'kb:write',
+  createNote: 'kb:write',
+  updateNote: 'kb:write',
+  deleteNote: 'kb:write',
+  createSource: 'kb:source:import',
+  createWiki: 'kb:write',
+  rewriteWiki: 'kb:write',
+  linkWiki: 'kb:write',
+  unlinkWiki: 'kb:write',
+  citeWiki: 'kb:write',
+  adoptWiki: 'kb:write',
+  deleteWiki: 'kb:write',
+  deleteSource: 'kb:write',
+  createMemo: 'kb:write',
+  deleteMemos: 'kb:write',
+  reindex: 'kb:write',
+} as const satisfies Record<KbDaemonKbMutationMethod, Capability>;
 
 export type KbDaemonRequestService = {
   read(request: KbDaemonKbReadRequest): Promise<KbToolResult>;
@@ -102,28 +152,31 @@ function parseRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function parseStringRecord(value: unknown): Record<string, string> | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const parsed: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === 'string') {
-      parsed[key] = entry;
-    }
-  }
-  return parsed;
-}
-
 function parseContext(value: unknown): KbDaemonRequestContext | undefined {
-  if (!isRecord(value) || typeof value.projectRoot !== 'string' || value.projectRoot.length === 0) {
+  const parsed = kbDaemonRequestContextWireSchema.safeParse(value);
+  if (!parsed.success) {
     return undefined;
   }
+  const principal = parsePrincipalWire(parsed.data.principal, {
+    transport: 'kb-daemon',
+    credential: { kind: 'daemon-rpc', id: 'request-context' },
+  });
+  if (principal === null) {
+    return undefined;
+  }
+  const subjectCaps = capabilitiesFor(principal.subject);
+  const constrainedPrincipal =
+    principal.attenuatedCaps === undefined
+      ? principal
+      : {
+          ...principal,
+          attenuatedCaps: new Set([...principal.attenuatedCaps].filter((capability) => subjectCaps.has(capability))),
+        };
   return {
-    projectRoot: value.projectRoot,
-    ...(typeof value.pluginRoot === 'string' && value.pluginRoot.length > 0 ? { pluginRoot: value.pluginRoot } : {}),
-    ...(value.authority === 'admin' || value.authority === 'user' ? { authority: value.authority } : {}),
-    ...(value.coralEnv === undefined ? {} : { coralEnv: parseStringRecord(value.coralEnv) ?? {} }),
+    ...(parsed.data.projectRoot === undefined ? {} : { projectRoot: parsed.data.projectRoot }),
+    ...(parsed.data.pluginRoot === undefined ? {} : { pluginRoot: parsed.data.pluginRoot }),
+    ...(parsed.data.coralEnv === undefined ? {} : { coralEnv: parsed.data.coralEnv }),
+    principal: constrainedPrincipal,
   };
 }
 
@@ -131,14 +184,14 @@ function invocationContext(
   state: KbDaemonRequestServiceState,
   ctx: KbDaemonRequestContext | undefined,
 ): InvocationContext | KbToolResult {
-  if (ctx === undefined) {
+  if (ctx?.projectRoot === undefined) {
     return invalidRequest('KB daemon mutation request requires project context.');
   }
   return {
     projectRoot: ctx.projectRoot,
     pluginRoot: ctx.pluginRoot ?? state.pluginRoot,
     coralEnv: ctx.coralEnv ?? {},
-    authority: ctx.authority ?? 'admin',
+    principal: ctx.principal,
   };
 }
 
@@ -174,6 +227,28 @@ function parsePrinciplesArgs(args: Record<string, unknown>): KbPrinciplesInput {
 
 function invalidRequest(message: string): KbToolResult {
   return kbError('invalid_request', message);
+}
+
+function unauthorized(method: string, decision: Extract<Decision, { ok: false }>): KbToolResult {
+  return kbError('unauthorized', `KB daemon request ${method} requires ${decision.detail.requires}.`, {
+    method,
+    decision,
+  });
+}
+
+function requestedBindingFromContext(ctx: KbDaemonRequestContext): ResourceBinding {
+  return ctx.projectRoot === undefined ? { kind: 'unbound' } : { kind: 'project', root: ctx.projectRoot };
+}
+
+function authorizeDaemonRequest(
+  ctx: KbDaemonRequestContext,
+  method: string,
+  requires: Capability,
+): KbToolResult | null {
+  const requestedBinding = requestedBindingFromContext(ctx);
+  const decision = authorize(ctx.principal, requires, requestedBinding);
+  writeAuthorizationDecisionAudit(ctx.principal, `kb-daemon.${method}`, decision, requestedBinding);
+  return decision.ok ? null : unauthorized(method, decision);
 }
 
 function invalidRequestFromError(error: unknown): KbToolResult {
@@ -234,8 +309,8 @@ function normalizeSlug(kind: KbReadKind, slug: string): string | KbToolResult {
   }
 }
 
-function projectDataDir(runtime: KbQueryRuntime, ctx: KbDaemonRequestContext | undefined): string | KbToolResult {
-  if (ctx === undefined) {
+function projectDataDir(runtime: KbQueryRuntime, ctx: KbDaemonRequestContext): string | KbToolResult {
+  if (ctx.projectRoot === undefined) {
     return invalidRequest('KB daemon read request requires project context.');
   }
   return runtime.paths.projectData(ctx.projectRoot);
@@ -298,6 +373,7 @@ function readTyped(
   state: KbDaemonRequestServiceState,
   kind: KbReadKind,
   request: KbDaemonKbReadRequest,
+  ctx: KbDaemonRequestContext,
 ): Promise<KbToolResult> {
   const slug = getSlug(request);
   if (typeof slug !== 'string') {
@@ -307,8 +383,7 @@ function readTyped(
   if (typeof normalizedSlug !== 'string') {
     return Promise.resolve(normalizedSlug);
   }
-  const ctx = parseContext(request.ctx);
-  if (kind === 'memo' && ctx === undefined) {
+  if (kind === 'memo' && ctx.projectRoot === undefined) {
     return Promise.resolve(invalidRequest('KB daemon read request requires project context.'));
   }
   try {
@@ -368,6 +443,13 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
     try {
       const args = parseRecord(request.args);
       const ctx = parseContext(request.ctx);
+      if (ctx === undefined) {
+        return invalidRequest('KB daemon read request requires principal context.');
+      }
+      const authorizationError = authorizeDaemonRequest(ctx, request.method, KB_DAEMON_READ_CAPABILITIES[request.method]);
+      if (authorizationError !== null) {
+        return authorizationError;
+      }
 
       switch (request.method) {
         case 'readSearch': {
@@ -388,17 +470,17 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
             return diagnoseKnowledgeBase(host);
           }, markFailure);
         case 'readNote':
-          return readTyped(state, 'note', request);
+          return readTyped(state, 'note', request, ctx);
         case 'readSource':
-          return readTyped(state, 'source', request);
+          return readTyped(state, 'source', request, ctx);
         case 'readCommunity':
-          return readTyped(state, 'community', request);
+          return readTyped(state, 'community', request, ctx);
         case 'readWiki':
-          return readTyped(state, 'wiki', request);
+          return readTyped(state, 'wiki', request, ctx);
         case 'readMemo':
-          return readTyped(state, 'memo', request);
+          return readTyped(state, 'memo', request, ctx);
         case 'readPrinciple':
-          return readTyped(state, 'principle', request);
+          return readTyped(state, 'principle', request, ctx);
         case 'listSources':
           return run(() => {
             const { queryContext } = createContext(state, ctx);
@@ -412,14 +494,15 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
             return listKnowledgeBaseWikis(host);
           }, markFailure);
         case 'listMemos': {
-          if (ctx === undefined) {
+          const projectRoot = ctx.projectRoot;
+          if (projectRoot === undefined) {
             return invalidRequest('KB daemon read request requires project context.');
           }
           return run(() => {
             const { runtime } = createContext(state, ctx);
             return listKnowledgeBaseMemos(
               runtime.storage,
-              runtime.paths.projectData(ctx.projectRoot),
+              runtime.paths.projectData(projectRoot),
               parseMemoListArgs(args),
             );
           }, markFailure);
@@ -476,6 +559,17 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
     try {
       const args = parseRecord(request.args);
       const ctx = parseContext(request.ctx);
+      if (ctx === undefined) {
+        return invalidRequest('KB daemon mutation request requires principal context.');
+      }
+      const authorizationError = authorizeDaemonRequest(
+        ctx,
+        request.method,
+        KB_DAEMON_MUTATION_CAPABILITIES[request.method],
+      );
+      if (authorizationError !== null) {
+        return authorizationError;
+      }
 
       switch (request.method) {
         case 'createMemo':

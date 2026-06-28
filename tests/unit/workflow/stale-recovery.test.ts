@@ -4,12 +4,13 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { LaunchedAtom, WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import { recoverStaleAtom } from '#src/workflow/stale-recovery.js';
 import type { AwaitStepState } from '#src/workflow/wait.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-workflow-project',
   pluginRoot: '/tmp/coral-workflow-plugin',
   coralEnv: {},
-  authority: 'admin',
+  principal: testProjectPrincipal('/tmp/coral-workflow-project'),
 };
 
 function atom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
