@@ -11,6 +11,9 @@ export interface CoordinatorPaths {
   infoFile: string;
   startupErrorFile: string;
   startupDiagnosticFile: string;
+  /** Run-dir projection of agent-facing tools installed via /equip, read by the
+   *  session-start hook to advertise them in the injected session context. */
+  equippedToolsFile: string;
 }
 
 export interface CoordinatorPathOptions {
@@ -48,5 +51,6 @@ export function coordinatorPaths(
     infoFile: join(runDir, 'coordinator.json'),
     startupErrorFile: join(runDir, 'startup-error.json'),
     startupDiagnosticFile: join(runDir, 'startup-diagnostic.json'),
+    equippedToolsFile: join(runDir, 'equipped-tools.json'),
   };
 }

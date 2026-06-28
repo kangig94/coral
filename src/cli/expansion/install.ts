@@ -2,6 +2,7 @@ import { rmSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { BUNDLED_ENGINES } from '../../expansion/bundled.js';
+import { writeEquippedToolsSnapshot } from '../../expansion/equipped-tools.js';
 import { INSTALL_ONLY_PACKAGES } from '../../expansion/install-only.js';
 import { createExpansionManifestCatalog } from '../../expansion/manifest/catalog.js';
 import { parseEngineManifest } from '../../expansion/manifest/schema.js';
@@ -116,7 +117,9 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
       update: opts.update,
     }),
   );
-  return applyPostInstallCatalogActions(result, runtime, name);
+  const finalized = await applyPostInstallCatalogActions(result, runtime, name);
+  writeEquippedToolsSnapshot(runtime);
+  return finalized;
 }
 
 export async function removeInstallArtifacts(runtime: Runtime, name: string): Promise<void> {
@@ -129,13 +132,16 @@ export async function uninstallExpansion(name: string, opts: UninstallExpansionO
     return toInstallError('unknown_expansion', name);
   }
 
-  return installResponseSchema.parse(
+  const runtime = resolveRuntime(opts.runtime);
+  const result = installResponseSchema.parse(
     await pkg.installer.uninstall({
       name,
       version: pkg.version,
-      runtime: resolveRuntime(opts.runtime),
+      runtime,
       logger: opts.logger,
       lockTimeoutMs: opts.lockTimeoutMs,
     }),
   );
+  writeEquippedToolsSnapshot(runtime);
+  return result;
 }

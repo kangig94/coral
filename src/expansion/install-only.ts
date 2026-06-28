@@ -18,6 +18,8 @@ export const INSTALL_ONLY_PACKAGES: readonly InstallOnlyManifest[] = [
     version: 'latest',
     description:
       'Codebase Memory MCP — indexes your code into a graph for AI navigation; its install script installs the codebase-memory-mcp binary (with graph UI) and registers it as an MCP server (agent restart required to activate)',
+    agentSummary:
+      'indexes this codebase into a queryable graph (symbols, calls, data flow) exposed as MCP tools (search_graph, trace_path, get_code_snippet, search_code, get_architecture) — reach for it first on code-discovery questions before manual grep/read',
     installer: createShellInstaller({
       binaryPath: (binDir) => join(binDir, CODEBASE_MEMORY_BINARY),
       buildInstallCommand: (binDir) =>

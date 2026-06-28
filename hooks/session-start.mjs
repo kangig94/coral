@@ -11,6 +11,7 @@ import {
   exitIfChildProcess,
   exitIfWrongFlavor,
   isValidSessionId,
+  readEquippedToolsSnapshot,
   readStdin,
   resolveKbRoot,
   resolveProjectSource,
@@ -98,6 +99,7 @@ try {
     sessionId,
     asOwner: true,
     kbEnabled,
+    equippedTools: readEquippedToolsSnapshot(),
   });
 
   const aiAgent = process.env.AI_AGENT ?? '';

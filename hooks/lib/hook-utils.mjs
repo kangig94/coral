@@ -143,6 +143,25 @@ export function coralStateRoot() {
   return slot ? join(root, 'by-config', slot) : root;
 }
 
+// Read the equipped-tools snapshot the daemon writes (src coordinatorPaths
+// `equippedToolsFile`: <stateRoot>/<run|run-dev>/equipped-tools.json). Returns
+// the well-formed { id, summary } entries, or [] on a missing/malformed file —
+// fail open so a session never blocks on this advisory surface.
+export function readEquippedToolsSnapshot() {
+  try {
+    const runDir = join(coralStateRoot(), buildFlavor() === 'dev' ? 'run-dev' : 'run');
+    const parsed = JSON.parse(readFileSync(join(runDir, 'equipped-tools.json'), 'utf8'));
+    // Contract lives in src/expansion/equipped-tools.ts as EQUIPPED_TOOLS_SNAPSHOT_VERSION.
+    if (parsed?.version !== 1) return [];
+    if (!Array.isArray(parsed.tools)) return [];
+    return parsed.tools
+      .filter((tool) => tool && typeof tool.id === 'string' && tool.id && typeof tool.summary === 'string' && tool.summary)
+      .map((tool) => ({ id: tool.id, summary: tool.summary }));
+  } catch {
+    return [];
+  }
+}
+
 export function resolveKbRoot() {
   const custom = process.env.CORAL_KB_PATH;
   if (custom) return custom.startsWith('~') ? join(homedir(), custom.slice(1)) : custom;

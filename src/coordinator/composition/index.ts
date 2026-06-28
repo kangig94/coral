@@ -1004,6 +1004,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,
     writeBackendInfoFn: defaults.writeBackendInfoFn,
+    writeEquippedToolsSnapshotFn: defaults.writeEquippedToolsSnapshotFn,
     removeBackendInfoIfOwnerFn: defaults.removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn: defaults.cleanupStaleJobsFn,
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,

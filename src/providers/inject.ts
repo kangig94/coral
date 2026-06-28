@@ -61,6 +61,9 @@ export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const rendered = base
     .replaceAll('{{CORAL_KB}}', kbRoot)
     .replaceAll('{{CORAL_CLI}}', cliPath)
+    // Equipped-tools advertising is a main-session-only surface (session-start
+    // hook). Provider-launched Claude jobs strip the placeholder.
+    .replaceAll('{{EQUIPPED_TOOLS}}', '')
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
     .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}');

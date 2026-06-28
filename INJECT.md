@@ -85,7 +85,7 @@ The correct response to "I'm almost done and something broke" is not speed — i
 
 # Tools
 
-CLI: `{{CORAL_CLI}}`
+CLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}
 
 <!-- KB_ONLY:BEGIN -->
 # Knowledge Base

@@ -80,6 +80,11 @@ export interface InstallOnlyManifest {
   readonly description: string;
   readonly installer: EngineInstaller;
   readonly onboarding?: readonly OnboardingStep[];
+  /** One-line usage hint surfaced to agents in the session context when this
+   *  package is installed. Unlike {@link description} (catalog/install copy),
+   *  this is written for an already-running agent: what the tool does and when
+   *  to reach for it. Absent for internal artifacts that agents never call. */
+  readonly agentSummary?: string;
 }
 
 export interface EngineManifestProvides {
