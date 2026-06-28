@@ -34,7 +34,10 @@ function stripKbOnly(text) {
 function renderEquippedTools(equippedTools) {
   if (!Array.isArray(equippedTools) || equippedTools.length === 0) return '';
   const lines = equippedTools.map((tool) => `- ${tool.id}: ${tool.summary}`);
-  return `\n\nEquipped tools (installed via /equip) — use these actively when relevant:\n${lines.join('\n')}`;
+  // Bare block — INJECT.md supplies the blank lines around the `{{EQUIPPED_TOOLS}}`
+  // line (it sits on its own line, blank above and below), so the rendered Tools
+  // section reads one blank line per gap.
+  return `Equipped tools (installed via /equip) — use these actively when relevant:\n${lines.join('\n')}`;
 }
 
 export function renderInject({ pluginRoot, projectDir, sessionId, asOwner, kbEnabled = true, equippedTools }) {
