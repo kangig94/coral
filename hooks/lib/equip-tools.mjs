@@ -8,11 +8,14 @@
 // just `equip uninstall`) immediately stops surfacing. Works the same for
 // MCP-server tools and CLI-only tools — presence of the binary is the signal.
 //
-// This catalog mirrors the equip-supported set in `src/expansion/install-only.ts`
-// (hooks are self-contained and must not import from `src/`); keep it in lockstep
-// the same way `coralStateRoot`/`claudeConfigSlot` mirror their `src` originals.
+// This catalog is the agent-facing install-only subset of `/equip` packages —
+// it intentionally excludes bundled artifacts the agent never calls directly
+// (e.g. the Kiwi tokenizer in `src/expansion/install-only.ts`). Hooks are
+// self-contained and must not import from `src/`, so keep it in lockstep with
+// that source the same way `coralStateRoot`/`claudeConfigSlot` mirror their
+// `src` originals.
 
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { buildFlavor, coralStateRoot } from './hook-utils.mjs';
@@ -32,11 +35,21 @@ function engineBinaryPath(id, bin) {
   return join(coralStateRoot(), dataDir, 'engines', id, bin);
 }
 
+// Mirror `src/expansion/shell-installer.ts`: a tool counts as installed only when
+// its binary path is a regular file (a like-named directory is not the tool).
+function isInstalledBinary(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 // Live snapshot of equip-supported tools whose binary is present. Fail-open: any
 // fs error yields [], so a session never blocks on this advisory surface.
 export function resolveEquippedTools() {
   try {
-    return EQUIP_AGENT_TOOLS.filter((tool) => existsSync(engineBinaryPath(tool.id, tool.bin))).map((tool) => ({
+    return EQUIP_AGENT_TOOLS.filter((tool) => isInstalledBinary(engineBinaryPath(tool.id, tool.bin))).map((tool) => ({
       id: tool.id,
       summary: tool.summary,
     }));

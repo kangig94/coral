@@ -1037,8 +1037,9 @@ async function renderCoralLine() {
   try {
     // The bare `/health` ping carries no job counts; the live snapshot
     // (active/queueDepth/liveDiscuss/textProjectionState) lives behind
-    // `?detailed=1`, gated by the boot token — mirror `coral-cli backend status`.
-    const resp = await fetch(`http://127.0.0.1:${info.port}/health?detailed=1`, {
+    // `?detailed=1`, gated by the boot token — mirror `coral-cli backend status`,
+    // including its discovered advertise host (e.g. `::1`), not a hardcoded loopback.
+    const resp = await fetch(`http://${info.host ?? '127.0.0.1'}:${info.port}/health?detailed=1`, {
       headers: { 'X-Coral-Boot-Token': info.bootToken },
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
