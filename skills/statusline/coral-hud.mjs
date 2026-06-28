@@ -1024,7 +1024,7 @@ async function renderCoralLine() {
   let info;
   try {
     info = JSON.parse(readFileSync(backendInfoPath, 'utf-8'));
-    if (!info?.port || !info?.token) return null;
+    if (!info?.port || !info?.bootToken) return null;
   } catch {
     return null;
   }
@@ -1035,8 +1035,11 @@ async function renderCoralLine() {
   }
 
   try {
-    const resp = await fetch(`http://127.0.0.1:${info.port}/health`, {
-      headers: { 'x-coral-backend-token': info.token },
+    // The bare `/health` ping carries no job counts; the live snapshot
+    // (active/queueDepth/liveDiscuss/textProjectionState) lives behind
+    // `?detailed=1`, gated by the boot token — mirror `coral-cli backend status`.
+    const resp = await fetch(`http://127.0.0.1:${info.port}/health?detailed=1`, {
+      headers: { 'X-Coral-Boot-Token': info.bootToken },
       signal: AbortSignal.timeout(CORAL_HEALTH_TIMEOUT_MS),
     });
     if (!resp.ok) {
