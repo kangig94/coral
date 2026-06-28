@@ -2369,11 +2369,21 @@ describe('execution backend server', () => {
       return { deps, runtimeState, executionService };
     }
 
-    async function startHttpHandlerServer(deps: any, createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler) {
+    async function startHttpHandlerServer(
+      deps: any,
+      createHttpHandlerFn?: typeof HttpHandlerMod.createHttpHandler,
+      options: { remoteAddress?: string | null } = {},
+    ) {
       const importedHandlerModule = await import('#src/transport/http/handler.js');
       const importedCreateHttpHandler = createHttpHandlerFn ?? importedHandlerModule.createHttpHandler;
       const handler = importedCreateHttpHandler(deps);
       const server = createServer((req, res) => {
+        if (Object.prototype.hasOwnProperty.call(options, 'remoteAddress')) {
+          Object.defineProperty(req.socket, 'remoteAddress', {
+            configurable: true,
+            value: options.remoteAddress ?? undefined,
+          });
+        }
         void handler(req, res).catch(() => {
           if (!res.headersSent) {
             importedHandlerModule.sendJson(res, 500, {
@@ -3824,6 +3834,78 @@ describe('execution backend server', () => {
       });
     });
 
+    it('rejects remote POST /sessions requests that bypass provider permissions', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hello',
+              projectRoot: '/tmp/project',
+              bypassPermissions: true,
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`bypassPermissions` is only allowed from loopback HTTP clients',
+            detail: { option: 'bypassPermissions' },
+          });
+          expect(fakeService.start).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects permission bypass requests when the peer address is unavailable', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService({
+          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+        });
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: null });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/sessions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              provider: 'codex',
+              prompt: 'hello',
+              projectRoot: '/tmp/project',
+              bypassPermissions: true,
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`bypassPermissions` is only allowed from loopback HTTP clients',
+            detail: { option: 'bypassPermissions' },
+          });
+          expect(fakeService.start).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
     it('accepts POST /sessions with namespaced coral agents', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
@@ -3995,6 +4077,41 @@ describe('execution backend server', () => {
             }),
             '/tmp/workflow',
           );
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
+    it('rejects remote POST /workflow requests that forward caller network env', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService();
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/workflow`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              expression: 'architect',
+              startPrompt: 'Begin',
+              provider: 'codex',
+              projectRoot: '/tmp/project',
+              networkEnv: { HTTPS_PROXY: 'http://proxy.example:8443' },
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`networkEnv` forwarding is only allowed from loopback HTTP clients',
+            detail: { option: 'networkEnv' },
+          });
+          expect(fakeService.executeWorkflow).not.toHaveBeenCalled();
         } finally {
           await _closeHttpServer(started.server);
         }
@@ -5491,24 +5608,24 @@ describe('execution backend server', () => {
     const response = await fetch(`${backend.baseUrl}/health`);
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
     expect(await response.json()).toEqual({ code: 'unauthorized', message: 'Unauthorized' });
   });
 
-  it('returns CORS headers for preflight requests without requiring a token', async () => {
+  it('returns CORS headers for loopback preflight requests without requiring a token', async () => {
     const backend = await startBackendServer();
 
     const response = await fetch(`${backend.baseUrl}/health`, {
       method: 'OPTIONS',
       headers: {
-        Origin: 'https://example.test',
+        Origin: 'http://127.0.0.1:8787',
         'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
         'Access-Control-Request-Private-Network': 'true',
       },
     });
 
     expect(response.status).toBe(204);
-    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBe('http://127.0.0.1:8787');
     expect(commaHeaderTokens(response.headers.get('Access-Control-Allow-Headers'))).toEqual([
       'content-type',
       'x-coral-backend-token',
@@ -5522,6 +5639,24 @@ describe('execution backend server', () => {
       'put',
     ]);
     expect(response.headers.get('Access-Control-Allow-Private-Network')).toBeNull();
+  });
+
+  it('does not grant CORS to non-loopback preflight origins', async () => {
+    const backend = await startBackendServer();
+
+    const response = await fetch(`${backend.baseUrl}/health`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://example.test',
+        'Access-Control-Request-Headers': 'X-Coral-Backend-Token, Content-Type',
+      },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(response.headers.get('Access-Control-Allow-Headers')).toBeNull();
+    expect(response.headers.get('Access-Control-Allow-Methods')).toBeNull();
+    expect(response.headers.get('Vary')).toBe('Origin');
   });
 
   describe('shutdown policy', () => {

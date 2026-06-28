@@ -52,8 +52,14 @@ const BODY_READ_CAPACITY_RESPONSE = {
   code: 'too_many_request_bodies',
   message: 'Too many concurrent request bodies',
 };
+const CORS_ALLOWED_HEADERS = 'X-Coral-Backend-Token, X-Coral-Shutdown-Token, Content-Type';
+const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
 const KB_DAEMON_HEALTH_PROBE_TTL_MS = 5_000;
 const REQUEST_PARSE_FAILED = Symbol('request_parse_failed');
+type RestrictedRemoteTransportOption = {
+  option: 'bypassPermissions' | 'networkEnv';
+  message: string;
+};
 const eventStreamQuerySchema = z
   .object({
     projectRoot: z.string().min(1, 'Project root is required').optional(),
@@ -296,10 +302,126 @@ function sendValidationFailure(res: ServerResponse, error: ZodError): void {
   sendJson(res, response.statusCode, response.body);
 }
 
-function setCorsHeaders(_req: IncomingMessage, res: ServerResponse): void {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'X-Coral-Backend-Token, X-Coral-Shutdown-Token, Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+function isLoopbackIpv4Literal(value: string): boolean {
+  const octets = value.split('.');
+  if (octets.length !== 4 || !octets.every((part) => /^\d+$/.test(part))) {
+    return false;
+  }
+  const [first, ...rest] = octets.map((part) => Number(part));
+  return first === 127 && rest.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255);
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  if (normalized === 'localhost' || normalized === '::1' || normalized === '[::1]') {
+    return true;
+  }
+
+  return isLoopbackIpv4Literal(normalized);
+}
+
+function isLoopbackRemoteAddress(remoteAddress: string | undefined): boolean {
+  if (remoteAddress === undefined) {
+    return false;
+  }
+
+  const normalized = remoteAddress.trim().toLowerCase();
+  if (normalized === '::1' || normalized === '0:0:0:0:0:0:0:1') {
+    return true;
+  }
+  if (normalized.startsWith('::ffff:')) {
+    return isLoopbackIpv4Literal(normalized.slice('::ffff:'.length));
+  }
+  return isLoopbackIpv4Literal(normalized);
+}
+
+function resolveAllowedCorsOrigin(origin: string): string | null {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return isLoopbackHostname(parsed.hostname) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string') {
+    return;
+  }
+
+  res.setHeader('Vary', 'Origin');
+  const allowedOrigin = resolveAllowedCorsOrigin(origin);
+  if (allowedOrigin === null) {
+    return;
+  }
+
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Access-Control-Allow-Headers', CORS_ALLOWED_HEADERS);
+  res.setHeader('Access-Control-Allow-Methods', CORS_ALLOWED_METHODS);
+}
+
+function findRestrictedRemoteTransportOption(request: unknown): RestrictedRemoteTransportOption | null {
+  if (!isRecord(request)) {
+    return null;
+  }
+  if (request.bypassPermissions === true) {
+    return {
+      option: 'bypassPermissions',
+      message: '`bypassPermissions` is only allowed from loopback HTTP clients',
+    };
+  }
+  if (Object.prototype.hasOwnProperty.call(request, 'networkEnv') && request.networkEnv !== undefined) {
+    return {
+      option: 'networkEnv',
+      message: '`networkEnv` forwarding is only allowed from loopback HTTP clients',
+    };
+  }
+  return null;
+}
+
+function rejectRestrictedRemoteTransportOption(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpHandlerPorts,
+  request: unknown,
+): boolean {
+  const socket = req.socket as IncomingMessage['socket'] | undefined;
+  if (socket === undefined) {
+    return false;
+  }
+
+  const remoteAddress = socket.remoteAddress;
+  if (isLoopbackRemoteAddress(remoteAddress)) {
+    return false;
+  }
+
+  const blocked = findRestrictedRemoteTransportOption(request);
+  if (blocked === null) {
+    return false;
+  }
+
+  writeAuditEvent(
+    'remote_transport_option_blocked',
+    {
+      transport: 'http',
+      option: blocked.option,
+      method: req.method,
+      path: req.url,
+      instanceId: deps.identity.instanceId,
+      remoteAddress,
+    },
+    'warn',
+  );
+  sendJson(res, 403, {
+    code: 'remote_transport_option_forbidden',
+    message: blocked.message,
+    detail: { option: blocked.option },
+  });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,9 +554,14 @@ function sendCatalogResponse(res: ServerResponse, result: { statusCode?: number;
 async function handleCatalogUnaryRoute(
   spec: RpcMethodSpec<unknown, unknown>,
   request: unknown,
+  req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
 ): Promise<void> {
+  if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
+    return;
+  }
+
   // interim mapping; future role-auth derives authority from the authenticated principal, not the transport.
   const result = await executeCatalogRequest(spec, request, deps, 'user');
   if (result.kind !== 'unary') {
@@ -451,6 +578,10 @@ async function handleJobsWaitSubscription(
   deps: HttpHandlerPorts,
   request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
 ): Promise<void> {
+  if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
+    return;
+  }
+
   if (request.cursor !== undefined) {
     sendJson(res, 400, { code: 'invalid_request', message: 'Request body cursor is not supported for /jobs/wait' });
     return;
@@ -601,7 +732,7 @@ export function httpAdapter(
         return;
       }
 
-      await handleCatalogUnaryRoute(spec, parsed, res, rpcPorts);
+      await handleCatalogUnaryRoute(spec, parsed, req, res, rpcPorts);
     },
   };
 }
