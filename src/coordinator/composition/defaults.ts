@@ -3,7 +3,6 @@ declare const __PLUGIN_ROOT__: string;
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { removeBackendInfoIfOwner, writeBackendInfo } from '../../infra/backend-discovery.js';
-import { writeEquippedToolsSnapshot } from '../../expansion/equipped-tools.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { LaunchCoordinator } from '../live/admission.js';
 import { IdleTimer, resolveIdleTimeoutMs } from '../live/idle.js';
@@ -37,7 +36,6 @@ type BackendEagerDefaults = {
   readonly createIdleTimer: NonNullable<CoordinatorCoreOptions['createIdleTimer']>;
   readonly createExecutionService: NonNullable<CoordinatorCoreOptions['createExecutionService']>;
   readonly writeBackendInfoFn: NonNullable<CoordinatorCoreOptions['writeBackendInfoFn']>;
-  readonly writeEquippedToolsSnapshotFn: NonNullable<CoordinatorCoreOptions['writeEquippedToolsSnapshotFn']>;
   readonly removeBackendInfoIfOwnerFn: NonNullable<CoordinatorCoreOptions['removeBackendInfoIfOwnerFn']>;
   readonly closeServerFn: NonNullable<CoordinatorCoreOptions['closeServerFn']>;
   readonly registerBuiltInProvidersFn: NonNullable<CoordinatorCoreOptions['registerBuiltInProvidersFn']>;
@@ -93,8 +91,6 @@ export function resolveCoordinatorDefaults(
   const fetchFn: FetchFn = options.fetchFn ?? ((url, init) => globalThis.fetch(url, init));
   const discoveryRuntime = { storage: runtime.storage, env: runtime.env, paths: runtime.paths };
   const writeBackendInfoFn = options.writeBackendInfoFn ?? ((info) => writeBackendInfo(info, discoveryRuntime));
-  const writeEquippedToolsSnapshotFn =
-    options.writeEquippedToolsSnapshotFn ?? (() => writeEquippedToolsSnapshot(runtime));
   const removeBackendInfoIfOwnerFn =
     options.removeBackendInfoIfOwnerFn ?? ((instanceId) => removeBackendInfoIfOwner(instanceId, discoveryRuntime));
   const closeServerFn = options.closeServerFn ?? defaultCloseServer;
@@ -114,7 +110,6 @@ export function resolveCoordinatorDefaults(
     createIdleTimer,
     createExecutionService,
     writeBackendInfoFn,
-    writeEquippedToolsSnapshotFn,
     removeBackendInfoIfOwnerFn,
     closeServerFn,
     registerBuiltInProvidersFn,

@@ -63,7 +63,6 @@ describe('composeCoralPaths', () => {
       infoFile: join('/tmp/coral-root', 'run', 'coordinator.json'),
       startupErrorFile: join('/tmp/coral-root', 'run', 'startup-error.json'),
       startupDiagnosticFile: join('/tmp/coral-root', 'run', 'startup-diagnostic.json'),
-      equippedToolsFile: join('/tmp/coral-root', 'run', 'equipped-tools.json'),
     });
   });
 

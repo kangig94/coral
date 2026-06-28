@@ -352,10 +352,6 @@ export type LifecycleDeps = {
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly writeBackendInfoFn: (info: BackendInfo) => void;
-  // Advisory run-dir projection refresh; unlike discovery it does not gate
-  // liveness, so the contract tolerates its absence (production composition
-  // always supplies it via defaults).
-  readonly writeEquippedToolsSnapshotFn?: () => void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
@@ -424,7 +420,6 @@ async function runLifecycleStartup({
     knownDiscussSources,
     getDiscussContext,
     writeBackendInfoFn,
-    writeEquippedToolsSnapshotFn,
     removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn,
     createKbHealthComponentFn,
@@ -586,10 +581,6 @@ async function runLifecycleStartup({
       instanceId,
       startedAt,
     });
-    // Refresh the equipped-tools run-dir projection the session-start hook reads.
-    // Co-located with the discovery write: both are run-dir artifacts the daemon
-    // owns and rewrites at boot. Self-contained fail-safe — never gates liveness.
-    writeEquippedToolsSnapshotFn?.();
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
 

@@ -60,7 +60,6 @@ export type CoordinatorCoreOptions = {
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   writeBackendInfoFn?: (info: BackendInfo) => void;
-  writeEquippedToolsSnapshotFn?: () => void;
   removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void;
