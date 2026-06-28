@@ -140,6 +140,15 @@ describe('resolveInjectMd', () => {
     expect(result).toContain('source: {{PROJECT_SOURCE}}');
   });
 
+  it('strips the {{EQUIPPED_TOOLS}} placeholder (provider jobs never advertise equipped tools)', async () => {
+    mockInjectMd = 'CLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\nafter';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    expect(result).not.toContain('{{EQUIPPED_TOOLS}}');
+    expect(result).toContain('after');
+  });
+
   it('strips the KB_ONLY block when kbEnabled is false', async () => {
     mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
     const resolveInjectMd = await loadResolve();

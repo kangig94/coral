@@ -15,6 +15,7 @@ import {
   resolveKbRoot,
   resolveProjectSource,
 } from './lib/hook-utils.mjs';
+import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
 import { readProjectScopedWakeUp } from './lib/wake-up-read.mjs';
 import { isKbEnabled } from './lib/kb-toggle.mjs';
@@ -98,6 +99,7 @@ try {
     sessionId,
     asOwner: true,
     kbEnabled,
+    equippedTools: resolveEquippedTools(),
   });
 
   const aiAgent = process.env.AI_AGENT ?? '';

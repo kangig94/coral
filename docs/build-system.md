@@ -91,7 +91,7 @@ When `--release` is passed, it additionally copies all artifacts from `build/` t
 | `platform` | `node` | Node.js runtime target |
 | `target` | `node22` | Matches the supported runtime floor |
 | `format` | `cjs` | Bundles are committed as `.cjs` |
-| `external` | `['node:*', 'better-sqlite3', '@lydell/node-pty']` | Keep Node built-ins and native modules external |
+| `external` | `['node:*', '@lydell/node-pty']` | Keep Node built-ins and native modules external (the store uses the built-in `node:sqlite`, so no `better-sqlite3`) |
 | `minify` | `true` | Smaller committed bundles |
 | `banner` | `var __PLUGIN_ROOT__=...` | Runtime plugin-root discovery |
 | `define.__VERSION__` | `package.json` version | Shared build-time version injection |
