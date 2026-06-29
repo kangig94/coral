@@ -292,7 +292,7 @@ export async function prepareCorpusProjectionInput(
   signal: AbortSignal,
   deps: AuthorityApplyDeps,
 ): Promise<KbProjectionInput> {
-  return deps.corpusProjectionReader.prepareCurrentProjectionInput({ signal });
+  return deps.corpusProjectionReader.prepareCurrentProjectionInput({ signal, ensureFreshness: false });
 }
 
 export function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {

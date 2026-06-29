@@ -215,8 +215,10 @@ class KbRuntimeImpl implements KbRuntime {
     };
     this.corpusProjectionReader = {
       resolveCurrentIndex: () => this.readIndexOrEmpty(),
-      prepareCurrentProjectionInput: async ({ signal, ...options } = {}) => {
-        await this.ensureCorpusFreshness({ wait: true, signal });
+      prepareCurrentProjectionInput: async ({ signal, ensureFreshness = true, ...options } = {}) => {
+        if (ensureFreshness) {
+          await this.ensureCorpusFreshness({ wait: true, signal });
+        }
         return createKbProjectionInput(this, options);
       },
     };

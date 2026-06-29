@@ -11,7 +11,7 @@ import { buildCommunityIndexEntry, buildNoteIndexEntry, buildSourceIndexEntry } 
 import { communityEntryId, noteEntryId, sourceEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbCorpusSnapshot, KbEngineRuntimeBase, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
-import type { KbProjectionInput } from '#src/kb/projection-input-contract.js';
+import type { KbProjectionInput, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -619,7 +619,7 @@ describe('orama AC10 incremental projection', () => {
     const inputV3 = createKbProjectionInput(kb);
 
     const prepareCurrentProjectionInput = vi
-      .fn<(options?: { readonly signal?: AbortSignal }) => Promise<KbProjectionInput>>()
+      .fn<(options?: PrepareKbProjectionInputOptions) => Promise<KbProjectionInput>>()
       .mockResolvedValueOnce(inputV2)
       .mockResolvedValueOnce(inputV3);
     let currentSnapshotReads = 0;
@@ -663,6 +663,11 @@ describe('orama AC10 incremental projection', () => {
     });
 
     expect(prepareCurrentProjectionInput).toHaveBeenCalledTimes(2);
+    expect(prepareCurrentProjectionInput.mock.calls.map(([options]) => options?.ensureFreshness)).toEqual([
+      false,
+      false,
+    ]);
+    expect(prepareCurrentProjectionInput.mock.calls.map(([options]) => options?.signal).every(Boolean)).toBe(true);
     // AC7 uses one full index load for the delta base, then a metadata-only
     // pre-persist guard so stale writers cannot clobber a newer artifact.
     expect(loadSpy).toHaveBeenCalledTimes(FULL_INDEX_LOADS_FOR_DELTA_BASE);
