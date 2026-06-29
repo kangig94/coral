@@ -516,8 +516,6 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   return {
     async withKb(fn) {
       const initialized = await init();
-      initialized.kbRuntime.kb.invalidateKbCache();
-      await initialized.kbRuntime.kb.ensureCorpusFreshness({ wait: true });
       return fn(initialized);
     },
     async createSource(args, ctx) {

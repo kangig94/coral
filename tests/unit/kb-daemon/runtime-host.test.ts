@@ -112,6 +112,51 @@ describe('KB daemon runtime host', () => {
     }
   });
 
+  it('does not block ordinary KB mutations on a preflight corpus rebuild', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+      db,
+    });
+
+    try {
+      let ensureFreshness: ReturnType<typeof vi.spyOn> | undefined;
+      let invalidateCache: ReturnType<typeof vi.spyOn> | undefined;
+      await host.withKb(({ kbRuntime }) => {
+        ensureFreshness = vi
+          .spyOn(kbRuntime.kb, 'ensureCorpusFreshness')
+          .mockRejectedValue(new Error('unexpected preflight corpus rebuild'));
+        invalidateCache = vi.spyOn(kbRuntime.kb, 'invalidateKbCache');
+      });
+
+      let invoked = false;
+      await expect(
+        host.withKb(() => {
+          invoked = true;
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(invoked).toBe(true);
+      expect(ensureFreshness).not.toHaveBeenCalled();
+      expect(invalidateCache).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('waits for the daemon Orama corpus consumer before completing source imports', async () => {
     const root = createTempRoot();
     vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
