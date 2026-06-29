@@ -85,7 +85,7 @@ function buildEscalationHarness(opts: {
     bindCount: () => bindCount,
     options: {
       socketPath: '/tmp/coral.sock',
-      desired: { bundleHash: 'new', flavor: 'prod' as const, namespace: 'ns' },
+      desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod' as const, namespace: 'ns' },
       bindAttempt,
       runtime,
       readVerifiedIncumbentFromDiscovery: () => opts.identity,

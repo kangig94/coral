@@ -257,6 +257,7 @@ function mergeDiscoveryWithHealth(info: VerifiedBackendInfo, health: RawCoordina
 
 function isCompatibleHealth(health: RawCoordinatorHealth, desired: DesiredCoordinator): boolean {
   return (
+    health.version === desired.version &&
     health.bundleHash === desired.bundleHash &&
     health.flavor === desired.flavor &&
     health.namespace === desired.namespace
@@ -554,7 +555,7 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
     flavor,
     namespace,
   };
-  const desiredIdentity: DesiredIncumbentIdentity = { bundleHash, flavor, namespace };
+  const desiredIdentity: DesiredIncumbentIdentity = { version: desired.version, bundleHash, flavor, namespace };
   const backendBin = resolveBackendBin(root);
 
   const health = await readRawCoordinatorHealth(createIpcClient(paths.socketPath, ipcTime));
@@ -577,7 +578,7 @@ export async function ensure(pluginRoot?: string, timePort?: TimePort): Promise<
     // still answers. Wait for the socket to be released, then spawn fresh.
     await waitForSocketRelease(paths.socketPath, HANDOFF_DRAIN_TIMEOUT_MS, ipcTime);
   } else if (health && !isCompatibleHealth(health, desired)) {
-    // Mismatched bundle/flavor/namespace — same shutdown path as daemon-side.
+    // Mismatched version/bundle/flavor/namespace — same shutdown path as daemon-side.
     try {
       const info = readDiscoverySnapshot(paths);
       const shutdownCredential = info?.bootToken;

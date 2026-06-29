@@ -244,6 +244,7 @@ describe('incumbent handoff reset authority', () => {
           id: request.id,
           result: {
             bundleHash: 'old-bundle',
+            version: '0.8.7',
             flavor: 'prod',
             namespace: 'ns',
             status: 'ok',

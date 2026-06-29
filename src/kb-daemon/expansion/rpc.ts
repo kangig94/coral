@@ -36,10 +36,7 @@ function toExpansionView(view: ReturnType<ExpansionLifecycleService['info']>): E
 
 export function createExpansionRpc(lifecycleService: ExpansionLifecycleService): ExpansionRequestPort {
   return {
-    equipExpansion: async (
-      request: EquipExpansionRequest,
-      _principal: Principal,
-    ): Promise<EquipExpansionResult> => {
+    equipExpansion: async (request: EquipExpansionRequest, _principal: Principal): Promise<EquipExpansionResult> => {
       if (lifecycleService.isActive(request.name)) {
         return {
           status: 'already_equipped',
@@ -67,8 +64,7 @@ export function createExpansionRpc(lifecycleService: ExpansionLifecycleService):
     removeExpansionCatalog: async (
       request: RemoveExpansionCatalogRequest,
       _principal: Principal,
-    ): Promise<RemoveExpansionCatalogResult> =>
-      lifecycleService.removeExpansionCatalog(request.name),
+    ): Promise<RemoveExpansionCatalogResult> => lifecycleService.removeExpansionCatalog(request.name),
     listExpansion: async (_request: ListExpansionRequest, _principal: Principal): Promise<ListExpansionResult> => ({
       expansions: lifecycleService.list().map(toExpansionView),
     }),

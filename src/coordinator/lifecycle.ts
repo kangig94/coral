@@ -456,7 +456,7 @@ async function runLifecycleStartup({
     if (ipcServer && listenIpcFn) {
       const handoff = await bindWithHandoff({
         socketPath,
-        desired: { bundleHash, flavor, namespace },
+        desired: { version, bundleHash, flavor, namespace },
         bindAttempt: async () => {
           try {
             await listenIpcFn(ipcServer);
@@ -489,6 +489,7 @@ async function runLifecycleStartup({
             lastHealth &&
             (lastHealth.flavor !== info.flavor ||
               lastHealth.namespace !== info.namespace ||
+              (lastHealth.version !== undefined && lastHealth.version !== info.version) ||
               lastHealth.bundleHash !== info.bundleHash ||
               (lastHealth.pid !== undefined && lastHealth.pid !== info.pid) ||
               (lastHealth.processStartedAt !== undefined && lastHealth.processStartedAt !== info.processStartedAt))

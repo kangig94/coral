@@ -91,7 +91,6 @@ type KbDaemonWriteRuntimeState = {
   abortRegistry: AbortRegistry;
 };
 
-
 const DEFAULT_DAEMON_CORPUS_READINESS_TIMEOUT_MS = 90_000;
 const DEFAULT_DAEMON_JOB_DRAIN_TIMEOUT_MS = 5_000;
 const DAEMON_JOB_DRAIN_POLL_MS = 25;

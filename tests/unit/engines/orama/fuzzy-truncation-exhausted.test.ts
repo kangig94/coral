@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  ORAMA_FUZZY_DOCUMENT_SCAN_LIMIT,
-  collectFuzzyOramaSearchCandidates,
-} from '#src/engines/orama/ranking.js';
+import { ORAMA_FUZZY_DOCUMENT_SCAN_LIMIT, collectFuzzyOramaSearchCandidates } from '#src/engines/orama/ranking.js';
 import type { KbOramaDb } from '#src/engines/orama/schema.js';
 import type { OramaSearchQueryAnalysis } from '#src/engines/orama/search-channels.js';
 

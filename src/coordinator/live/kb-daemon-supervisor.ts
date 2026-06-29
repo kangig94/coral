@@ -639,9 +639,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       const initialError = errorMessage(error);
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'read request recovery');
       if (recovered.phase !== 'online') {
-        return kbUnavailable(
-          `KB daemon read request failed: ${initialError}; recovery ended in ${recovered.phase}.`,
-        );
+        return kbUnavailable(`KB daemon read request failed: ${initialError}; recovery ended in ${recovered.phase}.`);
       }
       try {
         return await sendKbReadRequest(request);
@@ -687,9 +685,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     try {
       return await sendExpansionRpcRequest(request);
     } catch (error: unknown) {
-      return kbUnavailable(
-        `KB daemon expansion request failed: ${errorMessage(error)}; request was not retried.`,
-      );
+      return kbUnavailable(`KB daemon expansion request failed: ${errorMessage(error)}; request was not retried.`);
     }
   };
 

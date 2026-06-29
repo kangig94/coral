@@ -43,7 +43,7 @@ export class HandoffEscalationError extends Error {
 
 /**
  * Raised when the contender discovers the incumbent already serves the same
- * bundle/flavor/namespace and is therefore not a candidate for replacement.
+ * version/bundle/flavor/namespace and is therefore not a candidate for replacement.
  * Bootstrap translates this into an info-log + `exit 0` (the contender is
  * redundant; the existing daemon stays).
  */
@@ -364,7 +364,7 @@ function verifySignalTarget(
  * Repeatedly attempt socket bind. On 'incumbent' result:
  *   1. open IPC client to incumbent's socket
  *   2. requestIncumbentShutdown() → health + transport.shutdown; if
- *      bundle/flavor/namespace match and the incumbent is not draining,
+ *      version/bundle/flavor/namespace match and the incumbent is not draining,
  *      throw IncumbentMatchesError (we're redundant)
  *   3. poll bind until budget expires
  *   4. on budget expiry, escalate via process signals only after revalidating
