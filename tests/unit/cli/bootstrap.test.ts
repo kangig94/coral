@@ -71,11 +71,7 @@ describe('cli bootstrap', () => {
     const parseAsync = vi
       .fn()
       .mockRejectedValue(
-        new CommanderError(
-          2,
-          'commander.missingMandatoryOptionValue',
-          "error: required option '--jobs <ids>' not specified",
-        ),
+        new CommanderError(2, 'commander.missingArgument', "error: missing required argument 'jobIds'"),
       );
     const program = { parseAsync };
     vi.doMock('#src/cli/program.js', () => ({

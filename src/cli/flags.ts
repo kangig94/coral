@@ -36,7 +36,7 @@ export function parseJobIds(raw: string): string[] {
     }
   }
   if (jobIds.length === 0) {
-    throw new UsageError('--jobs must include at least one job ID');
+    throw new UsageError('jobs must include at least one job ID');
   }
 
   return jobIds;

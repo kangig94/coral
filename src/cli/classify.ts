@@ -6,6 +6,7 @@ export type StaticCommandPath =
   | 'jobs'
   | 'wait jobs'
   | 'abort'
+  | 'abort jobs'
   | 'workflow'
   | 'expansion list'
   | 'expansion equip'
@@ -52,6 +53,7 @@ export const commandClassMap = {
   jobs: 'read',
   'wait jobs': 'subscribe',
   abort: 'mutate',
+  'abort jobs': 'mutate',
   workflow: 'mutate',
   'expansion list': 'read',
   'expansion equip': 'mutate',
@@ -224,6 +226,10 @@ export function assertCommandClassCoverage(program: Command): void {
         problems.push(`Leaf command "${entry.path}" is missing a command-class entry or exemption.`);
       }
 
+      continue;
+    }
+
+    if (entry.resolution.kind === 'class') {
       continue;
     }
 

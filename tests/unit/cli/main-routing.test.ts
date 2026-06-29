@@ -731,7 +731,7 @@ describe('cli main routing', () => {
     expect(stderr).toBe('');
   });
 
-  it('routes abort --jobs through exact pass-through targeting', async () => {
+  it('routes abort jobs through exact pass-through targeting', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -741,7 +741,7 @@ describe('cli main routing', () => {
     };
     mockState.abortJobs.mockResolvedValueOnce(result);
 
-    await program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-1,job-2']);
+    await program.parseAsync(['node', 'coral-cli', 'abort', 'jobs', 'job-1', 'job-2']);
 
     expect(mockState.listJobs).not.toHaveBeenCalled();
     expect(mockState.abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
@@ -828,7 +828,7 @@ describe('cli main routing', () => {
     expect(mockState.abortJobs).not.toHaveBeenCalled();
     expect(stdout).toBe('');
     expect(stderr).toBe(
-      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: '--jobs, --all, --phase, or --provider is required' })}\n`,
+      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: 'abort requires jobs <ids...>, --all, --phase, or --provider' })}\n`,
     );
     expect(process.exitCode).toBe(2);
   });
@@ -878,47 +878,33 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(2);
   });
 
-  it('returns a usage error for abort --jobs combined with --all', async () => {
+  it('does not support the retired abort --jobs form', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
+    program.exitOverride();
 
-    await program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-1', '--all']);
+    await expect(program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-1'])).rejects.toThrow(
+      /unknown option/u,
+    );
 
     expect(mockState.listJobs).not.toHaveBeenCalled();
     expect(mockState.abortJobs).not.toHaveBeenCalled();
-    expect(stdout).toBe('');
-    expect(stderr).toBe(
-      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: '--jobs cannot be used with --all, --phase, or --provider' })}\n`,
-    );
-    expect(process.exitCode).toBe(2);
   });
 
-  it('returns a usage error for abort --jobs combined with --phase', async () => {
+  it.each([
+    ['abort jobs job-1 --all', ['abort', 'jobs', 'job-1', '--all']],
+    ['abort --all jobs job-1', ['abort', '--all', 'jobs', 'job-1']],
+  ])('returns a usage error for %s', async (_label, argv) => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
-    await program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-1', '--phase', 'running']);
+    await program.parseAsync(['node', 'coral-cli', ...argv]);
 
     expect(mockState.listJobs).not.toHaveBeenCalled();
     expect(mockState.abortJobs).not.toHaveBeenCalled();
     expect(stdout).toBe('');
     expect(stderr).toBe(
-      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: '--jobs cannot be used with --all, --phase, or --provider' })}\n`,
-    );
-    expect(process.exitCode).toBe(2);
-  });
-
-  it('returns a usage error for abort --jobs combined with --provider', async () => {
-    const { buildProgram } = await loadMainModule();
-    const program = buildProgram();
-
-    await program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-1', '--provider', 'codex']);
-
-    expect(mockState.listJobs).not.toHaveBeenCalled();
-    expect(mockState.abortJobs).not.toHaveBeenCalled();
-    expect(stdout).toBe('');
-    expect(stderr).toBe(
-      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: '--jobs cannot be used with --all, --phase, or --provider' })}\n`,
+      `${formatErrorEnvelope({ error: true, code: 'invalid_usage', message: 'abort jobs cannot be used with --all, --phase, or --provider' })}\n`,
     );
     expect(process.exitCode).toBe(2);
   });
@@ -954,7 +940,7 @@ describe('cli main routing', () => {
     };
     mockState.abortJobs.mockResolvedValueOnce(result);
 
-    await program.parseAsync(['node', 'coral-cli', 'abort', '--jobs', 'job-live,job-terminal']);
+    await program.parseAsync(['node', 'coral-cli', 'abort', 'jobs', 'job-live', 'job-terminal']);
 
     expect(mockState.listJobs).not.toHaveBeenCalled();
     expect(mockState.abortJobs).toHaveBeenCalledWith(['job-live', 'job-terminal']);
