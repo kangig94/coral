@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  USER_SOURCE_IMPORT_MAX_BYTES,
-  deriveSourceImportReadPolicy,
-} from '#src/kb/ops/source/import.js';
+import { USER_SOURCE_IMPORT_MAX_BYTES, deriveSourceImportReadPolicy } from '#src/kb/ops/source/import.js';
 import type { Capability } from '#src/security/capability.js';
 import type { ResourceBinding } from '#src/security/principal.js';
 import { attenuate } from '#src/security/attenuate.js';
@@ -37,14 +34,18 @@ function operationalSpec(id: OperationalRouteSpec['id']): OperationalRouteSpec {
 
 function expectAllProjectReadPolicy(requires: Capability, requestedBinding: ResourceBinding): void {
   expect(requestedBinding).toEqual({ kind: 'unbound' });
-  expect(authorize(testPrincipal({ subject: 'operator', binding: { kind: 'unbound' } }), requires, requestedBinding))
-    .toEqual({ ok: true });
-  expect(authorize(testPrincipal({ subject: 'system', binding: { kind: 'unbound' } }), requires, requestedBinding))
-    .toEqual({ ok: true });
-  expect(authorize(testPrincipal({ subject: 'agent', binding: { kind: 'unbound' } }), requires, requestedBinding))
-    .toMatchObject({ ok: false, reason: 'resource_unbound' });
-  expect(authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), requires, requestedBinding))
-    .toMatchObject({ ok: false, reason: 'resource_unbound' });
+  expect(
+    authorize(testPrincipal({ subject: 'operator', binding: { kind: 'unbound' } }), requires, requestedBinding),
+  ).toEqual({ ok: true });
+  expect(
+    authorize(testPrincipal({ subject: 'system', binding: { kind: 'unbound' } }), requires, requestedBinding),
+  ).toEqual({ ok: true });
+  expect(
+    authorize(testPrincipal({ subject: 'agent', binding: { kind: 'unbound' } }), requires, requestedBinding),
+  ).toMatchObject({ ok: false, reason: 'resource_unbound' });
+  expect(
+    authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), requires, requestedBinding),
+  ).toMatchObject({ ok: false, reason: 'resource_unbound' });
 }
 
 describe('principal request binding invariants', () => {
@@ -80,8 +81,9 @@ describe('principal request binding invariants', () => {
       spec.requestSchema.parse({ projectRoot: '/workspace/project' }),
     );
     expect(projectBinding).toEqual({ kind: 'project', root: '/workspace/project' });
-    expect(authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), spec.requires, projectBinding))
-      .toEqual({ ok: true });
+    expect(
+      authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), spec.requires, projectBinding),
+    ).toEqual({ ok: true });
   });
 
   it('declares event-stream all-project reads as optional-project bindings with child denial', () => {
@@ -95,8 +97,9 @@ describe('principal request binding invariants', () => {
       filterJobId: null,
     });
     expect(projectBinding).toEqual({ kind: 'project', root: '/workspace/project' });
-    expect(authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), spec.requires, projectBinding))
-      .toEqual({ ok: true });
+    expect(
+      authorize(testProjectPrincipal('/workspace/project', { subject: 'agent' }), spec.requires, projectBinding),
+    ).toEqual({ ok: true });
   });
 
   it('keeps a project-bound child on sandboxed source-import and denies all-project reads', () => {
@@ -114,11 +117,17 @@ describe('principal request binding invariants', () => {
     );
 
     const jobsSpec = rpcSpec('jobs.list');
-    expect(authorize(child, jobsSpec.requires, resolveRequestBinding(jobsSpec.requestBinding, jobsSpec.requestSchema.parse({}))))
-      .toMatchObject({ ok: false, reason: 'resource_unbound' });
+    expect(
+      authorize(
+        child,
+        jobsSpec.requires,
+        resolveRequestBinding(jobsSpec.requestBinding, jobsSpec.requestSchema.parse({})),
+      ),
+    ).toMatchObject({ ok: false, reason: 'resource_unbound' });
 
     const eventsSpec = operationalSpec('http.events.stream');
-    expect(authorize(child, eventsSpec.requires, resolveRequestBinding(eventsSpec.requestBinding, { filterJobId: null })))
-      .toMatchObject({ ok: false, reason: 'resource_unbound' });
+    expect(
+      authorize(child, eventsSpec.requires, resolveRequestBinding(eventsSpec.requestBinding, { filterJobId: null })),
+    ).toMatchObject({ ok: false, reason: 'resource_unbound' });
   });
 });

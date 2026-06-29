@@ -80,6 +80,7 @@ describe('pre-PR running incumbent (R6)', () => {
           id: req.id,
           result: {
             bundleHash: 'old',
+            version: '0.8.7',
             flavor: 'prod',
             namespace: 'ns',
             status: 'ok',
@@ -120,7 +121,7 @@ describe('pre-PR running incumbent (R6)', () => {
 
     const handoffPromise = bindWithHandoff({
       socketPath,
-      desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
+      desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
       bindAttempt: async () => {
         bindCallCount += 1;
         // Bind succeeds only after the incumbent's socket has actually released.
@@ -151,7 +152,7 @@ describe('pre-PR running incumbent (R6)', () => {
     expect(bindCallCount).toBeGreaterThan(1);
   }, 15_000);
 
-  it('HAPPY: same bundle → IncumbentMatchesError (treat as redundant, not handoff)', async () => {
+  it('HAPPY: same version+bundle → IncumbentMatchesError (treat as redundant, not handoff)', async () => {
     const socketPath = makeSocketPath('compat');
     await startScriptedIncumbent(socketPath, async (req) => {
       if (req.method === 'transport.ping') {
@@ -160,6 +161,7 @@ describe('pre-PR running incumbent (R6)', () => {
           id: req.id,
           result: {
             bundleHash: 'h1',
+            version: '0.9.1',
             flavor: 'prod',
             namespace: 'ns',
             status: 'ok',
@@ -184,13 +186,86 @@ describe('pre-PR running incumbent (R6)', () => {
     await expect(
       bindWithHandoff({
         socketPath,
-        desired: { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
+        desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
         bindAttempt: async () => ({ kind: 'incumbent' as const, reason: 'live-listener' }),
         runtime,
         readVerifiedIncumbentFromDiscovery: () => null,
         totalBudgetMs: 1_000,
       }),
     ).rejects.toBeInstanceOf(IncumbentMatchesError);
+  }, 15_000);
+
+  it('HAPPY: same bundle but older version → shutdown RPC and contender binds', async () => {
+    const socketPath = makeSocketPath('same-bundle-old-version');
+    let shutdownReceived = false;
+    let server: NetServer | null = null;
+    server = await startScriptedIncumbent(socketPath, async (req) => {
+      if (req.method === 'transport.ping') {
+        return {
+          kind: 'response',
+          id: req.id,
+          result: {
+            bundleHash: 'h1',
+            version: '0.8.7',
+            flavor: 'prod',
+            namespace: 'ns',
+            status: 'ok',
+            pid: 2,
+            processStartedAt: 2,
+          } satisfies IncumbentHealth,
+        };
+      }
+      if (req.method === 'transport.shutdown') {
+        shutdownReceived = true;
+        expect(req.auth).toEqual({ kind: 'boot', token: 'boot-token' });
+        queueMicrotask(() => {
+          server?.close();
+        });
+        return { kind: 'response', id: req.id, result: { status: 'draining' } };
+      }
+      return { kind: 'response', id: req.id, result: null };
+    });
+
+    const time = new VirtualTime();
+    let socketReleased = false;
+    server.on('close', () => {
+      socketReleased = true;
+    });
+
+    const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
+      time,
+      process: {
+        kill: () => undefined,
+        isAlive: () => true,
+      } as unknown as Runtime['process'],
+      env: { platform: () => 'linux' } as unknown as Runtime['env'],
+    };
+
+    const handoffPromise = bindWithHandoff({
+      socketPath,
+      desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
+      bindAttempt: async () =>
+        socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
+      runtime,
+      readVerifiedIncumbentFromDiscovery: () => ({
+        pid: 2,
+        processStartedAt: 2,
+        source: 'discovery',
+        instanceId: 'old-version-incumbent',
+        token: 'token',
+        bootToken: 'boot-token',
+      }),
+      totalBudgetMs: 5_000,
+    });
+
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      time.tick(200);
+    }
+
+    const result = await handoffPromise;
+    expect(result.acquiredViaHandoff).toBe(true);
+    expect(shutdownReceived).toBe(true);
   }, 15_000);
 
   it('DEGRADED: finalizeInterruptedAppServerJob early-returns with warn when phase is already terminal', async () => {

@@ -65,11 +65,12 @@ function makeHome(): string {
   return root;
 }
 
-function createPluginRoot(flavor: 'prod' | 'dev' = 'prod'): string {
+function createPluginRoot(flavor: 'prod' | 'dev' = 'prod', version = '0.5.2'): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-ipc-ensure-root-'));
   tempRoots.push(root);
   mkdirSync(join(root, 'bridge'), { recursive: true });
   writeFileSync(join(root, 'bridge', 'manifest.json'), JSON.stringify({ bundleHash: 'test-hash', flavor }), 'utf-8');
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version }), 'utf-8');
   return root;
 }
 
@@ -190,6 +191,62 @@ describe('ipc ensure', () => {
     expect(ensured.instanceId).toBe('existing-coordinator');
     expect(mockState.spawn).not.toHaveBeenCalled();
     expect(mockState.shutdown).not.toHaveBeenCalled();
+  });
+
+  it('treats same-bundle older-version incumbent as incompatible and spawns fresh', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot('prod', '0.9.1');
+    writeDiscovery(root, {
+      version: '0.8.7',
+      port: 4202,
+      token: 'old-token',
+      instanceId: 'old-coordinator',
+    });
+
+    let spawned = false;
+    mockState.health.mockImplementation(async () => {
+      if (!spawned) {
+        return {
+          status: 'ok',
+          version: '0.8.7',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'old-coordinator',
+          namespace: pluginRootNamespace(root),
+        };
+      }
+      return {
+        status: 'ok',
+        version: '0.9.1',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'new-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    mockState.shutdown.mockResolvedValue({ status: 'draining' });
+    mockState.bindSocket.mockResolvedValue({ kind: 'bound' });
+    mockState.spawn.mockImplementation(() => {
+      spawned = true;
+      writeDiscovery(root, {
+        version: '0.9.1',
+        port: 4203,
+        token: 'new-token',
+        instanceId: 'new-coordinator',
+      });
+      return { pid: 12_345, unref: vi.fn() };
+    });
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure(root);
+    await vi.advanceTimersByTimeAsync(800);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.version).toBe('0.9.1');
+    expect(ensured.instanceId).toBe('new-coordinator');
+    expect(mockState.shutdown).toHaveBeenCalledTimes(1);
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
   });
 
   it('waits for coordinator.json when health reports starting and returns the merged client', async () => {

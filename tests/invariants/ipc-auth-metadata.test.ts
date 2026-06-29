@@ -185,9 +185,7 @@ function createPorts(): HttpHandlerPorts {
   };
 }
 
-async function withRealIpcServer(
-  run: (socketPath: string, ports: HttpHandlerPorts) => Promise<void>,
-): Promise<void> {
+async function withRealIpcServer(run: (socketPath: string, ports: HttpHandlerPorts) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'coral-ipc-auth-server-'));
   const socketPath = join(dir, 'daemon.sock');
   const ports = createPorts();

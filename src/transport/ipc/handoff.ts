@@ -26,6 +26,7 @@ export type IncumbentIdentity = {
 };
 
 export type DesiredIncumbentIdentity = {
+  version: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
   namespace: string;
@@ -37,6 +38,7 @@ export type DesiredIncumbentIdentity = {
  * `transport/server-ports` and keep the helper coordinator-neutral.
  */
 export type IncumbentHealth = {
+  version?: string;
   bundleHash: string;
   flavor: 'prod' | 'dev';
   namespace: string;
@@ -48,7 +50,7 @@ export type IncumbentHealth = {
 
 /**
  * Raised when the contender concludes the existing incumbent is *us* — same
- * bundle/flavor/namespace, not draining — and exiting the contender is the
+ * version/bundle/flavor/namespace, not draining — and exiting the contender is the
  * correct action. Lifecycle translates this back into the existing
  * `BackendAlreadyRunningError` so bootstrap's "info log + exit 0" path
  * stays unchanged.
@@ -77,6 +79,7 @@ export class IpcDeadlineExceededError extends Error {
 
 export function isCompatibleIncumbent(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
   return (
+    health.version === desired.version &&
     health.bundleHash === desired.bundleHash &&
     health.flavor === desired.flavor &&
     health.namespace === desired.namespace
@@ -105,7 +108,7 @@ function isShutdownUnauthorizedError(error: unknown): boolean {
  *   - `verifiedIdentity`: pid+processStartedAt sourced from health, or null.
  *
  * Throws `IncumbentMatchesError` when the incumbent is compatible (same
- * bundleHash/flavor/namespace) and not draining; the contender treats this
+ * version/bundleHash/flavor/namespace) and not draining; the contender treats this
  * as "we are redundant" rather than handoff.
  */
 export async function requestIncumbentShutdown(opts: {

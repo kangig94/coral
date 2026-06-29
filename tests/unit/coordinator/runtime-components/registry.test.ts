@@ -82,8 +82,7 @@ describe('createRuntimeComponentRegistry', () => {
       id: KB_COMPONENT_ID,
       initialPhase: runtimeComponentPhase.online(KB_COMPONENT_ID),
     });
-    (failing as unknown as { dispose: () => Promise<void> }).dispose = () =>
-      Promise.reject(new Error('dispose boom'));
+    (failing as unknown as { dispose: () => Promise<void> }).dispose = () => Promise.reject(new Error('dispose boom'));
     registry.register(failing);
 
     const peerId = 'peer' as RuntimeComponentId;

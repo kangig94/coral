@@ -89,7 +89,7 @@ function buildHarness(opts?: {
 
   const options: HandoffOptions = {
     socketPath: '/tmp/coral.sock',
-    desired: { bundleHash: 'new-hash', flavor: 'prod', namespace: 'ns' },
+    desired: { version: '0.9.1', bundleHash: 'new-hash', flavor: 'prod', namespace: 'ns' },
     bindAttempt,
     runtime,
     readVerifiedIncumbentFromDiscovery: readDiscovery,
@@ -201,10 +201,7 @@ describe('bindWithHandoff', () => {
       shutdownToken: 'shutdown-token',
     };
     const { options, time } = buildHarness({
-      bindSequence: [
-        { kind: 'incumbent', reason: 'live-listener' },
-        { kind: 'bound' },
-      ],
+      bindSequence: [{ kind: 'incumbent', reason: 'live-listener' }, { kind: 'bound' }],
       readDiscovery: () => discoveryIdentity,
     });
     mockedShutdown.mockResolvedValue(

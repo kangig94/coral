@@ -80,6 +80,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
           id: req.id,
           result: {
             bundleHash: 'old-bundle',
+            version: '0.8.7',
             flavor: 'prod',
             namespace: 'ns',
             status: 'ok',
@@ -119,7 +120,7 @@ describe('handoff integration (AC2 + AC3 happy path)', () => {
 
       const handoffPromise = bindWithHandoff({
         socketPath,
-        desired: { bundleHash: 'new-bundle', flavor: 'prod', namespace: 'ns' },
+        desired: { version: '0.9.1', bundleHash: 'new-bundle', flavor: 'prod', namespace: 'ns' },
         bindAttempt: async () =>
           socketReleased ? { kind: 'bound' as const } : { kind: 'incumbent' as const, reason: 'live-listener' },
         runtime,

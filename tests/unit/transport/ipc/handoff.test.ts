@@ -71,15 +71,21 @@ afterEach(async () => {
 });
 
 describe('isCompatibleIncumbent', () => {
-  it('matches on bundleHash + flavor + namespace', () => {
-    const desired: DesiredIncumbentIdentity = { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
-    const health: IncumbentHealth = { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+  it('matches on version + bundleHash + flavor + namespace', () => {
+    const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    const health: IncumbentHealth = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
     expect(isCompatibleIncumbent(health, desired)).toBe(true);
   });
 
   it('rejects on bundleHash mismatch', () => {
-    const desired: DesiredIncumbentIdentity = { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
-    const health: IncumbentHealth = { bundleHash: 'h2', flavor: 'prod', namespace: 'ns' };
+    const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    const health: IncumbentHealth = { version: '0.9.1', bundleHash: 'h2', flavor: 'prod', namespace: 'ns' };
+    expect(isCompatibleIncumbent(health, desired)).toBe(false);
+  });
+
+  it('rejects on version mismatch even when bundle identity matches', () => {
+    const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
+    const health: IncumbentHealth = { version: '0.8.7', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
     expect(isCompatibleIncumbent(health, desired)).toBe(false);
   });
 });
@@ -92,7 +98,13 @@ describe('requestIncumbentShutdown', () => {
         return {
           kind: 'response',
           id: request.id,
-          result: { bundleHash: 'h1', flavor: 'prod', namespace: 'ns', status: 'ok' } satisfies IncumbentHealth,
+          result: {
+            version: '0.9.1',
+            bundleHash: 'h1',
+            flavor: 'prod',
+            namespace: 'ns',
+            status: 'ok',
+          } satisfies IncumbentHealth,
         };
       }
       return { kind: 'response', id: request.id, result: null };
@@ -101,7 +113,7 @@ describe('requestIncumbentShutdown', () => {
     await expect(
       requestIncumbentShutdown({
         socketPath,
-        desired: { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
+        desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
         timeoutMs: 1_000,
       }),
     ).rejects.toBeInstanceOf(IncumbentMatchesError);
@@ -117,6 +129,7 @@ describe('requestIncumbentShutdown', () => {
           id: request.id,
           result: {
             bundleHash: 'old',
+            version: '0.8.7',
             flavor: 'prod',
             namespace: 'ns',
             status: 'ok',
@@ -136,7 +149,7 @@ describe('requestIncumbentShutdown', () => {
 
     const result = await requestIncumbentShutdown({
       socketPath,
-      desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
+      desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
       bootToken: 'boot-token',
       timeoutMs: 1_000,
     });
@@ -157,6 +170,7 @@ describe('requestIncumbentShutdown', () => {
           id: request.id,
           result: {
             bundleHash: 'old',
+            version: '0.8.7',
             flavor: 'prod',
             namespace: 'ns',
             status: 'ok',
@@ -173,7 +187,7 @@ describe('requestIncumbentShutdown', () => {
 
     const result = await requestIncumbentShutdown({
       socketPath,
-      desired: { bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
+      desired: { version: '0.9.1', bundleHash: 'new', flavor: 'prod', namespace: 'ns' },
       timeoutMs: 1_000,
     });
     expect(receivedShutdown).toBe(false);
@@ -188,7 +202,13 @@ describe('requestIncumbentShutdown', () => {
         return {
           kind: 'response',
           id: request.id,
-          result: { bundleHash: 'h1', flavor: 'prod', namespace: 'ns', status: 'draining' } satisfies IncumbentHealth,
+          result: {
+            version: '0.9.1',
+            bundleHash: 'h1',
+            flavor: 'prod',
+            namespace: 'ns',
+            status: 'draining',
+          } satisfies IncumbentHealth,
         };
       }
       return { kind: 'response', id: request.id, result: null };
@@ -196,7 +216,7 @@ describe('requestIncumbentShutdown', () => {
 
     const result = await requestIncumbentShutdown({
       socketPath,
-      desired: { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
+      desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
       timeoutMs: 500,
     });
     expect(result.health?.status).toBe('draining');
@@ -212,7 +232,7 @@ describe('requestIncumbentShutdown', () => {
     const start = Date.now();
     const result = await requestIncumbentShutdown({
       socketPath,
-      desired: { bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
+      desired: { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' },
       timeoutMs: 500,
     });
     const elapsed = Date.now() - start;

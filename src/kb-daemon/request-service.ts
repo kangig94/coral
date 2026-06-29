@@ -446,7 +446,11 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
       if (ctx === undefined) {
         return invalidRequest('KB daemon read request requires principal context.');
       }
-      const authorizationError = authorizeDaemonRequest(ctx, request.method, KB_DAEMON_READ_CAPABILITIES[request.method]);
+      const authorizationError = authorizeDaemonRequest(
+        ctx,
+        request.method,
+        KB_DAEMON_READ_CAPABILITIES[request.method],
+      );
       if (authorizationError !== null) {
         return authorizationError;
       }
