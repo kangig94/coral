@@ -9,8 +9,11 @@ import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import { parseSourceFrontmatter } from '#src/kb/corpus/frontmatter.js';
+import { CorpusFreshnessService } from '#src/kb/corpus/freshness-service.js';
 import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
+import type { KbIndex } from '#src/kb/entry-types.js';
 import { kbRuntimeDir } from '#src/kb/paths.js';
+import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -73,6 +76,7 @@ function readImportPath(value: unknown): string {
 
 describe('KB daemon runtime host', () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
 
@@ -103,6 +107,103 @@ describe('KB daemon runtime host', () => {
       expect(runtime.storage.existsSync(stagedDir)).toBe(false);
       expect(runtime.storage.existsSync(pdfDir)).toBe(false);
     } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('does not block ordinary KB mutations on a preflight corpus rebuild', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+      db,
+    });
+
+    try {
+      let ensureFreshness: ReturnType<typeof vi.spyOn> | undefined;
+      let invalidateCache: ReturnType<typeof vi.spyOn> | undefined;
+      await host.withKb(({ kbRuntime }) => {
+        ensureFreshness = vi
+          .spyOn(kbRuntime.kb, 'ensureCorpusFreshness')
+          .mockRejectedValue(new Error('unexpected preflight corpus rebuild'));
+        invalidateCache = vi.spyOn(kbRuntime.kb, 'invalidateKbCache');
+      });
+
+      let invoked = false;
+      await expect(
+        host.withKb(() => {
+          invoked = true;
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(invoked).toBe(true);
+      expect(ensureFreshness).not.toHaveBeenCalled();
+      expect(invalidateCache).not.toHaveBeenCalled();
+    } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('does not block write runtime initialization on corpus rebuild or consumer drain', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const delayedIndex: KbIndex = { entries: {}, principles: {}, entityMeta: {}, relationships: [] };
+    const ensureFreshness = vi
+      .spyOn(CorpusFreshnessService.prototype, 'ensureCorpusFreshness')
+      .mockImplementation(
+        () =>
+          new Promise<KbIndex>((resolve) => {
+            setTimeout(() => resolve(delayedIndex), 50);
+          }),
+      );
+    const drainAll = vi
+      .spyOn(ConsumerDriver.prototype, 'drainAll')
+      .mockRejectedValue(new Error('unexpected boot consumer drain'));
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+      db,
+    });
+
+    try {
+      const result = await Promise.race([
+        host.withKb(() => 'ready'),
+        new Promise<'blocked'>((resolve) => {
+          setTimeout(() => resolve('blocked'), 10);
+        }),
+      ]);
+
+      expect(result).toBe('ready');
+      expect(drainAll).not.toHaveBeenCalled();
+    } finally {
+      if (ensureFreshness.mock.calls.length > 0) {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 60);
+        });
+      }
       await host.dispose().catch(() => undefined);
       db.close();
       rmSync(runtimeDir, { recursive: true, force: true });

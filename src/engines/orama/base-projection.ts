@@ -344,7 +344,10 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     let projectionInput =
       selectedSnapshot.snapshotId === ctx.snapshot.snapshotId
         ? ctx.projectionInput
-        : await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({ signal: ctx.signal });
+        : await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({
+            signal: ctx.signal,
+            ensureFreshness: false,
+          });
 
     while (true) {
       const settledSnapshot = this.latestSnapshot(selectedSnapshot, ctx.corpusStateReader.readCurrentSnapshot());
@@ -353,7 +356,10 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       }
 
       selectedSnapshot = settledSnapshot;
-      projectionInput = await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({ signal: ctx.signal });
+      projectionInput = await this.runtime.corpusProjectionReader.prepareCurrentProjectionInput({
+        signal: ctx.signal,
+        ensureFreshness: false,
+      });
     }
   }
 

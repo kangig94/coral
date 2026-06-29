@@ -3,6 +3,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
+import type { KbProjectionInput, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -63,6 +64,59 @@ function readCursorRow(db: Database, consumerId: string): CursorRow {
 }
 
 describe('ConsumerDriver corpus registrations', () => {
+  it('prepares corpus projection input without forcing corpus freshness', async () => {
+    const db = createDb();
+    const emptyProjectionInput: KbProjectionInput = {
+      index: {
+        entries: {},
+        principles: {},
+        entityMeta: {},
+        relationships: [],
+      },
+      records: [],
+      communityFresh: false,
+    };
+    const prepareCalls: PrepareKbProjectionInputOptions[] = [];
+    const applyInputs: KbProjectionInput[] = [];
+    const driver = new ConsumerDriver({
+      db,
+      time: REAL_CONSUMER_DRIVER_TIMERS,
+      now: realConsumerDriverNow,
+      corpusProjectionReader: {
+        resolveCurrentIndex: () => emptyProjectionInput.index,
+        prepareCurrentProjectionInput: async (options = {}) => {
+          prepareCalls.push(options);
+          return emptyProjectionInput;
+        },
+      },
+    });
+    const snapshot = buildSnapshot({ snapshotId: 'snapshot-2', contentSeq: 1 });
+
+    try {
+      driver.register({
+        id: 'corpus-proj',
+        authority: 'corpus',
+        kind: 'apply',
+        registrationKind: 'base',
+        corpusInterest: 'both',
+        async apply({ projectionInput }) {
+          applyInputs.push(projectionInput);
+        },
+      });
+
+      driver.notify('corpus', snapshot);
+      await driver.drainAll();
+
+      expect(prepareCalls).toHaveLength(1);
+      expect(prepareCalls[0]?.ensureFreshness).toBe(false);
+      expect(prepareCalls[0]?.signal).toBeDefined();
+      expect(applyInputs).toEqual([emptyProjectionInput]);
+    } finally {
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
   it('brackets text-index corpus applies with in-progress callbacks', async () => {
     const db = createDb();
     const applyStarted = createDeferred<void>();

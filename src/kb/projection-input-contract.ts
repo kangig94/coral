@@ -41,9 +41,12 @@ export interface KbProjectionInputOptions {
   readonly forceCommunityFresh?: boolean;
 }
 
+export interface PrepareKbProjectionInputOptions extends Omit<KbProjectionInputOptions, 'index'> {
+  readonly signal?: AbortSignal;
+  readonly ensureFreshness?: boolean;
+}
+
 export interface KbCorpusProjectionReader {
   resolveCurrentIndex(): KbIndex;
-  prepareCurrentProjectionInput(
-    options?: Omit<KbProjectionInputOptions, 'index'> & { readonly signal?: AbortSignal },
-  ): Promise<KbProjectionInput>;
+  prepareCurrentProjectionInput(options?: PrepareKbProjectionInputOptions): Promise<KbProjectionInput>;
 }
