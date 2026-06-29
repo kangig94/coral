@@ -33,11 +33,11 @@ describe('cli errors', () => {
     });
 
     it('maps UsageError to invalid_usage and exit 2', () => {
-      expect(buildErrorEnvelope(new UsageError('--jobs must include at least one job ID'))).toEqual({
+      expect(buildErrorEnvelope(new UsageError('jobs must include at least one job ID'))).toEqual({
         envelope: {
           error: true,
           code: 'invalid_usage',
-          message: '--jobs must include at least one job ID',
+          message: 'jobs must include at least one job ID',
         },
         exitCode: 2,
       });

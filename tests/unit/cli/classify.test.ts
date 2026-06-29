@@ -16,11 +16,11 @@ describe('command class coverage', () => {
     expect(leafEntries.filter((entry) => entry.resolution.kind === 'unclassified')).toEqual([]);
     expect(leafEntries.filter((entry) => entry.resolution.kind === 'container')).toEqual([]);
 
-    const mappedLeafPaths = leafEntries
+    const mappedCommandPaths = coverage
       .filter((entry) => entry.resolution.kind === 'class' && entry.resolution.source === 'map')
       .map((entry) => entry.path)
       .sort();
-    expect(mappedLeafPaths).toEqual(Object.keys(commandClassMap).sort());
+    expect(mappedCommandPaths).toEqual(Object.keys(commandClassMap).sort());
 
     const providerLeafPaths = leafEntries
       .filter((entry) => entry.resolution.kind === 'class' && entry.resolution.source === 'provider-family')
@@ -38,7 +38,7 @@ describe('command class coverage', () => {
   it('treats structural grouping nodes as explicit containers', () => {
     const coverage = collectCommandCoverage(buildProgram());
     const containerEntries = coverage
-      .filter((entry) => !entry.isLeaf)
+      .filter((entry) => !entry.isLeaf && entry.resolution.kind === 'container')
       .map((entry) => ({ path: entry.path, kind: entry.resolution.kind }))
       .sort((left, right) => left.path.localeCompare(right.path));
 
@@ -48,6 +48,18 @@ describe('command class coverage', () => {
         kind: 'container',
       })),
     );
+  });
+
+  it('allows executable parent commands to also expose subcommands', () => {
+    const coverage = collectCommandCoverage(buildProgram());
+    const executableParents = coverage
+      .filter((entry) => !entry.isLeaf && entry.resolution.kind === 'class')
+      .map((entry) => ({
+        path: entry.path,
+        commandClass: entry.resolution.kind === 'class' ? entry.resolution.commandClass : null,
+      }));
+
+    expect(executableParents).toEqual([{ path: 'abort', commandClass: 'mutate' }]);
   });
 
   it('classifies the expansion command family with the declared read/mutate split', () => {

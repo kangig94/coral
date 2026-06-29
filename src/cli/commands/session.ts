@@ -16,7 +16,7 @@ import { getProviderNames, makeClient, WAIT_TIMEOUT_SECONDS, type AbortOptions }
 import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
-import { normalizeUsageError } from '../errors.js';
+import { UsageError, normalizeUsageError } from '../errors.js';
 import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { mapWaitSubscriptionError } from '../wait-stream-error.js';
@@ -76,30 +76,19 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     });
   const abortSelectorSchema = z
     .object({
-      jobs: z.string().optional(),
       all: z.boolean().optional(),
       phase: z.string().optional(),
       provider: z.string().optional(),
     })
     .superRefine((value, ctx) => {
-      const hasJobs = value.jobs !== undefined;
       const hasAll = value.all === true;
       const hasPhase = value.phase !== undefined;
       const hasProvider = value.provider !== undefined;
 
-      if (!hasJobs && !hasAll && !hasPhase && !hasProvider) {
+      if (!hasAll && !hasPhase && !hasProvider) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: '--jobs, --all, --phase, or --provider is required',
-          path: ['jobs'],
-        });
-      }
-
-      if (hasJobs && (hasAll || hasPhase || hasProvider)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: '--jobs cannot be used with --all, --phase, or --provider',
-          path: ['jobs'],
+          message: 'abort requires jobs <ids...>, --all, --phase, or --provider',
         });
       }
 
@@ -262,7 +251,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
   const abortCommand = program.command('abort');
   abortCommand
     .description('Abort running jobs')
-    .option('--jobs <ids>', 'Comma-separated job IDs')
     .option('--all', 'Abort all live jobs in the current project (plus shared KB jobs)')
     .option('--phase <phase>', 'Abort live jobs in a single phase (current project + KB jobs)')
     .option('--provider <name>', 'Abort live jobs for a registered provider')
@@ -271,12 +259,6 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         const parsed = abortSelectorSchema.parse(opts);
         const projectRoot = process.cwd();
         const client = makeClient(projectRoot, abortCommand);
-
-        if (parsed.jobs !== undefined) {
-          const result = await client.abortJobs(parseJobIds(parsed.jobs));
-          process.stdout.write(formatAbortResult(result) + '\n');
-          return;
-        }
 
         const selector: AbortQuerySelector = {
           projectRoot,
@@ -293,6 +275,25 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
         }
 
         const result = await client.abortJobs(jobIds);
+        process.stdout.write(formatAbortResult(result) + '\n');
+      } catch (error) {
+        emitError(normalizeUsageError(error));
+      }
+    });
+
+  const abortJobsCommand = abortCommand.command('jobs');
+  abortJobsCommand
+    .description('Abort one or more jobs by ID')
+    .argument('<jobIds...>', 'Job IDs')
+    .action(async (jobIdArgs: string[]) => {
+      try {
+        const parentOpts = abortCommand.opts<AbortOptions>();
+        if (parentOpts.all === true || parentOpts.phase !== undefined || parentOpts.provider !== undefined) {
+          throw new UsageError('abort jobs cannot be used with --all, --phase, or --provider');
+        }
+        const projectRoot = process.cwd();
+        const client = makeClient(projectRoot, abortJobsCommand);
+        const result = await client.abortJobs(parseJobIds(jobIdArgs.join(' ')));
         process.stdout.write(formatAbortResult(result) + '\n');
       } catch (error) {
         emitError(normalizeUsageError(error));

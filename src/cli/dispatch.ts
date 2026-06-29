@@ -189,7 +189,6 @@ export type WaitOptions = {
 };
 
 export type AbortOptions = {
-  jobs?: string;
   all?: boolean;
   phase?: string;
   provider?: string;

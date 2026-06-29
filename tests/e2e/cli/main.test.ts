@@ -67,6 +67,13 @@ describe('cli main — help and structure', () => {
     expect(stdout).not.toContain('--jobs');
   });
 
+  it('shows abort subcommand help', () => {
+    const { stdout, status } = runCli(['abort', '--help']);
+    expect(status).toBe(0);
+    expect(stdout).toContain('jobs <jobIds...>');
+    expect(stdout).not.toContain('--jobs');
+  });
+
   it('shows discuss subcommand help', () => {
     const { stdout, status } = runCli(['discuss', '--help']);
     expect(status).toBe(0);
@@ -266,9 +273,9 @@ describe('cli main — backend shutdown routing', () => {
   });
 });
 
-describe('cli main — abort --jobs parsing', () => {
+describe('cli main — abort jobs parsing', () => {
   it('emits text envelopes for invalid usage', () => {
-    const { stderr, status } = runCli(['abort', '--jobs', '']);
+    const { stderr, status } = runCli(['abort', 'jobs', '']);
     expect(status).toBe(2);
     expect(stderr).toContain('[code=invalid_usage]');
     expect(stderr).toContain('job');

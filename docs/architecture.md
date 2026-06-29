@@ -162,7 +162,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 ### Job inspection and control
 
 1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
-2. `coral-cli abort --jobs "<ids>"` dispatches `jobs.abort` over IPC for local calls
+2. `coral-cli abort jobs <id...>` dispatches `jobs.abort` over IPC for local calls
 3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
 ### Workflow
