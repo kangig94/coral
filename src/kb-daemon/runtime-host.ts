@@ -334,10 +334,8 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       expansionLifecycleService = activeExpansionLifecycleService;
       await runPromoteRecovery(kb);
       await kb.retryPendingCorpusPublication();
-      await kb.ensureCorpusFreshness({ wait: true });
       await activeExpansionLifecycleService.recoverOnBoot();
       activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
-      await activeConsumerDriver.drainAll({ timeoutMs: corpusReadinessTimeoutMs });
       await repairProjectionArtifactLagOnBoot(kb, activeConsumerDriver, corpusReadinessTimeoutMs);
       const kbRuntime: DaemonKnowledgeBaseRuntime = {
         kb,
