@@ -110,6 +110,47 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
 
+/**
+ * Convention: every CORAL_* env var the KB daemon reads from its own process.env
+ * carries the `CORAL_KB_` prefix, so forwarding the whole prefix re-injects all KB
+ * config (analyzers, import/marker limits, corpus-scan caps, curate timings, …) in
+ * one rule. `composeChildEnv` strips inherited CORAL_* from the spawn env
+ * (`infra/env-sanitize.ts`), so without this re-injection the daemon silently loses
+ * every CORAL_KB_* knob.
+ */
+export const CORAL_KB_ENV_PREFIX = 'CORAL_KB_';
+
+/**
+ * Shared knobs whose primary owner is the parent (coordinator) process and that
+ * therefore do NOT carry the `CORAL_KB_` prefix. The KB daemon reuses them, so it
+ * inherits them through this explicit allowlist rather than the prefix rule. Renaming
+ * them would mislabel a parent-owned, cross-cutting var as KB-specific.
+ */
+export const PARENT_FORWARDED_KB_ENV = ['CORAL_BOOT_FRESHNESS_TIMEOUT_MS'] as const;
+
+/**
+ * Collect the env the KB daemon inherits from its parent: every inherited `CORAL_KB_*`
+ * plus the explicitly allowlisted parent-owned knobs. The caller spreads daemon-identity
+ * vars (`CORAL_KB_DAEMON_*`) after these, so identity always wins over any collision.
+ * The CORAL_KB_ prefix discipline this relies on is enforced by
+ * `tests/invariants/kb-daemon-env-prefix.test.ts`.
+ */
+function collectForwardedKbDaemonEnv(env: Pick<Runtime['env'], 'get' | 'coralSnapshot'>): Record<string, string> {
+  const forwarded: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env.coralSnapshot())) {
+    if (key.startsWith(CORAL_KB_ENV_PREFIX)) {
+      forwarded[key] = value;
+    }
+  }
+  for (const name of PARENT_FORWARDED_KB_ENV) {
+    const value = env.get(name);
+    if (value !== undefined) {
+      forwarded[name] = value;
+    }
+  }
+  return forwarded;
+}
+
 function resolveDaemonBackendNamespace(pluginRoot: string, override: string | undefined): string {
   if (override !== undefined) {
     return override;
@@ -229,6 +270,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   const jobRequestTimeoutMs = options.jobRequestTimeoutMs ?? DEFAULT_JOB_REQUEST_TIMEOUT_MS;
   const backendNamespace = resolveDaemonBackendNamespace(pluginRoot, options.backendNamespace);
   const bundleHash = resolveDaemonBundleHash(pluginRoot, options.bundleHash);
+  const forwardedKbDaemonEnv = collectForwardedKbDaemonEnv(runtime.env);
   const parentCurateAssistant = options.curateAssistant;
   const log = options.log ?? (() => undefined);
 
@@ -714,6 +756,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         args: [entrypoint],
         cwd: pluginRoot,
         envAdditions: {
+          // Inherited CORAL_KB_* config + allowlisted parent knobs first; daemon-identity
+          // vars below override any collision.
+          ...forwardedKbDaemonEnv,
           CORAL_KB_DAEMON: '1',
           CORAL_KB_DAEMON_GENERATION: String(generation),
           CORAL_KB_DAEMON_PARENT_PID: String(process.pid),

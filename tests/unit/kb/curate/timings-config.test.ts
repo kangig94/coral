@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { EnvPort } from '#src/infra/port-types.js';
 import {
-  CORAL_CURATE_CLAIM_STALE_MS_ENV,
-  CORAL_CURATE_MAX_RETRY_MS_ENV,
-  CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV,
-  CORAL_CURATE_TRANSIENT_RETRY_MS_ENV,
+  CORAL_KB_CURATE_CLAIM_STALE_MS_ENV,
+  CORAL_KB_CURATE_MAX_RETRY_MS_ENV,
+  CORAL_KB_CURATE_MISSING_CLI_RETRY_MS_ENV,
+  CORAL_KB_CURATE_TRANSIENT_RETRY_MS_ENV,
   DEFAULT_CLAIM_STALE_MS,
   DEFAULT_CURATE_MAX_RETRY_MS,
   DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
@@ -35,10 +35,10 @@ describe('resolveCurateTimings', () => {
   it('honours each env override independently when set to a positive integer', () => {
     const timings = resolveCurateTimings(
       envOf({
-        [CORAL_CURATE_CLAIM_STALE_MS_ENV]: '60000',
-        [CORAL_CURATE_TRANSIENT_RETRY_MS_ENV]: '120000',
-        [CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV]: '180000',
-        [CORAL_CURATE_MAX_RETRY_MS_ENV]: '240000',
+        [CORAL_KB_CURATE_CLAIM_STALE_MS_ENV]: '60000',
+        [CORAL_KB_CURATE_TRANSIENT_RETRY_MS_ENV]: '120000',
+        [CORAL_KB_CURATE_MISSING_CLI_RETRY_MS_ENV]: '180000',
+        [CORAL_KB_CURATE_MAX_RETRY_MS_ENV]: '240000',
       }),
     );
     expect(timings).toEqual({
@@ -54,10 +54,10 @@ describe('resolveCurateTimings', () => {
     for (const value of cases) {
       const timings = resolveCurateTimings(
         envOf({
-          [CORAL_CURATE_CLAIM_STALE_MS_ENV]: value,
-          [CORAL_CURATE_TRANSIENT_RETRY_MS_ENV]: value,
-          [CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV]: value,
-          [CORAL_CURATE_MAX_RETRY_MS_ENV]: value,
+          [CORAL_KB_CURATE_CLAIM_STALE_MS_ENV]: value,
+          [CORAL_KB_CURATE_TRANSIENT_RETRY_MS_ENV]: value,
+          [CORAL_KB_CURATE_MISSING_CLI_RETRY_MS_ENV]: value,
+          [CORAL_KB_CURATE_MAX_RETRY_MS_ENV]: value,
         }),
       );
       expect(timings).toEqual({

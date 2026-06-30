@@ -7,6 +7,7 @@ import {
   type KbDaemonCurateAssistantHandler,
 } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
+import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 
 class FakeStdin extends EventEmitter {
@@ -48,7 +49,11 @@ class FakeDaemonProcess extends EventEmitter {
   }
 }
 
-function createRuntime(daemonProcesses: FakeDaemonProcess[], time = new VirtualTime()) {
+function createRuntime(
+  daemonProcesses: FakeDaemonProcess[],
+  time = new VirtualTime(),
+  envVars: Record<string, string | undefined> = {},
+) {
   const spawnCalls: RuntimeSpawnOptions[] = [];
   const runtime = {
     time,
@@ -63,7 +68,15 @@ function createRuntime(daemonProcesses: FakeDaemonProcess[], time = new VirtualT
       }),
     },
     storage: {},
-    env: {},
+    env: {
+      get: (key: string): string | undefined => envVars[key],
+      coralSnapshot: (): Readonly<Record<string, string>> =>
+        Object.fromEntries(
+          Object.entries(envVars).filter(
+            (entry): entry is [string, string] => entry[0].startsWith('CORAL_') && entry[1] !== undefined,
+          ),
+        ),
+    },
     ids: {},
     paths: {},
   } as unknown as Runtime;
@@ -172,6 +185,91 @@ describe('KB daemon supervisor', () => {
       startedAt: 1_000_000,
       readyAt: 1_000_123,
     });
+  });
+
+  it('forwards every inherited CORAL_KB_* config var into the spawn env (composeChildEnv strips inherited CORAL_*)', async () => {
+    const daemonProcess = new FakeDaemonProcess(111);
+    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
+      [CORAL_KB_EXTRA_LANGS_ENV]: 'ko,ja',
+      CORAL_KB_IMPORT_MARKER_DEVICE: 'cuda',
+      CORAL_KB_CORPUS_SCAN_MAX_FILES: '9000',
+    });
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    void supervisor.start();
+    await flushMicrotasks();
+
+    // Values are forwarded verbatim — parsing stays in the daemon.
+    expect(spawnCalls[0]?.envAdditions).toMatchObject({
+      [CORAL_KB_EXTRA_LANGS_ENV]: 'ko,ja',
+      CORAL_KB_IMPORT_MARKER_DEVICE: 'cuda',
+      CORAL_KB_CORPUS_SCAN_MAX_FILES: '9000',
+    });
+  });
+
+  it('does not forward CORAL_* vars that lack the CORAL_KB_ prefix and are not allowlisted', async () => {
+    const daemonProcess = new FakeDaemonProcess(112);
+    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
+      CORAL_MAX_WORKERS: '4',
+      CORAL_ENV_PASSTHROUGH: 'FOO',
+    });
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    void supervisor.start();
+    await flushMicrotasks();
+
+    // Guard against a vacuous pass: the spawn must have happened for the negative
+    // assertions below to mean anything.
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0]?.envAdditions).not.toHaveProperty('CORAL_MAX_WORKERS');
+    expect(spawnCalls[0]?.envAdditions).not.toHaveProperty('CORAL_ENV_PASSTHROUGH');
+  });
+
+  it('forwards allowlisted parent-owned knobs that do not carry the CORAL_KB_ prefix', async () => {
+    const daemonProcess = new FakeDaemonProcess(113);
+    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
+      CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
+    });
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    void supervisor.start();
+    await flushMicrotasks();
+
+    expect(spawnCalls[0]?.envAdditions).toMatchObject({ CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' });
+  });
+
+  it('lets daemon-identity vars override any inherited CORAL_KB_DAEMON_* collision', async () => {
+    const daemonProcess = new FakeDaemonProcess(114);
+    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {
+      CORAL_KB_DAEMON_GENERATION: '999',
+    });
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    void supervisor.start();
+    await flushMicrotasks();
+
+    // First start → generation 1, not the stale inherited 999.
+    expect(spawnCalls[0]?.envAdditions).toMatchObject({ CORAL_KB_DAEMON_GENERATION: '1' });
   });
 
   it('reports failed when the daemon closes before emitting ready', async () => {
