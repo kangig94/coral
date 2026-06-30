@@ -39,6 +39,7 @@ import {
   createOramaProjectionReconcileRequester,
   repairProjectionArtifactLagOnBoot,
 } from './expansion/projection-reconcile.js';
+import { startKiwiArtifactFetchOnBoot } from './expansion/kiwi-boot.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
@@ -219,6 +220,9 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let state: KbDaemonWriteRuntimeState | null = null;
   let initPromise: Promise<KbDaemonWriteRuntimeState> | null = null;
   let disposePromise: Promise<void> | null = null;
+  // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
+  // disposes; the in-flight model download takes no signal and runs to completion detached.
+  let kiwiArtifactBootController: AbortController | null = null;
 
   const markReady = (): void => {
     phase = 'ready';
@@ -337,6 +341,18 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       await activeExpansionLifecycleService.recoverOnBoot();
       activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
       await repairProjectionArtifactLagOnBoot(kb, activeConsumerDriver, corpusReadinessTimeoutMs);
+      // When CORAL_KB_EXTRA_LANGS declares 'ko', fetch the Kiwi model in the background and
+      // reproject once it lands. Boot does not await this: the text lane serves Intl-segmented
+      // results until the Korean analyzer is ready, so the first note mutation is never blocked
+      // on an 88MB model download or a corpus-scale Korean re-tokenization.
+      kiwiArtifactBootController = new AbortController();
+      startKiwiArtifactFetchOnBoot({
+        runtime,
+        kb,
+        driver: activeConsumerDriver,
+        timeoutMs: corpusReadinessTimeoutMs,
+        signal: kiwiArtifactBootController.signal,
+      });
       const kbRuntime: DaemonKnowledgeBaseRuntime = {
         kb,
         readDb: activeDb,
@@ -487,6 +503,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     }
     disposePromise = (async () => {
       markDisposing();
+      kiwiArtifactBootController?.abort();
       try {
         let activeState = state;
         if (activeState === null && initPromise !== null) {

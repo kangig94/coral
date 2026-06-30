@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
@@ -75,6 +75,12 @@ function readImportPath(value: unknown): string {
 }
 
 describe('KB daemon runtime host', () => {
+  beforeEach(() => {
+    // Neutralize an ambient CORAL_KB_EXTRA_LANGS=ko so build()'s background Kiwi
+    // boot fetch can never reach a real 88MB network download from a unit test,
+    // regardless of the runner's shell.
+    vi.stubEnv('CORAL_KB_EXTRA_LANGS', '');
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();

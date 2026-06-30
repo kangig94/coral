@@ -97,6 +97,7 @@ type KbDaemonSupervisorOptions = {
   startTimeoutMs?: number;
   stopTimeoutMs?: number;
   requestTimeoutMs?: number;
+  mutationRequestTimeoutMs?: number;
   jobRequestTimeoutMs?: number;
   backendNamespace?: string;
   bundleHash?: string;
@@ -108,6 +109,20 @@ type KbDaemonSupervisorOptions = {
 const DEFAULT_START_TIMEOUT_MS = 5_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 2_000;
+/**
+ * Non-job KB mutations (note promote/update, wiki/community edits) serialize on the
+ * daemon's single FIFO mutation lock, behind corpus-scale work — reindex, freshness
+ * rescan, Kiwi re-tokenization reproject, curate — that can legitimately hold it for
+ * seconds. A mutation queued behind such a holder must not be abandoned at the 2s
+ * DEFAULT_REQUEST_TIMEOUT_MS. This value is intentionally aligned with the daemon-side
+ * DEFAULT_MUTATION_LOCK_TIMEOUT_MS (src/kb/corpus/mutation-lock.ts), which bounds how
+ * long the lock can be held, so the supervisor waits exactly as long as the lock could
+ * be in flight. Keep the two in lockstep: raising one without the other re-opens this
+ * timeout. (A cold-boot lazy write-runtime build is one such long holder, not the only
+ * one.) createSource/reindex run under the long job timeout; health/warmup/jobs/read
+ * keep the short default for liveness.
+ */
+const DEFAULT_MUTATION_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_JOB_REQUEST_TIMEOUT_MS = 60 * 60 * 1000;
 
 /**
@@ -267,6 +282,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   const startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
   const stopTimeoutMs = options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const mutationRequestTimeoutMs = options.mutationRequestTimeoutMs ?? DEFAULT_MUTATION_REQUEST_TIMEOUT_MS;
   const jobRequestTimeoutMs = options.jobRequestTimeoutMs ?? DEFAULT_JOB_REQUEST_TIMEOUT_MS;
   const backendNamespace = resolveDaemonBackendNamespace(pluginRoot, options.backendNamespace);
   const bundleHash = resolveDaemonBundleHash(pluginRoot, options.bundleHash);
@@ -627,7 +643,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
 
   const sendKbMutationRequest = (request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult> => {
     const timeoutMs =
-      request.method === 'createSource' || request.method === 'reindex' ? jobRequestTimeoutMs : undefined;
+      request.method === 'createSource' || request.method === 'reindex'
+        ? jobRequestTimeoutMs
+        : mutationRequestTimeoutMs;
     return sendTypedRequest(
       'kb.mutate',
       request,
