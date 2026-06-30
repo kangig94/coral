@@ -5,6 +5,7 @@ import type { ForcedCorpusFreshnessTarget } from '#src/projection-consumers/inde
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { createEmptyGeneratedCommunityProjectionStore } from '#tests/fixtures/test-runtime.js';
 
 function createSnapshot(): KbCorpusSnapshot {
   return {
@@ -29,6 +30,7 @@ describe('startKiwiArtifactFetchOnBoot', () => {
       runtime: {} as Runtime,
       kb: {
         declaredAnalyzers: ['ko'],
+        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
         getCorpusStateSnapshot: () => snapshot,
         invalidateTextSnapshot: (reason: string) => {
           events.push(`invalidate:${reason}`);
@@ -89,6 +91,7 @@ describe('startKiwiArtifactFetchOnBoot', () => {
       runtime: {} as Runtime,
       kb: {
         declaredAnalyzers: [],
+        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
         getCorpusStateSnapshot: createSnapshot,
         invalidateTextSnapshot: () => ({ contentSeq: 0, metadataSeq: 0 }),
       },

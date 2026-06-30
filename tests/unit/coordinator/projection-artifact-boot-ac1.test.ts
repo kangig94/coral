@@ -4,8 +4,10 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { type ConsumerDriver } from '#src/projection-consumers/index.js';
 import { repairProjectionArtifactLagOnBoot } from '#src/kb-daemon/expansion/projection-reconcile.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
+import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import type { EngineArtifactDescriptor } from '#src/kb/corpus/artifact-port.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
+import { createEmptyGeneratedCommunityProjectionStore } from '#tests/fixtures/test-runtime.js';
 
 const SNAPSHOT: KbCorpusSnapshot = {
   snapshotId: 'snapshot-ac1',
@@ -39,6 +41,7 @@ function descriptorFor(targetConsumerIds: readonly string[]): EngineArtifactDesc
 
 function kbWithDescriptor(descriptor: EngineArtifactDescriptor): KbRuntime {
   return {
+    generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
     getCorpusStateSnapshot: () => SNAPSHOT,
     engineArtifactRegistry: {
       describeArtifacts: async () => [descriptor],
@@ -68,6 +71,7 @@ describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
     expect(driver.forceCorpusApply).toHaveBeenCalledWith(SNAPSHOT, {
       reason: 'projection-artifact-lag',
       consumers: [ORAMA_BASE_CONSUMER_ID],
+      generatedCommunityFreshness: EMPTY_GENERATED_COMMUNITY_FRESHNESS,
     });
     expect(driver.waitFreshUntil).not.toHaveBeenCalled();
   });
@@ -82,6 +86,7 @@ describe('repairProjectionArtifactLagOnBoot AC1 fallback', () => {
     expect(driver.forceCorpusApply).toHaveBeenCalledWith(SNAPSHOT, {
       reason: 'projection-artifact-lag',
       consumers: ['vector-base'],
+      generatedCommunityFreshness: EMPTY_GENERATED_COMMUNITY_FRESHNESS,
     });
     expect(driver.waitFreshUntil).not.toHaveBeenCalled();
   });

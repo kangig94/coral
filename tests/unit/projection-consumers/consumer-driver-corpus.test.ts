@@ -3,6 +3,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
+import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import type { KbProjectionInput, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
@@ -75,6 +76,7 @@ describe('ConsumerDriver corpus registrations', () => {
       },
       records: [],
       communityFresh: false,
+      ...EMPTY_GENERATED_COMMUNITY_FRESHNESS,
     };
     const prepareCalls: PrepareKbProjectionInputOptions[] = [];
     const applyInputs: KbProjectionInput[] = [];

@@ -215,7 +215,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
                 break;
               }
               case 'waiting':
-                formatted = formatWaitWaiting(event, cursor);
+                formatted = formatWaitWaiting(event, cursor, jobIds);
                 break;
             }
 

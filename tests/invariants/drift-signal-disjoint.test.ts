@@ -9,6 +9,7 @@ import { createCorpusAuthorityBaselineStore } from '#src/kb/corpus/rescan/author
 import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
 import { createCorpusMarkdownFileScan, createCorpusScanView } from '#src/kb/corpus/rescan/scan.js';
 import type { KbCorpusSnapshot } from '#src/kb/contract.js';
+import { createEmptyGeneratedCommunityProjectionStore } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
@@ -85,7 +86,8 @@ describe('drift signal split', () => {
       ],
       entityGraph: null,
     });
-    const store = createCorpusAuthorityBaselineStore(db);
+    let id = 0;
+    const store = createCorpusAuthorityBaselineStore(db, () => `test-id-${(id += 1)}`);
     const before = [...store.rebuild(scan).entries()].sort();
 
     db.prepare('DELETE FROM kb_corpus_authority_baseline').run();
@@ -98,12 +100,7 @@ describe('drift signal split', () => {
     const lag = detectProjectionArtifactLag(
       {
         getCorpusStateSnapshot: () => SNAPSHOT,
-        generatedCommunityProjectionStore: {
-          readActiveFreshness: () => ({
-            generatedCommunityGeneration: 0,
-            generatedCommunityDocsHash: 'empty',
-          }),
-        },
+        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore({ runtimeDir: tempRoot() }),
       },
       [
         {

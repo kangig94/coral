@@ -28,8 +28,20 @@ import { createKbDaemonRequestService } from '#src/kb-daemon/request-service.js'
 import { INDEX_FILE } from '#src/kb/corpus/index/store.js';
 import { GeneratedCommunityProjectionStore } from '#src/kb/curate/community/generated-projection-store.js';
 import { kbRuntimeDir, memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
+import type { KnowledgeBaseRuntime } from '#src/kb/runtime-contract.js';
+import type { KbQueryRuntime } from '#src/read-model/kb-query-runtime.js';
 import type { PrincipalWire } from '#src/security/principal-wire.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+
+type WithKbCallback<T> = (state: { kbRuntime: KnowledgeBaseRuntime; runtime: KbQueryRuntime }) => Promise<T> | T;
+
+function createSearchKbRuntime(kb: unknown): KnowledgeBaseRuntime {
+  return {
+    kb: kb as KnowledgeBaseRuntime['kb'],
+    readDb: {} as KnowledgeBaseRuntime['readDb'],
+    curateScheduler: {} as KnowledgeBaseRuntime['curateScheduler'],
+  };
+}
 
 function principalWire(projectRoot: string): PrincipalWire {
   return {
@@ -439,10 +451,10 @@ describe('KB daemon request service', () => {
   it('serves kb search through the ready write runtime so ko/Kiwi results are not read-side fallbacks', async () => {
     const runtime = new SimulationRuntime();
     const writeKb = { marker: 'write-runtime-kb' };
+    const kbRuntime = createSearchKbRuntime(writeKb);
+    const withKb = vi.fn(async (run: WithKbCallback<unknown>) => run({ kbRuntime, runtime }));
     const writeRuntime = {
-      withKb: vi.fn(async (run: (ctx: { kbRuntime: { kb: typeof writeKb } }) => Promise<unknown>) =>
-        run({ kbRuntime: { kb: writeKb } }),
-      ),
+      withKb: withKb as <T>(run: WithKbCallback<T>) => Promise<T>,
       warmSearchRuntime: vi.fn(),
       searchReadiness: vi.fn(() => ({ ready: true as const })),
       createSource: vi.fn(async () => {
@@ -468,17 +480,17 @@ describe('KB daemon request service', () => {
       },
     });
     expect(writeRuntime.warmSearchRuntime).toHaveBeenCalledTimes(1);
-    expect(writeRuntime.withKb).toHaveBeenCalledTimes(1);
+    expect(withKb).toHaveBeenCalledTimes(1);
     expect(searchMock.searchKb).toHaveBeenCalledWith(writeKb, '계약', 3, 'all', 'auto', undefined);
   });
 
   it('makes served search reachable in a read-only session after daemon warmup', async () => {
     const runtime = new SimulationRuntime();
     let ready = false;
+    const kbRuntime = createSearchKbRuntime({});
+    const withKb = vi.fn(async (run: WithKbCallback<unknown>) => run({ kbRuntime, runtime }));
     const writeRuntime = {
-      withKb: vi.fn(async (run: (ctx: { kbRuntime: { kb: Record<string, never> } }) => Promise<unknown>) =>
-        run({ kbRuntime: { kb: {} } }),
-      ),
+      withKb: withKb as <T>(run: WithKbCallback<T>) => Promise<T>,
       warmSearchRuntime: vi.fn(() => {
         ready = true;
       }),

@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as CorpusScanMod from '#src/kb/corpus/rescan/scan.js';
 import * as curateState from '#src/kb/curate/state/index.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { createCurateScheduler, type CurateHandle, type RunCommunitySummaryJob } from '#src/kb/curate/scheduler.js';
@@ -51,6 +52,16 @@ import { curateDb } from '../../../src/kb/curate/db-access.js';
 vi.mock('#src/kb/curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
 }));
+
+vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
+  const actual = await vi.importActual<typeof CorpusScanMod>('#src/kb/corpus/rescan/scan.js');
+  return {
+    CORPUS_SCAN_WORKER_TIMEOUT_MS: 120_000,
+    buildCorpusScanViewInWorker: vi.fn(async (...args: Parameters<typeof actual.buildCorpusScanView>) =>
+      actual.buildCorpusScanView(...args),
+    ),
+  };
+});
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
@@ -342,7 +353,7 @@ function generatedCommunityFrontmatters() {
 }
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     await vi.advanceTimersByTimeAsync(1);
     if (!handle.isRunning()) {
       return;

@@ -25,7 +25,7 @@ import { communityEntryId, noteEntryId, type KbIndex } from '#src/kb/entry-types
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
@@ -206,12 +206,7 @@ describe('Orama AC1 projection metadata', () => {
     const lag = detectProjectionArtifactLag(
       {
         getCorpusStateSnapshot: () => snapshot,
-        generatedCommunityProjectionStore: {
-          readActiveFreshness: () => ({
-            generatedCommunityGeneration: 0,
-            generatedCommunityDocsHash: 'empty',
-          }),
-        },
+        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore({ runtimeDir: allocateRoot('coral-generated-community-') }),
       },
       [{ ...descriptor, targetConsumerIds: [ORAMA_BASE_CONSUMER_ID] }],
     );
