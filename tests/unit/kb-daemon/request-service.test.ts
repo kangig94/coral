@@ -1,9 +1,33 @@
 import { dirname, join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const searchMock = vi.hoisted(() => ({
+  searchKb: vi.fn(async () => ({
+    results: [
+      {
+        note: 'ko-contract',
+        kind: 'note' as const,
+        title: 'KO Contract',
+        matchedBy: ['content' as const],
+        tags: ['ko'],
+        principles: [],
+        evidence: [],
+        snippet: '계약 검색 결과',
+      },
+    ],
+    mode: 'text' as const,
+    retrievalDiagnostics: [],
+  })),
+}));
+
+vi.mock('#src/kb/ops/search.js', () => ({
+  searchKb: searchMock.searchKb,
+}));
 
 import { createKbDaemonRequestService } from '#src/kb-daemon/request-service.js';
 import { INDEX_FILE } from '#src/kb/corpus/index/store.js';
-import { communityPathFromName, kbRuntimeDir, memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
+import { GeneratedCommunityProjectionStore } from '#src/kb/curate/community/generated-projection-store.js';
+import { kbRuntimeDir, memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
 import type { PrincipalWire } from '#src/security/principal-wire.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -36,6 +60,10 @@ const deniedSourceImportPrincipals: Array<[string, PrincipalWire]> = [
   ],
 ];
 
+afterEach(() => {
+  searchMock.searchKb.mockClear();
+});
+
 function writeNote(runtime: SimulationRuntime, slug: string): void {
   const path = notePathFromName(slug, runtime.paths.coral.corpus.kbRoot);
   runtime.storage.mkdirSync(dirname(path), { recursive: true });
@@ -66,23 +94,48 @@ function writeMemo(runtime: SimulationRuntime, projectRoot: string): void {
   );
 }
 
-function writeCommunity(runtime: SimulationRuntime, slug: string): void {
-  const path = communityPathFromName(slug, runtime.paths.coral.corpus.kbRoot);
-  runtime.storage.mkdirSync(dirname(path), { recursive: true });
-  runtime.storage.writeFileSync(
-    path,
-    [
-      '---',
-      'createdAt: 2026-01-01T00:00:00.000Z',
-      'updatedAt: 2026-01-01T00:00:00.000Z',
-      'level: 0',
-      '---',
-      '# Alpha Community',
-      '',
-      '## Members',
-      '',
-    ].join('\n'),
-  );
+function writeGeneratedCommunity(runtime: SimulationRuntime, slug: string): void {
+  const runtimeDir = kbRuntimeDir(runtime.flavor);
+  const store = new GeneratedCommunityProjectionStore({
+    runtimeDir,
+    storage: runtime.storage,
+    ids: runtime.ids,
+    time: runtime.time,
+  });
+  const snapshot = {
+    snapshotId: 'daemon-summary-snapshot',
+    contentSeq: 0,
+    metadataSeq: 0,
+    contentManifestHash: 'content',
+    metadataManifestHash: 'metadata',
+  };
+  const staged = store.stageGeneration({
+    snapshot,
+    topologyHash: 'daemon-summary-topology',
+    documents: [
+      {
+        slug,
+        title: 'Alpha Community',
+        level: 0,
+        members: [],
+        createdAt: '2026-01-01',
+        updatedAt: '2026-01-01',
+        content: [
+          '---',
+          'coralGeneratedCommunity: true',
+          'createdAt: 2026-01-01',
+          'updatedAt: 2026-01-01',
+          'level: 0',
+          '---',
+          '# Alpha Community',
+          '',
+          '## Members',
+          '',
+        ].join('\n'),
+      },
+    ],
+  });
+  store.adoptStagedGeneration(staged, snapshot);
 }
 
 function writeWiki(runtime: SimulationRuntime, slug: string): void {
@@ -383,6 +436,127 @@ describe('KB daemon request service', () => {
     expect(writeRuntime.withKb).not.toHaveBeenCalled();
   });
 
+  it('serves kb search through the ready write runtime so ko/Kiwi results are not read-side fallbacks', async () => {
+    const runtime = new SimulationRuntime();
+    const writeKb = { marker: 'write-runtime-kb' };
+    const writeRuntime = {
+      withKb: vi.fn(async (run: (ctx: { kbRuntime: { kb: typeof writeKb } }) => Promise<unknown>) =>
+        run({ kbRuntime: { kb: writeKb } }),
+      ),
+      warmSearchRuntime: vi.fn(),
+      searchReadiness: vi.fn(() => ({ ready: true as const })),
+      createSource: vi.fn(async () => {
+        throw new Error('source import should not be called');
+      }),
+      reindex: vi.fn(async () => {
+        throw new Error('reindex should not be called');
+      }),
+      health: () => ({ phase: 'ready' as const, initializedAt: 1 }),
+    };
+    const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime, writeRuntime });
+
+    const result = await service.read({
+      method: 'readSearch',
+      args: { query: '계약', top_k: 3, scope: 'all' },
+      ctx: daemonCtx(),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        results: [expect.objectContaining({ note: 'ko-contract' })],
+      },
+    });
+    expect(writeRuntime.warmSearchRuntime).toHaveBeenCalledTimes(1);
+    expect(writeRuntime.withKb).toHaveBeenCalledTimes(1);
+    expect(searchMock.searchKb).toHaveBeenCalledWith(writeKb, '계약', 3, 'all', 'auto', undefined);
+  });
+
+  it('makes served search reachable in a read-only session after daemon warmup', async () => {
+    const runtime = new SimulationRuntime();
+    let ready = false;
+    const writeRuntime = {
+      withKb: vi.fn(async (run: (ctx: { kbRuntime: { kb: Record<string, never> } }) => Promise<unknown>) =>
+        run({ kbRuntime: { kb: {} } }),
+      ),
+      warmSearchRuntime: vi.fn(() => {
+        ready = true;
+      }),
+      searchReadiness: vi.fn(() =>
+        ready
+          ? { ready: true as const }
+          : {
+              ready: false as const,
+              reason: 'write_runtime_initializing',
+              message: 'KB search runtime is still warming.',
+            },
+      ),
+      createSource: vi.fn(async () => {
+        throw new Error('source import should not be called');
+      }),
+      reindex: vi.fn(async () => {
+        throw new Error('reindex should not be called');
+      }),
+      health: () => ({ phase: ready ? ('ready' as const) : ('not_initialized' as const) }),
+    };
+    const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime, writeRuntime });
+
+    await expect(service.warmup()).resolves.toMatchObject({ phase: 'ready' });
+    await expect(
+      service.read({
+        method: 'readSearch',
+        args: { query: '계약' },
+        ctx: daemonCtx(),
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: { results: [expect.objectContaining({ note: 'ko-contract' })] },
+    });
+    expect(writeRuntime.warmSearchRuntime).toHaveBeenCalled();
+    expect(writeRuntime.withKb).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails fast when the Kiwi analyzer was evicted instead of timing out or returning silent zero hits', async () => {
+    const runtime = new SimulationRuntime();
+    const writeRuntime = {
+      withKb: vi.fn(async () => {
+        throw new Error('write runtime search should not run while analyzer is evicted');
+      }),
+      warmSearchRuntime: vi.fn(),
+      searchReadiness: vi.fn(() => ({
+        ready: false as const,
+        reason: 'kiwi_analyzer_evicted',
+        message: 'KB search analyzer is warming.',
+      })),
+      createSource: vi.fn(async () => {
+        throw new Error('source import should not be called');
+      }),
+      reindex: vi.fn(async () => {
+        throw new Error('reindex should not be called');
+      }),
+      health: () => ({ phase: 'ready' as const, initializedAt: 1 }),
+    };
+    const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime, writeRuntime });
+
+    const startedAt = Date.now();
+    const result = await service.read({
+      method: 'readSearch',
+      args: { query: '계약' },
+      ctx: daemonCtx(),
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'kb_search_runtime_not_ready',
+      message: 'KB search analyzer is warming.',
+      detail: { reason: 'kiwi_analyzer_evicted' },
+    });
+    expect(writeRuntime.warmSearchRuntime).toHaveBeenCalledTimes(1);
+    expect(writeRuntime.withKb).not.toHaveBeenCalled();
+    expect(searchMock.searchKb).not.toHaveBeenCalled();
+  });
+
   it.each(deniedSourceImportPrincipals)(
     'denies createSource for %s before touching write runtime services',
     async (_label, principal) => {
@@ -442,7 +616,7 @@ describe('KB daemon request service', () => {
 
   it('reads community summary surfaces from the daemon request runtime', async () => {
     const runtime = new SimulationRuntime();
-    writeCommunity(runtime, 'alpha-community');
+    writeGeneratedCommunity(runtime, 'alpha-community');
     const indexPath = join(kbRuntimeDir(runtime.flavor), INDEX_FILE);
     runtime.storage.mkdirSync(dirname(indexPath), { recursive: true });
     runtime.storage.writeFileSync(indexPath, '{not-json');

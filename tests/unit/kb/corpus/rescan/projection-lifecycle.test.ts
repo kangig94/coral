@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Database } from '#src/store/db.js';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
+import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import { update } from '#src/kb/ops/update.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
@@ -16,6 +17,8 @@ const scanGate = vi.hoisted(() => {
   let markStarted: (() => void) | null = null;
   return {
     enabled: false,
+    insideMutationLock: false,
+    forbiddenLockWork: [] as string[],
     waitForRelease: null as Promise<void> | null,
     started: null as Promise<void> | null,
     arm() {
@@ -30,12 +33,19 @@ const scanGate = vi.hoisted(() => {
     notifyStarted() {
       markStarted?.();
     },
+    assertUnlocked(label: string) {
+      if (this.insideMutationLock) {
+        this.forbiddenLockWork.push(label);
+      }
+    },
     release() {
       this.enabled = false;
       releaseScan?.();
     },
     reset() {
       this.enabled = false;
+      this.insideMutationLock = false;
+      this.forbiddenLockWork = [];
       this.waitForRelease = null;
       this.started = null;
       releaseScan = null;
@@ -51,6 +61,7 @@ vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
   return {
     ...actual,
     buildCorpusScanViewInWorker: vi.fn(async (...args: Parameters<typeof actual.buildCorpusScanViewInWorker>) => {
+      scanGate.assertUnlocked('corpus scan');
       if (scanGate.enabled) {
         scanGate.notifyStarted();
         await scanGate.waitForRelease;
@@ -173,7 +184,15 @@ describe('corpus projection lifecycle', () => {
     expect(result).toMatchObject({ status: 'discarded', reason: 'stale_seq' });
     expect(kb.readIndex()).toBeNull();
     expect(kb.readIndexState().textStaleReason).toBe('concurrent metadata mutation');
+    expect(kb.corpusAuthorityBaseline.read()).toEqual(new Map());
+    expect(kb.generatedCommunityProjectionStore.readActiveFreshness()).toEqual(EMPTY_GENERATED_COMMUNITY_FRESHNESS);
     expect(existsSync(staged.stagedIndex.stagingDir)).toBe(false);
+
+    const retryCandidate = await deriveCorpusProjection(kb, captureIndexStateSnapshot(kb.readIndexState()));
+    const retry = await commitCorpusProjection(kb, stageCorpusProjectionArtifacts(kb, retryCandidate));
+    expect(retry.status).toBe('committed');
+    expect(kb.readIndex()?.entries[noteEntryId('projection-note')]).toBeDefined();
+    expect(kb.readIndexState().textStaleReason).toBeUndefined();
   });
 
   it('discards a G1-derived candidate after generated generation G2 adopts without clearing G2 freshness', async () => {
@@ -234,31 +253,41 @@ describe('corpus projection lifecycle', () => {
     expect(kb.readIndexState().textStaleReason).toBeUndefined();
   });
 
-  it('stages full artifacts before the mutation lock and commits only bounded adoption work', async () => {
+  it('keeps corpus-scale rebuild work outside the mutation lock and commits only bounded adoption work', async () => {
     const { performRescan } = await loadLifecycleModule();
     const { kb, root } = createHarness();
     writeNote(root, 'projection-note', 'Initial body.');
-    let insideLock = false;
     const originalLock = kb.withMutationLock.bind(kb);
     vi.spyOn(kb, 'withMutationLock').mockImplementation(async (fn, options) =>
       originalLock(async (mutation, args) => {
-        insideLock = true;
+        scanGate.insideMutationLock = true;
         try {
           return await fn(mutation, args);
         } finally {
-          insideLock = false;
+          scanGate.insideMutationLock = false;
         }
       }, options),
     );
     const originalStage = kb.stageCorpusProjectionArtifacts.bind(kb);
     vi.spyOn(kb, 'stageCorpusProjectionArtifacts').mockImplementation((candidate) => {
-      expect(insideLock).toBe(false);
+      scanGate.assertUnlocked('full index serialization and projection staging');
       return originalStage(candidate);
+    });
+    const originalBaselineStage = kb.corpusAuthorityBaseline.stageReplacement.bind(kb.corpusAuthorityBaseline);
+    vi.spyOn(kb.corpusAuthorityBaseline, 'stageReplacement').mockImplementation((records, generationId) => {
+      scanGate.assertUnlocked('full authority baseline replacement');
+      return originalBaselineStage(records, generationId);
+    });
+    const originalBaselineReplace = kb.corpusAuthorityBaseline.replace.bind(kb.corpusAuthorityBaseline);
+    vi.spyOn(kb.corpusAuthorityBaseline, 'replace').mockImplementation((records) => {
+      scanGate.assertUnlocked('full authority baseline replace');
+      return originalBaselineReplace(records);
     });
 
     await expect(performRescan(kb, captureIndexStateSnapshot(kb.readIndexState()))).resolves.toMatchObject({
       status: 'committed',
     });
+    expect(scanGate.forbiddenLockWork).toEqual([]);
   });
 
   it.each([
@@ -272,6 +301,34 @@ describe('corpus projection lifecycle', () => {
     const { deriveCorpusProjection, stageCorpusProjectionArtifacts, commitCorpusProjection } = await loadLifecycleModule();
     const harness = createHarness();
     writeNote(harness.root, 'projection-note', `Body for ${phase}.`);
+    const generated = harness.kb.generatedCommunityProjectionStore.stageGeneration({
+      snapshot: harness.kb.captureCorpusSnapshot(),
+      topologyHash: 'topology-crash',
+      documents: [
+        generatedCommunityDocument(
+          [
+            '---',
+            'coralGeneratedCommunity: true',
+            'createdAt: 2026-06-01',
+            'updatedAt: 2026-06-01',
+            'level: 1',
+            '---',
+            '# Generated G2',
+            '',
+            '## Members',
+            '- #fresh',
+            '',
+            `Generated community survives ${phase}.`,
+            '',
+          ].join('\n'),
+        ),
+      ],
+    });
+    const generatedAdopt = harness.kb.generatedCommunityProjectionStore.adoptStagedGeneration(
+      generated,
+      harness.kb.captureCorpusSnapshot(),
+    );
+    expect(generatedAdopt.status).toBe('adopted');
 
     const candidate = await deriveCorpusProjection(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState()));
     const staged = stageCorpusProjectionArtifacts(harness.kb, candidate);
@@ -285,13 +342,23 @@ describe('corpus projection lifecycle', () => {
     harness.db = reopened.db;
     harness.kb = reopened.kb;
     const stateWritten = phase === 'state_written' || phase === 'committed';
+    expect(harness.kb.generatedCommunityProjectionStore.readActiveFreshness()).toEqual({
+      generatedCommunityGeneration: 1,
+      generatedCommunityDocsHash: generated.generationDocsHash,
+    });
+    expect(harness.kb.generatedCommunityProjectionStore.readCommunityDocument('generated-g2')).not.toBeNull();
+    expect(existsSync(staged.stagedIndex.stagingDir)).toBe(false);
+    expect(existsSync(join(harness.runtimeDir, 'corpus-projection', 'commits', staged.commitId))).toBe(false);
     if (stateWritten) {
       expect(harness.kb.readIndex()?.entries[noteEntryId('projection-note')]).toBeDefined();
+      expect(harness.kb.readIndex()?.generatedCommunityGeneration).toBe(1);
+      expect(harness.kb.corpusAuthorityBaseline.read().size).toBeGreaterThan(0);
       expect(harness.kb.readIndexState().textStaleReason).toBeUndefined();
       return;
     }
 
     expect(harness.kb.readIndex()).toBeNull();
+    expect(harness.kb.corpusAuthorityBaseline.read().size).toBe(0);
     expect(captureIndexStateSnapshot(harness.kb.readIndexState())).toEqual({ contentSeq: 0, metadataSeq: 0 });
   });
 });
