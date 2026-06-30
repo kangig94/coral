@@ -67,7 +67,7 @@ export async function deriveCorpusProjection(
     index,
     finalSurface,
     incidents,
-    ...(rebuildInfo.externalMutation === undefined ? {} : { externalMutation: rebuildInfo.externalMutation }),
+    ...(rebuildInfo.externalMutation == null ? {} : { externalMutation: rebuildInfo.externalMutation }),
     counts: buildCounts(notes, sources, communities, wikis, principles, index),
   };
 }

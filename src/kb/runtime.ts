@@ -889,10 +889,11 @@ function isCorpusProjectionSeq(value: unknown): value is Pick<KbIndexState, 'con
 }
 
 function isCorpusProjectionIndexState(value: unknown): value is KbIndexState {
-  return (
-    isCorpusProjectionSeq(value) &&
-    (value.textStaleReason === undefined || typeof value.textStaleReason === 'string')
-  );
+  if (!isCorpusProjectionSeq(value)) {
+    return false;
+  }
+  const textStaleReason = (value as { textStaleReason?: unknown }).textStaleReason;
+  return textStaleReason === undefined || typeof textStaleReason === 'string';
 }
 
 function isCorpusProjectionCommitPhase(value: unknown): value is CorpusProjectionCommitRecord['phase'] {
