@@ -2,12 +2,13 @@ import { sha256Hex } from '../../infra/hash.js';
 import type { EntityGraph, KbIndex } from '../entry-types.js';
 import {
   communityMetadataManifestId,
+  communitySlugFromMetadataManifestId,
   computeManifestHashFromSurfaceHashes,
   entityGraphMetadataManifestId,
-  isCommunityMetadataManifestId,
   type ManifestAuthority,
 } from './manifest-authority.js';
 import { computeMetadataSurfaceHash } from './snapshot.js';
+import type { GeneratedCommunityFreshness } from '../curate/community/generated-projection-store.js';
 
 export type CorpusStructuralKey = {
   readonly entityGraphHash: string;
@@ -25,19 +26,46 @@ export function corpusStructuralCacheKey(key: CorpusStructuralKey): string {
   return `${key.entityGraphHash}\u0000${key.communityDocsHash}`;
 }
 
-export function computeCommunityDocsHashFromSurfaceHashes(metadataHashes: ReadonlyMap<string, string>): string {
+function combineAuthoredAndGeneratedCommunityDocsHash(
+  authoredCommunityDocsHash: string,
+  generatedCommunityFreshness: GeneratedCommunityFreshness,
+): string {
+  return computeManifestHashFromSurfaceHashes(
+    new Map([
+      ['authored-community-docs', authoredCommunityDocsHash],
+      ['generated-community-docs', generatedCommunityFreshness.generatedCommunityDocsHash],
+    ]),
+  );
+}
+
+export function computeCommunityDocsHashFromSurfaceHashes(
+  metadataHashes: ReadonlyMap<string, string>,
+  generatedCommunityFreshness: GeneratedCommunityFreshness,
+  generatedCommunitySlugs: ReadonlySet<string> = new Set(),
+): string {
   const communityHashes = new Map<string, string>();
   for (const [manifestId, surfaceHash] of metadataHashes) {
-    if (isCommunityMetadataManifestId(manifestId)) {
+    const slug = communitySlugFromMetadataManifestId(manifestId);
+    if (slug !== null && !generatedCommunitySlugs.has(slug)) {
       communityHashes.set(manifestId, surfaceHash);
     }
   }
-  return computeManifestHashFromSurfaceHashes(communityHashes);
+  return combineAuthoredAndGeneratedCommunityDocsHash(
+    computeManifestHashFromSurfaceHashes(communityHashes),
+    generatedCommunityFreshness,
+  );
 }
 
-export function computeCommunityDocsHashFromRawDocuments(documents: Iterable<RawCommunityDocument>): string {
+export function computeCommunityDocsHashFromRawDocuments(
+  documents: Iterable<RawCommunityDocument>,
+  generatedCommunityFreshness: GeneratedCommunityFreshness,
+  generatedCommunitySlugs: ReadonlySet<string> = new Set(),
+): string {
   const communityHashes = new Map<string, string>();
   for (const document of documents) {
+    if (generatedCommunitySlugs.has(document.slug)) {
+      continue;
+    }
     communityHashes.set(
       communityMetadataManifestId(document.slug),
       computeMetadataSurfaceHash({
@@ -45,12 +73,17 @@ export function computeCommunityDocsHashFromRawDocuments(documents: Iterable<Raw
       }),
     );
   }
-  return computeManifestHashFromSurfaceHashes(communityHashes);
+  return combineAuthoredAndGeneratedCommunityDocsHash(
+    computeManifestHashFromSurfaceHashes(communityHashes),
+    generatedCommunityFreshness,
+  );
 }
 
 export function createCorpusStructuralKeyFromRawSurfaces(input: {
   readonly entityGraphRaw: string | null;
   readonly communityDocuments: Iterable<RawCommunityDocument>;
+  readonly generatedCommunityFreshness: GeneratedCommunityFreshness;
+  readonly generatedCommunitySlugs?: ReadonlySet<string>;
 }): CorpusStructuralKey | undefined {
   if (input.entityGraphRaw === null) {
     return undefined;
@@ -60,11 +93,19 @@ export function createCorpusStructuralKeyFromRawSurfaces(input: {
     entityGraphHash: computeMetadataSurfaceHash({
       rawBytes: input.entityGraphRaw,
     }),
-    communityDocsHash: computeCommunityDocsHashFromRawDocuments(input.communityDocuments),
+    communityDocsHash: computeCommunityDocsHashFromRawDocuments(
+      input.communityDocuments,
+      input.generatedCommunityFreshness,
+      input.generatedCommunitySlugs,
+    ),
   };
 }
 
-export function readCurrentCorpusStructuralKey(authority: CorpusStructuralKeyAuthority): CorpusStructuralKey | null {
+export function readCurrentCorpusStructuralKey(
+  authority: CorpusStructuralKeyAuthority,
+  generatedCommunityFreshness: GeneratedCommunityFreshness,
+  generatedCommunitySlugs: ReadonlySet<string> = new Set(),
+): CorpusStructuralKey | null {
   const entityGraphHash = authority.getCurrentSurfaceHash('metadata', entityGraphMetadataManifestId());
   if (entityGraphHash === null) {
     return null;
@@ -72,17 +113,27 @@ export function readCurrentCorpusStructuralKey(authority: CorpusStructuralKeyAut
 
   return {
     entityGraphHash,
-    communityDocsHash: computeCommunityDocsHashFromSurfaceHashes(authority.getCurrentSurfaceHashes('metadata')),
+    communityDocsHash: computeCommunityDocsHashFromSurfaceHashes(
+      authority.getCurrentSurfaceHashes('metadata'),
+      generatedCommunityFreshness,
+      generatedCommunitySlugs,
+    ),
   };
 }
 
 export function resolveCorpusStructuralKey(input: {
   readonly index: KbIndex;
   readonly manifestAuthority: CorpusStructuralKeyAuthority;
+  readonly generatedCommunityFreshness: GeneratedCommunityFreshness;
+  readonly generatedCommunitySlugs?: ReadonlySet<string>;
   readonly currentGraph?: EntityGraph | null;
   readonly readCurrentGraph?: () => EntityGraph | null;
 }): CorpusStructuralKey | null {
-  const currentKey = readCurrentCorpusStructuralKey(input.manifestAuthority);
+  const currentKey = readCurrentCorpusStructuralKey(
+    input.manifestAuthority,
+    input.generatedCommunityFreshness,
+    input.generatedCommunitySlugs,
+  );
   if (currentKey === null || Object.keys(input.index.entityMeta).length === 0) {
     return null;
   }

@@ -15,6 +15,8 @@ import type {
   KbCorpusPublication,
   KbCorpusPublishCallbacks,
   KbCorpusSnapshot,
+  KbGeneratedCommunityProjectionCallbacks,
+  KbGeneratedCommunityPublication,
   KbInboundSyncOptions,
   KbIndexMutationLane,
   KbIndexState,
@@ -74,6 +76,7 @@ import { CorpusMutationFinalizer, type KbRuntimeMutationLockContext } from './co
 import { CorpusPublicationService } from './corpus/publication-service.js';
 import { buildCurrentCorpusSurface } from './corpus/surface.js';
 import { readDeclaredKbAnalyzersFromEnv, type KbDeclaredAnalyzer } from './extra-langs.js';
+import { GeneratedCommunityProjectionStore } from './curate/community/generated-projection-store.js';
 
 export interface CreateKbRuntimeOptions {
   markdownRoot: string;
@@ -96,6 +99,7 @@ export interface CreateKbRuntimeOptions {
   /** Defaults to {@link DEFAULT_MUTATION_LOCK_TIMEOUT_MS}; override for slow paths. */
   mutationLockTimeoutMs?: number;
   engineArtifactRegistry?: EngineArtifactRegistry;
+  generatedCommunityProjectionCallbacks?: KbGeneratedCommunityProjectionCallbacks;
 }
 
 type KbRuntimeTimePort = Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'> & Partial<Pick<TimePort, 'sleep'>>;
@@ -122,6 +126,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly roleCatalog: KbRuntime['roleCatalog'];
   readonly engineArtifactRegistry: EngineArtifactRegistry;
   readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
+  readonly generatedCommunityProjectionStore: GeneratedCommunityProjectionStore;
   readonly projectionArtifacts: KbProjectionArtifactPort;
   readonly corpusProjectionReader: KbRuntime['corpusProjectionReader'];
   private readonly paths: KbRuntimePaths;
@@ -143,6 +148,7 @@ class KbRuntimeImpl implements KbRuntime {
   private readonly mutationFinalizer: CorpusMutationFinalizer;
   private readonly freshnessService: CorpusFreshnessService;
   private readonly inboundSyncService: CorpusInboundSyncService;
+  private readonly generatedCommunityProjectionCallbacks?: KbGeneratedCommunityProjectionCallbacks;
 
   constructor({
     markdownRoot,
@@ -158,6 +164,7 @@ class KbRuntimeImpl implements KbRuntime {
     processPort,
     mutationLockTimeoutMs,
     engineArtifactRegistry,
+    generatedCommunityProjectionCallbacks,
   }: CreateKbRuntimeOptions) {
     this.markdownRoot = markdownRoot;
     this.version = version;
@@ -195,6 +202,13 @@ class KbRuntimeImpl implements KbRuntime {
     this.roleCatalog = roleRegistry.catalogView();
     this.engineArtifactRegistry = engineArtifactRegistry ?? new EngineArtifactRegistry();
     this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db);
+    this.generatedCommunityProjectionCallbacks = generatedCommunityProjectionCallbacks;
+    this.generatedCommunityProjectionStore = new GeneratedCommunityProjectionStore({
+      runtimeDir: this.runtimeDir,
+      storage: this.storagePort,
+      ids: this.ids,
+      time: this.time,
+    });
     this.projectionArtifacts = {
       runtimeDir: this.runtimeDir,
       files: {
@@ -219,7 +233,15 @@ class KbRuntimeImpl implements KbRuntime {
         if (ensureFreshness) {
           await this.ensureCorpusFreshness({ wait: true, signal });
         }
-        return createKbProjectionInput(this, options);
+        const activeGenerated = this.generatedCommunityProjectionStore.readActiveGeneration();
+        return createKbProjectionInput(this, {
+          ...options,
+          generatedCommunityDocs: options.generatedCommunityDocs ?? activeGenerated.records,
+          generatedCommunityGeneration:
+            options.generatedCommunityGeneration ?? activeGenerated.generatedCommunityGeneration,
+          generatedCommunityDocsHash:
+            options.generatedCommunityDocsHash ?? activeGenerated.generatedCommunityDocsHash,
+        });
       },
     };
     this.corpusStateMirror = createCorpusStateMirror(this.db);
@@ -262,6 +284,8 @@ class KbRuntimeImpl implements KbRuntime {
     this.mutationFinalizer = new CorpusMutationFinalizer({
       indexStore: this.indexStore,
       manifestAuthority: this.manifestAuthority,
+      readGeneratedCommunityFreshness: () => this.generatedCommunityProjectionStore.readActiveFreshness(),
+      readGeneratedCommunitySlugs: () => this.generatedCommunityProjectionStore.readActiveGeneratedSlugs(),
       entityGraphHost: { storagePort: this.storagePort, ids: this.ids },
       entityGraphPath: () => this.entityGraphPath(),
       getActiveMutationContext: () => this.activeMutationContext,
@@ -323,6 +347,7 @@ class KbRuntimeImpl implements KbRuntime {
         sourcePath: (source) => this.sourcePath(source),
         communityPath: (community) => this.communityPath(community),
         principlePath: (principle) => this.principlePath(principle),
+        generatedCommunitySlugs: () => this.generatedCommunityProjectionStore.readActiveGeneratedSlugs(),
       },
       recordMutationCommitted: (lane, reason) => {
         this.recordMutationCommitted(lane, reason);
@@ -388,6 +413,8 @@ class KbRuntimeImpl implements KbRuntime {
     return resolveCorpusStructuralKey({
       index,
       manifestAuthority: this.manifestAuthority,
+      generatedCommunityFreshness: this.generatedCommunityProjectionStore.readActiveFreshness(),
+      generatedCommunitySlugs: this.generatedCommunityProjectionStore.readActiveGeneratedSlugs(),
       ...(currentGraph === undefined ? {} : { currentGraph }),
       readCurrentGraph: () => this.readEntityGraph(),
     });
@@ -422,6 +449,14 @@ class KbRuntimeImpl implements KbRuntime {
   }
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void {
     this.publicationService.register(corpusPublishCallbacks);
+  }
+
+  publishGeneratedCommunityProjection(publication: KbGeneratedCommunityPublication): void {
+    void Promise.resolve(this.generatedCommunityProjectionCallbacks?.notifyGeneratedCommunityProjection(publication)).catch(
+      (error: unknown) => {
+        backendLog.error('Generated community projection publication failed', error);
+      },
+    );
   }
 
   recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {

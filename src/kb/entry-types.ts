@@ -230,6 +230,8 @@ export interface KbIndex {
   entityMeta: Record<string, EntityMeta>;
   relationships: EntityRelationship[];
   structuralKey?: CorpusStructuralKey;
+  generatedCommunityGeneration?: number;
+  generatedCommunityDocsHash?: string;
 }
 
 export interface KbSearchResponse {

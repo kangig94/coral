@@ -356,6 +356,12 @@ export function parseIndex(value: unknown): KbIndex {
     entityMeta: parseEntityMetaMap(value.entityMeta, 'Invalid KB index'),
     relationships: parseEntityRelationships(value.relationships, 'Invalid KB index'),
     ...(value.structuralKey === undefined ? {} : { structuralKey: parseCorpusStructuralKey(value.structuralKey) }),
+    ...(value.generatedCommunityGeneration === undefined
+      ? {}
+      : { generatedCommunityGeneration: parseNonNegativeInteger(value.generatedCommunityGeneration, 'generatedCommunityGeneration') }),
+    ...(value.generatedCommunityDocsHash === undefined
+      ? {}
+      : { generatedCommunityDocsHash: assertNonEmptyText(value.generatedCommunityDocsHash, 'generatedCommunityDocsHash') }),
   };
 }
 

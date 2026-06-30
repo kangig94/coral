@@ -2,10 +2,18 @@ import { nowIsoString } from '../../../infra/time.js';
 import { captureCommunityManifestDelta } from '../../corpus/manifest-authority.js';
 import { writeFileAtomic } from '../../corpus/file-atomic.js';
 import { recordMetadataMutation } from '../../corpus/index/mutations.js';
+import { isNoEntryError } from '../../../infra/fs-errors.js';
+import {
+  extractBody,
+  extractTitle,
+  parseCommunityFrontmatter,
+  parseMembersFromBody,
+  parseSummaryFromBody,
+} from '../../corpus/frontmatter.js';
 import { compareLocale } from '../../validation.js';
 import type { KbRuntime } from '../../contract.js';
 import type { ExistingGeneratedCommunity } from './contracts.js';
-import { loadExistingCommunityState, renderCommunityDocument } from './documents.js';
+import { renderCommunityDocument } from './documents.js';
 import { CURATE_STALE_REASON } from '../operations.js';
 import {
   buildCommunitySummaryInput,
@@ -30,7 +38,12 @@ export type StaleCommunity = { slug: string; level: number };
 export type CommunitySummaryInput = { slug: string; level: number; kind: 'leaf' | 'parent'; input: string };
 export type CommunitySummaryReadRuntime = Pick<
   KbRuntime,
-  'communitiesDir' | 'notePath' | 'sourcePath' | 'storagePort' | 'readIndexOrEmpty'
+  | 'generatedCommunityProjectionStore'
+  | 'communityPath'
+  | 'notePath'
+  | 'sourcePath'
+  | 'storagePort'
+  | 'readIndexOrEmpty'
 >;
 
 function bySlug(generated: ExistingGeneratedCommunity[]): Map<string, ExistingGeneratedCommunity> {
@@ -41,6 +54,23 @@ function bySlug(generated: ExistingGeneratedCommunity[]): Map<string, ExistingGe
   return map;
 }
 
+function generatedCommunities(kb: CommunitySummaryReadRuntime): ExistingGeneratedCommunity[] {
+  return kb.generatedCommunityProjectionStore.readActiveGeneration().records.map((record) => ({
+    slug: record.slug,
+    title: record.title,
+    level: record.level,
+    members: [...record.members],
+    ...(record.parent === undefined ? {} : { parent: record.parent }),
+    ...(record.children === undefined ? {} : { children: [...record.children] }),
+    ...(record.summary === undefined ? {} : { summary: record.summary }),
+    ...(record.summaryInputFingerprint === undefined
+      ? {}
+      : { summaryInputFingerprint: record.summaryInputFingerprint }),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  }));
+}
+
 /**
  * Communities whose stored summary is missing or whose input fingerprint no
  * longer matches the current inputs, ordered children-before-parents (level
@@ -48,7 +78,7 @@ function bySlug(generated: ExistingGeneratedCommunity[]): Map<string, ExistingGe
  * A converged corpus returns an empty list — the agent then has nothing to do.
  */
 export function listStaleCommunities(kb: CommunitySummaryReadRuntime): StaleCommunity[] {
-  const { generated } = loadExistingCommunityState(kb);
+  const generated = generatedCommunities(kb);
   const index = kb.readIndexOrEmpty();
   const communities = bySlug(generated);
   const stale: StaleCommunity[] = [];
@@ -73,13 +103,46 @@ export function listStaleCommunities(kb: CommunitySummaryReadRuntime): StaleComm
 
 /** The LLM input context for one community, or null when the slug is unknown. */
 export function readCommunitySummaryInput(kb: CommunitySummaryReadRuntime, slug: string): CommunitySummaryInput | null {
-  const { generated } = loadExistingCommunityState(kb);
+  const generated = generatedCommunities(kb);
   const community = generated.find((entry) => entry.slug === slug);
   if (community === undefined) {
-    return null;
+    const authored = loadAuthoredCommunity(kb, slug);
+    if (authored === null) {
+      return null;
+    }
+    const { kind, input } = buildCommunitySummaryInput(authored, bySlug([authored]), kb, kb.readIndexOrEmpty());
+    return { slug, level: authored.level, kind, input };
   }
   const { kind, input } = buildCommunitySummaryInput(community, bySlug(generated), kb, kb.readIndexOrEmpty());
   return { slug, level: community.level, kind, input };
+}
+
+function loadAuthoredCommunity(kb: CommunitySummaryReadRuntime, slug: string): ExistingGeneratedCommunity | null {
+  let raw: string;
+  try {
+    raw = kb.storagePort.readFileSync(kb.communityPath(slug), 'utf-8');
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return null;
+    }
+    throw error;
+  }
+  const frontmatter = parseCommunityFrontmatter(raw);
+  const body = extractBody(raw);
+  return {
+    slug,
+    title: extractTitle(raw),
+    level: frontmatter.level,
+    members: parseMembersFromBody(body),
+    ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
+    ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
+    summary: parseSummaryFromBody(body),
+    ...(frontmatter.summaryInputFingerprint === undefined
+      ? {}
+      : { summaryInputFingerprint: frontmatter.summaryInputFingerprint }),
+    createdAt: frontmatter.createdAt,
+    updatedAt: frontmatter.updatedAt,
+  };
 }
 
 /**
@@ -98,29 +161,70 @@ export async function applyCommunitySummary(
     throw new Error(`Refusing to store an empty summary for community ${slug}.`);
   }
 
-  let written = false;
-  await kb.withMutationLock(async (mutation) => {
-    const { generated } = loadExistingCommunityState(kb);
-    const community = generated.find((entry) => entry.slug === slug);
-    if (community === undefined) {
-      return;
-    }
-
+  const generated = generatedCommunities(kb);
+  const generatedCommunity = generated.find((entry) => entry.slug === slug);
+  if (generatedCommunity !== undefined) {
     const summaryInputFingerprint = computeCommunitySummaryInputFingerprintForCommunity(
-      community,
+      generatedCommunity,
       bySlug(generated),
       kb,
       kb.readIndexOrEmpty(),
     );
-    const content = renderCommunityDocument({
-      title: community.title,
-      members: community.members,
-      level: community.level,
-      ...(community.parent === undefined ? {} : { parent: community.parent }),
-      ...(community.children === undefined ? {} : { children: community.children }),
+    const staged = kb.generatedCommunityProjectionStore.updateGeneratedSummary({
+      slug,
       summary,
       summaryInputFingerprint,
-      createdAt: community.createdAt,
+    });
+    if (staged === null) {
+      return { written: false };
+    }
+
+    let written = false;
+    try {
+      await kb.withMutationLock(() => {
+        const currentSnapshot = kb.captureCorpusSnapshot();
+        const result = kb.generatedCommunityProjectionStore.adoptStagedGeneration(staged, currentSnapshot);
+        if (result.status === 'discarded') {
+          return;
+        }
+        kb.invalidateTextSnapshot('generated-community-summary');
+        kb.publishGeneratedCommunityProjection({
+          snapshot: currentSnapshot,
+          generatedCommunityGeneration: result.generation,
+          generatedCommunityDocsHash: result.generatedCommunityDocsHash,
+        });
+        written = true;
+      });
+    } finally {
+      if (!written) {
+        kb.generatedCommunityProjectionStore.discardStagedGeneration(staged);
+      }
+    }
+    return { written };
+  }
+
+  const authoredCommunity = loadAuthoredCommunity(kb, slug);
+  if (authoredCommunity === null) {
+    return { written: false };
+  }
+
+  let written = false;
+  await kb.withMutationLock(async (mutation) => {
+    const summaryInputFingerprint = computeCommunitySummaryInputFingerprintForCommunity(
+      authoredCommunity,
+      bySlug([authoredCommunity]),
+      kb,
+      kb.readIndexOrEmpty(),
+    );
+    const content = renderCommunityDocument({
+      title: authoredCommunity.title,
+      members: authoredCommunity.members,
+      level: authoredCommunity.level,
+      ...(authoredCommunity.parent === undefined ? {} : { parent: authoredCommunity.parent }),
+      ...(authoredCommunity.children === undefined ? {} : { children: authoredCommunity.children }),
+      summary,
+      summaryInputFingerprint,
+      createdAt: authoredCommunity.createdAt,
       updatedAt: nowIsoString(kb.time).slice(0, 10),
     });
 

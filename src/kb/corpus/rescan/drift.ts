@@ -19,6 +19,7 @@ import { mergeMutationLane } from '../lanes.js';
 import type { CorpusInterest } from '../../../store/consumer-contract.js';
 import {
   isNoteEntry,
+  isCommunityEntry,
   isSourceEntry,
   isWikiEntry,
   noteEntryId,
@@ -34,6 +35,7 @@ import type { DetectedIncident } from './incidents/catalog.js';
 import type { EngineArtifactDescriptor, EngineArtifactProjectedSnapshot } from '../artifact-port.js';
 import type { CorpusAuthorityBaselineMap, CorpusAuthorityBaselineRecord } from '../authority-baseline-contract.js';
 import { curateDb } from '../../curate/db-access.js';
+import type { GeneratedCommunityFreshness } from '../../curate/community/generated-projection-store.js';
 
 const INDEX_FILE = 'index.json';
 
@@ -79,6 +81,37 @@ function markdownDirModifiedAfter(
 function fileModifiedAfter(storagePort: StoragePort, filePath: string, threshold: bigint): boolean {
   const modifiedAt = modifiedAtNs(storagePort, filePath);
   return modifiedAt !== null && modifiedAt > threshold;
+}
+
+function communityMarkdownAuthorityModifiedAfter(
+  storagePort: StoragePort,
+  dir: string,
+  files: readonly CorpusMarkdownFileScan[],
+  threshold: bigint,
+  index: KbIndex,
+  generatedCommunitySlugs: ReadonlySet<string>,
+): boolean {
+  for (const file of files) {
+    if (fileModifiedAfter(storagePort, file.path, threshold)) {
+      return true;
+    }
+  }
+
+  const dirModifiedAt = modifiedAtNs(storagePort, dir);
+  if (dirModifiedAt === null || dirModifiedAt <= threshold) {
+    return false;
+  }
+
+  const presentSlugs = new Set(files.map((file) => file.slug));
+  for (const entry of Object.values(index.entries)) {
+    if (!isCommunityEntry(entry) || generatedCommunitySlugs.has(entry.slug)) {
+      continue;
+    }
+    if (!presentSlugs.has(entry.slug)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function classifyAuthorityDrift(
@@ -340,8 +373,10 @@ export function detectIncidentRetryDrift(
 
 function projectedSnapshotMatchesInterest(
   current: KbCorpusSnapshot,
+  currentGenerated: GeneratedCommunityFreshness,
   projected: EngineArtifactProjectedSnapshot,
   interest: CorpusInterest,
+  projectsGeneratedCommunityDocs: boolean,
 ): boolean {
   if (interest === 'both' && projected.snapshotId !== current.snapshotId) {
     return false;
@@ -362,10 +397,23 @@ function projectedSnapshotMatchesInterest(
     }
   }
 
+  if (projectsGeneratedCommunityDocs) {
+    if (
+      projected.generatedCommunityGeneration !== currentGenerated.generatedCommunityGeneration ||
+      projected.generatedCommunityDocsHash !== currentGenerated.generatedCommunityDocsHash
+    ) {
+      return false;
+    }
+  }
+
   return true;
 }
 
-function projectionLagDiagnostic(descriptor: EngineArtifactDescriptor, current: KbCorpusSnapshot): string | null {
+function projectionLagDiagnostic(
+  descriptor: EngineArtifactDescriptor,
+  current: KbCorpusSnapshot,
+  currentGenerated: GeneratedCommunityFreshness,
+): string | null {
   if (descriptor.freshness.status === 'missing') {
     return 'projection artifact is missing';
   }
@@ -375,20 +423,29 @@ function projectionLagDiagnostic(descriptor: EngineArtifactDescriptor, current: 
   if (descriptor.freshness.projected.projectionIdentityHash !== descriptor.expectedProjectionIdentityHash) {
     return 'projection identity differs from the currently registered projection';
   }
-  if (!projectedSnapshotMatchesInterest(current, descriptor.freshness.projected, descriptor.corpusInterest)) {
+  if (
+    !projectedSnapshotMatchesInterest(
+      current,
+      currentGenerated,
+      descriptor.freshness.projected,
+      descriptor.corpusInterest,
+      descriptor.projectsGeneratedCommunityDocs === true,
+    )
+  ) {
     return 'projection artifact does not match the current corpus snapshot';
   }
   return null;
 }
 
 export function detectProjectionArtifactLag(
-  kb: Pick<KbRuntime, 'getCorpusStateSnapshot'>,
+  kb: Pick<KbRuntime, 'getCorpusStateSnapshot' | 'generatedCommunityProjectionStore'>,
   descriptors: readonly EngineArtifactDescriptor[],
 ): readonly ProjectionArtifactLag[] {
   const current = kb.getCorpusStateSnapshot();
+  const currentGenerated = kb.generatedCommunityProjectionStore.readActiveFreshness();
   const lag: ProjectionArtifactLag[] = [];
   for (const descriptor of descriptors) {
-    const diagnostic = projectionLagDiagnostic(descriptor, current);
+    const diagnostic = projectionLagDiagnostic(descriptor, current, currentGenerated);
     if (diagnostic === null) {
       continue;
     }
@@ -418,6 +475,7 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
     const storedAuthorityHashes = baseline.rebuilt ? new Map() : baseline.baseline;
     const indexMtime = kb.storagePort.statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
+    const currentGenerated = kb.generatedCommunityProjectionStore.readActiveFreshness();
     const retryQueue = readCurateRetryQueue(curateDb(kb));
     const pendingRepairIds = new Set<string>();
     for (const entry of retryQueue) {
@@ -427,6 +485,12 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
 
     if (currentIndex !== null) {
       externalMutation = mergeMutationLane(externalMutation, detectEntityGraphDrift(scan.entityGraph, currentIndex));
+      if (
+        currentIndex.generatedCommunityGeneration !== currentGenerated.generatedCommunityGeneration ||
+        currentIndex.generatedCommunityDocsHash !== currentGenerated.generatedCommunityDocsHash
+      ) {
+        externalMutation = mergeMutationLane(externalMutation, 'metadata');
+      }
     }
 
     const principleFiles: CorpusMarkdownFileScan[] = [];
@@ -438,9 +502,19 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
         communityFiles.push(file);
       }
     }
+    if (markdownDirModifiedAfter(kb.storagePort, kb.principlesDir(), principleFiles, indexMtime)) {
+      externalMutation = mergeMutationLane(externalMutation, 'metadata');
+    }
     if (
-      markdownDirModifiedAfter(kb.storagePort, kb.principlesDir(), principleFiles, indexMtime) ||
-      markdownDirModifiedAfter(kb.storagePort, kb.communitiesDir(), communityFiles, indexMtime)
+      currentIndex !== null &&
+      communityMarkdownAuthorityModifiedAfter(
+        kb.storagePort,
+        kb.communitiesDir(),
+        communityFiles,
+        indexMtime,
+        currentIndex,
+        kb.generatedCommunityProjectionStore.readActiveGeneratedSlugs(),
+      )
     ) {
       externalMutation = mergeMutationLane(externalMutation, 'metadata');
     }

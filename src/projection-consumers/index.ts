@@ -1,5 +1,6 @@
 import type { KbCorpusSnapshot } from '../kb/contract.js';
 import type { KbCorpusProjectionReader } from '../kb/projection-input-contract.js';
+import type { GeneratedCommunityFreshness } from '../kb/curate/community/generated-projection-store.js';
 import { readCorpusState } from '../kb/state/corpus-state.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { TimePort } from '../infra/port-types.js';
@@ -218,7 +219,11 @@ export class ConsumerDriver {
 
   forceCorpusApply(
     snapshot: KbCorpusSnapshot,
-    options: { readonly reason: 'projection-artifact-lag'; readonly consumers: readonly string[] },
+    options: {
+      readonly reason: 'projection-artifact-lag';
+      readonly consumers: readonly string[];
+      readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
+    },
   ): { readonly generation: number; readonly consumers: readonly string[] } {
     void options.reason;
     this.forceGeneration += 1;
@@ -237,7 +242,7 @@ export class ConsumerDriver {
         continue;
       }
       consumers.push(consumerId);
-      scheduleForcedCorpusApply(state, snapshot, generation, this.applyDeps);
+      scheduleForcedCorpusApply(state, snapshot, generation, this.applyDeps, options.generatedCommunityFreshness);
     }
 
     return { generation, consumers };

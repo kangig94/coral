@@ -189,6 +189,8 @@ function isOramaProjectionMetadata(value: unknown): value is OramaProjectionMeta
     typeof value.contentManifestHash === 'string' &&
     typeof value.metadataManifestHash === 'string' &&
     typeof value.projectionIdentityHash === 'string' &&
+    isOptionalNumber(value.generatedCommunityGeneration) &&
+    isOptionalString(value.generatedCommunityDocsHash) &&
     isOptionalNumber(value.identitySchemaVersion) &&
     isOptionalNumber(value.schemaVersion) &&
     isOptionalString(value.schemaDigest) &&
@@ -287,6 +289,10 @@ export function classifyProjectionMismatch(
 export function createOramaProjectionMetadataBase(
   snapshot: KbCorpusSnapshot,
   identityInput: OramaProjectionIdentityInput = {},
+  generatedCommunityFreshness: Pick<
+    EngineArtifactProjectedSnapshot,
+    'generatedCommunityGeneration' | 'generatedCommunityDocsHash'
+  > = {},
 ): OramaProjectionMetadataBase {
   const normalizedIdentity = normalizeProjectionIdentityInput(identityInput);
   return {
@@ -296,6 +302,12 @@ export function createOramaProjectionMetadataBase(
     contentManifestHash: snapshot.contentManifestHash,
     metadataManifestHash: snapshot.metadataManifestHash,
     projectionIdentityHash: ORAMA_PROJECTION_IDENTITY_HASH(normalizedIdentity),
+    ...(generatedCommunityFreshness.generatedCommunityGeneration === undefined
+      ? {}
+      : { generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration }),
+    ...(generatedCommunityFreshness.generatedCommunityDocsHash === undefined
+      ? {}
+      : { generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash }),
     identitySchemaVersion: normalizedIdentity.identitySchemaVersion,
     schemaVersion: normalizedIdentity.schemaVersion,
     schemaDigest: normalizedIdentity.schemaDigest,
@@ -311,9 +323,13 @@ export function createOramaProjectionMetadata(
   artifactDigest: string,
   entryManifest: OramaEntryManifest,
   identityInput: OramaProjectionIdentityInput = {},
+  generatedCommunityFreshness: Pick<
+    EngineArtifactProjectedSnapshot,
+    'generatedCommunityGeneration' | 'generatedCommunityDocsHash'
+  > = {},
 ): OramaProjectionMetadata {
   return {
-    ...createOramaProjectionMetadataBase(snapshot, identityInput),
+    ...createOramaProjectionMetadataBase(snapshot, identityInput, generatedCommunityFreshness),
     artifactDigest,
     entryManifest,
   };
@@ -458,6 +474,7 @@ export class OramaArtifactPort implements EngineArtifactPort {
         corpusInterest: 'both',
         artifactPaths: [artifactPath, metadataPath],
         expectedProjectionIdentityHash: this.projectionIdentityHash(),
+        projectsGeneratedCommunityDocs: true,
         freshness,
       },
     ];
@@ -475,6 +492,12 @@ export class OramaArtifactPort implements EngineArtifactPort {
           contentManifestHash: metadata.contentManifestHash,
           metadataManifestHash: metadata.metadataManifestHash,
           projectionIdentityHash: metadata.projectionIdentityHash,
+          ...(metadata.generatedCommunityGeneration === undefined
+            ? {}
+            : { generatedCommunityGeneration: metadata.generatedCommunityGeneration }),
+          ...(metadata.generatedCommunityDocsHash === undefined
+            ? {}
+            : { generatedCommunityDocsHash: metadata.generatedCommunityDocsHash }),
         },
       };
     } catch (error: unknown) {

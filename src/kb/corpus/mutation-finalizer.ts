@@ -10,6 +10,7 @@ import type { ManifestAuthorityDelta } from './manifest-types.js';
 import type { KbMutationLockContext } from './mutation-lock.js';
 import { computeCommunityDocsHashFromSurfaceHashes } from './structural-key.js';
 import { computeMetadataSurfaceHash } from './snapshot.js';
+import type { GeneratedCommunityFreshness } from '../curate/community/generated-projection-store.js';
 
 export type KbRuntimeMutationLockContext = KbMutationLockContext<
   KbIndex,
@@ -21,6 +22,8 @@ export type KbRuntimeMutationLockContext = KbMutationLockContext<
 export interface CorpusMutationFinalizerOptions {
   indexStore: KbIndexStore;
   manifestAuthority: ManifestAuthority;
+  readGeneratedCommunityFreshness(): GeneratedCommunityFreshness;
+  readGeneratedCommunitySlugs(): ReadonlySet<string>;
   entityGraphHost: FileAtomicHost;
   entityGraphPath(): string;
   getActiveMutationContext(): KbRuntimeMutationLockContext | null;
@@ -97,6 +100,8 @@ export class CorpusMutationFinalizer {
         entityGraphHash: computeMetadataSurfaceHash({ rawBytes: raw }),
         communityDocsHash: computeCommunityDocsHashFromSurfaceHashes(
           this.options.manifestAuthority.getCurrentSurfaceHashes('metadata'),
+          this.options.readGeneratedCommunityFreshness(),
+          this.options.readGeneratedCommunitySlugs(),
         ),
       };
       this.options.indexStore.writeIndex(nextIndex);

@@ -171,7 +171,20 @@ function buildKbReadOptions(
     ...(ctx?.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
     storage: runtime.storage,
   };
-  return kind === 'memo' ? options : { ...options, paths: kbReadPaths(kbRuntime) };
+  return kind === 'memo'
+    ? options
+    : {
+        ...options,
+        paths: kbReadPaths(kbRuntime),
+        ...(kbRuntime === undefined
+          ? {}
+          : {
+              communityDocumentProvider: {
+                readGeneratedCommunityDocument: (slug: string) =>
+                  kbRuntime.kb.generatedCommunityProjectionStore.readCommunityDocument(slug),
+              },
+            }),
+      };
 }
 
 function handleKbTypedRead(
@@ -279,6 +292,14 @@ export function handleKbRead(
         ...(ctx.projectRoot === undefined ? {} : { projectDataDir: runtime.paths.projectData(ctx.projectRoot) }),
         storage: runtime.storage,
         paths: kbReadPaths(kbRuntime),
+        ...(kbRuntime === undefined
+          ? {}
+          : {
+              communityDocumentProvider: {
+                readGeneratedCommunityDocument: (slug: string) =>
+                  kbRuntime.kb.generatedCommunityProjectionStore.readCommunityDocument(slug),
+              },
+            }),
       }),
     );
   } catch (error: unknown) {

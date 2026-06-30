@@ -95,23 +95,34 @@ describe('drift signal split', () => {
   });
 
   it('classifies projection artifact lag separately from authority drift inputs', () => {
-    const lag = detectProjectionArtifactLag({ getCorpusStateSnapshot: () => SNAPSHOT }, [
+    const lag = detectProjectionArtifactLag(
       {
-        artifactId: 'engine:cache',
-        kind: 'projection-cache',
-        targetConsumerIds: ['consumer-a'],
-        corpusInterest: 'content',
-        artifactPaths: ['/tmp/cache'],
-        expectedProjectionIdentityHash: 'expected',
-        freshness: {
-          status: 'present',
-          projected: {
-            ...SNAPSHOT,
-            projectionIdentityHash: 'older-projection',
-          },
+        getCorpusStateSnapshot: () => SNAPSHOT,
+        generatedCommunityProjectionStore: {
+          readActiveFreshness: () => ({
+            generatedCommunityGeneration: 0,
+            generatedCommunityDocsHash: 'empty',
+          }),
         },
       },
-    ]);
+      [
+        {
+          artifactId: 'engine:cache',
+          kind: 'projection-cache',
+          targetConsumerIds: ['consumer-a'],
+          corpusInterest: 'content',
+          artifactPaths: ['/tmp/cache'],
+          expectedProjectionIdentityHash: 'expected',
+          freshness: {
+            status: 'present',
+            projected: {
+              ...SNAPSHOT,
+              projectionIdentityHash: 'older-projection',
+            },
+          },
+        },
+      ],
+    );
 
     expect(lag).toEqual([
       {

@@ -9,6 +9,7 @@ import type {
   CorpusConsumerRegistration,
 } from '../../store/consumer-contract.js';
 import type { KbProjectionInput, KbProjectionRecord } from '../../kb/projection-input-contract.js';
+import type { GeneratedCommunityFreshness } from '../../kb/curate/community/generated-projection-store.js';
 import { computeContentSurfaceHash, computeMetadataSurfaceHash } from '../../kb/corpus/snapshot.js';
 import { isSnapshotFresherForInterest } from '../../kb/state/corpus-state.js';
 import { noteMetadataHash, sourceMetadataHash, wikiMetadataHash } from '../../kb/metadata-hash.js';
@@ -38,6 +39,7 @@ export interface PreparedOramaProjection {
   db: KbOramaDb;
   tokenizer: KbOramaTokenizer;
   documents: KbOramaDocument[];
+  generatedCommunityFreshness: GeneratedCommunityFreshness;
 }
 
 type CurrentOramaDocumentMap = ReadonlyMap<string, KbOramaDocument>;
@@ -158,11 +160,15 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
 
   /** Builds a complete projection from KB-materialized corpus input. */
   async prepareFullSnapshot(input: KbProjectionInput): Promise<PreparedOramaProjection> {
-    return this.prepareFullSnapshotFromDocuments(this.prepareCurrentDocumentMap(input));
+    return this.prepareFullSnapshotFromDocuments(
+      this.prepareCurrentDocumentMap(input),
+      this.generatedCommunityFreshnessFromInput(input),
+    );
   }
 
   private async prepareFullSnapshotFromDocuments(
     currentByEntryId: CurrentOramaDocumentMap,
+    generatedCommunityFreshness: GeneratedCommunityFreshness,
     lease?: OramaAnalyzerLeaseContext,
   ): Promise<PreparedOramaProjection> {
     const { db, tokenizer } = await createOramaDb({
@@ -173,6 +179,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       db,
       tokenizer,
       documents: [...currentByEntryId.values()],
+      generatedCommunityFreshness,
     };
   }
 
@@ -194,12 +201,18 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     const skipSnapshot = await this.staleProjectionWriteSkipSnapshot(
       snapshot,
       ORAMA_PROJECTION_IDENTITY_HASH(identityInput),
+      preparedProjection.generatedCommunityFreshness,
     );
     if (skipSnapshot !== null) {
       this.searchPort.probeFreshness();
       return skipSnapshot;
     }
-    const metadata = await this.snapshotStore.persistAsync(snapshot, preparedProjection.db, identityInput);
+    const metadata = await this.snapshotStore.persistAsync(
+      snapshot,
+      preparedProjection.db,
+      identityInput,
+      preparedProjection.generatedCommunityFreshness,
+    );
     this.snapshotStore.install({
       db: preparedProjection.db,
       tokenizer: preparedProjection.tokenizer,
@@ -219,17 +232,21 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     lease: OramaAnalyzerLeaseContext,
   ): Promise<KbCorpusSnapshot> {
     const { snapshot, projectionInput } = await this.resolveLatestSettledProjectionInput(ctx);
+    const generatedCommunityFreshness = this.generatedCommunityFreshnessFromInput(projectionInput);
     const currentByEntryId = this.prepareCurrentDocumentMap(projectionInput);
     const loaded = await this.loadPersistedDeltaBase(lease);
     if (loaded === null) {
       return await this.installFullSnapshot(
         snapshot,
-        await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease),
+        await this.prepareFullSnapshotFromDocuments(currentByEntryId, generatedCommunityFreshness, lease),
       );
     }
 
     const persistedSnapshot = this.snapshotFromMetadata(loaded.metadata);
-    if (!isSnapshotFresherForInterest(snapshot, persistedSnapshot, this.corpusInterest)) {
+    if (
+      !isSnapshotFresherForInterest(snapshot, persistedSnapshot, this.corpusInterest) &&
+      this.generatedCommunityFreshnessMatches(loaded.metadata, generatedCommunityFreshness)
+    ) {
       this.snapshotStore.install(loaded);
       this.searchPort.probeFreshness();
       return persistedSnapshot;
@@ -238,7 +255,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     if (this.requiresFullInstallFromManifest(loaded.metadata.entryManifest, currentByEntryId)) {
       return await this.installFullSnapshot(
         snapshot,
-        await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease),
+        await this.prepareFullSnapshotFromDocuments(currentByEntryId, generatedCommunityFreshness, lease),
       );
     }
 
@@ -247,7 +264,7 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     } catch {
       return await this.installFullSnapshot(
         snapshot,
-        await this.prepareFullSnapshotFromDocuments(currentByEntryId, lease),
+        await this.prepareFullSnapshotFromDocuments(currentByEntryId, generatedCommunityFreshness, lease),
       );
     }
 
@@ -255,12 +272,13 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     const skipSnapshot = await this.staleProjectionWriteSkipSnapshot(
       snapshot,
       ORAMA_PROJECTION_IDENTITY_HASH(identityInput),
+      generatedCommunityFreshness,
     );
     if (skipSnapshot !== null) {
       this.searchPort.probeFreshness();
       return skipSnapshot;
     }
-    const metadata = await this.snapshotStore.persistAsync(snapshot, loaded.db, identityInput);
+    const metadata = await this.snapshotStore.persistAsync(snapshot, loaded.db, identityInput, generatedCommunityFreshness);
     this.snapshotStore.install({
       db: loaded.db,
       tokenizer: loaded.tokenizer,
@@ -280,11 +298,17 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
   private async staleProjectionWriteSkipSnapshot(
     sourceSnapshot: KbCorpusSnapshot,
     targetProjectionIdentityHash: string,
+    generatedCommunityFreshness: GeneratedCommunityFreshness,
   ): Promise<KbCorpusSnapshot | null> {
     const cached = this.snapshotStore.getCache();
     if (cached?.metadata !== undefined) {
       if (
-        this.shouldSkipProjectionWriteAgainstMetadata(cached.metadata, sourceSnapshot, targetProjectionIdentityHash)
+        this.shouldSkipProjectionWriteAgainstMetadata(
+          cached.metadata,
+          sourceSnapshot,
+          targetProjectionIdentityHash,
+          generatedCommunityFreshness,
+        )
       ) {
         return this.snapshotFromMetadata(cached.metadata);
       }
@@ -292,7 +316,14 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
 
     try {
       const metadata = this.snapshotStore.loadMetadata();
-      if (this.shouldSkipProjectionWriteAgainstMetadata(metadata, sourceSnapshot, targetProjectionIdentityHash)) {
+      if (
+        this.shouldSkipProjectionWriteAgainstMetadata(
+          metadata,
+          sourceSnapshot,
+          targetProjectionIdentityHash,
+          generatedCommunityFreshness,
+        )
+      ) {
         return this.snapshotFromMetadata(metadata);
       }
       return null;
@@ -306,7 +337,12 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     persistedMetadata: OramaProjectionMetadata,
     sourceSnapshot: KbCorpusSnapshot,
     targetProjectionIdentityHash: string,
+    generatedCommunityFreshness: GeneratedCommunityFreshness,
   ): boolean {
+    if (!this.generatedCommunityFreshnessMatches(persistedMetadata, generatedCommunityFreshness)) {
+      return false;
+    }
+
     const persistedSnapshot = this.snapshotFromMetadata(persistedMetadata);
     if (this.isSnapshotStrictlyFresherForInterest(persistedSnapshot, sourceSnapshot)) {
       return true;
@@ -315,6 +351,23 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
     return (
       persistedMetadata.projectionIdentityHash === targetProjectionIdentityHash &&
       this.snapshotsMatchForInterest(persistedSnapshot, sourceSnapshot)
+    );
+  }
+
+  private generatedCommunityFreshnessFromInput(input: KbProjectionInput): GeneratedCommunityFreshness {
+    return {
+      generatedCommunityGeneration: input.generatedCommunityGeneration,
+      generatedCommunityDocsHash: input.generatedCommunityDocsHash,
+    };
+  }
+
+  private generatedCommunityFreshnessMatches(
+    metadata: Pick<OramaProjectionMetadata, 'generatedCommunityGeneration' | 'generatedCommunityDocsHash'>,
+    expected: GeneratedCommunityFreshness,
+  ): boolean {
+    return (
+      metadata.generatedCommunityGeneration === expected.generatedCommunityGeneration &&
+      metadata.generatedCommunityDocsHash === expected.generatedCommunityDocsHash
     );
   }
 

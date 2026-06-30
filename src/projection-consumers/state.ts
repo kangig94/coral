@@ -1,4 +1,8 @@
 import type { KbCorpusSnapshot } from '../kb/contract.js';
+import {
+  EMPTY_GENERATED_COMMUNITY_FRESHNESS,
+  type GeneratedCommunityFreshness,
+} from '../kb/curate/community/generated-projection-store.js';
 import { documentedCoralSetupError, type CoralSetupError } from '../runtime/errors.js';
 import type { TimerHandle, TimePort } from '../infra/port-types.js';
 import type {
@@ -20,6 +24,8 @@ export type ConsumerDriverTimers = Pick<TimePort, 'setTimeout' | 'clearTimeout'>
 export type ForcedCorpusFreshnessTarget = {
   readonly snapshot: KbCorpusSnapshot;
   readonly atLeastGeneration: number;
+  readonly generatedCommunityGeneration?: number;
+  readonly generatedCommunityDocsHash?: string;
 };
 
 export interface Waiter {
@@ -54,11 +60,17 @@ export type CorpusConsumerState = ConsumerStateCommon & {
   readonly reg: CorpusConsumerRegistration;
   inFlight: Promise<void> | null;
   pendingCorpusSnapshot: KbCorpusSnapshot | null;
-  pendingForcedCorpusApply: { snapshot: KbCorpusSnapshot; generation: number } | null;
+  pendingForcedCorpusApply: {
+    snapshot: KbCorpusSnapshot;
+    generation: number;
+    generatedCommunityFreshness?: GeneratedCommunityFreshness;
+  } | null;
   waiters: Set<Waiter>;
   activeController: AbortController | null;
   lastApplyError: ConsumerApplyError | null;
   lastAppliedForceGeneration: number;
+  lastAppliedGeneratedCommunityGeneration: number;
+  lastAppliedGeneratedCommunityDocsHash: string;
 };
 
 export type StatelessConsumerState = ConsumerStateCommon & {
@@ -124,6 +136,9 @@ export function createConsumerState(
     activeController: null,
     lastApplyError: null,
     lastAppliedForceGeneration: 0,
+    lastAppliedGeneratedCommunityGeneration:
+      EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityGeneration,
+    lastAppliedGeneratedCommunityDocsHash: EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityDocsHash,
   };
 }
 
@@ -164,13 +179,17 @@ export function isKbCorpusSnapshot(value: unknown): value is KbCorpusSnapshot {
 }
 
 export function isForcedCorpusFreshnessTarget(value: unknown): value is ForcedCorpusFreshnessTarget {
+  const generatedGeneration = (value as ForcedCorpusFreshnessTarget | null)?.generatedCommunityGeneration;
+  const generatedDocsHash = (value as ForcedCorpusFreshnessTarget | null)?.generatedCommunityDocsHash;
   return (
     typeof value === 'object' &&
     value !== null &&
     isKbCorpusSnapshot((value as ForcedCorpusFreshnessTarget).snapshot) &&
     typeof (value as ForcedCorpusFreshnessTarget).atLeastGeneration === 'number' &&
     Number.isInteger((value as ForcedCorpusFreshnessTarget).atLeastGeneration) &&
-    (value as ForcedCorpusFreshnessTarget).atLeastGeneration >= 0
+    (value as ForcedCorpusFreshnessTarget).atLeastGeneration >= 0 &&
+    ((generatedGeneration === undefined && generatedDocsHash === undefined) ||
+      (typeof generatedGeneration === 'number' && typeof generatedDocsHash === 'string'))
   );
 }
 

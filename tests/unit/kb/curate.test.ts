@@ -3,7 +3,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -332,6 +331,14 @@ function writeSource(
   const sourcePath = join(runtime.sourcesDir(), `${slug}.md`);
   writeFileSync(sourcePath, renderSource(options), 'utf-8');
   return sourcePath;
+}
+
+function generatedCommunityRecords() {
+  return [...runtime.generatedCommunityProjectionStore.readActiveGeneration().records];
+}
+
+function generatedCommunityFrontmatters() {
+  return generatedCommunityRecords().map((record) => parseCommunityFrontmatter(record.content));
 }
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
@@ -2878,31 +2885,18 @@ describe('curate', () => {
       });
       expect(readCurateRetryQueue(curateDb(runtime)).map((repair) => repair.entryId)).toContain('note:coral-malformed');
 
-      // Topology materialized docs without summaries; stale communities await the agent.
-      const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-      expect(communityFiles.length).toBeGreaterThan(0);
+      // Topology materialized generated projection docs without summaries; stale communities await the agent.
+      const communityDocs = generatedCommunityRecords();
+      expect(communityDocs.length).toBeGreaterThan(0);
+      expect(communityDocs.every((record) => !record.content.includes('## Summary'))).toBe(true);
       expect(
-        communityFiles.every(
-          (entry) => !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
-        ),
-      ).toBe(true);
-      expect(
-        communityFiles.every((entry) => {
-          const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
-          return parseCommunityFrontmatter(raw).summaryInputFingerprint === undefined;
-        }),
+        communityDocs.every((record) => parseCommunityFrontmatter(record.content).summaryInputFingerprint === undefined),
       ).toBe(true);
     });
 
     it('carries prior summary and fingerprint through a topology rebuild', async () => {
       const readCommunityFingerprints = (): Array<string | undefined> =>
-        readdirSync(runtime.communitiesDir())
-          .filter((entry) => entry.endsWith('.md'))
-          .map(
-            (entry) =>
-              parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8'))
-                .summaryInputFingerprint,
-          );
+        generatedCommunityFrontmatters().map((frontmatter) => frontmatter.summaryInputFingerprint);
 
       writeNote('coral-peer-community', {
         title: 'Peer Community',
@@ -2944,13 +2938,15 @@ describe('curate', () => {
       expect(readCommunityFingerprints().every((fp) => fp === undefined)).toBe(true);
 
       // Simulate the agent applying a summary (sets fingerprint server-side).
-      const files = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-      const slug = files[0].replace(/\.md$/, '');
+      const firstGenerated = generatedCommunityRecords()[0];
+      if (firstGenerated === undefined) {
+        throw new Error('Expected generated community projection records.');
+      }
+      const slug = firstGenerated.slug;
       await applyCommunitySummary(runtime, slug, 'Peer summary.');
       expect(readCommunityFingerprints().every((fp) => fp !== undefined)).toBe(true);
 
-      // Rescan drives the topology-refresh writer (the subphase never sets
-      // communitySummaryTopologyHash, so the refresh rebuilds the files).
+      // Rescan observes the generated projection freshness without rebuilding corpus markdown.
       await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
 
       // The frontmatter fingerprint must survive the refresh, otherwise the
@@ -2965,9 +2961,8 @@ describe('curate', () => {
     it('preserves an unrelated community fingerprint when a new cluster shifts the topology', async () => {
       const fingerprintBySlug = (): Map<string, string | undefined> => {
         const map = new Map<string, string | undefined>();
-        for (const entry of readdirSync(runtime.communitiesDir()).filter((file) => file.endsWith('.md'))) {
-          const raw = readFileSync(join(runtime.communitiesDir(), entry), 'utf-8');
-          map.set(entry.replace(/\.md$/, ''), parseCommunityFrontmatter(raw).summaryInputFingerprint);
+        for (const record of generatedCommunityRecords()) {
+          map.set(record.slug, parseCommunityFrontmatter(record.content).summaryInputFingerprint);
         }
         return map;
       };
@@ -3011,9 +3006,9 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       // Simulate the agent applying summaries to cluster A communities.
-      const clusterAFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-      for (const file of clusterAFiles) {
-        await applyCommunitySummary(runtime, file.replace(/\.md$/, ''), 'Cluster A summary.');
+      const clusterARecords = generatedCommunityRecords();
+      for (const record of clusterARecords) {
+        await applyCommunitySummary(runtime, record.slug, 'Cluster A summary.');
       }
       const before = fingerprintBySlug();
       expect([...before.values()].every((fp) => fp !== undefined)).toBe(true);
@@ -3060,7 +3055,7 @@ describe('curate', () => {
       });
       await runtime.writeEntityGraph({ entityMeta: metaAB, relationships: relsAB });
 
-      // Rescan with the shifted topology drives the topology-refresh rebuild.
+      // Rescan with the shifted topology observes the generated projection freshness.
       await applyBoundCorpusConsumerForTest(runtime, writableDbByRuntime.get(runtime)!);
 
       // Cluster A's fingerprint must be carried through unchanged; if the refresh
@@ -3071,7 +3066,7 @@ describe('curate', () => {
       }
     });
 
-    it('topology run writes docs without summaries and a stale DB fingerprint does not prevent doc writes', async () => {
+    it('topology run materializes generated docs without summaries', async () => {
       writeNote('coral-peer-community', {
         title: 'Peer Community',
         tags: ['graph-rag', 'retrieval'],
@@ -3122,29 +3117,11 @@ describe('curate', () => {
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
       // Topology only: no summary, no frontmatter fingerprint.
-      const communityFiles = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-      expect(communityFiles.length).toBeGreaterThan(0);
-      const generatedFrontmatter = communityFiles.map((entry) =>
-        parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8')),
-      );
+      const communityDocs = generatedCommunityRecords();
+      expect(communityDocs.length).toBeGreaterThan(0);
+      const generatedFrontmatter = generatedCommunityFrontmatters();
       expect(generatedFrontmatter.every((frontmatter) => frontmatter.summaryInputFingerprint === undefined)).toBe(true);
-
-      // Re-run with changed input: topology still writes docs, no LLM call.
-      writeNote('coral-peer-community', {
-        title: 'Peer Community',
-        tags: ['graph-rag', 'retrieval'],
-        entrySeq: 1,
-        body: 'Graph-backed retrieval now emphasizes changed member evidence.',
-      });
-
-      await expect(internals.runCommunitySubphase()).resolves.toBe(true);
-      expect(
-        communityFiles.every(
-          (entry) =>
-            parseCommunityFrontmatter(readFileSync(join(runtime.communitiesDir(), entry), 'utf-8'))
-              .summaryInputFingerprint === undefined,
-        ),
-      ).toBe(true);
+      expect(communityDocs.every((record) => !record.content.includes('## Summary'))).toBe(true);
     });
 
     it('discards the topology batch on mutation-lock failures and retries cleanly on the next run', async () => {
@@ -3199,26 +3176,20 @@ describe('curate', () => {
       lockSpy.mockRestore();
 
       const stateAfterFailure = readCurateState(curateDb(runtime));
-      const filesAfterFailure = existsSync(runtime.communitiesDir())
-        ? readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'))
-        : [];
+      const docsAfterFailure = generatedCommunityRecords();
 
       expect(stateAfterFailure.communitySummaryTopologyHash).toBeUndefined();
       // The throw must skip the success-path state write: the seeded failure
       // counter survives unchanged (not reset to 0).
       expect(stateAfterFailure.consecutiveCommunityBatchFailures).toBe(4);
-      expect(filesAfterFailure).toEqual([]);
+      expect(docsAfterFailure).toEqual([]);
 
       await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
-      const filesAfterRecovery = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-      expect(filesAfterRecovery.length).toBeGreaterThan(0);
+      const docsAfterRecovery = generatedCommunityRecords();
+      expect(docsAfterRecovery.length).toBeGreaterThan(0);
       // Topology only: docs are written without summaries.
-      expect(
-        filesAfterRecovery.every(
-          (entry) => !readFileSync(join(runtime.communitiesDir(), entry), 'utf-8').includes('## Summary'),
-        ),
-      ).toBe(true);
+      expect(docsAfterRecovery.every((record) => !record.content.includes('## Summary'))).toBe(true);
       expect(readCurateState(curateDb(runtime))).toMatchObject({
         consecutiveClaimFailures: 2,
         consecutiveCommunityBatchFailures: 0,
@@ -3268,8 +3239,7 @@ describe('curate', () => {
 
       useScheduler(noopCurateAssistant, 100);
 
-      // Spy on captureCorpusSnapshot which is called only from prepareCommunityPayload
-      // (the community batch phase), not from the topology-refresh rescan path.
+      // Spy on captureCorpusSnapshot which is called from the generated-projection community batch.
       const captureSnapshotSpy = vi.spyOn(runtime, 'captureCorpusSnapshot');
 
       await scheduler.start();
@@ -3290,8 +3260,8 @@ describe('curate', () => {
       expect(captureSnapshotSpy.mock.calls.length).toBeGreaterThan(snapshotsAfterStart);
 
       await settleCurateRuntime(scheduler);
-      // Topology docs written (by rescan or community batch) without summaries.
-      expect(readdirSync(runtime.communitiesDir()).some((entry) => entry.endsWith('.md'))).toBe(true);
+      // Topology docs written by the generated projection lifecycle without summaries.
+      expect(generatedCommunityRecords().length).toBeGreaterThan(0);
     });
 
     it('runs the community-summary job after topology materializes and commits on its result', async () => {
@@ -3332,7 +3302,7 @@ describe('curate', () => {
       // The summary job runs after topology and reports it wrote summaries.
       let topologyExistedWhenCalled = false;
       const summaryJob = vi.fn<RunCommunitySummaryJob>(async () => {
-        topologyExistedWhenCalled = readdirSync(runtime.communitiesDir()).some((entry) => entry.endsWith('.md'));
+        topologyExistedWhenCalled = generatedCommunityRecords().length > 0;
         return true;
       });
       useScheduler(noopCurateAssistant, 0, summaryJob);
@@ -3409,27 +3379,29 @@ describe('community summary agent surface', () => {
     useScheduler();
     await expect(internals.runCommunitySubphase()).resolves.toBe(true);
 
-    // Apply a summary for each community via the surface so nothing is stale.
-    const files = readdirSync(runtime.communitiesDir()).filter((entry) => entry.endsWith('.md'));
-    for (const file of files) {
-      await applyCommunitySummary(runtime, file.replace(/\.md$/, ''), 'Initial summary.');
+    // Apply a summary for each generated community via the surface so nothing is stale.
+    const records = generatedCommunityRecords();
+    expect(records.length).toBeGreaterThan(0);
+    for (const record of records) {
+      await applyCommunitySummary(runtime, record.slug, 'Initial summary.');
     }
 
     // All summaries applied → the server recomputes a matching fingerprint, so nothing is stale.
     expect(listStaleCommunities(runtime)).toEqual([]);
 
-    // Simulate the churn-stripped state: remove the fingerprint from one community file.
-    expect(files.length).toBeGreaterThan(0);
-    const slug = files[0].replace(/\.md$/, '');
-    const path = join(runtime.communitiesDir(), files[0]);
-    writeFileSync(
-      path,
-      readFileSync(path, 'utf-8')
-        .split('\n')
-        .filter((line) => !line.startsWith('summaryInputFingerprint:'))
-        .join('\n'),
-      'utf-8',
-    );
+    // Mutate the representative input; generated docs remain projection-store authority.
+    const fallbackRecord = records[0];
+    if (fallbackRecord === undefined) {
+      throw new Error('Expected generated community projection records.');
+    }
+    const staleRecord = generatedCommunityRecords().find((record) => record.children === undefined) ?? fallbackRecord;
+    const slug = staleRecord.slug;
+    writeNote('coral-peer-community', {
+      title: 'Peer Community',
+      tags: ['graph-rag', 'retrieval'],
+      entrySeq: 1,
+      body: 'Graph-backed retrieval cluster changed after the previous generated summary.',
+    });
     expect(listStaleCommunities(runtime).some((community) => community.slug === slug)).toBe(true);
 
     // The agent reads the input context for that community.

@@ -20,6 +20,7 @@ import { oramaIndexMetadataPath, oramaIndexPath } from './paths.js';
 import { createOramaDb, type OramaTokenizerAnalyzer } from './document-builder.js';
 import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { serializeOramaProjectionArtifactInWorker } from './snapshot-worker.js';
+import type { GeneratedCommunityFreshness } from '../../kb/curate/community/generated-projection-store.js';
 
 export const ORAMA_SNAPSHOT_SAVE_WARN_MS = 250;
 
@@ -137,25 +138,27 @@ export class OramaSnapshotStore {
     projected: KbCorpusSnapshot,
     db: KbOramaDb,
     identityInput: OramaProjectionIdentityInput = {},
+    generatedCommunityFreshness?: GeneratedCommunityFreshness,
   ): OramaProjectionMetadata {
     const snapshot = this.saveSnapshotWithTiming(db);
-    return this.persistSavedSnapshot(projected, snapshot, identityInput);
+    return this.persistSavedSnapshot(projected, snapshot, identityInput, generatedCommunityFreshness);
   }
 
   async persistAsync(
     projected: KbCorpusSnapshot,
     db: KbOramaDb,
     identityInput: OramaProjectionIdentityInput = {},
+    generatedCommunityFreshness?: GeneratedCommunityFreshness,
   ): Promise<OramaProjectionMetadata> {
     await waitImmediate();
     const snapshot = this.saveSnapshotWithTiming(db);
     if (this.ports.files.writeTextAtomic === undefined) {
-      return this.persistSavedSnapshot(projected, snapshot, identityInput);
+      return this.persistSavedSnapshot(projected, snapshot, identityInput, generatedCommunityFreshness);
     }
 
     const artifact = await serializeOramaProjectionArtifactInWorker(
       snapshot,
-      createOramaProjectionMetadataBase(projected, identityInput),
+      createOramaProjectionMetadataBase(projected, identityInput, generatedCommunityFreshness),
     );
     this.ports.files.writeTextAtomic(oramaIndexPath(this.runtimeDir), artifact.artifactRaw);
     this.ports.files.writeTextAtomic(oramaIndexMetadataPath(this.runtimeDir), artifact.metadataRaw);
@@ -176,6 +179,7 @@ export class OramaSnapshotStore {
     projected: KbCorpusSnapshot,
     snapshot: RawData,
     identityInput: OramaProjectionIdentityInput,
+    generatedCommunityFreshness: GeneratedCommunityFreshness | undefined,
   ): OramaProjectionMetadata {
     const artifactPath = oramaIndexPath(this.runtimeDir);
     this.ports.files.writeJsonAtomic(artifactPath, snapshot);
@@ -186,6 +190,7 @@ export class OramaSnapshotStore {
       computeOramaArtifactDigest(artifactRaw),
       entryManifest,
       identityInput,
+      generatedCommunityFreshness,
     );
     this.ports.files.writeJsonAtomic(oramaIndexMetadataPath(this.runtimeDir), metadata);
     return metadata;

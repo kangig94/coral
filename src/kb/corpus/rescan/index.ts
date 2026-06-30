@@ -1,5 +1,4 @@
-import { readCurateState, writeCurateState } from '../../curate/state/index.js';
-import { prepareCommunityTopologyRefresh } from '../../curate/community/topology-refresh.js';
+import { writeCurateState, readCurateState } from '../../curate/state/index.js';
 import { createGitSyncController } from '../../curate/git-sync.js';
 import { deleteCurateRetryEntry, readCurateRetryQueue } from '../../curate/retry.js';
 import { throwIfAborted } from '../../../runtime/abort.js';
@@ -64,32 +63,25 @@ export async function performRescan(
   const initialScan = await buildCorpusScanViewInWorker(kb, { signal });
   const notes = loadNotes(initialScan);
   const sources = loadSources(initialScan);
-  const initialWikis = loadWikis(initialScan);
+  const wikis = loadWikis(initialScan);
   const principles = loadPrinciples(initialScan);
   const rebuildInfo = await detectRescanInfo(kb, initialScan);
+  const activeGeneratedCommunities = kb.generatedCommunityProjectionStore.readActiveGeneration();
 
-  // Topology refresh may rewrite community files on disk; rescan once afterwards
-  // so the projected index reflects the regenerated communities.
-  const topologyIndex = buildKbIndex(initialScan, notes, sources, [], initialWikis, principles);
-  const topologyRefresh = prepareCommunityTopologyRefresh(kb, mutation, topologyIndex);
-  const finalScan = await buildCorpusScanViewInWorker(kb, { signal });
-  const finalSurface = buildCorpusSurface(finalScan);
-  const communities = loadCommunities(finalScan);
-  const wikis = loadWikis(finalScan);
-  const index = buildKbIndex(finalScan, notes, sources, communities, wikis, principles);
+  const finalSurface = buildCorpusSurface(initialScan);
+  const communities = loadCommunities(initialScan);
+  const index = buildKbIndex(initialScan, notes, sources, communities, wikis, principles, {
+    generatedCommunityDocuments: activeGeneratedCommunities.records,
+    generatedCommunityFreshness: {
+      generatedCommunityGeneration: activeGeneratedCommunities.generatedCommunityGeneration,
+      generatedCommunityDocsHash: activeGeneratedCommunities.generatedCommunityDocsHash,
+    },
+  });
 
   kb.writeIndex(index);
   kb.recordReindexSuccess(startState, rebuildInfo.externalMutation ?? undefined, finalSurface);
 
-  if (topologyRefresh.shouldPersistState) {
-    const currentState = readCurateState(curateDb(kb));
-    writeCurateState(curateDb(kb), {
-      ...currentState,
-      communitySummaryTopologyHash: topologyRefresh.topologyHash,
-    });
-  }
-
-  const incidents = projectIncidents(finalScan);
+  const incidents = projectIncidents(initialScan);
   syncRetryQueueAgainstIncidents(kb, incidents);
   if (incidents.length > 0) {
     if (signal !== undefined) {

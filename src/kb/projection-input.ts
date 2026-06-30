@@ -2,6 +2,7 @@ import { isNoEntryError } from '../infra/fs-errors.js';
 import { errorMessage } from '../infra/error-format.js';
 import { backendLog } from '../infra/backend-log.js';
 import { areCommunityDocumentsFresh } from './curate/community/freshness.js';
+import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from './curate/community/generated-projection-store.js';
 import { extractBody, parseCommunityFrontmatter, parseWikiBody, parseWikiFrontmatter } from './corpus/frontmatter.js';
 import { isCommunityEntry, isNoteEntry, isSourceEntry, isWikiEntry, type KbIndex } from './entry-types.js';
 import { loadKbNote, loadKbSource } from './read.js';
@@ -92,14 +93,21 @@ function materializeProjectionRecord(
     };
   }
 
-  const rawContent = kb.storagePort.readFileSync(kb.communityPath(entry.slug), 'utf-8');
-  parseCommunityFrontmatter(rawContent);
-  return {
-    kind: 'community',
-    entry,
-    body: extractBody(rawContent),
-    rawContent,
-  };
+  try {
+    const rawContent = kb.storagePort.readFileSync(kb.communityPath(entry.slug), 'utf-8');
+    parseCommunityFrontmatter(rawContent);
+    return {
+      kind: 'community',
+      entry,
+      body: extractBody(rawContent),
+      rawContent,
+    };
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 export function createKbProjectionInput(
@@ -125,5 +133,9 @@ export function createKbProjectionInput(
     index,
     records,
     communityFresh: options.forceCommunityFresh ?? areCommunityDocumentsFresh(kb as KbRuntime, index),
+    generatedCommunityGeneration:
+      options.generatedCommunityGeneration ?? EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityGeneration,
+    generatedCommunityDocsHash:
+      options.generatedCommunityDocsHash ?? EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityDocsHash,
   };
 }

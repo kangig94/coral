@@ -21,6 +21,7 @@ import {
   readEntry,
   readEntryWithResolvedId,
   type KbReadPathResolver,
+  type KbReadCommunityDocumentProvider,
   type KbReadStorage,
   type KbResolvedReadResult,
 } from './read.js';
@@ -49,6 +50,7 @@ export interface KbQueryHost {
   readonly readDb: ReadonlyDatabase;
   readonly storage: KbReadStorage;
   readonly readPaths: KbReadPathResolver;
+  readonly communityDocumentProvider: KbReadCommunityDocumentProvider;
   /** Resolved per-project data dir for the caller's project root (memo reads/writes). */
   requireProjectDataDir(operation: string): string;
 }
@@ -63,6 +65,7 @@ export function readKnowledgeBaseEntry(selector: KbReadInput, host: KbQueryHost)
     projectDataDir: host.requireProjectDataDir('kb.read'),
     storage: host.storage,
     paths: host.readPaths,
+    communityDocumentProvider: host.communityDocumentProvider,
   });
 }
 
@@ -71,6 +74,7 @@ export function readKnowledgeBaseEntryWithResolvedId(selector: KbReadInput, host
     projectDataDir: host.requireProjectDataDir('kb.read'),
     storage: host.storage,
     paths: host.readPaths,
+    communityDocumentProvider: host.communityDocumentProvider,
   });
 }
 

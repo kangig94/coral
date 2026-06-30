@@ -15,6 +15,8 @@ export type EngineArtifactProjectedSnapshot = Pick<
   'snapshotId' | 'contentSeq' | 'metadataSeq' | 'contentManifestHash' | 'metadataManifestHash'
 > & {
   readonly projectionIdentityHash: string;
+  readonly generatedCommunityGeneration?: number;
+  readonly generatedCommunityDocsHash?: string;
 };
 
 export type EngineArtifactFreshness =
@@ -37,6 +39,7 @@ export interface EngineArtifactDescriptor {
   readonly corpusInterest: CorpusInterest;
   readonly artifactPaths: readonly string[];
   readonly expectedProjectionIdentityHash: string;
+  readonly projectsGeneratedCommunityDocs?: boolean;
   readonly freshness: EngineArtifactFreshness;
 }
 

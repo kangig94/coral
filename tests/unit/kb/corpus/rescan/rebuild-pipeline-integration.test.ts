@@ -309,8 +309,7 @@ describe('performRescan failure semantics', () => {
 describe('detectRescanInfo unified MutationLane emitter', () => {
   // Parity claim: a markdown frontmatter-only edit and an entity-graph-only edit both
   // emit MutationLane='metadata'. Each scenario lives in its own seeded runtime so the
-  // assertion isolates one drift source — community-topology refresh side-effects from
-  // earlier scenarios cannot bleed in via the retry queue.
+  // assertion isolates one drift source so earlier scenarios cannot bleed in via the retry queue.
   it('emits "metadata" for a markdown frontmatter-only edit', async () => {
     const { kb, root } = createSeededKbRuntime();
     const noteFrontmatter = (tags: string): string =>

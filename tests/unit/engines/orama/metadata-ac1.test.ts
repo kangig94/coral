@@ -185,9 +185,18 @@ describe('Orama AC1 projection metadata', () => {
     const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
     const [descriptor] = await artifactPort.describeArtifacts();
     expect(descriptor).toBeDefined();
-    const lag = detectProjectionArtifactLag({ getCorpusStateSnapshot: () => snapshot }, [
-      { ...descriptor, targetConsumerIds: [ORAMA_BASE_CONSUMER_ID] },
-    ]);
+    const lag = detectProjectionArtifactLag(
+      {
+        getCorpusStateSnapshot: () => snapshot,
+        generatedCommunityProjectionStore: {
+          readActiveFreshness: () => ({
+            generatedCommunityGeneration: 0,
+            generatedCommunityDocsHash: 'empty',
+          }),
+        },
+      },
+      [{ ...descriptor, targetConsumerIds: [ORAMA_BASE_CONSUMER_ID] }],
+    );
 
     expect(descriptor?.expectedProjectionIdentityHash).toBe(
       ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput([])),

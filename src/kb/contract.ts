@@ -18,6 +18,10 @@ import type { FtsSearchResult, RoleCatalogView, RoleRegistry } from './search/co
 import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 import type { KbCapabilityCatalogView, KbCapabilityRegistry } from './capability/contract.js';
 import type { KbDeclaredAnalyzer } from './extra-langs.js';
+import type {
+  GeneratedCommunityFreshness,
+  GeneratedCommunityProjectionStore,
+} from './curate/community/generated-projection-store.js';
 
 export type KbIndexMutationLane = 'content' | 'metadata' | 'both';
 
@@ -48,6 +52,16 @@ export interface KbCorpusPublishCallbacks {
   notifyCorpusMutation(publication: KbCorpusPublication): Promise<void> | void;
   onPublishFailure?(failure: KbCorpusPublishFailure): void;
   onPublishSuccess?(): void;
+}
+
+export type KbGeneratedCommunityPublication = {
+  readonly snapshot: KbCorpusSnapshot;
+} & GeneratedCommunityFreshness;
+
+export interface KbGeneratedCommunityProjectionCallbacks {
+  notifyGeneratedCommunityProjection(
+    publication: KbGeneratedCommunityPublication,
+  ): Promise<void> | void;
 }
 
 export interface KbIndexState {
@@ -145,6 +159,7 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   readonly version: string;
   readonly engineArtifactRegistry: EngineArtifactRegistry;
   readonly corpusAuthorityBaseline: CorpusAuthorityBaselineStore;
+  readonly generatedCommunityProjectionStore: GeneratedCommunityProjectionStore;
   /**
    * general-purpose I/O surface used by gitSync; do NOT use for corpus
    * markdown reads — use corpusStorage instead.
@@ -166,6 +181,7 @@ export interface KbRuntime extends KbEngineRuntimeBase {
   readIndexState(): KbIndexState;
   writeIndexState(state: KbIndexState): void;
   register(corpusPublishCallbacks: KbCorpusPublishCallbacks): void;
+  publishGeneratedCommunityProjection(publication: KbGeneratedCommunityPublication): void;
   recordMutationCommitted(lane?: KbIndexMutationLane, reason?: string): KbIndexState;
   recordIndexSyncSuccess(): KbIndexState;
   recordIndexSyncFailure(reason: string): KbIndexState;

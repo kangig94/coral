@@ -137,6 +137,12 @@ export function isCommunityMetadataManifestId(manifestId: string): boolean {
   return manifestId.startsWith(COMMUNITY_METADATA_MANIFEST_ID_PREFIX);
 }
 
+export function communitySlugFromMetadataManifestId(manifestId: string): string | null {
+  return isCommunityMetadataManifestId(manifestId)
+    ? manifestId.slice(COMMUNITY_METADATA_MANIFEST_ID_PREFIX.length)
+    : null;
+}
+
 export function principleMetadataManifestId(slug: string): string {
   return `principle:${slug}`;
 }

@@ -5,7 +5,6 @@ import { errorMessage } from '../infra/error-format.js';
 import {
   createDefaultKbReadPaths,
   createKbQueryHost,
-  resolveQueryMarkdownRoot,
   type KbQueryContext,
   type KbQueryRuntime,
 } from '../read-model/kb-query-runtime.js';
@@ -25,7 +24,8 @@ import {
   searchKnowledgeBase,
 } from '../kb/queries.js';
 import { readEntryByKind } from '../kb/read.js';
-import { communitiesDir, kbRuntimeDir } from '../kb/paths.js';
+import { kbRuntimeDir } from '../kb/paths.js';
+import { GeneratedCommunityProjectionStore } from '../kb/curate/community/generated-projection-store.js';
 import type { KbReadKind } from '../kb/selector.js';
 import { kbError, kbSuccess, kbValidationError, type KbToolResult } from '../kb/result.js';
 import {
@@ -320,11 +320,11 @@ function createCommunitySummaryRuntime(
   runtime: KbQueryRuntime,
   queryContext: KbQueryContext,
 ): CommunitySummaryReadRuntime {
-  const markdownRoot = resolveQueryMarkdownRoot(queryContext);
   const paths = createDefaultKbReadPaths(queryContext);
   const indexStorage = runtime.storage;
+  const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
   const indexStore = new KbIndexStore({
-    runtimeDir: kbRuntimeDir(runtime.flavor, runtime.paths.configSlot),
+    runtimeDir,
     storage: {
       readFileSync: (path, encoding) => indexStorage.readFileSync(path, encoding),
       // KbIndexStore normally quarantines corrupt artifacts by unlinking them.
@@ -337,8 +337,14 @@ function createCommunitySummaryRuntime(
     ids: runtime.ids,
   });
   return {
+    generatedCommunityProjectionStore: new GeneratedCommunityProjectionStore({
+      runtimeDir,
+      storage: runtime.storage,
+      ids: runtime.ids,
+      time: runtime.time,
+    }),
     storagePort: runtime.storage,
-    communitiesDir: () => communitiesDir(markdownRoot),
+    communityPath: paths.communityPath,
     notePath: paths.notePath,
     sourcePath: paths.sourcePath,
     readIndexOrEmpty: () => indexStore.readIndexOrEmpty(),
@@ -395,6 +401,7 @@ function readTyped(
     const entry = readEntryByKind(kind, normalizedSlug, {
       storage: runtime.storage,
       paths: createDefaultKbReadPaths(queryContext),
+      communityDocumentProvider: createKbQueryHost(queryContext).communityDocumentProvider,
       ...(projectDir === undefined ? {} : { projectDataDir: projectDir }),
     });
     return Promise.resolve(entry === null ? notFound(kind, normalizedSlug) : kbSuccess(entry));

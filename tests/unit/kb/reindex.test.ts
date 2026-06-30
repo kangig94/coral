@@ -456,9 +456,7 @@ Shared retrieval patterns.
       );
     };
 
-    // First reindex establishes the empty-graph topology hash.
-    // Then re-write the community file (topology refresh deletes it).
-    // Second reindex indexes the community (topology hash now matches).
+    // First reindex establishes an empty index; the next pass indexes the authored community.
     await reindex(kb);
     writeCommunityFile();
 

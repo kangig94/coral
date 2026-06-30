@@ -38,11 +38,16 @@ export type KbReadPathResolver = {
   principlePath(principle: string): string;
 };
 
+export type KbReadCommunityDocumentProvider = {
+  readGeneratedCommunityDocument(slug: string): { readonly content: string } | null;
+};
+
 export type KbReadOptions = {
   storage: KbReadStorage;
   /** Resolved per-project data dir (`runtime.paths.projectData(projectRoot)`); memo reads only. */
   projectDataDir?: string;
   paths?: KbReadPathResolver;
+  communityDocumentProvider?: KbReadCommunityDocumentProvider;
 };
 
 export type KbResolvedReadResult = {
@@ -131,13 +136,23 @@ function readSourceEntry(source: string, storage: KbReadStorage, paths: KbReadPa
   };
 }
 
-function readCommunityEntry(community: string, storage: KbReadStorage, paths: KbReadPathResolver): KbReadResult | null {
+function readCommunityEntry(
+  community: string,
+  storage: KbReadStorage,
+  paths: KbReadPathResolver,
+  provider?: KbReadCommunityDocumentProvider,
+): KbReadResult | null {
   const communityPath = paths.communityPath(community);
-  if (!storage.existsSync(communityPath)) {
+  let raw: string | null = null;
+  if (storage.existsSync(communityPath)) {
+    raw = storage.readFileSync(communityPath, 'utf-8');
+  } else {
+    raw = provider?.readGeneratedCommunityDocument(community)?.content ?? null;
+  }
+  if (raw === null) {
     return null;
   }
 
-  const raw = storage.readFileSync(communityPath, 'utf-8');
   const frontmatter = parseCommunityFrontmatter(raw);
   const body = extractBody(raw);
   const summary = parseSummaryFromBody(body);
@@ -248,7 +263,7 @@ export function readEntryByKind(kind: KbReadKind, slug: string, options: KbReadO
     return readWikiEntry(slug, storage, paths);
   }
   if (kind === 'community') {
-    return readCommunityEntry(slug, storage, paths);
+    return readCommunityEntry(slug, storage, paths, options.communityDocumentProvider);
   }
   if (kind === 'source') {
     return readSourceEntry(slug, storage, paths);
@@ -261,6 +276,7 @@ function readCandidateEntry(
   storage: KbReadStorage,
   paths: KbReadPathResolver,
   projectDataDir?: string,
+  communityDocumentProvider?: KbReadCommunityDocumentProvider,
 ): KbReadResult | null {
   if (candidate.kind === 'memo') {
     if (!MEMO_FILENAME_PATTERN.test(candidate.slug)) {
@@ -278,7 +294,7 @@ function readCandidateEntry(
   }
 
   if (candidate.kind === 'community') {
-    return readCommunityEntry(candidate.slug, storage, paths);
+    return readCommunityEntry(candidate.slug, storage, paths, communityDocumentProvider);
   }
 
   if (candidate.kind === 'source') {
@@ -310,7 +326,13 @@ export function readEntryWithResolvedId(input: KbReadInput, options: KbReadOptio
   const selector = parseKbSelector(input.note);
 
   for (const candidate of expandKbReadSelector(selector)) {
-    const entry = readCandidateEntry(candidate, storage, paths, options.projectDataDir);
+    const entry = readCandidateEntry(
+      candidate,
+      storage,
+      paths,
+      options.projectDataDir,
+      options.communityDocumentProvider,
+    );
     if (entry !== null) {
       return {
         result: entry,

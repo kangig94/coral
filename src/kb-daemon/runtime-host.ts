@@ -266,6 +266,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         providers: noProviderLookupPort,
         observer: (appended) => options.onJournalEvents?.(appended),
       });
+      let kbRef: KbRuntime | null = null;
       const kb = createKbRuntime({
         markdownRoot,
         runtimeDir,
@@ -289,7 +290,45 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
             options.onCorpusMutation?.(publication);
           },
         },
+        generatedCommunityProjectionCallbacks: {
+          notifyGeneratedCommunityProjection: async (publication) => {
+            const activeKb = kbRef;
+            const driver = daemonConsumerDriver;
+            if (activeKb === null || driver === null) {
+              return;
+            }
+            activeKb.invalidateTextSnapshot('generated-community-projection');
+            await activeKb.ensureCorpusFreshness({ wait: true });
+            const descriptors = await activeKb.engineArtifactRegistry.describeArtifacts();
+            const targetConsumerIds: string[] = [];
+            const seen = new Set<string>();
+            for (const descriptor of descriptors) {
+              if (descriptor.projectsGeneratedCommunityDocs !== true) {
+                continue;
+              }
+              for (const consumerId of descriptor.targetConsumerIds) {
+                if (seen.has(consumerId)) {
+                  continue;
+                }
+                seen.add(consumerId);
+                targetConsumerIds.push(consumerId);
+              }
+            }
+            if (targetConsumerIds.length === 0) {
+              return;
+            }
+            driver.forceCorpusApply(publication.snapshot, {
+              reason: 'projection-artifact-lag',
+              consumers: targetConsumerIds,
+              generatedCommunityFreshness: {
+                generatedCommunityGeneration: publication.generatedCommunityGeneration,
+                generatedCommunityDocsHash: publication.generatedCommunityDocsHash,
+              },
+            });
+          },
+        },
       });
+      kbRef = kb;
       const activeConsumerDriver = new ConsumerDriver({
         db: activeDb as Database,
         now: () => nowDate(runtime.time),
@@ -372,12 +411,24 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           readiness,
           snapshot,
           timeoutMs: corpusReadinessTimeoutMs,
-          waitFresh: ({ consumerId, snapshot: target, timeoutMs }) =>
-            waitAbortable(
-              activeConsumerDriver.waitFreshUntil('corpus', target, consumerId, timeoutMs),
+          waitFresh: ({ consumerId, snapshot: target, timeoutMs }) => {
+            const generatedCommunityFreshness = kb.generatedCommunityProjectionStore.readActiveFreshness();
+            return waitAbortable(
+              activeConsumerDriver.waitFreshUntil(
+                'corpus',
+                {
+                  snapshot: target,
+                  atLeastGeneration: 0,
+                  generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+                  generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
+                },
+                consumerId,
+                timeoutMs,
+              ),
               signal,
               `kb_readiness:${readiness}`,
-            ),
+            );
+          },
         });
       };
       const sourceImportService = new KbSourceImportService({
