@@ -7,7 +7,7 @@ import { noteEntryId, parseKbEntryId, sourceEntryId, type KbEntryId } from '../.
 
 /**
  * Curate timing operator knobs (see §16(d) triage rule). Defaults match the
- * historical hardcoded values; operators tune via the matching `CORAL_CURATE_*`
+ * historical hardcoded values; operators tune via the matching `CORAL_KB_CURATE_*`
  * env vars. Reducers below stay pure — they receive the resolved timings as
  * parameters; the env read happens at the scheduler/operations boundary.
  */
@@ -16,10 +16,10 @@ export const DEFAULT_CURATE_TRANSIENT_RETRY_MS = 30 * 60 * 1000;
 export const DEFAULT_CURATE_MISSING_CLI_RETRY_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_CURATE_MAX_RETRY_MS = 4 * 60 * 60 * 1000;
 
-export const CORAL_CURATE_CLAIM_STALE_MS_ENV = 'CORAL_CURATE_CLAIM_STALE_MS';
-export const CORAL_CURATE_TRANSIENT_RETRY_MS_ENV = 'CORAL_CURATE_TRANSIENT_RETRY_MS';
-export const CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV = 'CORAL_CURATE_MISSING_CLI_RETRY_MS';
-export const CORAL_CURATE_MAX_RETRY_MS_ENV = 'CORAL_CURATE_MAX_RETRY_MS';
+export const CORAL_KB_CURATE_CLAIM_STALE_MS_ENV = 'CORAL_KB_CURATE_CLAIM_STALE_MS';
+export const CORAL_KB_CURATE_TRANSIENT_RETRY_MS_ENV = 'CORAL_KB_CURATE_TRANSIENT_RETRY_MS';
+export const CORAL_KB_CURATE_MISSING_CLI_RETRY_MS_ENV = 'CORAL_KB_CURATE_MISSING_CLI_RETRY_MS';
+export const CORAL_KB_CURATE_MAX_RETRY_MS_ENV = 'CORAL_KB_CURATE_MAX_RETRY_MS';
 
 export type CurateTimings = {
   claimStaleMs: number;
@@ -49,16 +49,16 @@ function parsePositiveIntMs(raw: string | undefined, fallback: number): number {
  */
 export function resolveCurateTimings(env: Pick<EnvPort, 'get'>): CurateTimings {
   return {
-    claimStaleMs: parsePositiveIntMs(env.get(CORAL_CURATE_CLAIM_STALE_MS_ENV), DEFAULT_CLAIM_STALE_MS),
+    claimStaleMs: parsePositiveIntMs(env.get(CORAL_KB_CURATE_CLAIM_STALE_MS_ENV), DEFAULT_CLAIM_STALE_MS),
     transientRetryMs: parsePositiveIntMs(
-      env.get(CORAL_CURATE_TRANSIENT_RETRY_MS_ENV),
+      env.get(CORAL_KB_CURATE_TRANSIENT_RETRY_MS_ENV),
       DEFAULT_CURATE_TRANSIENT_RETRY_MS,
     ),
     missingCliRetryMs: parsePositiveIntMs(
-      env.get(CORAL_CURATE_MISSING_CLI_RETRY_MS_ENV),
+      env.get(CORAL_KB_CURATE_MISSING_CLI_RETRY_MS_ENV),
       DEFAULT_CURATE_MISSING_CLI_RETRY_MS,
     ),
-    maxRetryMs: parsePositiveIntMs(env.get(CORAL_CURATE_MAX_RETRY_MS_ENV), DEFAULT_CURATE_MAX_RETRY_MS),
+    maxRetryMs: parsePositiveIntMs(env.get(CORAL_KB_CURATE_MAX_RETRY_MS_ENV), DEFAULT_CURATE_MAX_RETRY_MS),
   };
 }
 
