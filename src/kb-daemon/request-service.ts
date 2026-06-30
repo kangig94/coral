@@ -21,9 +21,9 @@ import {
   listKnowledgeBasePrinciples,
   listKnowledgeBaseSources,
   listKnowledgeBaseWikis,
-  searchKnowledgeBase,
 } from '../kb/queries.js';
 import { readEntryByKind } from '../kb/read.js';
+import { searchKb } from '../kb/ops/search.js';
 import { kbRuntimeDir } from '../kb/paths.js';
 import { GeneratedCommunityProjectionStore } from '../kb/curate/community/generated-projection-store.js';
 import type { KbReadKind } from '../kb/selector.js';
@@ -87,6 +87,10 @@ type KbDaemonWriteRuntimeHost = {
   withKb<T>(
     fn: (state: { kbRuntime: Parameters<typeof handleKbUpdate>[1]; runtime: KbQueryRuntime }) => Promise<T> | T,
   ): Promise<T>;
+  warmSearchRuntime?(): void;
+  searchReadiness?():
+    | { ready: true }
+    | { ready: false; reason: string; message: string; detail?: Record<string, unknown> };
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   health(): KbDaemonKbReadHealth;
@@ -270,6 +274,20 @@ function getWriteRuntimeOrError(
     return kbError('kb_unavailable', `KB daemon write runtime is ${phase}.`);
   }
   return writeRuntime;
+}
+
+function searchRuntimeNotReady(
+  readiness:
+    | { ready: false; reason: string; message: string; detail?: Record<string, unknown> }
+    | undefined,
+): KbToolResult {
+  return kbError(
+    'kb_search_runtime_not_ready',
+    readiness?.message ?? 'KB search runtime is not ready.',
+    readiness === undefined
+      ? { reason: 'search_readiness_unavailable' }
+      : { ...(readiness.detail === undefined ? {} : readiness.detail), reason: readiness.reason },
+  );
 }
 
 function notFound(kind: KbReadKind, slug: string): KbToolResult {
@@ -468,10 +486,28 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
           if ('ok' in parsed) {
             return parsed;
           }
-          return run(() => {
-            const { queryContext } = createContext(state, ctx);
-            const host = createKbQueryHost(queryContext);
-            return searchKnowledgeBase(parsed, host);
+          return runToolResult(async () => {
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
+            }
+            activeWriteRuntime.warmSearchRuntime?.();
+            const readiness = activeWriteRuntime.searchReadiness?.();
+            if (readiness?.ready !== true) {
+              return searchRuntimeNotReady(readiness);
+            }
+            return kbSuccess(
+              await activeWriteRuntime.withKb(({ kbRuntime }) =>
+                searchKb(
+                  kbRuntime.kb,
+                  parsed.query,
+                  parsed.top_k ?? 20,
+                  parsed.scope ?? 'all',
+                  parsed.mode ?? 'auto',
+                  parsed.signal,
+                ),
+              ),
+            );
           }, markFailure);
         }
         case 'diagnose':
@@ -760,6 +796,7 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
     try {
       const { queryContext } = createContext(state);
       createDefaultKbReadPaths(queryContext);
+      writeRuntime?.warmSearchRuntime?.();
       markReady();
     } catch (error: unknown) {
       markFailure(error);

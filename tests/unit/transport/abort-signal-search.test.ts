@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import type { KbIndex, KbSearchScope } from '#src/kb/entry-types.js';
 import { createSearchRequest, runRetrieval } from '#src/kb/ops/search-runner.js';
-import { searchKnowledgeBase, type KbQueryHost } from '#src/kb/queries.js';
+import { searchKb } from '#src/kb/ops/search.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
@@ -129,7 +129,7 @@ describe('AbortSignal propagation for KB search', () => {
     ]);
   });
 
-  it('threads the read-side KbSearchInput signal through searchKnowledgeBase', async () => {
+  it('threads the search signal through searchKb', async () => {
     const controller = new AbortController();
     let seenSignal: AbortSignal | undefined;
     const textDescriptor = descriptor('text', ['lexical'], ['all']);
@@ -142,14 +142,9 @@ describe('AbortSignal propagation for KB search', () => {
       }),
     };
     const runtime = runtimeWithBlockingRoles([{ role: textRole, criticality: 'core' }]);
-    const host = {
-      acquireKbRuntime: vi.fn(async () => runtime),
-      requireProjectRoot: vi.fn(),
-    } as unknown as KbQueryHost;
 
-    const response = await searchKnowledgeBase({ query: 'read side abort', signal: controller.signal }, host);
+    const response = await searchKb(runtime, 'read side abort', 20, 'all', 'auto', controller.signal);
 
-    expect(host.acquireKbRuntime).toHaveBeenCalledWith({ ensureBundledEngines: true });
     expect(seenSignal).toBe(controller.signal);
     expect(response.mode).toBe('text');
   });

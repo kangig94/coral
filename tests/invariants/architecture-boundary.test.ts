@@ -999,9 +999,9 @@ describe('architecture boundary guard', () => {
   it('kb domain modules do not compose runtimes or load engines', () => {
     // Composition (`createRealRuntime`, `createExpansionHost`, `createScope`)
     // and bundled-engine loading (`BUNDLED_ENGINES`, `loadBundledEngine`)
-    // are coordinator/CLI/read-model concerns. The KB domain owns query
+    // are coordinator/daemon concerns. The KB domain owns query
     // semantics and operations but never composes the runtime that runs
-    // them — read-side composition lives at `read-model/kb-query-runtime.ts`.
+    // them.
     const forbiddenSpecifiers = ['runtime/real.js', 'expansion/bundled.js', 'expansion/host.js', 'expansion/scope.js'];
     const violations: string[] = [];
     for (const filePath of PRODUCTION_SOURCE_FILES) {

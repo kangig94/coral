@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-export type CommandClass = 'read' | 'mutate' | 'subscribe';
+export type CommandClass = 'directRead' | 'servedRead' | 'mutate' | 'subscribe';
 
 export type StaticCommandPath =
   | 'jobs'
@@ -50,28 +50,28 @@ export type StaticCommandPath =
   | 'discuss abort';
 
 export const commandClassMap = {
-  jobs: 'read',
+  jobs: 'directRead',
   'wait jobs': 'subscribe',
   abort: 'mutate',
   'abort jobs': 'mutate',
   workflow: 'mutate',
-  'expansion list': 'read',
+  'expansion list': 'directRead',
   'expansion equip': 'mutate',
   'expansion unequip': 'mutate',
   'expansion remove-catalog': 'mutate',
   'expansion update': 'mutate',
-  'expansion info': 'read',
-  'kb search': 'read',
-  'kb diagnose': 'read',
+  'expansion info': 'directRead',
+  'kb search': 'servedRead',
+  'kb diagnose': 'directRead',
   'kb merge-entity-graph': 'mutate',
   'kb merge-frontmatter': 'mutate',
-  'kb principles': 'read',
-  'kb read': 'read',
+  'kb principles': 'directRead',
+  'kb read': 'directRead',
   'kb source import': 'mutate',
-  'kb source list': 'read',
+  'kb source list': 'directRead',
   'kb source delete': 'mutate',
-  'kb community list-stale': 'read',
-  'kb community summary-input': 'read',
+  'kb community list-stale': 'directRead',
+  'kb community summary-input': 'directRead',
   'kb community set-summary': 'mutate',
   'kb wiki create': 'mutate',
   'kb wiki rewrite': 'mutate',
@@ -80,10 +80,10 @@ export const commandClassMap = {
   'kb wiki cite': 'mutate',
   'kb wiki adopt': 'mutate',
   'kb wiki delete': 'mutate',
-  'kb wiki list': 'read',
-  'kb wake-up': 'read',
+  'kb wiki list': 'directRead',
+  'kb wake-up': 'directRead',
   'kb memo write': 'mutate',
-  'kb memo list': 'read',
+  'kb memo list': 'directRead',
   'kb memo delete': 'mutate',
   'kb memo purge': 'mutate',
   'kb promote': 'mutate',
@@ -92,7 +92,7 @@ export const commandClassMap = {
   'kb reindex': 'mutate',
   'discuss seed': 'mutate',
   'discuss start': 'mutate',
-  'discuss watch': 'read',
+  'discuss watch': 'directRead',
   'discuss participate': 'mutate',
   'discuss abort': 'mutate',
 } as const satisfies Readonly<Record<StaticCommandPath, CommandClass>>;

@@ -183,10 +183,12 @@ HTTP is *not* a CLI dispatch path — remote CLI dispatch is not supported.
 
 ### 8.1 Why command-class routing
 
-`CommandClass` enumerates exactly three values: `read`, `mutate`, `subscribe`. The CLI dispatch decides per command:
+`CommandClass` enumerates four values: `directRead`, `servedRead`, `mutate`, `subscribe`. The CLI dispatch decides per command:
 
-- `read` (and the command does not need the coordinator) → `read-model/CoralStore` direct library reads.
-- `mutate` or `subscribe` → IPC.
+- `directRead` → `read-model/CoralStore` direct library reads.
+- `servedRead`, `mutate`, or `subscribe` → IPC.
+
+`kb search` is a `servedRead`: the daemon owns the hot KB search runtime and its language analyzers. KB metadata/read commands such as `kb read`, `kb principles`, source/wiki/memo lists, and community summary reads remain `directRead`s.
 
 Command class is the routing axis, not transport-aware code paths in domain logic. IPC and HTTP share identical coordinator RPC semantics; only wire format differs.
 

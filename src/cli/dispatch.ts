@@ -516,7 +516,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         ...(options.provider !== undefined ? { provider: options.provider } : {}),
         ...(options.all === true ? { all: true } : {}),
       };
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return { jobs: readStore().jobs.list(filters) };
       }
       return request<JobsListResponse>('jobs.list', filters);
@@ -527,7 +527,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     discussStart: async (args) =>
       request<DiscussStartResponse>('discuss.session.create', buildTransportContextBody(args, defaultContext)),
     discussWatch: async (session, cursor) => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().discuss.watch(session, cursor);
       }
 
@@ -558,8 +558,8 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         buildProjectScopedQuery({ sessionId: session }, defaultContext),
       ),
     kbSearch: async (args) => {
-      if (commandClass === 'read') {
-        return readStore().kb.search(args);
+      if (commandClass === 'directRead') {
+        throw new Error(`Command "${path}" is classified as directRead and cannot issue served KB searches.`);
       }
 
       return request<KbSearchResponse>('kb.entries.search', {
@@ -570,14 +570,14 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       });
     },
     kbDiagnose: async (_args = {}) => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.diagnose();
       }
 
       return request<KbDiagnoseResult>('kb.diagnose', {});
     },
     kbPrinciples: async (args) => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.listPrinciples(args);
       }
 
@@ -588,7 +588,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       });
     },
     kbRead: async (args) => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.read(args);
       }
 
@@ -624,7 +624,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
       ),
     kbWikiList: async () => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.listWikis();
       }
 
@@ -632,7 +632,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     },
     kbWikiRead: async (args) => request<KbReadResult>('kb.wiki.read', { slug: args.slug }),
     kbWakeUp: async (args = {}) => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.wakeUp(args);
       }
 
@@ -641,7 +641,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     kbSourceImport: async (args) =>
       request<KbSourceImportResponse>('kb.source.create', buildKbMutationTransportContextBody(args, defaultContext)),
     kbSourceList: async () => {
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.listSources();
       }
 
@@ -652,11 +652,25 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         'kb.source.delete',
         buildKbMutationTransportContextBody({ slug: args.slug }, defaultContext),
       ),
-    kbCommunityListStale: async () => request<Array<{ slug: string; level: number }>>('kb.community.list-stale', {}),
-    kbCommunitySummaryInput: async (args) =>
-      request<{ slug: string; level: number; kind: 'leaf' | 'parent'; input: string }>('kb.community.summary-input', {
-        slug: args.slug,
-      }),
+    kbCommunityListStale: async () => {
+      if (commandClass === 'directRead') {
+        return readStore().kb.listStaleCommunities();
+      }
+
+      return request<Array<{ slug: string; level: number }>>('kb.community.list-stale', {});
+    },
+    kbCommunitySummaryInput: async (args) => {
+      if (commandClass === 'directRead') {
+        return readStore().kb.readCommunitySummaryInput(args.slug);
+      }
+
+      return request<{ slug: string; level: number; kind: 'leaf' | 'parent'; input: string }>(
+        'kb.community.summary-input',
+        {
+          slug: args.slug,
+        },
+      );
+    },
     kbCommunitySetSummary: async (args) =>
       request<{ slug: string }>(
         'kb.community.set-summary',
@@ -667,7 +681,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     kbMemoList: async (args) => {
       const owner = resolveMemoOwner(args.owner, defaultContext);
 
-      if (commandClass === 'read') {
+      if (commandClass === 'directRead') {
         return readStore().kb.listMemos(owner === undefined ? {} : { owner });
       }
 

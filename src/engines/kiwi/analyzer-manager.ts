@@ -63,6 +63,16 @@ export type KiwiAnalyzerManagerStatus =
       readonly reason: string;
     };
 
+export type KiwiAnalyzerLeaseReadiness =
+  | {
+      readonly ready: true;
+    }
+  | {
+      readonly ready: false;
+      readonly state: 'unloaded' | 'loading' | 'evicting' | 'degraded';
+      readonly reason?: string;
+    };
+
 type DegradedState = {
   readonly reason: string;
   readonly modelStateKey: string;
@@ -169,6 +179,38 @@ export class KiwiAnalyzerManager {
       return { state: 'degraded', leaseCount: 0, reason: this.degraded.reason };
     }
     return { state: 'unloaded', leaseCount: 0 };
+  }
+
+  leaseReadiness(
+    runtime: Runtime | undefined,
+    declaredAnalyzers: readonly KbDeclaredAnalyzer[],
+  ): KiwiAnalyzerLeaseReadiness {
+    const normalized = normalDeclaredAnalyzers(declaredAnalyzers);
+    if (!wantsKiwi(normalized) || runtime === undefined) {
+      return { ready: true };
+    }
+
+    if (this.degraded !== null && this.modelChangedSinceFailure(runtime, this.degraded)) {
+      this.degraded = null;
+      this.lastNotifiedDegradedModelStateKey = null;
+    }
+
+    if (this.degraded !== null) {
+      return { ready: false, state: 'degraded', reason: this.degraded.reason };
+    }
+    if (this.evictionPromise !== null) {
+      return { ready: false, state: 'evicting' };
+    }
+    if (this.loadPromise !== null) {
+      return { ready: false, state: 'loading' };
+    }
+
+    const key = runtimeKey(runtime);
+    if (this.activeHandle !== null && !this.activeHandle.closed && this.activeHandle.runtimeKey === key) {
+      return { ready: true };
+    }
+
+    return { ready: false, state: 'unloaded' };
   }
 
   currentAnalyzer(): KiwiAnalyzer | null {

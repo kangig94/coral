@@ -8,7 +8,7 @@ import type * as MainMod from '#src/cli/program.js';
 
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+import { openStoreDatabase } from '#src/store/db.js';
 
 const REPO_ROOT = process.cwd();
 // Keep this fixed clock aligned with the snapshot's relative-time offsets vs. seeded `created_at` values.
@@ -23,37 +23,6 @@ function toText(chunk: string | Uint8Array): string {
 async function loadMainModule(): Promise<MainModule> {
   vi.resetModules();
   return import('#src/cli/program.js');
-}
-
-async function seedKbSearchSnapshot(): Promise<void> {
-  const [{ reindex }, { closeNeedleBackend }, kbPaths, { applyBoundCorpusConsumerForTest, createKbTestRuntime }] =
-    await Promise.all([
-      import('#src/kb/ops/reindex.js'),
-      import('#src/engines/needle/backend.js'),
-      import('#src/kb/paths.js'),
-      import('#tests/helpers/kb-test-runtime.js'),
-    ]);
-  const realRuntime = createRealRuntime('prod');
-  // Mirror the backend store db wiring so the seeded retry queue is visible to
-  // the read-only query runtime that opens the same store via defaultRegistry.
-  const db = openWritableStoreDbNoReset(realRuntime);
-  const { kb } = createKbTestRuntime({
-    markdownRoot: process.env.CORAL_KB_PATH!,
-    runtimeDir: kbPaths.kbRuntimeDir('prod', realRuntime.paths.configSlot),
-    db,
-    runtime: realRuntime,
-  });
-
-  const { bindOramaFtsForTest } = await import('#tests/unit/kb/expansion-test-helpers.js');
-  bindOramaFtsForTest(kb);
-
-  try {
-    await reindex(kb);
-    await applyBoundCorpusConsumerForTest(kb, db);
-  } finally {
-    await closeNeedleBackend(kb);
-    db.close();
-  }
 }
 
 function writeKbFixtures(kbRoot: string): void {
@@ -188,7 +157,6 @@ describe('cli coral-store read parity', () => {
 
     writeKbFixtures(process.env.CORAL_KB_PATH);
     seedStore(projectRoot);
-    await seedKbSearchSnapshot();
   });
 
   afterEach(() => {
@@ -219,7 +187,6 @@ describe('cli coral-store read parity', () => {
 
   it.each([
     ['jobs', ['jobs']],
-    ['kb search', ['kb', 'search', 'authoritative']],
     ['kb principles', ['kb', 'principles']],
     ['kb read', ['kb', 'read', 'coral-kb-mode']],
   ])('preserves %s output via CoralStore reads', async (_name, args) => {
@@ -230,25 +197,6 @@ describe('cli coral-store read parity', () => {
 
     expect(stderr).toBe('');
     expect(normalizedStdout).toMatchSnapshot();
-  });
-
-  it('degrades direct-read kb search when the Orama snapshot is absent', async () => {
-    const [{ kbRuntimeDir }, { createRealRuntime }] = await Promise.all([
-      import('#src/kb/paths.js'),
-      import('#src/runtime/real.js'),
-    ]);
-    rmSync(kbRuntimeDir('prod', createRealRuntime('prod').paths.configSlot), { recursive: true, force: true });
-
-    const { searchKnowledgeBase } = await import('#src/kb/queries.js');
-    const { createKbQueryHost } = await import('#src/read-model/kb-query-runtime.js');
-    const result = await searchKnowledgeBase({ query: 'authoritative' }, createKbQueryHost({ pluginRoot: REPO_ROOT }));
-
-    expect(result).toEqual({
-      results: [],
-      mode: 'text',
-      retrievalDiagnostics: [],
-      warnings: ['kb_search_degraded_until_coordinator_rebuild'],
-    });
   });
 
   it('resolves direct-read kb read root from plugin flavor when CORAL_KB_PATH is unset', async () => {

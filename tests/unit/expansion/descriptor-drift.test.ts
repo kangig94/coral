@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { validateManifestCompleteness } from '#src/expansion/manifest/completeness.js';
 import type { EngineManifest } from '#src/expansion/contract.js';
@@ -7,7 +7,6 @@ import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/cont
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import { KB_FTS_CAPABILITY, KB_VECTOR_CAPABILITY } from '#src/kb/capability/constants.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import { createTestRuntime } from '#tests/fixtures/test-runtime.js';
 
 const baseDescriptor = {
   id: 'drift-role',
@@ -132,65 +131,6 @@ describe('manifest descriptor drift validation', () => {
           missing: 'role-a, role-b, role-c',
         },
       });
-    }
-  });
-
-  it('rethrows role_descriptor_unregistered from read-side bundled loading and disposes the partial role scope', async () => {
-    type DisposableScope = { [Symbol.dispose](): void };
-    type ExpansionHostRegister = (role: RetrievalRole, scope: DisposableScope) => unknown;
-
-    vi.resetModules();
-    vi.doMock('#src/expansion/bundled.js', () => ({
-      BUNDLED_ENGINES: [
-        {
-          id: 'partial-read-side',
-          version: '0.0.0',
-          specifier: '#tests/partial-read-side/expansion.js',
-          tier: 'bundled',
-          description: 'partial read-side role expansion',
-          provides: {
-            retrievalRoles: [
-              { ...baseDescriptor, id: 'read-side-one' },
-              { ...baseDescriptor, id: 'read-side-two' },
-            ],
-          },
-        },
-      ],
-      loadBundledEngine: vi.fn(
-        async (
-          _entry: EngineManifest,
-          host: { registerRetrievalRole: ExpansionHostRegister; scope: DisposableScope },
-        ) => {
-          const descriptor = { ...baseDescriptor, id: 'read-side-one' };
-          host.registerRetrievalRole(
-            {
-              id: descriptor.id,
-              descriptor,
-              async search() {
-                return { hits: [] };
-              },
-            },
-            host.scope,
-          );
-        },
-      ),
-    }));
-
-    try {
-      const { ensureBundledEnginesLoaded } = await import('#src/read-model/kb-query-runtime.js');
-      const { kb, runtime } = createTestRuntime();
-
-      await expect(ensureBundledEnginesLoaded(kb, { pluginRoot: '/tmp/coral-plugin', runtime })).rejects.toMatchObject({
-        code: 'role_descriptor_unregistered',
-        context: {
-          expansion: 'partial-read-side',
-          missing: 'read-side-two',
-        },
-      });
-      expect(kb.roleRegistry.list().some((record) => record.descriptor.id === 'read-side-one')).toBe(false);
-    } finally {
-      vi.doUnmock('#src/expansion/bundled.js');
-      vi.resetModules();
     }
   });
 });

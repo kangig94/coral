@@ -15,7 +15,8 @@ import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import { runCommunitySummaryAgent } from '../kb/curate/community/summary-agent.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import { cleanupSourceImportRuntimeArtifacts } from '../kb/ops/source/import.js';
-import type { KbCorpusPublication, KbRuntime } from '../kb/contract.js';
+import type { Backed, FtsRetrieval, KbCorpusPublication, KbRuntime } from '../kb/contract.js';
+import { KB_FTS_CAPABILITY } from '../kb/capability/constants.js';
 import { persistCorpusState } from '../kb/state/corpus-state.js';
 import type { KbDaemonKbReadHealth } from './protocol.js';
 import type { AppendedEvent } from '../store/append.js';
@@ -44,6 +45,7 @@ import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
+import { getKiwiAnalyzerManager } from '../engines/kiwi/analyzer-manager.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -109,6 +111,8 @@ export type DaemonKnowledgeBaseRuntime = {
 
 export type KbDaemonWriteRuntimeHost = {
   withKb<T>(fn: (state: KbDaemonWriteRuntimeState) => Promise<T> | T): Promise<T>;
+  warmSearchRuntime(): void;
+  searchReadiness(): KbDaemonSearchRuntimeReadiness;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
@@ -117,6 +121,23 @@ export type KbDaemonWriteRuntimeHost = {
   dispose(options?: { signal?: AbortSignal }): Promise<void>;
   health(): KbDaemonKbReadHealth;
 };
+
+export type KbDaemonSearchRuntimeReadiness =
+  | { ready: true }
+  | {
+      ready: false;
+      reason:
+        | 'write_runtime_not_initialized'
+        | 'write_runtime_initializing'
+        | 'write_runtime_unavailable'
+        | 'fts_binding_unavailable'
+        | 'kiwi_analyzer_unloaded'
+        | 'kiwi_analyzer_loading'
+        | 'kiwi_analyzer_evicting'
+        | 'kiwi_analyzer_degraded';
+      message: string;
+      detail?: Record<string, unknown>;
+    };
 
 function createUnavailableCurateAssistant(): CurateAssistantPort {
   return {
@@ -220,6 +241,9 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let state: KbDaemonWriteRuntimeState | null = null;
   let initPromise: Promise<KbDaemonWriteRuntimeState> | null = null;
   let disposePromise: Promise<void> | null = null;
+  let searchWarmupPromise: Promise<void> | null = null;
+  let lastSearchWarmupError: string | undefined;
+  const kiwiAnalyzerManager = getKiwiAnalyzerManager();
   // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
   // disposes; the in-flight model download takes no signal and runs to completion detached.
   let kiwiArtifactBootController: AbortController | null = null;
@@ -499,6 +523,88 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     return initPromise;
   };
 
+  const assertFtsBindingReady = (
+    activeState: KbDaemonWriteRuntimeState,
+  ): KbDaemonSearchRuntimeReadiness | null => {
+    try {
+      activeState.kbRuntime.kb.capabilityRegistry
+        .runtimeView()
+        .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
+        .read();
+      return null;
+    } catch (error: unknown) {
+      return {
+        ready: false,
+        reason: 'fts_binding_unavailable',
+        message: 'KB search runtime is not ready: FTS capability is not bound.',
+        detail: { error: errorMessage(error) },
+      };
+    }
+  };
+
+  const searchReadiness = (): KbDaemonSearchRuntimeReadiness => {
+    const activeState = state;
+    if (activeState === null) {
+      if (initPromise !== null) {
+        return {
+          ready: false,
+          reason: 'write_runtime_initializing',
+          message: 'KB search runtime is still warming.',
+        };
+      }
+      return {
+        ready: false,
+        reason: phase === 'not_initialized' ? 'write_runtime_not_initialized' : 'write_runtime_unavailable',
+        message: `KB search runtime is not ready: write runtime is ${phase}.`,
+        ...(lastSearchWarmupError === undefined ? {} : { detail: { lastSearchWarmupError } }),
+      };
+    }
+
+    const ftsReadiness = assertFtsBindingReady(activeState);
+    if (ftsReadiness !== null) {
+      return ftsReadiness;
+    }
+
+    const analyzerReadiness = kiwiAnalyzerManager.leaseReadiness(
+      activeState.runtime,
+      activeState.kbRuntime.kb.declaredAnalyzers,
+    );
+    if (!analyzerReadiness.ready) {
+      return {
+        ready: false,
+        reason: `kiwi_analyzer_${analyzerReadiness.state}`,
+        message: `KB search runtime is not ready: Kiwi analyzer is ${analyzerReadiness.state}.`,
+        ...(analyzerReadiness.reason === undefined ? {} : { detail: { analyzerReason: analyzerReadiness.reason } }),
+      };
+    }
+
+    return { ready: true };
+  };
+
+  const warmSearchRuntime = (): void => {
+    if (searchWarmupPromise !== null || phase === 'disposing' || phase === 'disposed') {
+      return;
+    }
+
+    searchWarmupPromise = init()
+      .then(async (activeState) => {
+        if (activeState.kbRuntime.kb.declaredAnalyzers.includes('ko')) {
+          await kiwiAnalyzerManager.withAnalyzerLease(
+            activeState.runtime,
+            activeState.kbRuntime.kb.declaredAnalyzers,
+            () => undefined,
+          );
+        }
+        lastSearchWarmupError = undefined;
+      })
+      .catch((error: unknown) => {
+        lastSearchWarmupError = errorMessage(error);
+      })
+      .finally(() => {
+        searchWarmupPromise = null;
+      });
+  };
+
   const disposeState = async (
     activeState: KbDaemonWriteRuntimeState,
     signal: AbortSignal | undefined,
@@ -584,6 +690,8 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       const initialized = await init();
       return fn(initialized);
     },
+    warmSearchRuntime,
+    searchReadiness,
     async createSource(args, ctx) {
       if (phase === 'disposing' || phase === 'disposed') {
         return disposedError();

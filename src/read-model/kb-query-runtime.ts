@@ -14,27 +14,10 @@ import {
   wikiPathFromName,
 } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
-import { loadBundledEngine } from '../expansion/bundled.js';
-import { createExpansionHost, disposeExpansionScope } from '../expansion/host.js';
-import { createScope } from '../expansion/scope.js';
-import type { ExpansionHost } from '../expansion/contract.js';
-import { validateManifestCompleteness } from '../expansion/manifest/completeness.js';
-import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
-import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
-import { serializeCoralSetupError } from '../runtime/errors.js';
-import {
-  BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-  BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-  BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-} from '../kb/capability/constants.js';
-import type { ConsumerHandle, ConsumerHandleStatus, ConsumerRegistration } from '../store/consumer-contract.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
-
-const MANIFEST_CATALOG_UNAVAILABLE_MESSAGE =
-  /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 
@@ -56,7 +39,6 @@ export class KbQueryRegistry {
   private cachedRuntime: { flavor: BuildFlavor; runtime: ReturnType<typeof createRealRuntime> } | undefined;
   private cachedDb: { flavor: BuildFlavor; db: ReadonlyDatabase } | undefined;
   private readonly cachedRuntimeDbs = new Map<KbQueryRuntime, ReadonlyDatabase>();
-  private bundledLoaded = new WeakSet<KbRuntime>();
 
   getRuntime(flavor: BuildFlavor): ReturnType<typeof createRealRuntime> {
     if (this.cachedRuntime?.flavor !== flavor) {
@@ -91,15 +73,6 @@ export class KbQueryRegistry {
       db.close();
     }
     this.cachedRuntimeDbs.clear();
-    this.bundledLoaded = new WeakSet<KbRuntime>();
-  }
-
-  hasLoadedBundled(kb: KbRuntime): boolean {
-    return this.bundledLoaded.has(kb);
-  }
-
-  markBundledLoaded(kb: KbRuntime): void {
-    this.bundledLoaded.add(kb);
   }
 }
 
@@ -161,95 +134,6 @@ export function createDefaultKbQueryRuntime(context: KbQueryContext): KbRuntime 
   });
 }
 
-function isManifestCatalogUnavailableError(error: unknown): boolean {
-  if (serializeCoralSetupError(error) !== null) {
-    return false;
-  }
-  return error instanceof Error && MANIFEST_CATALOG_UNAVAILABLE_MESSAGE.test(error.message);
-}
-
-/**
- * Loads bundled read-side capabilities onto a read-only KB runtime once per
- * `kb` instance. Read-side CLI does not run the coordinator's bundled
- * fallback, so this is the dual; without it reading the kb.fts capability throws
- * `binding_empty` and the search degrades silently.
- */
-export async function ensureBundledEnginesLoaded(kb: KbRuntime, context: KbQueryContext): Promise<void> {
-  if (defaultRegistry.hasLoadedBundled(kb)) {
-    return;
-  }
-
-  const runtime = resolveQueryRuntime(context);
-  let manifestCatalog: ReturnType<typeof createExpansionManifestCatalog>;
-  try {
-    manifestCatalog = createExpansionManifestCatalog({ readDb: getDefaultKbQueryDb(context) });
-  } catch (error) {
-    if (!isManifestCatalogUnavailableError(error)) {
-      throw error;
-    }
-    manifestCatalog = createExpansionManifestCatalog();
-  }
-  initializeCapabilityCatalog(kb.capabilityRegistry, manifestCatalog.listManifests(), [
-    BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
-    BUILTIN_VECTOR_CAPABILITY_DESCRIPTOR,
-    BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
-  ]);
-
-  const noopDriver = {
-    register(_reg: ConsumerRegistration): ConsumerHandle {
-      return {
-        id: _reg.id,
-        registrationKind: _reg.kind === 'stateless' ? 'stateless' : 'base',
-        lastApplyError: null,
-        async stop() {},
-        async unregister() {},
-        status: () => noopConsumerStatus(_reg),
-      };
-    },
-    getJournalReader() {
-      return {
-        readCursor: () => 0,
-      };
-    },
-    getCorpusStateReader() {
-      return {
-        readConsumerCursor: () => ({
-          snapshotId: '',
-          contentSeq: 0,
-          metadataSeq: 0,
-          contentManifestHash: '',
-          metadataManifestHash: '',
-        }),
-        readCurrentSnapshot: () => kb.getCorpusStateSnapshot(),
-      };
-    },
-  };
-
-  for (const entry of manifestCatalog.listManifests()) {
-    if (entry.tier !== 'bundled') {
-      continue;
-    }
-    const scope = createScope();
-    const host: ExpansionHost = createExpansionHost({
-      runtime,
-      kb,
-      roleRegistry: kb.roleRegistry,
-      scope,
-      manifest: entry,
-      consumerDriver: noopDriver,
-    });
-    try {
-      await loadBundledEngine(entry, host);
-      validateManifestCompleteness(entry, kb.roleRegistry, kb.capabilityRegistry);
-    } catch (error) {
-      await disposeExpansionScope(scope);
-      throw error;
-    }
-  }
-
-  defaultRegistry.markBundledLoaded(kb);
-}
-
 /**
  * KB query runtime is read-only: it answers `kb` CLI subcommands without touching
  * `gitSync.scheduleDeferredCommit()` or the auto-fix dispatcher. The curate assistant
@@ -264,49 +148,21 @@ function createReadOnlyCurateAssistant(): CurateAssistantPort {
   };
 }
 
-function noopConsumerStatus(reg: ConsumerRegistration): ConsumerHandleStatus {
-  if (reg.kind === 'stateless') {
-    return { kind: 'stateless', pending: false };
-  }
-
-  if (reg.authority === 'corpus') {
-    return {
-      authority: 'corpus',
-      corpusInterest: reg.corpusInterest,
-      snapshotId: null,
-      contentSeq: 0,
-      metadataSeq: 0,
-      contentManifestHash: null,
-      metadataManifestHash: null,
-      pending: false,
-      lastApplyError: null,
-    };
-  }
-
-  return { authority: 'journal', cursor: 0, pending: false, lastApplyError: null };
-}
-
 /**
  * Compose a `KbQueryHost` for read-side KB queries. The host caches the
- * built `KbRuntime` so search and metadata reads in the same CLI process
- * share one runtime + bundled-engine load. Domain code receives the
+ * built `KbRuntime` so metadata reads in the same CLI process share one
+ * runtime. Domain code receives the
  * composed host through `kb/queries.ts`'s `KbQueryHost` interface — KB
  * does not import composition itself.
  */
 export function createKbQueryHost(context: KbQueryContext): KbQueryHost {
   let cachedKb: KbRuntime | undefined;
-  let bundledLoadPromise: Promise<void> | undefined;
 
   const ensureKb = (): KbRuntime => (cachedKb ??= createDefaultKbQueryRuntime(context));
 
   return {
-    async acquireKbRuntime(options) {
-      const kb = ensureKb();
-      if (options?.ensureBundledEngines === true) {
-        bundledLoadPromise ??= ensureBundledEnginesLoaded(kb, context);
-        await bundledLoadPromise;
-      }
-      return kb;
+    async acquireKbRuntime() {
+      return ensureKb();
     },
     get readDb(): ReadonlyDatabase {
       return getDefaultKbQueryDb(context);
@@ -319,7 +175,8 @@ export function createKbQueryHost(context: KbQueryContext): KbQueryHost {
     },
     get communityDocumentProvider() {
       return {
-        readGeneratedCommunityDocument: (slug: string) => ensureKb().generatedCommunityProjectionStore.readCommunityDocument(slug),
+        readGeneratedCommunityDocument: (slug: string) =>
+          ensureKb().generatedCommunityProjectionStore.readCommunityDocument(slug),
       };
     },
     requireProjectDataDir(operation: string): string {

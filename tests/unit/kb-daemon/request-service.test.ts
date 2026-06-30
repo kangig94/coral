@@ -345,6 +345,44 @@ describe('KB daemon request service', () => {
     expect(writeRuntime.withKb).not.toHaveBeenCalled();
   });
 
+  it('fails kb search fast and starts write-runtime warmup when search is still cold', async () => {
+    const runtime = new SimulationRuntime();
+    const writeRuntime = {
+      withKb: vi.fn(async () => {
+        throw new Error('write runtime search should not run while cold');
+      }),
+      warmSearchRuntime: vi.fn(),
+      searchReadiness: vi.fn(() => ({
+        ready: false as const,
+        reason: 'write_runtime_initializing',
+        message: 'KB search runtime is still warming.',
+      })),
+      createSource: vi.fn(async () => {
+        throw new Error('source import should not be called');
+      }),
+      reindex: vi.fn(async () => {
+        throw new Error('reindex should not be called');
+      }),
+      health: () => ({ phase: 'not_initialized' as const }),
+    };
+    const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime, writeRuntime });
+
+    const result = await service.read({
+      method: 'readSearch',
+      args: { query: '계약' },
+      ctx: daemonCtx(),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'kb_search_runtime_not_ready',
+      message: 'KB search runtime is still warming.',
+      detail: { reason: 'write_runtime_initializing' },
+    });
+    expect(writeRuntime.warmSearchRuntime).toHaveBeenCalledTimes(1);
+    expect(writeRuntime.withKb).not.toHaveBeenCalled();
+  });
+
   it.each(deniedSourceImportPrincipals)(
     'denies createSource for %s before touching write runtime services',
     async (_label, principal) => {

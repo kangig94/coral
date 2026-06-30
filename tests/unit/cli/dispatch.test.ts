@@ -181,7 +181,7 @@ describe('command client routing', () => {
     expect(ensure).not.toHaveBeenCalled();
   });
 
-  it('forwards kb search mode through non-read transport dispatchers', async () => {
+  it('forwards kb search mode through transport dispatchers', async () => {
     mockState.request.mockResolvedValueOnce({ results: [], mode: 'vector' });
     const program = buildProgram();
     const client = makeClient('/tmp/project', findCommand(program, 'kb', 'reindex'));
