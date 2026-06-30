@@ -274,11 +274,15 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   // from ambient time, so the construction is a deterministic format step.
   // src/workflow/stale-recovery.ts formats a continuation-lease expiry from
   // `options.time.now()`; the clock value is injected through the workflow port.
+  // src/kb/curate/community/generated-projection-store.ts formats a port-sourced
+  // clock (`new Date(this.time.now())`) to an ISO date; the millis come from the
+  // injected TimePort, not ambient time — the same deterministic format step as memo.ts.
   const allowed = new Set([
     'src/kb/env.ts',
     'src/discuss/transcript.ts',
     'src/kb/paths.ts',
     'src/kb/ops/memo.ts',
+    'src/kb/curate/community/generated-projection-store.ts',
     'src/workflow/stale-recovery.ts',
     'src/providers/claude/appserver/controller.ts',
   ]);

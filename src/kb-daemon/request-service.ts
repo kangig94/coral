@@ -286,7 +286,7 @@ function searchRuntimeNotReady(
     readiness?.message ?? 'KB search runtime is not ready.',
     readiness === undefined
       ? { reason: 'search_readiness_unavailable' }
-      : { ...(readiness.detail === undefined ? {} : readiness.detail), reason: readiness.reason },
+      : { ...(readiness.detail ?? {}), reason: readiness.reason },
   );
 }
 

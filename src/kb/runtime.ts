@@ -226,7 +226,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.roleRegistry = roleRegistry;
     this.roleCatalog = roleRegistry.catalogView();
     this.engineArtifactRegistry = engineArtifactRegistry ?? new EngineArtifactRegistry();
-    this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db);
+    this.corpusAuthorityBaseline = createCorpusAuthorityBaselineStore(this.db, () => this.ids.uuid());
     this.generatedCommunityProjectionCallbacks = generatedCommunityProjectionCallbacks;
     this.generatedCommunityProjectionStore = new GeneratedCommunityProjectionStore({
       runtimeDir: this.runtimeDir,

@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import { withImmediate, type Database } from '../../../store/db.js';
 import { buildCorpusSurface } from '../surface.js';
 import type { CorpusScanView } from './scan.js';
@@ -90,8 +88,12 @@ export function readActiveBaselineGenerationId(db: Database): string {
   return readActiveBaselineGenerationIdUnchecked(db);
 }
 
-export function replaceCorpusAuthorityBaseline(db: Database, records: readonly CorpusAuthorityBaselineRecord[]): void {
-  const generation = stageCorpusAuthorityBaselineReplacement(db, records);
+export function replaceCorpusAuthorityBaseline(
+  db: Database,
+  records: readonly CorpusAuthorityBaselineRecord[],
+  generationId: string,
+): void {
+  const generation = stageCorpusAuthorityBaselineReplacement(db, records, generationId);
   adoptCorpusAuthorityBaselineGeneration(db, generation.generationId);
   cleanupInactiveCorpusAuthorityBaselineGenerations(db);
 }
@@ -99,7 +101,7 @@ export function replaceCorpusAuthorityBaseline(db: Database, records: readonly C
 export function stageCorpusAuthorityBaselineReplacement(
   db: Database,
   records: readonly CorpusAuthorityBaselineRecord[],
-  generationId = `baseline-${randomUUID()}`,
+  generationId: string,
 ): CorpusAuthorityBaselineGeneration {
   ensureCorpusAuthorityBaselineTable(db);
   withImmediate(db, () => {
@@ -224,9 +226,13 @@ export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuth
   return [...buildCorpusSurface(scan).baselineRecords];
 }
 
-export function rebuildCorpusAuthorityBaseline(db: Database, scan: CorpusScanView): CorpusAuthorityBaselineMap {
+export function rebuildCorpusAuthorityBaseline(
+  db: Database,
+  scan: CorpusScanView,
+  generationId: string,
+): CorpusAuthorityBaselineMap {
   const records = collectCorpusAuthorityBaseline(scan);
-  replaceCorpusAuthorityBaseline(db, records);
+  replaceCorpusAuthorityBaseline(db, records, generationId);
   const baseline: CorpusAuthorityBaselineMap = new Map();
   for (const record of records) {
     baseline.set(record.entryId, record);
@@ -237,6 +243,7 @@ export function rebuildCorpusAuthorityBaseline(db: Database, scan: CorpusScanVie
 export function ensureCorpusAuthorityBaseline(
   db: Database,
   scan: CorpusScanView,
+  uuid: () => string,
 ): { readonly baseline: CorpusAuthorityBaselineMap; readonly rebuilt: boolean } {
   const baseline = readCorpusAuthorityBaseline(db);
   if (baseline.size > 0 || (scan.markdownFiles.length === 0 && scan.entityGraph === null)) {
@@ -244,30 +251,33 @@ export function ensureCorpusAuthorityBaseline(
   }
 
   return {
-    baseline: rebuildCorpusAuthorityBaseline(db, scan),
+    baseline: rebuildCorpusAuthorityBaseline(db, scan, `baseline-${uuid()}`),
     rebuilt: true,
   };
 }
 
-export function createCorpusAuthorityBaselineStore(db: Database): CorpusAuthorityBaselineStore {
+export function createCorpusAuthorityBaselineStore(
+  db: Database,
+  uuid: () => string,
+): CorpusAuthorityBaselineStore {
   return {
     ensure(scan) {
-      return ensureCorpusAuthorityBaseline(db, scan as CorpusScanView);
+      return ensureCorpusAuthorityBaseline(db, scan as CorpusScanView, uuid);
     },
     rebuild(scan) {
-      return rebuildCorpusAuthorityBaseline(db, scan as CorpusScanView);
+      return rebuildCorpusAuthorityBaseline(db, scan as CorpusScanView, `baseline-${uuid()}`);
     },
     read() {
       return readCorpusAuthorityBaseline(db);
     },
     replace(records) {
-      replaceCorpusAuthorityBaseline(db, records);
+      replaceCorpusAuthorityBaseline(db, records, `baseline-${uuid()}`);
     },
     readActiveGenerationId() {
       return readActiveBaselineGenerationId(db);
     },
     stageReplacement(records, generationId) {
-      return stageCorpusAuthorityBaselineReplacement(db, records, generationId);
+      return stageCorpusAuthorityBaselineReplacement(db, records, generationId ?? `baseline-${uuid()}`);
     },
     adoptStagedGeneration(generationId) {
       adoptCorpusAuthorityBaselineGeneration(db, generationId);

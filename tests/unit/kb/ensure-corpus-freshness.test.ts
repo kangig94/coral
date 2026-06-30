@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { KbRuntime } from '#src/kb/contract.js';
 import * as rescanModule from '#src/kb/corpus/rescan/index.js';
+import type { RescanCounts } from '#src/kb/corpus/projection-lifecycle.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
@@ -13,7 +14,7 @@ import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 // readiness/boot/curate paths use `wait: true` to block on that rebuild.
 
 interface RescanGate {
-  release: (counts?: rescanModule.RescanCounts) => void;
+  release: (counts?: RescanCounts) => void;
   wasInvoked: () => boolean;
   callCount: () => number;
   receivedSignals: () => Array<AbortSignal | undefined>;
@@ -54,7 +55,7 @@ function installGatedRescan(): RescanGate {
   };
 }
 
-function emptyCounts(): rescanModule.RescanCounts {
+function emptyCounts(): RescanCounts {
   return {
     notes: 0,
     sources: 0,

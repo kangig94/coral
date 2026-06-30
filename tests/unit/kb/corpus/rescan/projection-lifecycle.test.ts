@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '#src/store/db.js';
 import type { KbRuntime } from '#src/kb/contract.js';
+import type * as ScanWorkerModule from '#src/kb/corpus/rescan/scan-worker.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
@@ -55,7 +56,7 @@ const scanGate = vi.hoisted(() => {
 });
 
 vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
-  const actual = await vi.importActual<typeof import('#src/kb/corpus/rescan/scan-worker.js')>(
+  const actual = await vi.importActual<typeof ScanWorkerModule>(
     '#src/kb/corpus/rescan/scan-worker.js',
   );
   return {

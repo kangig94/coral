@@ -143,7 +143,7 @@ function readCommunityEntry(
   provider?: KbReadCommunityDocumentProvider,
 ): KbReadResult | null {
   const communityPath = paths.communityPath(community);
-  let raw: string | null = null;
+  let raw: string | null;
   if (storage.existsSync(communityPath)) {
     raw = storage.readFileSync(communityPath, 'utf-8');
   } else {

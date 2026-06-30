@@ -18,6 +18,17 @@ function createKiwiAnalyzerManagerPort(manager: KiwiAnalyzerManager = getKiwiAna
   };
 }
 
+/**
+ * The slice of the Kiwi analyzer manager the write-runtime host needs to gate and warm
+ * KB search. Exposed here (an allowlisted engine importer) so `runtime-host` stays
+ * engine-blind — it depends on this structural port, never on `src/engines/**`.
+ */
+export type KiwiSearchAnalyzerPort = Pick<KiwiAnalyzerManager, 'leaseReadiness' | 'withAnalyzerLease'>;
+
+export function resolveKiwiSearchAnalyzerPort(): KiwiSearchAnalyzerPort {
+  return getKiwiAnalyzerManager();
+}
+
 export type LifecycleBundledLoaderOptions = Pick<
   OramaExpansionOptions,
   'requestProjectionReconcile' | 'onApplyFailure'

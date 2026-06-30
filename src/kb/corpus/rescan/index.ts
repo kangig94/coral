@@ -25,11 +25,8 @@ import type {
   CorpusProjectionCommitResult,
   CorpusProjectionFaultInjection,
   CorpusProjectionSeq,
-  RescanCounts,
   StagedCorpusProjection,
 } from '../projection-lifecycle.js';
-
-export type { RescanCounts } from '../projection-lifecycle.js';
 
 export async function deriveCorpusProjection(
   kb: KbRuntime,
@@ -67,7 +64,9 @@ export async function deriveCorpusProjection(
     index,
     finalSurface,
     incidents,
-    ...(rebuildInfo.externalMutation == null ? {} : { externalMutation: rebuildInfo.externalMutation }),
+    ...(rebuildInfo.externalMutation === undefined || rebuildInfo.externalMutation === null
+      ? {}
+      : { externalMutation: rebuildInfo.externalMutation }),
     counts: buildCounts(notes, sources, communities, wikis, principles, index),
   };
 }

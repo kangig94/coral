@@ -167,15 +167,6 @@ function captureError(fn: () => unknown): unknown {
   }
 }
 
-async function captureAsyncError(fn: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await fn();
-    return null;
-  } catch (error) {
-    return error;
-  }
-}
-
 function expectSetupCode(error: unknown, code: string): void {
   expect(serializeCoralSetupError(error)).toMatchObject({ code });
 }

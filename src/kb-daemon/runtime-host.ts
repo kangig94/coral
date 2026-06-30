@@ -45,7 +45,7 @@ import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
-import { getKiwiAnalyzerManager } from '../engines/kiwi/analyzer-manager.js';
+import { resolveKiwiSearchAnalyzerPort, type KiwiSearchAnalyzerPort } from './expansion/bundled-loaders.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -67,6 +67,7 @@ type KbDaemonWriteRuntimeOptions = {
   curateAssistant?: CurateAssistantPort;
   onJournalEvents?: (appended: readonly AppendedEvent[]) => void;
   onCorpusMutation?: (publication: KbCorpusPublication) => void;
+  kiwiAnalyzer?: KiwiSearchAnalyzerPort;
 };
 
 type WritableStatement<TParams extends unknown[] = unknown[], TRow = unknown> = {
@@ -243,7 +244,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let disposePromise: Promise<void> | null = null;
   let searchWarmupPromise: Promise<void> | null = null;
   let lastSearchWarmupError: string | undefined;
-  const kiwiAnalyzerManager = getKiwiAnalyzerManager();
+  const kiwiAnalyzerManager = options.kiwiAnalyzer ?? resolveKiwiSearchAnalyzerPort();
   // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
   // disposes; the in-flight model download takes no signal and runs to completion detached.
   let kiwiArtifactBootController: AbortController | null = null;
