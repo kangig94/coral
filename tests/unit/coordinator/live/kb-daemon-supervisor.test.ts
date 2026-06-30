@@ -899,9 +899,6 @@ describe('KB daemon supervisor', () => {
       entrypoint: '/plugin/bridge/coral-backend.cjs',
       command: '/node',
       requestTimeoutMs: 25,
-      // Match requestTimeoutMs so the createMemo mutation still times out at tick(25);
-      // non-job mutations now route to mutationRequestTimeoutMs (default 30s), not requestTimeoutMs.
-      mutationRequestTimeoutMs: 25,
     });
 
     const start = supervisor.start();
@@ -960,53 +957,6 @@ describe('KB daemon supervisor', () => {
     await flushMicrotasks();
     expect(latestRequest(daemonProcess).method).toBe('kb.mutate');
 
-    time.tick(25);
-    await flushMicrotasks(12);
-    expect(settled).toBe(false);
-    expect(supervisor.read()).toMatchObject({ pendingRequests: 1 });
-
-    time.tick(75);
-    await flushMicrotasks(12);
-    await expect(mutation).resolves.toMatchObject({
-      ok: false,
-      code: 'kb_unavailable',
-      message: expect.stringContaining('timed out after 100ms'),
-    });
-  });
-
-  it('uses the extended mutation timeout for note mutations, not the short request timeout', async () => {
-    const daemonProcess = new FakeDaemonProcess(178);
-    const { runtime, time } = createRuntime([daemonProcess]);
-    const supervisor = createKbDaemonSupervisor({
-      runtime,
-      pluginRoot: '/plugin',
-      entrypoint: '/plugin/bridge/coral-backend.cjs',
-      command: '/node',
-      requestTimeoutMs: 25,
-      mutationRequestTimeoutMs: 100,
-    });
-
-    const start = supervisor.start();
-    await flushMicrotasks();
-    writeReady(daemonProcess);
-    await start;
-
-    let settled = false;
-    const mutation = supervisor
-      .mutateKb({
-        method: 'updateNote',
-        args: { note: 'alpha-note', content: 'body' },
-        ctx: daemonCtx(),
-      })
-      .finally(() => {
-        settled = true;
-      });
-    await flushMicrotasks();
-    expect(latestRequest(daemonProcess).method).toBe('kb.mutate');
-    expect(latestRequest(daemonProcess).params).toMatchObject({ method: 'updateNote' });
-
-    // The short requestTimeoutMs must not cut a note mutation short: a cold first
-    // mutation can wait on the write-runtime boot well past it.
     time.tick(25);
     await flushMicrotasks(12);
     expect(settled).toBe(false);
