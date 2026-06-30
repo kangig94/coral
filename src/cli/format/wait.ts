@@ -84,12 +84,8 @@ export function formatWaitTerminal(
 
 export function formatWaitWaiting(event: WaitWaitingEvent, cursor: string | null): string {
   const jobs = event.waitingJobIds.length > 0 ? event.waitingJobIds.join(', ') : 'none';
-  const waitCommand =
-    event.waitingJobIds.length > 0
-      ? `coral-cli wait jobs ${event.waitingJobIds.join(' ')}`
-      : 'coral-cli wait jobs <job_id>';
 
-  return appendCursor(`Still waiting; jobs: ${jobs}. Run ${waitCommand} again to continue waiting.`, cursor);
+  return appendCursor(`Still waiting; jobs: ${jobs}. Run coral-cli wait jobs again to continue waiting.`, cursor);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {
