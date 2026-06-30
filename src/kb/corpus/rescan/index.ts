@@ -16,45 +16,26 @@ import {
 } from './projections.js';
 import { buildCorpusScanViewInWorker } from './scan-worker.js';
 import { buildCorpusSurface } from '../surface.js';
-import type { KbIndexState, KbMutationEffects, KbRuntime } from '../../contract.js';
-import type { ReindexResult } from '../../entry-types.js';
+import type { KbIndexState, KbRuntime } from '../../contract.js';
 import type { DetectedIncident } from './incidents/catalog.js';
 import { curateDb } from '../../curate/db-access.js';
+import { indexStateMatchesSnapshot } from '../lanes.js';
+import type {
+  CorpusProjectionCandidate,
+  CorpusProjectionCommitResult,
+  CorpusProjectionFaultInjection,
+  CorpusProjectionSeq,
+  RescanCounts,
+  StagedCorpusProjection,
+} from '../projection-lifecycle.js';
 
-export type RescanCounts = Pick<
-  ReindexResult,
-  | 'notes'
-  | 'sources'
-  | 'communities'
-  | 'wikis'
-  | 'principles'
-  | 'tags'
-  | 'entities'
-  | 'relationships'
-  | 'entityCoverage'
->;
+export type { RescanCounts } from '../projection-lifecycle.js';
 
-/**
- * @precondition Caller already holds `kb.withMutationLock()`.
- *
- * Single-shot rescan: scans the corpus, refreshes derived community topology, projects
- * a fresh `KbIndex` plus typed incidents, applies auto-fixes (manual incidents enqueue),
- * and bumps the freshness state. Either commits the whole rescan or throws — partial
- * state cannot escape under the lock.
- *
- * `signal` is the composed mutation-lock callback signal (caller signal + internal
- * deadline). Honored at named checkpoints — `'scan'` before the corpus scan and
- * `'repair'` before incident auto-fix — so a user `coral-cli abort` lands at a
- * deterministic boundary instead of mid-scan. The corpus scan runs in a worker so
- * aborting the signal can terminate file traversal/read work without keeping the
- * daemon event loop stuck on synchronous filesystem calls.
- */
-export async function performRescan(
+export async function deriveCorpusProjection(
   kb: KbRuntime,
-  mutation: KbMutationEffects,
-  startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+  startState: CorpusProjectionSeq,
   options: { signal?: AbortSignal } = {},
-): Promise<RescanCounts> {
+): Promise<CorpusProjectionCandidate> {
   const { signal } = options;
   if (signal !== undefined) {
     throwIfAborted(signal, 'scan');
@@ -78,15 +59,97 @@ export async function performRescan(
     },
   });
 
-  kb.writeIndex(index);
-  kb.recordReindexSuccess(startState, rebuildInfo.externalMutation ?? undefined, finalSurface);
-
   const incidents = projectIncidents(initialScan);
-  syncRetryQueueAgainstIncidents(kb, incidents);
-  if (incidents.length > 0) {
-    if (signal !== undefined) {
-      throwIfAborted(signal, 'repair');
+  return {
+    startSeq: startState,
+    priorGeneratedGeneration: activeGeneratedCommunities.generatedCommunityGeneration,
+    priorGeneratedDocsHash: activeGeneratedCommunities.generatedCommunityDocsHash,
+    index,
+    finalSurface,
+    incidents,
+    ...(rebuildInfo.externalMutation === undefined ? {} : { externalMutation: rebuildInfo.externalMutation }),
+    counts: buildCounts(notes, sources, communities, wikis, principles, index),
+  };
+}
+
+export function stageCorpusProjectionArtifacts(
+  kb: KbRuntime,
+  candidate: CorpusProjectionCandidate,
+): StagedCorpusProjection {
+  return kb.stageCorpusProjectionArtifacts(candidate);
+}
+
+export async function commitCorpusProjection(
+  kb: KbRuntime,
+  staged: StagedCorpusProjection,
+  options: { faultInjection?: CorpusProjectionFaultInjection } = {},
+): Promise<CorpusProjectionCommitResult> {
+  return kb.commitCorpusProjection(staged, options);
+}
+
+/**
+ * Single-attempt corpus projection rebuild: derive and stage off-lock, then
+ * attempt a short seq+generated-generation CAS commit under the mutation lock.
+ * Discarded candidates perform no retry-queue, curate-state, or incident-fix
+ * side effects.
+ */
+export async function performRescan(
+  kb: KbRuntime,
+  startState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+  options: { signal?: AbortSignal; faultInjection?: CorpusProjectionFaultInjection } = {},
+): Promise<CorpusProjectionCommitResult> {
+  const candidate = await deriveCorpusProjection(kb, startState, options);
+  const staged = stageCorpusProjectionArtifacts(kb, candidate);
+  const result = await commitCorpusProjection(kb, staged, options);
+  if (result.status === 'committed') {
+    await runCommittedProjectionSideEffects(kb, candidate, result, options);
+  }
+  return result;
+}
+
+async function runCommittedProjectionSideEffects(
+  kb: KbRuntime,
+  candidate: CorpusProjectionCandidate,
+  result: Extract<CorpusProjectionCommitResult, { readonly status: 'committed' }>,
+  options: { signal?: AbortSignal },
+): Promise<void> {
+  await applyCommittedProjectionQueueSideEffects(kb, candidate, result.state);
+  for (const incident of candidate.incidents) {
+    if (options.signal !== undefined) {
+      throwIfAborted(options.signal, 'repair');
     }
+    await applyDetectedIncidentFixForCommittedProjection(kb, incident, result.state);
+  }
+}
+
+async function applyCommittedProjectionQueueSideEffects(
+  kb: KbRuntime,
+  candidate: CorpusProjectionCandidate,
+  committedState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+): Promise<void> {
+  await kb.withMutationLock(() => {
+    if (!indexStateMatchesSnapshot(kb.readIndexState(), committedState)) {
+      return;
+    }
+    syncRetryQueueAgainstIncidents(kb, candidate.incidents);
+
+    // Re-persist CurateState so normalizeCurateStateRepairFrontier clamps scheduler progress
+    // when the retry queue surfaces a known frontier — preserving the invariant that
+    // discoveryHighSeq/discoveryOffset are clamped on disk, not just at read time.
+    writeCurateState(curateDb(kb), readCurateState(curateDb(kb)));
+  });
+}
+
+async function applyDetectedIncidentFixForCommittedProjection(
+  kb: KbRuntime,
+  incident: DetectedIncident,
+  committedState: Pick<KbIndexState, 'contentSeq' | 'metadataSeq'>,
+): Promise<void> {
+  await kb.withMutationLock(async (mutation, { signal }) => {
+    if (!indexStateMatchesSnapshot(kb.readIndexState(), committedState)) {
+      return;
+    }
+    throwIfAborted(signal, 'repair');
     const gitSync = createGitSyncController({
       kb,
       curateAssistant: kb.curateAssistant,
@@ -94,15 +157,8 @@ export async function performRescan(
       storagePort: kb.storagePort,
       envPort: kb.envPort,
     });
-    await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, incidents);
-  }
-
-  // Re-persist CurateState so normalizeCurateStateRepairFrontier clamps scheduler progress
-  // when the retry queue surfaces a known frontier — preserving the invariant that
-  // discoveryHighSeq/discoveryOffset are clamped on disk, not just at read time.
-  writeCurateState(curateDb(kb), readCurateState(curateDb(kb)));
-
-  return buildCounts(notes, sources, communities, wikis, principles, index);
+    await applyDetectedIncidentFixesLocked(kb, mutation, gitSync, [incident]);
+  });
 }
 
 /**

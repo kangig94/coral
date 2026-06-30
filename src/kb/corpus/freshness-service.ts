@@ -1,29 +1,19 @@
 import type {
   EnsureCorpusFreshnessOptions,
-  KbCorpusPublication,
-  KbIndexMutationLane,
   KbIndexState,
-  KbMutationEffects,
   KbRuntime,
 } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
 import { emptyIndex, isFreshTextSnapshot, type KbIndexStore } from './index/store.js';
 import { captureIndexStateSnapshot } from './lanes.js';
-import type { ManifestAuthorityDelta } from './manifest-types.js';
-import type { KbMutationLockController } from './mutation-lock.js';
 import { detectRescanInfo } from './rescan/drift.js';
 import { performRescan } from './rescan/index.js';
 import { buildCorpusScanViewInWorker } from './rescan/scan-worker.js';
 
+const MAX_REBUILD_COMMIT_ATTEMPTS = 2;
+
 export interface CorpusFreshnessServiceOptions {
   indexStore: KbIndexStore;
-  mutationLockController: KbMutationLockController<
-    KbIndex,
-    KbCorpusPublication,
-    KbIndexMutationLane,
-    ManifestAuthorityDelta
-  >;
-  mutationEffects: KbMutationEffects;
   getRuntime(): KbRuntime;
 }
 
@@ -88,16 +78,20 @@ export class CorpusFreshnessService {
   }
 
   private async runRebuildOnce(): Promise<void> {
-    await this.options.mutationLockController.withMutationLock(async (_lockContext, { signal: lockSignal }) => {
+    for (let attempt = 0; attempt < MAX_REBUILD_COMMIT_ATTEMPTS; attempt += 1) {
       const state = this.options.indexStore.readIndexStateIfPresent();
       if (!(await this.textArtifactsNeedRebuild(state))) {
         return;
       }
 
-      await performRescan(this.options.getRuntime(), this.options.mutationEffects, captureIndexStateSnapshot(state), {
-        signal: lockSignal,
-      });
-    });
+      const result = await performRescan(
+        this.options.getRuntime(),
+        captureIndexStateSnapshot(state),
+      );
+      if (result.status === 'committed') {
+        return;
+      }
+    }
   }
 
   private async indexNeedsRebuild(): Promise<boolean> {

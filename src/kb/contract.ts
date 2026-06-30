@@ -19,6 +19,12 @@ import type { KbCorpusProjectionReader } from './projection-input-contract.js';
 import type { KbCapabilityCatalogView, KbCapabilityRegistry } from './capability/contract.js';
 import type { KbDeclaredAnalyzer } from './extra-langs.js';
 import type {
+  CorpusProjectionCandidate,
+  CorpusProjectionCommitResult,
+  CorpusProjectionFaultInjection,
+  StagedCorpusProjection,
+} from './corpus/projection-lifecycle.js';
+import type {
   GeneratedCommunityFreshness,
   GeneratedCommunityProjectionStore,
 } from './curate/community/generated-projection-store.js';
@@ -193,6 +199,11 @@ export interface KbRuntime extends KbEngineRuntimeBase {
       readonly baselineRecords: readonly CorpusAuthorityBaselineRecord[];
     },
   ): KbIndexState;
+  stageCorpusProjectionArtifacts(candidate: CorpusProjectionCandidate): StagedCorpusProjection;
+  commitCorpusProjection(
+    staged: StagedCorpusProjection,
+    options?: { faultInjection?: CorpusProjectionFaultInjection },
+  ): Promise<CorpusProjectionCommitResult>;
   getCorpusStateSnapshot(): KbCorpusSnapshot;
   captureCorpusSnapshot(): KbCorpusSnapshot;
   invalidateCorpusStateSnapshot(): void;

@@ -471,8 +471,9 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
   }
 
   try {
-    const baseline = kb.corpusAuthorityBaseline.ensure(scan);
-    const storedAuthorityHashes = baseline.rebuilt ? new Map() : baseline.baseline;
+    const baseline = kb.corpusAuthorityBaseline.read();
+    const baselineMissing = baseline.size === 0 && (scan.markdownFiles.length > 0 || scan.entityGraph !== null);
+    const storedAuthorityHashes = baselineMissing ? new Map() : baseline;
     const indexMtime = kb.storagePort.statSync(indexPath, { bigint: true }).mtimeNs;
     const currentIndex = kb.readIndex();
     const currentGenerated = kb.generatedCommunityProjectionStore.readActiveFreshness();
@@ -481,7 +482,7 @@ export async function detectRescanInfo(kb: KbRuntime, scan: CorpusScanView): Pro
     for (const entry of retryQueue) {
       pendingRepairIds.add(entry.entryId);
     }
-    let externalMutation: KbIndexMutationLane | null = null;
+    let externalMutation: KbIndexMutationLane | null = baselineMissing ? 'both' : null;
 
     if (currentIndex !== null) {
       externalMutation = mergeMutationLane(externalMutation, detectEntityGraphDrift(scan.entityGraph, currentIndex));

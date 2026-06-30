@@ -80,12 +80,16 @@ export class KbReindexService {
         snapshot: kbRuntime.kb.getCorpusStateSnapshot(),
         signal: job.signal,
       });
+      const total = result.notes + result.sources + result.communities + result.wikis + result.principles;
+      return {
+        data: result,
+        terminalContent: `Reindexed ${total} KB entries.\nwikis: ${result.wikis}`,
+      };
     }
 
-    const total = result.notes + result.sources + result.communities + result.wikis + result.principles;
     return {
       data: result,
-      terminalContent: `Reindexed ${total} KB entries.\nwikis: ${result.wikis}`,
+      terminalContent: `KB reindex candidate discarded: ${result.warning}`,
     };
   }
 }

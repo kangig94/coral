@@ -980,12 +980,12 @@ This note has malformed frontmatter.
       new Date(Date.parse(detectedAt) + 60_000),
     );
 
-    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+    const corpusCommitSpy = vi.spyOn(kb, 'commitCorpusProjection');
 
     await kb.ensureCorpusFreshness();
     await kb.ensureCorpusFreshness();
 
-    expect(reindexSuccessSpy).not.toHaveBeenCalled();
+    expect(corpusCommitSpy).not.toHaveBeenCalled();
     expectPendingRepairEntries(readCurateRetryQueue(readDbByRuntime.get(kb)!), [
       {
         entryId: noteEntryId('bad-note'),
@@ -1083,11 +1083,11 @@ This note is valid now.
     );
     setMtime(paths.notesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt) - 60_000));
 
-    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+    const corpusCommitSpy = vi.spyOn(kb, 'commitCorpusProjection');
 
     await kb.ensureCorpusFreshness({ wait: true });
 
-    expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+    expect(corpusCommitSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(curateDb(kb))).toMatchObject({
       discoveryHighSeq: 6,
       discoveryOffset: 0,
@@ -1159,10 +1159,10 @@ Source body.
     );
     setMtime(paths.sourcesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt) - 60_000));
 
-    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+    const corpusCommitSpy = vi.spyOn(kb, 'commitCorpusProjection');
 
     await kb.ensureCorpusFreshness({ wait: true });
-    expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+    expect(corpusCommitSpy).toHaveBeenCalledTimes(1);
     expect(readCurateRetryQueue(readDbByRuntime.get(kb)!)).toEqual([]);
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({
       kind: 'source',

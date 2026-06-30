@@ -1,49 +1,50 @@
 import type { KbRuntime } from '../contract.js';
 import { performRescan } from '../corpus/rescan/index.js';
-import { isWikiEntry, type ReindexResult } from '../entry-types.js';
+import type { ReindexResult } from '../entry-types.js';
+import { throwIfAborted } from '../../runtime/abort.js';
 
-/** Heavy-path mutation deadline for `kb reindex` — full corpus rescans on
- * large KBs legitimately exceed the 60s default. */
-export const KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_REINDEX_COMMIT_ATTEMPTS = 2;
 
 /** `signal` is the caller's AbortSignal — threaded from the KB job's
- * coordinator-owned AbortRegistry into `withMutationLock` and into
- * `performRescan` so `'scan'` / `'repair'` checkpoints honor it. */
+ * coordinator-owned AbortRegistry into derive/stage/post-commit checkpoints. */
 export async function reindex(kb: KbRuntime, options?: { signal?: AbortSignal }): Promise<ReindexResult> {
   const startedAt = kb.time.now();
   const signal = options?.signal;
 
-  // The destructured `lockSignal` is the composed signal from the mutation
-  // lock (caller signal + internal deadline) and propagates into rescan.
-  const counts = await kb.withMutationLock(
-    async (mutation, { signal: lockSignal }) => {
-      const startState = kb.readIndexState();
-      const counts = await performRescan(
-        kb,
-        mutation,
-        {
-          contentSeq: startState.contentSeq,
-          metadataSeq: startState.metadataSeq,
-        },
-        { signal: lockSignal },
-      );
-      let wikis = 0;
-      for (const entry of Object.values(kb.readIndexOrEmpty().entries)) {
-        if (isWikiEntry(entry)) {
-          wikis += 1;
-        }
-      }
-      return { ...counts, wikis };
-    },
-    {
-      timeoutMs: KB_REINDEX_MUTATION_LOCK_TIMEOUT_MS,
-      ...(signal === undefined ? {} : { signal }),
-    },
-  );
+  for (let attempt = 0; attempt < MAX_REINDEX_COMMIT_ATTEMPTS; attempt += 1) {
+    if (signal !== undefined) {
+      throwIfAborted(signal, 'scan');
+    }
+    const startState = kb.readIndexState();
+    const result = await performRescan(
+      kb,
+      {
+        contentSeq: startState.contentSeq,
+        metadataSeq: startState.metadataSeq,
+      },
+      { signal },
+    );
+    if (result.status === 'committed') {
+      return {
+        ...result.counts,
+        duration_ms: kb.time.now() - startedAt,
+        mode: 'text',
+      };
+    }
+  }
 
   return {
-    ...counts,
+    notes: 0,
+    sources: 0,
+    communities: 0,
+    wikis: 0,
+    principles: 0,
+    tags: 0,
+    entities: 0,
+    relationships: 0,
+    entityCoverage: 0,
     duration_ms: kb.time.now() - startedAt,
     mode: 'text',
+    warning: 'kb_reindex_discarded_stale_seq',
   };
 }

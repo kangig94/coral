@@ -22,11 +22,11 @@ interface RescanGate {
 function installGatedRescan(): RescanGate {
   const calls: Array<{
     kb: KbRuntime;
-    startState: Parameters<typeof rescanModule.performRescan>[2];
-    resolve: (counts: rescanModule.RescanCounts) => void;
+    startState: Parameters<typeof rescanModule.performRescan>[1];
+    resolve: (result: Awaited<ReturnType<typeof rescanModule.performRescan>>) => void;
   }> = [];
   const signals: Array<AbortSignal | undefined> = [];
-  vi.spyOn(rescanModule, 'performRescan').mockImplementation(async (kb, _mutation, startState, options) => {
+  vi.spyOn(rescanModule, 'performRescan').mockImplementation(async (kb, startState, options) => {
     signals.push(options?.signal);
     return new Promise((resolve) => {
       calls.push({ kb, startState, resolve });
@@ -40,7 +40,13 @@ function installGatedRescan(): RescanGate {
       }
       // Mark fresh at completion time, matching the real rescan commit boundary.
       next.kb.recordReindexSuccess(next.startState);
-      next.resolve(counts ?? emptyCounts());
+      next.resolve({
+        status: 'committed',
+        commitId: 'test-commit',
+        counts: counts ?? emptyCounts(),
+        snapshot: next.kb.captureCorpusSnapshot(),
+        state: next.kb.readIndexState(),
+      });
     },
     wasInvoked: () => calls.length > 0,
     callCount: () => calls.length,
@@ -227,10 +233,8 @@ describe('KbRuntime.ensureCorpusFreshness', () => {
 
     expect(gate.callCount()).toBe(1);
     const [received] = gate.receivedSignals();
-    expect(received).toBeDefined();
-    expect(received?.aborted).toBe(false);
+    expect(received).toBeUndefined();
     controller.abort('test_user_abort');
-    expect(received?.aborted).toBe(false);
     await expect(abortedWait).rejects.toThrow(/aborted/i);
     expect(secondResolved).toBe(false);
 

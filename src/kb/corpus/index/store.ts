@@ -41,6 +41,10 @@ import { captureIndexStateSnapshot, type KbIndexStateSnapshot } from '../lanes.j
 
 export const INDEX_FILE = 'index.json';
 export const INDEX_STATE_FILE = 'index-state.json';
+const CORPUS_PROJECTION_DIR = 'corpus-projection';
+const INDEX_ARTIFACT_DIR = 'index';
+const INDEX_STAGING_DIR = 'staging';
+const INDEX_COMMITS_DIR = 'commits';
 const ENTITY_TYPE_SET = new Set<string>(ENTITY_TYPES);
 const RELATIONSHIP_TYPE_SET = new Set<string>(RELATIONSHIP_TYPES);
 const RESERVED_ENTITY_META_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -397,11 +401,25 @@ export function parseIndexState(value: unknown): KbIndexState {
 
 export interface KbIndexStoreOptions {
   runtimeDir: string;
-  storage: Pick<StoragePort, 'readFileSync' | 'rmSync' | 'mkdirSync' | 'writeFileSync' | 'renameSync'>;
+  storage: Pick<StoragePort, 'readFileSync' | 'rmSync' | 'mkdirSync' | 'writeFileSync' | 'renameSync'> &
+    Partial<Pick<StoragePort, 'existsSync' | 'readdirSync'>>;
   ids: Pick<IdPort, 'uuid'>;
   onStateChange?: (previous: KbIndexStateSnapshot, next: KbIndexStateSnapshot) => void;
   onIndexCorruption?: () => void;
 }
+
+export type StagedKbIndexArtifact = {
+  readonly commitId: string;
+  readonly stagingId: string;
+  readonly stagingDir: string;
+  readonly indexPath: string;
+  readonly index: KbIndex;
+};
+
+export type AdoptedKbIndexArtifact = {
+  readonly previousIndexPath: string;
+  readonly hadPreviousIndex: boolean;
+};
 
 export class KbIndexStore {
   private indexCache: { index: KbIndex | null } | null = null;
@@ -449,6 +467,55 @@ export class KbIndexStore {
 
   writeIndex(index: KbIndex): KbIndex {
     return this.installIndexCache(this.persistIndexToDisk(index));
+  }
+
+  stageIndexArtifact(index: KbIndex, commitId: string): StagedKbIndexArtifact {
+    const normalized = parseIndex(index);
+    const stagingId = this.options.ids.uuid();
+    const stagingDir = join(this.indexStagingRoot(), stagingId);
+    const indexPath = join(stagingDir, INDEX_FILE);
+    this.options.storage.rmSync(stagingDir, { recursive: true, force: true });
+    this.options.storage.mkdirSync(stagingDir, { recursive: true });
+    writeJsonAtomic(this.host, indexPath, normalized);
+    return {
+      commitId,
+      stagingId,
+      stagingDir,
+      indexPath,
+      index: normalized,
+    };
+  }
+
+  adoptStagedIndexArtifact(staged: StagedKbIndexArtifact): AdoptedKbIndexArtifact {
+    const commitDir = this.indexCommitDir(staged.commitId);
+    const previousIndexPath = join(commitDir, 'previous-index.json');
+    this.options.storage.mkdirSync(commitDir, { recursive: true });
+    this.options.storage.rmSync(previousIndexPath, { force: true });
+
+    let hadPreviousIndex = false;
+    if (this.fileExists(this.indexPath())) {
+      this.options.storage.renameSync(this.indexPath(), previousIndexPath);
+      hadPreviousIndex = true;
+    }
+    this.options.storage.renameSync(staged.indexPath, this.indexPath());
+    this.options.storage.rmSync(staged.stagingDir, { recursive: true, force: true });
+    this.installIndexCache(staged.index);
+    return { previousIndexPath, hadPreviousIndex };
+  }
+
+  rollbackAdoptedIndexArtifact(input: {
+    readonly previousIndexPath: string;
+    readonly hadPreviousIndex: boolean;
+  }): void {
+    this.options.storage.rmSync(this.indexPath(), { force: true });
+    if (input.hadPreviousIndex) {
+      this.options.storage.renameSync(input.previousIndexPath, this.indexPath());
+    }
+    this.invalidateIndexCache();
+  }
+
+  discardStagedIndexArtifact(staged: Pick<StagedKbIndexArtifact, 'stagingDir'>): void {
+    this.options.storage.rmSync(staged.stagingDir, { recursive: true, force: true });
   }
 
   readIndexOrEmpty(): KbIndex {
@@ -499,5 +566,40 @@ export class KbIndexStore {
 
   indexStatePath(): string {
     return join(this.options.runtimeDir, INDEX_STATE_FILE);
+  }
+
+  indexCommitRoot(): string {
+    return join(this.options.runtimeDir, CORPUS_PROJECTION_DIR, INDEX_ARTIFACT_DIR, INDEX_COMMITS_DIR);
+  }
+
+  cleanupIndexStaging(): void {
+    this.options.storage.rmSync(this.indexStagingRoot(), { recursive: true, force: true });
+  }
+
+  cleanupIndexCommit(commitId: string): void {
+    this.options.storage.rmSync(this.indexCommitDir(commitId), { recursive: true, force: true });
+  }
+
+  private indexStagingRoot(): string {
+    return join(this.options.runtimeDir, CORPUS_PROJECTION_DIR, INDEX_ARTIFACT_DIR, INDEX_STAGING_DIR);
+  }
+
+  private indexCommitDir(commitId: string): string {
+    return join(this.indexCommitRoot(), commitId);
+  }
+
+  private fileExists(path: string): boolean {
+    if (this.options.storage.existsSync !== undefined) {
+      return this.options.storage.existsSync(path);
+    }
+    try {
+      this.options.storage.readFileSync(path, 'utf-8');
+      return true;
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) {
+        return false;
+      }
+      throw error;
+    }
   }
 }

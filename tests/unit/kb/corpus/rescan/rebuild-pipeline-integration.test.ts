@@ -289,14 +289,14 @@ describe('performRescan failure semantics', () => {
       'utf-8',
     );
 
-    // Force writeIndex to throw: writeIndex precedes recordReindexSuccess and the
-    // typed-incident pipeline, so all subsequent rescan side-effects must skip.
-    const writeIndexSpy = vi.spyOn(kb, 'writeIndex').mockImplementation(() => {
-      throw new Error('forced writeIndex failure');
+    // Force staging to throw before commit and before the typed-incident
+    // side-effect pipeline, so all subsequent rescan side effects must skip.
+    const stageSpy = vi.spyOn(kb, 'stageCorpusProjectionArtifacts').mockImplementation(() => {
+      throw new Error('forced staging failure');
     });
 
-    await expect(reindex(kb)).rejects.toThrow('forced writeIndex failure');
-    writeIndexSpy.mockRestore();
+    await expect(reindex(kb)).rejects.toThrow('forced staging failure');
+    stageSpy.mockRestore();
 
     expect(kb.readIndex()).toEqual(indexBefore);
     // Synthetic prior row still present; no new row from the malformed entry was added.
