@@ -15,7 +15,6 @@ import {
 } from '#tests/unit/kb/expansion-test-helpers.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { applyBoundCorpusConsumerForTest, createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
-import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -194,14 +193,9 @@ function writeCommunity(
 /**
  * Ensure manually-written community files are indexed with fresh Orama freshness.
  *
- * The entity-graph topology refresh deletes community files on the first reindex
- * (topology hash changes from undefined to the empty-graph hash). Community summary
- * freshness requires stored fingerprints that can only be computed after the index
- * includes the community entries. Three reindex passes resolve the bootstrap:
- *   1. First reindex establishes the empty-graph topology hash in curate state.
- *   2. Re-write community files; second reindex indexes them (still stale).
- *   3. markCommunityStateFresh stores correct summary fingerprints.
- *   4. Third reindex inserts community Orama documents as fresh.
+ * Community summary freshness requires stored fingerprints that can only be
+ * computed after the index includes the community entries. The extra passes
+ * resolve that bootstrap without relying on topology markdown writes.
  */
 async function ensureFreshCommunityIndex(
   kb: KbRuntime,
@@ -723,7 +717,6 @@ describe('kb search', () => {
 
   it('filters stale community documents at query time for all and community scopes', async () => {
     const { searchKb, reindex, createKbRuntime, paths } = await loadKbModules();
-    const { readCurateState, writeCurateState } = await import('#src/kb/curate/state/index.js');
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
     mkdirSync(paths.communitiesDir(process.env.CORAL_KB_PATH!), { recursive: true });
@@ -742,10 +735,6 @@ describe('kb search', () => {
 
     await reindex(kb);
     await applyOramaProjection(kb);
-    writeCurateState(curateDb(kb), {
-      ...readCurateState(curateDb(kb)),
-      communitySummaryTopologyHash: 'stale-topology',
-    });
 
     const allScope = await searchKb(kb, 'shared retrieval patterns', 5, 'all');
     const communityScope = await searchKb(kb, 'shared retrieval patterns', 5, 'communities');

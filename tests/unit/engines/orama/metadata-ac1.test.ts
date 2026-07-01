@@ -20,12 +20,12 @@ import { ORAMA_SCHEMA } from '#src/engines/orama/schema.js';
 import { OramaSnapshotStore } from '#src/engines/orama/snapshot.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { detectProjectionArtifactLag } from '#src/kb/corpus/rescan/drift.js';
-import { buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
-import { noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
+import { buildCommunityIndexEntry, buildNoteIndexEntry } from '#src/kb/corpus/index/records.js';
+import { communityEntryId, noteEntryId, type KbIndex } from '#src/kb/entry-types.js';
 import type { KbCorpusSnapshot, KbRuntime } from '#src/kb/contract.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
 import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
 const tempRoots: string[] = [];
@@ -110,6 +110,24 @@ function makeContext(kb: KbRuntime, snapshot: KbCorpusSnapshot): CorpusConsumerA
   };
 }
 
+function generatedCommunityRaw(body: string): string {
+  return [
+    '---',
+    'coralGeneratedCommunity: true',
+    'createdAt: 2026-06-20',
+    'updatedAt: 2026-06-20',
+    'level: 1',
+    '---',
+    '# Generated Orama Community',
+    '',
+    '## Members',
+    '- #orama',
+    '',
+    body,
+    '',
+  ].join('\n');
+}
+
 async function applyCurrentSnapshot(kb: KbRuntime): Promise<{
   readonly snapshotStore: OramaSnapshotStore;
   readonly snapshot: KbCorpusSnapshot;
@@ -185,9 +203,13 @@ describe('Orama AC1 projection metadata', () => {
     const artifactPort = createOramaArtifactPort(kb.projectionArtifacts.files, kb.projectionArtifacts.runtimeDir, []);
     const [descriptor] = await artifactPort.describeArtifacts();
     expect(descriptor).toBeDefined();
-    const lag = detectProjectionArtifactLag({ getCorpusStateSnapshot: () => snapshot }, [
-      { ...descriptor, targetConsumerIds: [ORAMA_BASE_CONSUMER_ID] },
-    ]);
+    const lag = detectProjectionArtifactLag(
+      {
+        getCorpusStateSnapshot: () => snapshot,
+        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore({ runtimeDir: allocateRoot('coral-generated-community-') }),
+      },
+      [{ ...descriptor, targetConsumerIds: [ORAMA_BASE_CONSUMER_ID] }],
+    );
 
     expect(descriptor?.expectedProjectionIdentityHash).toBe(
       ORAMA_PROJECTION_IDENTITY_HASH(createOramaProjectionIdentityInput([])),
@@ -221,5 +243,72 @@ describe('Orama AC1 projection metadata', () => {
     expect(oramaProjectionTokenizerTier(sidecar)).toBe('intl');
     expect(loaded.metadata).toEqual(sidecar);
     expect(snapshotStore.getCache()?.metadata).toEqual(sidecar);
+  });
+
+  it('rewrites and serves same-snapshot generated-doc changes instead of reusing prior metadata', async () => {
+    const kb = createRuntime(allocateRoot('coral-orama-generated-doc-freshness-'));
+    const slug = 'generated-orama-community';
+    const entryId = communityEntryId(slug);
+    const index: KbIndex = {
+      entries: {
+        [entryId]: buildCommunityIndexEntry({
+          slug,
+          title: 'Generated Orama Community',
+          level: 1,
+          members: ['orama'],
+          createdAt: '2026-06-20',
+          updatedAt: '2026-06-20',
+        }),
+      },
+      principles: {},
+      entityMeta: {},
+      relationships: [],
+    };
+    kb.writeIndex(index);
+    kb.recordMutationCommitted('both', 'seed generated Orama community');
+    const snapshot = kb.captureCorpusSnapshot();
+    const snapshotStore = new OramaSnapshotStore(
+      { files: kb.projectionArtifacts.files },
+      kb.projectionArtifacts.runtimeDir,
+    );
+    const projection = new OramaBaseProjection(kb, snapshotStore);
+    const firstInput = createKbProjectionInput(kb, {
+      index,
+      forceCommunityFresh: true,
+      generatedCommunityDocs: [{ slug, content: generatedCommunityRaw('alphaonly generated body') }],
+      generatedCommunityGeneration: 1,
+      generatedCommunityDocsHash: 'generated-docs-a',
+    });
+    await projection.apply({ ...makeContext(kb, snapshot), projectionInput: firstInput });
+    const firstMetadata = readMetadata(kb);
+    expect(firstMetadata).toMatchObject({
+      generatedCommunityGeneration: 1,
+      generatedCommunityDocsHash: 'generated-docs-a',
+    });
+    const firstManifestEntry = firstMetadata.entryManifest[entryId];
+    expect(firstManifestEntry).toBeDefined();
+
+    const secondInput = createKbProjectionInput(kb, {
+      index,
+      forceCommunityFresh: true,
+      generatedCommunityDocs: [{ slug, content: generatedCommunityRaw('betaonly generated body') }],
+      generatedCommunityGeneration: 2,
+      generatedCommunityDocsHash: 'generated-docs-b',
+    });
+    await projection.apply({ ...makeContext(kb, snapshot), projectionInput: secondInput });
+
+    const secondMetadata = readMetadata(kb);
+    expect(secondMetadata).toMatchObject({
+      snapshotId: snapshot.snapshotId,
+      contentSeq: snapshot.contentSeq,
+      metadataSeq: snapshot.metadataSeq,
+      generatedCommunityGeneration: 2,
+      generatedCommunityDocsHash: 'generated-docs-b',
+    });
+    expect(snapshotStore.getCache()?.metadata).toMatchObject({
+      generatedCommunityGeneration: 2,
+      generatedCommunityDocsHash: 'generated-docs-b',
+    });
+    expect(secondMetadata.entryManifest[entryId]?.contentHash).not.toBe(firstManifestEntry?.contentHash);
   });
 });

@@ -77,13 +77,14 @@ Jobs are not an async wrapper for every command. They are durable work ledgers f
 
 | Class                    | Examples                                   | Owner                                                       |
 | ------------------------ | ------------------------------------------ | ----------------------------------------------------------- |
-| Direct read              | KB search/read/list, `jobs`, discuss watch | Read model or KB query helpers; no durable artifact rebuild |
+| Direct read              | KB read/list, `jobs`, discuss watch        | Read model or KB query helpers; no durable artifact rebuild |
+| Served read              | KB search                                  | KB daemon search runtime; no durable job ledger             |
 | Direct mutation          | KB note write/delete; memo write/delete    | Corpus lock for KB notes; project data dir for memos        |
 | Provider/session job     | Codex/Claude launches, workflow atoms      | Jobs + sessions + provider adapters                         |
 | Internal coordinator job | KB source import, KB reindex               | Coordinator service over jobs + KB                          |
 | Projection freshness     | Orama/Needle catch-up                      | ConsumerDriver cursor wait                                  |
 
-Direct KB reads are coordinator-free, not context-free. CLI/bootstrap adapters resolve plugin root, build flavor, project root, Corpus root, and KB runtime root before invoking KB query helpers or `read-model/CoralStore`; lower KB path helpers do not choose `cwd`, `HOME`, or `CORAL_KB_PATH` on their own.
+Direct KB reads are coordinator-free, not context-free. CLI/bootstrap adapters resolve plugin root, build flavor, project root, Corpus root, and KB runtime root before invoking KB query helpers or `read-model/CoralStore`; lower KB path helpers do not choose `cwd`, `HOME`, or `CORAL_KB_PATH` on their own. KB search is a served read: it uses the KB daemon's search runtime instead of the direct read model.
 
 Projection freshness is not authority. A Corpus commit remains durable even if a retrieval consumer fails to catch up; callers that requested readiness observe that failure through the hosting command or job.
 

@@ -5,7 +5,6 @@ import { errorMessage } from '../infra/error-format.js';
 import {
   createDefaultKbReadPaths,
   createKbQueryHost,
-  resolveQueryMarkdownRoot,
   type KbQueryContext,
   type KbQueryRuntime,
 } from '../read-model/kb-query-runtime.js';
@@ -22,10 +21,11 @@ import {
   listKnowledgeBasePrinciples,
   listKnowledgeBaseSources,
   listKnowledgeBaseWikis,
-  searchKnowledgeBase,
 } from '../kb/queries.js';
 import { readEntryByKind } from '../kb/read.js';
-import { communitiesDir, kbRuntimeDir } from '../kb/paths.js';
+import { searchKb } from '../kb/ops/search.js';
+import { kbRuntimeDir } from '../kb/paths.js';
+import { GeneratedCommunityProjectionStore } from '../kb/curate/community/generated-projection-store.js';
 import type { KbReadKind } from '../kb/selector.js';
 import { kbError, kbSuccess, kbValidationError, type KbToolResult } from '../kb/result.js';
 import {
@@ -44,7 +44,7 @@ import {
   handleKbWikiRewrite,
   handleKbWikiUnlink,
 } from '../kb/tool-handlers.js';
-import { kbWakeUpSchema } from '../kb/tool-contracts.js';
+import { kbSearchSchema, kbWakeUpSchema } from '../kb/tool-contracts.js';
 import { generateWakeUpPacket } from '../kb/ops/wake-up.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../kb/validation.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -87,6 +87,10 @@ type KbDaemonWriteRuntimeHost = {
   withKb<T>(
     fn: (state: { kbRuntime: Parameters<typeof handleKbUpdate>[1]; runtime: KbQueryRuntime }) => Promise<T> | T,
   ): Promise<T>;
+  warmSearchRuntime?(): void;
+  searchReadiness?():
+    | { ready: true }
+    | { ready: false; reason: string; message: string; detail?: Record<string, unknown> };
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   health(): KbDaemonKbReadHealth;
@@ -196,21 +200,25 @@ function invocationContext(
 }
 
 function parseSearchArgs(args: Record<string, unknown>): KbSearchInput | KbToolResult {
-  if (typeof args.query !== 'string' || args.query.length === 0) {
-    return invalidRequest('KB daemon search requires a query.');
+  const parsed = kbSearchSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
   }
+  const signal = asAbortSignal(args.abortSignal);
   return {
-    query: args.query,
-    ...(typeof args.top_k === 'number' ? { top_k: args.top_k } : {}),
-    ...(args.scope === 'notes' ||
-    args.scope === 'sources' ||
-    args.scope === 'communities' ||
-    args.scope === 'wiki' ||
-    args.scope === 'all'
-      ? { scope: args.scope }
-      : {}),
-    ...(args.mode === 'text' || args.mode === 'vector' || args.mode === 'hybrid' ? { mode: args.mode } : {}),
+    ...parsed.data,
+    ...(signal === undefined ? {} : { signal }),
   };
+}
+
+function asAbortSignal(value: unknown): AbortSignal | undefined {
+  return typeof value === 'object' &&
+    value !== null &&
+    'aborted' in value &&
+    'addEventListener' in value &&
+    'removeEventListener' in value
+    ? (value as AbortSignal)
+    : undefined;
 }
 
 function parseMemoListArgs(args: Record<string, unknown>): KbMemoListInput {
@@ -272,6 +280,18 @@ function getWriteRuntimeOrError(
   return writeRuntime;
 }
 
+function searchRuntimeNotReady(
+  readiness: { ready: false; reason: string; message: string; detail?: Record<string, unknown> } | undefined,
+): KbToolResult {
+  return kbError(
+    'kb_search_runtime_not_ready',
+    readiness?.message ?? 'KB search runtime is not ready.',
+    readiness === undefined
+      ? { reason: 'search_readiness_unavailable' }
+      : { ...(readiness.detail ?? {}), reason: readiness.reason },
+  );
+}
+
 function notFound(kind: KbReadKind, slug: string): KbToolResult {
   return kbError('not_found', `KB ${kind} not found: ${slug}`);
 }
@@ -320,11 +340,11 @@ function createCommunitySummaryRuntime(
   runtime: KbQueryRuntime,
   queryContext: KbQueryContext,
 ): CommunitySummaryReadRuntime {
-  const markdownRoot = resolveQueryMarkdownRoot(queryContext);
   const paths = createDefaultKbReadPaths(queryContext);
   const indexStorage = runtime.storage;
+  const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
   const indexStore = new KbIndexStore({
-    runtimeDir: kbRuntimeDir(runtime.flavor, runtime.paths.configSlot),
+    runtimeDir,
     storage: {
       readFileSync: (path, encoding) => indexStorage.readFileSync(path, encoding),
       // KbIndexStore normally quarantines corrupt artifacts by unlinking them.
@@ -337,8 +357,14 @@ function createCommunitySummaryRuntime(
     ids: runtime.ids,
   });
   return {
+    generatedCommunityProjectionStore: new GeneratedCommunityProjectionStore({
+      runtimeDir,
+      storage: runtime.storage,
+      ids: runtime.ids,
+      time: runtime.time,
+    }),
     storagePort: runtime.storage,
-    communitiesDir: () => communitiesDir(markdownRoot),
+    communityPath: paths.communityPath,
     notePath: paths.notePath,
     sourcePath: paths.sourcePath,
     readIndexOrEmpty: () => indexStore.readIndexOrEmpty(),
@@ -395,6 +421,7 @@ function readTyped(
     const entry = readEntryByKind(kind, normalizedSlug, {
       storage: runtime.storage,
       paths: createDefaultKbReadPaths(queryContext),
+      communityDocumentProvider: createKbQueryHost(queryContext).communityDocumentProvider,
       ...(projectDir === undefined ? {} : { projectDataDir: projectDir }),
     });
     return Promise.resolve(entry === null ? notFound(kind, normalizedSlug) : kbSuccess(entry));
@@ -461,10 +488,28 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
           if ('ok' in parsed) {
             return parsed;
           }
-          return run(() => {
-            const { queryContext } = createContext(state, ctx);
-            const host = createKbQueryHost(queryContext);
-            return searchKnowledgeBase(parsed, host);
+          return runToolResult(async () => {
+            const activeWriteRuntime = getWriteRuntimeOrError(writeRuntime);
+            if ('ok' in activeWriteRuntime) {
+              return activeWriteRuntime;
+            }
+            activeWriteRuntime.warmSearchRuntime?.();
+            const readiness = activeWriteRuntime.searchReadiness?.();
+            if (readiness?.ready !== true) {
+              return searchRuntimeNotReady(readiness);
+            }
+            return kbSuccess(
+              await activeWriteRuntime.withKb(({ kbRuntime }) =>
+                searchKb(
+                  kbRuntime.kb,
+                  parsed.query,
+                  parsed.top_k ?? 20,
+                  parsed.scope ?? 'all',
+                  parsed.mode ?? 'auto',
+                  parsed.signal,
+                ),
+              ),
+            );
           }, markFailure);
         }
         case 'diagnose':
@@ -753,6 +798,7 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
     try {
       const { queryContext } = createContext(state);
       createDefaultKbReadPaths(queryContext);
+      writeRuntime?.warmSearchRuntime?.();
       markReady();
     } catch (error: unknown) {
       markFailure(error);

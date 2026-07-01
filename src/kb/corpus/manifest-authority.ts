@@ -20,12 +20,22 @@ export type FullManifestSurfaceHashes = {
   metadata: Map<string, string>;
 };
 
+export type StagedManifestSurfaceHashes = {
+  readonly commitId: string;
+  readonly hashes: FullManifestSurfaceHashes;
+  readonly contentManifestHash: string;
+  readonly metadataManifestHash: string;
+};
+
 export interface ManifestAuthority {
   replaceCurrentSurfaceHashes(hashes: FullManifestSurfaceHashes): void;
+  stageCurrentSurfaceHashes(hashes: FullManifestSurfaceHashes, commitId: string): StagedManifestSurfaceHashes;
+  adoptStagedSurfaceHashes(staged: StagedManifestSurfaceHashes): void;
   updateFromDelta(deltas: Iterable<ManifestAuthorityDelta>): void;
   getCurrentManifestHash(lane: ManifestAuthorityLane): string;
   getCurrentSurfaceHash(lane: ManifestAuthorityLane, manifestId: string): string | null;
   getCurrentSurfaceHashes(lane: ManifestAuthorityLane): ReadonlyMap<string, string>;
+  getCurrentSurfaceCommitId(): string | null;
   reset(): void;
 }
 
@@ -34,6 +44,7 @@ export function createManifestAuthority(): ManifestAuthority {
   let metadataSurfaceHashes = new Map<string, string>();
   let cachedContentManifestHash: string | null = null;
   let cachedMetadataManifestHash: string | null = null;
+  let currentSurfaceCommitId: string | null = null;
 
   function mapForLane(lane: ManifestAuthorityLane): Map<string, string> {
     return lane === 'content' ? contentSurfaceHashes : metadataSurfaceHashes;
@@ -64,6 +75,26 @@ export function createManifestAuthority(): ManifestAuthority {
     replaceCurrentSurfaceHashes(hashes): void {
       replaceLaneHashes('content', hashes.content);
       replaceLaneHashes('metadata', hashes.metadata);
+      currentSurfaceCommitId = null;
+    },
+
+    stageCurrentSurfaceHashes(hashes, commitId): StagedManifestSurfaceHashes {
+      const content = new Map(hashes.content);
+      const metadata = new Map(hashes.metadata);
+      return {
+        commitId,
+        hashes: { content, metadata },
+        contentManifestHash: computeManifestHashFromSurfaceHashes(content),
+        metadataManifestHash: computeManifestHashFromSurfaceHashes(metadata),
+      };
+    },
+
+    adoptStagedSurfaceHashes(staged): void {
+      contentSurfaceHashes = staged.hashes.content;
+      metadataSurfaceHashes = staged.hashes.metadata;
+      cachedContentManifestHash = staged.contentManifestHash;
+      cachedMetadataManifestHash = staged.metadataManifestHash;
+      currentSurfaceCommitId = staged.commitId;
     },
 
     updateFromDelta(deltas): void {
@@ -76,6 +107,7 @@ export function createManifestAuthority(): ManifestAuthority {
           }
           target.delete(delta.manifestId);
           invalidateLaneHash(delta.lane);
+          currentSurfaceCommitId = null;
           continue;
         }
 
@@ -85,6 +117,7 @@ export function createManifestAuthority(): ManifestAuthority {
 
         target.set(delta.manifestId, delta.surfaceHash);
         invalidateLaneHash(delta.lane);
+        currentSurfaceCommitId = null;
       }
     },
 
@@ -106,11 +139,16 @@ export function createManifestAuthority(): ManifestAuthority {
       return new Map(mapForLane(lane));
     },
 
+    getCurrentSurfaceCommitId(): string | null {
+      return currentSurfaceCommitId;
+    },
+
     reset(): void {
       contentSurfaceHashes = new Map();
       metadataSurfaceHashes = new Map();
       cachedContentManifestHash = null;
       cachedMetadataManifestHash = null;
+      currentSurfaceCommitId = null;
     },
   };
 }
@@ -135,6 +173,12 @@ export function communityMetadataManifestId(slug: string): string {
 
 export function isCommunityMetadataManifestId(manifestId: string): boolean {
   return manifestId.startsWith(COMMUNITY_METADATA_MANIFEST_ID_PREFIX);
+}
+
+export function communitySlugFromMetadataManifestId(manifestId: string): string | null {
+  return isCommunityMetadataManifestId(manifestId)
+    ? manifestId.slice(COMMUNITY_METADATA_MANIFEST_ID_PREFIX.length)
+    : null;
 }
 
 export function principleMetadataManifestId(slug: string): string {

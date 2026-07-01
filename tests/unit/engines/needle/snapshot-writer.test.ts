@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { NeedleSnapshotWriter } from '#src/engines/needle/snapshot-writer.js';
 import type { ResolvedNeedleEmbedder } from '#src/engines/needle/projection-identity.js';
 import type { ChunkRecord, EmbeddingSpec, NeedleStore } from '#src/engines/needle/store.js';
+import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import type { KbProjectionInput } from '#src/kb/projection-input-contract.js';
 import { noteEntryId, type NoteEntry } from '#src/kb/entry-types.js';
 
@@ -165,6 +166,7 @@ function createProjectionInput(count: number): KbProjectionInput {
     },
     records,
     communityFresh: true,
+    ...EMPTY_GENERATED_COMMUNITY_FRESHNESS,
   };
 }
 

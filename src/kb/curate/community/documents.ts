@@ -1,21 +1,4 @@
-import { join } from 'node:path';
-import { unlinkIfExists } from '../../../infra/fs-errors.js';
-import {
-  captureCommunityManifestDelta,
-  captureRemovedCommunityManifestDelta,
-} from '../../corpus/manifest-authority.js';
-import {
-  extractBody,
-  extractTitle,
-  parseCommunityFrontmatter,
-  parseMembersFromBody,
-  parseSummaryFromBody,
-  serializeCommunityFrontmatter,
-} from '../../corpus/frontmatter.js';
-import { sortedMarkdownEntries } from '../../corpus/markdown-entries.js';
-import { writeFileAtomic } from '../../corpus/file-atomic.js';
-import { stripMdExt } from '../../paths.js';
-import type { KbMutationEffects, KbRuntime } from '../../contract.js';
+import { serializeCommunityFrontmatter } from '../../corpus/frontmatter.js';
 import type { CommunityDocument, DetectedCommunity, ExistingGeneratedCommunity } from './contracts.js';
 
 type BuildCommunityDocumentsOptions = {
@@ -37,44 +20,6 @@ function renderChildrenSection(children: string[]): string {
     lines.push(`- ${child}`);
   }
   return lines.join('\n');
-}
-
-export function loadExistingCommunityState(kb: Pick<KbRuntime, 'communitiesDir' | 'storagePort'>): {
-  generated: ExistingGeneratedCommunity[];
-  reservedSlugs: Set<string>;
-} {
-  const generated: ExistingGeneratedCommunity[] = [];
-  const reservedSlugs = new Set<string>();
-  const storage = kb.storagePort;
-
-  for (const entry of sortedMarkdownEntries(storage, kb.communitiesDir())) {
-    const slug = stripMdExt(entry);
-    const raw = storage.readFileSync(join(kb.communitiesDir(), entry), 'utf-8');
-
-    try {
-      const frontmatter = parseCommunityFrontmatter(raw);
-      const body = extractBody(raw);
-      const community: ExistingGeneratedCommunity = {
-        slug,
-        title: extractTitle(raw),
-        level: frontmatter.level,
-        members: parseMembersFromBody(body),
-        ...(frontmatter.parent === undefined ? {} : { parent: frontmatter.parent }),
-        ...(frontmatter.children === undefined ? {} : { children: frontmatter.children }),
-        summary: parseSummaryFromBody(body),
-        ...(frontmatter.summaryInputFingerprint === undefined
-          ? {}
-          : { summaryInputFingerprint: frontmatter.summaryInputFingerprint }),
-        createdAt: frontmatter.createdAt,
-        updatedAt: frontmatter.updatedAt,
-      };
-      generated.push(community);
-    } catch {
-      reservedSlugs.add(slug);
-    }
-  }
-
-  return { generated, reservedSlugs };
 }
 
 export function renderCommunityDocument(document: {
@@ -150,35 +95,4 @@ export function buildCommunityDocuments(
     documents.push(document);
   }
   return documents;
-}
-
-export function generateCommunityFiles(
-  kb: KbRuntime,
-  mutation: KbMutationEffects,
-  documents: CommunityDocument[],
-  priorGeneratedCommunities: ExistingGeneratedCommunity[],
-  onWrite?: () => void,
-): boolean {
-  let wroteFiles = false;
-
-  for (const community of priorGeneratedCommunities) {
-    const communityPath = kb.communityPath(community.slug);
-    if (!kb.storagePort.existsSync(communityPath)) {
-      continue;
-    }
-
-    unlinkIfExists(communityPath);
-    mutation.queueManifestAuthorityDelta(captureRemovedCommunityManifestDelta(community.slug));
-    onWrite?.();
-    wroteFiles = true;
-  }
-
-  for (const document of documents) {
-    writeFileAtomic(kb, kb.communityPath(document.slug), document.content);
-    mutation.queueManifestAuthorityDelta(captureCommunityManifestDelta(document.slug, document.content));
-    onWrite?.();
-    wroteFiles = true;
-  }
-
-  return wroteFiles;
 }

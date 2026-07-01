@@ -15,14 +15,12 @@ import { memoDir } from '#src/kb/paths.js';
 import { commitMetadataTargets } from '#src/kb/curate/metadata-commit.js';
 import { runPrincipleDiscovery } from '#src/kb/curate/principles.js';
 import { runCommunitySubphase } from '#src/kb/curate/community/index.js';
-import { generateCommunityFiles, renderCommunityDocument } from '#src/kb/curate/community/documents.js';
 import {
   cursorTimestampFromStorageSeq,
   noteCursor,
   readCurateState,
   writeCurateState,
 } from '#src/kb/curate/state/index.js';
-import { recordMetadataMutation } from '#src/kb/corpus/index/mutations.js';
 import { computeCorpusSurfaceManifestHash } from '#src/kb/corpus/surface.js';
 import { applyDetectedIncidentFixesLocked } from '#src/kb/corpus/rescan/auto-fix.js';
 import { createGitSyncController } from '#src/kb/curate/git-sync.js';
@@ -373,41 +371,6 @@ describe('manifest authority drift checks', () => {
         });
 
         await runCommunitySubphase(fixture.kb);
-
-        assertAuthorityMatchesDisk(fixture.kb);
-      },
-    },
-    {
-      name: 'generateCommunityFiles',
-      run: async () => {
-        const fixture = await createRuntimeFixture(() => {}, { reindexOnBoot: false });
-
-        await fixture.kb.withMutationLock((mutation) => {
-          generateCommunityFiles(
-            fixture.kb,
-            mutation,
-            [
-              {
-                slug: 'retrieval-community',
-                title: 'Retrieval Community',
-                level: 1,
-                members: ['graph-rag', 'retrieval'],
-                createdAt: '2026-04-02',
-                updatedAt: '2026-04-02',
-                content: renderCommunityDocument({
-                  title: 'Retrieval Community',
-                  members: ['graph-rag', 'retrieval'],
-                  level: 1,
-                  summary: 'Shared retrieval themes.',
-                  createdAt: '2026-04-02',
-                  updatedAt: '2026-04-02',
-                }),
-              },
-            ],
-            [],
-          );
-          recordMetadataMutation(fixture.kb, 'KB text snapshot is stale after community generation.');
-        });
 
         assertAuthorityMatchesDisk(fixture.kb);
       },

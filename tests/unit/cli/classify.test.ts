@@ -77,11 +77,38 @@ describe('command class coverage', () => {
     expect(expansionEntries).toEqual([
       { path: 'expansion', isLeaf: false, kind: 'container', commandClass: null },
       { path: 'expansion equip', isLeaf: true, kind: 'class', commandClass: 'mutate' },
-      { path: 'expansion info', isLeaf: true, kind: 'class', commandClass: 'read' },
-      { path: 'expansion list', isLeaf: true, kind: 'class', commandClass: 'read' },
+      { path: 'expansion info', isLeaf: true, kind: 'class', commandClass: 'directRead' },
+      { path: 'expansion list', isLeaf: true, kind: 'class', commandClass: 'directRead' },
       { path: 'expansion remove-catalog', isLeaf: true, kind: 'class', commandClass: 'mutate' },
       { path: 'expansion unequip', isLeaf: true, kind: 'class', commandClass: 'mutate' },
       { path: 'expansion update', isLeaf: true, kind: 'class', commandClass: 'mutate' },
+    ]);
+  });
+
+  it('classifies kb search as servedRead and non-search reads as directRead', () => {
+    const coverage = collectCommandCoverage(buildProgram());
+    const kbEntries = coverage
+      .filter((entry) => entry.path.startsWith('kb '))
+      .filter((entry) => entry.resolution.kind === 'class')
+      .map((entry) => ({
+        path: entry.path,
+        commandClass: entry.resolution.kind === 'class' ? entry.resolution.commandClass : null,
+      }));
+
+    expect(kbEntries.find((entry) => entry.path === 'kb search')).toEqual({
+      path: 'kb search',
+      commandClass: 'servedRead',
+    });
+    expect(kbEntries.filter((entry) => entry.commandClass === 'directRead').map((entry) => entry.path).sort()).toEqual([
+      'kb community list-stale',
+      'kb community summary-input',
+      'kb diagnose',
+      'kb memo list',
+      'kb principles',
+      'kb read',
+      'kb source list',
+      'kb wake-up',
+      'kb wiki list',
     ]);
   });
 });

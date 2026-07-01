@@ -54,7 +54,6 @@ export class CorpusAuthorityBaselineRefresh {
 
   refreshAuthorityBaselineForPendingDeltas(deltas: readonly ManifestAuthorityDelta[]): void {
     if (deltas.length === 0) {
-      this.rebuildAuthorityBaselineFromDisk();
       return;
     }
 
@@ -62,17 +61,12 @@ export class CorpusAuthorityBaselineRefresh {
     for (const delta of deltas) {
       const target = this.authorityBaselineRefreshTarget(delta.manifestId);
       if (target === null) {
-        this.rebuildAuthorityBaselineFromDisk();
         return;
       }
       targets.set(target.key, target);
     }
 
     const current = this.options.corpusAuthorityBaseline.read();
-    if (current.size === 0) {
-      this.rebuildAuthorityBaselineFromDisk();
-      return;
-    }
 
     for (const target of targets.values()) {
       if (target.kind === 'entity-graph') {
@@ -82,7 +76,11 @@ export class CorpusAuthorityBaselineRefresh {
       }
     }
 
-    this.options.corpusAuthorityBaseline.replace([...current.values()]);
+    const upserts = [...current.values()].filter((record) => targets.has(record.entryId));
+    const deletes = [...targets.values()]
+      .map((target) => target.entryId)
+      .filter((entryId) => !current.has(entryId));
+    this.options.corpusAuthorityBaseline.applyDelta({ upserts, deletes });
   }
 
   private authorityBaselineRefreshTarget(manifestId: string): AuthorityBaselineRefreshTarget | null {

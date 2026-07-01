@@ -73,7 +73,7 @@ export interface KbDaemonSupervisor {
   start(): Promise<KbDaemonHealthSnapshot>;
   probe(): Promise<KbDaemonHealthSnapshot>;
   warmup(): Promise<KbDaemonHealthSnapshot>;
-  readKb(request: KbDaemonKbReadRequest): Promise<KbDaemonKbReadResult>;
+  readKb(request: KbDaemonKbReadRequest, options?: { signal?: AbortSignal }): Promise<KbDaemonKbReadResult>;
   mutateKb(request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult>;
   expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
   abortKbJobs?(jobIds: string[]): Promise<KbDaemonAbortResult>;
@@ -611,8 +611,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     isResult: (value: unknown) => value is KbDaemonKbReadResult,
     malformedMessage: string,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<KbDaemonKbReadResult> => {
-    const response = await sendRequest(method, request, timeoutMs);
+    const response = await sendRequest(method, request, timeoutMs, signal);
     if (!response.ok) {
       return { ok: false, code: 'kb_daemon_protocol_error', message: response.error.message };
     }
@@ -622,8 +623,21 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     return response.result;
   };
 
-  const sendKbReadRequest = (request: KbDaemonKbReadRequest): Promise<KbDaemonKbReadResult> =>
-    sendTypedRequest('kb.read', request, isKbDaemonKbReadResult, 'KB daemon returned malformed read result.');
+  const sendKbReadRequest = (
+    request: KbDaemonKbReadRequest,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<KbDaemonKbReadResult> =>
+    // The JSONL daemon protocol has no per-request cancel frame yet. The signal
+    // still cancels the parent-side wait promptly; daemon-side search
+    // cancellation needs a protocol-level follow-up.
+    sendTypedRequest(
+      'kb.read',
+      request,
+      isKbDaemonKbReadResult,
+      'KB daemon returned malformed read result.',
+      undefined,
+      options.signal,
+    );
 
   const sendKbMutationRequest = (request: KbDaemonKbMutationRequest): Promise<KbDaemonKbMutationResult> => {
     const timeoutMs =
@@ -669,23 +683,35 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
   };
 
-  const readKbNow = async (request: KbDaemonKbReadRequest): Promise<KbDaemonKbReadResult> => {
+  const readKbNow = async (
+    request: KbDaemonKbReadRequest,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<KbDaemonKbReadResult> => {
     if (!requestRecoveryEnabled) {
       return kbUnavailable('KB daemon read request skipped: supervisor is disposing.');
+    }
+    if (options.signal?.aborted) {
+      return kbUnavailable('KB daemon read request aborted.');
     }
     const failedGeneration = generation;
     const failedPhase = phase;
     try {
-      return await sendKbReadRequest(request);
+      return await sendKbReadRequest(request, options);
     } catch (error: unknown) {
+      if (options.signal?.aborted) {
+        return kbUnavailable('KB daemon read request aborted.');
+      }
       const initialError = errorMessage(error);
       const recovered = await recoverForRequest(failedGeneration, failedPhase, 'read request recovery');
       if (recovered.phase !== 'online') {
         return kbUnavailable(`KB daemon read request failed: ${initialError}; recovery ended in ${recovered.phase}.`);
       }
       try {
-        return await sendKbReadRequest(request);
+        return await sendKbReadRequest(request, options);
       } catch (retryError: unknown) {
+        if (options.signal?.aborted) {
+          return kbUnavailable('KB daemon read request aborted.');
+        }
         return kbUnavailable(
           `KB daemon read request failed after recovery: ${errorMessage(retryError)}; initial failure: ${initialError}`,
         );

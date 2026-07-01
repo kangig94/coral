@@ -15,7 +15,8 @@ import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import { runCommunitySummaryAgent } from '../kb/curate/community/summary-agent.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import { cleanupSourceImportRuntimeArtifacts } from '../kb/ops/source/import.js';
-import type { KbCorpusPublication, KbRuntime } from '../kb/contract.js';
+import type { Backed, FtsRetrieval, KbCorpusPublication, KbRuntime } from '../kb/contract.js';
+import { KB_FTS_CAPABILITY } from '../kb/capability/constants.js';
 import { persistCorpusState } from '../kb/state/corpus-state.js';
 import type { KbDaemonKbReadHealth } from './protocol.js';
 import type { AppendedEvent } from '../store/append.js';
@@ -39,10 +40,12 @@ import {
   createOramaProjectionReconcileRequester,
   repairProjectionArtifactLagOnBoot,
 } from './expansion/projection-reconcile.js';
+import { startKiwiArtifactFetchOnBoot } from './expansion/kiwi-boot.js';
 import { ExpansionLifecycleService } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
+import { resolveKiwiSearchAnalyzerPort, type KiwiSearchAnalyzerPort } from './expansion/bundled-loaders.js';
 import {
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -64,6 +67,7 @@ type KbDaemonWriteRuntimeOptions = {
   curateAssistant?: CurateAssistantPort;
   onJournalEvents?: (appended: readonly AppendedEvent[]) => void;
   onCorpusMutation?: (publication: KbCorpusPublication) => void;
+  kiwiAnalyzer?: KiwiSearchAnalyzerPort;
 };
 
 type WritableStatement<TParams extends unknown[] = unknown[], TRow = unknown> = {
@@ -108,6 +112,8 @@ export type DaemonKnowledgeBaseRuntime = {
 
 export type KbDaemonWriteRuntimeHost = {
   withKb<T>(fn: (state: KbDaemonWriteRuntimeState) => Promise<T> | T): Promise<T>;
+  warmSearchRuntime(): void;
+  searchReadiness(): KbDaemonSearchRuntimeReadiness;
   createSource(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   reindex(args: Record<string, unknown>, ctx: InvocationContext): Promise<KbToolResult>;
   expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
@@ -116,6 +122,23 @@ export type KbDaemonWriteRuntimeHost = {
   dispose(options?: { signal?: AbortSignal }): Promise<void>;
   health(): KbDaemonKbReadHealth;
 };
+
+export type KbDaemonSearchRuntimeReadiness =
+  | { ready: true }
+  | {
+      ready: false;
+      reason:
+        | 'write_runtime_not_initialized'
+        | 'write_runtime_initializing'
+        | 'write_runtime_unavailable'
+        | 'fts_binding_unavailable'
+        | 'kiwi_analyzer_unloaded'
+        | 'kiwi_analyzer_loading'
+        | 'kiwi_analyzer_evicting'
+        | 'kiwi_analyzer_degraded';
+      message: string;
+      detail?: Record<string, unknown>;
+    };
 
 function createUnavailableCurateAssistant(): CurateAssistantPort {
   return {
@@ -219,6 +242,12 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   let state: KbDaemonWriteRuntimeState | null = null;
   let initPromise: Promise<KbDaemonWriteRuntimeState> | null = null;
   let disposePromise: Promise<void> | null = null;
+  let searchWarmupPromise: Promise<void> | null = null;
+  let lastSearchWarmupError: string | undefined;
+  const kiwiAnalyzerManager = options.kiwiAnalyzer ?? resolveKiwiSearchAnalyzerPort();
+  // Cancels the post-fetch Korean (Kiwi) re-tokenization reproject when the daemon
+  // disposes; the in-flight model download takes no signal and runs to completion detached.
+  let kiwiArtifactBootController: AbortController | null = null;
 
   const markReady = (): void => {
     phase = 'ready';
@@ -262,6 +291,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         providers: noProviderLookupPort,
         observer: (appended) => options.onJournalEvents?.(appended),
       });
+      let kbRef: KbRuntime | null = null;
       const kb = createKbRuntime({
         markdownRoot,
         runtimeDir,
@@ -285,7 +315,45 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
             options.onCorpusMutation?.(publication);
           },
         },
+        generatedCommunityProjectionCallbacks: {
+          notifyGeneratedCommunityProjection: async (publication) => {
+            const activeKb = kbRef;
+            const driver = daemonConsumerDriver;
+            if (activeKb === null || driver === null) {
+              return;
+            }
+            activeKb.invalidateTextSnapshot('generated-community-projection');
+            await activeKb.ensureCorpusFreshness({ wait: true });
+            const descriptors = await activeKb.engineArtifactRegistry.describeArtifacts();
+            const targetConsumerIds: string[] = [];
+            const seen = new Set<string>();
+            for (const descriptor of descriptors) {
+              if (descriptor.projectsGeneratedCommunityDocs !== true) {
+                continue;
+              }
+              for (const consumerId of descriptor.targetConsumerIds) {
+                if (seen.has(consumerId)) {
+                  continue;
+                }
+                seen.add(consumerId);
+                targetConsumerIds.push(consumerId);
+              }
+            }
+            if (targetConsumerIds.length === 0) {
+              return;
+            }
+            driver.forceCorpusApply(publication.snapshot, {
+              reason: 'projection-artifact-lag',
+              consumers: targetConsumerIds,
+              generatedCommunityFreshness: {
+                generatedCommunityGeneration: publication.generatedCommunityGeneration,
+                generatedCommunityDocsHash: publication.generatedCommunityDocsHash,
+              },
+            });
+          },
+        },
       });
+      kbRef = kb;
       const activeConsumerDriver = new ConsumerDriver({
         db: activeDb as Database,
         now: () => nowDate(runtime.time),
@@ -337,6 +405,18 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       await activeExpansionLifecycleService.recoverOnBoot();
       activeConsumerDriver.notifyCorpus(kb.getCorpusStateSnapshot());
       await repairProjectionArtifactLagOnBoot(kb, activeConsumerDriver, corpusReadinessTimeoutMs);
+      // When CORAL_KB_EXTRA_LANGS declares 'ko', fetch the Kiwi model in the background and
+      // reproject once it lands. Boot does not await this: the text lane serves Intl-segmented
+      // results until the Korean analyzer is ready, so the first note mutation is never blocked
+      // on an 88MB model download or a corpus-scale Korean re-tokenization.
+      kiwiArtifactBootController = new AbortController();
+      startKiwiArtifactFetchOnBoot({
+        runtime,
+        kb,
+        driver: activeConsumerDriver,
+        timeoutMs: corpusReadinessTimeoutMs,
+        signal: kiwiArtifactBootController.signal,
+      });
       const kbRuntime: DaemonKnowledgeBaseRuntime = {
         kb,
         readDb: activeDb,
@@ -356,12 +436,24 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           readiness,
           snapshot,
           timeoutMs: corpusReadinessTimeoutMs,
-          waitFresh: ({ consumerId, snapshot: target, timeoutMs }) =>
-            waitAbortable(
-              activeConsumerDriver.waitFreshUntil('corpus', target, consumerId, timeoutMs),
+          waitFresh: ({ consumerId, snapshot: target, timeoutMs }) => {
+            const generatedCommunityFreshness = kb.generatedCommunityProjectionStore.readActiveFreshness();
+            return waitAbortable(
+              activeConsumerDriver.waitFreshUntil(
+                'corpus',
+                {
+                  snapshot: target,
+                  atLeastGeneration: 0,
+                  generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+                  generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
+                },
+                consumerId,
+                timeoutMs,
+              ),
               signal,
               `kb_readiness:${readiness}`,
-            ),
+            );
+          },
         });
       };
       const sourceImportService = new KbSourceImportService({
@@ -432,6 +524,88 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     return initPromise;
   };
 
+  const assertFtsBindingReady = (
+    activeState: KbDaemonWriteRuntimeState,
+  ): KbDaemonSearchRuntimeReadiness | null => {
+    try {
+      activeState.kbRuntime.kb.capabilityRegistry
+        .runtimeView()
+        .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
+        .read();
+      return null;
+    } catch (error: unknown) {
+      return {
+        ready: false,
+        reason: 'fts_binding_unavailable',
+        message: 'KB search runtime is not ready: FTS capability is not bound.',
+        detail: { error: errorMessage(error) },
+      };
+    }
+  };
+
+  const searchReadiness = (): KbDaemonSearchRuntimeReadiness => {
+    const activeState = state;
+    if (activeState === null) {
+      if (initPromise !== null) {
+        return {
+          ready: false,
+          reason: 'write_runtime_initializing',
+          message: 'KB search runtime is still warming.',
+        };
+      }
+      return {
+        ready: false,
+        reason: phase === 'not_initialized' ? 'write_runtime_not_initialized' : 'write_runtime_unavailable',
+        message: `KB search runtime is not ready: write runtime is ${phase}.`,
+        ...(lastSearchWarmupError === undefined ? {} : { detail: { lastSearchWarmupError } }),
+      };
+    }
+
+    const ftsReadiness = assertFtsBindingReady(activeState);
+    if (ftsReadiness !== null) {
+      return ftsReadiness;
+    }
+
+    const analyzerReadiness = kiwiAnalyzerManager.leaseReadiness(
+      activeState.runtime,
+      activeState.kbRuntime.kb.declaredAnalyzers,
+    );
+    if (!analyzerReadiness.ready) {
+      return {
+        ready: false,
+        reason: `kiwi_analyzer_${analyzerReadiness.state}`,
+        message: `KB search runtime is not ready: Kiwi analyzer is ${analyzerReadiness.state}.`,
+        ...(analyzerReadiness.reason === undefined ? {} : { detail: { analyzerReason: analyzerReadiness.reason } }),
+      };
+    }
+
+    return { ready: true };
+  };
+
+  const warmSearchRuntime = (): void => {
+    if (searchWarmupPromise !== null || phase === 'disposing' || phase === 'disposed') {
+      return;
+    }
+
+    searchWarmupPromise = init()
+      .then(async (activeState) => {
+        if (activeState.kbRuntime.kb.declaredAnalyzers.includes('ko')) {
+          await kiwiAnalyzerManager.withAnalyzerLease(
+            activeState.runtime,
+            activeState.kbRuntime.kb.declaredAnalyzers,
+            () => undefined,
+          );
+        }
+        lastSearchWarmupError = undefined;
+      })
+      .catch((error: unknown) => {
+        lastSearchWarmupError = errorMessage(error);
+      })
+      .finally(() => {
+        searchWarmupPromise = null;
+      });
+  };
+
   const disposeState = async (
     activeState: KbDaemonWriteRuntimeState,
     signal: AbortSignal | undefined,
@@ -487,6 +661,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     }
     disposePromise = (async () => {
       markDisposing();
+      kiwiArtifactBootController?.abort();
       try {
         let activeState = state;
         if (activeState === null && initPromise !== null) {
@@ -516,6 +691,8 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       const initialized = await init();
       return fn(initialized);
     },
+    warmSearchRuntime,
+    searchReadiness,
     async createSource(args, ctx) {
       if (phase === 'disposing' || phase === 'disposed') {
         return disposedError();

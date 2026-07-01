@@ -34,6 +34,8 @@ Single-writer discipline eliminates distributed-consensus machinery. The coordin
 
 The daemon's existence is justified by **live-state ownership**, not by gatekeeping reads — read-only paths access either authority without invoking the coordinator. Library-direct readers open SQLite read-only and read Corpus filesystem directly.
 
+Corpus-scale rebuilds are not ordinary mutations. A point mutation changes authority: it writes markdown, SQL state, or another authoritative surface and therefore needs the mutation lock. Rebuilding a derived artifact is different: scans, index materialization, manifest-surface preparation, authority-baseline replacement, and text projection preparation are rebuildable consequences of the Corpus authority. Those steps run lock-free against a captured snapshot and stage discardable artifacts; the mutation lock is entered only for the O(1) seq-guarded swap that adopts the staged derivative if the authority sequence still matches. A stale derivative is thrown away and retried, not allowed to block foreground authority writes.
+
 ### 1.4 Why no cross-authority references
 
 Journal events do not embed Corpus entries via a typed pointer. The two authorities are independent: process-like state (Journal) does not reference knowledge-like state (Corpus), and the recovery paths of each authority do not consume the other's events as input.
@@ -171,22 +173,32 @@ Replay-from-zero exists as a regression test fixture, not a production recovery 
 
 ### 7.2 Corpus recovery
 
-Recovery = **rescan + index rebuild**. There is no event history to replay; the markdown filesystem *is* the truth. Coordinator startup scans the Corpus, diffs content/metadata hashes against last-known state, and rebuilds retrieval projections via the registered CorpusConsumers.
+Recovery = **rescan + staged projection reconciliation**. There is no event history to replay; the markdown filesystem *is* the truth. Coordinator startup scans the Corpus, diffs content/metadata hashes against last-known state, reconciles any interrupted staged projection commit, and rebuilds retrieval projections via the registered CorpusConsumers.
 
 External edits (Obsidian, git pull, direct filesystem writes) are first-class — the rescan absorbs them without backfilling synthetic events.
 
+Corpus rebuilds follow a lock-free derive / stage / seq-guarded swap lifecycle. The expensive work derives from a captured `(contentSeq, metadataSeq)` snapshot outside the mutation lock and writes only to staging. Commit briefly re-enters the mutation lock, re-checks the snapshot sequence and generated-community generation, then swaps active pointers for the staged index, manifest surface, and authority baseline. If either guard is stale, the staged derivative is discarded and freshness remains eligible to retry.
+
+This is deliberately not a reader-writer lock. A reader-writer lock would still make foreground mutations queue behind long-running readers or rebuild readers, and it would blur the authority boundary by treating rebuild work as protected access to live mutable state. The Corpus authority is already the serialization point; derivative rebuilds should be optimistic and discardable, not readers that hold shared locks for seconds.
+
+There is one serving owner for projections with live runtime state. A projection that depends on resident analyzers, caches, or engine leases is served by the process that owns those resources. Other processes may read authority directly, but they do not reconstruct a competing live projection runtime.
+
 ## 8. Transport: IPC for CLI, HTTP for Remote
 
-Local CLI commands always go through the coordinator over **IPC** (`coordinator.sock`, authenticated). The HTTP gateway is server-side exposure for non-CLI consumers (`coral-reef`, future browser/external clients) plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`).
+Local CLI commands that need a served runtime, mutation, or subscription go through the coordinator over **IPC** (`coordinator.sock`, authenticated). `directRead` commands bypass IPC and read authority directly through `read-model/CoralStore`. The HTTP gateway is server-side exposure for non-CLI consumers (`coral-reef`, future browser/external clients) plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`).
 
 HTTP is *not* a CLI dispatch path — remote CLI dispatch is not supported.
 
 ### 8.1 Why command-class routing
 
-`CommandClass` enumerates exactly three values: `read`, `mutate`, `subscribe`. The CLI dispatch decides per command:
+`CommandClass` enumerates four values: `directRead`, `servedRead`, `mutate`, `subscribe`. The CLI dispatch decides per command:
 
-- `read` (and the command does not need the coordinator) → `read-model/CoralStore` direct library reads.
-- `mutate` or `subscribe` → IPC.
+- `directRead` → `read-model/CoralStore` direct library reads.
+- `servedRead`, `mutate`, or `subscribe` → IPC.
+
+`kb search` is a `servedRead`: the daemon owns the hot KB search runtime and its language analyzers. KB metadata/read commands such as `kb read`, `kb principles`, source/wiki/memo lists, and community summary reads remain `directRead`s.
+
+Invariant: authority reads are direct; served projections are read through the process that owns their live runtime. Markdown and SQLite authority reads do not require the coordinator. Search and other projection reads that depend on live analyzer/runtime residency do require the serving owner instead of rebuilding or loading an alternate read-side runtime.
 
 Command class is the routing axis, not transport-aware code paths in domain logic. IPC and HTTP share identical coordinator RPC semantics; only wire format differs.
 

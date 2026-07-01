@@ -5,13 +5,14 @@ import { createKbQueryHost, type KbQueryContext } from './kb-query-runtime.js';
 import {
   type KbQueryHost,
   diagnoseKnowledgeBase,
+  listKnowledgeBaseStaleCommunities,
+  readKnowledgeBaseCommunitySummaryInput,
   generateKnowledgeBaseWakeUpPacket,
   listKnowledgeBaseMemos,
   listKnowledgeBasePrinciples,
   listKnowledgeBaseSources,
   listKnowledgeBaseWikis,
   readKnowledgeBaseEntryWithResolvedId,
-  searchKnowledgeBase,
 } from '../kb/queries.js';
 import { appendTouchEvent } from '../kb/curate/touch-journal.js';
 import { kbRuntimeDir } from '../kb/paths.js';
@@ -52,13 +53,12 @@ import type {
   KbEntryId,
   KbReadInput,
   KbReadResult,
-  KbSearchInput,
-  KbSearchResponse,
   KbSourceListResult,
   KbWakeUpInput,
   KbWakeUpResponse,
   KbWikiListResult,
 } from '../kb/entry-types.js';
+import type { CommunitySummaryInput, StaleCommunity } from '../kb/curate/community/summary-surface.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
@@ -90,12 +90,13 @@ export class CoralStore implements StoreReadContext {
     detail: (jobId: string) => JobDetail | null;
   };
   public readonly kb: {
-    search: (args: KbSearchInput) => Promise<KbSearchResponse>;
     diagnose: () => KbDiagnoseResult;
     read: (selector: KbReadInput) => KbReadResult;
     listPrinciples: (args: KbPrinciplesInput) => Promise<KbPrinciplesResult>;
     listSources: () => Promise<KbSourceListResult>;
     listWikis: () => Promise<KbWikiListResult>;
+    listStaleCommunities: () => Promise<StaleCommunity[]>;
+    readCommunitySummaryInput: (slug: string) => Promise<CommunitySummaryInput>;
     listMemos: (args: KbMemoListInput) => KbMemoListResult;
     wakeUp: (args: KbWakeUpInput) => Promise<KbWakeUpResponse>;
   };
@@ -140,12 +141,22 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.kb = {
-      search: (args) => searchKnowledgeBase(args, this.kbQueryHost('kb.search')),
       diagnose: () => diagnoseKnowledgeBase(this.kbQueryHost('kb.diagnose')),
       read: (selector) => this.readKnowledgeBaseEntry(selector),
       listPrinciples: (args) => listKnowledgeBasePrinciples(args, this.kbQueryHost('kb.listPrinciples')),
       listSources: () => listKnowledgeBaseSources(this.kbQueryHost('kb.listSources')),
       listWikis: () => listKnowledgeBaseWikis(this.kbQueryHost('kb.listWikis')),
+      listStaleCommunities: () => listKnowledgeBaseStaleCommunities(this.kbQueryHost('kb.listStaleCommunities')),
+      readCommunitySummaryInput: async (slug) => {
+        const input = await readKnowledgeBaseCommunitySummaryInput(
+          slug,
+          this.kbQueryHost('kb.readCommunitySummaryInput'),
+        );
+        if (input === null) {
+          throw new Error(`KB community not found: ${slug}`);
+        }
+        return input;
+      },
       listMemos: (args) =>
         listKnowledgeBaseMemos(
           this.requireRuntime('kb.listMemos').storage,

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as CorpusScanMod from '#src/kb/corpus/rescan/scan.js';
 import { createCurateTestHandle, type CurateTestHandle } from '#tests/unit/kb/curate/__helpers__/test-handle.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createCurateScheduler, type CurateHandle } from '#src/kb/curate/scheduler.js';
@@ -27,6 +28,16 @@ import { curateDb } from '../../../src/kb/curate/db-access.js';
 vi.mock('#src/kb/curate/usage-budget.js', () => ({
   isUsageBudgetExhausted: () => false,
 }));
+
+vi.mock('#src/kb/corpus/rescan/scan-worker.js', async () => {
+  const actual = await vi.importActual<typeof CorpusScanMod>('#src/kb/corpus/rescan/scan.js');
+  return {
+    CORPUS_SCAN_WORKER_TIMEOUT_MS: 120_000,
+    buildCorpusScanViewInWorker: vi.fn(async (...args: Parameters<typeof actual.buildCorpusScanView>) =>
+      actual.buildCorpusScanView(...args),
+    ),
+  };
+});
 
 const DEFAULT_CREATED_AT = '2026-03-20T00:00:00.000Z';
 const DEFAULT_UPDATED_AT = '2026-03-20T00:00:00.000Z';
@@ -95,6 +106,7 @@ function renderSource({
   tags = ['database'],
   url,
   importedAt = DEFAULT_IMPORTED_AT,
+  inputFingerprint,
   entrySeq,
   related = [],
   body = 'Body.',
@@ -104,6 +116,7 @@ function renderSource({
   tags?: string[];
   url?: string;
   importedAt?: string;
+  inputFingerprint?: string;
   entrySeq?: number;
   related?: KbEntryId[];
   body?: string;
@@ -115,6 +128,7 @@ function renderSource({
     `tags: [${tags.join(', ')}]`,
     ...(url === undefined ? [] : [`url: ${url}`]),
     `importedAt: ${importedAt}`,
+    ...(inputFingerprint === undefined ? [] : [`inputFingerprint: ${inputFingerprint}`]),
     ...(entrySeq === undefined ? [] : [`entrySeq: ${entrySeq}`]),
     ...renderRelatedLines(related),
     '---',
@@ -140,7 +154,7 @@ function writeSource(runtime: KbRuntime, slug: string, options: Parameters<typeo
 }
 
 async function settleCurateRuntime(handle: CurateHandle): Promise<void> {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     await vi.advanceTimersByTimeAsync(1);
     if (!handle.isRunning()) {
       return;
@@ -372,6 +386,7 @@ describe('curate related-resolution and budget guards', () => {
         importedAt: string;
         related: string[];
         bodyHash: string;
+        inputFingerprint: string;
         entrySeq: number;
       }
     > = {};
@@ -380,6 +395,7 @@ describe('curate related-resolution and budget guards', () => {
       writeSource(runtime, slug, {
         title: `SQLite Source ${index}`,
         tags: ['database'],
+        inputFingerprint: `stale-sqlite-source-${String(index).padStart(2, '0')}`,
         entrySeq: index,
         body: `Reference body ${index}.`,
       });
@@ -392,6 +408,7 @@ describe('curate related-resolution and budget guards', () => {
         importedAt: DEFAULT_IMPORTED_AT,
         related: [],
         bodyHash: computeBodySurfaceHash(`Reference body ${index}.`),
+        inputFingerprint: `stale-sqlite-source-${String(index).padStart(2, '0')}`,
         entrySeq: index,
       };
       assignments.push({

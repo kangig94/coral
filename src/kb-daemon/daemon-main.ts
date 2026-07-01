@@ -441,6 +441,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     startedAt,
     readyAt: Date.now(),
   });
+  kbWriteHost.warmSearchRuntime();
 
   return shutdown;
 }

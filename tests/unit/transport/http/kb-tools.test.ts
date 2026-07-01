@@ -37,6 +37,7 @@ import {
   handleKbWikiUnlink,
 } from '#src/kb/tool-handlers.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { createEmptyGeneratedCommunityProjectionStore } from '#tests/fixtures/test-runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const mockState = vi.hoisted(() => ({
@@ -111,7 +112,8 @@ function createKbToolRuntime(): KnowledgeBaseRuntime {
       sourcePath: (slug: string) => `${KB_ROOT}/sources/${slug}.md`,
       communityPath: (slug: string) => `${KB_ROOT}/communities/${slug}.md`,
       principlePath: (slug: string) => `${KB_ROOT}/principles/${slug}.md`,
-    } as KnowledgeBaseRuntime['kb'],
+      generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
+    } as unknown as KnowledgeBaseRuntime['kb'],
     readDb: {} as KnowledgeBaseRuntime['readDb'],
     curateScheduler: {
       start: vi.fn(async () => {}),

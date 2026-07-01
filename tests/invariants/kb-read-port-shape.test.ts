@@ -1,14 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as NodeOs from 'node:os';
 import ts from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { oramaIndexMetadataPath, oramaIndexPath } from '#src/engines/orama/paths.js';
-import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
-import type { Backed, FtsRetrieval } from '#src/kb/contract.js';
-import type { KbQueryContext } from '#src/read-model/kb-query-runtime.js';
 import {
   createProductionFileIndex,
   listProductionSourceFiles,
@@ -170,56 +166,6 @@ function tempRoot(): string {
   return root;
 }
 
-function writeNote(noteDir: string, slug: string, title: string, body: string): void {
-  mkdirSync(noteDir, { recursive: true });
-  writeFileSync(
-    join(noteDir, `${slug}.md`),
-    `---
-tags: []
-principles: []
-source:
-  - kangig94/coral
-createdAt: 2026-04-01
-updatedAt: 2026-04-01
-entrySeq: 1
----
-# ${title}
-
-${body}
-`,
-    'utf-8',
-  );
-}
-
-async function createWritableKbRuntime() {
-  const [{ createRealRuntime }, { openStoreDatabase }, { createKbRuntime }, { kbRuntimeDir }] = await Promise.all([
-    import('#src/runtime/real.js'),
-    import('#src/store/db.js'),
-    import('#src/kb/runtime.js'),
-    import('#src/kb/paths.js'),
-  ]);
-
-  const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
-    path: runtime.paths.coral.store.dbFile,
-    storage: runtime.storage,
-  });
-  const kb = createKbRuntime({
-    markdownRoot: runtime.paths.coral.corpus.kbRoot,
-    runtimeDir: kbRuntimeDir('prod', runtime.paths.configSlot),
-    version: 'dev',
-    db,
-    time: runtime.time,
-    envPort: runtime.env,
-    ids: runtime.ids,
-    storage: runtime.storage,
-    curateAssistant: { complete: async () => '' },
-    processPort: runtime.process,
-  });
-
-  return { runtime, db, kb };
-}
-
 describe('KB read port shape', () => {
   beforeEach(() => {
     mockState.tmpHome = tempRoot();
@@ -279,71 +225,15 @@ describe('KB read port shape', () => {
     expect(writableDatabaseLeaks).toEqual([]);
   });
 
-  it('searchKnowledgeBase degrades on a missing read-side snapshot without writing and consumer apply materializes it', async () => {
-    const [
-      { searchKnowledgeBase },
-      { reindex },
-      { applyBoundCorpusConsumerForTest },
-      { bindOramaFtsForTest },
-      { notesDir },
-      { createKbQueryHost },
-    ] = await Promise.all([
-      import('#src/kb/queries.js'),
-      import('#src/kb/ops/reindex.js'),
-      import('#tests/helpers/kb-test-runtime.js'),
-      import('#tests/unit/kb/expansion-test-helpers.js'),
-      import('#src/kb/paths.js'),
-      import('#src/read-model/kb-query-runtime.js'),
-    ]);
-    const { runtime, db, kb } = await createWritableKbRuntime();
-    const runtimeDir = kb.runtimeDir;
-    const context: KbQueryContext = { pluginRoot: REPO_ROOT, runtime };
-    const host = createKbQueryHost(context);
+  it('does not expose library-direct KB search or read-side bundled search loading', () => {
+    expect(sourceText('src/kb/queries.ts')).not.toContain('searchKnowledgeBase');
+    expect(sourceText('src/read-model/coral-store.ts')).not.toContain('searchKnowledgeBase');
+    expect(sourceText('src/read-model/coral-store.ts')).not.toMatch(/\bsearch:\s*\(/);
 
-    writeNote(
-      notesDir(runtime.paths.coral.corpus.kbRoot),
-      'read-port-note',
-      'Read Port Note',
-      'Read-side search probe.',
-    );
-    await reindex(kb);
-
-    const artifactPath = oramaIndexPath(runtimeDir);
-    const metadataPath = oramaIndexMetadataPath(runtimeDir);
-    expect(existsSync(artifactPath)).toBe(false);
-    expect(existsSync(metadataPath)).toBe(false);
-    bindOramaFtsForTest(kb);
-    expect(
-      kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read().warnings(),
-    ).toContain('fts_index_uninitialized');
-
-    const degraded = await searchKnowledgeBase({ query: 'read-side', mode: 'text' }, host);
-
-    expect(degraded).toEqual({
-      mode: 'text',
-      results: [],
-      retrievalDiagnostics: [
-        {
-          roleId: 'text',
-          code: 'binding_missing',
-          recoverable: true,
-          publicText: 'kb_search_degraded_until_coordinator_rebuild',
-        },
-      ],
-      warnings: ['kb_search_degraded_until_coordinator_rebuild'],
-    });
-    expect(existsSync(artifactPath)).toBe(false);
-    expect(existsSync(metadataPath)).toBe(false);
-
-    await applyBoundCorpusConsumerForTest(kb, db);
-
-    expect(existsSync(artifactPath)).toBe(true);
-    expect(existsSync(metadataPath)).toBe(true);
-
-    const ready = await searchKnowledgeBase({ query: 'probe', mode: 'text' }, host);
-    expect(ready.warnings).toBeUndefined();
-    expect(ready.results.map((result) => result.note)).toEqual(['read-port-note']);
-
-    db.close();
+    const queryRuntimeText = sourceText('src/read-model/kb-query-runtime.ts');
+    expect(queryRuntimeText).not.toContain('ensureBundledEnginesLoaded');
+    expect(queryRuntimeText).not.toContain('ensureBundledEngines');
+    expect(queryRuntimeText).not.toContain('loadBundledEngine');
+    expect(queryRuntimeText).not.toContain('engines/kiwi');
   });
 });

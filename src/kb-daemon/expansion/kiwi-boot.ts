@@ -4,6 +4,7 @@ import { hasKiwiModelArtifact, ensureKiwiModelArtifact } from '../../engines/kiw
 import { ORAMA_BASE_CONSUMER_ID } from '../../engines/orama/constants.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { Runtime } from '../../runtime/ports.js';
+import type { GeneratedCommunityFreshness } from '../../kb/curate/community/generated-projection-store.js';
 
 export type KiwiArtifactBootHandle = {
   readonly started: boolean;
@@ -13,11 +14,20 @@ export type KiwiArtifactBootHandle = {
 type KiwiArtifactBootDriver = {
   forceCorpusApply(
     snapshot: KbCorpusSnapshot,
-    options: { readonly reason: 'projection-artifact-lag'; readonly consumers: readonly string[] },
+    options: {
+      readonly reason: 'projection-artifact-lag';
+      readonly consumers: readonly string[];
+      readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
+    },
   ): { readonly generation: number; readonly consumers: readonly string[] };
   waitFreshUntil(
     authority: 'corpus',
-    target: { readonly snapshot: KbCorpusSnapshot; readonly atLeastGeneration: number },
+    target: {
+      readonly snapshot: KbCorpusSnapshot;
+      readonly atLeastGeneration: number;
+      readonly generatedCommunityGeneration?: number;
+      readonly generatedCommunityDocsHash?: string;
+    },
     consumerId: string,
     timeoutMs: number,
   ): Promise<void>;
@@ -25,7 +35,10 @@ type KiwiArtifactBootDriver = {
 
 export type StartKiwiArtifactFetchOnBootOptions = {
   readonly runtime: Runtime;
-  readonly kb: Pick<KbRuntime, 'getCorpusStateSnapshot' | 'invalidateTextSnapshot'> &
+  readonly kb: Pick<
+    KbRuntime,
+    'getCorpusStateSnapshot' | 'invalidateTextSnapshot' | 'generatedCommunityProjectionStore'
+  > &
     Partial<Pick<KbRuntime, 'declaredAnalyzers'>>;
   readonly driver: KiwiArtifactBootDriver;
   readonly timeoutMs: number;
@@ -37,19 +50,26 @@ export type StartKiwiArtifactFetchOnBootOptions = {
 };
 
 async function forceOramaReindexAfterKiwiFetch(
-  kb: Pick<KbRuntime, 'invalidateTextSnapshot'>,
+  kb: Pick<KbRuntime, 'invalidateTextSnapshot' | 'generatedCommunityProjectionStore'>,
   driver: KiwiArtifactBootDriver,
   snapshot: KbCorpusSnapshot,
   timeoutMs: number,
 ): Promise<void> {
   kb.invalidateTextSnapshot('kiwi-model-installed');
+  const generatedCommunityFreshness = kb.generatedCommunityProjectionStore.readActiveFreshness();
   const forced = driver.forceCorpusApply(snapshot, {
     reason: 'projection-artifact-lag',
     consumers: [ORAMA_BASE_CONSUMER_ID],
+    generatedCommunityFreshness,
   });
   await Promise.all(
     forced.consumers.map((consumerId) =>
-      driver.waitFreshUntil('corpus', { snapshot, atLeastGeneration: forced.generation }, consumerId, timeoutMs),
+      driver.waitFreshUntil(
+        'corpus',
+        { snapshot, atLeastGeneration: forced.generation, ...generatedCommunityFreshness },
+        consumerId,
+        timeoutMs,
+      ),
     ),
   );
 }

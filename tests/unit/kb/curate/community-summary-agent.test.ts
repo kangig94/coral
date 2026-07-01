@@ -127,7 +127,15 @@ describe('runCommunitySummaryAgent', () => {
   });
 
   it('spawns no turn when the stale work-list is empty', async () => {
-    // Drop the entity graph so no communities are detected/stale.
+    // Drop the entity graph and republish the generated projection so no
+    // communities are detected/stale.
+    runtime.writeIndex({
+      ...runtime.readIndexOrEmpty(),
+      entityMeta: {},
+      relationships: [],
+    });
+    await runtime.writeEntityGraph({ entityMeta: {}, relationships: [] });
+    await runCommunitySubphase(runtime);
     rmSync(runtime.communitiesDir(), { recursive: true, force: true });
     expect(listStaleCommunities(runtime)).toEqual([]);
 

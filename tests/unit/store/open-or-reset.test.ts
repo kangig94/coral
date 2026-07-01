@@ -18,15 +18,10 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
 import { readDefaultExpansionCatalog, readExpansionCatalog } from '#src/cli/expansion/catalog.js';
 import { openReadCoralStore } from '#src/cli/read-store.js';
-import {
-  ensureBundledEnginesLoaded,
-  createDefaultKbQueryRuntime,
-  KbQueryRegistry,
-} from '#src/read-model/kb-query-runtime.js';
+import { createDefaultKbQueryRuntime, KbQueryRegistry } from '#src/read-model/kb-query-runtime.js';
 import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { KbRuntime } from '#src/kb/contract.js';
 import {
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
@@ -166,15 +161,6 @@ function openReset(runtime: Runtime, dbPath: string) {
 function captureError(fn: () => unknown): unknown {
   try {
     fn();
-    return null;
-  } catch (error) {
-    return error;
-  }
-}
-
-async function captureAsyncError(fn: () => Promise<unknown>): Promise<unknown> {
-  try {
-    await fn();
     return null;
   } catch (error) {
     return error;
@@ -496,14 +482,6 @@ describe('read-only store access', () => {
       const { runtime } = makeMismatchHome();
       expectSetupCode(
         captureError(() => createDefaultKbQueryRuntime({ pluginRoot: REPO_ROOT, runtime })),
-        'store_schema_outdated',
-      );
-    });
-
-    it('ensureBundledEnginesLoaded', async () => {
-      const { runtime } = makeMismatchHome();
-      expectSetupCode(
-        await captureAsyncError(() => ensureBundledEnginesLoaded({} as KbRuntime, { pluginRoot: REPO_ROOT, runtime })),
         'store_schema_outdated',
       );
     });

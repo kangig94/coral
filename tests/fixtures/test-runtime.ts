@@ -7,6 +7,7 @@ import type { EngineManifest, ExpansionHost } from '#src/expansion/contract.js';
 import { createExpansionHost, type ConsumerDriverPort } from '#src/expansion/host.js';
 import type { KbCorpusPublishCallbacks, KbRuntime } from '#src/kb/contract.js';
 import type { CurateAssistantPort } from '#src/kb/curate/assistant.js';
+import { GeneratedCommunityProjectionStore } from '#src/kb/curate/community/generated-projection-store.js';
 import { createKbRuntime } from '#src/kb/runtime.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime, Disposable } from '#src/runtime/ports.js';
@@ -106,6 +107,20 @@ export interface CreateTestRuntimeOptions {
   runtime?: Runtime;
   kb?: KbRuntime;
   registerConsumer?: (reg: ConsumerRegistration) => ConsumerHandle;
+}
+
+export function createEmptyGeneratedCommunityProjectionStore(options: {
+  runtimeDir?: string;
+  runtime?: Runtime;
+} = {}): GeneratedCommunityProjectionStore {
+  const root = options.runtimeDir ?? mkdtempSync(join(tmpdir(), 'coral-generated-community-store-'));
+  const runtime = options.runtime ?? createRealRuntime('prod');
+  return new GeneratedCommunityProjectionStore({
+    runtimeDir: root,
+    storage: runtime.storage,
+    ids: runtime.ids,
+    time: runtime.time,
+  });
 }
 
 export function createTestRuntime(): {

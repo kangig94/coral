@@ -7,6 +7,7 @@ import type { KbRuntime } from '#src/kb/contract.js';
 import type { ReadonlyDatabase } from '#src/store/read-port.js';
 import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
+import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import { cursorTimestampFromStorageSeq, noteCursor } from '#src/kb/curate/state/index.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
@@ -28,17 +29,19 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [{ reindex }, runtime, paths, read] = await Promise.all([
+  const [{ reindex }, runtime, paths, read, community] = await Promise.all([
     import('#src/kb/ops/reindex.js'),
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
     import('#src/kb/read.js'),
+    import('#src/kb/curate/community/index.js'),
   ]);
   return {
     reindex,
     createKbRuntime: runtime.createKbRuntime,
     paths,
     readEntry: read.readEntry,
+    runCommunitySubphase: community.runCommunitySubphase,
   };
 }
 
@@ -223,6 +226,7 @@ Make the contract explicit first.
       },
       entityMeta: {},
       relationships: [],
+      ...EMPTY_GENERATED_COMMUNITY_FRESHNESS,
     });
     expect(readFileSync(join(mockState.tmpHome, '.coral', 'data', 'kb', 'index.json'), 'utf-8')).toContain(
       '"coral-kb-mode"',
@@ -315,10 +319,8 @@ Make the contract explicit first.
     expect(wikiRecord?.body).toContain('## Understanding');
     expect(parseWikiBody(wikiRecord?.body ?? '').understanding).toContain('Wakeful retrieval keeps the session');
 
-    const projection = createOramaBaseProjection(
-      kb,
-      new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir),
-    );
+    const snapshotStore = new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir);
+    const projection = createOramaBaseProjection(kb, snapshotStore);
     const preparedProjection = await projection.prepareFullSnapshot(projectionInput);
     await projection.installFullSnapshot(kb.captureCorpusSnapshot(), preparedProjection);
     const search = await projection.search('wakeful retrieval', 5, 'wiki');
@@ -456,9 +458,7 @@ Shared retrieval patterns.
       );
     };
 
-    // First reindex establishes the empty-graph topology hash.
-    // Then re-write the community file (topology refresh deletes it).
-    // Second reindex indexes the community (topology hash now matches).
+    // First reindex establishes an empty index; the next pass indexes the authored community.
     await reindex(kb);
     writeCommunityFile();
 
@@ -490,6 +490,7 @@ Shared retrieval patterns.
       principles: {},
       entityMeta: {},
       relationships: [],
+      ...EMPTY_GENERATED_COMMUNITY_FRESHNESS,
     });
     expect(
       readEntry({ note: 'communities:graph-rag' }, { storage: kb.storagePort, paths: createReadPaths(paths) }),
@@ -576,7 +577,7 @@ Body.
   });
 
   it('repairs entity-graph-driven topology on ensureCorpusFreshness after a manual entity graph edit', async () => {
-    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { reindex, createKbRuntime, paths, runCommunitySubphase } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -651,6 +652,8 @@ Body.
     writeFileSync(kb.entityGraphPath(), `${JSON.stringify(editedGraph, null, 2)}\n`, 'utf-8');
     setMtime(kb.entityGraphPath(), new Date(Date.now() + 60_000));
 
+    await kb.ensureCorpusFreshness({ wait: true });
+    await runCommunitySubphase(kb);
     const index = await kb.ensureCorpusFreshness({ wait: true });
     const communities = Object.values(index.entries).filter((entry) => entry.kind === 'community');
 
@@ -667,7 +670,7 @@ Body.
   });
 
   it('repairs entity-graph-driven topology on reindex after a manual entity graph edit', async () => {
-    const { reindex, createKbRuntime, paths } = await loadKbModules();
+    const { reindex, createKbRuntime, paths, runCommunitySubphase } = await loadKbModules();
     const kb = createRuntime(createKbRuntime, paths);
     mkdirSync(paths.notesDir(process.env.CORAL_KB_PATH!), { recursive: true });
 
@@ -742,6 +745,8 @@ Body.
     writeFileSync(kb.entityGraphPath(), `${JSON.stringify(editedGraph, null, 2)}\n`, 'utf-8');
     setMtime(kb.entityGraphPath(), new Date(Date.now() + 60_000));
 
+    await reindex(kb);
+    await runCommunitySubphase(kb);
     const result = await reindex(kb);
     const index = kb.readIndex();
     const communities = Object.values(index?.entries ?? {}).filter((entry) => entry.kind === 'community');
@@ -982,12 +987,12 @@ This note has malformed frontmatter.
       new Date(Date.parse(detectedAt) + 60_000),
     );
 
-    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+    const corpusCommitSpy = vi.spyOn(kb, 'commitCorpusProjection');
 
     await kb.ensureCorpusFreshness();
     await kb.ensureCorpusFreshness();
 
-    expect(reindexSuccessSpy).not.toHaveBeenCalled();
+    expect(corpusCommitSpy).not.toHaveBeenCalled();
     expectPendingRepairEntries(readCurateRetryQueue(readDbByRuntime.get(kb)!), [
       {
         entryId: noteEntryId('bad-note'),
@@ -1085,14 +1090,14 @@ This note is valid now.
     );
     setMtime(paths.notesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt) - 60_000));
 
-    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+    const corpusCommitSpy = vi.spyOn(kb, 'commitCorpusProjection');
 
     await kb.ensureCorpusFreshness({ wait: true });
 
-    expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+    expect(corpusCommitSpy).toHaveBeenCalledTimes(1);
     expect(readCurateState(curateDb(kb))).toMatchObject({
-      discoveryHighSeq: 6,
-      discoveryOffset: 0,
+      discoveryHighSeq: 12,
+      discoveryOffset: 3,
     });
     expect(readCurateRetryQueue(readDbByRuntime.get(kb)!)).toEqual([]);
     expect(kb.readIndex()?.entries[noteEntryId('bad-note')]).toEqual({
@@ -1161,10 +1166,10 @@ Source body.
     );
     setMtime(paths.sourcesDir(process.env.CORAL_KB_PATH!), new Date(Date.parse(detectedAt) - 60_000));
 
-    const reindexSuccessSpy = vi.spyOn(kb, 'recordReindexSuccess');
+    const corpusCommitSpy = vi.spyOn(kb, 'commitCorpusProjection');
 
     await kb.ensureCorpusFreshness({ wait: true });
-    expect(reindexSuccessSpy).toHaveBeenCalledTimes(1);
+    expect(corpusCommitSpy).toHaveBeenCalledTimes(1);
     expect(readCurateRetryQueue(readDbByRuntime.get(kb)!)).toEqual([]);
     expect(kb.readIndex()?.entries[sourceEntryId('bad-source')]).toEqual({
       kind: 'source',

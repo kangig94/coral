@@ -35,6 +35,10 @@ export class FreshnessTimeout extends Error {
         ? String(target)
         : `${snapshot?.snapshotId}:${snapshot?.contentSeq}/${snapshot?.metadataSeq}${
             isForcedCorpusFreshnessTarget(target) ? `#${target.atLeastGeneration}` : ''
+          }${
+            isForcedCorpusFreshnessTarget(target) && target.generatedCommunityGeneration !== undefined
+              ? `@generated:${target.generatedCommunityGeneration}/${target.generatedCommunityDocsHash ?? ''}`
+              : ''
           }`;
     super(`waitFreshUntil timed out (consumer=${consumerId}, target=${renderedTarget}, timeoutMs=${timeoutMs})`);
     this.name = 'FreshnessTimeout';
@@ -166,7 +170,19 @@ export function corpusTargetReached(
   if (isSnapshotFresherForInterest(snapshot, current, state.reg.corpusInterest)) {
     return false;
   }
-  return !isForcedCorpusFreshnessTarget(target) || state.lastAppliedForceGeneration >= target.atLeastGeneration;
+  if (!isForcedCorpusFreshnessTarget(target)) {
+    return true;
+  }
+  if (state.lastAppliedForceGeneration < target.atLeastGeneration) {
+    return false;
+  }
+  if (target.generatedCommunityGeneration === undefined && target.generatedCommunityDocsHash === undefined) {
+    return true;
+  }
+  return (
+    state.lastAppliedGeneratedCommunityGeneration === target.generatedCommunityGeneration &&
+    state.lastAppliedGeneratedCommunityDocsHash === target.generatedCommunityDocsHash
+  );
 }
 
 export function resolveWaiters(

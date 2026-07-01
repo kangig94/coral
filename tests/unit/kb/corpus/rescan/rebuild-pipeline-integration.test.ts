@@ -289,14 +289,14 @@ describe('performRescan failure semantics', () => {
       'utf-8',
     );
 
-    // Force writeIndex to throw: writeIndex precedes recordReindexSuccess and the
-    // typed-incident pipeline, so all subsequent rescan side-effects must skip.
-    const writeIndexSpy = vi.spyOn(kb, 'writeIndex').mockImplementation(() => {
-      throw new Error('forced writeIndex failure');
+    // Force staging to throw before commit and before the typed-incident
+    // side-effect pipeline, so all subsequent rescan side effects must skip.
+    const stageSpy = vi.spyOn(kb, 'stageCorpusProjectionArtifacts').mockImplementation(() => {
+      throw new Error('forced staging failure');
     });
 
-    await expect(reindex(kb)).rejects.toThrow('forced writeIndex failure');
-    writeIndexSpy.mockRestore();
+    await expect(reindex(kb)).rejects.toThrow('forced staging failure');
+    stageSpy.mockRestore();
 
     expect(kb.readIndex()).toEqual(indexBefore);
     // Synthetic prior row still present; no new row from the malformed entry was added.
@@ -309,8 +309,7 @@ describe('performRescan failure semantics', () => {
 describe('detectRescanInfo unified MutationLane emitter', () => {
   // Parity claim: a markdown frontmatter-only edit and an entity-graph-only edit both
   // emit MutationLane='metadata'. Each scenario lives in its own seeded runtime so the
-  // assertion isolates one drift source — community-topology refresh side-effects from
-  // earlier scenarios cannot bleed in via the retry queue.
+  // assertion isolates one drift source so earlier scenarios cannot bleed in via the retry queue.
   it('emits "metadata" for a markdown frontmatter-only edit', async () => {
     const { kb, root } = createSeededKbRuntime();
     const noteFrontmatter = (tags: string): string =>

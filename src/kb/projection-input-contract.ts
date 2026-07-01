@@ -28,6 +28,8 @@ export interface KbProjectionInput {
   readonly index: KbIndex;
   readonly records: readonly KbProjectionRecord[];
   readonly communityFresh: boolean;
+  readonly generatedCommunityGeneration: number;
+  readonly generatedCommunityDocsHash: string;
 }
 
 export interface KbGeneratedCommunityDocument {
@@ -38,6 +40,8 @@ export interface KbGeneratedCommunityDocument {
 export interface KbProjectionInputOptions {
   readonly index?: KbIndex;
   readonly generatedCommunityDocs?: readonly KbGeneratedCommunityDocument[];
+  readonly generatedCommunityGeneration?: number;
+  readonly generatedCommunityDocsHash?: string;
   readonly forceCommunityFresh?: boolean;
 }
 

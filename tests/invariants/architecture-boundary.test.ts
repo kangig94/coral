@@ -274,11 +274,15 @@ function collectDomainAmbientRuntimeAccess(): string[] {
   // from ambient time, so the construction is a deterministic format step.
   // src/workflow/stale-recovery.ts formats a continuation-lease expiry from
   // `options.time.now()`; the clock value is injected through the workflow port.
+  // src/kb/curate/community/generated-projection-store.ts formats a port-sourced
+  // clock (`new Date(this.time.now())`) to an ISO date; the millis come from the
+  // injected TimePort, not ambient time — the same deterministic format step as memo.ts.
   const allowed = new Set([
     'src/kb/env.ts',
     'src/discuss/transcript.ts',
     'src/kb/paths.ts',
     'src/kb/ops/memo.ts',
+    'src/kb/curate/community/generated-projection-store.ts',
     'src/workflow/stale-recovery.ts',
     'src/providers/claude/appserver/controller.ts',
   ]);
@@ -999,9 +1003,9 @@ describe('architecture boundary guard', () => {
   it('kb domain modules do not compose runtimes or load engines', () => {
     // Composition (`createRealRuntime`, `createExpansionHost`, `createScope`)
     // and bundled-engine loading (`BUNDLED_ENGINES`, `loadBundledEngine`)
-    // are coordinator/CLI/read-model concerns. The KB domain owns query
+    // are coordinator/daemon concerns. The KB domain owns query
     // semantics and operations but never composes the runtime that runs
-    // them — read-side composition lives at `read-model/kb-query-runtime.ts`.
+    // them.
     const forbiddenSpecifiers = ['runtime/real.js', 'expansion/bundled.js', 'expansion/host.js', 'expansion/scope.js'];
     const violations: string[] = [];
     for (const filePath of PRODUCTION_SOURCE_FILES) {

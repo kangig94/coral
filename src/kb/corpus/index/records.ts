@@ -119,6 +119,12 @@ export function cloneKbIndex(index: KbIndex | null): KbIndex {
     entityMeta: cloneEntityMetaRecord(index.entityMeta),
     relationships,
     ...(index.structuralKey === undefined ? {} : { structuralKey: { ...index.structuralKey } }),
+    ...(index.generatedCommunityGeneration === undefined
+      ? {}
+      : { generatedCommunityGeneration: index.generatedCommunityGeneration }),
+    ...(index.generatedCommunityDocsHash === undefined
+      ? {}
+      : { generatedCommunityDocsHash: index.generatedCommunityDocsHash }),
   };
 }
 

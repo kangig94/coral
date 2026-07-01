@@ -622,7 +622,7 @@ describe('cli main routing', () => {
     expect(process.exitCode).toBe(2);
   });
 
-  it('accepts -f json on kb search (option registered locally on the read command)', async () => {
+  it('accepts -f json on kb search (option registered locally on the search command)', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     const kbSearchCommand = findCommand(program, 'kb', 'search');

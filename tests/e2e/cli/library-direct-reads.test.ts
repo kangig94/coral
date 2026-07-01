@@ -27,7 +27,6 @@ import {
   formatKbMemoList,
   formatKbPrinciples,
   formatKbRead,
-  formatKbSearch,
   formatKbSourceList,
 } from '#src/cli/format/kb.js';
 
@@ -56,7 +55,6 @@ type ReadCommandCase = {
 
 const READ_COMMANDS: ReadonlyArray<ReadCommandCase> = [
   { name: 'jobs', args: ['jobs'] },
-  { name: 'kb search', args: ['kb', 'search', 'authoritative'] },
   { name: 'kb principles', args: ['kb', 'principles'] },
   { name: 'kb read', args: ['kb', 'read', 'coral-kb-mode'] },
   { name: 'kb source list', args: ['kb', 'source', 'list'] },
@@ -314,8 +312,6 @@ async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Prom
     switch (testCase.name) {
       case 'jobs':
         return `${renderJobsList(formatJobsList({ jobs: store.jobs.list({}) }, FIXED_NOW.getTime()), { cwd: fixture.projectRoot })}\n`;
-      case 'kb search':
-        return `${formatKbSearch(await store.kb.search({ query: 'authoritative' }))}\n`;
       case 'kb principles':
         return `${formatKbPrinciples(await store.kb.listPrinciples({}))}\n`;
       case 'kb read':

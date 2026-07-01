@@ -17,8 +17,15 @@ function buildTransientReadIndex(kb: KbRuntime): KbIndex {
   const principles = loadPrinciples(scan);
   const communities = loadCommunities(scan);
   const wikis = loadWikis(scan);
+  const activeGeneratedCommunities = kb.generatedCommunityProjectionStore.readActiveGeneration();
 
-  return buildKbIndex(scan, notes, sources, communities, wikis, principles);
+  return buildKbIndex(scan, notes, sources, communities, wikis, principles, {
+    generatedCommunityDocuments: activeGeneratedCommunities.records,
+    generatedCommunityFreshness: {
+      generatedCommunityGeneration: activeGeneratedCommunities.generatedCommunityGeneration,
+      generatedCommunityDocsHash: activeGeneratedCommunities.generatedCommunityDocsHash,
+    },
+  });
 }
 
 export function readKnowledgeBaseListIndex(kb: KbRuntime): KbIndex {

@@ -1,5 +1,9 @@
 import type { KbCorpusSnapshot } from '../kb/contract.js';
 import type { KbCorpusProjectionReader, KbProjectionInput } from '../kb/projection-input-contract.js';
+import {
+  EMPTY_GENERATED_COMMUNITY_FRESHNESS,
+  type GeneratedCommunityFreshness,
+} from '../kb/curate/community/generated-projection-store.js';
 import { isSnapshotFresherForInterest } from '../kb/state/corpus-state.js';
 import { backendLog } from '../infra/backend-log.js';
 import type { Database } from '../store/db.js';
@@ -23,6 +27,8 @@ const EMPTY_PROJECTION_INPUT: KbProjectionInput = {
   },
   records: [],
   communityFresh: false,
+  generatedCommunityGeneration: EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityGeneration,
+  generatedCommunityDocsHash: EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityDocsHash,
 };
 
 export const DEFAULT_CORPUS_PROJECTION_READER = {
@@ -127,7 +133,7 @@ export function scheduleCorpusApply(state: ConsumerState, snapshot: KbCorpusSnap
     if (state.pendingForcedCorpusApply !== null) {
       const next = state.pendingForcedCorpusApply;
       state.pendingForcedCorpusApply = null;
-      scheduleForcedCorpusApply(state, next.snapshot, next.generation, deps);
+      scheduleForcedCorpusApply(state, next.snapshot, next.generation, deps, next.generatedCommunityFreshness);
       return;
     }
 
@@ -144,6 +150,7 @@ export function scheduleForcedCorpusApply(
   snapshot: KbCorpusSnapshot,
   generation: number,
   deps: AuthorityApplyDeps,
+  generatedCommunityFreshness?: GeneratedCommunityFreshness,
 ): void {
   if (state.stopped || state.kind !== 'corpus') {
     return;
@@ -153,13 +160,17 @@ export function scheduleForcedCorpusApply(
 
   if (state.inFlight) {
     if (state.pendingForcedCorpusApply === null || generation > state.pendingForcedCorpusApply.generation) {
-      state.pendingForcedCorpusApply = { snapshot: { ...snapshot }, generation };
+      state.pendingForcedCorpusApply = {
+        snapshot: { ...snapshot },
+        generation,
+        ...(generatedCommunityFreshness === undefined ? {} : { generatedCommunityFreshness }),
+      };
     }
     return;
   }
 
   state.inFlight = (async () => {
-    await runCorpusApply(state, reg, snapshot, deps, { forceGeneration: generation });
+    await runCorpusApply(state, reg, snapshot, deps, { forceGeneration: generation, generatedCommunityFreshness });
     state.inFlight = null;
     state.activeController = null;
 
@@ -172,7 +183,7 @@ export function scheduleForcedCorpusApply(
     if (state.pendingForcedCorpusApply !== null) {
       const next = state.pendingForcedCorpusApply;
       state.pendingForcedCorpusApply = null;
-      scheduleForcedCorpusApply(state, next.snapshot, next.generation, deps);
+      scheduleForcedCorpusApply(state, next.snapshot, next.generation, deps, next.generatedCommunityFreshness);
       return;
     }
 
@@ -226,7 +237,10 @@ export async function runCorpusApply(
   reg: CorpusConsumerRegistration,
   snapshot: KbCorpusSnapshot,
   deps: AuthorityApplyDeps,
-  options: { readonly forceGeneration?: number } = {},
+  options: {
+    readonly forceGeneration?: number;
+    readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
+  } = {},
 ): Promise<boolean> {
   try {
     const current = deps.repository.readCorpusCursor(reg.id);
@@ -243,7 +257,11 @@ export async function runCorpusApply(
       if (state.kind === 'corpus') {
         state.activeController = controller;
       }
-      const projectionInput = await prepareCorpusProjectionInput(controller.signal, deps);
+      const projectionInput = await prepareCorpusProjectionInput(
+        controller.signal,
+        deps,
+        options.generatedCommunityFreshness,
+      );
       const applyResult = await reg.apply({
         snapshot,
         journalReader: deps.journalReader,
@@ -265,6 +283,10 @@ export async function runCorpusApply(
       deps.repository.advanceCorpusCursor(reg, appliedSnapshot);
       if (state.kind === 'corpus' && options.forceGeneration !== undefined) {
         state.lastAppliedForceGeneration = Math.max(state.lastAppliedForceGeneration, options.forceGeneration);
+      }
+      if (state.kind === 'corpus') {
+        state.lastAppliedGeneratedCommunityGeneration = projectionInput.generatedCommunityGeneration;
+        state.lastAppliedGeneratedCommunityDocsHash = projectionInput.generatedCommunityDocsHash;
       }
       if (state.kind === 'corpus') {
         state.lastApplyError = null;
@@ -291,8 +313,18 @@ export async function runCorpusApply(
 export async function prepareCorpusProjectionInput(
   signal: AbortSignal,
   deps: AuthorityApplyDeps,
+  generatedCommunityFreshness?: GeneratedCommunityFreshness,
 ): Promise<KbProjectionInput> {
-  return deps.corpusProjectionReader.prepareCurrentProjectionInput({ signal, ensureFreshness: false });
+  return deps.corpusProjectionReader.prepareCurrentProjectionInput({
+    signal,
+    ensureFreshness: false,
+    ...(generatedCommunityFreshness === undefined
+      ? {}
+      : {
+          generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+          generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
+        }),
+  });
 }
 
 export function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {

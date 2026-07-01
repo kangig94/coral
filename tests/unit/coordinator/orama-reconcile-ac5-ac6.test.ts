@@ -32,7 +32,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { createScope } from '#src/expansion/scope.js';
-import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
+import { createEmptyGeneratedCommunityProjectionStore, createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 
@@ -76,6 +76,7 @@ function createSnapshot(id = 'snapshot-1'): KbCorpusSnapshot {
 
 function createReconcileRuntime(events: string[], snapshot = createSnapshot()): OramaProjectionReconcileRuntime {
   return {
+    generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore(),
     getCorpusStateSnapshot: () => {
       events.push(`snapshot:${snapshot.snapshotId}`);
       return snapshot;
@@ -433,6 +434,7 @@ describe('Orama coordinator reconcile ownership', () => {
     });
     const requester = createOramaProjectionReconcileRequester({
       kb: {
+        generatedCommunityProjectionStore: kb.generatedCommunityProjectionStore,
         getCorpusStateSnapshot: () => kb.getCorpusStateSnapshot(),
         invalidateTextSnapshot: (reason) => kb.invalidateTextSnapshot(reason),
       },

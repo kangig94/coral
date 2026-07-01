@@ -4,6 +4,7 @@ import { ORAMA_BASE_CONSUMER_ID, type OramaReconcileReason } from '../../engines
 import { detectProjectionArtifactLag } from '../../kb/corpus/rescan/drift.js';
 import type { KbCorpusSnapshot, KbRuntime } from '../../kb/contract.js';
 import type { KiwiAnalyzerDegradedEvent } from '../../engines/kiwi/analyzer-manager.js';
+import type { GeneratedCommunityFreshness } from '../../kb/curate/community/generated-projection-store.js';
 
 type OramaProjectionReconcileResult = {
   readonly generation: number;
@@ -13,12 +14,22 @@ type OramaProjectionReconcileResult = {
 type OramaProjectionReconcileDriver = {
   forceCorpusApply(
     snapshot: KbCorpusSnapshot,
-    options: { readonly reason: 'projection-artifact-lag'; readonly consumers: readonly string[] },
+    options: {
+      readonly reason: 'projection-artifact-lag';
+      readonly consumers: readonly string[];
+      readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
+    },
   ): OramaProjectionReconcileResult | PromiseLike<OramaProjectionReconcileResult>;
 };
 
-export type OramaProjectionReconcileRuntime = Pick<KbRuntime, 'getCorpusStateSnapshot' | 'invalidateTextSnapshot'>;
-export type ProjectionArtifactBootRuntime = Pick<KbRuntime, 'engineArtifactRegistry' | 'getCorpusStateSnapshot'>;
+export type OramaProjectionReconcileRuntime = Pick<
+  KbRuntime,
+  'getCorpusStateSnapshot' | 'invalidateTextSnapshot' | 'generatedCommunityProjectionStore'
+>;
+export type ProjectionArtifactBootRuntime = Pick<
+  KbRuntime,
+  'engineArtifactRegistry' | 'getCorpusStateSnapshot' | 'generatedCommunityProjectionStore'
+>;
 
 type BootProjectionArtifactRepairResult = {
   readonly allowStaleFts: boolean;
@@ -59,6 +70,7 @@ export async function repairProjectionArtifactLagOnBoot(
   const forced = await driver.forceCorpusApply(snapshot, {
     reason: 'projection-artifact-lag',
     consumers: targetConsumerIds,
+    generatedCommunityFreshness: kb.generatedCommunityProjectionStore.readActiveFreshness(),
   });
   void timeoutMs;
   if (forced.consumers.length > 0) {
@@ -98,6 +110,7 @@ export function createOramaProjectionReconcileRequester(params: {
         await params.driver.forceCorpusApply(snapshot, {
           reason: 'projection-artifact-lag',
           consumers: [ORAMA_BASE_CONSUMER_ID],
+          generatedCommunityFreshness: params.kb.generatedCommunityProjectionStore.readActiveFreshness(),
         });
       })
       .catch((error: unknown) => {

@@ -17,6 +17,7 @@ import {
 import { assertCommunitySlug, assertSourceSlug, assertWikiSlug } from '../../validation.js';
 import {
   communityEntryId,
+  isCommunityEntry,
   noteEntryId,
   sourceEntryId,
   vaultLinkToEntryId,
@@ -39,6 +40,12 @@ import { referenceIntegrityDetector } from './incidents/references.js';
 import type { CorpusMarkdownFileScan, CorpusScanView } from './scan.js';
 import type { DetectedIncident, Detector } from './incidents/catalog.js';
 import { createCorpusStructuralKeyFromRawSurfaces } from '../structural-key.js';
+import {
+  EMPTY_GENERATED_COMMUNITY_FRESHNESS,
+  generatedCommunityRecordToReindexRecord,
+  type GeneratedCommunityDocumentRecord,
+  type GeneratedCommunityFreshness,
+} from '../../curate/community/generated-projection-store.js';
 
 const ALL_DETECTORS: readonly Detector[] = [
   fileSyntaxDetector,
@@ -247,14 +254,24 @@ export function buildKbIndex(
   communities: KbReindexCommunityRecord[],
   wikis: KbReindexWikiRecord[],
   principles: Array<[string, string]>,
+  options: {
+    readonly generatedCommunityDocuments?: readonly GeneratedCommunityDocumentRecord[];
+    readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
+  } = {},
 ): KbIndex {
   const entries: KbIndex['entries'] = {};
   const entityGraph = scan.entityGraph?.graph ?? null;
+  const generatedCommunityDocuments = options.generatedCommunityDocuments ?? [];
+  const generatedCommunityFreshness =
+    options.generatedCommunityFreshness ?? EMPTY_GENERATED_COMMUNITY_FRESHNESS;
+  const generatedCommunitySlugs = new Set(generatedCommunityDocuments.map((document) => document.slug));
   const structuralKey = createCorpusStructuralKeyFromRawSurfaces({
     entityGraphRaw: scan.entityGraph?.graph === null ? null : (scan.entityGraph?.content ?? null),
     communityDocuments: scan.markdownFiles
       .filter((file) => file.kind === 'community')
       .map((file) => ({ slug: file.slug, raw: file.content })),
+    generatedCommunityFreshness,
+    generatedCommunitySlugs,
   });
 
   for (const note of notes) {
@@ -288,7 +305,10 @@ export function buildKbIndex(
     });
   }
 
-  for (const community of communities) {
+  for (const community of [
+    ...communities,
+    ...generatedCommunityDocuments.map((record) => generatedCommunityRecordToReindexRecord(record)),
+  ]) {
     entries[communityEntryId(community.slug)] = buildCommunityIndexEntry({
       slug: community.slug,
       title: community.title,
@@ -327,6 +347,8 @@ export function buildKbIndex(
     entityMeta: entityGraph?.entityMeta ?? {},
     relationships: entityGraph?.relationships ?? [],
     ...(structuralKey === undefined ? {} : { structuralKey }),
+    generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+    generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
   };
 }
 
@@ -351,6 +373,7 @@ export function buildCounts(
 > {
   const entityMeta = index.entityMeta;
   const uniqueTags = new Set<string>();
+  let communityCount = 0;
   for (const note of notes) {
     for (const tag of note.tags) {
       uniqueTags.add(tag);
@@ -363,6 +386,15 @@ export function buildCounts(
   }
   for (const community of communities) {
     for (const member of community.members) {
+      uniqueTags.add(member);
+    }
+  }
+  for (const entry of Object.values(index.entries)) {
+    if (!isCommunityEntry(entry)) {
+      continue;
+    }
+    communityCount += 1;
+    for (const member of entry.members) {
       uniqueTags.add(member);
     }
   }
@@ -381,7 +413,7 @@ export function buildCounts(
   return {
     notes: notes.length,
     sources: sources.length,
-    communities: communities.length,
+    communities: communityCount,
     wikis: wikis.length,
     principles: principles.length,
     tags: uniqueTags.size,

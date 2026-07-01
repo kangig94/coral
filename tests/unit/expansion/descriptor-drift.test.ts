@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { loadBundledEngine } from '#src/expansion/bundled.js';
+import type { EngineManifest, Expansion } from '#src/expansion/contract.js';
+import { disposeExpansionScope } from '#src/expansion/host.js';
 import { validateManifestCompleteness } from '#src/expansion/manifest/completeness.js';
-import type { EngineManifest } from '#src/expansion/contract.js';
 import { createScope } from '#src/expansion/scope.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
@@ -136,61 +138,53 @@ describe('manifest descriptor drift validation', () => {
   });
 
   it('rethrows role_descriptor_unregistered from read-side bundled loading and disposes the partial role scope', async () => {
-    type DisposableScope = { [Symbol.dispose](): void };
-    type ExpansionHostRegister = (role: RetrievalRole, scope: DisposableScope) => unknown;
-
-    vi.resetModules();
-    vi.doMock('#src/expansion/bundled.js', () => ({
-      BUNDLED_ENGINES: [
+    const entry = {
+      id: 'partial-read-side',
+      version: '0.0.0',
+      specifier: '#tests/partial-read-side/expansion.js',
+      tier: 'bundled',
+      description: 'partial read-side role expansion',
+      provides: {
+        retrievalRoles: [
+          { ...baseDescriptor, id: 'read-side-one' },
+          { ...baseDescriptor, id: 'read-side-two' },
+        ],
+      },
+    } satisfies EngineManifest;
+    const partialLoader: Expansion = vi.fn(async (host) => {
+      const descriptor = { ...baseDescriptor, id: 'read-side-one' };
+      host.registerRetrievalRole(
         {
-          id: 'partial-read-side',
-          version: '0.0.0',
-          specifier: '#tests/partial-read-side/expansion.js',
-          tier: 'bundled',
-          description: 'partial read-side role expansion',
-          provides: {
-            retrievalRoles: [
-              { ...baseDescriptor, id: 'read-side-one' },
-              { ...baseDescriptor, id: 'read-side-two' },
-            ],
+          id: descriptor.id,
+          descriptor,
+          async search() {
+            return { hits: [] };
           },
         },
-      ],
-      loadBundledEngine: vi.fn(
-        async (
-          _entry: EngineManifest,
-          host: { registerRetrievalRole: ExpansionHostRegister; scope: DisposableScope },
-        ) => {
-          const descriptor = { ...baseDescriptor, id: 'read-side-one' };
-          host.registerRetrievalRole(
-            {
-              id: descriptor.id,
-              descriptor,
-              async search() {
-                return { hits: [] };
-              },
-            },
-            host.scope,
-          );
-        },
-      ),
-    }));
+        host.scope,
+      );
+    });
+    const { kb, makeHost } = createTestRuntime();
+    const scope = createScope();
+    const host = makeHost(entry, scope);
 
-    try {
-      const { ensureBundledEnginesLoaded } = await import('#src/read-model/kb-query-runtime.js');
-      const { kb, runtime } = createTestRuntime();
-
-      await expect(ensureBundledEnginesLoaded(kb, { pluginRoot: '/tmp/coral-plugin', runtime })).rejects.toMatchObject({
-        code: 'role_descriptor_unregistered',
-        context: {
-          expansion: 'partial-read-side',
-          missing: 'read-side-two',
-        },
-      });
-      expect(kb.roleRegistry.list().some((record) => record.descriptor.id === 'read-side-one')).toBe(false);
-    } finally {
-      vi.doUnmock('#src/expansion/bundled.js');
-      vi.resetModules();
-    }
+    await expect(
+      (async () => {
+        try {
+          await loadBundledEngine(entry, host, { [entry.id]: partialLoader });
+          validateManifestCompleteness(entry, kb.roleRegistry, kb.capabilityRegistry);
+        } catch (error) {
+          await disposeExpansionScope(scope);
+          throw error;
+        }
+      })(),
+    ).rejects.toMatchObject({
+      code: 'role_descriptor_unregistered',
+      context: {
+        expansion: 'partial-read-side',
+        missing: 'read-side-two',
+      },
+    });
+    expect(kb.roleRegistry.list().some((record) => record.descriptor.id === 'read-side-one')).toBe(false);
   });
 });

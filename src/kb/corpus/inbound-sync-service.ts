@@ -51,6 +51,7 @@ export interface CorpusInboundSyncTarget {
   sourcePath(source: string): string;
   communityPath(community: string): string;
   principlePath(principle: string): string;
+  generatedCommunitySlugs(): ReadonlySet<string>;
   storagePort: StoragePort;
 }
 
