@@ -728,8 +728,12 @@ async function dispatchFrame(
   startRequest();
 
   let subscriptionController: AbortController | null = null;
+  const abortDispatchOnClose = (): void => {
+    subscriptionController?.abort(new Error('IPC client disconnected'));
+  };
   try {
     subscriptionController = new AbortController();
+    socket.once('close', abortDispatchOnClose);
     const invocation = await entry.dispatch(parsed.data, executionPrincipal, subscriptionController.signal);
     if (invocation.kind === 'unary') {
       // Domain-level errors (statusCode >= 400) ride a JSON-RPC `error`
@@ -755,6 +759,7 @@ async function dispatchFrame(
       return;
     }
 
+    socket.off('close', abortDispatchOnClose);
     await streamSubscription(socket, request, entry, invocation, subscriptionController, options);
   } catch (error: unknown) {
     if (subscriptionController?.signal.aborted || socket.destroyed) {
@@ -769,6 +774,7 @@ async function dispatchFrame(
       socket.end();
     }
   } finally {
+    socket.off('close', abortDispatchOnClose);
     finishRequest();
   }
 }

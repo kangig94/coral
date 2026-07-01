@@ -484,6 +484,43 @@ describe('KB daemon request service', () => {
     expect(searchMock.searchKb).toHaveBeenCalledWith(writeKb, '계약', 3, 'all', 'auto', undefined);
   });
 
+  it.each([
+    ['invalid scope', { query: '계약', scope: 'everything' }],
+    ['invalid mode', { query: '계약', mode: 'semantic' }],
+    ['negative top_k', { query: '계약', top_k: -1 }],
+  ])('rejects kb search with %s', async (_label, args) => {
+    const runtime = new SimulationRuntime();
+    const writeRuntime = {
+      withKb: vi.fn(async () => {
+        throw new Error('write runtime search should not run for invalid search input');
+      }),
+      warmSearchRuntime: vi.fn(),
+      searchReadiness: vi.fn(() => ({ ready: true as const })),
+      createSource: vi.fn(async () => {
+        throw new Error('source import should not be called');
+      }),
+      reindex: vi.fn(async () => {
+        throw new Error('reindex should not be called');
+      }),
+      health: () => ({ phase: 'ready' as const, initializedAt: 1 }),
+    };
+    const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime, writeRuntime });
+
+    await expect(
+      service.read({
+        method: 'readSearch',
+        args,
+        ctx: daemonCtx(),
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: 'invalid_request',
+    });
+    expect(writeRuntime.warmSearchRuntime).not.toHaveBeenCalled();
+    expect(writeRuntime.withKb).not.toHaveBeenCalled();
+    expect(searchMock.searchKb).not.toHaveBeenCalled();
+  });
+
   it('makes served search reachable in a read-only session after daemon warmup', async () => {
     const runtime = new SimulationRuntime();
     let ready = false;

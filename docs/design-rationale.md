@@ -185,7 +185,7 @@ There is one serving owner for projections with live runtime state. A projection
 
 ## 8. Transport: IPC for CLI, HTTP for Remote
 
-Local CLI commands always go through the coordinator over **IPC** (`coordinator.sock`, authenticated). The HTTP gateway is server-side exposure for non-CLI consumers (`coral-reef`, future browser/external clients) plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`).
+Local CLI commands that need a served runtime, mutation, or subscription go through the coordinator over **IPC** (`coordinator.sock`, authenticated). `directRead` commands bypass IPC and read authority directly through `read-model/CoralStore`. The HTTP gateway is server-side exposure for non-CLI consumers (`coral-reef`, future browser/external clients) plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`).
 
 HTTP is *not* a CLI dispatch path — remote CLI dispatch is not supported.
 

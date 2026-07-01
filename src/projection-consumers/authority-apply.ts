@@ -237,7 +237,10 @@ export async function runCorpusApply(
   reg: CorpusConsumerRegistration,
   snapshot: KbCorpusSnapshot,
   deps: AuthorityApplyDeps,
-  options: { readonly forceGeneration?: number; readonly generatedCommunityFreshness?: GeneratedCommunityFreshness } = {},
+  options: {
+    readonly forceGeneration?: number;
+    readonly generatedCommunityFreshness?: GeneratedCommunityFreshness;
+  } = {},
 ): Promise<boolean> {
   try {
     const current = deps.repository.readCorpusCursor(reg.id);
@@ -254,7 +257,11 @@ export async function runCorpusApply(
       if (state.kind === 'corpus') {
         state.activeController = controller;
       }
-      const projectionInput = await prepareCorpusProjectionInput(controller.signal, deps);
+      const projectionInput = await prepareCorpusProjectionInput(
+        controller.signal,
+        deps,
+        options.generatedCommunityFreshness,
+      );
       const applyResult = await reg.apply({
         snapshot,
         journalReader: deps.journalReader,
@@ -306,8 +313,18 @@ export async function runCorpusApply(
 export async function prepareCorpusProjectionInput(
   signal: AbortSignal,
   deps: AuthorityApplyDeps,
+  generatedCommunityFreshness?: GeneratedCommunityFreshness,
 ): Promise<KbProjectionInput> {
-  return deps.corpusProjectionReader.prepareCurrentProjectionInput({ signal, ensureFreshness: false });
+  return deps.corpusProjectionReader.prepareCurrentProjectionInput({
+    signal,
+    ensureFreshness: false,
+    ...(generatedCommunityFreshness === undefined
+      ? {}
+      : {
+          generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+          generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
+        }),
+  });
 }
 
 export function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {

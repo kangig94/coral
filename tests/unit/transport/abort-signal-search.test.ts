@@ -6,6 +6,8 @@ import { createSearchRequest, runRetrieval } from '#src/kb/ops/search-runner.js'
 import { searchKb } from '#src/kb/ops/search.js';
 import { createRoleRegistry } from '#src/kb/search/role-registry.js';
 import type { RetrievalRole, RetrievalRoleDescriptor } from '#src/kb/search/contract.js';
+import { createKbDaemonReadPort } from '#src/coordinator/composition/index.js';
+import type { KbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
@@ -182,5 +184,30 @@ describe('AbortSignal propagation for KB search', () => {
       body: { observed: true },
       statusCode: 200,
     });
+  });
+
+  it('passes the served-read search abort signal into the KB daemon supervisor', async () => {
+    const controller = new AbortController();
+    const readKb = vi.fn(async () => ({ ok: true, data: { observed: true } }));
+    const port = createKbDaemonReadPort({ readKb } as unknown as KbDaemonSupervisor);
+    const args: Record<string, unknown> = { query: 'abort query' };
+    Object.defineProperty(args, 'abortSignal', {
+      value: controller.signal,
+      enumerable: false,
+      configurable: true,
+    });
+
+    await expect(port.readSearch(args, testPrincipal())).resolves.toEqual({
+      ok: true,
+      data: { observed: true },
+    });
+    expect(readKb).toHaveBeenCalledWith(
+      {
+        method: 'readSearch',
+        args,
+        ctx: expect.objectContaining({ principal: expect.any(Object) }),
+      },
+      { signal: controller.signal },
+    );
   });
 });

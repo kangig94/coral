@@ -43,9 +43,11 @@ export type CorpusProjectionCommitPhase =
 
 export type CorpusProjectionCommitFaultPhase =
   | 'pending'
+  | 'index_renamed'
   | 'index_adopted'
   | 'baseline_adopted'
   | 'manifest_adopted'
+  | 'state_persisted'
   | 'state_written'
   | 'committed';
 
@@ -85,15 +87,17 @@ export type CorpusProjectionCommitRecord = {
   readonly schemaVersion: 1;
   readonly commitId: string;
   readonly startSeq: CorpusProjectionSeq;
+  readonly previousState: KbIndexState | null;
   readonly nextState: KbIndexState | null;
   readonly stagedIndex: {
     readonly stagingDir: string;
     readonly indexPath: string;
-    readonly previousIndexPath: string | null;
+    readonly previousIndexPath: string;
     readonly hadPreviousIndex: boolean;
   };
   readonly stagedBaselineGenerationId: string;
   readonly previousBaselineGenerationId: string;
   readonly stagedManifestCommitId: string;
+  readonly previousManifestCommitId: string | null;
   readonly phase: CorpusProjectionCommitPhase;
 };

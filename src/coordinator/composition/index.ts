@@ -192,12 +192,15 @@ function readResourceSnapshot(
   };
 }
 
-function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadRpcPort {
+export function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadRpcPort {
   const daemonCtx = (ctx: InvocationContext | Principal): KbDaemonRequestContextWire => toKbDaemonWireContext(ctx);
 
   return {
-    readSearch: (args, principal) =>
-      kbDaemonSupervisor.readKb({ method: 'readSearch', args, ctx: daemonCtx(principal) }),
+    readSearch: (args, principal) => {
+      const request = { method: 'readSearch' as const, args, ctx: daemonCtx(principal) };
+      const signal = readAbortSignal(args);
+      return signal === undefined ? kbDaemonSupervisor.readKb(request) : kbDaemonSupervisor.readKb(request, { signal });
+    },
     diagnose: (principal) => kbDaemonSupervisor.readKb({ method: 'diagnose', ctx: daemonCtx(principal) }),
     readNote: (slug, principal) => kbDaemonSupervisor.readKb({ method: 'readNote', slug, ctx: daemonCtx(principal) }),
     readSource: (slug, principal) =>
@@ -219,6 +222,17 @@ function createKbDaemonReadPort(kbDaemonSupervisor: KbDaemonSupervisor): KbReadR
       kbDaemonSupervisor.readKb({ method: 'readCommunitySummaryInput', slug, ctx: daemonCtx(principal) }),
     wakeUp: (args, principal) => kbDaemonSupervisor.readKb({ method: 'wakeUp', args, ctx: daemonCtx(principal) }),
   };
+}
+
+function readAbortSignal(args: Record<string, unknown>): AbortSignal | undefined {
+  const signal = args.abortSignal;
+  return typeof signal === 'object' &&
+    signal !== null &&
+    'aborted' in signal &&
+    'addEventListener' in signal &&
+    'removeEventListener' in signal
+    ? (signal as AbortSignal)
+    : undefined;
 }
 
 function readStartedKbJobId(result: KbToolResult): string | null {

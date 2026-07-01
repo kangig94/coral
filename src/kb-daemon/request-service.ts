@@ -44,7 +44,7 @@ import {
   handleKbWikiRewrite,
   handleKbWikiUnlink,
 } from '../kb/tool-handlers.js';
-import { kbWakeUpSchema } from '../kb/tool-contracts.js';
+import { kbSearchSchema, kbWakeUpSchema } from '../kb/tool-contracts.js';
 import { generateWakeUpPacket } from '../kb/ops/wake-up.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from '../kb/validation.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -200,21 +200,25 @@ function invocationContext(
 }
 
 function parseSearchArgs(args: Record<string, unknown>): KbSearchInput | KbToolResult {
-  if (typeof args.query !== 'string' || args.query.length === 0) {
-    return invalidRequest('KB daemon search requires a query.');
+  const parsed = kbSearchSchema.safeParse(args);
+  if (!parsed.success) {
+    return kbValidationError(parsed.error);
   }
+  const signal = asAbortSignal(args.abortSignal);
   return {
-    query: args.query,
-    ...(typeof args.top_k === 'number' ? { top_k: args.top_k } : {}),
-    ...(args.scope === 'notes' ||
-    args.scope === 'sources' ||
-    args.scope === 'communities' ||
-    args.scope === 'wiki' ||
-    args.scope === 'all'
-      ? { scope: args.scope }
-      : {}),
-    ...(args.mode === 'text' || args.mode === 'vector' || args.mode === 'hybrid' ? { mode: args.mode } : {}),
+    ...parsed.data,
+    ...(signal === undefined ? {} : { signal }),
   };
+}
+
+function asAbortSignal(value: unknown): AbortSignal | undefined {
+  return typeof value === 'object' &&
+    value !== null &&
+    'aborted' in value &&
+    'addEventListener' in value &&
+    'removeEventListener' in value
+    ? (value as AbortSignal)
+    : undefined;
 }
 
 function parseMemoListArgs(args: Record<string, unknown>): KbMemoListInput {
@@ -277,9 +281,7 @@ function getWriteRuntimeOrError(
 }
 
 function searchRuntimeNotReady(
-  readiness:
-    | { ready: false; reason: string; message: string; detail?: Record<string, unknown> }
-    | undefined,
+  readiness: { ready: false; reason: string; message: string; detail?: Record<string, unknown> } | undefined,
 ): KbToolResult {
   return kbError(
     'kb_search_runtime_not_ready',

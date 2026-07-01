@@ -486,30 +486,38 @@ export class KbIndexStore {
     };
   }
 
-  adoptStagedIndexArtifact(staged: StagedKbIndexArtifact): AdoptedKbIndexArtifact {
+  prepareStagedIndexAdoption(staged: Pick<StagedKbIndexArtifact, 'commitId'>): AdoptedKbIndexArtifact {
     const commitDir = this.indexCommitDir(staged.commitId);
     const previousIndexPath = join(commitDir, 'previous-index.json');
     this.options.storage.mkdirSync(commitDir, { recursive: true });
     this.options.storage.rmSync(previousIndexPath, { force: true });
 
-    let hadPreviousIndex = false;
-    if (this.fileExists(this.indexPath())) {
-      this.options.storage.renameSync(this.indexPath(), previousIndexPath);
-      hadPreviousIndex = true;
+    return { previousIndexPath, hadPreviousIndex: this.fileExists(this.indexPath()) };
+  }
+
+  adoptStagedIndexArtifact(
+    staged: StagedKbIndexArtifact,
+    adoption: AdoptedKbIndexArtifact = this.prepareStagedIndexAdoption(staged),
+  ): void {
+    if (adoption.hadPreviousIndex) {
+      this.options.storage.renameSync(this.indexPath(), adoption.previousIndexPath);
     }
     this.options.storage.renameSync(staged.indexPath, this.indexPath());
     this.options.storage.rmSync(staged.stagingDir, { recursive: true, force: true });
     this.installIndexCache(staged.index);
-    return { previousIndexPath, hadPreviousIndex };
   }
 
   rollbackAdoptedIndexArtifact(input: {
     readonly previousIndexPath: string;
     readonly hadPreviousIndex: boolean;
   }): void {
-    this.options.storage.rmSync(this.indexPath(), { force: true });
     if (input.hadPreviousIndex) {
-      this.options.storage.renameSync(input.previousIndexPath, this.indexPath());
+      if (this.fileExists(input.previousIndexPath)) {
+        this.options.storage.rmSync(this.indexPath(), { force: true });
+        this.options.storage.renameSync(input.previousIndexPath, this.indexPath());
+      }
+    } else {
+      this.options.storage.rmSync(this.indexPath(), { force: true });
     }
     this.invalidateIndexCache();
   }

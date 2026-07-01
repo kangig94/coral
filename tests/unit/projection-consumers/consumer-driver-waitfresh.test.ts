@@ -8,6 +8,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { ConsumerDriver, FreshnessApplyFailure, FreshnessTimeout } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS, realConsumerDriverNow } from '#tests/helpers/consumer-driver-defaults.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
+import type { KbCorpusProjectionReader, PrepareKbProjectionInputOptions } from '#src/kb/projection-input-contract.js';
 import type { CorpusConsumerRegistration, JournalConsumerRegistration } from '#src/store/consumer-contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 function createDb(): Database {
@@ -40,6 +41,7 @@ function createCorpusDriver(
   apply: CorpusConsumerRegistration['apply'] = async () => {},
   timers: Pick<TimePort, 'setTimeout' | 'clearTimeout'> = REAL_CONSUMER_DRIVER_TIMERS,
   onApplyFailure?: CorpusConsumerRegistration['onApplyFailure'],
+  corpusProjectionReader?: KbCorpusProjectionReader,
 ): {
   db: Database;
   driver: ConsumerDriver;
@@ -47,7 +49,12 @@ function createCorpusDriver(
   handle: ReturnType<ConsumerDriver['register']>;
 } {
   const db = createDb();
-  const driver = new ConsumerDriver({ db, time: timers, now: realConsumerDriverNow });
+  const driver = new ConsumerDriver({
+    db,
+    time: timers,
+    now: realConsumerDriverNow,
+    ...(corpusProjectionReader === undefined ? {} : { corpusProjectionReader }),
+  });
   const consumerId = 'corpus-consumer';
   const handle = driver.register({
     id: consumerId,
@@ -522,6 +529,107 @@ describe('ConsumerDriver waitFreshUntil', () => {
       expect(applyCount).toBe(2);
     } finally {
       releaseForcedApply.resolve();
+      await driver.shutdown();
+      db.close();
+    }
+  });
+
+  it('threads forced generated community freshness into projection input and exact forced waits', async () => {
+    const snapshot = buildSnapshot({ snapshotId: 'forced-generated', contentSeq: 5, metadataSeq: 5 });
+    const generatedCommunityFreshness = {
+      generatedCommunityGeneration: 2,
+      generatedCommunityDocsHash: 'generated-docs-g2',
+    };
+    const applyStarted = createDeferred<void>();
+    const releaseApply = createDeferred<void>();
+    const preparedOptions: PrepareKbProjectionInputOptions[] = [];
+    const appliedFreshness: Array<{
+      generatedCommunityGeneration: number;
+      generatedCommunityDocsHash: string;
+    }> = [];
+    const corpusProjectionReader: KbCorpusProjectionReader = {
+      resolveCurrentIndex: () => ({ entries: {}, principles: {}, entityMeta: {}, relationships: [] }),
+      prepareCurrentProjectionInput: async (options = {}) => {
+        preparedOptions.push(options);
+        return {
+          index: { entries: {}, principles: {}, entityMeta: {}, relationships: [] },
+          records: [],
+          communityFresh: false,
+          generatedCommunityGeneration: options.generatedCommunityGeneration ?? 0,
+          generatedCommunityDocsHash: options.generatedCommunityDocsHash ?? '',
+        };
+      },
+    };
+    const { db, driver, consumerId } = createCorpusDriver(
+      async ({ projectionInput }) => {
+        appliedFreshness.push({
+          generatedCommunityGeneration: projectionInput.generatedCommunityGeneration,
+          generatedCommunityDocsHash: projectionInput.generatedCommunityDocsHash,
+        });
+        applyStarted.resolve();
+        await releaseApply.promise;
+      },
+      REAL_CONSUMER_DRIVER_TIMERS,
+      undefined,
+      corpusProjectionReader,
+    );
+
+    try {
+      const forced = driver.forceCorpusApply(snapshot, {
+        reason: 'projection-artifact-lag',
+        consumers: [consumerId],
+        generatedCommunityFreshness,
+      });
+      await applyStarted.promise;
+
+      let exactResolved = false;
+      const exactWait = driver
+        .waitFreshUntil(
+          'corpus',
+          { snapshot, atLeastGeneration: forced.generation, ...generatedCommunityFreshness },
+          consumerId,
+          5000,
+        )
+        .then(() => {
+          exactResolved = true;
+        });
+      let wrongTupleResolved = false;
+      const wrongTupleWait = driver
+        .waitFreshUntil(
+          'corpus',
+          {
+            snapshot,
+            atLeastGeneration: forced.generation,
+            generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+            generatedCommunityDocsHash: 'wrong-docs-hash',
+          },
+          consumerId,
+          25,
+        )
+        .then(
+          () => {
+            wrongTupleResolved = true;
+          },
+          (error: unknown) => error,
+        );
+
+      await flushMicrotasks();
+      expect(exactResolved).toBe(false);
+      expect(preparedOptions).toHaveLength(1);
+      expect(preparedOptions[0]).toMatchObject({
+        ensureFreshness: false,
+        generatedCommunityGeneration: generatedCommunityFreshness.generatedCommunityGeneration,
+        generatedCommunityDocsHash: generatedCommunityFreshness.generatedCommunityDocsHash,
+      });
+      expect(appliedFreshness).toEqual([generatedCommunityFreshness]);
+
+      releaseApply.resolve();
+      await exactWait;
+      expect(exactResolved).toBe(true);
+      expect(wrongTupleResolved).toBe(false);
+      await expect(wrongTupleWait).resolves.toBeInstanceOf(FreshnessTimeout);
+    } finally {
+      releaseApply.resolve();
       await driver.shutdown();
       db.close();
     }

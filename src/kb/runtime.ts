@@ -59,7 +59,7 @@ import {
   previewPendingMutationState,
   withoutTextStaleReason,
 } from './corpus/lanes.js';
-import { KbIndexStore, writeJsonAtomic } from './corpus/index/store.js';
+import { INDEX_STATE_FILE, KbIndexStore, writeJsonAtomic, type StagedKbIndexArtifact } from './corpus/index/store.js';
 import { writeFileAtomic } from './corpus/file-atomic.js';
 import { readEntityGraphFile } from './corpus/entity-graph-store.js';
 import { resolveCorpusStructuralKey, type CorpusStructuralKey } from './corpus/structural-key.js';
@@ -71,7 +71,10 @@ import { createKbRuntimePaths, type KbRuntimePaths } from './paths.js';
 import { createKbProjectionInput } from './projection-input.js';
 import { EngineArtifactRegistry } from './corpus/artifact-registry.js';
 import { createCorpusAuthorityBaselineStore } from './corpus/rescan/authority-baseline.js';
-import type { CorpusAuthorityBaselineStore } from './corpus/authority-baseline-contract.js';
+import type {
+  CorpusAuthorityBaselineGeneration,
+  CorpusAuthorityBaselineStore,
+} from './corpus/authority-baseline-contract.js';
 import { CorpusAuthorityBaselineRefresh } from './corpus/authority-baseline-refresh.js';
 import { CorpusFreshnessService } from './corpus/freshness-service.js';
 import { CorpusInboundSyncService } from './corpus/inbound-sync-service.js';
@@ -121,16 +124,6 @@ const CORPUS_PROJECTION_DIR = 'corpus-projection';
 const CORPUS_PROJECTION_COMMITS_DIR = 'commits';
 const CORPUS_PROJECTION_COMMIT_FILE = 'commit.json';
 const CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION = 1;
-
-const CORPUS_PROJECTION_COMMIT_PHASE_ORDER: Record<CorpusProjectionCommitRecord['phase'], number> = {
-  pending: 0,
-  index_adopted: 1,
-  baseline_adopted: 2,
-  manifest_adopted: 3,
-  state_written: 4,
-  committed: 5,
-  rolled_back: 6,
-};
 
 class KbRuntimeImpl implements KbRuntime {
   readonly markdownRoot: string;
@@ -549,10 +542,15 @@ class KbRuntimeImpl implements KbRuntime {
 
   stageCorpusProjectionArtifacts(candidate: CorpusProjectionCandidate): StagedCorpusProjection {
     const commitId = this.ids.uuid();
+    let stagedIndex: StagedKbIndexArtifact | null = null;
+    let stagedBaseline: CorpusAuthorityBaselineGeneration | null = null;
     try {
-      const stagedIndex = this.indexStore.stageIndexArtifact(candidate.index, commitId);
-      const stagedManifestSurface = this.manifestAuthority.stageCurrentSurfaceHashes(candidate.finalSurface.manifest, commitId);
-      const stagedBaseline = this.corpusAuthorityBaseline.stageReplacement(
+      stagedIndex = this.indexStore.stageIndexArtifact(candidate.index, commitId);
+      const stagedManifestSurface = this.manifestAuthority.stageCurrentSurfaceHashes(
+        candidate.finalSurface.manifest,
+        commitId,
+      );
+      stagedBaseline = this.corpusAuthorityBaseline.stageReplacement(
         candidate.finalSurface.baselineRecords,
         `baseline-${commitId}`,
       );
@@ -564,10 +562,12 @@ class KbRuntimeImpl implements KbRuntime {
         stagedBaseline,
       };
     } catch (error: unknown) {
-      this.storagePort.rmSync(join(this.runtimeDir, CORPUS_PROJECTION_DIR, 'index', 'staging'), {
-        recursive: true,
-        force: true,
-      });
+      if (stagedIndex !== null) {
+        this.indexStore.discardStagedIndexArtifact(stagedIndex);
+      }
+      if (stagedBaseline !== null) {
+        this.corpusAuthorityBaseline.discardStagedGeneration(stagedBaseline.generationId);
+      }
       throw error;
     }
   }
@@ -606,37 +606,35 @@ class KbRuntimeImpl implements KbRuntime {
         };
       }
 
+      const previousState = this.indexStore.readIndexStateIfPresent();
       const previousBaselineGenerationId = this.corpusAuthorityBaseline.readActiveGenerationId();
+      const previousManifestCommitId = this.manifestAuthority.getCurrentSurfaceCommitId();
+      const adoptedIndex = this.indexStore.prepareStagedIndexAdoption(staged.stagedIndex);
       const nextState = applyMutationLane(withoutTextStaleReason(state), staged.candidate.externalMutation ?? null);
       let record: CorpusProjectionCommitRecord = {
         schemaVersion: CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION,
         commitId: staged.commitId,
         startSeq: staged.candidate.startSeq,
+        previousState,
         nextState,
         stagedIndex: {
           stagingDir: staged.stagedIndex.stagingDir,
           indexPath: staged.stagedIndex.indexPath,
-          previousIndexPath: null,
-          hadPreviousIndex: false,
+          previousIndexPath: adoptedIndex.previousIndexPath,
+          hadPreviousIndex: adoptedIndex.hadPreviousIndex,
         },
         stagedBaselineGenerationId: staged.stagedBaseline.generationId,
         previousBaselineGenerationId,
         stagedManifestCommitId: staged.stagedManifestSurface.commitId,
+        previousManifestCommitId,
         phase: 'pending',
       };
       this.writeCorpusProjectionCommitRecord(record);
       this.throwCorpusProjectionFault(options.faultInjection, 'pending');
 
-      const adoptedIndex = this.indexStore.adoptStagedIndexArtifact(staged.stagedIndex);
-      record = {
-        ...record,
-        stagedIndex: {
-          ...record.stagedIndex,
-          previousIndexPath: adoptedIndex.previousIndexPath,
-          hadPreviousIndex: adoptedIndex.hadPreviousIndex,
-        },
-        phase: 'index_adopted',
-      };
+      this.indexStore.adoptStagedIndexArtifact(staged.stagedIndex, adoptedIndex);
+      this.throwCorpusProjectionFault(options.faultInjection, 'index_renamed');
+      record = { ...record, phase: 'index_adopted' };
       this.writeCorpusProjectionCommitRecord(record);
       this.throwCorpusProjectionFault(options.faultInjection, 'index_adopted');
 
@@ -651,6 +649,7 @@ class KbRuntimeImpl implements KbRuntime {
       this.throwCorpusProjectionFault(options.faultInjection, 'manifest_adopted');
 
       this.writeIndexState(nextState);
+      this.throwCorpusProjectionFault(options.faultInjection, 'state_persisted');
       record = { ...record, phase: 'state_written' };
       this.writeCorpusProjectionCommitRecord(record);
       this.throwCorpusProjectionFault(options.faultInjection, 'state_written');
@@ -751,7 +750,7 @@ class KbRuntimeImpl implements KbRuntime {
         continue;
       }
 
-      if (record.phase === 'committed' || this.commitPhaseReached(record.phase, 'state_written')) {
+      if (this.corpusProjectionStateReachedCommitPoint(record)) {
         this.finishCommittedCorpusProjectionRecord(record);
       } else {
         this.rollbackPendingCorpusProjectionRecord(record);
@@ -765,11 +764,7 @@ class KbRuntimeImpl implements KbRuntime {
     if (this.corpusAuthorityBaseline.readActiveGenerationId() !== record.stagedBaselineGenerationId) {
       this.corpusAuthorityBaseline.adoptStagedGeneration(record.stagedBaselineGenerationId);
     }
-    const stagedManifest = this.manifestAuthority.stageCurrentSurfaceHashes(
-      buildCurrentCorpusSurface(this).manifest,
-      record.stagedManifestCommitId,
-    );
-    this.manifestAuthority.adoptStagedSurfaceHashes(stagedManifest);
+    this.adoptCorpusProjectionManifestCommit(record.commitId);
     this.writeCorpusProjectionCommitRecord({ ...record, phase: 'committed' });
     this.indexStore.cleanupIndexCommit(record.commitId);
     this.storagePort.rmSync(this.corpusProjectionCommitDir(record.commitId), { recursive: true, force: true });
@@ -777,18 +772,17 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private rollbackPendingCorpusProjectionRecord(record: CorpusProjectionCommitRecord): void {
-    if (this.commitPhaseReached(record.phase, 'index_adopted')) {
-      this.indexStore.rollbackAdoptedIndexArtifact({
-        previousIndexPath: record.stagedIndex.previousIndexPath ?? '',
-        hadPreviousIndex: record.stagedIndex.hadPreviousIndex,
-      });
-    } else {
-      this.storagePort.rmSync(record.stagedIndex.stagingDir, { recursive: true, force: true });
-    }
+    this.indexStore.rollbackAdoptedIndexArtifact({
+      previousIndexPath: record.stagedIndex.previousIndexPath,
+      hadPreviousIndex: record.stagedIndex.hadPreviousIndex,
+    });
+    this.storagePort.rmSync(record.stagedIndex.stagingDir, { recursive: true, force: true });
 
-    if (this.commitPhaseReached(record.phase, 'baseline_adopted')) {
+    if (this.corpusAuthorityBaseline.readActiveGenerationId() !== record.previousBaselineGenerationId) {
       this.corpusAuthorityBaseline.adoptStagedGeneration(record.previousBaselineGenerationId);
     }
+    this.restoreCorpusProjectionManifestCommit(record.previousManifestCommitId);
+    this.restoreCorpusProjectionIndexState(record.previousState);
     this.corpusAuthorityBaseline.discardStagedGeneration(record.stagedBaselineGenerationId);
     this.writeCorpusProjectionCommitRecord({ ...record, phase: 'rolled_back' });
     this.indexStore.cleanupIndexCommit(record.commitId);
@@ -837,11 +831,47 @@ class KbRuntimeImpl implements KbRuntime {
     return join(this.corpusProjectionCommitDir(commitId), CORPUS_PROJECTION_COMMIT_FILE);
   }
 
-  private commitPhaseReached(
-    phase: CorpusProjectionCommitRecord['phase'],
-    target: CorpusProjectionCommitRecord['phase'],
-  ): boolean {
-    return CORPUS_PROJECTION_COMMIT_PHASE_ORDER[phase] >= CORPUS_PROJECTION_COMMIT_PHASE_ORDER[target];
+  private corpusProjectionStateReachedCommitPoint(record: CorpusProjectionCommitRecord): boolean {
+    if (record.nextState === null) {
+      return false;
+    }
+    return corpusProjectionIndexStatesEqual(this.indexStore.readIndexStateIfPresent(), record.nextState);
+  }
+
+  private adoptCorpusProjectionManifestCommit(commitId: string): void {
+    if (this.manifestAuthority.getCurrentSurfaceCommitId() === commitId) {
+      return;
+    }
+    const stagedManifest = this.manifestAuthority.stageCurrentSurfaceHashes(
+      buildCurrentCorpusSurface(this).manifest,
+      commitId,
+    );
+    this.manifestAuthority.adoptStagedSurfaceHashes(stagedManifest);
+  }
+
+  private restoreCorpusProjectionManifestCommit(commitId: string | null): void {
+    if (this.manifestAuthority.getCurrentSurfaceCommitId() === commitId) {
+      return;
+    }
+    const surface = buildCurrentCorpusSurface(this).manifest;
+    if (commitId === null) {
+      this.manifestAuthority.replaceCurrentSurfaceHashes(surface);
+      return;
+    }
+    const stagedManifest = this.manifestAuthority.stageCurrentSurfaceHashes(surface, commitId);
+    this.manifestAuthority.adoptStagedSurfaceHashes(stagedManifest);
+  }
+
+  private restoreCorpusProjectionIndexState(previousState: KbIndexState | null): void {
+    const currentState = this.indexStore.readIndexStateIfPresent();
+    if (corpusProjectionIndexStatesEqual(currentState, previousState)) {
+      return;
+    }
+    if (previousState === null) {
+      this.storagePort.rmSync(join(this.runtimeDir, INDEX_STATE_FILE), { force: true });
+      return;
+    }
+    this.writeIndexState(previousState);
   }
 
   private throwCorpusProjectionFault(
@@ -915,10 +945,12 @@ function isCorpusProjectionCommitRecord(value: unknown): value is CorpusProjecti
   if (
     typeof value.commitId !== 'string' ||
     !isCorpusProjectionSeq(value.startSeq) ||
+    !(value.previousState === null || isCorpusProjectionIndexState(value.previousState)) ||
     !(value.nextState === null || isCorpusProjectionIndexState(value.nextState)) ||
     typeof value.stagedBaselineGenerationId !== 'string' ||
     typeof value.previousBaselineGenerationId !== 'string' ||
     typeof value.stagedManifestCommitId !== 'string' ||
+    !(value.previousManifestCommitId === null || typeof value.previousManifestCommitId === 'string') ||
     !isCorpusProjectionCommitPhase(value.phase) ||
     !isRecord(value.stagedIndex)
   ) {
@@ -927,8 +959,19 @@ function isCorpusProjectionCommitRecord(value: unknown): value is CorpusProjecti
   return (
     typeof value.stagedIndex.stagingDir === 'string' &&
     typeof value.stagedIndex.indexPath === 'string' &&
-    (value.stagedIndex.previousIndexPath === null || typeof value.stagedIndex.previousIndexPath === 'string') &&
+    typeof value.stagedIndex.previousIndexPath === 'string' &&
     typeof value.stagedIndex.hadPreviousIndex === 'boolean'
+  );
+}
+
+function corpusProjectionIndexStatesEqual(left: KbIndexState | null, right: KbIndexState | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return (
+    left.contentSeq === right.contentSeq &&
+    left.metadataSeq === right.metadataSeq &&
+    (left.textStaleReason ?? null) === (right.textStaleReason ?? null)
   );
 }
 

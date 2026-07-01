@@ -412,6 +412,40 @@ describe('KB daemon supervisor', () => {
     });
   });
 
+  it('aborts a pending daemon KB read when the caller signal aborts', async () => {
+    const daemonProcess = new FakeDaemonProcess(158);
+    const { runtime } = createRuntime([daemonProcess]);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+    const controller = new AbortController();
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(daemonProcess);
+    await start;
+
+    const read = supervisor.readKb(
+      { method: 'readSearch', args: { query: 'abort' }, ctx: daemonCtx() },
+      { signal: controller.signal },
+    );
+    await flushMicrotasks();
+    const request = latestRequest(daemonProcess);
+    expect(request.method).toBe('kb.read');
+    expect(supervisor.read().pendingRequests).toBe(1);
+
+    controller.abort();
+    await expect(read).resolves.toMatchObject({
+      ok: false,
+      code: 'kb_unavailable',
+      message: 'KB daemon read request aborted.',
+    });
+    expect(supervisor.read().pendingRequests).toBe(0);
+  });
+
   it('sends KB mutation requests over the daemon control protocol', async () => {
     const daemonProcess = new FakeDaemonProcess(159);
     const { runtime } = createRuntime([daemonProcess]);
