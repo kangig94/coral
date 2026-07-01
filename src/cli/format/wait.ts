@@ -88,9 +88,14 @@ export function formatWaitWaiting(
   resumeJobIds: readonly string[] = [],
 ): string {
   const jobs = event.waitingJobIds.length > 0 ? event.waitingJobIds.join(', ') : 'none';
+  const waitingCount = event.waitingJobIds.length;
+  const status =
+    resumeJobIds.length > 0 && waitingCount > 0
+      ? `Still waiting on ${waitingCount} ${waitingCount === 1 ? 'job' : 'jobs'}.`
+      : `Still waiting; jobs: ${jobs}.`;
   const resumeArgs = resumeJobIds.length > 0 ? ` ${resumeJobIds.join(' ')}` : '';
 
-  return appendCursor(`Still waiting; jobs: ${jobs}. Run coral-cli wait jobs${resumeArgs} again to continue waiting.`, cursor);
+  return appendCursor(`${status} Run coral-cli wait jobs${resumeArgs} again to continue waiting.`, cursor);
 }
 
 export function renderWaitLine(text: string, ctx: WaitRenderContext): string {

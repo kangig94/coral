@@ -13,13 +13,14 @@ import type { JobStatus } from '#src/jobs/records.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import {
   formatAbortResult,
+  formatDetachedLaunchStatus,
   formatJobsList,
   formatLaunch,
   formatLaunchWaitHint,
   renderJobsList,
 } from '#src/cli/format/jobs.js';
 import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from '#src/cli/format/discuss.js';
-import { formatWaitProgress, formatWaitTerminal } from '#src/cli/format/wait.js';
+import { formatWaitProgress, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
@@ -1172,7 +1173,7 @@ describe('cli main routing', () => {
       job: 'job-1',
       session: 'session-1',
     };
-    expect(stdout).toBe(`${formatLaunch(launchResult)}\n${formatLaunchWaitHint(launchResult)}\n`);
+    expect(stdout).toBe(`${formatDetachedLaunchStatus(launchResult)}\n${formatLaunchWaitHint(launchResult)}\n`);
     expect(stderr).toBe('');
     expect(mockState.launchAndFollow).not.toHaveBeenCalled();
   });
@@ -1426,7 +1427,7 @@ describe('cli main routing', () => {
         jobIds: ['job-1', 'job-2'],
       }),
     );
-    expect(stdout).toContain('Run coral-cli wait jobs job-1 job-2 again to continue waiting.');
+    expect(stdout).toBe(`${formatWaitWaiting(waitingEvent, null, ['job-1', 'job-2'])}\n`);
     expect(stderr).toBe('');
   });
 

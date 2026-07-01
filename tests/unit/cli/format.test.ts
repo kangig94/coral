@@ -22,6 +22,7 @@ import {
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import {
   formatAbortResult,
+  formatDetachedLaunchStatus,
   formatLaunch,
   formatLaunchWaitHint,
   renderJobsList,
@@ -181,6 +182,12 @@ describe('cli format', () => {
   describe('formatLaunchWaitHint', () => {
     it('formats the wait command for a detached launch', () => {
       expect(formatLaunchWaitHint(runningDecision)).toBe('Run coral-cli wait jobs job-1 to wait for completion.');
+    });
+  });
+
+  describe('formatDetachedLaunchStatus', () => {
+    it('formats detached launch status without repeating the job id', () => {
+      expect(formatDetachedLaunchStatus(runningDecision)).toBe('Job running (session session-1)');
     });
   });
 
@@ -979,6 +986,18 @@ describe('cli format', () => {
     it('formats waiting output with pending jobs', () => {
       expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4')).toBe(
         'Still waiting; jobs: job-1, job-2. Run coral-cli wait jobs again to continue waiting. (cursor: cursor-4)',
+      );
+    });
+
+    it('formats waiting output with resume args without repeating job ids', () => {
+      expect(formatWaitWaiting(waitWaitingEvent, 'cursor-4', ['job-1', 'job-2'])).toBe(
+        'Still waiting on 2 jobs. Run coral-cli wait jobs job-1 job-2 again to continue waiting. (cursor: cursor-4)',
+      );
+    });
+
+    it('formats singular waiting output with resume args', () => {
+      expect(formatWaitWaiting({ type: 'waiting', waitingJobIds: ['job-1'] }, null, ['job-1'])).toBe(
+        'Still waiting on 1 job. Run coral-cli wait jobs job-1 again to continue waiting.',
       );
     });
 
