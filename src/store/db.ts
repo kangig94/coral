@@ -116,6 +116,13 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
   }
 }
 
+/**
+ * Steady-state `busy_timeout` restored after the startup open/reset contention
+ * window. Matches {@link applyJournalPragmas}'s default; kept distinct from the
+ * short startup timeout the caller passes into {@link openOrResetBackendStoreDb}.
+ */
+const STEADY_STATE_BUSY_TIMEOUT_MS = 5000;
+
 type StoreSchemaClassification =
   | { kind: 'fresh'; userVersion: 0; storedVersion: 0 }
   | { kind: 'retired'; userVersion: 0; storedVersion: number }
@@ -611,11 +618,19 @@ export function openOrResetBackendStoreDb(
       warnBackendStoreReset(classification, quarantineDir);
     }
 
-    return openStoreDatabase({
+    const db = openStoreDatabase({
       path: files.dbFile,
       storage: runtime.storage,
       busyTimeoutMs: options.busyTimeoutMs,
     });
+    // The caller passes a short busy_timeout to fail fast against a peer still
+    // holding the store during the open/reset contention window. That window
+    // closes here: restore the steady-state timeout so this long-lived handle
+    // tolerates ordinary cross-process write-lock contention (notably the
+    // out-of-process KB daemon committing projections) rather than throwing
+    // SQLITE_BUSY after the short startup budget.
+    db.exec(`PRAGMA busy_timeout = ${STEADY_STATE_BUSY_TIMEOUT_MS}`);
+    return db;
   } finally {
     releaseLock?.();
   }

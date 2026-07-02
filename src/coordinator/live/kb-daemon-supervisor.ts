@@ -368,6 +368,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
       throw new Error('KB daemon request aborted');
     }
 
+    const requestGeneration = generation;
     const id = `${generation}:${nextRequestId++}`;
     const sentAt = runtime.time.now();
     const response = await new Promise<KbDaemonResponseMessage>((resolve, reject) => {
@@ -411,7 +412,11 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         rejectWith(error instanceof Error ? error : new Error(String(error)));
       }
     });
-    lastHeartbeatLatencyMs = Math.max(0, runtime.time.now() - sentAt);
+    // Only the current generation's latency is a live health signal; a
+    // late-completing request from a restarted daemon must not clobber it.
+    if (requestGeneration === generation) {
+      lastHeartbeatLatencyMs = Math.max(0, runtime.time.now() - sentAt);
+    }
     return response;
   };
 
@@ -812,9 +817,17 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     pid = spawned.pid ?? null;
     const activeGeneration = generation;
     const startedAtForExit = startedAt;
-    const { stdout, stderr } = pipedHandles;
+    const { stdin, stdout, stderr } = pipedHandles;
     stdout.setEncoding('utf-8');
     stderr.setEncoding('utf-8');
+    // A write to a dead child surfaces EPIPE asynchronously as a stdin 'error'
+    // event; with no listener Node re-throws it as an uncaughtException and
+    // crashes the coordinator. Swallow it here — the 'close' handler below owns
+    // real teardown (rejectPendingRequests / phase transition). Mirrors the
+    // sibling live transports (provider-server-transport, durable-transport).
+    stdin.on('error', (error: unknown) => {
+      log(`[kb-daemon] stdin error: ${formatError(error)}`);
+    });
 
     const readyPromise = new Promise<'ready' | 'closed' | 'error' | 'timeout'>((resolve) => {
       let settled = false;

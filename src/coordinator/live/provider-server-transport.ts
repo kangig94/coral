@@ -219,7 +219,20 @@ export async function spawnProviderServerTransport(params: {
   };
 
   if (options.initializeRequest) {
-    await rpc.request(options.initializeRequest.method, options.initializeRequest.params);
+    try {
+      await rpc.request(options.initializeRequest.method, options.initializeRequest.params);
+    } catch (error) {
+      // The child is alive but rejected `initialize` (protocol/version/auth
+      // mismatch). Nothing upstream owns this handle yet, so kill and detach it
+      // here before rethrowing — otherwise the OS process leaks per failure.
+      const initError =
+        error instanceof Error
+          ? error
+          : createProviderServerError(entry.provider, `initialize failed`, { stderr: entry.stderr });
+      detachProviderServer(entry, initError);
+      gracefulKill(child, runtime);
+      throw initError;
+    }
   }
 
   return {

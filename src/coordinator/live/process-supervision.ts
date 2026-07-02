@@ -15,6 +15,10 @@ export function gracefulKill(child: ChildProcessLike, runtime: Runtime): void {
   const killTimer = runtime.time.setTimeout(() => {
     safeKill(child, 'SIGKILL');
   }, SIGTERM_GRACE_MS);
+  // Unref so a caller that fires gracefulKill on an already-closed child (whose
+  // 'close' won't fire again to clear the timer) can't pin the event loop for
+  // the SIGTERM grace window. Matches gracefulKillByPid's escalation timer.
+  killTimer.unref?.();
   child.on('close', () => runtime.time.clearTimeout(killTimer));
 }
 

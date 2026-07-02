@@ -13,6 +13,7 @@ import {
   recordSpawn,
   saveRecording,
 } from '../infra/spawn-recording.js';
+import { backendLog } from '../infra/backend-log.js';
 
 export type EmittingRuntimeObserver = RuntimeObserver & {
   emit(event: SpawnEvent): void;
@@ -23,8 +24,16 @@ export class EventEmitterObserver implements EmittingRuntimeObserver {
 
   emit(event: SpawnEvent): void {
     const snapshot = cloneSpawnEvent(event);
-    for (const listener of this.listeners) {
-      listener(cloneSpawnEvent(snapshot));
+    // emit() runs inside the patched spawn() after the child is created but
+    // before it is returned. A listener that throws must not orphan that child
+    // (never returned → never tracked → leaked) or starve later listeners, so
+    // isolate each call. Iterate a snapshot in case a listener mutates the set.
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(cloneSpawnEvent(snapshot));
+      } catch (error: unknown) {
+        backendLog.error('spawn observer listener failed', error);
+      }
     }
   }
 

@@ -35,7 +35,11 @@ export function createReplacementBackendOwnershipChecker({
             env: runtime.env,
             paths: runtime.paths,
           });
-          if (current?.instanceId !== instanceId) {
+          // Only a DIFFERENT live instanceId is evidence of replacement. An
+          // absent record means "my record was deleted" (a departing peer's
+          // cleanup, or an external rm) — not that another daemon took over, so
+          // a healthy daemon must not self-drain on absence.
+          if (current !== null && current.instanceId !== instanceId) {
             teardown();
             idleTimer.requestDrain('replaced');
           }
