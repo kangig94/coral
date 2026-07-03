@@ -47,7 +47,8 @@ describe('resolveClaudeModel', () => {
 
 describe('buildPreparedClaudeRequest KB gating', () => {
   type PrepArgs = Parameters<typeof buildPreparedClaudeRequest>;
-  const INJECT_MD = 'Guidelines\n<!-- KB_ONLY:BEGIN -->\n# Knowledge Base\nkb stuff\n<!-- KB_ONLY:END -->';
+  const INJECT_MD =
+    'Guidelines\n{{EQUIPPED_TOOLS}}\n<!-- KB_ONLY:BEGIN -->\n# Knowledge Base\nkb stuff\n<!-- KB_ONLY:END -->';
   const storage = {
     readFileSync: (p: string) => (p.endsWith('INJECT.md') ? INJECT_MD : ''),
   } as unknown as PrepArgs[1];
@@ -62,5 +63,21 @@ describe('buildPreparedClaudeRequest KB gating', () => {
   it('includes KB guidance when coralEnv enables KB', () => {
     const result = buildPreparedClaudeRequest(requestWith({ CORAL_KB_ENABLE: '1' }), storage, '/mock/kb');
     expect(result.systemPrompt).toContain('kb stuff');
+  });
+
+  it('includes equipped tools in the provider system prompt when supplied', () => {
+    const result = buildPreparedClaudeRequest(requestWith({}), storage, '/mock/kb', undefined, undefined, [
+      {
+        id: 'codebase-memory',
+        summary: 'mandatory first stop for any code work.',
+        guidance: ['Use search_graph before opening files.', 'Manual grep/read is a fallback only.'],
+      },
+    ]);
+
+    expect(result.systemPrompt).toContain('mandatory first-pass capabilities');
+    expect(result.systemPrompt).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(result.systemPrompt).toContain('- codebase-memory: mandatory first stop for any code work.');
+    expect(result.systemPrompt).toContain('  - Use search_graph before opening files.');
+    expect(result.systemPrompt).toContain('  - Manual grep/read is a fallback only.');
   });
 });

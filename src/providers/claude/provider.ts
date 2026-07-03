@@ -60,6 +60,7 @@ export const claude: Provider = (request, runtime) => {
     runtime.kbRoot,
     runtime.coralProjects,
     runtime.projectSource,
+    runtime.equippedTools,
   );
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 

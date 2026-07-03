@@ -25,7 +25,13 @@ const EQUIP_AGENT_TOOLS = [
     id: 'codebase-memory',
     bin: 'codebase-memory-mcp',
     summary:
-      'indexes this codebase into a queryable graph (symbols, calls, data flow) exposed as MCP tools (search_graph, trace_path, get_code_snippet, search_code, get_architecture) — reach for it first on code-discovery questions before manual grep/read',
+      'mandatory first stop for any code work. Use it before grep, file reads, edits, reviews, debugging, or behavior analysis.',
+    guidance: [
+      'Start with search_graph to find symbols, classes, routes, and likely owners before opening files.',
+      'Use trace_path to inspect callers, callees, and data flow so behavior changes do not miss hidden call sites.',
+      'Use get_code_snippet for targeted source after graph discovery, and query_graph/get_architecture for broader relationships or module context.',
+      'Manual grep/read is a fallback only for string literals, config/non-code files, or when graph results are insufficient.',
+    ],
   },
 ];
 
@@ -52,6 +58,7 @@ export function resolveEquippedTools() {
     return EQUIP_AGENT_TOOLS.filter((tool) => isInstalledBinary(engineBinaryPath(tool.id, tool.bin))).map((tool) => ({
       id: tool.id,
       summary: tool.summary,
+      guidance: tool.guidance,
     }));
   } catch {
     return [];

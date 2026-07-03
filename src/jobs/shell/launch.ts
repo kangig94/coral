@@ -32,6 +32,7 @@ import { SessionClaimError, type ClaimJobOptions } from '../session-claim.js';
 import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
 import { buildJobEventRefs } from '../refs.js';
+import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobProgressBody | JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -689,6 +690,7 @@ export class LaunchOrchestrator {
       persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
+      equippedTools: resolveEquippedTools(this.deps.runtime),
       // Empty cwd is not a project root: treat it as absent so the INJECT.md
       // placeholders stay unsubstituted rather than resolving `local/` from ''.
       ...(request.cwd

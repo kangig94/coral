@@ -4,6 +4,12 @@ import type { StoragePort } from '../infra/port-types.js';
 
 declare const __PLUGIN_ROOT__: string;
 
+export interface InjectEquippedTool {
+  readonly id: string;
+  readonly summary: string;
+  readonly guidance?: readonly string[];
+}
+
 export interface ResolveInjectMdOptions {
   storage: Pick<StoragePort, 'readFileSync'>;
   ownerSessionId?: string;
@@ -15,6 +21,7 @@ export interface ResolveInjectMdOptions {
   projectSource?: string;
   /** When false, strip the KB_ONLY block so no KB guidance reaches the provider. */
   kbEnabled?: boolean;
+  equippedTools?: readonly InjectEquippedTool[];
 }
 
 let injectMdCache: string | undefined;
@@ -50,6 +57,18 @@ function stripKbOnly(text: string): string {
   return text.replace(/<!-- KB_ONLY:BEGIN -->[\s\S]*?<!-- KB_ONLY:END -->\n?/g, '');
 }
 
+function renderEquippedTools(equippedTools: readonly InjectEquippedTool[] | undefined): string {
+  if (!equippedTools || equippedTools.length === 0) {
+    return '';
+  }
+
+  const lines = equippedTools.flatMap((tool) => [
+    `- ${tool.id}: ${tool.summary}`,
+    ...(tool.guidance ?? []).map((item) => `  - ${item}`),
+  ]);
+  return `Equipped tools (installed via /equip) — mandatory first-pass capabilities. These are live MCP tools available in this session; call them directly before using manual search/read. Use the live MCP tools in the mcp__codebase_memory_mcp namespace:\n${lines.join('\n')}`;
+}
+
 export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const md = getInjectMd(opts.storage);
   if (!md) return '';
@@ -61,9 +80,7 @@ export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
   const rendered = base
     .replaceAll('{{CORAL_KB}}', kbRoot)
     .replaceAll('{{CORAL_CLI}}', cliPath)
-    // Equipped-tools advertising is a main-session-only surface (session-start
-    // hook). Provider-launched Claude jobs strip the placeholder.
-    .replaceAll('{{EQUIPPED_TOOLS}}', '')
+    .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(opts.equippedTools))
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
     .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}');

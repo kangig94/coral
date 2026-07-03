@@ -291,6 +291,12 @@ export interface ProviderContinuityBridge {
   transportClosed(closed: ProviderTransportClose): void;
 }
 
+export interface ProviderEquippedToolSummary {
+  readonly id: string;
+  readonly summary: string;
+  readonly guidance?: readonly string[];
+}
+
 export interface ProviderRuntime {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
@@ -312,6 +318,8 @@ export interface ProviderRuntime {
   coralProjects?: string;
   /** Resolved project source for the request cwd (`runtime.paths.projectSource`); absent when no cwd. */
   projectSource?: string;
+  /** Installed /equip tools that should be advertised in provider system prompts. */
+  equippedTools?: readonly ProviderEquippedToolSummary[];
 }
 
 export type Provider = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;

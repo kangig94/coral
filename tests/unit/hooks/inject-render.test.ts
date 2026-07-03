@@ -31,11 +31,20 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       sessionId: 's',
       asOwner: true,
       kbEnabled: true,
-      equippedTools: [{ id: 'codebase-memory', summary: 'indexes your code into a graph' }],
+      equippedTools: [
+        {
+          id: 'codebase-memory',
+          summary: 'mandatory first stop for any code work.',
+          guidance: ['Use search_graph before opening files.', 'Manual grep/read is a fallback only.'],
+        },
+      ],
     });
 
-    expect(out).toContain('Equipped tools (installed via /equip)');
-    expect(out).toContain('- codebase-memory: indexes your code into a graph');
+    expect(out).toContain('mandatory first-pass capabilities');
+    expect(out).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(out).toContain('- codebase-memory: mandatory first stop for any code work.');
+    expect(out).toContain('  - Use search_graph before opening files.');
+    expect(out).toContain('  - Manual grep/read is a fallback only.');
     expect(out).not.toContain('{{EQUIPPED_TOOLS}}');
   });
 

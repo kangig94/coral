@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -1528,6 +1528,33 @@ describe('ExecutionService launch', () => {
 
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
     expect(request.bypassPermissions).toBe(false);
+  });
+
+  it('passes installed equipped tools into provider runtime', async () => {
+    const engineDir = runtime.paths.coral.engine.dataDir('codebase-memory');
+    mkdirSync(engineDir, { recursive: true });
+    writeFileSync(join(engineDir, 'codebase-memory-mcp'), 'binary');
+    let equippedTools: readonly { id: string; summary: string; guidance?: readonly string[] }[] | undefined;
+    const { provider, execute } = makeProvider({
+      execute: async (_request, providerRuntime) => {
+        equippedTools = providerRuntime.equippedTools;
+        return { content: 'ok' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'raw prompt' }, ctx);
+
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.job);
+    await waitForTerminalEvent(service, decision.job);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(equippedTools?.map((tool) => tool.id)).toEqual(['codebase-memory']);
+    expect(equippedTools?.[0]?.summary).toContain('mandatory first stop');
+    expect(equippedTools?.[0]?.guidance?.join('\n')).toContain('trace_path');
   });
 
   it('start returns queued when provider launch slots are full', async () => {

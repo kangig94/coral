@@ -36,6 +36,14 @@ function coralProjectDir(homeDir: string, source: string): string {
   return join(homeDir, '.coral', 'projects', source.replace(/\//g, '-'));
 }
 
+function seedCodebaseMemoryBinary(homeDir: string): void {
+  for (const dataDir of ['data', 'data-dev']) {
+    const dir = join(homeDir, '.coral', dataDir, 'engines', 'codebase-memory');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'codebase-memory-mcp'), 'binary');
+  }
+}
+
 describe('session-start.mjs', () => {
   it('outputs INJECT.md with session_id when both provided', () => {
     const fixture = createFixture();
@@ -304,6 +312,27 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toBe(
       `CLI: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}"`,
     );
+  });
+
+  it('renders equipped tools when the engine binary is installed', () => {
+    const fixture = createFixture();
+    seedCodebaseMemoryBinary(fixture.root);
+    writeInjectMd(fixture.pluginRoot, 'Tools\n\n{{EQUIPPED_TOOLS}}\n\nDone');
+
+    const result = runHook(
+      SUBAGENT_START_HOOK,
+      { session_id: 'sess-parent' },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    const output = expectHookOutput(result);
+    expect(output.hookSpecificOutput.additionalContext).toContain('mandatory first-pass capabilities');
+    expect(output.hookSpecificOutput.additionalContext).toContain('- codebase-memory:');
+    expect(output.hookSpecificOutput.additionalContext).toContain('Use trace_path to inspect callers');
+    expect(output.hookSpecificOutput.additionalContext).not.toContain('{{EQUIPPED_TOOLS}}');
   });
 
   it('exits cleanly when CLAUDE_PLUGIN_ROOT unset', () => {
