@@ -883,6 +883,104 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  it('1b. aborting a queued recoverable job during startup recovery finalizes it without launching', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-queued-abort');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-queued-abort');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      {
+        db: openTestStoreDb(runtime, ':memory:'),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
+    );
+    const launchCoordinator = createLaunchCoordinator(modules);
+    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const service = createActualRecoveryService(modules, {
+      progressStore,
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      pluginRoot,
+      projectRoot,
+    });
+    const recoverQueuedSpy = vi.spyOn(service, 'recoverQueuedJob');
+    const jobId = 'queued-recovery-abort';
+    let abortResult: { aborted: string[]; notFound: string[] } | null = null;
+
+    progressStore.initJob({
+      jobId,
+      sessionId: 'queued-recovery-abort-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      initialPhase: 'queued',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'queued-recovery-abort-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      enqueueSequence: 1,
+    });
+    appendQueuedEvent(progressStore, jobId, 'queued-recovery-abort-session', namespace, projectRoot, 1);
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      servicesByProjectRoot: new Map([[projectRoot, service]]),
+      runStartupRecoveryFn: async ({
+        identity,
+        runtime,
+        progressStore,
+        providerRegistry,
+        getRecoveryService,
+        createInvocationContext,
+        recoveryCoordinator,
+        signal,
+      }) => {
+        await recoveryCoordinator.runStartupRecovery({
+          namespace: identity.namespace,
+          bundleHash: identity.bundleHash,
+          runtime,
+          progressStore,
+          providerRegistry,
+          getRecoveryService,
+          createInvocationContext,
+          signal,
+          log: identity.log,
+          cleanupStaleJobs: () => {
+            abortResult = recoveryCoordinator.getRecoveryRegistry()?.abort([jobId]) ?? null;
+          },
+          sessionLookup: modules.sessionLookupModule.createProjectionSessionLookup(progressStore.getDb()),
+          coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+        });
+        return [];
+      },
+    });
+
+    try {
+      await controller.start();
+      expect(abortResult).toEqual({ aborted: [jobId], notFound: [] });
+      expect(recoverQueuedSpy).not.toHaveBeenCalled();
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase: 'aborted',
+        result: { outcome: { kind: 'aborted', reason: 'user_abort' } },
+      });
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
   it('2. running durable-cli job with a live PID is adopted before the launch fence lifts', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-running');
@@ -956,6 +1054,105 @@ describe('lifecycle recovery', () => {
       expect(fenceOffOrder).toBeDefined();
       expect(adoptOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(fenceOffOrder ?? Number.POSITIVE_INFINITY);
     } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('2b. aborting an adopted running durable job during recovery finalizes as aborted when it dies', async () => {
+    const { spawn } = await import('node:child_process');
+    const { createCoordinatorControl } = await import('#src/coordinator/composition/job-control.js');
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-running-adopted-abort');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-running-adopted-abort');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(
+      namespace,
+      runtime,
+      createDefaultUpcasterRegistry(),
+      {
+        db: openTestStoreDb(runtime, ':memory:'),
+        eventBus,
+        providers: permissiveProviderLookupPort,
+      },
+    );
+    const launchCoordinator = createLaunchCoordinator(modules);
+    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const service = createActualRecoveryService(modules, {
+      progressStore,
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      pluginRoot,
+      projectRoot,
+    });
+    const jobId = 'running-adopted-abort';
+    // Real PID adoption/kill semantics require an actual child process here.
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], { stdio: 'ignore' });
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    if (child.pid === undefined) {
+      throw new Error('Expected spawned child pid for adopted-running abort test');
+    }
+
+    progressStore.initJob({
+      jobId,
+      sessionId: 'running-adopted-abort-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+      initialPhase: 'running',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'running-adopted-abort-session',
+      provider: 'fakeprovider',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubRuntimeRecord(progressStore, {
+      jobId,
+      pid: child.pid,
+      startTime: '2026-04-12T00:00:00.000Z',
+    });
+
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      launchCoordinator,
+      providerRegistry,
+      servicesByProjectRoot: new Map([[projectRoot, service]]),
+    });
+
+    try {
+      await controller.start();
+      const control = createCoordinatorControl({
+        world: { idleTimer: { requestDrain() {} } } as never,
+        listExecutionServices: () => [service] as never,
+        getLifecycleController: () => controller,
+        backendNamespace: namespace,
+        getProgressStore: () => progressStore,
+        internalJobAbortRegistry: {
+          abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }),
+        } as never,
+      });
+
+      expect(control.abortJobs([jobId])).toEqual({ aborted: [jobId], notFound: [] });
+
+      await vi.waitFor(
+        () => {
+          expect(progressStore.readStatus(jobId)).toMatchObject({
+            phase: 'aborted',
+            result: { outcome: { kind: 'aborted', reason: 'user_abort' } },
+          });
+        },
+        { timeout: 4_000 },
+      );
+    } finally {
+      child.kill('SIGKILL');
       await stopLifecycleController(controller);
     }
   });

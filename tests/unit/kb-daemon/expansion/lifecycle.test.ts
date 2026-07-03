@@ -708,6 +708,68 @@ describe('ExpansionLifecycleService', () => {
     }
   });
 
+  it('rejects equip that resumes from the serialized queue after draining begins', async () => {
+    let phase: 'starting' | 'running' | 'draining' | 'stopped' = 'running';
+    const gateKey = `__cluster_T_queued_dispose_gate_${Math.random().toString(36).slice(2)}__`;
+    const globalState = globalThis as Record<string, unknown>;
+    let releaseImport!: () => void;
+    globalState[gateKey] = new Promise<void>((resolve) => {
+      releaseImport = resolve;
+    });
+    const QUEUED_SOURCE = `
+      export default async (host) => {
+        await globalThis[${JSON.stringify(gateKey)}];
+        host.bind('kb.embedding', {
+          read: () => ({
+            name: 'queued',
+            model: 'queued',
+            dims: 1,
+            normalization: 'l2',
+            specId: 'queued:1:l2',
+            embedDocuments: async () => [],
+            embedQuery: async () => new Float32Array([0]),
+          }),
+          consumer: { id: 'queued-embedder', kind: 'stateless', registrationKind: 'stateless' },
+        });
+      };
+    `;
+    const QUEUED_ENTRY = {
+      id: 'queued-embedder',
+      version: '0.0.0',
+      specifier: javascriptDataUrl(QUEUED_SOURCE),
+      tier: 'installed',
+      description: 'queued dispose fence',
+      fills: [KB_EMBEDDING_CAPABILITY],
+    } as const;
+
+    try {
+      const { kb, state, lifecycle } = createLifecycleHarness({
+        manifest: [QUEUED_ENTRY] as unknown as readonly (typeof FAKE_EMBEDDER_ENTRY)[],
+        getLifecyclePhase: () => phase,
+      });
+
+      const firstEquip = lifecycle.equip('queued-embedder');
+      for (let i = 0; i < 8; i += 1) {
+        await Promise.resolve();
+      }
+      const queuedEquip = lifecycle.equip('queued-embedder');
+
+      phase = 'draining';
+      releaseImport();
+
+      await firstEquip;
+      await expect(queuedEquip).rejects.toMatchObject({
+        code: 'expansion_equip_aborted',
+      });
+
+      expect(heldBy(kb, KB_EMBEDDING_CAPABILITY)).toBe('queued-embedder');
+      expect(state.snapshot()).toEqual([{ id: 'queued-embedder', version: '0.0.0', installed_at: FIXED_NOW }]);
+      expect(lifecycleScopes(lifecycle).get('queued-embedder')).toHaveLength(1);
+    } finally {
+      delete globalState[gateKey];
+    }
+  });
+
   // #18 + #13a: shutdown that fires WHILE an equip is mid-import must wait for
   // the in-flight equip to publish its scope (via engineMutex), then dispose
   // it cooperatively. The post-condition is `scopes.has(id) iff state.get(id)`

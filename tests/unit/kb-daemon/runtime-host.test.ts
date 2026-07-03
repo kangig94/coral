@@ -20,6 +20,12 @@ import type { Database } from '#src/store/db.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
+type Deferred<T = void> = {
+  promise: Promise<T>;
+  resolve: (value?: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+};
+
 type CorpusSnapshotRow = {
   snapshot_id: string | null;
   content_seq: number | null;
@@ -34,6 +40,22 @@ function createTempRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-kb-daemon-write-'));
   tempRoots.push(root);
   return root;
+}
+
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (value?: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = (value) => res(value as T | PromiseLike<T>);
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks(count = 1): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
 }
 
 function writeImportSource(runtime: Runtime, path: string): void {
@@ -84,6 +106,7 @@ describe('KB daemon runtime host', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.useRealTimers();
   });
 
   it('cleans orphaned source import runtime artifacts during boot', async () => {
@@ -113,6 +136,126 @@ describe('KB daemon runtime host', () => {
       expect(runtime.storage.existsSync(stagedDir)).toBe(false);
       expect(runtime.storage.existsSync(pdfDir)).toBe(false);
     } finally {
+      await host.dispose().catch(() => undefined);
+      db.close();
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('waits for in-flight corpus mutations before closing an owned database during dispose', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+    });
+    const mutationEntered = deferred();
+    const releaseMutation = deferred();
+    let mutation: Promise<void> | undefined;
+    let disposeSettled = false;
+    let dispose: Promise<void> | undefined;
+    let withMutationLock: ReturnType<typeof vi.spyOn> | undefined;
+
+    try {
+      await host.withKb(async ({ consumerDriver, kbRuntime }) => {
+        await consumerDriver.drainAll();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        withMutationLock = vi.spyOn(kbRuntime.kb, 'withMutationLock');
+        mutation = kbRuntime.kb.withMutationLock(async () => {
+          mutationEntered.resolve();
+          await releaseMutation.promise;
+          kbRuntime.readDb.prepare('SELECT 1').get();
+        });
+      });
+      await mutationEntered.promise;
+
+      dispose = host.dispose().then(() => {
+        disposeSettled = true;
+      });
+      await flushMicrotasks(32);
+
+      expect(disposeSettled).toBe(false);
+      expect(withMutationLock).toHaveBeenCalledTimes(2);
+
+      releaseMutation.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+
+      if (mutation === undefined) {
+        throw new Error('test mutation was not started');
+      }
+      await expect(mutation).resolves.toBeUndefined();
+      await expect(dispose).resolves.toBeUndefined();
+      expect(host.health()).toEqual({ phase: 'disposed', initializedAt: expect.any(Number) });
+    } finally {
+      releaseMutation.resolve();
+      await vi.advanceTimersByTimeAsync(5_000).catch(() => undefined);
+      await mutation?.catch(() => undefined);
+      if (disposeSettled) {
+        await host.dispose().catch(() => undefined);
+      } else {
+        void dispose?.catch(() => undefined);
+      }
+      rmSync(runtimeDir, { recursive: true, force: true });
+      while (tempRoots.length > 0) {
+        rmSync(tempRoots.pop()!, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('maps write-runtime disposal phases into the expansion lifecycle fence', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const db = openTestStoreDb(runtime, ':memory:');
+    const pluginRoot = join(root, 'plugin');
+    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const releaseExpansionShutdown = deferred();
+    let getLifecyclePhase!: () => 'starting' | 'running' | 'draining' | 'stopped';
+
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot,
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      runtime,
+      db,
+    });
+
+    try {
+      await host.withKb(async ({ consumerDriver, expansionLifecycleService }) => {
+        await consumerDriver.drainAll();
+        const options = (expansionLifecycleService as unknown as {
+          options: { getLifecyclePhase?: () => 'starting' | 'running' | 'draining' | 'stopped' };
+        }).options;
+        if (options.getLifecyclePhase === undefined) {
+          throw new Error('expansion lifecycle phase fence is not wired');
+        }
+        getLifecyclePhase = options.getLifecyclePhase;
+        vi.spyOn(expansionLifecycleService, 'shutdownActiveExpansions').mockImplementation(
+          () => releaseExpansionShutdown.promise,
+        );
+        vi.spyOn(consumerDriver, 'shutdown').mockResolvedValue(undefined);
+      });
+
+      expect(getLifecyclePhase()).toBe('running');
+
+      const dispose = host.dispose();
+      await flushMicrotasks();
+      expect(getLifecyclePhase()).toBe('draining');
+
+      releaseExpansionShutdown.resolve();
+      await dispose;
+
+      expect(getLifecyclePhase()).toBe('stopped');
+    } finally {
+      releaseExpansionShutdown.resolve();
       await host.dispose().catch(() => undefined);
       db.close();
       rmSync(runtimeDir, { recursive: true, force: true });

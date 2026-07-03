@@ -24,6 +24,7 @@ import {
 import { describeTerminalFailure, formatStepOutput } from './command.js';
 import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema } from './events.js';
 import { executePlannedSteps } from './executor.js';
+import { handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
 import {
   DEFAULT_DRAIN_DEADLINE_MS,
   DEFAULT_STALE_CHECK_INTERVAL_MS,
@@ -102,6 +103,11 @@ type WaitRecoveryPlan = {
   initialState: Partial<WaitInternalState>;
   blockingFailure: RecoveryTerminalFailure | null;
 };
+
+type ActiveStepLaunchState =
+  | { kind: 'all-launched'; neverLaunchedSlots: [] }
+  | { kind: 'all-never-launched'; neverLaunchedSlots: CompiledPlanSlot[] }
+  | { kind: 'mixed'; neverLaunchedSlots: CompiledPlanSlot[] };
 
 function readSlotJobIds(db: Database, workflowId: string, plan: WorkflowPlan): Map<string, string> {
   const slotIds = new Set<string>();
@@ -364,12 +370,124 @@ function completedFinalization(deps: ResumeWorkflowDeps, summary: RecoverySummar
   };
 }
 
-function shouldRelaunchActiveStep(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): boolean {
-  return snapshot.stepSlots.some((slot) => {
-    const projection = readProjectionJob(deps.db, slot.jobId);
-    const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
-    return projection === null && detail.status === null;
+function isNeverLaunchedSlot(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot, slot: CompiledPlanSlot): boolean {
+  const projection = readProjectionJob(deps.db, slot.jobId);
+  const detail = detailForJob(snapshot.slotDetailsByJob, slot.jobId);
+  return projection === null && detail.status === null;
+}
+
+function classifyActiveStepLaunchState(
+  deps: ResumeWorkflowDeps,
+  snapshot: RecoverySnapshot,
+): ActiveStepLaunchState {
+  const neverLaunchedSlots = snapshot.stepSlots.filter((slot) => isNeverLaunchedSlot(deps, snapshot, slot));
+  if (neverLaunchedSlots.length === 0) {
+    return { kind: 'all-launched', neverLaunchedSlots: [] };
+  }
+  if (neverLaunchedSlots.length === snapshot.stepSlots.length) {
+    return { kind: 'all-never-launched', neverLaunchedSlots };
+  }
+  return { kind: 'mixed', neverLaunchedSlots };
+}
+
+function atomIndexForSlot(snapshot: RecoverySnapshot, slot: CompiledPlanSlot): number {
+  return snapshot.activeAtoms.find((atom) => atom.slotId === slot.slotId)?.atomIndex ?? 0;
+}
+
+function runRecoveryWaitForAtoms(
+  deps: ResumeWorkflowDeps,
+  atoms: LaunchedAtom[],
+  extra: { initialState?: Partial<WaitInternalState>; completedStepDetails: StepDetail[] },
+): Promise<Map<string, string>> {
+  return waitForAtoms(atoms, deps.executionSvc, deps.ctx, {
+    staleTimeoutMs: deps.staleTimeoutMs,
+    staleCheckIntervalMs: deps.staleCheckIntervalMs,
+    staleAbortTimeoutMs: deps.staleAbortTimeoutMs,
+    drainDeadlineMs: deps.drainDeadlineMs,
+    ...(extra.initialState === undefined ? {} : { initialState: extra.initialState }),
+    completedStepDetails: extra.completedStepDetails,
+    workflowJobId: deps.workflowId,
+    onProgress: (message) => deps.onProgress(deps.workflowId, message),
+    time: deps.time,
+    recoverStaleAtom,
   });
+}
+
+async function drainLaunchedRecoveryAtoms(deps: ResumeWorkflowDeps, atoms: LaunchedAtom[]): Promise<StepDetail[]> {
+  if (atoms.length === 0) return [];
+
+  deps.executionSvc.abort(atoms.map((atom) => atom.jobId));
+  try {
+    const results = await runRecoveryWaitForAtoms(deps, atoms, { completedStepDetails: [] });
+    return buildStepDetailsForAtoms(atoms, results);
+  } catch (error) {
+    if (error instanceof WorkflowExecutionError) {
+      return error.stepDetails;
+    }
+    throw error;
+  }
+}
+
+function mergeActiveAtomsWithLaunched(
+  activeAtoms: LaunchedAtom[],
+  launchedAtoms: LaunchedAtom[],
+  launchedSlotIds: ReadonlySet<string>,
+): LaunchedAtom[] {
+  const launchedBySlot = new Map(launchedAtoms.map((atom) => [atom.slotId, atom]));
+  return activeAtoms.map((atom) =>
+    launchedSlotIds.has(atom.slotId) ? (launchedBySlot.get(atom.slotId) ?? atom) : atom,
+  );
+}
+
+function buildCompletedStepDetailsForActiveStep(summary: RecoverySummary, plan: WaitRecoveryPlan): StepDetail[] {
+  return [...summary.stepDetails, ...buildStepDetailsForAtoms(plan.activeAtoms, plan.completedOutputs)];
+}
+
+async function recoverPartiallyLaunchedStep(
+  deps: ResumeWorkflowDeps,
+  snapshot: RecoverySnapshot,
+  neverLaunchedSlots: readonly CompiledPlanSlot[],
+): Promise<RecoveredWorkflowFinalization> {
+  const waitPlan = buildWaitRecoveryPlan(deps, snapshot);
+  const blocked = blockingFailureFinalization(deps.workflowId, snapshot.summary, waitPlan.blockingFailure);
+  if (blocked !== null) return blocked;
+
+  deps.onProgress(deps.workflowId, `resuming partially launched step ${snapshot.summary.activeStepIndex}`);
+
+  const completedStepDetails = buildCompletedStepDetailsForActiveStep(snapshot.summary, waitPlan);
+  const neverLaunchedSlotIds = new Set(neverLaunchedSlots.map((slot) => slot.slotId));
+  const launchedPending = waitPlan.activeAtoms.filter((atom) => !neverLaunchedSlotIds.has(atom.slotId));
+  const { launchedAtoms, launchError } = await launchCompiledStepAtoms(
+    neverLaunchedSlots,
+    snapshot.summary.stepPrompt,
+    deps.executionSvc,
+    deps.ctx,
+    {
+      completedStepDetails,
+      workflowJobId: deps.workflowId,
+      atomIndexFor: (slot) => atomIndexForSlot(snapshot, slot),
+    },
+  );
+  if (launchError !== null) {
+    const drainAtoms = [...launchedPending, ...launchedAtoms];
+    await handleStepLaunchFailure(launchError, drainAtoms, {
+      completedStepDetails,
+      drainLaunchedAtoms: () => drainLaunchedRecoveryAtoms(deps, drainAtoms),
+    });
+  }
+
+  const launchedSlotIds = new Set(launchedAtoms.map((atom) => atom.slotId));
+  const hybridPlan: WaitRecoveryPlan = {
+    ...waitPlan,
+    // The initial snapshot uses unknown-session stubs for missing slots; replace
+    // them after launch so recovery diagnostics report the actual session.
+    activeAtoms: mergeActiveAtomsWithLaunched(waitPlan.activeAtoms, launchedAtoms, launchedSlotIds),
+  };
+  const stepResults = await runRecoveryWaitForAtoms(deps, hybridPlan.activeAtoms, {
+    initialState: hybridPlan.initialState,
+    completedStepDetails: snapshot.summary.stepDetails,
+  });
+  return continueAfterRecoveredStep(deps, snapshot.summary, hybridPlan, stepResults);
 }
 
 async function executeRemainingSteps(
@@ -497,17 +615,9 @@ async function waitAndFinalize(
   if (blocked !== null) return blocked;
 
   deps.onProgress(deps.workflowId, `resuming step ${snapshot.summary.activeStepIndex}`);
-  const stepResults = await waitForAtoms(plan.activeAtoms, deps.executionSvc, deps.ctx, {
-    staleTimeoutMs: deps.staleTimeoutMs,
-    staleCheckIntervalMs: deps.staleCheckIntervalMs,
-    staleAbortTimeoutMs: deps.staleAbortTimeoutMs,
-    drainDeadlineMs: deps.drainDeadlineMs,
+  const stepResults = await runRecoveryWaitForAtoms(deps, plan.activeAtoms, {
     initialState: plan.initialState,
     completedStepDetails: snapshot.summary.stepDetails,
-    workflowJobId: deps.workflowId,
-    onProgress: (message) => deps.onProgress(deps.workflowId, message),
-    time: deps.time,
-    recoverStaleAtom,
   });
   return continueAfterRecoveredStep(deps, snapshot.summary, plan, stepResults);
 }
@@ -522,7 +632,12 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
     return completedFinalization(deps, snapshot.summary);
   }
 
-  if (shouldRelaunchActiveStep(deps, snapshot)) {
+  const launchState = classifyActiveStepLaunchState(deps, snapshot);
+  if (launchState.kind === 'mixed') {
+    return recoverPartiallyLaunchedStep(deps, snapshot, launchState.neverLaunchedSlots);
+  }
+
+  if (launchState.kind === 'all-never-launched') {
     return assembleRelaunch(deps, snapshot.summary);
   }
 

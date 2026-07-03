@@ -17,6 +17,7 @@ const GITIGNORE_HEADER = '# Coral KB runtime (device-local, auto-managed)';
 const GITATTRIBUTES_ENTRIES = ['.entity-graph.json merge=coral-entity-graph', '*.md merge=coral-frontmatter'];
 const GITATTRIBUTES_HEADER = '# Coral KB merge drivers (auto-managed)';
 const DEFERRED_COMMIT_DELAY_MS = 60_000;
+const GIT_INDEX_LOCK_STALE_MS = 10 * 60 * 1000;
 const RECOVERY_REF_NAMESPACE = 'refs/coral-recovery';
 const RECOVERY_REF_KEEP_PER_BRANCH = 20;
 const GIT_OPERATION_PATHS = [
@@ -276,6 +277,27 @@ export function createGitSyncController({
       return GIT_OPERATION_PATHS.some((path) => storagePort.existsSync(gitPath(path)));
     } catch {
       return true;
+    }
+  }
+
+  function cleanupStaleGitIndexLock(): void {
+    try {
+      if (!isGitRepo()) {
+        return;
+      }
+      const indexLockPath = gitPath('index.lock');
+      if (!storagePort.existsSync(indexLockPath)) {
+        return;
+      }
+      if (kb.time.now() - storagePort.statSync(indexLockPath).mtimeMs < GIT_INDEX_LOCK_STALE_MS) {
+        return;
+      }
+      if (isGitOperationInProgress()) {
+        return;
+      }
+      storagePort.rmSync(indexLockPath, { force: true });
+    } catch {
+      // Best-effort boot cleanup; git's own operation-state markers stay authoritative.
     }
   }
 
@@ -904,6 +926,8 @@ export function createGitSyncController({
       deferredCommitTimer = null;
     }
   }
+
+  cleanupStaleGitIndexLock();
 
   return {
     ensureKbGitignore,

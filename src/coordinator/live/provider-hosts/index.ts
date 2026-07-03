@@ -61,6 +61,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
             args: nextSpec.args,
             cwd: nextSpec.cwd,
             extraEnv: nextSpec.env,
+            ...(options?.signal ? { signal: options.signal } : {}),
             initializeRequest: nextSpec.initializeRequest,
           }),
         runtime: this.runtime,

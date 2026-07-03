@@ -42,6 +42,12 @@ function makeTempRoot(prefix: string): string {
   return root;
 }
 
+function errno(code: string): NodeJS.ErrnoException {
+  const error = new Error(code) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
+}
+
 function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T {
   const previous = new Map(Object.entries(updates).map(([key]) => [key, process.env[key]]));
   for (const [key, value] of Object.entries(updates)) {
@@ -317,6 +323,52 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
+  it('retries a busy quarantine rename during handoff-acquired reset', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-busy-quarantine-'), 'store.db');
+    createMismatchStore(dbPath);
+    const renameSync = runtime.storage.renameSync;
+    let dbRenameAttempts = 0;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((oldPath, newPath) => {
+      if (oldPath === dbPath && dbRenameAttempts++ === 0) {
+        throw errno('EBUSY');
+      }
+      renameSync(oldPath, newPath);
+    });
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    expect(dbRenameAttempts).toBe(2);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
+  it('resets a retired store on cold start without handoff authority', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-cold-retired-'), 'store.db');
+    createRetiredStore(dbPath);
+    const authority = createBackendStoreResetAuthority(
+      runtime,
+      { acquiredViaHandoff: false },
+      {
+        path: dbPath,
+        bundleHash: BUNDLE_HASH,
+        namespace: NAMESPACE,
+      },
+    );
+
+    const db = openOrResetBackendStoreDb(runtime, authority, {
+      path: dbPath,
+      bundleHash: BUNDLE_HASH,
+      namespace: NAMESPACE,
+    });
+    db.close();
+
+    expect(readUserVersion(dbPath)).not.toBe(0);
+    expect(retiredSchemaVersionRow(dbPath)).toBeNull();
   });
 
   it('logs the live-work-loss warning for mismatched stores', () => {

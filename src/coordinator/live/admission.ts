@@ -1,9 +1,7 @@
 import type { Runtime } from '../../runtime/ports.js';
 import {
   type CliExecResult,
-  type SpawnCliOptions,
   type SpawnDurableJobOptions,
-  spawnCliTransport,
   spawnDurableJobTransport,
 } from './durable-transport.js';
 import { type SpawnProviderServerOptions, spawnProviderServerTransport } from './provider-server-transport.js';
@@ -29,13 +27,6 @@ type QueuedLaunchEntry = {
   reject: (error: Error) => void;
 };
 
-export type InternalLaunchPermitOptions = {
-  provider: string;
-  pool?: LaunchPool;
-  prefix: string;
-  signal?: AbortSignal;
-};
-
 type PoolState = { active: Map<string, string>; queued: QueuedLaunchEntry[] };
 
 const IMMEDIATE_ADMISSION: AdmittedHandle = { type: 'immediate' };
@@ -46,7 +37,7 @@ export class LaunchCoordinator {
   private readonly cleanupHandles = new Map<symbol, () => void>();
   private nextProviderServerGeneration = 1;
   private readonly pools: Map<LaunchPool, PoolState> = new Map<LaunchPool, PoolState>();
-  private readonly signalLaunchPermits = new WeakMap<AbortSignal, { jobId: string; pool: LaunchPool }>();
+  private shutdownRequested = false;
   private readonly runtime: Runtime;
 
   constructor(options: { runtime: Runtime }) {
@@ -120,31 +111,8 @@ export class LaunchCoordinator {
     return [...this.getActiveMap(pool).keys()];
   }
 
-  bindLaunchPermit(jobId: string, signal: AbortSignal, pool: LaunchPool = 'default'): void {
-    this.signalLaunchPermits.set(signal, { jobId, pool });
-  }
-
   private rejectedPermitPromise(error: unknown): Promise<never> {
     return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-  }
-
-  spawnCli(options: SpawnCliOptions): Promise<CliExecResult> {
-    const pool = options.pool ?? 'default';
-    let internalPermitJobId: string | null;
-    try {
-      internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, 'spawncli');
-    } catch (error: unknown) {
-      return this.rejectedPermitPromise(error);
-    }
-
-    return spawnCliTransport({
-      runtime: this.runtime,
-      options,
-      pool,
-      internalPermitJobId,
-      cleanupHandles: this.cleanupHandles,
-      releaseLaunch: (jobId, nextPool) => this.releaseLaunch(jobId, nextPool),
-    });
   }
 
   spawnProviderServer(options: SpawnProviderServerOptions) {
@@ -171,25 +139,8 @@ export class LaunchCoordinator {
       internalPermitJobId,
       cleanupHandles: this.cleanupHandles,
       releaseLaunch: (jobId, nextPool) => this.releaseLaunch(jobId, nextPool),
+      shouldTerminateAfterLaunch: () => this.shutdownRequested,
     });
-  }
-
-  async withInternalPermit<T>(options: InternalLaunchPermitOptions, run: () => Promise<T>): Promise<T> {
-    const pool = options.pool ?? 'default';
-    let internalPermitJobId: string | null;
-    try {
-      internalPermitJobId = this.reserveInternalPermitOrThrow(options, pool, options.prefix);
-    } catch (error: unknown) {
-      return this.rejectedPermitPromise(error);
-    }
-
-    try {
-      return await run();
-    } finally {
-      if (internalPermitJobId !== null) {
-        this.releaseLaunch(internalPermitJobId, pool);
-      }
-    }
   }
 
   restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {
@@ -213,6 +164,7 @@ export class LaunchCoordinator {
   }
 
   terminateAll(): void {
+    this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
     for (const cleanup of this.cleanupHandles.values()) {
       cleanup();
@@ -233,13 +185,11 @@ export class LaunchCoordinator {
   }
 
   private reserveInternalPermitOrThrow(
-    options: Pick<SpawnCliOptions, 'permitGranted' | 'signal' | 'provider'>,
+    options: Pick<SpawnDurableJobOptions, 'permitGranted' | 'provider'>,
     pool: LaunchPool,
     prefix: string,
   ): string | null {
-    const usingReservedPermit =
-      options.permitGranted === true ||
-      (options.signal ? this.consumeSignalPermit(options.signal, options.provider) : false);
+    const usingReservedPermit = options.permitGranted === true;
     if (usingReservedPermit) {
       return null;
     }
@@ -299,12 +249,5 @@ export class LaunchCoordinator {
         entry.reject(error);
       }
     }
-  }
-
-  private consumeSignalPermit(signal: AbortSignal, provider: string): boolean {
-    const permit = this.signalLaunchPermits.get(signal);
-    if (!permit) return false;
-    this.signalLaunchPermits.delete(signal);
-    return this.getActiveMap(permit.pool).get(permit.jobId) === provider;
   }
 }

@@ -510,6 +510,7 @@ async function runLifecycleStartup({
           storage: runtime.storage,
           runDir: runtime.paths.coral.coordinator.runDir,
         }),
+        signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
       socketAuthorityAcquired = true;

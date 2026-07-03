@@ -392,7 +392,6 @@ export class LaunchOrchestrator {
           this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
         }
 
-        launchAdmission.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, request, jobId, sessionId, signal, pool);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
@@ -448,7 +447,6 @@ export class LaunchOrchestrator {
         this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
         this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
 
-        launchAdmission.bindLaunchPermit(jobId, signal, pool);
         await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {

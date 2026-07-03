@@ -179,8 +179,35 @@ type FinalizeDeadAdoptedJobContext = {
   progressStore: JobStore;
   runtime: Runtime;
   sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
+  cancelledJobIds?: ReadonlySet<string>;
   log: (message: string) => void;
 };
+
+type FinalizeAbortedRecoveredJobContext = {
+  jobId: string;
+  launchRecord: JobLaunch;
+  service: RecoveryCapableService;
+  progressStore: Pick<JobStore, 'readStatus'>;
+  log: (message: string) => void;
+};
+
+export function finalizeAbortedRecoveredJob({
+  jobId,
+  launchRecord,
+  service,
+  progressStore,
+  log,
+}: FinalizeAbortedRecoveredJobContext): void {
+  const status = progressStore.readStatus(jobId);
+  const sessionId = launchRecord.sessionId ?? status?.sessionId ?? null;
+  if (sessionId === null) {
+    log(`Skipped aborted recovery terminal for job ${jobId}: session id is unavailable\n`);
+    return;
+  }
+
+  const outcome: TerminalOutcome = { kind: 'aborted', reason: 'user_abort' };
+  service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, 'aborted');
+}
 
 export function finalizeDeadAdoptedJob({
   jobId,
@@ -191,12 +218,18 @@ export function finalizeDeadAdoptedJob({
   progressStore,
   runtime,
   sessionLookup,
+  cancelledJobIds,
   log,
 }: FinalizeDeadAdoptedJobContext): void {
   const sessionId = launchRecord.sessionId;
   const providerName = launchRecord.provider;
   if (sessionId === null || providerName === null) {
     log(`Skipped provider recovery for job ${jobId}: launch record is not a provider session launch\n`);
+    return;
+  }
+
+  if (cancelledJobIds?.has(jobId)) {
+    finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
     return;
   }
 

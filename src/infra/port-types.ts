@@ -50,6 +50,7 @@ export interface StoragePort {
     data: string,
     options: { canonicalPath: string; maxRetries?: number },
   ): { ok: boolean; retries: number; orphanPath?: string };
+  rmdirSync(path: string): void;
   unlinkSync(path: string): void;
   tryExclusiveWriteSync(
     path: string,

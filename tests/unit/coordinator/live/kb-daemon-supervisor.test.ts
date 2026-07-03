@@ -311,6 +311,33 @@ describe('KB daemon supervisor', () => {
     expect(daemonProcess.killedSignals).toContain('SIGKILL');
   });
 
+  it('does not spawn another daemon while a failed-phase child is still live', async () => {
+    const first = new FakeDaemonProcess(104);
+    const second = new FakeDaemonProcess(105);
+    const { runtime, spawnCalls, time } = createRuntime([first, second]);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      startTimeoutMs: 25,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    time.tick(25);
+
+    await expect(start).resolves.toMatchObject({ phase: 'failed', generation: 1, pid: 104 });
+    expect(first.killedSignals).toContain('SIGTERM');
+    expect(spawnCalls).toHaveLength(1);
+
+    const secondStart = supervisor.start();
+    await flushMicrotasks();
+
+    expect(spawnCalls).toHaveLength(1);
+    await expect(secondStart).resolves.toMatchObject({ phase: 'failed', generation: 1, pid: 104 });
+  });
+
   it('probes the daemon over the JSONL control protocol and records heartbeat health', async () => {
     const daemonProcess = new FakeDaemonProcess(151);
     const { runtime } = createRuntime([daemonProcess]);
@@ -1040,6 +1067,41 @@ describe('KB daemon supervisor', () => {
     await dispose;
     expect(spawnCalls).toHaveLength(1);
     expect(supervisor.read()).toMatchObject({ phase: 'stopped', generation: 1, pendingRequests: 0 });
+  });
+
+  it('does not allow a restart queued after dispose to revive the daemon', async () => {
+    const first = new FakeDaemonProcess(181);
+    const second = new FakeDaemonProcess(182);
+    const { runtime, spawnCalls } = createRuntime([first, second]);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(first);
+    await start;
+
+    const dispose = supervisor.dispose('shutdown');
+    await flushMicrotasks();
+    expect(first.stdin.destroyed).toBe(true);
+    expect(first.stdin.chunks.join('')).toContain('"reason":"shutdown"');
+
+    const restart = supervisor.restart('operator');
+    await flushMicrotasks();
+    expect(spawnCalls).toHaveLength(1);
+
+    first.emitClose(0, null);
+    await flushMicrotasks(12);
+
+    expect(spawnCalls).toHaveLength(1);
+    await dispose;
+    await expect(restart).resolves.toMatchObject({ phase: 'stopped', generation: 1, pid: null });
+    expect(spawnCalls).toHaveLength(1);
+    expect(second.stdin.chunks).toEqual([]);
   });
 
   it('keeps read recovery disabled when dispose is queued behind a restart', async () => {

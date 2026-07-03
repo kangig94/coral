@@ -21,10 +21,16 @@ type Publication = { snapshot: CorpusSnapshot; changedLanes: Lane[] };
 
 function createSpyRunner(): KbMutationLockRunner<Index, Publication, Lane> & {
   finalizeCalls: number;
+  publications: Publication[];
   contextSnapshots: Array<KbMutationLockContext<Index, Publication, Lane> | null>;
+  releaseFinalizeHang(): void;
+  hangFinalize(): void;
 } {
   let currentLock: Promise<void> = Promise.resolve();
   let finalizeCalls = 0;
+  let finalizeHang: Promise<void> | null = null;
+  let releaseFinalizeHang: (() => void) | null = null;
+  const publications: Publication[] = [];
   const contextSnapshots: Array<KbMutationLockContext<Index, Publication, Lane> | null> = [];
 
   return {
@@ -36,17 +42,33 @@ function createSpyRunner(): KbMutationLockRunner<Index, Publication, Lane> & {
     setActiveContext: (context: KbMutationLockContext<Index, Publication, Lane> | null) => {
       contextSnapshots.push(context);
     },
-    finalizePendingMutation: () => {
+    finalizePendingMutation: async () => {
       finalizeCalls += 1;
+      if (finalizeHang !== null) {
+        await finalizeHang;
+      }
     },
-    enqueuePublication: () => {},
+    enqueuePublication: (publication: Publication) => {
+      publications.push(publication);
+    },
     hasQueuedPublications: () => false,
     processPublishQueue: () => {},
     get finalizeCalls() {
       return finalizeCalls;
     },
+    get publications() {
+      return publications;
+    },
     get contextSnapshots() {
       return contextSnapshots;
+    },
+    releaseFinalizeHang() {
+      releaseFinalizeHang?.();
+    },
+    hangFinalize() {
+      finalizeHang = new Promise<void>((resolve) => {
+        releaseFinalizeHang = resolve;
+      });
     },
   } as never;
 }
@@ -244,5 +266,66 @@ describe('createKbMutationLock', () => {
     callerController.abort(callerReason);
 
     await expect(promise).rejects.toMatchObject({ reason: callerReason });
+  });
+
+  it('enqueues publication for finalized mutation before propagating postFinalize failure', async () => {
+    const runner = createSpyRunner();
+    const time = new VirtualTime();
+    const controller = createKbMutationLock<Index, Publication, Lane>(runner, {
+      defaultTimeoutMs: 1000,
+      time: asTimePort(time),
+    });
+    const publication: Publication = {
+      snapshot: {} as CorpusSnapshot,
+      changedLanes: ['content'],
+    };
+    const postFinalizeError = new Error('post finalize failed');
+
+    await expect(
+      controller.withMutationLock(
+        async (lockCtx) => {
+          lockCtx.publication = publication;
+          return 'committed' as const;
+        },
+        {
+          postFinalize: async () => {
+            throw postFinalizeError;
+          },
+        },
+      ),
+    ).rejects.toBe(postFinalizeError);
+
+    expect(runner.finalizeCalls).toBe(1);
+    expect(runner.publications).toEqual([publication]);
+  });
+
+  it('keeps mutationBlocked watchdog active while finalize is hung', async () => {
+    const runner = createSpyRunner();
+    runner.hangFinalize();
+    const time = new VirtualTime();
+    const controller = createKbMutationLock<Index, Publication, Lane>(runner, {
+      defaultTimeoutMs: 1000,
+      time: asTimePort(time),
+    });
+
+    const promise = controller.withMutationLock(async (lockCtx) => {
+      lockCtx.pendingMutationReason = 'finalize';
+      return 'done' as const;
+    });
+
+    await flushMicrotasks();
+    time.tick(1100);
+    await flushMicrotasks();
+    time.tick(150);
+    await flushMicrotasks();
+
+    const blocked = controller.diagnostics();
+    expect(blocked.blocked).toBe(true);
+    if (!blocked.blocked) throw new Error('unreachable');
+    expect(blocked.owner).toBe('finalize');
+
+    runner.releaseFinalizeHang();
+    expect(await promise).toBe('done');
+    expect(controller.diagnostics()).toEqual({ blocked: false });
   });
 });

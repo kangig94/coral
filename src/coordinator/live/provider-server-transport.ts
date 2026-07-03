@@ -5,9 +5,11 @@ import { MAX_BUFFER } from '../../infra/process-constants.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { AbortError } from '../../runtime/abort.js';
 import { appendBuffer, gracefulKill, requirePipedHandles } from './process-supervision.js';
 
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
+export const PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
 
 export class ProviderServerLineTooLargeError extends Error {
   readonly code = 'provider_server_line_too_large';
@@ -74,6 +76,7 @@ export type SpawnProviderServerOptions = {
   args: string[];
   cwd?: string;
   extraEnv?: Record<string, string>;
+  signal?: AbortSignal;
   initializeRequest?: {
     method: string;
     params: Record<string, unknown>;
@@ -220,7 +223,13 @@ export async function spawnProviderServerTransport(params: {
 
   if (options.initializeRequest) {
     try {
-      await rpc.request(options.initializeRequest.method, options.initializeRequest.params);
+      await initializeProviderServer({
+        entry,
+        rpc,
+        request: options.initializeRequest,
+        runtime,
+        signal: options.signal,
+      });
     } catch (error) {
       // The child is alive but rejected `initialize` (protocol/version/auth
       // mismatch). Nothing upstream owns this handle yet, so kill and detach it
@@ -256,6 +265,62 @@ export async function spawnProviderServerTransport(params: {
       await entry.closePromise;
     },
   };
+}
+
+function initializeProviderServer(params: {
+  entry: ProviderServerEntry;
+  rpc: ProviderServerRpc;
+  request: NonNullable<SpawnProviderServerOptions['initializeRequest']>;
+  runtime: Runtime;
+  signal?: AbortSignal;
+}): Promise<unknown> {
+  const { entry, rpc, request, runtime, signal } = params;
+  if (signal?.aborted) {
+    return Promise.reject(createProviderServerInitializeAbortError(entry, signal));
+  }
+
+  let timeoutHandle: ReturnType<Runtime['time']['setTimeout']> | null = null;
+  let abortHandler: (() => void) | null = null;
+
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = runtime.time.setTimeout(() => {
+      reject(
+        createProviderServerError(
+          entry.provider,
+          `initialize timed out after ${PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS}ms`,
+          { stderr: entry.stderr },
+        ),
+      );
+    }, PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS);
+    timeoutHandle.unref?.();
+  });
+
+  const abort =
+    signal === undefined
+      ? null
+      : new Promise<never>((_, reject) => {
+          abortHandler = () => reject(createProviderServerInitializeAbortError(entry, signal));
+          signal.addEventListener('abort', abortHandler, { once: true });
+        });
+
+  return Promise.race([rpc.request(request.method, request.params), timeout, ...(abort ? [abort] : [])]).finally(
+    () => {
+      if (timeoutHandle !== null) {
+        runtime.time.clearTimeout(timeoutHandle);
+      }
+      if (abortHandler !== null && signal !== undefined) {
+        signal.removeEventListener('abort', abortHandler);
+      }
+    },
+  );
+}
+
+function createProviderServerInitializeAbortError(entry: ProviderServerEntry, signal: AbortSignal): Error {
+  // Canonical abort vocabulary (src/runtime/abort.ts) — preserves signal.reason
+  // so callers can distinguish a user abort from a deadline abort. Constructing
+  // the error locally is forbidden by the architecture-boundary invariant.
+  const reason = signal.reason;
+  return new AbortError({ stage: `provider ${entry.provider} initialize`, reason });
 }
 
 function createProviderServerError(
@@ -438,7 +503,21 @@ function handleProviderServerLine(entry: ProviderServerEntry, line: string, runt
     params: message.params,
   };
   for (const handler of entry.notificationHandlers) {
-    handler(notification);
+    try {
+      handler(notification);
+    } catch (error) {
+      const dispatchError = createProviderServerError(
+        entry.provider,
+        `notification handler failed: ${errorMessage(error)}`,
+        { stderr: entry.stderr },
+      );
+      backendLog.error(dispatchError.message, error);
+      if (!entry.closed) {
+        detachProviderServer(entry, dispatchError);
+        gracefulKill(entry.child, runtime);
+      }
+      return;
+    }
   }
 }
 

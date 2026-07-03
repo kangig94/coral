@@ -294,6 +294,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   let kbReadHealth: KbDaemonKbReadHealth | undefined;
   let kbWriteHealth: KbDaemonKbReadHealth | undefined;
   let requestRecoveryEnabled = true;
+  let disposed = false;
   const exitListeners = new Set<(snapshot: KbDaemonHealthSnapshot) => void>();
 
   const read = (): KbDaemonHealthSnapshot => ({
@@ -583,7 +584,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     reason: string,
   ): Promise<KbDaemonHealthSnapshot> =>
     runExclusive(async () => {
-      if (!requestRecoveryEnabled) {
+      if (!requestRecoveryEnabled || disposed) {
         return read();
       }
       if (
@@ -763,7 +764,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   };
 
   const startNow = async (): Promise<KbDaemonHealthSnapshot> => {
-    if (daemonProcess !== null && (phase === 'starting' || phase === 'online')) {
+    if (disposed || daemonProcess !== null) {
       return read();
     }
 
@@ -989,6 +990,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     },
     start: () =>
       runExclusive(async () => {
+        if (disposed) {
+          return read();
+        }
         requestRecoveryEnabled = true;
         return startNow();
       }),
@@ -1002,6 +1006,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     stop: (reason, stopOptions) => runExclusive(() => stopNow(reason, stopOptions?.signal)),
     restart: (reason = 'restart') =>
       runExclusive(async () => {
+        if (disposed) {
+          return read();
+        }
         requestRecoveryEnabled = true;
         phase = 'restarting';
         await stopNow(reason);
@@ -1017,6 +1024,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         // re-enables recovery, so disabling only before runExclusive would let a
         // post-dispose read/mutate revive the daemon. This second write is load-bearing.
         requestRecoveryEnabled = false;
+        // Terminal supervisor disposal is distinct from a recoverable stop. A
+        // start/restart queued after this turn must not flip recovery back on.
+        disposed = true;
         return stopNow(reason, disposeOptions?.signal);
       });
     },

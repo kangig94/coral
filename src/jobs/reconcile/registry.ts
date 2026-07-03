@@ -11,10 +11,12 @@ export interface RecoveryEntry {
 export class RecoveryRegistry {
   private readonly entries = new Map<string, RecoveryEntry>();
   private readonly abortHandlers = new Map<string, () => void>();
+  private readonly cancelledJobIds: Set<string>;
 
   private readonly runtimeProcess?: Pick<ProcessPort, 'kill'>;
-  constructor(runtimeProcess?: Pick<ProcessPort, 'kill'>) {
+  constructor(runtimeProcess?: Pick<ProcessPort, 'kill'>, cancelledJobIds: Set<string> = new Set()) {
     this.runtimeProcess = runtimeProcess;
+    this.cancelledJobIds = cancelledJobIds;
   }
 
   register(jobId: string, launchRecord: JobLaunch, runtimeRecord?: JobRuntime, abortHandler?: () => void): void {
@@ -45,14 +47,30 @@ export class RecoveryRegistry {
     const aborted: string[] = [];
     const notFound: string[] = [];
     for (const jobId of jobIds) {
-      if (!this.entries.has(jobId)) {
+      const entry = this.entries.get(jobId);
+      if (!entry) {
         notFound.push(jobId);
         continue;
       }
-      this.abortHandlers.get(jobId)?.();
+      const abortHandler = this.abortHandlers.get(jobId);
+      if (!abortHandler && entry.runtimeRecord !== undefined) {
+        notFound.push(jobId);
+        continue;
+      }
+      abortHandler?.();
+      this.cancelledJobIds.add(jobId);
+      this.remove(jobId);
       aborted.push(jobId);
     }
     return { aborted, notFound };
+  }
+
+  markCancelled(jobId: string): void {
+    this.cancelledJobIds.add(jobId);
+  }
+
+  clearCancelled(jobId: string): void {
+    this.cancelledJobIds.delete(jobId);
   }
 
   remove(jobId: string): void {

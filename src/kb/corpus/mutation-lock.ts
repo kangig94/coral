@@ -227,35 +227,39 @@ export function createKbMutationLock<
       } catch (error: unknown) {
         deferredError = error;
       } finally {
-        time.clearTimeout(deadlineHandle);
-        time.clearTimeout(graceHandle);
-        callerSignal?.removeEventListener('abort', onCallerAbort);
-        blockedState = null;
-
         try {
-          if (succeeded) {
-            await runner.finalizePendingMutation(lockContext);
-            // One-way flip — never reset within the same lock. Subsequent
-            // attempts to queue mutation effects (e.g. manifest authority
-            // deltas from postFinalize) must throw rather than silently
-            // accumulate state that will never be applied.
-            lockContext.finalized = true;
-            if (options.postFinalize !== undefined) {
-              await options.postFinalize(lockContext);
+          try {
+            if (succeeded) {
+              await runner.finalizePendingMutation(lockContext);
+              // One-way flip — never reset within the same lock. Subsequent
+              // attempts to queue mutation effects (e.g. manifest authority
+              // deltas from postFinalize) must throw rather than silently
+              // accumulate state that will never be applied.
+              lockContext.finalized = true;
+              if (options.postFinalize !== undefined) {
+                await options.postFinalize(lockContext);
+              }
             }
+          } catch (error: unknown) {
+            deferredError = error;
+            succeeded = false;
           }
-        } catch (error: unknown) {
-          deferredError = error;
-          succeeded = false;
-        }
 
-        runner.setActiveContext(null);
-        if (succeeded && lockContext.publication !== null) {
-          runner.enqueuePublication(lockContext.publication);
-        }
-        release();
-        if (runner.hasQueuedPublications()) {
-          void runner.processPublishQueue();
+          runner.setActiveContext(null);
+          if (lockContext.finalized && lockContext.publication !== null) {
+            runner.enqueuePublication(lockContext.publication);
+          }
+          release();
+          if (runner.hasQueuedPublications()) {
+            void runner.processPublishQueue();
+          }
+        } finally {
+          // Keep the watchdog active until finalize/postFinalize settles; those
+          // phases still hold the mutation lock and must remain health-visible.
+          time.clearTimeout(deadlineHandle);
+          time.clearTimeout(graceHandle);
+          callerSignal?.removeEventListener('abort', onCallerAbort);
+          blockedState = null;
         }
       }
 

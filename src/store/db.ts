@@ -340,6 +340,8 @@ type StoreResetQuarantineManifest = {
 };
 
 const STORE_RESET_QUARANTINE_MANIFEST = 'reset-manifest.json';
+const QUARANTINE_RENAME_BACKOFF_MS = [0, 10, 25, 50, 100] as const;
+const quarantineRenameWaitState = new Int32Array(new SharedArrayBuffer(4));
 
 function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): string {
   if (options.path === ':memory:') {
@@ -493,6 +495,34 @@ function writeStoreResetManifest(
   });
 }
 
+function isBusyRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EPERM' || code === 'EBUSY';
+}
+
+function waitForQuarantineRenameRetry(ms: number): void {
+  if (ms > 0) {
+    Atomics.wait(quarantineRenameWaitState, 0, 0, ms);
+  }
+}
+
+function renameStoreFileForQuarantine(storage: StoragePort, source: string, destination: string): void {
+  for (let attempt = 0; attempt <= QUARANTINE_RENAME_BACKOFF_MS.length; attempt++) {
+    try {
+      storage.renameSync(source, destination);
+      return;
+    } catch (error: unknown) {
+      if (!isBusyRenameError(error) || attempt === QUARANTINE_RENAME_BACKOFF_MS.length) {
+        throw error;
+      }
+      // POSIX lets rename succeed while a predecessor still has the old file
+      // open; that handle keeps an orphaned inode. Windows can report a short
+      // EPERM/EBUSY residual while the draining predecessor closes its handle.
+      waitForQuarantineRenameRetry(QUARANTINE_RENAME_BACKOFF_MS[attempt]);
+    }
+  }
+}
+
 function quarantineStoreFiles(
   storage: StoragePort,
   files: StoreFileSet,
@@ -523,7 +553,7 @@ function quarantineStoreFiles(
     );
     storage.mkdirSync(quarantineDir, { recursive: true });
     for (const entry of candidates) {
-      storage.renameSync(entry.source, join(quarantineDir, entry.name));
+      renameStoreFileForQuarantine(storage, entry.source, join(quarantineDir, entry.name));
     }
     writeStoreResetManifest(storage, join(quarantineDir, STORE_RESET_QUARANTINE_MANIFEST), {
       schemaVersion: 1,

@@ -149,6 +149,7 @@ class KbRuntimeImpl implements KbRuntime {
   readonly corpusProjectionReader: KbRuntime['corpusProjectionReader'];
   private readonly paths: KbRuntimePaths;
   private readonly directoryMutationLockDir: string;
+  private readonly mutationLockDefaultTimeoutMs: number;
   private readonly manifestAuthority = createManifestAuthority();
   private readonly indexStore: KbIndexStore;
   private mutationLock: Promise<void> = Promise.resolve();
@@ -190,6 +191,7 @@ class KbRuntimeImpl implements KbRuntime {
     this.db = db;
     this.time = time;
     this.directoryMutationLockDir = join(this.runtimeDir, 'mutation.lock');
+    this.mutationLockDefaultTimeoutMs = mutationLockTimeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS;
     this.ids = ids;
     this.storagePort = storage;
     this.corpusStorage = createCorpusStorage(storage);
@@ -340,7 +342,7 @@ class KbRuntimeImpl implements KbRuntime {
         processPublishQueue: () => this.publicationQueue.process(),
       },
       {
-        defaultTimeoutMs: mutationLockTimeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS,
+        defaultTimeoutMs: this.mutationLockDefaultTimeoutMs,
         time: this.time,
       },
     );
@@ -352,6 +354,7 @@ class KbRuntimeImpl implements KbRuntime {
       indexStore: this.indexStore,
       manifestAuthority: this.manifestAuthority,
       mutationLockController: this.mutationLockController,
+      withDirectoryMutationLock: (fn) => this.withDirectoryMutationLock(this.mutationLockDefaultTimeoutMs, fn),
       mutationEffects: this.mutationFinalizer.mutationEffects,
       target: {
         markdownRoot: this.markdownRoot,
@@ -703,7 +706,16 @@ class KbRuntimeImpl implements KbRuntime {
     fn: (mutation: KbMutationEffects, args: { signal: AbortSignal }) => Promise<T> | T,
     options: KbMutationLockOptions = {},
   ): Promise<T> {
-    const timeoutMs = options.timeoutMs ?? DEFAULT_MUTATION_LOCK_TIMEOUT_MS;
+    const timeoutMs = options.timeoutMs ?? this.mutationLockDefaultTimeoutMs;
+    return this.withDirectoryMutationLock(timeoutMs, () =>
+      this.mutationLockController.withMutationLock(
+        (_lockContext, args) => fn(this.mutationFinalizer.mutationEffects, args),
+        options,
+      ),
+    );
+  }
+
+  private async withDirectoryMutationLock<T>(timeoutMs: number, fn: () => Promise<T> | T): Promise<T> {
     const releaseDirectoryLock = await acquireDirectoryLock(
       this.directoryMutationLockDir,
       {
@@ -720,10 +732,7 @@ class KbRuntimeImpl implements KbRuntime {
       timeoutMs,
     );
     try {
-      return await this.mutationLockController.withMutationLock(
-        (_lockContext, args) => fn(this.mutationFinalizer.mutationEffects, args),
-        options,
-      );
+      return await fn();
     } finally {
       releaseDirectoryLock();
     }
@@ -832,10 +841,7 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   private corpusProjectionStateReachedCommitPoint(record: CorpusProjectionCommitRecord): boolean {
-    if (record.nextState === null) {
-      return false;
-    }
-    return corpusProjectionIndexStatesEqual(this.indexStore.readIndexStateIfPresent(), record.nextState);
+    return record.phase === 'state_written' || record.phase === 'committed';
   }
 
   private adoptCorpusProjectionManifestCommit(commitId: string): void {
