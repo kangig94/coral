@@ -717,6 +717,7 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
         type: 'progress',
         ts: row.ts,
         message: body.message,
+        timing: body.timing,
       });
       continue;
     }

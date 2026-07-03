@@ -388,7 +388,6 @@ export class RecoveryService {
     }
 
     this.deps.jobPools.set(jobId, pool);
-    this.deps.progressStore.hydrateJobStartedAt(jobId, runtimeRecord.startTime);
 
     this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, pool);
     this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);

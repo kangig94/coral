@@ -9,6 +9,7 @@ import {
 } from '../wait.js';
 import type { JobQueueReadPort, LaunchPool } from '../contracts/admission.js';
 import type { JobEventBus } from '../event-bus.js';
+import { queuedProgressTiming } from '../progress-timing.js';
 import type { TimePort } from '../../infra/port-types.js';
 import type { SessionJobReadPort } from '../../sessions/contracts.js';
 import type { JobProjectionDetail } from '../read-queries.js';
@@ -35,6 +36,7 @@ function toProgressWaitEvent(event: JobProgressEvent): WaitStreamEvent {
     jobId: event.jobId,
     seq: event.seq,
     message: event.message,
+    timing: event.timing,
   };
 }
 
@@ -366,6 +368,7 @@ export class WaitCoordinator {
             sessionId: status.sessionId ?? '',
             queuePosition: launchQueue.queuePosition(jobId, pool) ?? 0,
             runningJobIds: launchQueue.getActiveJobIds(pool),
+            timing: queuedProgressTiming(status, this.deps.time.now()),
           };
         }
       }

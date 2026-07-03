@@ -57,6 +57,13 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
+const progressTiming = {
+  origin: 'runtime',
+  originAt: '2026-03-06T00:00:00.000Z',
+  emittedAt: '2026-03-06T00:00:01.000Z',
+  elapsedMs: 1_000,
+} as const;
+
 type ProviderTurnContinuity = {
   conversationRef: string | null;
   resumable: boolean;
@@ -853,6 +860,7 @@ describe('ExecutionService wait', () => {
         type: 'progress',
         ts: '2026-03-06T00:00:01.000Z',
         message: 'step 1',
+        timing: progressTiming,
       },
       {
         jobId: 'job-1',
@@ -879,6 +887,7 @@ describe('ExecutionService wait', () => {
         jobId: 'job-1',
         seq: 1,
         message: 'step 1',
+        timing: progressTiming,
       },
       {
         type: 'terminal',
@@ -1421,6 +1430,12 @@ describe('ExecutionService wait', () => {
       sessionId: decision.session,
       queuePosition: 1,
       runningJobIds,
+      timing: expect.objectContaining({
+        origin: 'queued',
+        originAt: expect.any(String),
+        emittedAt: expect.any(String),
+        elapsedMs: expect.any(Number),
+      }),
     });
     expect(events[1]).toMatchObject({
       type: 'progress',
@@ -1570,8 +1585,24 @@ describe('ExecutionService wait', () => {
         const [jid] = args as [string];
         void jid;
         return [
-          { jobId, sessionId: 'session-1', seq: 1, type: 'progress' as const, ts: '', message: 'event-1' },
-          { jobId, sessionId: 'session-1', seq: 2, type: 'progress' as const, ts: '', message: 'event-2' },
+          {
+            jobId,
+            sessionId: 'session-1',
+            seq: 1,
+            type: 'progress' as const,
+            ts: '',
+            message: 'event-1',
+            timing: progressTiming,
+          },
+          {
+            jobId,
+            sessionId: 'session-1',
+            seq: 2,
+            type: 'progress' as const,
+            ts: '',
+            message: 'event-2',
+            timing: progressTiming,
+          },
           {
             jobId,
             sessionId: 'session-1',

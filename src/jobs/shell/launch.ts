@@ -15,7 +15,7 @@ import { isTerminalPhase, type JobPhase } from '../phase.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { RetentionPolicy, SessionEntry } from '../../sessions/entry.js';
 import { type AbortReason, type JobAbortedBody, type JobLaunchRejected } from '../outcome.js';
-import type { JobProgressBody, JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.js';
+import type { JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.js';
 import { type AbortRegistry } from './abort-registry.js';
 import { writeResultArtifact } from '../terminal/export.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
@@ -35,7 +35,7 @@ import { buildJobEventRefs } from '../refs.js';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
-type LauncherJobEventBody = JobProgressBody | JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
+type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
 
 function missingContinuityMiddleware(method: keyof NonNullable<ProviderRuntime['continuityBridge']>): never {
   throw new Error(`runtime.continuityBridge.${method}() called without sessionContinuity() middleware.`);
@@ -177,10 +177,7 @@ export class LaunchOrchestrator {
   }
 
   private appendProgressEvent(jobId: string, sessionId: string, message: string): void {
-    this.appendJobEvent(jobId, sessionId, 'job.progress.emitted', {
-      kind: 'message',
-      message,
-    });
+    this.deps.progressStore.appendProgress(jobId, sessionId, message);
   }
 
   private appendLaunchRejectedTerminal(

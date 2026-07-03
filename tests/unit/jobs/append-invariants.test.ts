@@ -83,6 +83,12 @@ function progressInput(jobId: string): CoralEventInput {
     body: {
       kind: 'message',
       message: 'late progress',
+      timing: {
+        origin: 'launch',
+        originAt: NOW.toISOString(),
+        emittedAt: '2026-04-19T00:00:01.000Z',
+        elapsedMs: 1000,
+      },
     },
   };
 }

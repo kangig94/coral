@@ -15,6 +15,12 @@ let testJobId: string;
 let testHomeDir: string;
 
 const NOW = '2026-01-01T00:00:00Z';
+const PROGRESS_TIMING = {
+  origin: 'launch',
+  originAt: NOW,
+  emittedAt: '2026-01-01T00:00:02Z',
+  elapsedMs: 2000,
+} as const;
 const nodeStoreStorage = createRealRuntime('prod').storage;
 
 function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
@@ -211,7 +217,9 @@ describe('readProgressLog', () => {
   it('returns valid progress entries with all required fields', () => {
     seedJobProjection({
       phase: 'running',
-      events: [{ type: 'job.progress.emitted', body: { kind: 'message', message: 'working' } }],
+      events: [
+        { type: 'job.progress.emitted', body: { kind: 'message', message: 'working', timing: PROGRESS_TIMING } },
+      ],
     });
     const result = readProgressLog(testJobId);
     expect(result).toHaveLength(1);
@@ -223,6 +231,7 @@ describe('readProgressLog', () => {
     expect(event.ts).toBe(NOW);
     if (event.type !== 'progress') throw new Error('expected progress event');
     expect(event.message).toBe('working');
+    expect(event.timing).toEqual(PROGRESS_TIMING);
   });
 
   it('returns empty array when the projection store has no matching job', () => {
@@ -256,7 +265,12 @@ describe('readProgressLog', () => {
   it('throws when a progress event body contains unexpected fields', () => {
     seedJobProjection({
       phase: 'running',
-      events: [{ type: 'job.progress.emitted', body: { kind: 'message', message: 'working', futureField: 'data' } }],
+      events: [
+        {
+          type: 'job.progress.emitted',
+          body: { kind: 'message', message: 'working', timing: PROGRESS_TIMING, futureField: 'data' },
+        },
+      ],
     });
     expect(() => readProgressLog(testJobId)).toThrow();
   });

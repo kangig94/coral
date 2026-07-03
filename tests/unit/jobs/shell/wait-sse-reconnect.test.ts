@@ -124,6 +124,12 @@ describe('wait SSE reconnect', () => {
           body: {
             kind: 'message',
             message,
+            timing: {
+              origin: 'runtime',
+              originAt: '2026-04-19T00:00:01.000Z',
+              emittedAt: '2026-04-19T00:00:02.000Z',
+              elapsedMs: 1000,
+            },
           },
         },
       ]);
@@ -305,6 +311,12 @@ describe('wait SSE reconnect', () => {
           body: {
             kind: 'message',
             message: 'progress-before-race',
+            timing: {
+              origin: 'runtime',
+              originAt: '2026-04-19T00:00:01.000Z',
+              emittedAt: '2026-04-19T00:00:02.000Z',
+              elapsedMs: 1000,
+            },
           },
         },
       ]);

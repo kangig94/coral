@@ -15,7 +15,6 @@ import {
   formatAbortResult,
   formatDetachedLaunchStatus,
   formatJobsList,
-  formatLaunch,
   formatLaunchWaitHint,
   renderJobsList,
 } from '#src/cli/format/jobs.js';
@@ -1379,6 +1378,12 @@ describe('cli main routing', () => {
       jobId: 'job-1',
       seq: 1,
       message: 'working',
+      timing: {
+        origin: 'runtime',
+        originAt: '2026-07-03T08:00:00.000Z',
+        emittedAt: '2026-07-03T08:00:02.000Z',
+        elapsedMs: 2_000,
+      },
     } as const;
     const terminalEvent = {
       type: 'terminal' as const,

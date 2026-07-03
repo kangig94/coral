@@ -25,8 +25,9 @@ import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
-import type { JobRuntimeStartedBody } from './event-bodies.js';
+import type { JobProgressTiming, JobRuntimeStartedBody } from './event-bodies.js';
 import { type JobLaunch, type JobRuntime, type JobStatus, type JobTerminal } from './records.js';
+import { progressTimingFromProjection } from './progress-timing.js';
 import { buildJobEventRefs } from './refs.js';
 
 export type JobStoreOptions = {
@@ -43,24 +44,6 @@ export type JobStoreOptions = {
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
 };
-
-function formatElapsed(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const s = String(seconds).padStart(2, ' ');
-  const m = String(minutes).padStart(2, ' ');
-  if (hours > 0) {
-    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
-  }
-  return `${m}m ${s}s`;
-}
-
-function formatProgressMessage(startedAt: number | undefined, nowMs: number, message: string): string {
-  const elapsed = startedAt === undefined ? 0 : nowMs - startedAt;
-  return `[${formatElapsed(elapsed)}] ${message}`;
-}
 
 function toTerminalPayload(detail: ReturnType<typeof loadJobProjectionDetail>): JobTerminal | null {
   const exit = detail.exit;
@@ -110,7 +93,6 @@ export class JobStore implements JobProgressStore {
   private readonly commitEvents: CommitEventsFn;
   private readonly observer?: PostCommitObserver;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
-  private readonly jobStartedAt = new Map<string, number>();
   private changeSeq = 0;
   private waiters: Array<() => void> = [];
   private enqueueSequence = 0;
@@ -288,23 +270,19 @@ export class JobStore implements JobProgressStore {
       }
 
       if (event.type === 'job.progress.emitted') {
-        const body = event.body as { kind?: string; message?: string };
+        const body = event.body as { kind?: string; message?: string; timing?: JobProgressTiming };
         if (body.kind === 'message' && typeof body.message === 'string') {
-          this.eventBus.emit('job:progress', { jobId: event.stream.id, seq: event.seq, message: body.message });
-        }
-        continue;
-      }
-
-      if (event.type === 'job.runtime.started') {
-        const body = event.body as { startedAt?: string };
-        if (typeof body.startedAt === 'string') {
-          this.hydrateJobStartedAt(event.stream.id, body.startedAt);
+          this.eventBus.emit('job:progress', {
+            jobId: event.stream.id,
+            seq: event.seq,
+            message: body.message,
+            timing: body.timing as JobProgressTiming,
+          });
         }
         continue;
       }
 
       if (event.type === 'job.terminal.recorded') {
-        this.jobStartedAt.delete(event.stream.id);
         const result = this.readTerminalProjection(event.stream.id);
         if (result !== null) {
           this.eventBus.emit('job:completed', { jobId: event.stream.id, result });
@@ -350,7 +328,6 @@ export class JobStore implements JobProgressStore {
   initJob(opts: InitJobOptions): void {
     const dir = this.jobDir(opts.jobId);
     this.runtime.storage.mkdirSync(dir, { recursive: true });
-    this.jobStartedAt.set(opts.jobId, this.runtime.time.now());
     const createdAt = nowIsoString(this.runtime.time);
     this.appendLaunchRequested(opts.jobId, {
       jobId: opts.jobId,
@@ -417,7 +394,6 @@ export class JobStore implements JobProgressStore {
 
   purgeFromCache(jobId: string): void {
     this.namespaceOverrides.delete(jobId);
-    this.jobStartedAt.delete(jobId);
   }
 
   readStatus(jobId: string): JobStatus | null {
@@ -583,17 +559,11 @@ export class JobStore implements JobProgressStore {
     );
   }
 
-  hydrateJobStartedAt(jobId: string, startTime: string): void {
-    const ts = Date.parse(startTime);
-    if (Number.isFinite(ts)) {
-      this.jobStartedAt.set(jobId, ts);
-    }
-  }
-
   appendProgress(jobId: string, sessionId: string | null, message: string): number {
-    const stamped = formatProgressMessage(this.jobStartedAt.get(jobId), this.runtime.time.now(), message);
+    const nowMs = this.runtime.time.now();
     const detail = this.detail(jobId);
     const status = detail.status;
+    const timing = progressTimingFromProjection(detail, nowMs);
     const [appended] = this.commit((c) => {
       c.append({
         type: 'job.progress.emitted',
@@ -604,7 +574,8 @@ export class JobStore implements JobProgressStore {
         bodyVersion: 1,
         body: {
           kind: 'message',
-          message: stamped,
+          message,
+          timing,
         },
       });
       return undefined;

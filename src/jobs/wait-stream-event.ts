@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { jobContinuitySnapshotSchema } from './continuity.js';
+import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobTerminalSchema } from './terminal/result.js';
 import type { WaitStreamEvent } from './wait.js';
 
@@ -12,6 +13,7 @@ const waitProgressEventSchema = z
     jobId: z.string(),
     seq: z.number().int().nonnegative(),
     message: z.string(),
+    timing: jobProgressTimingSchema,
   })
   .strict();
 
@@ -22,6 +24,7 @@ const waitQueuedEventSchema = z
     sessionId: z.string(),
     queuePosition: z.number(),
     runningJobIds: z.array(z.string()),
+    timing: jobProgressTimingSchema,
   })
   .strict();
 

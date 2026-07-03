@@ -1,5 +1,6 @@
 import type { JobTerminal } from './records.js';
 import type { JobContinuitySnapshot } from './continuity.js';
+import type { JobProgressTiming } from './event-bodies.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
@@ -50,13 +51,14 @@ export type WaitStreamOnceResult = {
 };
 
 export type WaitStreamEvent =
-  | { type: 'progress'; jobId: string; seq: number; message: string }
+  | { type: 'progress'; jobId: string; seq: number; message: string; timing: JobProgressTiming }
   | {
       type: 'queued';
       jobId: string;
       sessionId: string;
       queuePosition: number;
       runningJobIds: string[];
+      timing: JobProgressTiming;
     }
   | {
       type: 'terminal';

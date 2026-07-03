@@ -35,6 +35,12 @@ const workflowTime = {
   },
 };
 const workflowIds = { uuid: () => 'workflow-test-uuid' };
+const waitTiming = {
+  origin: 'queued',
+  originAt: '2026-07-03T08:00:00.000Z',
+  emittedAt: '2026-07-03T08:00:02.000Z',
+  elapsedMs: 2_000,
+} as const;
 
 function running(job: string, session: string) {
   return {
@@ -994,6 +1000,7 @@ describe('waitForAtoms', () => {
             sessionId: 'session-1',
             queuePosition: 2,
             runningJobIds: ['job-a'],
+            timing: waitTiming,
           },
           terminal('job-1', 'session-1', { content: 'ARCH' }),
         ]),

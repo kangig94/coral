@@ -1,4 +1,5 @@
 import type { JobContinuitySnapshot } from '../continuity.js';
+import type { JobProgressTiming } from '../event-bodies.js';
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobEvent, JobTerminal } from '../records.js';
 import { normalizeJobTerminal } from '../terminal/result.js';
@@ -24,7 +25,7 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
   const sessionId = typeof event.refs?.sessionId === 'string' ? event.refs.sessionId : '';
 
   if (event.type === 'job.progress.emitted') {
-    const body = event.body as { kind?: string; message?: string };
+    const body = event.body as { kind?: string; message: string; timing: JobProgressTiming };
     if (body.kind !== 'message') {
       return null;
     }
@@ -35,7 +36,8 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
       seq: event.seq,
       type: 'progress',
       ts: event.ts,
-      message: body.message ?? '',
+      message: body.message,
+      timing: body.timing,
     };
   }
 
