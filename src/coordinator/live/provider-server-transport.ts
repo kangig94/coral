@@ -81,9 +81,16 @@ export type SpawnProviderServerOptions = {
     method: string;
     params: Record<string, unknown>;
   };
+  initializeTimeoutMs?: number;
 };
 
 export type SpawnProviderServerFn = (options: SpawnProviderServerOptions) => Promise<ProviderServerHandle>;
+
+function resolveProviderServerInitializeTimeoutMs(timeoutMs: number | undefined): number {
+  return timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS;
+}
 
 export async function spawnProviderServerTransport(params: {
   runtime: Runtime;
@@ -91,6 +98,10 @@ export async function spawnProviderServerTransport(params: {
   generation: number;
 }): Promise<ProviderServerHandle> {
   const { runtime, options, generation } = params;
+  if (options.signal?.aborted) {
+    throw createProviderServerSpawnAbortError(options.provider, options.signal);
+  }
+
   const command = windowsCommandName(options.command, runtime.env.platform());
   const child = runtime.process.spawn({
     command,
@@ -227,6 +238,7 @@ export async function spawnProviderServerTransport(params: {
         entry,
         rpc,
         request: options.initializeRequest,
+        timeoutMs: options.initializeTimeoutMs,
         runtime,
         signal: options.signal,
       });
@@ -271,10 +283,12 @@ function initializeProviderServer(params: {
   entry: ProviderServerEntry;
   rpc: ProviderServerRpc;
   request: NonNullable<SpawnProviderServerOptions['initializeRequest']>;
+  timeoutMs?: number;
   runtime: Runtime;
   signal?: AbortSignal;
 }): Promise<unknown> {
   const { entry, rpc, request, runtime, signal } = params;
+  const timeoutMs = resolveProviderServerInitializeTimeoutMs(params.timeoutMs);
   if (signal?.aborted) {
     return Promise.reject(createProviderServerInitializeAbortError(entry, signal));
   }
@@ -287,11 +301,11 @@ function initializeProviderServer(params: {
       reject(
         createProviderServerError(
           entry.provider,
-          `initialize timed out after ${PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS}ms`,
+          `initialize timed out after ${timeoutMs}ms`,
           { stderr: entry.stderr },
         ),
       );
-    }, PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS);
+    }, timeoutMs);
     timeoutHandle.unref?.();
   });
 
@@ -313,6 +327,10 @@ function initializeProviderServer(params: {
       }
     },
   );
+}
+
+function createProviderServerSpawnAbortError(provider: string, signal: AbortSignal): Error {
+  return new AbortError({ stage: `provider ${provider} spawn`, reason: signal.reason });
 }
 
 function createProviderServerInitializeAbortError(entry: ProviderServerEntry, signal: AbortSignal): Error {

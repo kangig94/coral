@@ -29,6 +29,7 @@ import {
   type BackendStoreResetAuthority,
 } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
+import { pragmaSimple } from '#tests/helpers/test-db.js';
 
 const REPO_ROOT = process.cwd();
 const BUNDLE_HASH = 'test-bundle';
@@ -209,6 +210,24 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(dbDir)).toBe(true);
     expect(readUserVersion(dbPath)).not.toBe(0);
     expect(existsSync(join(dbDir, 'store.db.reset.lock'))).toBe(false);
+  });
+
+  it('restores the steady-state busy timeout after the startup reset window', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-steady-busy-timeout-'), 'store.db');
+
+    const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+      path: dbPath,
+      bundleHash: BUNDLE_HASH,
+      namespace: NAMESPACE,
+      startupBusyTimeoutMs: 1,
+      steadyStateBusyTimeoutMs: 12_345,
+    });
+    try {
+      expect(pragmaSimple(db, 'busy_timeout')).toBe(12_345);
+    } finally {
+      db.close();
+    }
   });
 
   it('resets a retired v0.6.2 store, warns, and removes the old meta schema marker', () => {

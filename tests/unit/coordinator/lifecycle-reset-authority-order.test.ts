@@ -323,7 +323,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(storeDb.openOrResetBackendStoreDb).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
+      expect.objectContaining({ startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
     );
   });
 

@@ -475,6 +475,68 @@ describe('workflow recovery branch rules', () => {
     }
   });
 
+  it('does not duplicate completed active-step details when a partial relaunch fails', async () => {
+    const harness = createHarness({
+      expression: '(architect, critic)',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: {
+        0: {
+          atomPhase: 'running',
+          projectionPhase: 'completed',
+          terminal: { content: 'ARCH_DONE', outcome: { kind: 'completed' } },
+        },
+        1: {
+          atomPhase: null,
+          projectionPhase: null,
+        },
+      },
+    });
+    const [completedSlot, missingSlot] = harness.plan.slots;
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    harness.executionSvc.coralDispatch.mockResolvedValue({
+      status: 'rejected',
+      message: 'launch capacity unavailable',
+    });
+    harness.executionSvc.abort.mockReturnValue({ aborted: [completedSlot.slotId], notFound: [] });
+    harness.executionSvc.waitStream.mockImplementation((req: WaitStreamRequest) => {
+      harness.waitRequests.push({
+        ...req,
+        jobIds: [...req.jobIds],
+        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+      });
+      return emit(req.jobIds.map((jobId) => terminal(jobId, 'ARCH_DONE')));
+    });
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          time: fixedTime,
+        }),
+      ).rejects.toMatchObject({
+        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
+        failedSlotId: missingSlot.slotId,
+      });
+
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([completedSlot.slotId]);
+      expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
+      const intent = finalizeWorkflow.mock.calls[0]?.[0];
+      expect(intent).toMatchObject({
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+      });
+      expect(intent?.stepDetails).toEqual([{ stepIndex: 0, atomIndex: 0, label: 'architect', output: 'ARCH_DONE' }]);
+    } finally {
+      harness.db.close();
+    }
+  });
+
   it('finalizes failed recovery for an empty failed terminal output', async () => {
     const harness = createHarness({
       atomPhase: 'running',

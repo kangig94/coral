@@ -308,7 +308,11 @@ type BackendStoreIdentityOptions = {
 
 type BackendStoreResetAuthorityOptions = BackendStorePathOptions & BackendStoreIdentityOptions;
 
-type OpenOrResetBackendStoreOptions = BackendStorePathOptions & Partial<BackendStoreIdentityOptions>;
+type OpenOrResetBackendStoreOptions = BackendStorePathOptions &
+  Partial<BackendStoreIdentityOptions> & {
+    readonly startupBusyTimeoutMs?: number;
+    readonly steadyStateBusyTimeoutMs?: number;
+  };
 
 type StoreFileSet = {
   readonly dbDir: string;
@@ -616,6 +620,8 @@ export function openOrResetBackendStoreDb(
   options: OpenOrResetBackendStoreOptions = {},
 ): Database {
   const files = resolveStoreFileSet(runtime, options);
+  const startupBusyTimeoutMs = options.startupBusyTimeoutMs ?? options.busyTimeoutMs;
+  const steadyStateBusyTimeoutMs = options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS;
   if (files.dbFile === ':memory:') {
     throw new Error('openOrResetBackendStoreDb requires a real filesystem store path.');
   }
@@ -651,15 +657,12 @@ export function openOrResetBackendStoreDb(
     const db = openStoreDatabase({
       path: files.dbFile,
       storage: runtime.storage,
-      busyTimeoutMs: options.busyTimeoutMs,
+      busyTimeoutMs: startupBusyTimeoutMs,
     });
-    // The caller passes a short busy_timeout to fail fast against a peer still
-    // holding the store during the open/reset contention window. That window
-    // closes here: restore the steady-state timeout so this long-lived handle
-    // tolerates ordinary cross-process write-lock contention (notably the
-    // out-of-process KB daemon committing projections) rather than throwing
-    // SQLITE_BUSY after the short startup budget.
-    db.exec(`PRAGMA busy_timeout = ${STEADY_STATE_BUSY_TIMEOUT_MS}`);
+    // Startup and steady-state contention are separate budgets. Keep the legacy
+    // busyTimeoutMs option as a startup alias, then restore the long-lived
+    // handle to its steady-state budget after the reset window closes.
+    db.exec(`PRAGMA busy_timeout = ${steadyStateBusyTimeoutMs}`);
     return db;
   } finally {
     releaseLock?.();

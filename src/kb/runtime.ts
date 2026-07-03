@@ -354,7 +354,8 @@ class KbRuntimeImpl implements KbRuntime {
       indexStore: this.indexStore,
       manifestAuthority: this.manifestAuthority,
       mutationLockController: this.mutationLockController,
-      withDirectoryMutationLock: (fn) => this.withDirectoryMutationLock(this.mutationLockDefaultTimeoutMs, fn),
+      withDirectoryMutationLock: (fn, options = {}) =>
+        this.withDirectoryMutationLock(this.mutationLockDefaultTimeoutMs, fn, options),
       mutationEffects: this.mutationFinalizer.mutationEffects,
       target: {
         markdownRoot: this.markdownRoot,
@@ -707,15 +708,22 @@ class KbRuntimeImpl implements KbRuntime {
     options: KbMutationLockOptions = {},
   ): Promise<T> {
     const timeoutMs = options.timeoutMs ?? this.mutationLockDefaultTimeoutMs;
-    return this.withDirectoryMutationLock(timeoutMs, () =>
-      this.mutationLockController.withMutationLock(
-        (_lockContext, args) => fn(this.mutationFinalizer.mutationEffects, args),
-        options,
-      ),
+    return this.withDirectoryMutationLock(
+      timeoutMs,
+      () =>
+        this.mutationLockController.withMutationLock(
+          (_lockContext, args) => fn(this.mutationFinalizer.mutationEffects, args),
+          options,
+        ),
+      { signal: options.signal },
     );
   }
 
-  private async withDirectoryMutationLock<T>(timeoutMs: number, fn: () => Promise<T> | T): Promise<T> {
+  private async withDirectoryMutationLock<T>(
+    timeoutMs: number,
+    fn: () => Promise<T> | T,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<T> {
     const releaseDirectoryLock = await acquireDirectoryLock(
       this.directoryMutationLockDir,
       {
@@ -724,6 +732,7 @@ class KbRuntimeImpl implements KbRuntime {
           now: () => this.time.now(),
           sleep: this.sleep.bind(this),
         },
+        signal: options.signal,
         staleMs: Math.max(
           KB_MUTATION_DIRECTORY_LOCK_STALE_MIN_MS,
           timeoutMs * 2 + KB_MUTATION_DIRECTORY_LOCK_STALE_PADDING_MS,

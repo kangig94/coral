@@ -11,6 +11,7 @@ export type DirectoryLockDeps = {
   storage: Pick<StoragePort, 'mkdirSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'>;
   time: Pick<TimePort, 'now' | 'sleep'>;
   staleMs?: number;
+  signal?: AbortSignal;
 };
 
 export class DirectoryLockTimeoutError extends Error {
@@ -117,6 +118,43 @@ function isStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
   }
 }
 
+function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
+  deps.signal?.throwIfAborted();
+}
+
+async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void> {
+  const signal = deps.signal;
+  if (signal === undefined) {
+    await deps.time.sleep(LOCK_RETRY_INTERVAL_MS);
+    return;
+  }
+
+  signal.throwIfAborted();
+  let abortHandler: (() => void) | null = null;
+  const abort = new Promise<never>((_, reject) => {
+    abortHandler = () => {
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener('abort', abortHandler, { once: true });
+    if (signal.aborted) {
+      abortHandler();
+    }
+  });
+
+  try {
+    await Promise.race([deps.time.sleep(LOCK_RETRY_INTERVAL_MS), abort]);
+  } finally {
+    if (abortHandler !== null) {
+      signal.removeEventListener('abort', abortHandler);
+    }
+  }
+  signal.throwIfAborted();
+}
+
 export async function acquireDirectoryLock(lockDir: string, timeoutMs?: number): Promise<() => void>;
 export async function acquireDirectoryLock(
   lockDir: string,
@@ -133,6 +171,7 @@ export async function acquireDirectoryLock(
   const deadline = deps.time.now() + effectiveTimeoutMs;
 
   while (deps.time.now() < deadline) {
+    throwIfDirectoryLockAborted(deps);
     try {
       deps.storage.mkdirSync(lockDir);
       const ownerToken = randomUUID();
@@ -147,9 +186,10 @@ export async function acquireDirectoryLock(
       continue;
     }
 
-    await deps.time.sleep(LOCK_RETRY_INTERVAL_MS);
+    await waitForDirectoryLockRetry(deps);
   }
 
+  throwIfDirectoryLockAborted(deps);
   throw new DirectoryLockTimeoutError(lockDir);
 }
 

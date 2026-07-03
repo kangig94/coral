@@ -439,10 +439,6 @@ function mergeActiveAtomsWithLaunched(
   );
 }
 
-function buildCompletedStepDetailsForActiveStep(summary: RecoverySummary, plan: WaitRecoveryPlan): StepDetail[] {
-  return [...summary.stepDetails, ...buildStepDetailsForAtoms(plan.activeAtoms, plan.completedOutputs)];
-}
-
 async function recoverPartiallyLaunchedStep(
   deps: ResumeWorkflowDeps,
   snapshot: RecoverySnapshot,
@@ -454,7 +450,6 @@ async function recoverPartiallyLaunchedStep(
 
   deps.onProgress(deps.workflowId, `resuming partially launched step ${snapshot.summary.activeStepIndex}`);
 
-  const completedStepDetails = buildCompletedStepDetailsForActiveStep(snapshot.summary, waitPlan);
   const neverLaunchedSlotIds = new Set(neverLaunchedSlots.map((slot) => slot.slotId));
   const launchedPending = waitPlan.activeAtoms.filter((atom) => !neverLaunchedSlotIds.has(atom.slotId));
   const { launchedAtoms, launchError } = await launchCompiledStepAtoms(
@@ -463,7 +458,7 @@ async function recoverPartiallyLaunchedStep(
     deps.executionSvc,
     deps.ctx,
     {
-      completedStepDetails,
+      completedStepDetails: snapshot.summary.stepDetails,
       workflowJobId: deps.workflowId,
       atomIndexFor: (slot) => atomIndexForSlot(snapshot, slot),
     },
@@ -471,7 +466,7 @@ async function recoverPartiallyLaunchedStep(
   if (launchError !== null) {
     const drainAtoms = [...launchedPending, ...launchedAtoms];
     await handleStepLaunchFailure(launchError, drainAtoms, {
-      completedStepDetails,
+      completedStepDetails: snapshot.summary.stepDetails,
       drainLaunchedAtoms: () => drainLaunchedRecoveryAtoms(deps, drainAtoms),
     });
   }

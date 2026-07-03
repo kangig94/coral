@@ -76,6 +76,7 @@ export interface ProviderServerSpec {
     method: string;
     params: Record<string, unknown>;
   };
+  initializeTimeoutMs?: number;
   shutdownCapability?: {
     method: string;
     timeoutMs: number;

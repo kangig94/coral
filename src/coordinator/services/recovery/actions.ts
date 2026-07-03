@@ -228,11 +228,6 @@ export function finalizeDeadAdoptedJob({
     return;
   }
 
-  if (cancelledJobIds?.has(jobId)) {
-    finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
-    return;
-  }
-
   const exitRecord = progressStore.readExitProjection(jobId);
   if (exitRecord) {
     if (provider) {
@@ -331,6 +326,11 @@ export function finalizeDeadAdoptedJob({
           }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
     service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, phaseForOutcome(outcome));
+    return;
+  }
+
+  if (cancelledJobIds?.has(jobId)) {
+    finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
     return;
   }
 

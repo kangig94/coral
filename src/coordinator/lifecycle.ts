@@ -528,7 +528,7 @@ async function runLifecycleStartup({
     const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
       bundleHash,
       namespace,
-      busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+      startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
     });
     let storeServices: CoordinatorStoreServices;
     try {

@@ -1,6 +1,6 @@
 import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { acquireDirectoryLockSync, type DirectoryLockDeps } from '#src/infra/fs-lock.js';
+import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '#src/infra/fs-lock.js';
 
 function errno(code: string): NodeJS.ErrnoException {
   const error = new Error(code) as NodeJS.ErrnoException;
@@ -128,5 +128,29 @@ describe('directory fs lock', () => {
 
     replacementRelease();
     expect(directories.has('/locks/shared-session')).toBe(false);
+  });
+
+  it('aborts async acquire while waiting for a busy lock', async () => {
+    const { deps, directories } = createLockDeps(() => 1000);
+    directories.set('/locks/busy-session', 1000);
+    const controller = new AbortController();
+    let sleepStarted!: () => void;
+    const sleepStartedPromise = new Promise<void>((resolve) => {
+      sleepStarted = resolve;
+    });
+    deps.time.sleep = vi.fn(
+      () =>
+        new Promise<void>(() => {
+          sleepStarted();
+        }),
+    );
+
+    const promise = acquireDirectoryLock('/locks/busy-session', { ...deps, signal: controller.signal }, 10_000);
+    await sleepStartedPromise;
+    const reason = new Error('stop waiting');
+    controller.abort(reason);
+
+    await expect(promise).rejects.toBe(reason);
+    expect(directories.has('/locks/busy-session')).toBe(true);
   });
 });

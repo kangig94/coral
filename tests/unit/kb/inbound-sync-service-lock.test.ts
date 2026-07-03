@@ -93,4 +93,69 @@ describe('CorpusInboundSyncService', () => {
     expect(result).toEqual({ kind: 'no-change' });
     expect(events).toEqual(['directory:start', 'controller:start', 'fn', 'controller:end', 'directory:end']);
   });
+
+  it('passes inbound sync abort signal to the cross-process mutation wrapper', async () => {
+    const runtime = new SimulationRuntime();
+    const indexStore = new KbIndexStore({
+      runtimeDir: '/tmp/coral-inbound-sync-service-signal/runtime',
+      storage: runtime.storage,
+      ids: { uuid: () => 'inbound-sync-service-signal' },
+    });
+    const manifestAuthority = createManifestAuthority();
+    const controller = new AbortController();
+    const service = new CorpusInboundSyncService({
+      indexStore,
+      manifestAuthority,
+      mutationLockController: {
+        withMutationLock: async (fn, options) => {
+          expect(options?.signal).toBe(controller.signal);
+          return fn(
+            {
+              startIndex: null as unknown as KbIndex,
+              pendingMutationLane: null,
+              pendingMutationReason: undefined,
+              publication: null,
+              pendingOpaqueDeltas: [],
+              finalized: false,
+            },
+            { signal: controller.signal },
+          );
+        },
+        diagnostics: () => ({ blocked: false }),
+      },
+      mutationEffects: {
+        queueManifestAuthorityDelta: () => {
+          throw new Error('queueManifestAuthorityDelta should not run for no-change sync');
+        },
+        writeEntityGraph: () => {
+          throw new Error('writeEntityGraph should not run for no-change sync');
+        },
+      },
+      target: {
+        markdownRoot: '/tmp/coral-inbound-sync-service-signal',
+        corpusStorage: createCorpusStorage(runtime.storage),
+        storagePort: runtime.storage,
+        entityGraphPath: () => '/tmp/coral-inbound-sync-service-signal/.entity-graph.json',
+        notePath: (note: string) => `/tmp/coral-inbound-sync-service-signal/notes/${note}.md`,
+        wikiPath: (slug: string) => `/tmp/coral-inbound-sync-service-signal/wiki/${slug}.md`,
+        sourcePath: (source: string) => `/tmp/coral-inbound-sync-service-signal/sources/${source}.md`,
+        communityPath: (community: string) => `/tmp/coral-inbound-sync-service-signal/communities/${community}.md`,
+        principlePath: (principle: string) => `/tmp/coral-inbound-sync-service-signal/principles/${principle}.md`,
+        generatedCommunitySlugs: () => new Set(),
+      },
+      async withDirectoryMutationLock<T>(fn: () => Promise<T> | T, options?: { signal?: AbortSignal }): Promise<T> {
+        expect(options?.signal).toBe(controller.signal);
+        return fn();
+      },
+      recordMutationCommitted: () => {
+        throw new Error('recordMutationCommitted should not run for no-change sync');
+      },
+      invalidateKbCache: () => {
+        throw new Error('invalidateKbCache should not run for no-change sync');
+      },
+    });
+
+    await expect(service.runInboundSync(() => ({ kind: 'no-change' as const }), { signal: controller.signal }))
+      .resolves.toEqual({ kind: 'no-change' });
+  });
 });

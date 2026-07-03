@@ -66,7 +66,7 @@ export interface CorpusInboundSyncServiceOptions {
   >;
   mutationEffects: KbMutationEffects;
   target: CorpusInboundSyncTarget;
-  withDirectoryMutationLock?<T>(fn: () => Promise<T> | T): Promise<T>;
+  withDirectoryMutationLock?<T>(fn: () => Promise<T> | T, options?: { signal?: AbortSignal }): Promise<T>;
   recordMutationCommitted(lane: KbIndexMutationLane, reason?: string): void;
   invalidateKbCache(): void;
 }
@@ -82,64 +82,67 @@ export class CorpusInboundSyncService {
     let authoritativeSurface: CorpusSurface | null = null;
 
     const runWithControllerLock = (): Promise<T> =>
-      this.options.mutationLockController.withMutationLock(async (lockContext) => {
-        const target = this.options.target;
-        const beforeSurface = options.structuredDiff === true ? null : this.buildCurrentSurface();
-        const result = await fn();
-        if (options.structuredDiff !== true || structuredSyncMayChangeEntityGraph(result)) {
-          this.normalizeEntityGraphAfterInboundSync();
-        }
+      this.options.mutationLockController.withMutationLock(
+        async (lockContext) => {
+          const target = this.options.target;
+          const beforeSurface = options.structuredDiff === true ? null : this.buildCurrentSurface();
+          const result = await fn();
+          if (options.structuredDiff !== true || structuredSyncMayChangeEntityGraph(result)) {
+            this.normalizeEntityGraphAfterInboundSync();
+          }
 
-        if (options.structuredDiff === true && isGitSyncResult(result)) {
-          if (result.kind === 'ambiguous') {
-            authoritativeSurface = this.buildCurrentSurface();
-            mutationDiff = detectInboundSyncMutationFromSurface(
-              authoritativeSurface,
-              this.options.manifestAuthority,
-              true,
-            );
-          } else if (result.kind === 'paths') {
-            mutationDiff = detectInboundSyncMutationFromStructuredDiff(
-              result.changes,
-              target,
-              this.options.manifestAuthority,
-            );
+          if (options.structuredDiff === true && isGitSyncResult(result)) {
+            if (result.kind === 'ambiguous') {
+              authoritativeSurface = this.buildCurrentSurface();
+              mutationDiff = detectInboundSyncMutationFromSurface(
+                authoritativeSurface,
+                this.options.manifestAuthority,
+                true,
+              );
+            } else if (result.kind === 'paths') {
+              mutationDiff = detectInboundSyncMutationFromStructuredDiff(
+                result.changes,
+                target,
+                this.options.manifestAuthority,
+              );
+            } else {
+              mutationDiff = {
+                lane: null,
+                changedEntryIds: [],
+                requiresFullInstall: false,
+                manifestDeltas: [],
+              };
+            }
           } else {
-            mutationDiff = {
-              lane: null,
-              changedEntryIds: [],
-              requiresFullInstall: false,
-              manifestDeltas: [],
-            };
-          }
-        } else {
-          mutationDiff = detectInboundSyncMutation(
-            beforeSurface ?? this.buildCurrentSurface(),
-            (authoritativeSurface = this.buildCurrentSurface()),
-          );
-        }
-
-        if (mutationDiff.lane !== null) {
-          if (mutationDiff.manifestDeltas.length > 0) {
-            this.options.mutationEffects.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
-          } else if (authoritativeSurface !== null) {
-            this.options.manifestAuthority.replaceCurrentSurfaceHashes(authoritativeSurface.manifest);
-          }
-          if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
-            this.options.indexStore.writeIndex(
-              buildInboundSyncIndexDelta(lockContext.startIndex, mutationDiff.changedEntryIds, target),
+            mutationDiff = detectInboundSyncMutation(
+              beforeSurface ?? this.buildCurrentSurface(),
+              (authoritativeSurface = this.buildCurrentSurface()),
             );
-          } else if (mutationDiff.requiresFullInstall) {
-            this.options.invalidateKbCache();
           }
-          this.options.recordMutationCommitted(mutationDiff.lane, 'KB text snapshot is stale after inbound git sync.');
-        }
 
-        return result;
-      });
+          if (mutationDiff.lane !== null) {
+            if (mutationDiff.manifestDeltas.length > 0) {
+              this.options.mutationEffects.queueManifestAuthorityDelta(mutationDiff.manifestDeltas);
+            } else if (authoritativeSurface !== null) {
+              this.options.manifestAuthority.replaceCurrentSurfaceHashes(authoritativeSurface.manifest);
+            }
+            if (!mutationDiff.requiresFullInstall && mutationDiff.changedEntryIds.length > 0) {
+              this.options.indexStore.writeIndex(
+                buildInboundSyncIndexDelta(lockContext.startIndex, mutationDiff.changedEntryIds, target),
+              );
+            } else if (mutationDiff.requiresFullInstall) {
+              this.options.invalidateKbCache();
+            }
+            this.options.recordMutationCommitted(mutationDiff.lane, 'KB text snapshot is stale after inbound git sync.');
+          }
+
+          return result;
+        },
+        { signal: options.signal },
+      );
     return this.options.withDirectoryMutationLock === undefined
       ? runWithControllerLock()
-      : this.options.withDirectoryMutationLock(runWithControllerLock);
+      : this.options.withDirectoryMutationLock(runWithControllerLock, { signal: options.signal });
   }
 
   private buildCurrentSurface(): CorpusSurface {

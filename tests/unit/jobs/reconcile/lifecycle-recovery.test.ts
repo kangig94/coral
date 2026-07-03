@@ -666,7 +666,7 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('records recovered provider artifact handles before recovered terminal completion', async () => {
+  it('records recovered provider artifact handles before recovered terminal completion even when cancellation was observed', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-recovered-handles');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
@@ -772,6 +772,7 @@ describe('lifecycle recovery', () => {
       progressStore,
       runtime,
       sessionLookup: { readSessionEntry: () => null },
+      cancelledJobIds: new Set([jobId]),
       log: () => {},
     });
 
