@@ -839,23 +839,25 @@ describe('cli format', () => {
       );
     });
 
-    it('formats a non-inline terminal event with the result path and lists remaining jobIds', () => {
+    it('formats a non-inline terminal event with the result path and a continuation command', () => {
       expect(formatWaitTerminal(waitTerminalEvent, null, false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
-    it('reports "none" when no jobs remain on a non-inline terminal event', () => {
+    it('reports when no jobs remain on a non-inline terminal event', () => {
       const event = { ...waitTerminalEvent, remainingJobIds: [] };
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: none',
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'No remaining jobs.',
       );
     });
 
-    it('joins multiple remaining jobIds with commas on a non-inline terminal event', () => {
+    it('includes multiple remaining jobIds in the continuation command', () => {
       const event = { ...waitTerminalEvent, remainingJobIds: ['job-a', 'job-b', 'job-c'] };
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-a, job-b, job-c',
+        'Job job-1 completed\n' +
+          'Result path: /tmp/result.md\n' +
+          'Run coral-cli wait jobs job-a job-b job-c to continue waiting.',
       );
     });
 
@@ -889,7 +891,9 @@ describe('cli format', () => {
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 aborted: signal_abort\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+        'Job job-1 aborted: signal_abort\n' +
+          'Result path: /tmp/result.md\n' +
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
@@ -911,7 +915,7 @@ describe('cli format', () => {
       expect(formatWaitTerminal(event, null, false)).toBe(
         'Job job-1 errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n' +
           'Result path: /tmp/result.md\n' +
-          'Remaining jobs: job-2',
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
@@ -927,13 +931,13 @@ describe('cli format', () => {
       expect(formatWaitTerminal(event, null, false)).toBe(
         'Job job-1 provider exited 7: forced timeout at 600s\n' +
           'Result path: /tmp/result.md\n' +
-          'Remaining jobs: job-2',
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
-    it('includes the cursor in terminal output when present', () => {
+    it('omits the cursor from terminal continuation output when present', () => {
       expect(formatWaitTerminal(waitTerminalEvent, 'cursor-3', false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2\n' + 'Cursor: cursor-3',
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 

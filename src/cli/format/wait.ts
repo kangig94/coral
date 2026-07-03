@@ -47,6 +47,11 @@ function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCause
   }
 }
 
+function formatWaitContinuation(jobIds: readonly string[]): string {
+  if (jobIds.length === 0) return 'No remaining jobs.';
+  return `Run coral-cli wait jobs ${jobIds.join(' ')} to continue waiting.`;
+}
+
 export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
   if (label === undefined) return event.message;
   return injectProgressLabel(event.message, label);
@@ -65,12 +70,10 @@ export function formatWaitTerminal(
 ): string {
   const header = terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef);
   if (!inline) {
-    const remaining = event.remainingJobIds.length > 0 ? event.remainingJobIds.join(', ') : 'none';
     return joinLines([
       header,
       `Result path: ${event.resultPath}`,
-      `Remaining jobs: ${remaining}`,
-      cursor === null ? undefined : `Cursor: ${cursor}`,
+      formatWaitContinuation(event.remainingJobIds),
     ]);
   }
 
