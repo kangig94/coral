@@ -23,6 +23,7 @@ import {
 } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { KB_SKILL_FIELD_RE, KB_SKILL_MESSAGE_RE } from './lib/coral-skills.mjs';
+import { hasLiveSubagent } from './lib/subagent-registry.mjs';
 import { isKbEnabled } from './lib/kb-toggle.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -80,6 +81,9 @@ try {
 
   // Stop: check session-scoped flag; use visibleMemos for blocking
   if (event === 'Stop') {
+    // Defer while a background subagent is still running — keep the flag and
+    // memos intact so the reminder fires once the session truly winds down.
+    if (hasLiveSubagent(projectDir, sessionId, input.transcript_path)) process.exit(0);
     const flag = sessionId && join(flagDir, `${FLAG_PREFIX}${sessionId}`);
     const hasFlag = flag && existsSync(flag);
     if (hasFlag) {

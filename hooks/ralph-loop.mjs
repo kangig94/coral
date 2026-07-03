@@ -25,6 +25,7 @@ import { dirname, join, resolve } from 'node:path';
 import { claudeConfigDir, exitIfChildProcess, exitIfWrongFlavor, readStdin, readUserMessage, sweepStale } from './lib/hook-utils.mjs';
 import { projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 import { RALPH_FIELD_RE, RALPH_MESSAGE_RE } from './lib/coral-skills.mjs';
+import { hasLiveSubagent } from './lib/subagent-registry.mjs';
 exitIfChildProcess();
 exitIfWrongFlavor();
 
@@ -108,6 +109,10 @@ try {
       endLoop(statePath, stateDir);
     }
   }
+
+  // Defer the next iteration while a background subagent is still running; the
+  // loop resumes when its completion wakes the session and this Stop reruns.
+  if (hasLiveSubagent(projectDir, sessionId, input.transcript_path)) process.exit(0);
 
   const nextState = { ...state, iteration: state.iteration + 1 };
   atomicWriteJson(statePath, nextState);

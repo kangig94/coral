@@ -14,6 +14,7 @@ import {
   RALPH_LOOP_HOOK,
   SESSION_START_HOOK,
   SUBAGENT_START_HOOK,
+  SUBAGENT_TRACK_HOOK,
   cleanupFixtures,
   createFixture,
   expectHookOutput,
@@ -776,5 +777,130 @@ describe('ralph-loop hook', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
+  });
+});
+
+describe('subagent-track hook', () => {
+  it('creates a marker on SubagentStart and removes it on SubagentStop', () => {
+    const fixture = createFixture();
+    const sessionId = 'test-session-track-001';
+    const agentId = 'agent001';
+    const marker = join(fixture.snapshotDir, 'live-subagents', sessionId, agentId);
+
+    const started = runHook(
+      SUBAGENT_TRACK_HOOK,
+      { hook_event_name: 'SubagentStart', session_id: sessionId, agent_id: agentId },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+    expect(started.status).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+
+    const stopped = runHook(
+      SUBAGENT_TRACK_HOOK,
+      { hook_event_name: 'SubagentStop', session_id: sessionId, agent_id: agentId },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+    expect(stopped.status).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('exits silently without agent_id', () => {
+    const fixture = createFixture();
+    const result = runHook(
+      SUBAGENT_TRACK_HOOK,
+      { hook_event_name: 'SubagentStart', session_id: 'test-session-track-002' },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+    expect(result.status).toBe(0);
+    expect(existsSync(fixture.snapshotDir)).toBe(false);
+  });
+});
+
+describe('ralph-loop hook subagent gate', () => {
+  function seedRalphState(snapshotDir: string, sessionId: string): void {
+    mkdirSync(snapshotDir, { recursive: true });
+    writeFileSync(
+      join(snapshotDir, `ralph-state-${sessionId}.json`),
+      JSON.stringify({ prompt: 'keep building', iteration: 1, maxIterations: 0, completionPromise: 'TASK COMPLETE' }),
+    );
+  }
+
+  it('defers the next iteration while a subagent is live', () => {
+    const fixture = createFixture();
+    const sessionId = 'test-session-gate-001';
+    const transcriptRoot = join(fixture.root, 'projects', 'p');
+    const transcriptPath = join(transcriptRoot, `${sessionId}.jsonl`);
+    seedRalphState(fixture.snapshotDir, sessionId);
+    mkdirSync(join(fixture.snapshotDir, 'live-subagents', sessionId), { recursive: true });
+    writeFileSync(join(fixture.snapshotDir, 'live-subagents', sessionId, 'agentX'), '');
+    const subagentsDir = join(transcriptRoot, sessionId, 'subagents');
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, 'agent-agentX.jsonl'), '{}');
+
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      { hook_event_name: 'Stop', session_id: sessionId, transcript_path: transcriptPath, last_assistant_message: 'still working' },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(''); // deferred: no block emitted
+    const state = JSON.parse(readFileSync(join(fixture.snapshotDir, `ralph-state-${sessionId}.json`), 'utf-8'));
+    expect(state.iteration).toBe(1); // iteration not advanced
+  });
+
+  it('drives the next iteration when no subagent is live', () => {
+    const fixture = createFixture();
+    const sessionId = 'test-session-gate-002';
+    const transcriptPath = join(fixture.root, 'projects', 'p', `${sessionId}.jsonl`);
+    seedRalphState(fixture.snapshotDir, sessionId);
+
+    const result = runHook(
+      RALPH_LOOP_HOOK,
+      { hook_event_name: 'Stop', session_id: sessionId, transcript_path: transcriptPath, last_assistant_message: 'still working' },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot },
+    );
+
+    expect(result.status).toBe(0);
+    expect(expectStopOutput(result).decision).toBe('block');
+    const state = JSON.parse(readFileSync(join(fixture.snapshotDir, `ralph-state-${sessionId}.json`), 'utf-8'));
+    expect(state.iteration).toBe(2); // iteration advanced
+  });
+});
+
+describe('kb-promote-gate hook subagent gate', () => {
+  it('defers the memo-promotion block while a subagent is live, then fires once gone', () => {
+    const fixture = createFixture();
+    const sessionId = 'sess-kb-gate';
+    const memoDir = join(coralProjectDir(fixture.root, `local/${basename(fixture.projectRoot)}`), 'memo');
+    mkdirSync(memoDir, { recursive: true });
+    for (let i = 0; i < 10; i++) {
+      writeFileSync(join(memoDir, `20260321-note-${i}.md`), 'memo', 'utf-8');
+    }
+
+    // live subagent marker + fresh transcript for the gated session
+    mkdirSync(join(fixture.snapshotDir, 'live-subagents', sessionId), { recursive: true });
+    writeFileSync(join(fixture.snapshotDir, 'live-subagents', sessionId, 'agentK'), '');
+    const transcriptRoot = join(fixture.root, 'projects', 'p');
+    const transcriptPath = join(transcriptRoot, `${sessionId}.jsonl`);
+    const subagentsDir = join(transcriptRoot, sessionId, 'subagents');
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, 'agent-agentK.jsonl'), '{}');
+
+    const deferred = runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'Stop', session_id: sessionId, transcript_path: transcriptPath },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, HOME: fixture.root, TMPDIR: fixture.tmpRoot },
+    );
+    expect(deferred.status).toBe(0);
+    expect(deferred.stdout.trim()).toBe(''); // deferred: no block
+
+    // a session with no live subagent still gets the block (memos are owner-less)
+    const fired = runHook(
+      KB_PROMOTE_GATE_HOOK,
+      { hook_event_name: 'Stop', session_id: 'sess-kb-none', transcript_path: transcriptPath },
+      { CLAUDE_PROJECT_DIR: fixture.projectRoot, HOME: fixture.root, TMPDIR: fixture.tmpRoot },
+    );
+    expect(expectStopOutput(fired).decision).toBe('block');
   });
 });
