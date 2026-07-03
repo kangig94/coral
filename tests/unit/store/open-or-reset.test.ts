@@ -29,6 +29,7 @@ import {
   type BackendStoreResetAuthority,
 } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
+import { pragmaSimple } from '#tests/helpers/test-db.js';
 
 const REPO_ROOT = process.cwd();
 const BUNDLE_HASH = 'test-bundle';
@@ -40,6 +41,12 @@ function makeTempRoot(prefix: string): string {
   const root = mkdtempSync(join(tmpdir(), prefix));
   tempRoots.push(root);
   return root;
+}
+
+function errno(code: string): NodeJS.ErrnoException {
+  const error = new Error(code) as NodeJS.ErrnoException;
+  error.code = code;
+  return error;
 }
 
 function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T {
@@ -205,6 +212,24 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(join(dbDir, 'store.db.reset.lock'))).toBe(false);
   });
 
+  it('restores the steady-state busy timeout after the startup reset window', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-steady-busy-timeout-'), 'store.db');
+
+    const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
+      path: dbPath,
+      bundleHash: BUNDLE_HASH,
+      namespace: NAMESPACE,
+      startupBusyTimeoutMs: 1,
+      steadyStateBusyTimeoutMs: 12_345,
+    });
+    try {
+      expect(pragmaSimple(db, 'busy_timeout')).toBe(12_345);
+    } finally {
+      db.close();
+    }
+  });
+
   it('resets a retired v0.6.2 store, warns, and removes the old meta schema marker', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-retired-'), 'store.db');
@@ -317,6 +342,52 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
+  it('retries a busy quarantine rename during handoff-acquired reset', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-busy-quarantine-'), 'store.db');
+    createMismatchStore(dbPath);
+    const renameSync = runtime.storage.renameSync;
+    let dbRenameAttempts = 0;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((oldPath, newPath) => {
+      if (oldPath === dbPath && dbRenameAttempts++ === 0) {
+        throw errno('EBUSY');
+      }
+      renameSync(oldPath, newPath);
+    });
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    expect(dbRenameAttempts).toBe(2);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+  });
+
+  it('resets a retired store on cold start without handoff authority', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-cold-retired-'), 'store.db');
+    createRetiredStore(dbPath);
+    const authority = createBackendStoreResetAuthority(
+      runtime,
+      { acquiredViaHandoff: false },
+      {
+        path: dbPath,
+        bundleHash: BUNDLE_HASH,
+        namespace: NAMESPACE,
+      },
+    );
+
+    const db = openOrResetBackendStoreDb(runtime, authority, {
+      path: dbPath,
+      bundleHash: BUNDLE_HASH,
+      namespace: NAMESPACE,
+    });
+    db.close();
+
+    expect(readUserVersion(dbPath)).not.toBe(0);
+    expect(retiredSchemaVersionRow(dbPath)).toBeNull();
   });
 
   it('logs the live-work-loss warning for mismatched stores', () => {

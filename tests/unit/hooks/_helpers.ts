@@ -6,6 +6,7 @@ import { join } from 'node:path';
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
 export const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
 export const SUBAGENT_START_HOOK = join(process.cwd(), 'hooks', 'subagent-start.mjs');
+export const SUBAGENT_TRACK_HOOK = join(process.cwd(), 'hooks', 'subagent-track.mjs');
 export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');
 export const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'hooks', 'kb-promote-gate.mjs');
 export const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder.mjs');

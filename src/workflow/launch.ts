@@ -170,6 +170,7 @@ export async function launchCompiledStepAtoms(
     workDir?: string;
     signal?: AbortSignal;
     workflowJobId?: string;
+    atomIndexFor?: (slot: CompiledPlanSlot, positionalIndex: number) => number;
     completedStepDetails: StepDetail[];
   },
 ): Promise<StepLaunchResult> {
@@ -181,7 +182,7 @@ export async function launchCompiledStepAtoms(
       try {
         const launched = await launchAtomWithRetry({
           slot,
-          atomIndex,
+          atomIndex: options.atomIndexFor ? options.atomIndexFor(slot, atomIndex) : atomIndex,
           stepPrompt,
           context: options.context,
           workDir: options.workDir,

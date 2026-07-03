@@ -7,6 +7,7 @@ import type { Database } from '#src/store/db.js';
 import type { KbIndexState, KbRuntime } from '#src/kb/contract.js';
 import type * as ScanWorkerModule from '#src/kb/corpus/rescan/scan-worker.js';
 import { applyMutationLane, captureIndexStateSnapshot, withoutTextStaleReason } from '#src/kb/corpus/lanes.js';
+import { INDEX_STATE_FILE } from '#src/kb/corpus/index/store.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';
 import { noteEntryId } from '#src/kb/entry-types.js';
 import type { CorpusProjectionCommitFaultPhase } from '#src/kb/corpus/projection-lifecycle.js';
@@ -367,7 +368,7 @@ describe('corpus projection lifecycle', () => {
       const reopened = reopenHarness(harness);
       harness.db = reopened.db;
       harness.kb = reopened.kb;
-      const committed = phase === 'state_persisted' || phase === 'state_written' || phase === 'committed';
+      const committed = phase === 'state_written' || phase === 'committed';
       expect(harness.kb.generatedCommunityProjectionStore.readActiveFreshness()).toEqual({
         generatedCommunityGeneration: 1,
         generatedCommunityDocsHash: generated.generationDocsHash,
@@ -455,6 +456,50 @@ describe('corpus projection lifecycle', () => {
     expect(manifestCommitId(harness.kb)).toBe(previousManifestCommitId);
     expect(captureIndexStateSnapshot(harness.kb.readIndexState())).toEqual(previousSeq);
     expect(harness.kb.readIndexState().textStaleReason).toBe(previousTextStaleReason);
+    expect(existsSync(join(harness.runtimeDir, 'corpus-projection', 'commits', staged.commitId))).toBe(false);
+  });
+
+  it('rolls back a pending no-lane-change projection even when the state file already equals nextState', async () => {
+    const { performRescan, deriveCorpusProjection, stageCorpusProjectionArtifacts, commitCorpusProjection } =
+      await loadLifecycleModule();
+    const harness = createHarness();
+    writeNote(harness.root, 'projection-note', 'No-op projection body.');
+    await expect(
+      performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState())),
+    ).resolves.toMatchObject({ status: 'committed' });
+    expect(existsSync(join(harness.runtimeDir, INDEX_STATE_FILE))).toBe(true);
+
+    const previousEntry = harness.kb.readIndex()?.entries[noteEntryId('projection-note')];
+    expect(previousEntry).toBeDefined();
+    const previousSeq = captureIndexStateSnapshot(harness.kb.readIndexState());
+    const previousBaselineGenerationId = harness.kb.corpusAuthorityBaseline.readActiveGenerationId();
+    const previousManifestCommitId = manifestCommitId(harness.kb);
+
+    const candidate = await deriveCorpusProjection(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState()));
+    expect(candidate.externalMutation ?? null).toBeNull();
+    expect(harness.kb.readIndexState().textStaleReason).toBeUndefined();
+    expect(captureIndexStateSnapshot(projectedNextState(harness.kb, candidate.externalMutation ?? null))).toEqual(
+      previousSeq,
+    );
+    const staged = stageCorpusProjectionArtifacts(harness.kb, candidate);
+
+    await expect(
+      commitCorpusProjection(harness.kb, staged, {
+        faultInjection: { failAfterPhase: 'pending' },
+      }),
+    ).rejects.toThrow(/Injected corpus projection commit fault/);
+
+    const reopened = reopenHarness(harness);
+    harness.db = reopened.db;
+    harness.kb = reopened.kb;
+
+    expect(harness.kb.readIndex()?.entries[noteEntryId('projection-note')]).toEqual(previousEntry);
+    expect(harness.kb.corpusAuthorityBaseline.readActiveGenerationId()).toBe(previousBaselineGenerationId);
+    expect(manifestCommitId(harness.kb)).toBe(previousManifestCommitId);
+    expect(manifestCommitId(harness.kb)).not.toBe(staged.commitId);
+    expect(captureIndexStateSnapshot(harness.kb.readIndexState())).toEqual(previousSeq);
+    expect(harness.kb.readIndexState().textStaleReason).toBeUndefined();
+    expect(existsSync(staged.stagedIndex.stagingDir)).toBe(false);
     expect(existsSync(join(harness.runtimeDir, 'corpus-projection', 'commits', staged.commitId))).toBe(false);
   });
 });

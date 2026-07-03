@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { resolveInjectMd } from '../inject.js';
 import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../../infra/kb-toggle.js';
-import type { ProviderRequest, EffortLevel } from '../contract.js';
+import type { ProviderEquippedToolSummary, ProviderRequest, EffortLevel } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
@@ -136,6 +136,7 @@ export function buildPreparedClaudeRequest(
   kbRoot: string,
   coralProjects?: string,
   projectSource?: string,
+  equippedTools?: readonly ProviderEquippedToolSummary[],
 ): PreparedClaudeRequest {
   const systemParts: string[] = [];
   let prompt = request.prompt;
@@ -147,6 +148,7 @@ export function buildPreparedClaudeRequest(
     kbEnabled: resolveKbEnabled(request.coralEnv?.[CORAL_KB_ENABLE_ENV]),
     ...(coralProjects === undefined ? {} : { coralProjects }),
     ...(projectSource === undefined ? {} : { projectSource }),
+    ...(equippedTools === undefined ? {} : { equippedTools }),
   });
   if (injectMd) {
     systemParts.push(injectMd);

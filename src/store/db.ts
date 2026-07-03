@@ -116,6 +116,13 @@ export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void
   }
 }
 
+/**
+ * Steady-state `busy_timeout` restored after the startup open/reset contention
+ * window. Matches {@link applyJournalPragmas}'s default; kept distinct from the
+ * short startup timeout the caller passes into {@link openOrResetBackendStoreDb}.
+ */
+const STEADY_STATE_BUSY_TIMEOUT_MS = 5000;
+
 type StoreSchemaClassification =
   | { kind: 'fresh'; userVersion: 0; storedVersion: 0 }
   | { kind: 'retired'; userVersion: 0; storedVersion: number }
@@ -301,7 +308,11 @@ type BackendStoreIdentityOptions = {
 
 type BackendStoreResetAuthorityOptions = BackendStorePathOptions & BackendStoreIdentityOptions;
 
-type OpenOrResetBackendStoreOptions = BackendStorePathOptions & Partial<BackendStoreIdentityOptions>;
+type OpenOrResetBackendStoreOptions = BackendStorePathOptions &
+  Partial<BackendStoreIdentityOptions> & {
+    readonly startupBusyTimeoutMs?: number;
+    readonly steadyStateBusyTimeoutMs?: number;
+  };
 
 type StoreFileSet = {
   readonly dbDir: string;
@@ -333,6 +344,8 @@ type StoreResetQuarantineManifest = {
 };
 
 const STORE_RESET_QUARANTINE_MANIFEST = 'reset-manifest.json';
+const QUARANTINE_RENAME_BACKOFF_MS = [0, 10, 25, 50, 100] as const;
+const quarantineRenameWaitState = new Int32Array(new SharedArrayBuffer(4));
 
 function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions = {}): string {
   if (options.path === ':memory:') {
@@ -486,6 +499,34 @@ function writeStoreResetManifest(
   });
 }
 
+function isBusyRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EPERM' || code === 'EBUSY';
+}
+
+function waitForQuarantineRenameRetry(ms: number): void {
+  if (ms > 0) {
+    Atomics.wait(quarantineRenameWaitState, 0, 0, ms);
+  }
+}
+
+function renameStoreFileForQuarantine(storage: StoragePort, source: string, destination: string): void {
+  for (let attempt = 0; attempt <= QUARANTINE_RENAME_BACKOFF_MS.length; attempt++) {
+    try {
+      storage.renameSync(source, destination);
+      return;
+    } catch (error: unknown) {
+      if (!isBusyRenameError(error) || attempt === QUARANTINE_RENAME_BACKOFF_MS.length) {
+        throw error;
+      }
+      // POSIX lets rename succeed while a predecessor still has the old file
+      // open; that handle keeps an orphaned inode. Windows can report a short
+      // EPERM/EBUSY residual while the draining predecessor closes its handle.
+      waitForQuarantineRenameRetry(QUARANTINE_RENAME_BACKOFF_MS[attempt]);
+    }
+  }
+}
+
 function quarantineStoreFiles(
   storage: StoragePort,
   files: StoreFileSet,
@@ -516,7 +557,7 @@ function quarantineStoreFiles(
     );
     storage.mkdirSync(quarantineDir, { recursive: true });
     for (const entry of candidates) {
-      storage.renameSync(entry.source, join(quarantineDir, entry.name));
+      renameStoreFileForQuarantine(storage, entry.source, join(quarantineDir, entry.name));
     }
     writeStoreResetManifest(storage, join(quarantineDir, STORE_RESET_QUARANTINE_MANIFEST), {
       schemaVersion: 1,
@@ -579,6 +620,8 @@ export function openOrResetBackendStoreDb(
   options: OpenOrResetBackendStoreOptions = {},
 ): Database {
   const files = resolveStoreFileSet(runtime, options);
+  const startupBusyTimeoutMs = options.startupBusyTimeoutMs ?? options.busyTimeoutMs;
+  const steadyStateBusyTimeoutMs = options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS;
   if (files.dbFile === ':memory:') {
     throw new Error('openOrResetBackendStoreDb requires a real filesystem store path.');
   }
@@ -611,11 +654,16 @@ export function openOrResetBackendStoreDb(
       warnBackendStoreReset(classification, quarantineDir);
     }
 
-    return openStoreDatabase({
+    const db = openStoreDatabase({
       path: files.dbFile,
       storage: runtime.storage,
-      busyTimeoutMs: options.busyTimeoutMs,
+      busyTimeoutMs: startupBusyTimeoutMs,
     });
+    // Startup and steady-state contention are separate budgets. Keep the legacy
+    // busyTimeoutMs option as a startup alias, then restore the long-lived
+    // handle to its steady-state budget after the reset window closes.
+    db.exec(`PRAGMA busy_timeout = ${steadyStateBusyTimeoutMs}`);
+    return db;
   } finally {
     releaseLock?.();
   }

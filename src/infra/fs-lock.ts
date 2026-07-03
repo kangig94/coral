@@ -1,4 +1,6 @@
-import { mkdirSync, rmSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { StoragePort, TimePort } from './port-types.js';
 
 const LOCK_RETRY_INTERVAL_MS = 50;
@@ -6,9 +8,10 @@ const STALE_LOCK_MS = 30_000;
 const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 
 export type DirectoryLockDeps = {
-  storage: Pick<StoragePort, 'mkdirSync' | 'rmSync' | 'statSync'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'>;
   time: Pick<TimePort, 'now' | 'sleep'>;
   staleMs?: number;
+  signal?: AbortSignal;
 };
 
 export class DirectoryLockTimeoutError extends Error {
@@ -44,7 +47,10 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
     storage: {
       mkdirSync,
       rmSync,
+      rmdirSync,
       statSync,
+      unlinkSync,
+      writeFileSync,
     },
     time: {
       now: () => new Date().getTime(),
@@ -65,18 +71,88 @@ function tryRemoveLockDirectory(lockDir: string, storage: DirectoryLockDeps['sto
   }
 }
 
-function releaseDirectoryLock(lockDir: string, storage: DirectoryLockDeps['storage']): () => void {
-  return () => {
+function lockOwnerMarkerPath(lockDir: string, ownerToken: string): string {
+  return join(lockDir, `owner-${ownerToken}.lock`);
+}
+
+function writeLockOwnerMarker(lockDir: string, ownerToken: string, storage: DirectoryLockDeps['storage']): void {
+  try {
+    storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken), ownerToken, { encoding: 'utf-8', mode: 0o600 });
+  } catch (error) {
     tryRemoveLockDirectory(lockDir, storage);
+    throw error;
+  }
+}
+
+function tryRemoveOwnedLockDirectory(lockDir: string, ownerToken: string, storage: DirectoryLockDeps['storage']): void {
+  try {
+    storage.unlinkSync(lockOwnerMarkerPath(lockDir, ownerToken));
+  } catch {
+    return;
+  }
+
+  try {
+    storage.rmdirSync(lockDir);
+  } catch {
+    // Another owner can appear after stale stealing; leave its non-empty lock.
+  }
+}
+
+function releaseDirectoryLock(lockDir: string, storage: DirectoryLockDeps['storage'], ownerToken: string): () => void {
+  return () => {
+    tryRemoveOwnedLockDirectory(lockDir, ownerToken, storage);
   };
 }
 
+// Owner-token release is implemented above so a process only removes its own
+// lock. The mtime-heartbeat half is deferred because StoragePort does not expose
+// a repeating-timer dependency here. Residual risk: a lock held past staleMs can
+// be stolen, briefly creating two holders; KB callers bound this in practice
+// with a stale threshold around 10 minutes, much longer than a peer acquire
+// timeout.
 function isStaleLock(lockDir: string, deps: DirectoryLockDeps): boolean {
   try {
     return deps.time.now() - deps.storage.statSync(lockDir).mtimeMs > (deps.staleMs ?? STALE_LOCK_MS);
   } catch {
     return false;
   }
+}
+
+function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
+  deps.signal?.throwIfAborted();
+}
+
+async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void> {
+  const signal = deps.signal;
+  if (signal === undefined) {
+    await deps.time.sleep(LOCK_RETRY_INTERVAL_MS);
+    return;
+  }
+
+  signal.throwIfAborted();
+  let abortHandler: (() => void) | null = null;
+  const abort = new Promise<never>((_, reject) => {
+    abortHandler = () => {
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    signal.addEventListener('abort', abortHandler, { once: true });
+    if (signal.aborted) {
+      abortHandler();
+    }
+  });
+
+  try {
+    await Promise.race([deps.time.sleep(LOCK_RETRY_INTERVAL_MS), abort]);
+  } finally {
+    if (abortHandler !== null) {
+      signal.removeEventListener('abort', abortHandler);
+    }
+  }
+  signal.throwIfAborted();
 }
 
 export async function acquireDirectoryLock(lockDir: string, timeoutMs?: number): Promise<() => void>;
@@ -95,9 +171,12 @@ export async function acquireDirectoryLock(
   const deadline = deps.time.now() + effectiveTimeoutMs;
 
   while (deps.time.now() < deadline) {
+    throwIfDirectoryLockAborted(deps);
     try {
       deps.storage.mkdirSync(lockDir);
-      return releaseDirectoryLock(lockDir, deps.storage);
+      const ownerToken = randomUUID();
+      writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
+      return releaseDirectoryLock(lockDir, deps.storage, ownerToken);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }
@@ -107,9 +186,10 @@ export async function acquireDirectoryLock(
       continue;
     }
 
-    await deps.time.sleep(LOCK_RETRY_INTERVAL_MS);
+    await waitForDirectoryLockRetry(deps);
   }
 
+  throwIfDirectoryLockAborted(deps);
   throw new DirectoryLockTimeoutError(lockDir);
 }
 
@@ -127,7 +207,9 @@ export function acquireDirectoryLockSync(
   while (deps.time.now() < deadline) {
     try {
       deps.storage.mkdirSync(lockDir);
-      return releaseDirectoryLock(lockDir, deps.storage);
+      const ownerToken = randomUUID();
+      writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
+      return releaseDirectoryLock(lockDir, deps.storage, ownerToken);
     } catch (error: unknown) {
       if (!isAlreadyExistsError(error)) throw error;
     }

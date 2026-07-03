@@ -136,11 +136,19 @@ const notYourTurnResult = {
   current_speaker: 'bob',
 } satisfies SpeechResult;
 
+const waitTiming = {
+  origin: 'runtime',
+  originAt: '2026-07-03T08:00:00.000Z',
+  emittedAt: '2026-07-03T08:00:02.000Z',
+  elapsedMs: 2_000,
+} as const;
+
 const waitProgressEvent = {
   type: 'progress',
   jobId: 'job-1',
   seq: 4,
   message: 'Still running',
+  timing: waitTiming,
 } satisfies Extract<WaitStreamEvent, { type: 'progress' }>;
 
 const waitQueuedEvent = {
@@ -149,6 +157,7 @@ const waitQueuedEvent = {
   sessionId: 'session-1',
   queuePosition: 2,
   runningJobIds: ['job-9'],
+  timing: { ...waitTiming, origin: 'queued' as const },
 } satisfies Extract<WaitStreamEvent, { type: 'queued' }>;
 
 const waitTerminalEvent = {
@@ -811,25 +820,26 @@ describe('cli format', () => {
   });
 
   describe('wait formatters', () => {
-    it('formats progress events without a prefix when no label is passed (single-job case)', () => {
-      expect(formatWaitProgress(waitProgressEvent)).toBe('Still running');
+    it('formats progress events with elapsed time when no label is passed (single-job case)', () => {
+      expect(formatWaitProgress(waitProgressEvent)).toBe('[ 0m  2s] Still running');
     });
 
-    it('formats queued events without a prefix when no label is passed (single-job case)', () => {
-      expect(formatWaitQueued(waitQueuedEvent)).toBe('queued at position 2');
+    it('formats queued events with elapsed time when no label is passed (single-job case)', () => {
+      expect(formatWaitQueued(waitQueuedEvent)).toBe('[ 0m  2s] queued at position 2');
     });
 
-    it('prefixes queued events with the caller-supplied positional label (multi-job case)', () => {
-      expect(formatWaitQueued(waitQueuedEvent, 'j1')).toBe('j1 - queued at position 2');
+    it('formats queued events with elapsed time and caller-supplied positional label (multi-job case)', () => {
+      expect(formatWaitQueued(waitQueuedEvent, 'j1')).toBe('[ 0m  2s] j1 - queued at position 2');
     });
 
-    it('injects the positional label after the leading time bracket on progress messages', () => {
-      const withTime = { ...waitProgressEvent, message: '[ 0m  2s] 0-arc Thread ready' };
-      expect(formatWaitProgress(withTime, 'j0')).toBe('[ 0m  2s] j0 - 0-arc Thread ready');
+    it('injects the positional label after the elapsed time on progress messages', () => {
+      const event = { ...waitProgressEvent, message: '0-arc Thread ready' };
+      expect(formatWaitProgress(event, 'j0')).toBe('[ 0m  2s] j0 - 0-arc Thread ready');
     });
 
-    it('falls back to a leading "label - " prefix on progress messages without a time bracket', () => {
-      expect(formatWaitProgress(waitProgressEvent, 'j0')).toBe('j0 - Still running');
+    it('formats hour-scale elapsed values', () => {
+      const event = { ...waitProgressEvent, timing: { ...waitTiming, elapsedMs: 3_723_000 } };
+      expect(formatWaitProgress(event, 'j0')).toBe('[1h 02m 03s] j0 - Still running');
     });
 
     it('keeps full jobId on terminal events without surrounding brackets', () => {
@@ -839,23 +849,27 @@ describe('cli format', () => {
       );
     });
 
-    it('formats a non-inline terminal event with the result path and lists remaining jobIds', () => {
+    it('formats a non-inline terminal event with the result path and a continuation command', () => {
       expect(formatWaitTerminal(waitTerminalEvent, null, false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+        'Job job-1 completed\n' +
+          'Result path: /tmp/result.md\n' +
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
-    it('reports "none" when no jobs remain on a non-inline terminal event', () => {
+    it('reports when no jobs remain on a non-inline terminal event', () => {
       const event = { ...waitTerminalEvent, remainingJobIds: [] };
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: none',
+        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'No remaining jobs.',
       );
     });
 
-    it('joins multiple remaining jobIds with commas on a non-inline terminal event', () => {
+    it('includes multiple remaining jobIds in the continuation command', () => {
       const event = { ...waitTerminalEvent, remainingJobIds: ['job-a', 'job-b', 'job-c'] };
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-a, job-b, job-c',
+        'Job job-1 completed\n' +
+          'Result path: /tmp/result.md\n' +
+          'Run coral-cli wait jobs job-a job-b job-c to continue waiting.',
       );
     });
 
@@ -889,7 +903,9 @@ describe('cli format', () => {
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
       expect(formatWaitTerminal(event, null, false)).toBe(
-        'Job job-1 aborted: signal_abort\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2',
+        'Job job-1 aborted: signal_abort\n' +
+          'Result path: /tmp/result.md\n' +
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
@@ -911,7 +927,7 @@ describe('cli format', () => {
       expect(formatWaitTerminal(event, null, false)).toBe(
         'Job job-1 errored: Provider wrapper crashed: provider timed out. [wrapper_crashed]\n' +
           'Result path: /tmp/result.md\n' +
-          'Remaining jobs: job-2',
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
@@ -927,13 +943,15 @@ describe('cli format', () => {
       expect(formatWaitTerminal(event, null, false)).toBe(
         'Job job-1 provider exited 7: forced timeout at 600s\n' +
           'Result path: /tmp/result.md\n' +
-          'Remaining jobs: job-2',
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
-    it('includes the cursor in terminal output when present', () => {
+    it('omits the cursor from terminal continuation output when present', () => {
       expect(formatWaitTerminal(waitTerminalEvent, 'cursor-3', false)).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Remaining jobs: job-2\n' + 'Cursor: cursor-3',
+        'Job job-1 completed\n' +
+          'Result path: /tmp/result.md\n' +
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 

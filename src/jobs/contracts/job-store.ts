@@ -44,6 +44,5 @@ export interface JobProgressStore {
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCountByNamespace(namespace: string): number;
-  hydrateJobStartedAt(jobId: string, startTime: string): void;
   appendProgress(jobId: string, sessionId: string | null, message: string): number;
 }

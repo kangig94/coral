@@ -38,6 +38,9 @@ export function normalizedHostEnvEntries(spec: Pick<ProviderServerSpec, 'env'>):
 }
 
 export function hostKeyFromSpec(spec: ProviderServerSpec): string {
+  // Host identity is the executable boundary. Bootstrap/shutdown policy such as
+  // initializeTimeoutMs and shutdownCapability is intentionally not part of the
+  // key; it only affects spawning or draining a concrete handle for this host.
   return JSON.stringify({
     provider: spec.provider,
     command: spec.command,

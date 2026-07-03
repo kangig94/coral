@@ -6,8 +6,8 @@ import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
-import { appendBuffer, gracefulKill, gracefulKillByPid, requirePipedHandles } from './process-supervision.js';
+import { windowsCommandName } from '../../infra/windows-shell.js';
+import { gracefulKillByPid } from './process-supervision.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
 const IDLE_CHECK_INTERVAL = 30_000;
@@ -38,135 +38,6 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
   onRuntimeRecord?: (record: JobRuntime) => void;
 };
 
-export function spawnCliTransport(params: {
-  runtime: Runtime;
-  options: SpawnCliOptions;
-  pool: LaunchPool;
-  internalPermitJobId: string | null;
-  cleanupHandles: Map<symbol, () => void>;
-  releaseLaunch: (jobId: string, pool: LaunchPool) => void;
-}): Promise<CliExecResult> {
-  const { runtime, options, pool, cleanupHandles, releaseLaunch } = params;
-  let { internalPermitJobId } = params;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let abortedBySignal = false;
-    const command = windowsCommandName(options.command, runtime.env.platform());
-    const child = runtime.process.spawn({
-      command,
-      args: options.args,
-      cwd: options.cwd === '' ? undefined : options.cwd,
-      shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
-      envAdditions: options.extraEnv,
-    });
-    const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
-    const cleanupKey = Symbol();
-    cleanupHandles.set(cleanupKey, () => gracefulKill(child, runtime));
-
-    let lastOutputAt = runtime.time.now();
-    let lastTickAt = runtime.time.now();
-    const idleChecker = runtime.time.setInterval(() => {
-      if (settled) return;
-      const now = runtime.time.now();
-      const tickGap = now - lastTickAt;
-      lastTickAt = now;
-
-      if (tickGap > IDLE_CHECK_INTERVAL * 3) {
-        lastOutputAt = now;
-        return;
-      }
-
-      if (now - lastOutputAt >= IDLE_TIMEOUT) {
-        settled = true;
-        runtime.time.clearInterval(idleChecker);
-        gracefulKill(child, runtime);
-        cleanupHandles.delete(cleanupKey);
-        if (internalPermitJobId) {
-          releaseLaunch(internalPermitJobId, pool);
-          internalPermitJobId = null;
-        }
-        reject(new Error(`${options.command} killed after ${IDLE_TIMEOUT / 60_000} minutes of inactivity`));
-      }
-    }, IDLE_CHECK_INTERVAL);
-
-    const resetIdle = (): void => {
-      lastOutputAt = runtime.time.now();
-    };
-
-    let abortHandler: (() => void) | null = null;
-
-    const finish = (): boolean => {
-      if (settled) return false;
-      settled = true;
-      runtime.time.clearInterval(idleChecker);
-      cleanupHandles.delete(cleanupKey);
-      if (internalPermitJobId) {
-        releaseLaunch(internalPermitJobId, pool);
-        internalPermitJobId = null;
-      }
-      if (abortHandler && options.signal) {
-        options.signal.removeEventListener('abort', abortHandler);
-        abortHandler = null;
-      }
-      return true;
-    };
-
-    if (options.signal) {
-      abortHandler = () => {
-        if (settled) return;
-        abortedBySignal = true;
-        runtime.time.clearInterval(idleChecker);
-        gracefulKill(child, runtime);
-      };
-      if (options.signal.aborted) abortHandler();
-      else options.signal.addEventListener('abort', abortHandler, { once: true });
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let lineBuffer = '';
-
-    childStdout.on('data', (data: string | Buffer) => {
-      const chunk = data.toString();
-      resetIdle();
-      stdout = appendBuffer(stdout, chunk);
-      if (options.onEvent) {
-        lineBuffer += chunk;
-        const parts = lineBuffer.split('\n');
-        lineBuffer = parts.pop() ?? '';
-        for (const line of parts) {
-          if (line.trim()) options.onEvent(line);
-        }
-      }
-    });
-
-    childStderr.on('data', (data: string | Buffer) => {
-      resetIdle();
-      stderr = appendBuffer(stderr, data.toString());
-    });
-
-    child.on('close', (code) => {
-      if (finish()) resolve({ stdout, stderr, code, aborted: abortedBySignal });
-    });
-
-    child.on('error', (err) => {
-      if (finish()) reject(new Error(`Failed to spawn ${options.command}: ${err.message}`));
-    });
-
-    if (options.prompt) {
-      stdin.on('error', (err) => {
-        if (finish()) {
-          child.kill('SIGTERM');
-          reject(new Error(`Stdin write error: ${err.message}`));
-        }
-      });
-      stdin.write(options.prompt);
-    }
-    stdin.end();
-  });
-}
-
 export async function spawnDurableJobTransport(params: {
   runtime: Runtime;
   options: SpawnDurableJobOptions;
@@ -174,8 +45,9 @@ export async function spawnDurableJobTransport(params: {
   internalPermitJobId: string | null;
   cleanupHandles: Map<symbol, () => void>;
   releaseLaunch: (jobId: string, pool: LaunchPool) => void;
+  shouldTerminateAfterLaunch?: () => boolean;
 }): Promise<CliExecResult> {
-  const { runtime, options, pool, cleanupHandles, releaseLaunch } = params;
+  const { runtime, options, pool, cleanupHandles, releaseLaunch, shouldTerminateAfterLaunch } = params;
   const { internalPermitJobId } = params;
   let abortHandler: (() => void) | null = null;
   let cleanupKey: symbol | null = null;
@@ -195,9 +67,16 @@ export async function spawnDurableJobTransport(params: {
       envAdditions: options.extraEnv,
     });
     cleanupKey = Symbol();
-    cleanupHandles.set(cleanupKey, () => {
+    const cleanup = (): void => {
       gracefulKillByPid(runtime, durable.pid);
-    });
+    };
+    cleanupHandles.set(cleanupKey, cleanup);
+    if (shouldTerminateAfterLaunch?.()) {
+      // terminateAll may have drained before this durable child was registered.
+      cleanupHandles.delete(cleanupKey);
+      cleanupKey = null;
+      cleanup();
+    }
 
     let abortedBySignal = false;
     let runtimeRecord = durable.runtimeRecord;

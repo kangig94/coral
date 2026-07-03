@@ -311,6 +311,8 @@ describe('runtime hot-path perf regressions', () => {
         readFileSync: () => '',
         existsSync: () => false,
         writeAtomicSync: () => true,
+        statSync: (() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+        rmSync: () => {},
       },
       envPort: {
         get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),

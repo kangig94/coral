@@ -142,6 +142,12 @@ function progressInput(jobId: string, sessionId: string): CoralEventInput {
     body: {
       kind: 'message',
       message: 'late progress',
+      timing: {
+        origin: 'launch',
+        originAt: '2026-04-19T00:00:00.000Z',
+        emittedAt: '2026-04-19T00:00:01.000Z',
+        elapsedMs: 1000,
+      },
     },
   };
 }

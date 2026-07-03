@@ -381,6 +381,10 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(normalized === '/' ? '/' : parentPath(normalized));
   }
 
+  rmdirSync(path: string): void {
+    this.rmSync(path);
+  }
+
   readdirSync(path: string): string[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
   readdirSync(path: string, options?: { withFileTypes: true }): string[] | DirentLike[] {

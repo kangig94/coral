@@ -14,6 +14,12 @@ import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport
 
 const tempDirs: string[] = [];
 const httpServers: HttpServer[] = [];
+const waitTiming = {
+  origin: 'runtime',
+  originAt: '2026-07-03T08:00:00.000Z',
+  emittedAt: '2026-07-03T08:00:02.000Z',
+  elapsedMs: 2_000,
+} as const;
 
 function makeSocketPath(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-subscription-carriage-'));
@@ -23,8 +29,15 @@ function makeSocketPath(): string {
 
 function makeWaitEvents(): WaitStreamEvent[] {
   return [
-    { type: 'queued', jobId: 'job-1', sessionId: 'session-1', queuePosition: 1, runningJobIds: [] },
-    { type: 'progress', jobId: 'job-1', seq: 5, message: 'working' },
+    {
+      type: 'queued',
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      queuePosition: 1,
+      runningJobIds: [],
+      timing: { ...waitTiming, origin: 'queued' },
+    },
+    { type: 'progress', jobId: 'job-1', seq: 5, message: 'working', timing: waitTiming },
     {
       type: 'terminal',
       jobId: 'job-1',

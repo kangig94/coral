@@ -510,6 +510,7 @@ async function runLifecycleStartup({
           storage: runtime.storage,
           runDir: runtime.paths.coral.coordinator.runDir,
         }),
+        signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
       socketAuthorityAcquired = true;
@@ -527,7 +528,7 @@ async function runLifecycleStartup({
     const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
       bundleHash,
       namespace,
-      busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+      startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
     });
     let storeServices: CoordinatorStoreServices;
     try {

@@ -23,7 +23,6 @@ export interface JobAdmissionPort {
   requestLaunch(jobId: string, provider: string, pool?: LaunchPool): AdmissionResult;
   releaseLaunch(jobId: string, pool?: LaunchPool): void;
   cancelQueued(jobId: string, pool?: LaunchPool): boolean;
-  bindLaunchPermit(jobId: string, signal: AbortSignal, pool?: LaunchPool): void;
 }
 
 export interface JobQueueReadPort {

@@ -115,6 +115,7 @@ export interface KbProjectionArtifactPort {
 
 export interface KbInboundSyncOptions {
   structuredDiff?: boolean;
+  signal?: AbortSignal;
 }
 
 /**

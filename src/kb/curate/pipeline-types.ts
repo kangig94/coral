@@ -5,7 +5,7 @@ import type { CurateCursor } from './state/index.js';
 
 export type GitSyncRuntimePicks = {
   processPort: Pick<ProcessPort, 'exec' | 'execSync'>;
-  storagePort: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'writeAtomicSync'>;
+  storagePort: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'writeAtomicSync' | 'statSync' | 'rmSync'>;
   envPort: Pick<EnvPort, 'get' | 'claudeConfigDir'>;
   timePort?: Pick<TimePort, 'now'>;
   idsPort?: Pick<IdPort, 'uuid'>;

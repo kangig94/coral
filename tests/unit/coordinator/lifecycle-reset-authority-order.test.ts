@@ -221,7 +221,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
       streamResponses: new Set(),
       discussStores: new Map(),
       eventBus: { on: vi.fn(), off: vi.fn(), emit: vi.fn() } as never,
-      launchCoordinator: { active: 0, queueDepth: () => 0, terminateAll: vi.fn(), spawnCli: vi.fn() } as never,
+      launchCoordinator: { active: 0, queueDepth: () => 0, terminateAll: vi.fn() } as never,
       providerRegistry: {} as never,
       server,
       getExecutionService: vi.fn() as never,
@@ -300,6 +300,19 @@ describe('lifecycle reset authority and finalizer order', () => {
     );
   });
 
+  it('threads the startup abort signal into handoff binding', async () => {
+    const { deps } = makeLifecycleDeps();
+    const lifecycle = createLifecycle(deps);
+    const handoff = await import('#src/coordinator/handoff.js');
+
+    await lifecycle.start();
+
+    const handoffOptions = vi.mocked(handoff.bindWithHandoff).mock.calls[0]?.[0];
+    const startupSignal = handoffOptions?.signal;
+    expect(startupSignal).toBeInstanceOf(AbortSignal);
+    expect(startupSignal?.aborted).toBe(false);
+  });
+
   it('opens the startup store with a short busy timeout', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);
@@ -310,7 +323,7 @@ describe('lifecycle reset authority and finalizer order', () => {
     expect(storeDb.openOrResetBackendStoreDb).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
+      expect.objectContaining({ startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS }),
     );
   });
 

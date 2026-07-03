@@ -154,7 +154,6 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
     requestLaunch: () => ({ type: 'immediate' }) satisfies AdmittedHandle,
     releaseLaunch: releaseLaunchSpy,
     cancelQueued: () => false,
-    bindLaunchPermit: () => {},
   };
 
   const durableSpawner: ProviderDurableSpawner = {

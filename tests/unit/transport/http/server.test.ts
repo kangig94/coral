@@ -76,6 +76,12 @@ import type { KbRequestPort } from '#src/transport/rpc/ports.js';
 
 const testBackendNamespace = pluginRootNamespace(process.cwd());
 const foreignBackendNamespace = 'foreign-namespace-xyz';
+const waitTiming = {
+  origin: 'runtime',
+  originAt: '2026-07-03T08:00:00.000Z',
+  emittedAt: '2026-07-03T08:00:02.000Z',
+  elapsedMs: 2_000,
+} as const;
 
 function commaHeaderTokens(value: string | null): string[] {
   return (value ?? '')
@@ -182,6 +188,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         jobId: 'job-1',
         seq: 7,
         message: 'working',
+        timing: waitTiming,
       };
       yield {
         type: 'terminal',
@@ -4693,6 +4700,7 @@ describe('execution backend server', () => {
         jobId: 'job-foreign',
         seq: 1,
         message: 'foreign progress',
+        timing: waitTiming,
       });
       eventBus.emit('discuss:updated', {
         projectRoot: '/tmp/other-project',
@@ -4704,6 +4712,7 @@ describe('execution backend server', () => {
         jobId: 'job-owned',
         seq: 2,
         message: 'owned progress',
+        timing: waitTiming,
       });
       eventBus.emit('discuss:updated', {
         projectRoot: '/tmp/project',

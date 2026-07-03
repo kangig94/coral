@@ -17,6 +17,7 @@ import type { InterruptedAppServerReason } from '../../../jobs/reconcile/interru
 import type { CommitEventsFn } from '../../../store/append.js';
 import {
   applyRecoveryAction,
+  finalizeAbortedRecoveredJob,
   finalizeDeadAdoptedJob,
   logRecoveryActionFailure,
   type QueuedRecoverableJob,
@@ -29,6 +30,7 @@ const RECOVERY_POLL_MS = 500;
 
 type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
+  cancelledRecoveryJobIds: Set<string>;
   adoptedRunningPids: Map<string, { pid: number; pool: string }>;
   recoveryPollIntervals: Map<string, TimerHandle>;
   adoptedRunningJobCleanups: Map<string, () => void>;
@@ -89,6 +91,7 @@ export function createRecoveryCoordinator({
 }: RecoveryCoordinatorContext): RecoveryCoordinator {
   const state: RecoveryCoordinatorState = {
     recoveryRegistry: null,
+    cancelledRecoveryJobIds: new Set<string>(),
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
     recoveryPollIntervals: new Map<string, TimerHandle>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
@@ -113,11 +116,22 @@ export function createRecoveryCoordinator({
   const releaseAdoptedJob = (jobId: string): void => {
     clearRecoveryPoller(jobId);
     state.adoptedRunningPids.delete(jobId);
+    state.recoveryRegistry?.clearCancelled(jobId);
     takeAdoptedJobCleanup(jobId)?.();
   };
 
-  const resetRecoveryState = (): void => {
-    state.recoveryRegistry = null;
+  const maybeReleaseRecoveryRegistry = (): void => {
+    if (state.adoptedRunningPids.size === 0 && state.recoveryRegistry?.size === 0) {
+      state.recoveryRegistry = null;
+    }
+  };
+
+  const resetRecoveryState = (options: { forceRegistryRelease?: boolean } = {}): void => {
+    if (options.forceRegistryRelease) {
+      state.recoveryRegistry = null;
+    } else {
+      maybeReleaseRecoveryRegistry();
+    }
     runtimeState.setLaunchFenceActive(false);
   };
 
@@ -140,7 +154,11 @@ export function createRecoveryCoordinator({
     }
     state.adoptedRunningJobCleanups.clear();
     state.adoptedRunningPids.clear();
-    resetRecoveryState();
+    // If a queued job ACKed aborted but was not finalized before teardown clears
+    // this set, next boot re-recovers it. That narrow fallback is safe: it
+    // reverts to the pre-abort queued recovery behavior.
+    state.cancelledRecoveryJobIds.clear();
+    resetRecoveryState({ forceRegistryRelease: true });
   };
 
   async function runRecoveryAdoption({
@@ -276,9 +294,12 @@ export function createRecoveryCoordinator({
             progressStore,
             runtime,
             sessionLookup,
+            cancelledJobIds: state.cancelledRecoveryJobIds,
             log,
           });
+          state.recoveryRegistry?.clearCancelled(jobId);
           retainedCleanup?.();
+          maybeReleaseRecoveryRegistry();
         }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
         state.recoveryPollIntervals.set(jobId, pollInterval);
@@ -299,6 +320,13 @@ export function createRecoveryCoordinator({
       try {
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         signal.throwIfAborted();
+        if (state.cancelledRecoveryJobIds.has(jobId)) {
+          finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
+          state.recoveryRegistry?.remove(jobId);
+          state.recoveryRegistry?.clearCancelled(jobId);
+          log(`Aborted queued recovery job: ${jobId}\n`);
+          continue;
+        }
         service.recoverQueuedJob(launchRecord);
         state.recoveryRegistry?.remove(jobId);
         log(`Recovered queued job: ${jobId}\n`);
@@ -320,7 +348,7 @@ export function createRecoveryCoordinator({
       const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
       state.teardownRequested = false;
       runtimeState.setLaunchFenceActive(true);
-      const recoveryRegistry = new RecoveryRegistry(runtime.process);
+      const recoveryRegistry = new RecoveryRegistry(runtime.process, state.cancelledRecoveryJobIds);
       state.recoveryRegistry = recoveryRegistry;
       const queuedRecoverable: QueuedRecoverableJob[] = [];
       const runningRecoverable: RunningRecoverableJob[] = [];
@@ -413,7 +441,7 @@ export function createRecoveryCoordinator({
         for (const { jobId } of runningRecoverable) {
           markRecoverableAsError(jobId);
         }
-        resetRecoveryState();
+        resetRecoveryState({ forceRegistryRelease: true });
       }
     },
     getRecoveryRegistry: () => state.recoveryRegistry,

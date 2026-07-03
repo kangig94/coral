@@ -6,6 +6,7 @@ import type { RetentionPolicy } from '../sessions/entry.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
+import type { JobProgressTiming } from './event-bodies.js';
 
 /**
  * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +
@@ -151,6 +152,7 @@ interface JobEventBase {
 export interface JobProgressEvent extends JobEventBase {
   type: 'progress';
   message: string;
+  timing: JobProgressTiming;
 }
 
 export interface JobTerminalEvent extends JobEventBase {

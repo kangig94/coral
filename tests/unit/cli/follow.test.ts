@@ -48,12 +48,20 @@ function makeBackend(instanceId = 'backend-1') {
   };
 }
 
+const waitTiming = {
+  origin: 'runtime',
+  originAt: '2026-07-03T08:00:00.000Z',
+  emittedAt: '2026-07-03T08:00:02.000Z',
+  elapsedMs: 2_000,
+} as const;
+
 function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, { type: 'progress' }> {
   return {
     type: 'progress',
     jobId: 'job-1',
     seq: 1,
     message,
+    timing: waitTiming,
   };
 }
 
@@ -64,6 +72,7 @@ function makeQueuedEvent(): Extract<WaitStreamEvent, { type: 'queued' }> {
     sessionId: 'session-1',
     queuePosition: 2,
     runningJobIds: ['job-9'],
+    timing: { ...waitTiming, origin: 'queued' },
   };
 }
 

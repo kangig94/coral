@@ -40,6 +40,23 @@
             "type": "command",
             "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.mjs\"",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-track.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${CLAUDE_PLUGIN_ROOT}\" || exit 0; node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-track.mjs\"",
+            "timeout": 3
           }
         ]
       }

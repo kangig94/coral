@@ -73,12 +73,20 @@ function createWorkflowPlan(expression = 'architect'): WorkflowPlan {
   });
 }
 
+type SlotRecoveryState = {
+  atomPhase?: 'running' | 'queued' | null;
+  projectionPhase?: 'running' | 'queued' | 'completed' | 'error' | 'aborted' | null;
+  projectionLastSeq?: number;
+  terminal?: JobTerminal;
+};
+
 function createHarness(options: {
   expression?: string;
   atomPhase: 'running' | 'queued' | null;
   projectionPhase: 'running' | 'queued' | 'completed' | 'error' | 'aborted' | null;
   projectionLastSeq?: number;
   atomTerminals?: Partial<Record<number, JobTerminal>>;
+  slotStates?: Partial<Record<number, SlotRecoveryState>>;
 }) {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
@@ -110,16 +118,21 @@ function createHarness(options: {
   });
 
   for (const [slotIndex, slot] of plan.slots.entries()) {
-    const terminalForSlot = options.atomTerminals?.[slotIndex];
+    const slotState = options.slotStates?.[slotIndex];
+    const atomPhase = slotState && 'atomPhase' in slotState ? slotState.atomPhase : options.atomPhase;
+    const projectionPhase =
+      slotState && 'projectionPhase' in slotState ? slotState.projectionPhase : options.projectionPhase;
+    const projectionLastSeq = slotState?.projectionLastSeq ?? options.projectionLastSeq ?? 7;
+    const terminalForSlot = slotState?.terminal ?? options.atomTerminals?.[slotIndex];
     const sessionId = `session-atom-${slotIndex + 1}`;
-    if (options.atomPhase !== null || terminalForSlot !== undefined) {
+    if (atomPhase !== null || terminalForSlot !== undefined) {
       progressStore.initJob({
         jobId: slot.slotId,
         sessionId,
         provider: slot.provider,
         projectRoot: PROJECT_ROOT,
         backendNamespace: BACKEND_NAMESPACE,
-        initialPhase: options.atomPhase ?? 'running',
+        initialPhase: atomPhase ?? 'running',
       });
     }
 
@@ -127,7 +140,7 @@ function createHarness(options: {
       commitJobTerminal(progressStore, slot.slotId, sessionId, terminalForSlot);
     }
 
-    if (options.projectionPhase !== null) {
+    if (projectionPhase !== null) {
       db.prepare(
         `INSERT INTO projection_jobs (
            job_id, phase, session_id, provider, project_root, backend_namespace,
@@ -147,14 +160,14 @@ function createHarness(options: {
 	           last_seq = excluded.last_seq`,
       ).run(
         slot.slotId,
-        options.projectionPhase,
+        projectionPhase,
         sessionId,
         slot.provider,
         PROJECT_ROOT,
         BACKEND_NAMESPACE,
         'workflow-1',
         slot.slotId,
-        options.projectionLastSeq ?? 7,
+        projectionLastSeq,
       );
     }
   }
@@ -164,6 +177,7 @@ function createHarness(options: {
     coralDispatch: ReturnType<typeof vi.fn>;
     waitStream: ReturnType<typeof vi.fn>;
     awaitLaunch: ReturnType<typeof vi.fn>;
+    abort: ReturnType<typeof vi.fn>;
   } = {
     coralDispatch: vi.fn(async (_provider, _coralName, input) =>
       running(String(input.jobId ?? 'relaunched-atom-1'), `session-${String(input.jobId ?? 'relaunched-atom-1')}`),
@@ -276,6 +290,248 @@ describe('workflow recovery branch rules', () => {
       );
       expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('recovers a partially launched active step without redispatching completed or pending atoms', async () => {
+    const harness = createHarness({
+      expression: '(architect, critic, verifier)',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: {
+        0: {
+          atomPhase: 'running',
+          projectionPhase: 'completed',
+          terminal: { content: 'ARCH_DONE', outcome: { kind: 'completed' } },
+        },
+        1: {
+          atomPhase: 'running',
+          projectionPhase: 'running',
+          projectionLastSeq: 31,
+        },
+        2: {
+          atomPhase: null,
+          projectionPhase: null,
+        },
+      },
+    });
+    const [completedSlot, pendingSlot, missingSlot] = harness.plan.slots;
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
+    harness.executionSvc.coralDispatch.mockImplementation(async (_provider, _coralName, input) => {
+      const jobId = String(input.jobId);
+      if (jobId !== missingSlot.slotId) {
+        const error = new Error(`job_terminal_order_violation:${jobId}`);
+        Object.assign(error, { code: 'job_terminal_order_violation' });
+        throw error;
+      }
+      return running(jobId, `session-${jobId}`);
+    });
+    harness.executionSvc.waitStream.mockImplementation((req: WaitStreamRequest) => {
+      harness.waitRequests.push({
+        ...req,
+        jobIds: [...req.jobIds],
+        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+      });
+      return emit(
+        req.jobIds.map((jobId) =>
+          terminal(jobId, jobId === pendingSlot.slotId ? 'CRIT_DONE' : 'VERIFY_DONE'),
+        ),
+      );
+    });
+
+    try {
+      const resumed = await resumeAll({
+        db: harness.db,
+        progressStore: harness.progressStore,
+        loadJobDetails: loadJobProjectionDetails,
+        getExecutionService: () => harness.executionSvc,
+        createInvocationContext: harness.createInvocationContext,
+        finalizeWorkflow,
+        time: fixedTime,
+      });
+
+      expect(resumed).toEqual(['workflow-1']);
+      expect(harness.executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
+      expect(harness.executionSvc.coralDispatch).toHaveBeenCalledWith(
+        'codex',
+        'verifier',
+        expect.objectContaining({
+          jobId: missingSlot.slotId,
+          workflowSlotId: missingSlot.slotId,
+        }),
+        harness.createInvocationContext(PROJECT_ROOT),
+      );
+      expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ jobId: completedSlot.slotId }),
+        expect.anything(),
+      );
+      expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ jobId: pendingSlot.slotId }),
+        expect.anything(),
+      );
+      expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
+      expect(harness.waitRequests[0]).toEqual({
+        jobIds: [pendingSlot.slotId, missingSlot.slotId],
+        timeoutSeconds: 1,
+        cursor: { afterSeq: 31 },
+      });
+      expect(finalizeWorkflow).toHaveBeenCalledWith({
+        outcome: 'completed',
+        workflowJobId: 'workflow-1',
+        finalOutput:
+          '<architect>\nARCH_DONE\n</architect>\n\n<critic>\nCRIT_DONE\n</critic>\n\n<verifier>\nVERIFY_DONE\n</verifier>',
+        stepDetails: [
+          { stepIndex: 0, atomIndex: 0, label: 'architect', output: 'ARCH_DONE' },
+          { stepIndex: 0, atomIndex: 1, label: 'critic', output: 'CRIT_DONE' },
+          { stepIndex: 0, atomIndex: 2, label: 'verifier', output: 'VERIFY_DONE' },
+        ],
+      });
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('aborts launched-pending atoms when a partially launched recovery relaunch fails', async () => {
+    const harness = createHarness({
+      expression: '(architect, critic)',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: {
+        0: {
+          atomPhase: 'running',
+          projectionPhase: 'running',
+          projectionLastSeq: 41,
+        },
+        1: {
+          atomPhase: null,
+          projectionPhase: null,
+        },
+      },
+    });
+    const [pendingSlot, missingSlot] = harness.plan.slots;
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    harness.executionSvc.coralDispatch.mockResolvedValue({
+      status: 'rejected',
+      message: 'launch capacity unavailable',
+    });
+    harness.executionSvc.abort.mockReturnValue({ aborted: [pendingSlot.slotId], notFound: [] });
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          time: fixedTime,
+        }),
+      ).rejects.toMatchObject({
+        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
+        failedSlotId: missingSlot.slotId,
+      });
+
+      expect(harness.executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
+      expect(harness.executionSvc.coralDispatch).toHaveBeenCalledWith(
+        'codex',
+        'critic',
+        expect.objectContaining({
+          jobId: missingSlot.slotId,
+          workflowSlotId: missingSlot.slotId,
+        }),
+        harness.createInvocationContext(PROJECT_ROOT),
+      );
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([pendingSlot.slotId]);
+      expect(harness.waitRequests).toHaveLength(1);
+      expect(harness.waitRequests[0]?.jobIds).toEqual([pendingSlot.slotId]);
+      expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
+      expect(finalizeWorkflow.mock.calls[0]?.[0]).toMatchObject({
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+        failureLocation: {
+          slotId: missingSlot.slotId,
+          stepIndex: 0,
+          atomLabel: 'critic',
+        },
+        stepDetails: [
+          {
+            stepIndex: 0,
+            atomIndex: 0,
+            label: 'architect',
+            output: `result:${pendingSlot.slotId}`,
+          },
+        ],
+      });
+    } finally {
+      harness.db.close();
+    }
+  });
+
+  it('does not duplicate completed active-step details when a partial relaunch fails', async () => {
+    const harness = createHarness({
+      expression: '(architect, critic)',
+      atomPhase: null,
+      projectionPhase: null,
+      slotStates: {
+        0: {
+          atomPhase: 'running',
+          projectionPhase: 'completed',
+          terminal: { content: 'ARCH_DONE', outcome: { kind: 'completed' } },
+        },
+        1: {
+          atomPhase: null,
+          projectionPhase: null,
+        },
+      },
+    });
+    const [completedSlot, missingSlot] = harness.plan.slots;
+    const finalizeWorkflow = vi.fn<(intent: WorkflowFinalizationIntent) => void>();
+    harness.executionSvc.coralDispatch.mockResolvedValue({
+      status: 'rejected',
+      message: 'launch capacity unavailable',
+    });
+    harness.executionSvc.abort.mockReturnValue({ aborted: [completedSlot.slotId], notFound: [] });
+    harness.executionSvc.waitStream.mockImplementation((req: WaitStreamRequest) => {
+      harness.waitRequests.push({
+        ...req,
+        jobIds: [...req.jobIds],
+        ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+      });
+      return emit(req.jobIds.map((jobId) => terminal(jobId, 'ARCH_DONE')));
+    });
+
+    try {
+      await expect(
+        resumeAll({
+          db: harness.db,
+          progressStore: harness.progressStore,
+          loadJobDetails: loadJobProjectionDetails,
+          getExecutionService: () => harness.executionSvc,
+          createInvocationContext: harness.createInvocationContext,
+          finalizeWorkflow,
+          time: fixedTime,
+        }),
+      ).rejects.toMatchObject({
+        message: "Step 0, atom 'critic' launch failed: launch capacity unavailable",
+        failedSlotId: missingSlot.slotId,
+      });
+
+      expect(harness.executionSvc.abort).toHaveBeenCalledWith([completedSlot.slotId]);
+      expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
+      const intent = finalizeWorkflow.mock.calls[0]?.[0];
+      expect(intent).toMatchObject({
+        outcome: 'failed',
+        workflowJobId: 'workflow-1',
+      });
+      expect(intent?.stepDetails).toEqual([{ stepIndex: 0, atomIndex: 0, label: 'architect', output: 'ARCH_DONE' }]);
     } finally {
       harness.db.close();
     }

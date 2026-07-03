@@ -17,6 +17,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -195,6 +196,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
     appendFileWithCanonicalCheckSync: (path, data, options) =>
       appendFileWithCanonicalCheckSyncNode(path, data, options),
+    rmdirSync: (path) => rmdirSync(path),
     unlinkSync: (path) => unlinkSync(path),
     tryExclusiveWriteSync: (path, data, options) =>
       tryExclusiveWriteSyncNode(path, data, capturedEnv.platform, options),

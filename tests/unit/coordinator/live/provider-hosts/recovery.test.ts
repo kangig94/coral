@@ -39,6 +39,7 @@ describe('provider host recovery', () => {
         method: 'initialize',
         params: { clientInfo: { name: 'coral', version: '0.5.0' } },
       },
+      initializeTimeoutMs: 12_345,
     });
 
     const lease = await manager.acquireServer(spec);
@@ -48,6 +49,7 @@ describe('provider host recovery', () => {
           method: 'initialize',
           params: { clientInfo: { name: 'coral', version: '0.5.0' } },
         },
+        initializeTimeoutMs: 12_345,
       }),
     );
     lease.release();

@@ -9,8 +9,8 @@
 //     subagents share the parent's session_id and can write memos under
 //     the same owner scope.
 //   - {{EQUIPPED_TOOLS}}: rendered only when the caller passes `equippedTools`
-//     (session-start does; subagent-start does not). The placeholder is
-//     stripped otherwise — advertising equipped tools is a main-session surface.
+//     (session-start and subagent-start do). The placeholder is stripped
+//     otherwise.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -33,11 +33,14 @@ function stripKbOnly(text) {
 // vanishes cleanly and the section stays absent.
 function renderEquippedTools(equippedTools) {
   if (!Array.isArray(equippedTools) || equippedTools.length === 0) return '';
-  const lines = equippedTools.map((tool) => `- ${tool.id}: ${tool.summary}`);
+  const lines = equippedTools.flatMap((tool) => {
+    const guidance = Array.isArray(tool.guidance) ? tool.guidance : [];
+    return [`- ${tool.id}: ${tool.summary}`, ...guidance.map((item) => `  - ${item}`)];
+  });
   // Bare block — INJECT.md supplies the blank lines around the `{{EQUIPPED_TOOLS}}`
   // line (it sits on its own line, blank above and below), so the rendered Tools
   // section reads one blank line per gap.
-  return `Equipped tools (installed via /equip) — use these actively when relevant:\n${lines.join('\n')}`;
+  return `Equipped tools (installed via /equip) — mandatory first-pass capabilities. These are live MCP tools available in this session; call them directly before using manual search/read. Use the live MCP tools in the mcp__codebase_memory_mcp namespace:\n${lines.join('\n')}`;
 }
 
 export function renderInject({ pluginRoot, projectDir, sessionId, asOwner, kbEnabled = true, equippedTools }) {

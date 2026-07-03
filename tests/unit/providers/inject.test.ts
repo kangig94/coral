@@ -140,11 +140,35 @@ describe('resolveInjectMd', () => {
     expect(result).toContain('source: {{PROJECT_SOURCE}}');
   });
 
-  it('strips the {{EQUIPPED_TOOLS}} placeholder (provider jobs never advertise equipped tools)', async () => {
+  it('strips the {{EQUIPPED_TOOLS}} placeholder when caller omits equipped tools', async () => {
     mockInjectMd = 'CLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\nafter';
     const resolveInjectMd = await loadResolve();
 
     const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    expect(result).not.toContain('{{EQUIPPED_TOOLS}}');
+    expect(result).toContain('after');
+  });
+
+  it('renders equipped tools when caller provides them', async () => {
+    mockInjectMd = 'CLI: `{{CORAL_CLI}}`\n\n{{EQUIPPED_TOOLS}}\n\nafter';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      kbRoot: '/mock/kb',
+      equippedTools: [
+        {
+          id: 'codebase-memory',
+          summary: 'mandatory first stop for any code work.',
+          guidance: ['Use search_graph before opening files.', 'Manual grep/read is a fallback only.'],
+        },
+      ],
+    });
+    expect(result).toContain('mandatory first-pass capabilities');
+    expect(result).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(result).toContain('- codebase-memory: mandatory first stop for any code work.');
+    expect(result).toContain('  - Use search_graph before opening files.');
+    expect(result).toContain('  - Manual grep/read is a fallback only.');
     expect(result).not.toContain('{{EQUIPPED_TOOLS}}');
     expect(result).toContain('after');
   });

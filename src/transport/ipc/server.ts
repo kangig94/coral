@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createConnection, createServer, type Server as NetServer, type Socket } from 'node:net';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import * as timers from 'node:timers';
 import type { ZodError } from 'zod';
 import type { HttpHandlerPorts } from '../server-ports.js';
@@ -23,6 +23,7 @@ import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/au
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { formatError } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import { acquireDirectoryLock } from '../../infra/fs-lock.js';
 import type { Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';
 import { authorize } from '../../security/policy/authorize.js';
@@ -368,6 +369,10 @@ async function clearStaleSocket(socketPath: string): Promise<boolean> {
  */
 export type BindSocketResult = { kind: 'bound' } | { kind: 'incumbent'; reason: 'live-listener' };
 
+function staleSocketClearLockDir(socketPath: string): string {
+  return join(dirname(socketPath), `${basename(socketPath)}.clear.lock`);
+}
+
 export async function bindSocket(server: NetServer, socketPath: string): Promise<BindSocketResult> {
   mkdirSync(dirname(socketPath), { recursive: true });
 
@@ -392,8 +397,8 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
   }
 
   // EADDRINUSE — distinguish stale-orphan from live-listener.
-  const cleared = await clearStaleSocket(socketPath);
-  if (cleared) {
+  const releaseLock = await acquireDirectoryLock(staleSocketClearLockDir(socketPath));
+  try {
     try {
       await listenSocket(server, socketPath);
       finalize();
@@ -402,11 +407,26 @@ export async function bindSocket(server: NetServer, socketPath: string): Promise
       if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
         throw error;
       }
-      return { kind: 'incumbent', reason: 'live-listener' };
     }
-  }
 
-  return { kind: 'incumbent', reason: 'live-listener' };
+    const cleared = await clearStaleSocket(socketPath);
+    if (cleared) {
+      try {
+        await listenSocket(server, socketPath);
+        finalize();
+        return { kind: 'bound' };
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') {
+          throw error;
+        }
+        return { kind: 'incumbent', reason: 'live-listener' };
+      }
+    }
+
+    return { kind: 'incumbent', reason: 'live-listener' };
+  } finally {
+    releaseLock();
+  }
 }
 
 /**

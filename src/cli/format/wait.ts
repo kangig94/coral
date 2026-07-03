@@ -15,17 +15,22 @@ export type WaitRenderContext = {
   columns: number;
 };
 
-// Progress messages from the coordinator workflow runner conventionally start
-// with a time bracket like "[ 0m  2s] 0-arc ...". When a caller needs to
-// attribute an event to one of several jobs, we insert "<label> - " AFTER
-// the closing time bracket so the time stays first. Messages without a
-// leading bracket fall back to a plain "<label> - <message>" prefix.
-const TIME_BRACKET_RE = /^(\[[^\]]*\])\s+([\s\S]*)$/;
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const s = String(seconds).padStart(2, ' ');
+  const m = String(minutes).padStart(2, ' ');
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(seconds).padStart(2, '0')}s`;
+  }
+  return `${m}m ${s}s`;
+}
 
-function injectProgressLabel(message: string, label: string): string {
-  const match = TIME_BRACKET_RE.exec(message);
-  if (match === null) return `${label} - ${message}`;
-  return `${match[1]} ${label} - ${match[2]}`;
+function formatTimedMessage(elapsedMs: number, message: string, label?: string): string {
+  const body = label === undefined ? message : `${label} - ${message}`;
+  return `[${formatElapsed(elapsedMs)}] ${body}`;
 }
 
 function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCauseRef?: CauseRefDescriber): string {
@@ -47,14 +52,18 @@ function terminalOutcomeHeader(jobId: string, result: JobTerminal, describeCause
   }
 }
 
+function formatWaitContinuation(jobIds: readonly string[]): string {
+  if (jobIds.length === 0) return 'No remaining jobs.';
+  return `Run coral-cli wait jobs ${jobIds.join(' ')} to continue waiting.`;
+}
+
 export function formatWaitProgress(event: WaitProgressEvent, label?: string): string {
-  if (label === undefined) return event.message;
-  return injectProgressLabel(event.message, label);
+  return formatTimedMessage(event.timing.elapsedMs, event.message, label);
 }
 
 export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string {
   const body = `queued at position ${event.queuePosition}`;
-  return label === undefined ? body : `${label} - ${body}`;
+  return formatTimedMessage(event.timing.elapsedMs, body, label);
 }
 
 export function formatWaitTerminal(
@@ -65,13 +74,7 @@ export function formatWaitTerminal(
 ): string {
   const header = terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef);
   if (!inline) {
-    const remaining = event.remainingJobIds.length > 0 ? event.remainingJobIds.join(', ') : 'none';
-    return joinLines([
-      header,
-      `Result path: ${event.resultPath}`,
-      `Remaining jobs: ${remaining}`,
-      cursor === null ? undefined : `Cursor: ${cursor}`,
-    ]);
+    return joinLines([header, `Result path: ${event.resultPath}`, formatWaitContinuation(event.remainingJobIds)]);
   }
 
   return joinLines([

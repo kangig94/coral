@@ -57,6 +57,11 @@ export function createCoordinatorControl({
       const result = service.abort([...pending]);
       for (const jobId of result.aborted) {
         if (!pending.has(jobId)) continue;
+        // Adopted recovery jobs are removed from registry entries, but the
+        // registry object stays alive while the recovery death poller owns them.
+        if (recoveryRegistry !== null && recoveryRegistry !== undefined) {
+          recoveryRegistry.markCancelled(jobId);
+        }
         pending.delete(jobId);
         aborted.push(jobId);
       }

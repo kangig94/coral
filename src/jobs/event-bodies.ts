@@ -37,8 +37,17 @@ export const jobRuntimeStartedBodySchema = z
   })
   .strict();
 
+export const jobProgressTimingSchema = z
+  .object({
+    origin: z.enum(['runtime', 'queued', 'launch']),
+    originAt: z.string(),
+    emittedAt: z.string(),
+    elapsedMs: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const jobProgressBodySchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('message'), message: z.string() }).strict(),
+  z.object({ kind: z.literal('message'), message: z.string(), timing: jobProgressTimingSchema }).strict(),
   jobDomainProgressSchema,
   z.object({ kind: z.literal('missing_launch_record') }).strict(),
   z.object({ kind: z.literal('recovery_parse_failed'), cause: externalErrorSchema }).strict(),
@@ -47,4 +56,5 @@ export const jobProgressBodySchema = z.discriminatedUnion('kind', [
 export type JobQueueQueuedBody = z.infer<typeof jobQueueQueuedBodySchema>;
 export type JobQueueAdmittedBody = z.infer<typeof jobQueueAdmittedBodySchema>;
 export type JobRuntimeStartedBody = z.infer<typeof jobRuntimeStartedBodySchema>;
+export type JobProgressTiming = z.infer<typeof jobProgressTimingSchema>;
 export type JobProgressBody = z.infer<typeof jobProgressBodySchema>;

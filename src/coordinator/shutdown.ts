@@ -148,6 +148,12 @@ export async function runShutdownSequence({
   // until all handoff finalizers complete or consume the budget, so the
   // replacement daemon cannot run startup recovery against partial state.
   const serverClosed = closeServerFn(server);
+  // Consumed via Promise.race against the drain timer below. If the timer wins,
+  // a later rejection from serverClosed would have no handler and surface as an
+  // unhandledRejection — attach a swallow-and-log handler so it never does.
+  serverClosed.catch((error: unknown) => {
+    log(`server close failed during drain: ${formatError(error)}\n`);
+  });
   await waitForInflightDrain(idleTimer, remainingDrain(), runtime.time);
   server.closeAllConnections();
   for (const stream of streamResponses) {

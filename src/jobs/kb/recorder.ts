@@ -121,22 +121,8 @@ export class KbJobRecorder {
     return { jobId, startedAtMs, signal: controller.signal, finalize };
   }
 
-  appendMessage(jobId: string, projectRoot: string, message: string): void {
-    this.deps.progressStore.commit((c) => {
-      c.append({
-        type: 'job.progress.emitted',
-        stream: { kind: 'job', id: jobId },
-        namespace: this.deps.backendNamespace,
-        project: projectRoot,
-        refs: buildJobEventRefs({ jobId }),
-        bodyVersion: 1,
-        body: {
-          kind: 'message',
-          message,
-        },
-      });
-      return undefined;
-    });
+  appendMessage(jobId: string, _projectRoot: string, message: string): void {
+    this.deps.progressStore.appendProgress(jobId, null, message);
   }
 
   appendOperationFailureWithTerminal(params: {

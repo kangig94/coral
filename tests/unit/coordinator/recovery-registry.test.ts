@@ -107,12 +107,15 @@ describe('RecoveryRegistry', () => {
     expect(kill).toHaveBeenCalledWith(12345, 'SIGTERM');
   });
 
-  it('abort succeeds for queued jobs (no runtimeRecord, no kill handler)', () => {
-    const reg = new RecoveryRegistry();
+  it('abort cancels queued jobs without reporting a no-op success', () => {
+    const cancelledJobIds = new Set<string>();
+    const reg = new RecoveryRegistry(undefined, cancelledJobIds);
     reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
     const result = reg.abort(['j1']);
     expect(result.aborted).toEqual(['j1']);
     expect(result.notFound).toEqual([]);
+    expect(cancelledJobIds.has('j1')).toBe(true);
+    expect(reg.has('j1')).toBe(false);
   });
 
   it('abort handles mixed found and notFound jobs', () => {

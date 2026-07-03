@@ -76,6 +76,7 @@ export interface HandoffOptions {
   signalLedger?: HandoffSignalLedger;
   signalCooldownMs?: number;
   signalPolicy?: HandoffSignalPolicy;
+  signal?: AbortSignal;
   totalBudgetMs: number;
 }
 
@@ -157,19 +158,21 @@ function sameIncumbent(left: IncumbentIdentity, right: IncumbentIdentity): boole
   return true;
 }
 
+type DiscoveryMergeResult =
+  | { kind: 'merged'; incumbent: IncumbentIdentity | null }
+  | { kind: 'changed'; fresh: IncumbentIdentity };
+
 function mergeVerifiedDiscovery(
   current: IncumbentIdentity | null,
   fresh: IncumbentIdentity | null,
-): IncumbentIdentity | null {
+): DiscoveryMergeResult {
   if (fresh === null) {
-    return current;
+    return { kind: 'merged', incumbent: current };
   }
   if (current !== null && !sameIncumbent(current, fresh)) {
-    throw new HandoffEscalationError(
-      `Refusing to signal incumbent because discovery identity changed for pid=${current.pid}`,
-    );
+    return { kind: 'changed', fresh };
   }
-  return fresh;
+  return { kind: 'merged', incumbent: fresh };
 }
 
 function readFreshDiscovery(opts: HandoffOptions, lastHealth: IncumbentHealth | null): IncumbentIdentity | null {
@@ -340,6 +343,15 @@ function resolveSignalPolicy(opts: HandoffOptions): HandoffSignalPolicy {
   return opts.signalPolicy ?? readEnvSignalPolicy(opts.runtime.env) ?? 'term-kill';
 }
 
+async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<void> {
+  opts.signal?.throwIfAborted();
+  await opts.runtime.time.sleep(
+    Math.max(0, ms),
+    opts.signal === undefined ? undefined : { signal: opts.signal },
+  );
+  opts.signal?.throwIfAborted();
+}
+
 type SignalVerificationResult = 'matched' | 'gone';
 
 function verifySignalTarget(
@@ -380,8 +392,17 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
   let sigtermAt: number | null = null;
   let sigkillAt: number | null = null;
 
+  const resetForNewIncumbent = (fresh: IncumbentIdentity): void => {
+    backendLog.info(`Incumbent discovery changed before signaling; retrying handoff against pid=${fresh.pid}`);
+    incumbent = null;
+    sigtermAt = null;
+    sigkillAt = null;
+  };
+
   while (true) {
+    opts.signal?.throwIfAborted();
     const result = await opts.bindAttempt();
+    opts.signal?.throwIfAborted();
     if (result.kind === 'bound') {
       return { acquiredViaHandoff: sawIncumbent };
     }
@@ -390,7 +411,13 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
     let remaining = deadline - opts.runtime.time.now();
     if (remaining > 0) {
       const shutdownCredentialIdentity = readFreshDiscovery(opts, lastHealth);
-      incumbent = mergeVerifiedDiscovery(incumbent, shutdownCredentialIdentity);
+      let discoveryMerge = mergeVerifiedDiscovery(incumbent, shutdownCredentialIdentity);
+      if (discoveryMerge.kind === 'changed') {
+        resetForNewIncumbent(discoveryMerge.fresh);
+        await sleepForHandoffPoll(opts, Math.min(SOCKET_BIND_POLL_MS, remaining));
+        continue;
+      }
+      incumbent = discoveryMerge.incumbent;
       const shutdownCredential = shutdownCredentialIdentity?.bootToken;
       const shutdownResult = await requestIncumbentShutdown({
         socketPath: opts.socketPath,
@@ -405,7 +432,13 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         const incumbentBundleHash = shutdownResult.health?.bundleHash ?? 'unknown';
         backendLog.info(`Incumbent bundleHash=${incumbentBundleHash} pid=${incumbent.pid}; requested shutdown via IPC`);
       }
-      incumbent = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
+      discoveryMerge = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
+      if (discoveryMerge.kind === 'changed') {
+        resetForNewIncumbent(discoveryMerge.fresh);
+        await sleepForHandoffPoll(opts, Math.min(SOCKET_BIND_POLL_MS, deadline - opts.runtime.time.now()));
+        continue;
+      }
+      incumbent = discoveryMerge.incumbent;
       if (shutdownResult.shutdownUnauthorized) {
         throw new HandoffEscalationError(
           `Manual shutdown required: incumbent pid=${incumbent?.pid ?? 'unknown'} rejected shutdown capability`,
@@ -417,10 +450,17 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
         );
       }
     }
-    incumbent = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
+    const pollingMerge = mergeVerifiedDiscovery(incumbent, readFreshDiscovery(opts, lastHealth));
+    if (pollingMerge.kind === 'changed') {
+      resetForNewIncumbent(pollingMerge.fresh);
+      await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
+      continue;
+    }
+    incumbent = pollingMerge.incumbent;
 
     remaining = deadline - opts.runtime.time.now();
     if (remaining <= 0) {
+      opts.signal?.throwIfAborted();
       if (incumbent === null) {
         throw new HandoffEscalationError('Incumbent socket remained bound, but no verified pid was available');
       }
@@ -436,11 +476,12 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           incumbent = null;
           sigtermAt = null;
           sigkillAt = null;
-          await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
+          await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
           continue;
         }
         assertSignalCapability(incumbent);
         assertSignalCooldown(opts, incumbent, 'SIGTERM');
+        opts.signal?.throwIfAborted();
         const sigtermResult = signalIncumbent(opts, incumbent, 'SIGTERM');
         recordSignal(opts, incumbent, 'SIGTERM');
         sigtermAt = opts.runtime.time.now();
@@ -461,10 +502,11 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           incumbent = null;
           sigtermAt = null;
           sigkillAt = null;
-          await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
+          await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
           continue;
         }
         assertSignalCapability(incumbent);
+        opts.signal?.throwIfAborted();
         const sigkillResult = signalIncumbent(opts, incumbent, 'SIGKILL');
         recordSignal(opts, incumbent, 'SIGKILL');
         sigkillAt = opts.runtime.time.now();
@@ -478,10 +520,10 @@ export async function bindWithHandoff(opts: HandoffOptions): Promise<{ acquiredV
           `Incumbent socket remained bound after SIGKILL grace for pid=${incumbent.pid}`,
         );
       }
-      await opts.runtime.time.sleep(SOCKET_BIND_POLL_MS);
+      await sleepForHandoffPoll(opts, SOCKET_BIND_POLL_MS);
       continue;
     }
 
-    await opts.runtime.time.sleep(Math.min(SOCKET_BIND_POLL_MS, remaining));
+    await sleepForHandoffPoll(opts, Math.min(SOCKET_BIND_POLL_MS, remaining));
   }
 }

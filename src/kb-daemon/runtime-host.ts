@@ -41,7 +41,7 @@ import {
   repairProjectionArtifactLagOnBoot,
 } from './expansion/projection-reconcile.js';
 import { startKiwiArtifactFetchOnBoot } from './expansion/kiwi-boot.js';
-import { ExpansionLifecycleService } from './expansion/lifecycle.js';
+import { ExpansionLifecycleService, type CoordinatorLifecyclePhase } from './expansion/lifecycle.js';
 import { ExpansionStateStore } from './expansion/state.js';
 import { createExpansionManifestCatalog } from '../expansion/manifest/catalog.js';
 import { initializeCapabilityCatalog } from '../expansion/manifest/fills-validation.js';
@@ -97,6 +97,7 @@ type KbDaemonWriteRuntimeState = {
 
 const DEFAULT_DAEMON_CORPUS_READINESS_TIMEOUT_MS = 90_000;
 const DEFAULT_DAEMON_JOB_DRAIN_TIMEOUT_MS = 5_000;
+const DEFAULT_DAEMON_MUTATION_LOCK_DRAIN_TIMEOUT_MS = DEFAULT_DAEMON_JOB_DRAIN_TIMEOUT_MS;
 const DAEMON_JOB_DRAIN_POLL_MS = 25;
 const BUILTIN_CAPABILITY_DESCRIPTORS = [
   BUILTIN_FTS_CAPABILITY_DESCRIPTOR,
@@ -234,6 +235,16 @@ async function drainAbortRegistry(
   }
 }
 
+async function drainCorpusMutationLock(
+  kb: KbRuntime,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<void> {
+  await kb.withMutationLock(() => undefined, {
+    timeoutMs: options.timeoutMs ?? DEFAULT_DAEMON_MUTATION_LOCK_DRAIN_TIMEOUT_MS,
+    signal: options.signal,
+  });
+}
+
 export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOptions): KbDaemonWriteRuntimeHost {
   const now = options.now ?? Date.now;
   let phase: KbDaemonKbReadHealth['phase'] = 'not_initialized';
@@ -264,6 +275,18 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
   const markDisposed = (): void => {
     phase = 'disposed';
     lastError = undefined;
+  };
+  const getExpansionLifecyclePhase = (): CoordinatorLifecyclePhase => {
+    if (phase === 'disposing') {
+      return 'draining';
+    }
+    if (phase === 'disposed') {
+      return 'stopped';
+    }
+    // The expansion lifecycle speaks coordinator phases. Healthy daemon write
+    // phases, including `ready`, must map to `running` or normal equips are
+    // rejected by the drain fence.
+    return 'running';
   };
   const disposedError = (): KbToolResult => kbError('kb_unavailable', `KB daemon write runtime is ${phase}.`);
 
@@ -398,6 +421,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         }),
         now: () => nowDate(runtime.time).toISOString(),
         resolveKbRuntime: () => kb,
+        getLifecyclePhase: getExpansionLifecyclePhase,
       });
       expansionLifecycleService = activeExpansionLifecycleService;
       await runPromoteRecovery(kb);
@@ -624,6 +648,13 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       }
       try {
         await activeState.kbRuntime.curateScheduler.stop();
+      } catch (error: unknown) {
+        cleanupError ??= error;
+      }
+      try {
+        // Queue behind any corpus writer before the owned SQLite handle closes;
+        // the timeout bounds peer directory-lock contention during shutdown.
+        await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal });
       } catch (error: unknown) {
         cleanupError ??= error;
       }

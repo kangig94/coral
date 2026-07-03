@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -110,6 +110,73 @@ afterEach(() => {
 });
 
 describe('git sync conflict recovery', () => {
+  it('removes a stale git index lock when no git operation is in progress at controller construction', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-stale-index-lock-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod');
+    initRepo(root);
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+    const indexLock = join(root, '.git', 'index.lock');
+    writeFileSync(indexLock, 'stale', 'utf-8');
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(indexLock, old, old);
+
+    createGitSyncController({
+      kb,
+      curateAssistant: { complete: async () => '' },
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: {
+        get: () => undefined,
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+
+    expect(existsSync(indexLock)).toBe(false);
+  });
+
+  it('keeps a stale git index lock while a git operation state path is present', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-active-op-index-lock-'));
+    roots.push(root);
+    process.env.CLAUDE_CONFIG_DIR = join(root, '.claude');
+    const runtime = createRealRuntime('prod');
+    initRepo(root);
+    const db = createKbTestDb(root);
+    const kb = createTestKbRuntime({
+      markdownRoot: root,
+      runtimeDir: root,
+      db,
+      runtime,
+    });
+    const indexLock = join(root, '.git', 'index.lock');
+    const rebaseState = join(root, '.git', 'rebase-merge');
+    writeFileSync(indexLock, 'active operation', 'utf-8');
+    mkdirSync(rebaseState, { recursive: true });
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(indexLock, old, old);
+
+    createGitSyncController({
+      kb,
+      curateAssistant: { complete: async () => '' },
+      processPort: runtime.process,
+      storagePort: runtime.storage,
+      envPort: {
+        get: () => undefined,
+        claudeConfigDir: () => join(root, '.claude'),
+      },
+    });
+
+    expect(existsSync(indexLock)).toBe(true);
+    expect(existsSync(rebaseState)).toBe(true);
+  });
+
   it('detects staged leftover conflict markers before rebase continuation', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-staged-marker-'));
     roots.push(root);
@@ -337,6 +404,8 @@ describe('git sync conflict recovery', () => {
         }
         return false;
       }),
+      statSync: vi.fn(() => ({ size: 0, mtimeMs: 0, isDirectory: () => false, isFile: () => true })) as never,
+      rmSync: vi.fn(),
     };
 
     const complete = vi.fn(async () => {
