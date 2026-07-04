@@ -31,7 +31,7 @@
     "lint": "eslint src/ tests/ tools/",
     "lint:fix": "eslint src/ tests/ tools/ --fix",
     "typecheck:tests": "tsc -p tsconfig/typecheck.json",
-    "prune": "ts-prune -p tsconfig/typecheck.json | grep -v 'used in module' || true",
+    "knip": "knip",
     "format": "prettier --write 'src/**/*.ts' 'tests/**/*.ts' 'tools/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts' 'tests/**/*.ts' 'tools/**/*.ts'",
     "test": "node scripts/test.mjs",
@@ -61,8 +61,8 @@
     "esbuild": "^0.27.2",
     "eslint": "^10.1.0",
     "eslint-config-prettier": "^10.1.8",
+    "knip": "^6.24.0",
     "prettier": "^3.8.1",
-    "ts-prune": "^0.10.3",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.58.0",
     "vitest": "^4.0.17"

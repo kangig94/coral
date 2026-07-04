@@ -1,0 +1,24 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // Coral is esbuild-bundled from three process entrypoints (see scripts/build-server.mjs);
+  // it has no package.json "main"/"bin" pointing at src, so entrypoints are declared here.
+  "entry": [
+    "src/coordinator/bootstrap.ts",
+    "src/cli/bootstrap.ts",
+    "src/providers/claude/appserver/server.ts",
+    // Engine expansions are loaded dynamically by string specifier via src/expansion/bundled.ts,
+    // which knip's static graph cannot follow — declare them as entrypoints.
+    "src/engines/*/expansion.ts",
+    "scripts/**/*.mjs",
+    "hooks/**/*.mjs",
+    "tools/**/*.ts",
+    "tests/**/*.test.ts",
+    "vitest/*.ts"
+  ],
+  "project": ["src/**/*.ts"],
+  // Host system binaries invoked by name (not npm bins).
+  "ignoreBinaries": ["getconf", "ps", "wmic"],
+  // Loaded via dynamic require() in kb source conversion (conversion-worker.ts), which
+  // knip's static import graph does not resolve; @types/turndown backs turndown.
+  "ignoreDependencies": ["mammoth", "turndown", "@types/turndown"]
+}
