@@ -6,6 +6,7 @@ import type {
   ProviderRuntime,
   ProviderServerLease,
   ProviderTerminalEventBody,
+  UsageSummary,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
 import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../sessions/fault.js';
@@ -29,6 +30,7 @@ import {
   type PreparedClaudeRequest,
 } from './request-prep.js';
 import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
+import { normalizeClaudeUsage } from './usage.js';
 
 function buildClaudeSessionFailureCause(
   message: string,
@@ -46,7 +48,7 @@ type ClaudeCompletedTurn = {
   model?: string;
   durationMs: number;
   errors: string[];
-  costUsd?: number;
+  usage?: UsageSummary;
   isError: boolean;
 };
 
@@ -66,6 +68,7 @@ type ClaudeTurnState = {
   brokerTurnId?: string;
   turnRequested: boolean;
   completed: boolean;
+  lastKnownUsage?: UsageSummary;
   terminal: Promise<ClaudeTurnOutcome>;
   resolveTerminal: (outcome: ClaudeTurnOutcome) => void;
 };
@@ -117,7 +120,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 
       if (runtime.signal.aborted) {
         await closeBrokerSessionBeforeTurn(lease, state);
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
+        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
         return;
       }
 
@@ -140,11 +143,20 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
       emit(finalizeOutcome(state, outcome, runtime.time.now()));
     } catch (error) {
       if (runtime.signal.aborted) {
-        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now()));
+        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
         return;
       }
 
-      emit(buildFailedTerminal('', state.prepared.model, runtime.time.now() - state.startedAt, errorMessage(error)));
+      emit(
+        buildFailedTerminal(
+          '',
+          state.prepared.model,
+          runtime.time.now() - state.startedAt,
+          errorMessage(error),
+          undefined,
+          state.lastKnownUsage,
+        ),
+      );
     } finally {
       clearNotificationBinding();
       clearBinding();
@@ -296,6 +308,7 @@ function applyNotification(
   }
 
   if (message.method === turnProgress) {
+    rememberClaudeUsage(state, params.usage, readCostUsd(params.costUsd));
     if (typeof params.message === 'string' && params.message.length > 0) {
       emit({ kind: 'progress', message: params.message });
     }
@@ -306,7 +319,7 @@ function applyNotification(
     state.brokerTurnId = undefined;
     checkpointBrokerContinuity(runtime, state);
 
-    const costUsd = typeof params.costUsd === 'number' ? params.costUsd : undefined;
+    const usage = rememberClaudeUsage(state, params.usage, readCostUsd(params.costUsd));
     const content = typeof params.result === 'string' ? params.result : '';
     const model = typeof params.model === 'string' ? params.model : state.prepared.model;
     const isError = params.isError === true;
@@ -318,13 +331,14 @@ function applyNotification(
         durationMs: typeof params.durationMs === 'number' ? params.durationMs : runtime.time.now() - state.startedAt,
         errors: readErrors(params.errors),
         isError,
-        ...(costUsd === undefined ? {} : { costUsd }),
+        usage,
       },
     });
     return;
   }
 
   if (message.method === turnFailed) {
+    rememberClaudeUsage(state, params.usage, readCostUsd(params.costUsd));
     state.brokerTurnId = undefined;
     checkpointBrokerContinuity(runtime, state);
     const diagnostic = readTurnFailureDiagnostic(params.diagnostic);
@@ -334,6 +348,22 @@ function applyNotification(
       ...(diagnostic === undefined ? {} : { diagnostic }),
     });
   }
+}
+
+function readCostUsd(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined;
+}
+
+function rememberClaudeUsage(
+  state: ClaudeTurnState,
+  rawUsage: unknown,
+  costUsd: number | undefined,
+): UsageSummary | undefined {
+  const usage = normalizeClaudeUsage(rawUsage, costUsd);
+  if (usage !== undefined) {
+    state.lastKnownUsage = usage;
+  }
+  return usage;
 }
 
 function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, nowMs: number): ProviderTerminalEventBody {
@@ -348,7 +378,7 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
         content: outcome.turn.content,
         model: outcome.turn.model,
         durationMs: outcome.turn.durationMs,
-        usage: outcome.turn.costUsd === undefined ? undefined : { costUsd: outcome.turn.costUsd },
+        usage: outcome.turn.usage,
         outcome: outcome.turn.isError ? { kind: 'failed' } : { kind: 'completed' },
       }),
       diagnostics: buildJobDiagnostics({}),
@@ -363,19 +393,32 @@ function finalizeOutcome(state: ClaudeTurnState, outcome: ClaudeTurnOutcome, now
   }
 
   if (outcome.kind === 'aborted') {
-    return buildAbortedTerminal(state.prepared.model, state.startedAt, nowMs);
+    return buildAbortedTerminal(state.prepared.model, state.startedAt, nowMs, state.lastKnownUsage);
   }
 
-  return buildFailedTerminal('', state.prepared.model, nowMs - state.startedAt, outcome.message, outcome.diagnostic);
+  return buildFailedTerminal(
+    '',
+    state.prepared.model,
+    nowMs - state.startedAt,
+    outcome.message,
+    outcome.diagnostic,
+    state.lastKnownUsage,
+  );
 }
 
-function buildAbortedTerminal(model: string | undefined, startedAt: number, nowMs: number): ProviderTerminalEventBody {
+function buildAbortedTerminal(
+  model: string | undefined,
+  startedAt: number,
+  nowMs: number,
+  usage?: UsageSummary,
+): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
       content: '',
       model,
       durationMs: nowMs - startedAt,
+      usage,
       outcome: { kind: 'aborted', reason: 'signal_abort' },
     }),
     diagnostics: buildJobDiagnostics({}),
@@ -388,6 +431,7 @@ function buildFailedTerminal(
   durationMs: number,
   message: string,
   diagnostic?: SessionProviderFailureDiagnostic,
+  usage?: UsageSummary,
 ): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
@@ -395,6 +439,7 @@ function buildFailedTerminal(
       content,
       model,
       durationMs,
+      usage,
       outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),

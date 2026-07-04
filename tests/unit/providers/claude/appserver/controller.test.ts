@@ -83,6 +83,97 @@ function durationTranscriptLine(durationMs: number): string {
   });
 }
 
+type ActiveTurnForUsageTest = object;
+
+type ControllerInternals = {
+  activeTurn: ActiveTurnForUsageTest | null;
+  processTranscriptLine(turn: ActiveTurnForUsageTest, line: string, lineStartOffset: number): void;
+  recoverStalledTurn(turn: ActiveTurnForUsageTest, now: number): Promise<boolean>;
+};
+
+type UsageControllerHarness = {
+  controller: SingleSessionController;
+  internals: ControllerInternals;
+  notifications: ControllerNotification[];
+  turn: ActiveTurnForUsageTest;
+};
+
+type TurnCompletedNotification = Extract<ControllerNotification, { method: 'turn/completed' }>;
+
+function completedNotification(
+  notifications: readonly ControllerNotification[],
+): TurnCompletedNotification | undefined {
+  return notifications.find(
+    (notification): notification is TurnCompletedNotification => notification.method === 'turn/completed',
+  );
+}
+
+async function startUsageController(): Promise<UsageControllerHarness> {
+  const child = new FakeClaudeChild();
+  const notifications: ControllerNotification[] = [];
+  const controller = new SingleSessionController({
+    spawnChild: () => child,
+    ids: { uuid: () => TEST_SESSION_ID },
+    readySettleMs: 1,
+    promptAckTimeoutMs: 10_000,
+  });
+  controller.subscribeNotifications((notification) => {
+    notifications.push(notification);
+  });
+
+  await controller.sessionEnsure({
+    cwd: '/workspace',
+    systemPromptHash: 'sha256:test',
+    permissionMode: 'default',
+  });
+  await controller.turnStart({ brokerTurnId: 'turn-usage', prompt: 'hello' });
+
+  const internals = controller as unknown as ControllerInternals;
+  expect(internals.activeTurn).not.toBeNull();
+  return {
+    controller,
+    internals,
+    notifications,
+    turn: internals.activeTurn as ActiveTurnForUsageTest,
+  };
+}
+
+function assistantUsageTranscriptLine(options: {
+  text: string;
+  usage: Record<string, unknown>;
+  messageId?: string;
+  requestId?: string;
+  stopReason?: string;
+}): string {
+  return JSON.stringify({
+    type: 'assistant',
+    session_id: TEST_SESSION_ID,
+    ...(options.requestId === undefined ? {} : { requestId: options.requestId }),
+    message: {
+      role: 'assistant',
+      ...(options.messageId === undefined ? {} : { id: options.messageId }),
+      model: TEST_MODEL,
+      usage: options.usage,
+      content: [{ type: 'text', text: options.text }],
+      ...(options.stopReason === undefined ? {} : { stop_reason: options.stopReason }),
+    },
+  });
+}
+
+async function completeFromTranscriptRows(
+  harness: UsageControllerHarness,
+  rows: readonly string[],
+): Promise<TurnCompletedNotification> {
+  for (const row of rows) {
+    harness.internals.processTranscriptLine(harness.turn, row, 0);
+  }
+
+  await harness.internals.recoverStalledTurn(harness.turn, Date.now());
+  const completed = completedNotification(harness.notifications);
+  expect(completed).toBeDefined();
+  return completed as TurnCompletedNotification;
+}
+
 describe('SingleSessionController PTY lifecycle', () => {
   it('waits for Claude terminal readiness before accepting the first turn', async () => {
     const child = new FakeClaudeChild(false);
@@ -371,6 +462,154 @@ describe('SingleSessionController PTY lifecycle', () => {
     } finally {
       await controller.shutdown();
       fixture.cleanup();
+    }
+  });
+});
+
+describe('Claude TUI usage accumulation', () => {
+  it('sums three distinct assistant responses', async () => {
+    const harness = await startUsageController();
+    try {
+      const completed = await completeFromTranscriptRows(harness, [
+        assistantUsageTranscriptLine({
+          text: 'first response',
+          messageId: 'msg-1',
+          requestId: 'req-1',
+          usage: {
+            input_tokens: 1,
+            cache_creation_input_tokens: 2,
+            cache_read_input_tokens: 3,
+            output_tokens: 4,
+            costUSD: 0.1,
+          },
+        }),
+        assistantUsageTranscriptLine({
+          text: 'second response',
+          messageId: 'msg-2',
+          requestId: 'req-2',
+          usage: {
+            input_tokens: 10,
+            cache_creation_input_tokens: 20,
+            cache_read_input_tokens: 30,
+            output_tokens: 40,
+            costUSD: 0.2,
+          },
+        }),
+        assistantUsageTranscriptLine({
+          text: 'third response',
+          messageId: 'msg-3',
+          requestId: 'req-3',
+          usage: {
+            input_tokens: 100,
+            cache_creation_input_tokens: 200,
+            cache_read_input_tokens: 300,
+            output_tokens: 400,
+            costUSD: 0.3,
+          },
+          stopReason: 'end_turn',
+        }),
+        durationTranscriptLine(12),
+      ]);
+
+      expect(completed.params.usage).toEqual({
+        input_tokens: 111,
+        cache_creation_input_tokens: 222,
+        cache_read_input_tokens: 333,
+        output_tokens: 444,
+      });
+      expect(completed.params.costUsd).toBe(0.3);
+    } finally {
+      await harness.controller.shutdown();
+    }
+  });
+
+  it('counts duplicate rows with identical message id, request id, and usage once', async () => {
+    const harness = await startUsageController();
+    try {
+      const duplicate = assistantUsageTranscriptLine({
+        text: 'duplicate response',
+        messageId: 'msg-duplicate',
+        requestId: 'req-duplicate',
+        usage: {
+          input_tokens: 7,
+          cache_creation_input_tokens: 11,
+          cache_read_input_tokens: 13,
+          output_tokens: 17,
+          costUSD: 0.07,
+        },
+      });
+      const completed = await completeFromTranscriptRows(harness, [
+        duplicate,
+        duplicate,
+        assistantUsageTranscriptLine({
+          text: 'final response',
+          messageId: 'msg-final',
+          requestId: 'req-final',
+          usage: {
+            input_tokens: 19,
+            cache_creation_input_tokens: 23,
+            cache_read_input_tokens: 29,
+            output_tokens: 31,
+            costUSD: 0.09,
+          },
+          stopReason: 'end_turn',
+        }),
+        durationTranscriptLine(14),
+      ]);
+
+      expect(completed.params.usage).toEqual({
+        input_tokens: 26,
+        cache_creation_input_tokens: 34,
+        cache_read_input_tokens: 42,
+        output_tokens: 48,
+      });
+      expect(completed.params.costUsd).toBe(0.09);
+    } finally {
+      await harness.controller.shutdown();
+    }
+  });
+
+  it('counts rows with missing identity fields separately', async () => {
+    const harness = await startUsageController();
+    try {
+      const missingMessageId = assistantUsageTranscriptLine({
+        text: 'missing message id',
+        requestId: 'req-missing-message-id',
+        usage: {
+          input_tokens: 5,
+          cache_creation_input_tokens: 7,
+          cache_read_input_tokens: 11,
+          output_tokens: 13,
+          costUSD: 0.05,
+        },
+      });
+      const completed = await completeFromTranscriptRows(harness, [
+        missingMessageId,
+        missingMessageId,
+        assistantUsageTranscriptLine({
+          text: 'missing request id',
+          messageId: 'msg-missing-request-id',
+          usage: {
+            input_tokens: 17,
+            cache_creation_input_tokens: 19,
+            cache_read_input_tokens: 23,
+            output_tokens: 29,
+            costUSD: 0.08,
+          },
+          stopReason: 'end_turn',
+        }),
+        durationTranscriptLine(16),
+      ]);
+
+      expect(completed.params.usage).toEqual({
+        input_tokens: 27,
+        cache_creation_input_tokens: 33,
+        cache_read_input_tokens: 45,
+        output_tokens: 55,
+      });
+      expect(completed.params.costUsd).toBe(0.08);
+    } finally {
+      await harness.controller.shutdown();
     }
   });
 });

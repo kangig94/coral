@@ -111,6 +111,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       time: this.runtime.time,
       loadJobProjectionDetail: deps.loadJobProjectionDetail,
       readJobEvents: deps.readJobEvents,
+      aggregateWorkflowUsage: deps.aggregateWorkflowUsage,
       subscribeJobEvents: deps.subscribeJobEvents,
       getCurrentJournalSeq: deps.getCurrentJournalSeq,
       resultJobsRoot: this.runtime.paths.coral.exports.jobsRoot,

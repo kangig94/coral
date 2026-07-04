@@ -27,7 +27,6 @@ export interface ThreadStartParams {
   serviceTier?: 'fast' | 'flex';
   serviceName?: string;
   ephemeral?: boolean;
-  experimentalRawEvents?: boolean;
 }
 
 export interface ThreadStartResponse {

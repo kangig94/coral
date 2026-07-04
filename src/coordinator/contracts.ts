@@ -5,7 +5,7 @@ import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
-import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
+import type { ProviderServerLease, ProviderServerSpec, UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -78,6 +78,7 @@ export type ExecutionServiceDeps = {
   coordinatorCommit?: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobEvents: (jobId: string) => JobEvent[];
+  aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];

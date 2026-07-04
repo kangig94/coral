@@ -17,7 +17,7 @@ import { emitError, getTerminalContext } from '../emit.js';
 import { parseJobIds } from '../flags.js';
 import { flushPendingReadStoreNote } from '../read-store.js';
 import { UsageError, normalizeUsageError } from '../errors.js';
-import { formatAbortResult, formatJobsList, renderJobsList } from '../format/jobs.js';
+import { formatAbortResult, formatJobDetail, formatJobsList, renderJobsList } from '../format/jobs.js';
 import { openCliCauseRefRenderer } from '../cause-renderer.js';
 import { mapWaitSubscriptionError } from '../wait-stream-error.js';
 import {
@@ -45,6 +45,7 @@ type AbortQuerySelector = {
 type WaitJobsOptions = {
   cursor?: string;
   embed?: boolean;
+  verbose?: boolean;
 };
 
 export function registerSessionCommands(program: Command, providerRegistry: ProviderRegistry): void {
@@ -162,6 +163,33 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
       }
     });
 
+  const jobsDetailCommand = jobsCommand.command('detail');
+  jobsDetailCommand
+    .description('Show detailed status for one job')
+    .argument('<jobId>', 'Job ID')
+    .action(async (jobId: string) => {
+      try {
+        const projectRoot = process.cwd();
+        const client = makeClient(projectRoot, jobsDetailCommand);
+        const causeRenderer = openCliCauseRefRenderer(projectRoot);
+        try {
+          const result = await client.detailJob(jobId);
+          const renderCauseRef = causeRenderer.render;
+          process.stdout.write(
+            formatJobDetail(
+              result,
+              renderCauseRef === undefined ? undefined : (ref) => renderCauseRef(ref, result.exit?.outcome),
+            ) + '\n',
+          );
+          flushPendingReadStoreNote('text');
+        } finally {
+          causeRenderer.close();
+        }
+      } catch (error) {
+        emitError(normalizeUsageError(error));
+      }
+    });
+
   async function runWaitJobs(jobIds: string[], opts: WaitJobsOptions, command: Command): Promise<void> {
     try {
       const timeoutSeconds = WAIT_TIMEOUT_SECONDS;
@@ -211,7 +239,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
                 const describer = renderCauseRef
                   ? { describeCauseRef: (ref: CauseRef) => renderCauseRef(ref, event.result.outcome) }
                   : {};
-                formatted = formatWaitTerminal(event, cursor, embed, describer);
+                formatted = formatWaitTerminal(event, cursor, embed, { ...describer, verbose: opts.verbose === true });
                 break;
               }
               case 'waiting':
@@ -244,6 +272,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .argument('<jobIds...>', 'Job IDs')
     .option('--cursor <cursor>', 'Opaque resume cursor (from previous wait output)')
     .option('--embed', 'Embed terminal result content when size permits (path is always present)')
+    .option('--verbose', 'Show detailed usage breakdown on terminal events')
     .action(async (jobIdArgs: string[], opts: WaitJobsOptions) => {
       await runWaitJobs(parseJobIds(jobIdArgs.join(' ')), opts, waitJobsCommand);
     });

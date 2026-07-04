@@ -7,7 +7,7 @@ import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
 import type { AcceptedLaunchResponse } from '../jobs/launch.js';
-import type { JobStatus, JobsListResponse } from '../jobs/records.js';
+import type { JobDetailResponse, JobStatus, JobsListResponse } from '../jobs/records.js';
 import type { RetentionPolicy } from '../sessions/entry.js';
 import type {
   KbDiagnoseInput,
@@ -126,6 +126,7 @@ export type CliCommandClient = AbortCapableClient & {
   ): Promise<AcceptedLaunchResponse>;
   workflow(expression: string, options: WorkflowRequestOptions): Promise<AcceptedLaunchResponse>;
   listJobs(options?: JobsListOptions): Promise<JobsListResponse>;
+  detailJob(jobId: string): Promise<JobDetailResponse>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
   discussStart(args: {
     agents: Array<{ name: string; persona: string }>;
@@ -521,6 +522,8 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       }
       return request<JobsListResponse>('jobs.list', filters);
     },
+    detailJob: async (jobId) =>
+      request<JobDetailResponse>('jobs.detail', buildProjectScopedQuery({ jobId }, defaultContext)),
     abortJobs: async (jobIds) =>
       request<AbortResult>('jobs.abort', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
     discussSeed: async (args) => request<PersonaSeedOutput>('discuss.persona.generate', args),

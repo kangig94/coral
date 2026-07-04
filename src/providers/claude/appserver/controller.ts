@@ -57,9 +57,23 @@ const TRANSCRIPT_POLL_MS = 100;
 const RESUME_TRANSCRIPT_WAIT_MS = 2_000;
 const MAX_TRANSCRIPT_READ_BYTES = MAX_BUFFER;
 const MAX_TRANSCRIPT_LINE_BYTES = MAX_BUFFER;
+const CLAUDE_USAGE_TOKEN_FIELDS = [
+  'input_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens',
+  'output_tokens',
+] as const;
 
 export type TurnPhase = TurnFailureDiagnosticPhase;
 type ActiveTurnFailurePhase = Exclude<TurnFailureDiagnosticPhase, 'terminal'>;
+type ClaudeUsageTokenField = (typeof CLAUDE_USAGE_TOKEN_FIELDS)[number];
+type ClaudeUsageTotals = Partial<Record<ClaudeUsageTokenField, number>>;
+
+type ClaudeUsageAccumulator = {
+  seenRows: Set<string>;
+  fallbackRowSequence: number;
+  totals: ClaudeUsageTotals;
+};
 
 const ALLOWED_TURN_PHASE_TRANSITIONS = {
   sent: new Set<TurnPhase>(['registered', 'responding', 'terminal']),
@@ -99,6 +113,7 @@ type ActiveTurnState = {
   model: string | null;
   durationMs: number | null;
   usage: unknown;
+  usageAccumulator: ClaudeUsageAccumulator;
   costUsd: number | null;
   errors: string[];
   promptText: string;
@@ -260,6 +275,7 @@ export class SingleSessionController {
       model: this.bootstrapConfig?.model ?? null,
       durationMs: null,
       usage: undefined,
+      usageAccumulator: createClaudeUsageAccumulator(),
       costUsd: null,
       errors: [],
       promptText: params.prompt,
@@ -1024,8 +1040,7 @@ export class SingleSessionController {
       turn.model = model;
     }
     if (message.usage !== undefined) {
-      turn.usage = message.usage;
-      turn.costUsd = readCostUsd(message.usage);
+      recordAssistantUsage(turn, row, message);
     }
     const error = readString(row.error);
     if (error !== undefined) {
@@ -1540,6 +1555,82 @@ function safeFileSize(path: string): number {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function createClaudeUsageAccumulator(): ClaudeUsageAccumulator {
+  return {
+    seenRows: new Set(),
+    fallbackRowSequence: 0,
+    totals: {},
+  };
+}
+
+function recordAssistantUsage(
+  turn: ActiveTurnState,
+  row: Record<string, unknown>,
+  message: Record<string, unknown>,
+): void {
+  if (!isRecord(message.usage)) {
+    return;
+  }
+
+  const key = nextAssistantUsageKey(turn, row, message);
+  const signature = assistantUsageSignature(message.usage);
+  const dedupeKey = `${key}\0${signature}`;
+  if (turn.usageAccumulator.seenRows.has(dedupeKey)) {
+    return;
+  }
+  turn.usageAccumulator.seenRows.add(dedupeKey);
+
+  let updatedTokens = false;
+  for (const field of CLAUDE_USAGE_TOKEN_FIELDS) {
+    const tokens = readTokenCount(message.usage[field]);
+    if (tokens === undefined) {
+      continue;
+    }
+    turn.usageAccumulator.totals[field] = (turn.usageAccumulator.totals[field] ?? 0) + tokens;
+    updatedTokens = true;
+  }
+
+  if (updatedTokens) {
+    turn.usage = { ...turn.usageAccumulator.totals };
+  }
+
+  const costUsd = readCostUsd(message.usage);
+  if (costUsd !== null) {
+    turn.costUsd = costUsd;
+  }
+}
+
+function nextAssistantUsageKey(
+  turn: ActiveTurnState,
+  row: Record<string, unknown>,
+  message: Record<string, unknown>,
+): string {
+  const messageId = readString(message.id);
+  const requestId = readString(row.requestId);
+  if (messageId !== undefined && requestId !== undefined) {
+    return `api:${JSON.stringify([messageId, requestId])}`;
+  }
+
+  // Rows missing message.id or requestId are intentionally never deduped; the
+  // fallback key advances per row so distinct assistant rows cannot be merged.
+  const fallbackKey = `row:${turn.usageAccumulator.fallbackRowSequence}`;
+  turn.usageAccumulator.fallbackRowSequence += 1;
+  return fallbackKey;
+}
+
+function assistantUsageSignature(usage: Record<string, unknown>): string {
+  const signature: Record<string, number | null> = {};
+  for (const field of CLAUDE_USAGE_TOKEN_FIELDS) {
+    signature[field] = readTokenCount(usage[field]) ?? null;
+  }
+  signature.costUsd = readCostUsd(usage);
+  return JSON.stringify(signature);
 }
 
 function readCostUsd(value: unknown): number | null {

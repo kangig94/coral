@@ -7,6 +7,7 @@ import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
 import type { WatchState } from '#src/discuss/watch.js';
 import type { KbReadResult } from '#src/kb/entry-types.js';
+import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
@@ -23,6 +24,7 @@ import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import {
   formatAbortResult,
   formatDetachedLaunchStatus,
+  formatJobDetail,
   formatLaunch,
   formatLaunchWaitHint,
   renderJobsList,
@@ -48,6 +50,13 @@ import {
   formatWaitWaiting,
   renderWaitLine,
 } from '#src/cli/format/wait.js';
+import {
+  cachedPercent,
+  formatCost,
+  formatTokens,
+  formatUsageSegment,
+  totalUsageTokens,
+} from '#src/cli/format/usage.js';
 
 const runningDecision = {
   launchState: 'running',
@@ -177,6 +186,37 @@ const waitWaitingEvent = {
   waitingJobIds: ['job-1', 'job-2'],
 } satisfies Extract<WaitStreamEvent, { type: 'waiting' }>;
 
+const jobDetailResponse = {
+  status: {
+    jobId: 'job-1',
+    sessionId: 'session-1',
+    provider: 'codex',
+    projectRoot: '/work/coral',
+    backendNamespace: 'default',
+    jobKind: 'provider',
+    phase: 'completed',
+    updatedAt: '2026-07-03T08:01:00.000Z',
+    lastSeq: 5,
+  },
+  events: [],
+  readiness: 'ready',
+  exit: {
+    content: 'Workflow summary',
+    outcome: { kind: 'completed' },
+    diagnostics: {
+      progressFaults: [],
+      usage: {
+        inputTokens: 1_400_000,
+        cacheReadTokens: 16_900_000,
+        cacheWriteTokens: 60_000,
+        outputTokens: 400_000,
+        costUsd: 4.18,
+      },
+    },
+    endTime: '2026-07-03T08:02:00.000Z',
+  },
+} satisfies JobDetailResponse;
+
 describe('cli format', () => {
   describe('formatLaunch', () => {
     it('formats a running decision', () => {
@@ -211,6 +251,155 @@ describe('cli format', () => {
 
     it('formats a result with both aborted and missing jobs', () => {
       expect(formatAbortResult(mixedAbortResult)).toBe('Aborted jobs: job-1\nNot found: job-9');
+    });
+  });
+
+  describe('formatJobDetail', () => {
+    it('renders the 4-tier usage breakdown with the full cache-read billing annotation', () => {
+      expect(formatJobDetail(jobDetailResponse)).toMatchInlineSnapshot(`
+        "Job job-1
+        Phase: completed
+        Readiness: ready
+        Provider: codex
+        Kind: provider
+        Session: session-1
+        Project: /work/coral
+        Updated: 2026-07-03T08:01:00.000Z
+        Last seq: 5
+        Exit: completed
+        Ended: 2026-07-03T08:02:00.000Z
+        Usage:
+          $4.18 · input 1.4M · cache-read 16.9M (90%, billed ~0.1×) · cache-write 60.0K · output 400.0K
+        Result:
+        Workflow summary"
+      `);
+    });
+
+    it('renders a job without usage without a usage block', () => {
+      const withoutUsage = {
+        ...jobDetailResponse,
+        exit: {
+          ...jobDetailResponse.exit,
+          diagnostics: { progressFaults: [] },
+        },
+      } satisfies JobDetailResponse;
+
+      const formatted = formatJobDetail(withoutUsage);
+
+      expect(formatted).not.toContain('Usage:');
+      expect(formatted).toContain('Result:\nWorkflow summary');
+    });
+
+    it('renders a wait hint while the job is still running', () => {
+      const running = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          phase: 'running',
+        },
+        exit: null,
+      } satisfies JobDetailResponse;
+
+      expect(formatJobDetail(running)).toMatchInlineSnapshot(`
+        "Job job-1
+        Phase: running
+        Readiness: ready
+        Provider: codex
+        Kind: provider
+        Session: session-1
+        Project: /work/coral
+        Updated: 2026-07-03T08:01:00.000Z
+        Last seq: 5
+        Run coral-cli wait jobs job-1 to follow it."
+      `);
+    });
+
+    it('renders aborted terminal details from the outcome when content is empty', () => {
+      const aborted = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          phase: 'aborted',
+        },
+        exit: {
+          ...jobDetailResponse.exit,
+          content: '',
+          outcome: { kind: 'aborted' as const, reason: 'user_abort' as const },
+          diagnostics: { progressFaults: [] },
+        },
+      } satisfies JobDetailResponse;
+
+      expect(formatJobDetail(aborted)).toContain('Exit: aborted: user_abort');
+      expect(formatJobDetail(aborted)).toContain('Result:\nAborted: user_abort.');
+    });
+
+    it('renders failed terminal details through the cause ref describer', () => {
+      const failed = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          phase: 'error',
+        },
+        exit: {
+          ...jobDetailResponse.exit,
+          content: '',
+          outcome: {
+            kind: 'failed' as const,
+            causeRef: { stream: { kind: 'session' as const, id: 'session-1' }, seq: 4 },
+          },
+          diagnostics: { progressFaults: [] },
+        },
+      } satisfies JobDetailResponse;
+
+      const formatted = formatJobDetail(failed, () => 'Claude session failed: transcript missing.');
+
+      expect(formatted).toContain('Exit: Failed: Claude session failed: transcript missing.');
+      expect(formatted).toContain('Result:\nFailed: Claude session failed: transcript missing.');
+    });
+
+    it('renders job fault terminal details from the fault payload', () => {
+      const faulted = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          phase: 'error',
+        },
+        exit: {
+          ...jobDetailResponse.exit,
+          content: '',
+          outcome: {
+            kind: 'job_fault' as const,
+            fault: {
+              kind: 'wrapper_crashed' as const,
+              cause: { message: 'provider timed out' },
+            },
+          },
+          diagnostics: { progressFaults: [] },
+        },
+      } satisfies JobDetailResponse;
+
+      const formatted = formatJobDetail(faulted, () => 'unused cause ref');
+
+      expect(formatted).toContain('Exit: Provider wrapper crashed: provider timed out.');
+      expect(formatted).toContain('Result:\nProvider wrapper crashed: provider timed out.');
+    });
+
+    it('omits the Provider line when a workflow job has no provider', () => {
+      const workflow = {
+        ...jobDetailResponse,
+        status: {
+          ...jobDetailResponse.status,
+          sessionId: null,
+          provider: null,
+          jobKind: 'workflow' as const,
+        },
+      } satisfies JobDetailResponse;
+
+      const formatted = formatJobDetail(workflow);
+
+      expect(formatted).not.toContain('\nProvider:');
+      expect(formatted).toContain('\nKind: workflow\n');
+      expect(formatted).not.toContain('\nSession:');
     });
   });
 
@@ -820,6 +1009,37 @@ describe('cli format', () => {
   });
 
   describe('wait formatters', () => {
+    it('formats usage primitives for cost, token magnitude, derived totals, and cached percentage', () => {
+      const usage = {
+        inputTokens: 1_400_000,
+        cacheReadTokens: 16_740_000,
+        cacheWriteTokens: 60_000,
+        outputTokens: 400_000,
+        costUsd: 4.18,
+      };
+
+      expect(formatCost(0.34)).toBe('$0.34');
+      expect(formatCost(0.004)).toBe('<$0.01');
+      expect(formatTokens(941)).toBe('941');
+      expect(formatTokens(37_200)).toBe('37.2K');
+      expect(formatTokens(18_600_000)).toBe('18.6M');
+      expect(totalUsageTokens(usage)).toBe(18_600_000);
+      expect(cachedPercent(usage)).toBe(90);
+      expect(cachedPercent({ inputTokens: 600, cacheReadTokens: 400 })).toBeUndefined();
+    });
+
+    it('renders cost-only usage in light and verbose modes but omits empty usage', () => {
+      expect(formatUsageSegment({ costUsd: 0.34 })).toBe('$0.34');
+      expect(formatUsageSegment({ costUsd: 0.34 }, { verbose: true })).toBe('$0.34');
+      expect(formatUsageSegment({})).toBeUndefined();
+    });
+
+    it('pluralizes the missing-cost note for one workflow child', () => {
+      expect(formatUsageSegment({ costUsd: 0.5, jobsWithoutCostData: 1 })).toBe(
+        '$0.50+ · (+1 job without cost data)',
+      );
+    });
+
     it('formats progress events with elapsed time when no label is passed (single-job case)', () => {
       expect(formatWaitProgress(waitProgressEvent)).toBe('[ 0m  2s] Still running');
     });
@@ -855,6 +1075,158 @@ describe('cli format', () => {
           'Result path: /tmp/result.md\n' +
           'Run coral-cli wait jobs job-2 to continue waiting.',
       );
+    });
+
+    it('snapshots light wait terminal usage with cost, derived tokens, and cached percentage', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            usage: {
+              inputTokens: 1_400_000,
+              cacheReadTokens: 16_740_000,
+              cacheWriteTokens: 60_000,
+              outputTokens: 400_000,
+              costUsd: 4.18,
+            },
+          },
+          null,
+          false,
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 completed · $4.18 · 18.6M tokens (90% cached)
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
+    });
+
+    it('snapshots verbose wait terminal usage as a full token-bucket breakdown', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            usage: {
+              inputTokens: 1_400_000,
+              cacheReadTokens: 16_740_000,
+              cacheWriteTokens: 60_000,
+              outputTokens: 400_000,
+              costUsd: 4.18,
+            },
+          },
+          null,
+          false,
+          { verbose: true },
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 completed · $4.18 · input 1.4M · cache-read 16.7M (90% cached) · cache-write 60.0K · output 400.0K
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
+    });
+
+    it('snapshots no-cost wait terminal usage as tokens-only with cached percentage', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            usage: {
+              inputTokens: 12_979,
+              cacheReadTokens: 142_720,
+              outputTokens: 707,
+            },
+          },
+          null,
+          false,
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 completed · 156.4K tokens (91% cached)
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
+    });
+
+    it('snapshots workflow mixed-provider usage with partial-cost honesty', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            usage: {
+              inputTokens: 1_000,
+              cacheReadTokens: 1_000,
+              outputTokens: 500,
+              costUsd: 0.5,
+              jobsWithoutCostData: 1,
+            },
+          },
+          null,
+          false,
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 completed · $0.50+ · 2.5K tokens · (+1 job without cost data)
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
+    });
+
+    it('snapshots cost-only wait terminal usage', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            usage: {
+              costUsd: 0.34,
+            },
+          },
+          null,
+          false,
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 completed · $0.34
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
+    });
+
+    it('snapshots empty wait terminal usage without adding a usage segment', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            usage: {},
+          },
+          null,
+          false,
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 completed
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
+    });
+
+    it('snapshots aborted wait terminal usage with partial spend', () => {
+      expect(
+        formatWaitTerminal(
+          {
+            ...waitTerminalEvent,
+            result: {
+              content: '',
+              outcome: { kind: 'aborted' as const, reason: 'signal_abort' },
+            },
+            usage: {
+              inputTokens: 200,
+              outputTokens: 741,
+              costUsd: 0.004,
+            },
+          },
+          null,
+          false,
+        ),
+      ).toMatchInlineSnapshot(`
+        "Job job-1 aborted: signal_abort · <$0.01 · 941 tokens
+        Result path: /tmp/result.md
+        Run coral-cli wait jobs job-2 to continue waiting."
+      `);
     });
 
     it('reports when no jobs remain on a non-inline terminal event', () => {

@@ -5,6 +5,7 @@ import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { CoordinatorWorld } from './world.js';
 import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 import { prepareCached } from '../../store/db.js';
+import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -53,6 +54,7 @@ export function createExecutionServices({
       pluginRegistry: world.pluginRegistry,
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
+      aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         prepareCached<[], { seq: number }>(

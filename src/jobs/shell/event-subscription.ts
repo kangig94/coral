@@ -1,7 +1,7 @@
 import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProgressTiming } from '../event-bodies.js';
 import type { AppendedEvent } from '../../store/append.js';
-import type { JobEvent, JobTerminal } from '../records.js';
+import type { JobEvent, JobTerminal, JobTerminalDiagnostics } from '../records.js';
 import { normalizeJobTerminal } from '../terminal/result.js';
 
 type JobSubscriber = {
@@ -47,8 +47,10 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
 
   const body = event.body as {
     terminal: JobTerminal;
+    diagnostics?: JobTerminalDiagnostics;
     continuity?: JobContinuitySnapshot | null;
   };
+  const usage = body.diagnostics?.usage;
 
   return {
     jobId: event.stream.id,
@@ -58,6 +60,9 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     ts: event.ts,
     result: normalizeJobTerminal(body.terminal),
     continuity: body.continuity ?? null,
+    // Appended terminal events do not carry jobKind; the wait coordinator
+    // replaces workflow terminal usage with the read-time aggregate.
+    ...(usage === undefined ? {} : { usage }),
   };
 }
 

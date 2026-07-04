@@ -539,6 +539,7 @@ function createActualRecoveryService(
       },
       loadJobProjectionDetail: (() => ({}) as never) as never,
       readJobEvents: (() => []) as never,
+      aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: async function* () {} as never,
       getCurrentJournalSeq: () => 0,
     },

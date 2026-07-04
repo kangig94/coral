@@ -59,7 +59,10 @@ describe('command class coverage', () => {
         commandClass: entry.resolution.kind === 'class' ? entry.resolution.commandClass : null,
       }));
 
-    expect(executableParents).toEqual([{ path: 'abort', commandClass: 'mutate' }]);
+    expect(executableParents).toEqual([
+      { path: 'jobs', commandClass: 'directRead' },
+      { path: 'abort', commandClass: 'mutate' },
+    ]);
   });
 
   it('classifies the expansion command family with the declared read/mutate split', () => {

@@ -4,6 +4,7 @@ export type CommandClass = 'directRead' | 'servedRead' | 'mutate' | 'subscribe';
 
 export type StaticCommandPath =
   | 'jobs'
+  | 'jobs detail'
   | 'wait jobs'
   | 'abort'
   | 'abort jobs'
@@ -51,6 +52,7 @@ export type StaticCommandPath =
 
 export const commandClassMap = {
   jobs: 'directRead',
+  'jobs detail': 'servedRead',
   'wait jobs': 'subscribe',
   abort: 'mutate',
   'abort jobs': 'mutate',

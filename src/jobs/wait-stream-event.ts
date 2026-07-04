@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { jobContinuitySnapshotSchema } from './continuity.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobTerminalSchema } from './terminal/result.js';
+import { usageSummarySchema } from '../providers/contract.js';
 import type { WaitStreamEvent } from './wait.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'waiting']);
@@ -37,6 +38,7 @@ const waitTerminalEventSchema = z
     resultPath: z.string(),
     result: jobTerminalSchema,
     continuity: jobContinuitySnapshotSchema.nullable().optional(),
+    usage: usageSummarySchema.optional(),
   })
   .strict();
 

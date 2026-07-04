@@ -60,7 +60,7 @@ Behavior:
 1. `ExecutionService.coralDispatch()` resolves `agents/<name>.md`.
 2. `src/jobs/shell/instruction.ts` builds the provider instruction.
 3. The provider adapter injects that instruction into the provider launch.
-4. Detached launches print `Job <job> <launchState> (session <session>)`, and `wait --embed` always prints `Result path: <path>` for durable artifact recovery.
+4. Detached launches print `Job <job> <launchState> (session <session>)`, and `wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for durable artifact recovery.
 5. The job is persisted like any other provider execution.
 
 Unknown agent names fail through the normal provider/domain error path.
