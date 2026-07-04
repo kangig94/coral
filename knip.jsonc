@@ -18,7 +18,9 @@
   "project": ["src/**/*.ts"],
   // Host system binaries invoked by name (not npm bins).
   "ignoreBinaries": ["getconf", "ps", "wmic"],
-  // Loaded via dynamic require() in kb source conversion (conversion-worker.ts), which
-  // knip's static import graph does not resolve; @types/turndown backs turndown.
-  "ignoreDependencies": ["mammoth", "turndown", "@types/turndown"]
+  // mammoth/turndown: loaded via dynamic require() in kb source conversion
+  // (conversion-worker.ts), which knip's static import graph does not resolve;
+  // @types/turndown backs turndown. vite: a type-only import (vitest/raw-sql-plugin.ts)
+  // provided transitively by vitest, so it is intentionally not a direct dependency.
+  "ignoreDependencies": ["mammoth", "turndown", "@types/turndown", "vite"]
 }
