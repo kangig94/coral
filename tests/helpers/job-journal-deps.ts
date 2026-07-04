@@ -9,6 +9,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { publishJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 
 export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<Runtime, 'time'>) {
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
@@ -73,6 +74,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
   return {
     loadJobProjectionDetail: (jobId: string) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId: string) => progressStore.readJobEvents(jobId),
+    aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(progressStore.getDb(), workflowJobId),
     subscribeJobEvents,
     getCurrentJournalSeq,
     coordinatorCommit,

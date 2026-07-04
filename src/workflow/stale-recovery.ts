@@ -22,7 +22,7 @@ const INVARIANT = {
 
 export const DEFAULT_STALE_ABORT_TIMEOUT_MS = 30_000;
 export const CORAL_STALE_ABORT_TIMEOUT_MS_ENV = 'CORAL_STALE_ABORT_TIMEOUT_MS';
-export const MIN_CONTINUATION_LEASE_TTL_MS = 60_000;
+const MIN_CONTINUATION_LEASE_TTL_MS = 60_000;
 
 /**
  * Resolve how long workflow stale-recovery waits for an aborted atom to surface

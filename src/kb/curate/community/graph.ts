@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import * as GraphologyModule from 'graphology';
 import type { GraphConstructor } from 'graphology-types';
 import { compareLocale } from '../../validation.js';
-import type { EntityGraph, KbIndex } from '../../entry-types.js';
+import type { EntityGraph } from '../../entry-types.js';
 import { uniqueSorted } from './identity.js';
 import type { TagGraph } from './contracts.js';
 
@@ -27,13 +27,6 @@ function parseEdgeKey(key: string): [string, string] {
 
 function formatEdgeWeight(weight: number): string {
   return weight.toFixed(12);
-}
-
-function normalizeEntityGraph(index: KbIndex): EntityGraph {
-  return {
-    entityMeta: index.entityMeta,
-    relationships: index.relationships,
-  };
 }
 
 export function buildEntityRelationshipGraph(entityGraph: EntityGraph): TagGraph {
@@ -112,10 +105,6 @@ export function buildEntityRelationshipGraph(entityGraph: EntityGraph): TagGraph
     edges,
     adjacency,
   };
-}
-
-export function buildEntityRelationshipGraphFromIndex(index: KbIndex): TagGraph {
-  return buildEntityRelationshipGraph(normalizeEntityGraph(index));
 }
 
 export function computeGraphFingerprint(graph: TagGraph): string {

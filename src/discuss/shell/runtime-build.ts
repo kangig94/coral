@@ -43,7 +43,7 @@ export type AttemptSuccess = {
   continuity: JobContinuitySnapshot | null;
 };
 
-export type AttemptFailure = {
+type AttemptFailure = {
   ok: false;
   attempt?: number;
   consumedAttempt: boolean;
@@ -157,10 +157,7 @@ export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string,
   return config;
 }
 
-export function nextAttemptForPurpose(
-  run: PersistedDiscussAgentRun | undefined,
-  purpose: DiscussAgentJobPurpose,
-): number {
+function nextAttemptForPurpose(run: PersistedDiscussAgentRun | undefined, purpose: DiscussAgentJobPurpose): number {
   if (!run) {
     return 1;
   }

@@ -7,7 +7,7 @@ import { isRecord } from '../../../infra/json.js';
 
 export type ShutdownResult = { ok: true; alreadyDraining?: true } | { ok: false; reason: string };
 
-export function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
+function isShuttingDownError(value: unknown): value is { code: 'backend_shutting_down' } {
   return isRecord(value) && value.code === 'backend_shutting_down';
 }
 

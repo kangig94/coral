@@ -1,4 +1,5 @@
 import type { Database } from '../store/db.js';
+import type { UsageSummary } from '../providers/contract.js';
 
 import type { JobContinuitySnapshot } from './continuity.js';
 import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
@@ -8,9 +9,11 @@ import { type JobPhase } from './phase.js';
 import {
   belongsToNamespace,
   emptyJobDiagnostics,
+  isWorkflowJobKind,
   type JobDiagnostics,
   type JobEvent,
   type JobExit,
+  type JobKind,
   type JobLaunch,
   type JobRuntime,
   type JobStatus,
@@ -28,6 +31,7 @@ import { decodeBody, decodeEventJson, type StoreReadContext } from '../store/bod
 import { prepareCached, sqlPlaceholders } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
 import type { EventsRow } from '../store/schema.js';
+import { aggregateWorkflowUsage } from './workflow-usage.js';
 
 type JobLaunchProjection = {
   jobId: string;
@@ -36,7 +40,7 @@ type JobLaunchProjection = {
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind: 'provider' | 'workflow' | 'kb';
+  jobKind: JobKind;
   pool: string;
   enqueueSequence: number;
   providerAction?: 'exec' | 'resume';
@@ -123,7 +127,7 @@ type ProjectionRow = {
   project_root: string;
   backend_namespace: string;
   bundle_hash: string | null;
-  job_kind: 'provider' | 'workflow' | 'kb';
+  job_kind: JobKind;
   parent_workflow_job_id: string | null;
   workflow_slot: string | null;
   created_at: string;
@@ -492,6 +496,16 @@ function toJobExitProjection(
   };
 }
 
+function applyWorkflowUsage(diagnostics: JobDiagnostics, usage: UsageSummary | undefined): JobDiagnostics {
+  return {
+    progressFaults: diagnostics.progressFaults.map((fault) => ({ ...fault })),
+    ...(diagnostics.warnings === undefined ? {} : { warnings: [...diagnostics.warnings] }),
+    ...(diagnostics.processExit === undefined ? {} : { processExit: { ...diagnostics.processExit } }),
+    ...(diagnostics.byteCounts === undefined ? {} : { byteCounts: { ...diagnostics.byteCounts } }),
+    ...(usage === undefined ? {} : { usage: { ...usage } }),
+  };
+}
+
 function projectionRowToStatus(
   jobId: string,
   projection: ProjectionRow,
@@ -526,13 +540,17 @@ function hydrateJobProjectionDetail(
   runtime: EventRow | null,
   terminal: EventRow | null,
   ctx: StoreReadContext,
+  workflowUsage?: UsageSummary,
 ): JobProjectionDetail {
   const launch = decodeLaunch(jobId, requested, ctx);
   const terminalRecord = decodeTerminalRecord(terminal, ctx);
-  const diagnostics =
+  const terminalDiagnostics =
     terminalRecord === null
       ? decodeProjectionDiagnostics(projection)
       : mergeDiagnostics(decodeProjectionDiagnostics(projection), terminalRecord.diagnostics);
+  const diagnostics = isWorkflowJobKind(projection?.job_kind)
+    ? applyWorkflowUsage(terminalDiagnostics, workflowUsage)
+    : terminalDiagnostics;
   const exit = terminal && terminalRecord ? toJobExitProjection(terminal, terminalRecord, diagnostics) : null;
 
   const status = projection
@@ -553,7 +571,8 @@ export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreR
   const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');
   const runtime = readLatestEvent(db, 'job', jobId, 'job.runtime.started');
   const terminal = readLatestEvent(db, 'job', jobId, 'job.terminal.recorded');
-  return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx);
+  const workflowUsage = isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
+  return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx, workflowUsage);
 }
 
 export function loadJobProjectionDetails(
@@ -595,6 +614,7 @@ export function loadJobProjectionDetails(
         statusEvents.runtime,
         statusEvents.terminal,
         ctx,
+        isWorkflowJobKind(projectionsByJob.get(jobId)?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined,
       ),
     );
   }
@@ -700,7 +720,8 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
     body: Uint8Array | Buffer;
   }>;
 
-  const sessionId = readProjectionRow(db, jobId)?.session_id ?? null;
+  const projection = readProjectionRow(db, jobId);
+  const sessionId = projection?.session_id ?? null;
 
   const events: JobEvent[] = [];
   for (const row of rows) {
@@ -733,6 +754,10 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
       ctx,
     );
 
+    const usage = isWorkflowJobKind(projection?.job_kind)
+      ? aggregateWorkflowUsage(db, jobId)
+      : terminal?.diagnostics.usage;
+
     events.push({
       jobId,
       sessionId,
@@ -741,6 +766,7 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
       ts: row.ts,
       result: terminal?.record ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
       continuity: terminal?.continuity ?? null,
+      ...(usage === undefined ? {} : { usage }),
     });
   }
 

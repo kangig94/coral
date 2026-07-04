@@ -10,7 +10,7 @@ import {
 } from '../entry-types.js';
 import { compareLocale } from '../validation.js';
 
-export function listPrinciplesFromIndex(index: KbIndex, args: KbPrinciplesInput): KbPrinciplesResult {
+function listPrinciplesFromIndex(index: KbIndex, args: KbPrinciplesInput): KbPrinciplesResult {
   const allNames = Object.keys(index.principles).sort(compareLocale);
   const total = allNames.length;
   let names = allNames;

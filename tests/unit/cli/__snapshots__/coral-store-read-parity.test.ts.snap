@@ -18,8 +18,3 @@ exports[`cli coral-store read parity > preserves kb read output via CoralStore r
 "{"kind":"note","note":"coral-kb-mode","title":"KB Mode","content":"## Rule\\nKeep the JSON index authoritative.","tags":["coral","kb"],"principles":["contract-first-design"],"updatedAt":"2026-03-21T00:00:00.000Z","age":"1 day ago"}
 "
 `;
-
-exports[`cli coral-store read parity > preserves kb search output via CoralStore reads 1`] = `
-"{"results":[{"note":"coral-kb-mode","kind":"note","title":"KB Mode","matched":["content"],"snippet":"## Rule Keep the JSON index authoritative.","evidence":["[text:#1(w=1,c=0.016)]"]}],"mode":"text","count":1}
-"
-`;

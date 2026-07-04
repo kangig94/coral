@@ -105,7 +105,7 @@ const BUILTIN_CAPABILITY_DESCRIPTORS = [
   BUILTIN_EMBEDDING_CAPABILITY_DESCRIPTOR,
 ] as const;
 
-export type DaemonKnowledgeBaseRuntime = {
+type DaemonKnowledgeBaseRuntime = {
   kb: KbRuntime;
   readDb: Pick<WritableDatabase, 'prepare' | 'close'>;
   curateScheduler: CurateHandle;
@@ -124,7 +124,7 @@ export type KbDaemonWriteRuntimeHost = {
   health(): KbDaemonKbReadHealth;
 };
 
-export type KbDaemonSearchRuntimeReadiness =
+type KbDaemonSearchRuntimeReadiness =
   | { ready: true }
   | {
       ready: false;
@@ -548,14 +548,9 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     return initPromise;
   };
 
-  const assertFtsBindingReady = (
-    activeState: KbDaemonWriteRuntimeState,
-  ): KbDaemonSearchRuntimeReadiness | null => {
+  const assertFtsBindingReady = (activeState: KbDaemonWriteRuntimeState): KbDaemonSearchRuntimeReadiness | null => {
     try {
-      activeState.kbRuntime.kb.capabilityRegistry
-        .runtimeView()
-        .read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY)
-        .read();
+      activeState.kbRuntime.kb.capabilityRegistry.runtimeView().read<Backed<FtsRetrieval>>(KB_FTS_CAPABILITY).read();
       return null;
     } catch (error: unknown) {
       return {

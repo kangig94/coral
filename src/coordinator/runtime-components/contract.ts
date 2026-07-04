@@ -7,7 +7,7 @@ export type DegradedReason = {
   lastError: string;
 };
 
-export type OfflineDiagnostic = {
+type OfflineDiagnostic = {
   attempts?: number;
   failedStep?: string;
   retry?: 'restart-daemon' | 'none';

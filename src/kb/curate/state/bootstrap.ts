@@ -51,7 +51,7 @@ export type ScannedSource = {
   frontmatter: KbSourceFrontmatter;
 };
 
-export type CurateBootstrapScanFailure = {
+type CurateBootstrapScanFailure = {
   kind: 'note' | 'source';
   name: string;
   path: string;

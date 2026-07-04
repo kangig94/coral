@@ -3,7 +3,7 @@ import { Worker, type WorkerOptions } from 'node:worker_threads';
 
 import { AbortError } from '../../../runtime/abort.js';
 
-export const SOURCE_IMPORT_CONVERSION_WORKER_TIMEOUT_MS = 30 * 60 * 1000;
+const SOURCE_IMPORT_CONVERSION_WORKER_TIMEOUT_MS = 30 * 60 * 1000;
 
 export type SourceConversionWorkerRequest =
   | {

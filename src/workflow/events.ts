@@ -9,7 +9,7 @@ import { CoralAppendError } from '../store/append-error.js';
 import { causeRefSchema, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
 import { parseWorkflowSlotId, workflowPlanSchema, type WorkflowPlan } from './plan.js';
 
-export const workflowStepDetailSchema = z
+const workflowStepDetailSchema = z
   .object({
     stepIndex: z.number().int().nonnegative(),
     atomIndex: z.number().int().nonnegative(),
@@ -29,7 +29,7 @@ const workflowStepDetailsField = {
  * `workflow.completed` body for failed outcomes so coral-reef and operators
  * can identify the failing slot/step/atom without re-walking the journal.
  */
-export const workflowFailureLocationSchema = z
+const workflowFailureLocationSchema = z
   .object({
     slotId: z.string().optional(),
     stepIndex: z.number().int().nonnegative().optional(),
@@ -98,7 +98,7 @@ export const workflowDrainEnteredBodySchema = z
   .strict();
 
 export type WorkflowCompletedBody = z.infer<typeof workflowCompletedBodySchema>;
-export type WorkflowStepDetail = z.infer<typeof workflowStepDetailSchema>;
+type WorkflowStepDetail = z.infer<typeof workflowStepDetailSchema>;
 export type WorkflowFailureLocation = z.infer<typeof workflowFailureLocationSchema>;
 export type WorkflowLifecycleFaultBody = z.infer<typeof workflowLifecycleFaultBodySchema>;
 export type WorkflowCompletedInputBody<Scope = never> =
@@ -278,7 +278,7 @@ function workflowIdForSlotRef(input: CoralEventInput, parsedWorkflowId: string):
   return input.refs?.workflowId ?? input.refs?.parentJobId ?? parsedWorkflowId;
 }
 
-export const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
+const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
   const declaredSlotIdsByWorkflow = new Map<string, ReadonlySet<string>>();
   const storedSlotIdsByWorkflow = new Map<string, ReadonlySet<string> | null>();
 
@@ -346,7 +346,7 @@ export const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs)
  * Reject duplicate declarations at append time — covers both pre-existing
  * declarations on the stream and a second declaration in the same batch.
  */
-export const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (ctx, inputs) => {
+const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (ctx, inputs) => {
   const declaredInBatch = new Set<string>();
 
   for (const input of inputs) {
@@ -392,7 +392,7 @@ function workflowPlanDeclaredDuplicate(workflowId: string, where: string): Coral
  * pre-existing completions on the stream and a second completion in the
  * same batch.
  */
-export const validateWorkflowCompletedOnce: DomainAppendValidator = (ctx, inputs) => {
+const validateWorkflowCompletedOnce: DomainAppendValidator = (ctx, inputs) => {
   const completedInBatch = new Set<string>();
 
   for (const input of inputs) {

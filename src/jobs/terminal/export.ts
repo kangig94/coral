@@ -88,7 +88,7 @@ function describeResolvedCauseRef(db: Database, ctx: StoreReadContext, ref: Caus
   return describeCauseRefChain(db, ctx, ref, new Set()) ?? renderCauseRefFallback(ref);
 }
 
-export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
+function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadContext): string {
   const event = db
     .prepare(
       `SELECT type, body, body_version, stream_kind, stream_id
@@ -116,7 +116,7 @@ export function buildResultMarkdown(db: Database, jobId: string, ctx: StoreReadC
   return '';
 }
 
-export function materializeResultMarkdown(
+function materializeResultMarkdown(
   db: Database,
   jobId: string,
   jobsRoot: string,

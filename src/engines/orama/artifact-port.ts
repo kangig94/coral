@@ -45,7 +45,7 @@ function normalizeIdentityAnalyzers(analyzers: readonly string[]): readonly stri
   );
 }
 
-export function oramaTokenizerIdentityForAnalyzers(analyzers: readonly string[]): string {
+function oramaTokenizerIdentityForAnalyzers(analyzers: readonly string[]): string {
   return normalizeIdentityAnalyzers(analyzers).includes('ko')
     ? ORAMA_KIWI_TOKENIZER_IDENTITY
     : ORAMA_INTL_TOKENIZER_IDENTITY;

@@ -27,6 +27,10 @@ export function belongsToNamespace(status: JobStatus, namespace: string): boolea
 
 export type JobKind = 'provider' | 'workflow' | 'kb';
 
+export function isWorkflowJobKind(kind: JobKind | null | undefined): kind is 'workflow' {
+  return kind === 'workflow';
+}
+
 export interface JobTerminal {
   content: string;
   outcome: TerminalOutcome;
@@ -159,6 +163,7 @@ export interface JobTerminalEvent extends JobEventBase {
   type: 'terminal';
   result: JobTerminal;
   continuity: JobContinuitySnapshot | null;
+  usage?: UsageSummary;
 }
 
 export type JobEvent = JobProgressEvent | JobTerminalEvent;

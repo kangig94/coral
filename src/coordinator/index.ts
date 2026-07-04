@@ -39,6 +39,7 @@ import type { KbCorpusPublication, KbCorpusSnapshot } from '../kb/contract.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { createWorkflowRecoveryFinalizer } from './services/workflow-recovery-finalizer.js';
 import { assertDescriberCoverage } from '../read-model/event-describers.js';
+import { aggregateWorkflowUsage } from '../jobs/workflow-usage.js';
 import { JobStore } from '../jobs/store.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
@@ -397,6 +398,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         coordinatorCommit,
         loadJobProjectionDetail: (jobId: string) => loadJobProjectionDetail(getQueryDb(), jobId, readCtx),
         readJobEvents: (jobId: string) => readJobEvents(getQueryDb(), jobId, readCtx),
+        aggregateWorkflowUsage: (workflowJobId: string) => aggregateWorkflowUsage(getQueryDb(), workflowJobId),
         subscribeJobEvents,
         getCurrentJournalSeq,
       };

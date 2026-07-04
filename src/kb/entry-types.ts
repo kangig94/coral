@@ -94,7 +94,7 @@ export type KbSourceDeleteInput = {
   slug: string;
 };
 
-export type KbSourceListItem = KbSourceFrontmatter & {
+type KbSourceListItem = KbSourceFrontmatter & {
   slug: string;
 };
 
@@ -242,7 +242,7 @@ export interface KbSearchResponse {
   warnings?: string[];
 }
 
-export type KbDiagnoseIncident = {
+type KbDiagnoseIncident = {
   entry_id: KbEntryId;
   locus: string | null;
   canonical_incident: string | null;

@@ -1,4 +1,4 @@
-export type AgentAtom = {
+type AgentAtom = {
   kind: 'agent';
   namespace?: string;
   agent: string;

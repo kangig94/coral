@@ -72,7 +72,7 @@ Implementation notes:
 - `<os-tmpdir>/coral-jobs/<jobId>/` contains live scratch artifacts such as stdout/stderr/intermediates only
 - hook recovery reads CLI-visible job state and durable result artifacts, not file-backed job status records
 
-The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.
+The wait guidance matches the current CLI contract: terminal text always includes `Result path: <path>`, may include a terminal-line usage segment from job diagnostics, and `--embed` preview text is only a convenience layer. Read the printed result path for the durable artifact.
 
 ## SubagentStart
 

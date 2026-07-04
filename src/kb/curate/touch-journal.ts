@@ -15,7 +15,7 @@ const TOUCH_JOURNAL_ORPHAN_SUFFIX = '.jsonl';
 const DEFAULT_APPEND_RETRIES = 3;
 const TOUCH_JOURNAL_PROGRESS_VERSION = 1;
 
-export type TouchJournalStorage = Pick<
+type TouchJournalStorage = Pick<
   StoragePort,
   | 'appendFileWithCanonicalCheckSync'
   | 'existsSync'

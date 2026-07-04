@@ -205,6 +205,7 @@ function createService(
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
+    aggregateWorkflowUsage: createTestJobJournalDeps(progressStore, runtime).aggregateWorkflowUsage,
     subscribeJobEvents,
     getCurrentJournalSeq,
     coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,

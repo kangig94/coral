@@ -41,7 +41,7 @@ type BootProjectionArtifactRepairResult = {
  * coordinator boot path does not import `ORAMA_BASE_CONSUMER_ID` directly from
  * `src/engines/**`.
  */
-export function isOramaOnlyRepairTarget(consumerIds: readonly string[]): boolean {
+function isOramaOnlyRepairTarget(consumerIds: readonly string[]): boolean {
   return consumerIds.length === 1 && consumerIds[0] === ORAMA_BASE_CONSUMER_ID;
 }
 

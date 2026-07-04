@@ -9,7 +9,7 @@ import {
   type KbJobRecorderDeps,
 } from '../../jobs/kb/recorder.js';
 
-export interface KbOperationJobRecorderHelpers {
+interface KbOperationJobRecorderHelpers {
   appendMessage(message: string): void;
 }
 

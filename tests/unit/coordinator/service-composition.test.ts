@@ -48,6 +48,7 @@ import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
+import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
@@ -209,6 +210,7 @@ function createService(
     coordinatorCommit: (cb) => progressStore.commit(cb),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
+    aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(progressStore.getDb(), workflowJobId),
     subscribeJobEvents,
     getCurrentJournalSeq,
   });

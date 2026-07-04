@@ -2,9 +2,10 @@ import type { CauseRef } from '../../causality/cause-ref.js';
 import { describeTerminalOutcome } from '../../jobs/outcome.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
-import type { JobTerminal, JobsListResponse } from '../../jobs/records.js';
+import type { JobDetailResponse, JobTerminal, JobsListResponse } from '../../jobs/records.js';
 import type { AcceptedLaunchResponse } from '../../jobs/launch.js';
 import { formatTable, joinLines } from './text.js';
+import { formatUsageSegment } from './usage.js';
 
 export type JobsListItem = {
   jobId: string;
@@ -130,6 +131,52 @@ export function formatJobsList(data: JobsListResponse, now = Date.now()): JobsLi
     jobKind: status.jobKind,
     age: formatRelativeAge(status.updatedAt, now),
   }));
+}
+
+function terminalOutcomeText(result: JobTerminal, describeCauseRef?: CauseRefDescriber): string {
+  switch (result.outcome.kind) {
+    case 'completed':
+      return 'completed';
+    case 'aborted':
+      return `aborted: ${result.outcome.reason}`;
+    case 'provider_exit': {
+      const base = `provider exited ${result.outcome.code}`;
+      return result.outcome.note === undefined ? base : `${base}: ${result.outcome.note}`;
+    }
+    case 'failed':
+    case 'job_fault':
+      return describeTerminalOutcome(result.outcome, { describeCauseRef });
+    default:
+      return assertNever(result.outcome);
+  }
+}
+
+export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: CauseRefDescriber): string {
+  const status = response.status;
+  const usage = formatUsageSegment(response.exit?.diagnostics.usage, {
+    verbose: true,
+    cacheReadAnnotation: 'full',
+  });
+
+  const lines = [
+    `Job ${status.jobId}`,
+    `Phase: ${status.phase}`,
+    `Readiness: ${response.readiness}`,
+    status.provider === null ? undefined : `Provider: ${status.provider}`,
+    `Kind: ${status.jobKind}`,
+    status.sessionId === null ? undefined : `Session: ${status.sessionId}`,
+    `Project: ${status.projectRoot}`,
+    `Updated: ${status.updatedAt}`,
+    status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,
+    response.exit === null ? undefined : `Exit: ${terminalOutcomeText(response.exit, describeCauseRef)}`,
+    response.exit?.endTime === undefined ? undefined : `Ended: ${response.exit.endTime}`,
+    usage === undefined ? undefined : `Usage:\n  ${usage}`,
+    response.exit === null
+      ? `Run coral-cli wait jobs ${status.jobId} to follow it.`
+      : `Result:\n${truncatePreview(pickTerminalPreviewSource(response.exit, describeCauseRef))}`,
+  ];
+
+  return joinLines(lines);
 }
 
 const JOBS_TABLE_HEADERS = ['JOB ID', 'PHASE', 'PROVIDER', 'AGE'];

@@ -48,6 +48,8 @@ function findCommand(root: Command, ...path: string[]): Command {
 
 function buildProgram(): Command {
   const program = new Command();
+  const jobs = program.command('jobs');
+  jobs.command('detail');
   const kb = program.command('kb');
   kb.command('reindex');
   const discuss = program.command('discuss');
@@ -157,6 +159,20 @@ describe('command client routing', () => {
     expect(mockState.request).toHaveBeenCalledWith(
       'jobs.list',
       { projectRoot: '/tmp/project', phase: 'running' },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it('dispatches jobs.detail with the caller project root', async () => {
+    mockState.request.mockResolvedValueOnce({ status: { jobId: 'job-1' }, events: [], readiness: 'ready', exit: null });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'jobs', 'detail'));
+
+    await client.detailJob('job-1');
+
+    expect(mockState.request).toHaveBeenCalledWith(
+      'jobs.detail',
+      { jobId: 'job-1', projectRoot: '/tmp/project' },
       expect.objectContaining({ timeoutMs: expect.any(Number) }),
     );
   });

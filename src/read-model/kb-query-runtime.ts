@@ -78,7 +78,7 @@ export class KbQueryRegistry {
 
 const defaultRegistry = new KbQueryRegistry();
 
-export function resolveQueryFlavor(context: KbQueryContext): BuildFlavor {
+function resolveQueryFlavor(context: KbQueryContext): BuildFlavor {
   return readBuildFlavor(context.pluginRoot);
 }
 
@@ -86,7 +86,7 @@ function resolveQueryRuntime(context: KbQueryContext): KbQueryRuntime {
   return context.runtime ?? defaultRegistry.getRuntime(resolveQueryFlavor(context));
 }
 
-export function resolveQueryMarkdownRoot(context: KbQueryContext): string {
+function resolveQueryMarkdownRoot(context: KbQueryContext): string {
   return resolveQueryRuntime(context).paths.coral.corpus.kbRoot;
 }
 
@@ -101,11 +101,11 @@ export function createDefaultKbReadPaths(context: KbQueryContext): KbReadPathRes
   };
 }
 
-export function getDefaultKbQueryStorage(context: KbQueryContext): ReturnType<typeof createRealRuntime>['storage'] {
+function getDefaultKbQueryStorage(context: KbQueryContext): ReturnType<typeof createRealRuntime>['storage'] {
   return resolveQueryRuntime(context).storage;
 }
 
-export function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
+function getDefaultKbQueryDb(context: KbQueryContext): ReadonlyDatabase {
   if (context.readDb !== undefined) {
     return context.readDb;
   }

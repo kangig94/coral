@@ -38,7 +38,7 @@ export function renderCauseRefFallback(ref: CauseRef): string {
   return `${ref.stream.kind}/${ref.stream.id}#${ref.seq}`;
 }
 
-export function parseCauseRef(value: unknown): CauseRef | null {
+function parseCauseRef(value: unknown): CauseRef | null {
   const parsed = causeRefSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }

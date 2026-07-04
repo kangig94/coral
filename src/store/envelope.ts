@@ -80,9 +80,9 @@ export type ResolvableCoralEventInput<Scope, T = never> = CoralEventInput<T> & {
   };
 };
 
-export const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
+const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
 
-export function assertStreamKind(value: string): StreamKind {
+function assertStreamKind(value: string): StreamKind {
   if (!STREAM_KINDS.has(value as StreamKind)) {
     throw new CoralSetupError({
       code: 'event_stream_kind_invalid',

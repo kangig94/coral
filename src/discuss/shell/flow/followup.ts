@@ -121,7 +121,7 @@ async function collectFollowUpAnswer(
   }
 }
 
-export async function evaluateEpoch(
+async function evaluateEpoch(
   ctx: DiscussContext,
   sessionId: string,
   invocationCtx: InvocationContext,

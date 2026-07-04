@@ -69,14 +69,6 @@ export function readCurateConflictQuarantine(db: Database | ReadonlyDatabase): C
   return entries;
 }
 
-export function readCurateConflictQuarantineEntryIds(db: Database | ReadonlyDatabase): Set<KbEntryId> {
-  const ids = new Set<KbEntryId>();
-  for (const entry of readCurateConflictQuarantine(db)) {
-    ids.add(entry.entryId);
-  }
-  return ids;
-}
-
 export function upsertCurateConflictQuarantine(db: Database, entry: CurateConflictQuarantineEntry): void {
   const row = conflictQuarantineToRow(entry);
   prepareCached<[string, string, string, string, string, string]>(
@@ -100,8 +92,4 @@ export function upsertCurateConflictQuarantine(db: Database, entry: CurateConfli
 
 export function deleteCurateConflictQuarantineEntry(db: Database, entryId: KbEntryId): void {
   prepareCached<[string]>(db, `DELETE FROM kb_curate_conflict_quarantine WHERE entry_id = ?`).run(entryId);
-}
-
-export function clearCurateConflictQuarantine(db: Database): void {
-  prepareCached<[]>(db, `DELETE FROM kb_curate_conflict_quarantine`).run();
 }

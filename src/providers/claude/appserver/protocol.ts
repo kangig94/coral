@@ -14,14 +14,13 @@ import {
   TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION as PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   turnFailureDiagnosticPhaseSchema as providerTurnFailureDiagnosticPhaseSchema,
   turnFailureDiagnosticReasonSchema as providerTurnFailureDiagnosticReasonSchema,
-  turnFailureDiagnosticSchema as providerTurnFailureDiagnosticSchema,
   type TurnFailureDiagnostic as ProviderTurnFailureDiagnostic,
   type TurnFailureDiagnosticPhase as ProviderTurnFailureDiagnosticPhase,
   type TurnFailureDiagnosticReason as ProviderTurnFailureDiagnosticReason,
 } from '../../turn-failure-diagnostic.js';
 import { permissionModeSchema, type ClaudeBootstrapSignature } from '../request-prep.js';
 
-export const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
+const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
 export const CLAUDE_BROKER_BUSY_RPC_CODE = -32001;
 export const CLAUDE_BROKER_BOOTSTRAP_MISMATCH_RPC_CODE = -32002;
@@ -141,7 +140,6 @@ export type TurnFailureDiagnosticReason = ProviderTurnFailureDiagnosticReason;
 export const turnFailureDiagnosticPhaseSchema = providerTurnFailureDiagnosticPhaseSchema;
 export type TurnFailureDiagnosticPhase = ProviderTurnFailureDiagnosticPhase;
 
-export const turnFailureDiagnosticSchema = providerTurnFailureDiagnosticSchema;
 export type TurnFailureDiagnostic = ProviderTurnFailureDiagnostic;
 
 export interface TurnFailedParams {
@@ -349,7 +347,7 @@ function readEffortLevel(value: unknown): EffortLevel | undefined {
     : undefined;
 }
 
-export function readControllerEnv(value: unknown): Record<string, string> | undefined {
+function readControllerEnv(value: unknown): Record<string, string> | undefined {
   if (value === undefined) {
     return undefined;
   }

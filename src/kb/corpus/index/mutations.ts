@@ -44,10 +44,6 @@ export function commitCorpusEntryLocked(
   return rt.recordMutationCommitted(lane, reason);
 }
 
-export function recordContentMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
-  return rt.recordMutationCommitted('content', reason);
-}
-
 export function recordMetadataMutation(rt: Pick<KbRuntime, 'recordMutationCommitted'>, reason: string): KbIndexState {
   return rt.recordMutationCommitted('metadata', reason);
 }

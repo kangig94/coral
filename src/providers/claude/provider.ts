@@ -31,7 +31,7 @@ const claudeAppServerContract = {
   interrupt: mapClaudeInterrupt,
 } satisfies AppServerContract;
 
-export const claudeBrokerContinuity = createClaudeContinuityContract(
+const claudeBrokerContinuity = createClaudeContinuityContract(
   inferBrokerResumable,
   isClaudeBrokerSessionUnavailable,
   (state) => {
@@ -47,13 +47,13 @@ export const claudeBrokerContinuity = createClaudeContinuityContract(
   },
 );
 
-export const claudeSessionProvider = compose(
+const claudeSessionProvider = compose(
   sessionContinuity('claude', claudeBrokerContinuity),
   appServerSession(claudeAppServerContract),
   claudeSessionKernel,
 );
 
-export const claude: Provider = (request, runtime) => {
+const claude: Provider = (request, runtime) => {
   const prepared = buildPreparedClaudeRequest(
     request,
     runtime.storage,

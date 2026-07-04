@@ -45,7 +45,7 @@ Rules:
 
 1. Use detached launches when a skill needs a durable `job` or `session`.
 2. Capture `job` and `session` from the launch line: `Job <job> <launchState> (session <session>)`.
-3. Monitor with `coral-cli wait`.
+3. Monitor with `coral-cli wait`; terminal lines include usage diagnostics when provider data is available.
 4. For `--embed`, use inline preview text when it helps, but read the printed `Result path: <path>` for the full artifact.
 
 ## `--red` Flag

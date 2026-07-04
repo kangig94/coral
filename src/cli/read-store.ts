@@ -29,7 +29,7 @@ type SharedReadStoreOptions = {
  * projectRoot, flavor) tuple. Accumulates a single "missing store" note
  * that the CLI flushes at the end of text output.
  */
-export class ReadCoralStoreRegistry {
+class ReadCoralStoreRegistry {
   private cached: CachedReadStore | null = null;
   private cleanupRegistered = false;
   private pendingNote: string | null = null;

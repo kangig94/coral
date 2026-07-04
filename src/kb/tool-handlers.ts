@@ -17,11 +17,7 @@ import { generateWakeUpPacket } from './ops/wake-up.js';
 import { readCurateRetryQueue } from './curate/retry.js';
 import { readCurateConflictQuarantine } from './curate/conflict-quarantine.js';
 import { assertCommunitySlug, assertNoteSlug, assertSourceSlug, assertWikiSlug } from './validation.js';
-import {
-  applyCommunitySummary,
-  listStaleCommunities,
-  readCommunitySummaryInput,
-} from './curate/community/summary-surface.js';
+import { applyCommunitySummary } from './curate/community/summary-surface.js';
 import { type KbReadKind } from './selector.js';
 import { readEntry, readEntryByKind, type KbReadOptions, type KbReadPathResolver } from './read.js';
 import { deriveKbErrorMessage, kbError, kbSuccess, kbValidationError, type KbToolResult } from './result.js';
@@ -474,15 +470,6 @@ export async function handleKbSourceDelete(args: KbArgs, kbRuntime: KnowledgeBas
   }
 
   return runKbMutationAction(kbRuntime, () => deleteSource(kbRuntime.kb, { slug: parsed.data.slug }));
-}
-
-export function handleKbCommunityListStale(kbRuntime: KnowledgeBaseRuntime): KbToolResult {
-  return runKbSyncAction(() => listStaleCommunities(kbRuntime.kb));
-}
-
-export function handleKbCommunitySummaryInput(slug: string, kbRuntime: KnowledgeBaseRuntime): KbToolResult {
-  const input = readCommunitySummaryInput(kbRuntime.kb, slug);
-  return input === null ? kbNotFoundResult('community', slug) : kbSuccess(input);
 }
 
 export async function handleKbCommunitySetSummary(

@@ -32,7 +32,7 @@ export function deriveStableCorpusSnapshotId(snapshot: Omit<CorpusSnapshot, 'sna
 type CanonicalScalar = boolean | number | string | null | undefined;
 
 /** Canonicalizable frontmatter value tree for manifest hashing. */
-export type CanonicalFrontmatterValue =
+type CanonicalFrontmatterValue =
   | CanonicalScalar
   | CanonicalFrontmatterValue[]
   | { [key: string]: CanonicalFrontmatterValue };
@@ -66,17 +66,10 @@ type RawBytesMetadataSurface = {
 export type MetadataSurfaceInput = FrontmatterMetadataSurface | RawBytesMetadataSurface;
 
 // Extensibility policy: any new array-valued frontmatter field is classified as set-like or list-like at introduction; set-like fields added to canonical sort list in same PR.
-export const SET_LIKE_FRONTMATTER_ARRAY_FIELDS = new Set([
-  'tags',
-  'principles',
-  'related',
-  'source',
-  'members',
-  'children',
-]);
+const SET_LIKE_FRONTMATTER_ARRAY_FIELDS = new Set(['tags', 'principles', 'related', 'source', 'members', 'children']);
 
 /** Builds the canonical retrieval text that both text and vector indexing hash/embed. */
-export function buildRetrievalAuthorityText(title: string, body: string): string {
+function buildRetrievalAuthorityText(title: string, body: string): string {
   return `# ${title}\n\n${normalizeContentBody(body)}`.trim();
 }
 
@@ -133,22 +126,22 @@ export function computeManifestHash(entries: Iterable<HashedManifestEntry>): str
 }
 
 /** Canonicalizes parsed frontmatter into a stable serialization for hashing. */
-export function canonicalizeFrontmatter(frontmatter: CanonicalFrontmatterRecord): string {
+function canonicalizeFrontmatter(frontmatter: CanonicalFrontmatterRecord): string {
   return canonicalizeObject(frontmatter);
 }
 
 /** Hashes canonicalized frontmatter so metadata equality is order-insensitive. */
-export function computeCanonicalFrontmatterHash(frontmatter: CanonicalFrontmatterRecord): string {
+function computeCanonicalFrontmatterHash(frontmatter: CanonicalFrontmatterRecord): string {
   return sha256Hex(canonicalizeFrontmatter(frontmatter));
 }
 
 /** Hashes raw metadata bytes when no stronger semantic normalization exists. */
-export function computeRawBytesSurfaceHash(rawBytes: Uint8Array | string): string {
+function computeRawBytesSurfaceHash(rawBytes: Uint8Array | string): string {
   return sha256Hex(toUtf8Bytes(rawBytes));
 }
 
 /** Canonicalizes one frontmatter value, preserving list-vs-set semantics by field name. */
-export function canonicalizeFrontmatterValue(value: CanonicalFrontmatterValue, fieldName?: string): string | undefined {
+function canonicalizeFrontmatterValue(value: CanonicalFrontmatterValue, fieldName?: string): string | undefined {
   if (value === null || value === undefined) {
     return undefined;
   }
@@ -185,7 +178,7 @@ export function canonicalizeFrontmatterValue(value: CanonicalFrontmatterValue, f
 }
 
 /** Renders numbers into a unique decimal form suitable for manifest hashing. */
-export function canonicalizeNumber(value: number): string {
+function canonicalizeNumber(value: number): string {
   if (!Number.isFinite(value)) {
     throw new Error(`Cannot canonicalize non-finite number: ${value}`);
   }
@@ -223,7 +216,7 @@ export function canonicalizeNumber(value: number): string {
 }
 
 /** Sorts strings by UTF-8 bytes so manifest ordering is locale-independent. */
-export function compareUtf8Lexicographically(left: string, right: string): number {
+function compareUtf8Lexicographically(left: string, right: string): number {
   return Buffer.compare(toUtf8Bytes(left), toUtf8Bytes(right));
 }
 

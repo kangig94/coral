@@ -48,7 +48,7 @@ function joinPromptParts(parts: Array<string | undefined>): string {
   return joined.join('\n\n');
 }
 
-export async function readLaunchFailure(
+async function readLaunchFailure(
   jobId: string,
   executionSvc: WorkflowExecutionPort,
   signal?: AbortSignal,

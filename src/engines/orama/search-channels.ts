@@ -12,12 +12,12 @@ const MARKDOWN_ATX_HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
 const MARKDOWN_FENCE_PATTERN = /^\s{0,3}(?:```|~~~)/u;
 
 export const ORAMA_BODY_SURFACE_TERM_LIMIT = 2_048;
-export const ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT = 2_048;
-export const ORAMA_BODY_NGRAM_LEADING_TEXT_CHAR_LIMIT = 1_024;
-export const ORAMA_BODY_NGRAM_HEADING_LIMIT = 64;
+const ORAMA_BODY_NGRAM_SOURCE_CHAR_LIMIT = 2_048;
+const ORAMA_BODY_NGRAM_LEADING_TEXT_CHAR_LIMIT = 1_024;
+const ORAMA_BODY_NGRAM_HEADING_LIMIT = 64;
 export const ORAMA_BODY_NGRAM_TERM_LIMIT = 1_024;
 export const ORAMA_QUERY_SOURCE_CHAR_LIMIT = 256;
-export const ORAMA_QUERY_SURFACE_TERM_LIMIT = 64;
+const ORAMA_QUERY_SURFACE_TERM_LIMIT = 64;
 export const ORAMA_QUERY_NGRAM_TERM_LIMIT = 512;
 
 export const ORAMA_SEARCH_FIELDS = ['slug', 'title', 'body', 'tags', 'principles'] as const;
@@ -285,7 +285,7 @@ function pushSegmentWithinBudget(segments: string[], raw: string, remaining: num
   return Math.max(0, remaining - [...bounded].length);
 }
 
-export function bodyNgramSourceSegments(
+function bodyNgramSourceSegments(
   raw: string,
   options: { maxSourceChars?: number; maxLeadingTextChars?: number; headingLimit?: number } = {},
 ): string[] {
@@ -349,7 +349,7 @@ export function bodyNgramSourceSegments(
   return segments;
 }
 
-export function bodyNgramSearchTerms(
+function bodyNgramSearchTerms(
   raw: string,
   options: { maxTerms?: number; maxSourceChars?: number; surfaceTermLimit?: number } = {},
 ): string[] {

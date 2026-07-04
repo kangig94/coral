@@ -2,8 +2,8 @@ import { dirname } from 'node:path';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 
-export type FileAtomicStorage = Pick<StoragePort, 'mkdirSync' | 'writeFileSync' | 'renameSync' | 'rmSync'>;
-export type FileAtomicIds = Pick<IdPort, 'uuid'>;
+type FileAtomicStorage = Pick<StoragePort, 'mkdirSync' | 'writeFileSync' | 'renameSync' | 'rmSync'>;
+type FileAtomicIds = Pick<IdPort, 'uuid'>;
 
 /**
  * The KbRuntime port slice that callers passing `kb` directly satisfy without

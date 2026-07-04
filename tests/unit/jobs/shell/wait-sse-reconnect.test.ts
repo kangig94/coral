@@ -1,4 +1,5 @@
 import type { Database } from '#src/store/db.js';
+import type { UsageSummary } from '#src/providers/contract.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -15,7 +16,16 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 const runtimes = new Set<ReturnType<typeof createRealRuntime>>();
+
+const waitUsage = {
+  inputTokens: 11,
+  cacheReadTokens: 22,
+  cacheWriteTokens: 3,
+  outputTokens: 5,
+  costUsd: 0.42,
+} satisfies UsageSummary;
 
 afterEach(() => {
   runtimes.clear();
@@ -150,6 +160,9 @@ describe('wait SSE reconnect', () => {
               durationMs: 12,
               content: 'done',
             },
+            diagnostics: {
+              usage: waitUsage,
+            },
           },
         },
       ]);
@@ -166,6 +179,7 @@ describe('wait SSE reconnect', () => {
       time: runtime.time,
       loadJobProjectionDetail: (targetJobId) => loadJobProjectionDetail(db, targetJobId, progressStore),
       readJobEvents: (targetJobId) => readJobEvents(db, targetJobId, progressStore),
+      aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(db, workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,
@@ -224,6 +238,7 @@ describe('wait SSE reconnect', () => {
         content: 'done',
         outcome: { kind: 'completed' },
       },
+      usage: waitUsage,
     });
 
     await expect(reconnectIterator.next()).resolves.toEqual({ done: true, value: undefined });
@@ -361,6 +376,7 @@ describe('wait SSE reconnect', () => {
         }
         return events;
       },
+      aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(db, workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq,

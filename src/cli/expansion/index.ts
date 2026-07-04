@@ -47,7 +47,7 @@ function isIpcConnectFailed(error: unknown): boolean {
   );
 }
 
-export type ExpansionStatus =
+type ExpansionStatus =
   | { status: 'available'; expansions: Array<ExpansionView & { slot?: string }> }
   | { status: 'unavailable' };
 

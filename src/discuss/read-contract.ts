@@ -14,7 +14,7 @@ type DiscussAgentDto = {
   banned: boolean;
 };
 
-export type DiscussSessionDto = {
+type DiscussSessionDto = {
   sessionId: string;
   projectRoot: string;
   topic: string;

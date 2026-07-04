@@ -5,7 +5,7 @@ const USAGE_CACHE_STALE_MS = 10 * 60 * 1000;
 const USAGE_5H_THRESHOLD = 50;
 const USAGE_WK_THRESHOLD = 70;
 
-export type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
+type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 
 export type UsageBudgetOptions = {
   storage: UsageBudgetStorage;

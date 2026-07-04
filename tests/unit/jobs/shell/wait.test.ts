@@ -46,7 +46,7 @@ import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import type { PreflightRuntime } from '#src/providers/contract.js';
+import type { PreflightRuntime, UsageSummary } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
@@ -63,6 +63,14 @@ const progressTiming = {
   emittedAt: '2026-03-06T00:00:01.000Z',
   elapsedMs: 1_000,
 } as const;
+
+const waitUsage = {
+  inputTokens: 11,
+  cacheReadTokens: 22,
+  cacheWriteTokens: 3,
+  outputTokens: 5,
+  costUsd: 0.42,
+} satisfies UsageSummary;
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -221,6 +229,7 @@ function createService(
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
+    aggregateWorkflowUsage: createTestJobJournalDeps(progressStore, runtime).aggregateWorkflowUsage,
     subscribeJobEvents: options.subscribeJobEvents ?? subscribeJobEvents,
     getCurrentJournalSeq,
     coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
@@ -646,6 +655,7 @@ function makeTerminalReplay(
     sessionId?: string;
     ts?: string;
     result?: TestJobTerminal;
+    usage?: UsageSummary;
   } = {},
 ): JobEvent {
   return {
@@ -656,6 +666,7 @@ function makeTerminalReplay(
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
     result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
     continuity: null,
+    ...(options.usage ? { usage: options.usage } : {}),
   };
 }
 
@@ -870,6 +881,7 @@ describe('ExecutionService wait', () => {
         ts: '2026-03-06T00:00:02.000Z',
         result: { content: 'done', outcome: { kind: 'completed' } },
         continuity: null,
+        usage: waitUsage,
       },
     ];
 
@@ -897,6 +909,7 @@ describe('ExecutionService wait', () => {
         resultPath: `${runtime.paths.coral.exports.jobsRoot}/job-1/result.md`,
         result: { content: 'done', outcome: { kind: 'completed' } },
         continuity: null,
+        usage: waitUsage,
       },
     ]);
   });
@@ -1021,6 +1034,7 @@ describe('ExecutionService wait', () => {
         sessionId,
         { content: 'done', outcome: { kind: 'completed' } },
         'completed',
+        { diagnostics: { usage: waitUsage } },
       );
       await vi.advanceTimersByTimeAsync(250);
 
@@ -1034,6 +1048,7 @@ describe('ExecutionService wait', () => {
           resultPath: jobResultPath(jobId),
           result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
           continuity: null,
+          usage: waitUsage,
         },
       });
       await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
@@ -1611,6 +1626,7 @@ describe('ExecutionService wait', () => {
             ts: '',
             result: { content: 'done', outcome: { kind: 'completed' as const } },
             continuity: null,
+            usage: waitUsage,
           },
         ];
       });
@@ -1630,6 +1646,7 @@ describe('ExecutionService wait', () => {
       expect(events[0].jobId).toBe(jobId);
       expect(events[0].seq).toBe(3);
       expect(events[0].resultPath).toBe(jobResultPath(jobId));
+      expect(events[0].usage).toEqual(waitUsage);
 
       const progressMessages = events
         .filter((e): e is Extract<WaitStreamEvent, { type: 'progress' }> => e.type === 'progress')

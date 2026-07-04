@@ -19,14 +19,14 @@ function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
   }
 }
 
-export type CommitSuccess = {
+type CommitSuccess = {
   ok: true;
   previous: PersistedDiscussSnapshot;
   snapshot: PersistedDiscussSnapshot;
   events: DiscussDomainEvent[];
 };
 
-export type CommitFailure = {
+type CommitFailure = {
   ok: false;
   error: string;
   detail?: Record<string, unknown>;

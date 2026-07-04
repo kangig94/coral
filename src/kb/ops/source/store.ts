@@ -23,7 +23,7 @@ import { currentEntrySeq } from '../../index-state.js';
  * write + manifest delta capture stays within the 30s default, but `kb source
  * import` is the documented heavy path (spec §6.4) so it opts into 5 minutes
  * to absorb large conversions / staging churn without tripping the deadline. */
-export const KB_SOURCE_IMPORT_MUTATION_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
+const KB_SOURCE_IMPORT_MUTATION_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
 function resolvePreparedSourceStagePath(kb: KbRuntime, candidate: string): string {
   const stagedPath = assertWithin(kb.sourceImportStageDir(), candidate, 'KB source staged markdown path');

@@ -1,6 +1,7 @@
 import type { JobTerminal } from './records.js';
 import type { JobContinuitySnapshot } from './continuity.js';
 import type { JobProgressTiming } from './event-bodies.js';
+import type { UsageSummary } from '../providers/contract.js';
 
 export const WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS = 30_000;
 
@@ -68,6 +69,7 @@ export type WaitStreamEvent =
       resultPath: string;
       result: JobTerminal;
       continuity?: JobContinuitySnapshot | null;
+      usage?: UsageSummary;
     }
   | { type: 'waiting'; waitingJobIds: string[] };
 

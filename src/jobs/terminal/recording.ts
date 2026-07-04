@@ -25,7 +25,7 @@ export interface JobTerminalRecordedOptions<Scope = never> {
   readonly continuity?: JobContinuitySnapshot | null;
 }
 
-export function jobTerminalRecordedEvent<Scope = never>(
+function jobTerminalRecordedEvent<Scope = never>(
   options: JobTerminalRecordedOptions<Scope>,
 ): ResolvableCoralEventInput<Scope, JobTerminalRecordedInputBody<Scope>> {
   return {

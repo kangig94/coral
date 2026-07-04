@@ -10,7 +10,7 @@ import {
 } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
 
-export const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
+const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
 export type AbortReason = z.infer<typeof abortReasonSchema>;
 
 export const externalErrorSchema = z
@@ -20,7 +20,7 @@ export const externalErrorSchema = z
   })
   .strict();
 
-export const jobLifecycleFaultSchema = z.discriminatedUnion('kind', [
+const jobLifecycleFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ghost_launch') }).strict(),
   z.object({ kind: z.literal('wrapper_lost') }).strict(),
   z.object({ kind: z.literal('wrapper_crashed'), cause: externalErrorSchema }).strict(),

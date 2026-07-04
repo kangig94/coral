@@ -86,6 +86,8 @@ For provider-server-backed providers, `sessionContinuity` is the **outermost** m
 
 Claude is one of these provider-server-backed providers. The broker helper supports two transports under the same broker RPC surface. The default `print` transport starts `claude -p` with stream-json input/output and drives turns over JSONL. The opt-in `tui` transport starts interactive `claude`, waits for terminal readiness before writing the first turn, and reads Claude JSONL transcripts for completion. `CORAL_CLAUDE_TRANSPORT` is part of provider-server identity, so the two transports never reuse the same broker process.
 
+The same provider boundary is the usage boundary. Raw provider counters are normalized once to the additive `UsageSummary` buckets before jobs see them, then stored on the terminal record under `diagnostics.usage`. Coral does not invent missing cost: Claude print contributes provider-reported cost, Claude TUI contributes tokens only, and Codex contributes tokens only after subtracting cached input from fresh input. Token totals are render-time derivations, and workflow totals are read-time sums over child job diagnostics rather than facts written onto `workflow.completed`.
+
 Adding a new provider is declaring its middleware stack. Provider implementations stay pure: they emit bodies only. The coordinator wraps each body in an envelope (`seq`, `ts`, `stream`, `refs`) and appends to the Journal. Providers never touch envelopes, seqs, or the Journal directly.
 
 ## 4. Two Consumer Interfaces

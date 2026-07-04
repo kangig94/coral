@@ -29,7 +29,7 @@ import type { CoordinatorStoreServices, StoreServicesRef } from './store-service
 import type { HealthSnapshot } from '../../transport/server-ports.js';
 import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 
-export type CoordinatorBootSnapshot = {
+type CoordinatorBootSnapshot = {
   version?: string;
   bundleHash?: string;
   flavor?: 'prod' | 'dev';

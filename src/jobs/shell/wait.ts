@@ -1,5 +1,11 @@
 import { isTerminalPhase } from '../phase.js';
-import type { JobEvent, JobProgressEvent, JobStatus, JobTerminalEvent } from '../records.js';
+import {
+  isWorkflowJobKind,
+  type JobEvent,
+  type JobProgressEvent,
+  type JobStatus,
+  type JobTerminalEvent,
+} from '../records.js';
 import {
   WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS,
   type WaitRequest,
@@ -17,6 +23,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
 import type { JobContinuitySnapshot } from '../continuity.js';
+import type { UsageSummary } from '../../providers/contract.js';
 
 const ABORTED = 'wait-aborted' as const;
 const TIMED_OUT = 'wait-timed-out' as const;
@@ -45,6 +52,7 @@ function toTerminalWaitEvent(
   pending: ReadonlySet<string>,
   resultPath: string,
   continuity: JobContinuitySnapshot | null,
+  usage: UsageSummary | undefined = event.usage,
 ): WaitStreamEvent {
   const remainingJobIds: string[] = [];
   for (const id of pending) {
@@ -61,6 +69,7 @@ function toTerminalWaitEvent(
     resultPath,
     result: event.result,
     continuity: event.continuity ?? continuity,
+    ...(usage === undefined ? {} : { usage }),
   };
 }
 
@@ -169,6 +178,7 @@ export interface WaitCoordinatorDeps {
   time: TimePort;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobEvents: (jobId: string) => JobEvent[];
+  aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;
   subscribeJobEvents: (options: {
     afterSeq: number;
     jobIds: readonly string[];
@@ -191,6 +201,14 @@ export class WaitCoordinator {
 
   private readQueryContinuity(jobId: string): JobContinuitySnapshot | null {
     return this.readQueryStatus(jobId)?.continuity ?? null;
+  }
+
+  private readTerminalUsage(event: JobTerminalEvent): UsageSummary | undefined {
+    const status = this.readQueryStatus(event.jobId);
+    if (isWorkflowJobKind(status?.jobKind)) {
+      return this.deps.aggregateWorkflowUsage(event.jobId);
+    }
+    return event.usage;
   }
 
   private resultPathFor(jobId: string): string {
@@ -226,7 +244,13 @@ export class WaitCoordinator {
       return toProgressWaitEvent(event);
     }
 
-    return toTerminalWaitEvent(event, pending, this.resultPathFor(event.jobId), this.readQueryContinuity(event.jobId));
+    return toTerminalWaitEvent(
+      event,
+      pending,
+      this.resultPathFor(event.jobId),
+      this.readQueryContinuity(event.jobId),
+      this.readTerminalUsage(event),
+    );
   }
 
   async waitForJobTerminal(jobId: string, timeoutMs = WAIT_FOR_JOB_TERMINAL_TIMEOUT_MS): Promise<void> {
@@ -448,12 +472,7 @@ export class WaitCoordinator {
           continue;
         }
 
-        yield toTerminalWaitEvent(
-          event,
-          pending,
-          this.resultPathFor(event.jobId),
-          this.readQueryContinuity(event.jobId),
-        );
+        yield this.toWaitEvent(event, pending);
         return;
       }
     } finally {

@@ -4,7 +4,7 @@ export const CORAL_KB_EXTRA_LANGS_ENV = 'CORAL_KB_EXTRA_LANGS';
 
 export type KbDeclaredAnalyzer = 'ko';
 
-export const REGISTERED_KB_ANALYZERS: readonly KbDeclaredAnalyzer[] = ['ko'];
+const REGISTERED_KB_ANALYZERS: readonly KbDeclaredAnalyzer[] = ['ko'];
 
 const REGISTERED_ANALYZER_SET: ReadonlySet<string> = new Set(REGISTERED_KB_ANALYZERS);
 

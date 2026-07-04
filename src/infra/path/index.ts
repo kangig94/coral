@@ -45,9 +45,6 @@ export type CoralPaths = {
 // test fixtures) see a single public surface for path-shape vocabulary.
 // Runtime path-construction functions stay subdir-internal.
 export type { CoordinatorPaths } from './coordinator.js';
-export type { EnginePaths } from './engine.js';
-export type { StorePaths } from './store.js';
-
 // Config-dir resolution is part of this subdir's public surface: the runtime
 // composes paths from the resolved dir + slot, and provider/registry callers
 // resolve `.claude` data paths from the same dir. `root.js` stays internal.

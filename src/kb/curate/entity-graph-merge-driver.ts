@@ -79,14 +79,14 @@ export function mergeEntityGraphRevisions(ours: EntityGraph, theirs: EntityGraph
   return consolidateEntityGraph(EMPTY_GRAPH, buildCanonicalEntityGraphMergeDelta([ours, theirs])).canonicalGraph;
 }
 
-export function readEntityGraphPathFromHost(
+function readEntityGraphPathFromHost(
   host: Pick<EntityGraphMergeDriverHost, 'readFileSync'>,
   path: string,
 ): EntityGraph {
   return parseEntityGraph(JSON.parse(host.readFileSync(path, 'utf-8')) as unknown);
 }
 
-export function writeEntityGraphPath(
+function writeEntityGraphPath(
   host: Pick<EntityGraphMergeDriverHost, 'writeFileSync'>,
   path: string,
   graph: EntityGraph,

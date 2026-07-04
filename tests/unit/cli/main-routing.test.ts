@@ -9,11 +9,12 @@ import type * as ErrorsMod from '#src/cli/errors.js';
 import type * as MainMod from '#src/cli/program.js';
 import { installErrorSchema, installResultSchema } from '#src/expansion/rpc-contract.js';
 import { serializeWaitCursor } from '#src/jobs/wait.js';
-import type { JobStatus } from '#src/jobs/records.js';
+import type { JobDetailResponse, JobStatus } from '#src/jobs/records.js';
 import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import {
   formatAbortResult,
   formatDetachedLaunchStatus,
+  formatJobDetail,
   formatJobsList,
   formatLaunchWaitHint,
   renderJobsList,
@@ -29,6 +30,7 @@ const mockState = vi.hoisted(() => ({
   createSession: vi.fn(),
   workflow: vi.fn(),
   listJobs: vi.fn(),
+  detailJob: vi.fn(),
   abortJobs: vi.fn(),
   launchAndFollow: vi.fn(),
   getBackendStatusFull: vi.fn(),
@@ -114,6 +116,7 @@ vi.mock('#src/cli/dispatch.js', async () => {
       createSession: mockState.createSession,
       workflow: mockState.workflow,
       listJobs: mockState.listJobs,
+      detailJob: mockState.detailJob,
       abortJobs: mockState.abortJobs,
       discussSeed: mockState.discussSeed,
       discussStart: mockState.discussStart,
@@ -248,6 +251,39 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
   };
 }
 
+function makeJobDetailResponse(): JobDetailResponse {
+  return {
+    status: {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: 'default',
+      jobKind: 'provider',
+      phase: 'completed',
+      updatedAt: '2026-01-03T00:00:00.000Z',
+      lastSeq: 7,
+    },
+    events: [],
+    readiness: 'ready',
+    exit: {
+      content: 'Workflow summary',
+      outcome: { kind: 'completed' },
+      diagnostics: {
+        progressFaults: [],
+        usage: {
+          inputTokens: 1_400_000,
+          cacheReadTokens: 16_900_000,
+          cacheWriteTokens: 60_000,
+          outputTokens: 400_000,
+          costUsd: 4.18,
+        },
+      },
+      endTime: '2026-01-03T00:01:00.000Z',
+    },
+  };
+}
+
 function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
   const configSlot = claudeConfigSlot(resolveClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR, home), home);
@@ -319,6 +355,7 @@ describe('cli main routing', () => {
     mockState.createSession.mockReset();
     mockState.workflow.mockReset();
     mockState.listJobs.mockReset();
+    mockState.detailJob.mockReset();
     mockState.abortJobs.mockReset();
     mockState.launchAndFollow.mockReset();
     mockState.getBackendStatusFull.mockReset();
@@ -698,6 +735,19 @@ describe('cli main routing', () => {
       all: true,
     });
     expect(stdout).toBe(`${renderJobsList(formatJobsList(result), { all: true, cwd: process.cwd() })}\n`);
+    expect(stderr).toBe('');
+  });
+
+  it('routes jobs detail <jobId> through detail lookup and rendered output', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const result = makeJobDetailResponse();
+    mockState.detailJob.mockResolvedValueOnce(result);
+
+    await program.parseAsync(['node', 'coral-cli', 'jobs', 'detail', 'job-1']);
+
+    expect(mockState.detailJob).toHaveBeenCalledWith('job-1');
+    expect(stdout).toBe(`${formatJobDetail(result)}\n`);
     expect(stderr).toBe('');
   });
 
@@ -1433,6 +1483,45 @@ describe('cli main routing', () => {
       }),
     );
     expect(stdout).toBe(`${formatWaitWaiting(waitingEvent, null, ['job-1', 'job-2'])}\n`);
+    expect(stderr).toBe('');
+  });
+
+  it('routes wait jobs --verbose into detailed terminal usage rendering', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    expect(findCommand(program, 'wait', 'jobs').helpInformation()).toContain('--verbose');
+
+    const terminalEvent = {
+      type: 'terminal' as const,
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: [] as string[],
+      resultPath: '/tmp/result.md',
+      result: { content: 'done', outcome: { kind: 'completed' as const } },
+      usage: {
+        inputTokens: 1_400_000,
+        cacheReadTokens: 16_740_000,
+        cacheWriteTokens: 60_000,
+        outputTokens: 400_000,
+        costUsd: 4.18,
+      },
+    };
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield terminalEvent;
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', '--verbose']);
+
+    expect(mockState.streamWait).toHaveBeenCalledWith(
+      'jobs.wait',
+      expect.objectContaining({
+        jobIds: ['job-1'],
+      }),
+    );
+    expect(stdout).toBe(
+      `${formatWaitTerminal(terminalEvent, serializeWaitCursor({ afterSeq: 1 }), false, { verbose: true })}\n`,
+    );
+    expect(stdout).toContain('cache-read 16.7M (90% cached)');
     expect(stderr).toBe('');
   });
 

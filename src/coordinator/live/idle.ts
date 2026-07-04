@@ -1,7 +1,7 @@
 import type { TimePort } from '../../infra/port-types.js';
 import { parsePositiveInt } from './worker-limits.js';
 
-export const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
 const IDLE_CHECK_INTERVAL_MS = 60_000;
 
 export function resolveIdleTimeoutMs(raw: string | undefined): number {

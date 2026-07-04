@@ -10,7 +10,7 @@ import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { ToolDomainResult } from '../tool-result.js';
 
-export type SessionStartInput = Pick<
+type SessionStartInput = Pick<
   JobLaunchRequest,
   'prompt' | 'agent' | 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'retention'
 >;
@@ -24,7 +24,7 @@ export type WorkflowPortInput = {
   owner?: string;
 };
 
-export type WorkflowPortResult =
+type WorkflowPortResult =
   | { kind: 'decision'; decision: LaunchDecision }
   | { kind: 'invalid_request'; message: string; detail?: unknown };
 
@@ -41,11 +41,11 @@ export type JobListFilters = {
   provider?: string;
 };
 
-export interface SessionRequestPort {
+interface SessionRequestPort {
   start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<LaunchDecision>;
 }
 
-export interface JobsRequestPort {
+interface JobsRequestPort {
   scopeCheck(jobIds: string[], projectRoot: string): ScopeCheckResult;
   abort(jobIds: string[]): AbortResult;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
@@ -53,7 +53,7 @@ export interface JobsRequestPort {
   detail(jobId: string): JobDetailResponse | null;
 }
 
-export interface WorkflowRequestPort {
+interface WorkflowRequestPort {
   execute(request: WorkflowPortInput, ctx: InvocationContext): Promise<WorkflowPortResult>;
 }
 
@@ -93,7 +93,7 @@ export interface KbRequestPort {
   reindex(request: Record<string, unknown>, ctx?: InvocationContext): Promise<KbToolResult>;
 }
 
-export interface DiscussRequestPort {
+interface DiscussRequestPort {
   seed(args: unknown): ToolDomainResult;
   start(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
   listSessions(): DiscussSummaryDto[];

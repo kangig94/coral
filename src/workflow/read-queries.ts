@@ -13,9 +13,9 @@ export type WorkflowProjectionRow = {
   lastSeq: number;
 };
 
-export type WorkflowOutcome = 'running' | 'completed' | 'failed' | 'aborted';
+type WorkflowOutcome = 'running' | 'completed' | 'failed' | 'aborted';
 
-export type WorkflowSlotOutcome = {
+type WorkflowSlotOutcome = {
   jobId: string | null;
   phase: JobPhase | null;
   causeRef: CauseRef | null;

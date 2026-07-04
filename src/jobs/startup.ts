@@ -7,7 +7,7 @@ import type { SessionLookup } from '../sessions/lookup.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
 
-export type JobsStartupContext = {
+type JobsStartupContext = {
   namespace: string;
   bundleHash: string;
   runtime: Runtime;
@@ -32,15 +32,15 @@ export type JobsStartupContext = {
   interruptedAppServerReason?: InterruptedAppServerReason;
 };
 
-export interface JobsRecoveryCoordinator {
+interface JobsRecoveryCoordinator {
   runStartupRecovery(ctx: JobsStartupContext): Promise<void>;
 }
 
-export type JobsStartupDeps = JobsStartupContext & {
+type JobsStartupDeps = JobsStartupContext & {
   recoveryCoordinator: JobsRecoveryCoordinator;
 };
 
-export async function runJobsStartup({ recoveryCoordinator, ...deps }: JobsStartupDeps): Promise<void> {
+async function runJobsStartup({ recoveryCoordinator, ...deps }: JobsStartupDeps): Promise<void> {
   await recoveryCoordinator.runStartupRecovery(deps);
 }
 

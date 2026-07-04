@@ -6,7 +6,7 @@ import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.j
 import type { LaunchPool } from './contracts/admission.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
-export const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
+const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
 
@@ -62,7 +62,7 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
   provider?: string;
 }
 
-export const providerJobLaunchRequestBodySchema = z
+const providerJobLaunchRequestBodySchema = z
   .object({
     sessionId: z.string().min(1),
     provider: z.string().min(1),
@@ -102,7 +102,7 @@ const kbJobLaunchBaseSchema = z.object({
   createdAt: z.string(),
 });
 
-export const kbSourceImportJobRequestSchema = z
+const kbSourceImportJobRequestSchema = z
   .object({
     filePath: z.string().min(1),
     slug: z.string().optional(),
@@ -110,21 +110,21 @@ export const kbSourceImportJobRequestSchema = z
   })
   .strict();
 
-export const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
+const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   .extend({
     operation: z.literal('kb.source_import'),
     request: kbSourceImportJobRequestSchema,
   })
   .strict();
 
-export const kbReindexJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
+const kbReindexJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   .extend({
     operation: z.literal('kb.reindex'),
     request: z.object({}).strict(),
   })
   .strict();
 
-export const kbCommunitySummaryJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
+const kbCommunitySummaryJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   .extend({
     operation: z.literal('kb.community_summary'),
     request: z.object({}).strict(),

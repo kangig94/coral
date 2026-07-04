@@ -4,6 +4,7 @@ import type { JobTerminal } from '../../jobs/records.js';
 import type { WaitStreamEvent } from '../../jobs/wait.js';
 import { type CauseRefDescriber, pickTerminalPreviewSource, truncatePreview } from './jobs.js';
 import { appendCursor, joinLines } from './text.js';
+import { formatUsageSegment } from './usage.js';
 
 type WaitProgressEvent = Extract<WaitStreamEvent, { type: 'progress' }>;
 type WaitQueuedEvent = Extract<WaitStreamEvent, { type: 'queued' }>;
@@ -70,9 +71,14 @@ export function formatWaitTerminal(
   event: WaitTerminalEvent,
   cursor: string | null,
   inline: boolean,
-  options: { describeCauseRef?: CauseRefDescriber } = {},
+  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean } = {},
 ): string {
-  const header = terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef);
+  const header = [
+    terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef),
+    formatUsageSegment(event.usage, options),
+  ]
+    .filter((segment): segment is string => segment !== undefined)
+    .join(' · ');
   if (!inline) {
     return joinLines([header, `Result path: ${event.resultPath}`, formatWaitContinuation(event.remainingJobIds)]);
   }

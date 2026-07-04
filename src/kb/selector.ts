@@ -21,7 +21,7 @@ export const KB_BARE_READ_ORDER = [
   'source',
   'principle',
 ] as const satisfies readonly KbReadKind[];
-export const KB_MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
+const KB_MEMO_FILENAME_PATTERN = /^\d{8}-\d{6}-.+$/;
 
 function assertNonEmptyText(value: string, label: string): string {
   const normalized = value.trim();
@@ -79,7 +79,7 @@ export function parseKbSelector(input: string): KbReadSelector {
   };
 }
 
-export function isKbMemoCandidateSlug(slug: string): boolean {
+function isKbMemoCandidateSlug(slug: string): boolean {
   return KB_MEMO_FILENAME_PATTERN.test(normalizeKbReadSlug(slug, 'note'));
 }
 

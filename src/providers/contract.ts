@@ -33,15 +33,27 @@ export type ProviderInstruction = z.infer<typeof providerInstructionSchema>;
 
 export interface UsageSummary {
   inputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   outputTokens?: number;
   costUsd?: number;
+  /** Workflow-aggregate only — set solely by aggregateWorkflowUsage at read time; providers MUST never emit it. */
+  jobsWithoutCostData?: number;
 }
 
+export const USAGE_TOKEN_FIELDS = ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'] as const;
+
+// Totals are derived by renderers from the four additive token buckets when all
+// are present; totalTokens is intentionally never stored on the contract.
 export const usageSummarySchema = z
   .object({
-    inputTokens: z.number().optional(),
-    outputTokens: z.number().optional(),
+    inputTokens: z.number().int().nonnegative().optional(),
+    cacheReadTokens: z.number().int().nonnegative().optional(),
+    cacheWriteTokens: z.number().int().nonnegative().optional(),
+    outputTokens: z.number().int().nonnegative().optional(),
     costUsd: z.number().optional(),
+    /** Workflow-aggregate only — set solely by aggregateWorkflowUsage at read time; providers MUST never emit it. */
+    jobsWithoutCostData: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -61,7 +73,7 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
-export interface ProviderRecoveryMeta {
+interface ProviderRecoveryMeta {
   [key: string]: unknown;
 }
 
@@ -224,7 +236,7 @@ export const providerJobTerminalSchema = z
 // post-projection shape lives in `jobs/terminal/result.ts` (progress faults
 // get attached during projection); naming the two schemas distinctly avoids
 // the magnet hazard of two schemas sharing one identifier.
-export const providerTerminalDiagnosticsSchema = z
+const providerTerminalDiagnosticsSchema = z
   .object({
     byteCounts: z
       .object({
@@ -286,7 +298,7 @@ export type ProviderContinuityUpdate = {
   [key: string]: unknown;
 };
 
-export interface ProviderContinuityBridge {
+interface ProviderContinuityBridge {
   checkpoint(update: ProviderContinuityUpdate): void;
   transportClosed(closed: ProviderTransportClose): void;
 }

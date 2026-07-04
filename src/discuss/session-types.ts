@@ -2,23 +2,23 @@ type AgentScoreMap = Record<string, number>;
 type NullableAgentScoreMap = Record<string, number | null>;
 
 export const speakerTypes = ['quota', 'fallback', 'cold_start', 'forced'] as const;
-export type SpeakerType = (typeof speakerTypes)[number];
+type SpeakerType = (typeof speakerTypes)[number];
 
 export const transcriptResolveTypes = ['normal', 'fallback', 'cold_start', 'forced', 'no_winner'] as const;
 export type TranscriptResolveType = (typeof transcriptResolveTypes)[number];
 
 export const participationTypes = ['required', 'observer'] as const;
-export type ParticipationType = (typeof participationTypes)[number];
+type ParticipationType = (typeof participationTypes)[number];
 
 export const discussStatuses = ['setup', 'bidding', 'speaking', 'ended'] as const;
-export type DiscussStatus = (typeof discussStatuses)[number];
+type DiscussStatus = (typeof discussStatuses)[number];
 
 export const resolveReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'epoch_transition'] as const;
 
 export const endReasons = ['all_below_threshold', 'max_epochs_reached', 'all_blocked', 'no_participants'] as const;
 
 export const sessionEventKinds = ['force_end', 'synthesis'] as const;
-export type SessionEventKind = (typeof sessionEventKinds)[number];
+type SessionEventKind = (typeof sessionEventKinds)[number];
 
 type TranscriptStepMetadata = {
   step: number;
@@ -82,7 +82,7 @@ export type DiscussState = {
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string; detail?: Record<string, unknown> };
 
-export type ResolveReason = (typeof resolveReasons)[number];
+type ResolveReason = (typeof resolveReasons)[number];
 
 /**
  * Sealed-bid design: individual bid scores are never returned to any caller.

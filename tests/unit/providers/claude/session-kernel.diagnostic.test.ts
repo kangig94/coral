@@ -309,6 +309,51 @@ describe('Claude session-kernel turn failure diagnostics', () => {
     }
   });
 
+  it('reports normalized usage from a completed broker turn', async () => {
+    const lease = makeLease();
+    const runtime = makeRuntime();
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+
+      await vi.waitFor(() => {
+        expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+      });
+
+      getAppServerNotificationHandler(runtime)?.({
+        method: brokerNotificationMethods.turnCompleted,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          result: 'usage result',
+          model: 'claude-sonnet',
+          durationMs: 250,
+          costUsd: 0.42,
+          usage: {
+            input_tokens: 101,
+            cache_read_input_tokens: 202,
+            cache_creation_input_tokens: 303,
+            output_tokens: 404,
+          },
+        },
+      });
+
+      const terminal = terminalEvent(await eventsPromise);
+
+      expect(terminal.terminal.outcome).toEqual({ kind: 'completed' });
+      expect(terminal.terminal.usage).toEqual({
+        inputTokens: 101,
+        cacheReadTokens: 202,
+        cacheWriteTokens: 303,
+        outputTokens: 404,
+        costUsd: 0.42,
+      });
+    } finally {
+      clearLease();
+    }
+  });
+
   it('materializes a broker turn diagnostic into the provider failure cause', async () => {
     const lease = makeLease();
     const runtime = makeRuntime();
@@ -345,6 +390,127 @@ describe('Claude session-kernel turn failure diagnostics', () => {
           message: 'Claude turn stalled after prompt registration.',
           diagnostic: DIAGNOSTIC,
         },
+      });
+    } finally {
+      clearLease();
+    }
+  });
+
+  it('carries last observed usage into a failed terminal', async () => {
+    const lease = makeLease();
+    const runtime = makeRuntime();
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+
+      await vi.waitFor(() => {
+        expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+      });
+
+      const handler = getAppServerNotificationHandler(runtime);
+      expect(handler).toBeDefined();
+      handler?.({
+        method: brokerNotificationMethods.turnProgress,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          message: 'partial usage observed',
+          costUsd: 0.12,
+          usage: {
+            input_tokens: 31,
+            cache_read_input_tokens: 37,
+          },
+        },
+      });
+      handler?.({
+        method: brokerNotificationMethods.turnFailed,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          message: 'Claude turn stalled after prompt registration.',
+          sessionId: 'claude-session-diagnostic',
+          conversationRef: 'claude-session-diagnostic',
+          diagnostic: DIAGNOSTIC,
+        },
+      });
+
+      const terminal = terminalEvent(await eventsPromise);
+
+      expect(terminal.terminal.outcome).toEqual({ kind: 'failed' });
+      expect(terminal.terminal.usage).toEqual({
+        inputTokens: 31,
+        cacheReadTokens: 37,
+        costUsd: 0.12,
+      });
+    } finally {
+      clearLease();
+    }
+  });
+
+  it('carries last observed usage into an aborted terminal', async () => {
+    const controller = new AbortController();
+    const rpcMock = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          bootstrapSignature: BOOTSTRAP_SIGNATURE,
+          sessionId: 'claude-session-diagnostic',
+          conversationRef: 'claude-session-diagnostic',
+        };
+      }
+      if (method === 'turn/start') {
+        return {
+          brokerTurnId: 'claude-turn-diagnostic',
+          sessionId: 'claude-session-diagnostic',
+          conversationRef: 'claude-session-diagnostic',
+        };
+      }
+      if (method === 'turn/interrupt') {
+        return {
+          brokerTurnId: params.brokerTurnId,
+          interrupted: true,
+        };
+      }
+      throw new Error(`Unexpected Claude diagnostic RPC: ${method}`);
+    });
+    const lease: MockLease = {
+      ...makeLease(),
+      rpc: rpcMock as unknown as ProviderServerLease['rpc'],
+      rpcMock,
+    };
+    const runtime = makeRuntime(controller);
+    const clearLease = bindAppServerLease(runtime, lease);
+
+    try {
+      const eventsPromise = collectProviderEvents(claudeSessionKernel(REQUEST, runtime));
+
+      await vi.waitFor(() => {
+        expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
+      });
+
+      getAppServerNotificationHandler(runtime)?.({
+        method: brokerNotificationMethods.turnProgress,
+        params: {
+          brokerSessionKey: 'broker-claude-diagnostic',
+          brokerTurnId: 'claude-turn-diagnostic',
+          message: 'partial usage observed',
+          usage: {
+            input_tokens: 41,
+            cache_creation_input_tokens: 43,
+            output_tokens: 47,
+          },
+        },
+      });
+      controller.abort();
+
+      const terminal = terminalEvent(await eventsPromise);
+
+      expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
+      expect(terminal.terminal.usage).toEqual({
+        inputTokens: 41,
+        cacheWriteTokens: 43,
+        outputTokens: 47,
       });
     } finally {
       clearLease();

@@ -5,6 +5,7 @@ import type { RecoveryCapableService } from '../../jobs/reconcile/contracts.js';
 import type { CoordinatorWorld } from './world.js';
 import { subscribeJobEvents } from '../../jobs/shell/event-subscription.js';
 import { prepareCached } from '../../store/db.js';
+import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
@@ -14,9 +15,7 @@ type CreateExecutionServicesDeps = {
   createExecutionService: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
 };
 
-export function listInstantiatedExecutionServices(
-  services: ReadonlyMap<string, ProjectRequestPort>,
-): ProjectRequestPort[] {
+function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
   return [...services.values()];
 }
 
@@ -53,6 +52,7 @@ export function createExecutionServices({
       pluginRegistry: world.pluginRegistry,
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
+      aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),
       subscribeJobEvents,
       getCurrentJournalSeq: () =>
         prepareCached<[], { seq: number }>(

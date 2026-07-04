@@ -6,7 +6,7 @@ import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
 
-export interface AdminControlPort {
+interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
   isLifecycleRunning(): boolean;
   isDrainRequested(): boolean;
@@ -49,18 +49,11 @@ export type TransportRuntimeComponentStatus =
 
 export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
 
-export type TransportKbDaemonPhase =
-  | 'disabled'
-  | 'starting'
-  | 'online'
-  | 'restarting'
-  | 'stopping'
-  | 'stopped'
-  | 'failed';
+type TransportKbDaemonPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
-export type TransportKbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+type TransportKbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
 
-export type TransportKbDaemonRuntimeHealth = {
+type TransportKbDaemonRuntimeHealth = {
   phase: TransportKbDaemonRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
@@ -68,7 +61,7 @@ export type TransportKbDaemonRuntimeHealth = {
   mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
 
-export type TransportKbDaemonHealthSnapshot = {
+type TransportKbDaemonHealthSnapshot = {
   enabled: boolean;
   phase: TransportKbDaemonPhase;
   generation: number;
@@ -164,7 +157,7 @@ export type HealthSnapshot = {
   };
 };
 
-export interface HealthSnapshotPort {
+interface HealthSnapshotPort {
   read(): HealthSnapshot;
 }
 
@@ -202,7 +195,7 @@ export interface EventStreamBus {
   off<K extends keyof EventStreamEventMap>(event: K, listener: (payload: EventStreamEventMap[K]) => void): this;
 }
 
-export interface EventStreamPort {
+interface EventStreamPort {
   readonly bus: EventStreamBus;
   addResponse(res: ServerResponse): void;
   removeResponse(res: ServerResponse): void;
@@ -212,7 +205,7 @@ export interface EventStreamPort {
   unsubscribe(handlers: EventStreamHandlers): void;
 }
 
-export type HandlerIdentity = {
+type HandlerIdentity = {
   pluginRoot: string;
   token: string;
   bootToken: string;
@@ -226,7 +219,7 @@ export type HandlerIdentity = {
   log: (message: string) => void;
 };
 
-export interface ChildPrincipalRegistryPort {
+interface ChildPrincipalRegistryPort {
   authenticate(auth: Extract<IpcAuthMetadata, { kind: 'child' }>, namespace: string, nowMs: number): Principal | null;
 }
 

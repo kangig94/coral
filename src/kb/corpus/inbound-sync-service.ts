@@ -42,7 +42,7 @@ function structuredSyncMayChangeEntityGraph(result: unknown): boolean {
   });
 }
 
-export interface CorpusInboundSyncTarget {
+interface CorpusInboundSyncTarget {
   markdownRoot: string;
   corpusStorage: CorpusStorage;
   entityGraphPath(): string;
@@ -133,7 +133,10 @@ export class CorpusInboundSyncService {
             } else if (mutationDiff.requiresFullInstall) {
               this.options.invalidateKbCache();
             }
-            this.options.recordMutationCommitted(mutationDiff.lane, 'KB text snapshot is stale after inbound git sync.');
+            this.options.recordMutationCommitted(
+              mutationDiff.lane,
+              'KB text snapshot is stale after inbound git sync.',
+            );
           }
 
           return result;

@@ -6,6 +6,9 @@ import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js'
 import {
   PRE_TURN_MAILBOX_CAP,
   applyCodexNotificationForTest,
+  buildCodexAbortedTerminalForTest,
+  buildCodexCompletedTerminalForTest,
+  buildCodexFailedTerminalForTest,
   createCodexTurnStateForTest,
 } from '#src/providers/codex/thread-kernel.js';
 
@@ -100,6 +103,30 @@ function webSearchStarted(threadId: string, query: string): AppServerNotificatio
       item: {
         type: 'webSearch',
         query,
+      },
+    },
+  };
+}
+
+function prepareStartedTurn(state: ReturnType<typeof createCodexTurnStateForTest>): void {
+  state.threadId = 'thread-usage';
+  state.threadIds.add('thread-usage');
+  state.turnId = 'turn-usage';
+  state.threadTurnIds.set('thread-usage', 'turn-usage');
+}
+
+function tokenUsageEvent(
+  total: Record<string, unknown>,
+  last: Record<string, unknown> = {},
+): AppServerNotificationMessage {
+  return {
+    method: 'thread/tokenUsage/updated',
+    params: {
+      threadId: 'thread-usage',
+      turnId: 'turn-usage',
+      tokenUsage: {
+        total,
+        last,
       },
     },
   };
@@ -406,5 +433,89 @@ describe('codexTurnKernel pre-turn mailbox', () => {
         identity: { kind: 'codex-rollout', threadId: 'thread-1' },
       },
     ]);
+  });
+
+  it('captures cumulative tokenUsage.total (not per-step last) from thread/tokenUsage/updated', () => {
+    const state = createCodexTurnStateForTest(
+      makeRequest({ conversationRef: 'thread-usage' }),
+      makeRuntime({
+        cwd: '/workspace/persisted',
+        threadId: 'thread-usage',
+      }),
+    );
+    prepareStartedTurn(state);
+    const events: ProviderEventBody[] = [];
+    const total = {
+      totalTokens: 156_406,
+      inputTokens: 155_699,
+      cachedInputTokens: 142_720,
+      outputTokens: 707,
+      reasoningOutputTokens: 287,
+    };
+
+    applyCodexNotificationForTest(
+      state,
+      tokenUsageEvent(total, {
+        totalTokens: 11,
+        inputTokens: 10,
+        cachedInputTokens: 9,
+        outputTokens: 1,
+      }),
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    expect(events).toEqual([]);
+    expect(state.latestTokenCount).toEqual(total);
+    expect(buildCodexCompletedTerminalForTest(state, { id: 'turn-usage', status: 'completed' }).terminal.usage).toEqual(
+      {
+        inputTokens: 12_979,
+        cacheReadTokens: 142_720,
+        outputTokens: 707,
+      },
+    );
+  });
+
+  it('passes the last captured usage through failed and aborted terminals', () => {
+    const state = createCodexTurnStateForTest(
+      makeRequest({ conversationRef: 'thread-usage' }),
+      makeRuntime({
+        cwd: '/workspace/persisted',
+        threadId: 'thread-usage',
+      }),
+    );
+    prepareStartedTurn(state);
+
+    applyCodexNotificationForTest(
+      state,
+      tokenUsageEvent({
+        totalTokens: 110,
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        outputTokens: 10,
+      }),
+      () => {},
+    );
+    applyCodexNotificationForTest(
+      state,
+      tokenUsageEvent({
+        totalTokens: 23,
+        inputTokens: 20,
+        cachedInputTokens: 8,
+        outputTokens: 3,
+      }),
+      () => {},
+    );
+
+    const expectedUsage = {
+      inputTokens: 12,
+      cacheReadTokens: 8,
+      outputTokens: 3,
+    };
+    expect(buildCodexFailedTerminalForTest(state, 'Codex failed after spending tokens.').terminal.usage).toEqual(
+      expectedUsage,
+    );
+    expect(buildCodexAbortedTerminalForTest(state).terminal.usage).toEqual(expectedUsage);
   });
 });

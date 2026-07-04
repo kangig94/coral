@@ -20,7 +20,7 @@ export type CliExecResult = {
   aborted: boolean;
 };
 
-export type SpawnCliOptions = {
+type SpawnCliOptions = {
   provider: string;
   command: string;
   args: string[];

@@ -28,7 +28,7 @@ export type PipelineResult = {
   stepDetails: StepDetail[];
 };
 
-export interface CoralDispatchInput {
+interface CoralDispatchInput {
   prompt: string;
   sessionId?: string;
   jobId?: string;
@@ -41,7 +41,7 @@ export interface CoralDispatchInput {
   retention?: RetentionPolicy;
 }
 
-export interface ResumeInput {
+interface ResumeInput {
   sessionId: string;
   prompt: string;
   jobId?: string;

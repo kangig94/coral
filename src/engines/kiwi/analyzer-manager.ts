@@ -9,7 +9,7 @@ import type { Disposable, Runtime } from '../../runtime/ports.js';
 import { inspectKiwiModelArtifact, type KiwiModelArtifactState } from './model-artifact.js';
 import { loadKiwiAnalyzer, type KiwiAnalyzer } from './loader.js';
 
-export const KIWI_ANALYZER_IDLE_TTL_MS = 5 * 60 * 1000;
+const KIWI_ANALYZER_IDLE_TTL_MS = 5 * 60 * 1000;
 
 type ActiveKiwiHandle = {
   readonly analyzer: KiwiAnalyzer;

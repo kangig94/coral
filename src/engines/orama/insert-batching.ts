@@ -5,7 +5,7 @@ import { insertMultiple } from '@orama/orama';
 import type { KbOramaDocument } from './document-builder.js';
 import type { KbOramaDb } from './schema.js';
 
-export const ORAMA_FULL_INSTALL_INSERT_BATCH_SIZE = 500;
+const ORAMA_FULL_INSTALL_INSERT_BATCH_SIZE = 500;
 
 export async function insertOramaDocumentsCooperatively(
   db: KbOramaDb,

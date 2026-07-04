@@ -1,4 +1,4 @@
-export type ProviderCliRequest = {
+type ProviderCliRequest = {
   command: string;
   args: string[];
   prompt?: string;
@@ -8,7 +8,7 @@ export type ProviderCliRequest = {
   onRuntimeRecord?: (record: unknown) => void;
 };
 
-export type ProviderCliResult = {
+type ProviderCliResult = {
   stdout: string;
   stderr: string;
   code: number | null;

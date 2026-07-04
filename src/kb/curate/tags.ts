@@ -4,12 +4,12 @@ import { compareLocale } from '../validation.js';
 
 const PATTERN_SUFFIXES = new Set(['pattern', 'architecture', 'design', 'contract', 'strategy']);
 
-export type TagCleanupResult = {
+type TagCleanupResult = {
   globalReplacements: Map<string, string>;
   globalDeletions: Set<string>;
 };
 
-export function countTagSupport(index: KbIndex): Map<string, number> {
+function countTagSupport(index: KbIndex): Map<string, number> {
   const counts = new Map<string, number>();
 
   for (const entry of Object.values(index.entries)) {
@@ -28,6 +28,7 @@ function matchesPatternSuffix(tag: string): boolean {
   return PATTERN_SUFFIXES.has(suffix);
 }
 
+/** @knipignore Reached through Vitest dynamic import coverage. */
 export function cleanupTags(index: KbIndex, cohortSlugs: string[]): TagCleanupResult {
   const tagSupport = countTagSupport(index);
   const cohortTags = new Set<string>();

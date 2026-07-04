@@ -157,7 +157,7 @@ export function rejectWaiters(state: ConsumerState, err: Error, timers: Consumer
   }
 }
 
-export function corpusTargetReached(
+function corpusTargetReached(
   state: ConsumerState,
   target: KbCorpusSnapshot | ForcedCorpusFreshnessTarget,
   current: KbCorpusSnapshot,

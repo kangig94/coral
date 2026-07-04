@@ -9,13 +9,13 @@ import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { EngineManifest } from '../contract.js';
 import { validateRequireBindings } from '../require-binding-validation.js';
 
-export interface CapabilityCatalogEntry {
+interface CapabilityCatalogEntry {
   readonly descriptor: KbCapabilityDescriptor;
   readonly origin: 'builtin' | 'external';
   readonly declaredByManifest?: string;
 }
 
-export interface CapabilityCatalogSnapshot {
+interface CapabilityCatalogSnapshot {
   readonly entries: readonly CapabilityCatalogEntry[];
 }
 
@@ -68,7 +68,7 @@ function assertCatalogEntryCompatible(
   return existing;
 }
 
-export function collectCapabilityCatalog(
+function collectCapabilityCatalog(
   manifests: readonly EngineManifest[],
   builtinDescriptors: readonly KbCapabilityDescriptor[],
 ): CapabilityCatalogSnapshot {
@@ -159,7 +159,7 @@ function applyManifestDeclaration(registry: KbCapabilityRegistry, entry: Capabil
   });
 }
 
-export function applyCapabilityDeclarations(registry: KbCapabilityRegistry, catalog: CapabilityCatalogSnapshot): void {
+function applyCapabilityDeclarations(registry: KbCapabilityRegistry, catalog: CapabilityCatalogSnapshot): void {
   for (const entry of catalog.entries) {
     if (entry.origin === 'builtin') {
       assertBuiltinApplied(registry, entry);
@@ -169,7 +169,7 @@ export function applyCapabilityDeclarations(registry: KbCapabilityRegistry, cata
   }
 }
 
-export function assertCapabilityCatalogApplied(manifest: EngineManifest, catalog: KbCapabilityCatalogView): void {
+function assertCapabilityCatalogApplied(manifest: EngineManifest, catalog: KbCapabilityCatalogView): void {
   const descriptors = catalog.listDescriptors();
   for (const descriptor of manifest.provides?.capabilities ?? []) {
     const registered = descriptors.find((candidate) => candidate.name === descriptor.name);
@@ -202,7 +202,7 @@ export function validateManifestFills(manifest: EngineManifest, catalog: KbCapab
   }
 }
 
-export function validateRetrievalRoleRequirements(manifest: EngineManifest, catalog: KbCapabilityCatalogView): void {
+function validateRetrievalRoleRequirements(manifest: EngineManifest, catalog: KbCapabilityCatalogView): void {
   for (const descriptor of manifest.provides?.retrievalRoles ?? []) {
     for (const name of descriptor.requires ?? []) {
       if (!catalog.hasDescriptor(name)) {

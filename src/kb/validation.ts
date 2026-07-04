@@ -1,12 +1,12 @@
 import { stripMdExt } from './paths.js';
 
 /** Lowercase-only slug (e.g. domain, memo topic). */
-export const LOWERCASE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LOWERCASE_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** Mixed-case slug for KB filenames that embed code identifiers (e.g. rendering-efficiency-CuMem). */
 export const NOTE_SLUG_PATTERN = /^[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*$/;
 
-export function assertString(value: unknown, label: string): string {
+function assertString(value: unknown, label: string): string {
   if (typeof value !== 'string') {
     throw new Error(`${label} must be a string`);
   }

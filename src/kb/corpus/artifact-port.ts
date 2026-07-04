@@ -8,7 +8,7 @@ import type { CorpusSnapshot } from './snapshot.js';
  * (e.g. an authoritative mirror format) will be added when an actual engine
  * needs them.
  */
-export type EngineArtifactKind = 'projection-cache';
+type EngineArtifactKind = 'projection-cache';
 
 export type EngineArtifactProjectedSnapshot = Pick<
   CorpusSnapshot,
@@ -19,7 +19,7 @@ export type EngineArtifactProjectedSnapshot = Pick<
   readonly generatedCommunityDocsHash?: string;
 };
 
-export type EngineArtifactFreshness =
+type EngineArtifactFreshness =
   | {
       readonly status: 'present';
       readonly projected: EngineArtifactProjectedSnapshot;

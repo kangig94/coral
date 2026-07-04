@@ -3,10 +3,10 @@ import { transportOperationalCarveouts, type RequestBindingRule } from './catalo
 
 const [healthPath, shutdownPath, kbRestartPath, eventsStreamPath] = transportOperationalCarveouts;
 
-export type OperationalDispatchKind = 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart';
-export type OperationalAuthentication = 'none' | 'principal';
+type OperationalDispatchKind = 'ping' | 'health' | 'event-stream' | 'shutdown' | 'kb-restart';
+type OperationalAuthentication = 'none' | 'principal';
 
-export type OperationalBaseSpec = {
+type OperationalBaseSpec = {
   readonly id: string;
   readonly requires: Capability;
   readonly requestBinding?: RequestBindingRule;

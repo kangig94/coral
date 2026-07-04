@@ -47,7 +47,7 @@ function compareFusedHits(left: FusedRetrievalHit, right: FusedRetrievalHit): nu
   return left.entryId.localeCompare(right.entryId);
 }
 
-export class ReciprocalRankFusion implements HybridFusion {
+class ReciprocalRankFusion implements HybridFusion {
   fuse(roleResults: ReadonlyArray<RoleExecutionResult>, profile: FusionProfile): FusedResult {
     const fused = new Map<FusedRetrievalHit['entryId'], FusedRetrievalHit>();
 

@@ -14,12 +14,12 @@ export const CAPABILITIES = [
 export type Capability = (typeof CAPABILITIES)[number];
 export type CapabilityScope = 'bound-project' | 'any';
 
-export type CapabilityRegistryEntry = {
+type CapabilityRegistryEntry = {
   readonly capability: Capability;
   readonly scope: CapabilityScope;
 };
 
-export const CAPABILITY_REGISTRY = {
+const CAPABILITY_REGISTRY = {
   liveness: { capability: 'liveness', scope: 'any' },
   'kb:read': { capability: 'kb:read', scope: 'bound-project' },
   'kb:write': { capability: 'kb:write', scope: 'bound-project' },

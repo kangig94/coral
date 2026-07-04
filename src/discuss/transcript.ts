@@ -7,7 +7,7 @@ const HARD_LIMIT = 100;
 
 const SENTENCE_END = /[.!?]$/u;
 
-export function wrapText(text: string, opts?: { soft?: number; hard?: number }): string {
+function wrapText(text: string, opts?: { soft?: number; hard?: number }): string {
   const soft = opts?.soft ?? SOFT_LIMIT;
   const hard = opts?.hard ?? HARD_LIMIT;
   const lines: string[] = [];
@@ -89,7 +89,7 @@ export function renderEntries(entries: TranscriptEntry[], agents: Record<string,
   return rendered;
 }
 
-export function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {
+function renderEntry(e: TranscriptEntry, agents: Record<string, AgentState>): string {
   switch (e.type) {
     case 'bids': {
       const effectiveBids = e.effective_bids;

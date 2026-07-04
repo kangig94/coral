@@ -30,7 +30,7 @@ export type CompiledPlanSlot = PlanSlot & {
   kind: 'agent' | 'prompt';
 };
 
-export const planSlotSchema = z
+const planSlotSchema = z
   .object({
     slotId: z.string(),
     dependencies: z.array(z.string()).default([]),

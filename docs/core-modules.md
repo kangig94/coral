@@ -45,7 +45,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ## Provider Adapters
 
-Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
+Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters normalize provider usage at this boundary to the canonical additive `UsageSummary` (`inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, optional `costUsd`) before it reaches jobs. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
 
 ## Expansion
 

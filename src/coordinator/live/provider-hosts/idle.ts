@@ -4,7 +4,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import { activeLeaseCount } from './lease.js';
 import type { HostStatsState, ProviderHostEntry } from './state.js';
 
-export const DEFAULT_BROKER_IDLE_MS = 300_000;
+const DEFAULT_BROKER_IDLE_MS = 300_000;
 
 export function parseIdleTimeoutMs(raw: string | undefined): number {
   if (!raw) {
@@ -17,7 +17,7 @@ export function parseIdleTimeoutMs(raw: string | undefined): number {
   return parsed;
 }
 
-export function readHostStats(params: Record<string, unknown> | undefined): HostStatsState | null {
+function readHostStats(params: Record<string, unknown> | undefined): HostStatsState | null {
   if (!params) {
     return null;
   }
@@ -47,16 +47,16 @@ export function clearIdleTimer(entry: ProviderHostEntry, time: Pick<TimePort, 'c
   entry.idleTimer = null;
 }
 
-export function usesHostStats(entry: ProviderHostEntry): boolean {
+function usesHostStats(entry: ProviderHostEntry): boolean {
   return entry.spec.shared === true;
 }
 
-export function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
+function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
   const hostStats = entry.hostStats;
   return hostStats !== null && hostStats.liveControllers === 0 && hostStats.activeTurns === 0;
 }
 
-export function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, ProviderHostEntry>): boolean {
+function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, ProviderHostEntry>): boolean {
   if (entry.closingError || entries.get(entry.hostKey) !== entry || !entry.handle) {
     return false;
   }

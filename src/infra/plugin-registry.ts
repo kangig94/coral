@@ -20,7 +20,7 @@ const installedPluginsFileSchema = z
   })
   .passthrough();
 
-export type InstalledPluginsFile = z.infer<typeof installedPluginsFileSchema>;
+type InstalledPluginsFile = z.infer<typeof installedPluginsFileSchema>;
 
 export type PluginRegistry = {
   discoverPluginRoot(namespace: string): string | null;

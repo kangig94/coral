@@ -21,7 +21,7 @@ import { blockHeaderFor } from './knowledge.js';
 
 const DEFAULT_WIKI_REWRITE_REASON = 'KB text snapshot is stale after wiki rewrite.';
 
-export type WikiRewriteCurrent = {
+type WikiRewriteCurrent = {
   slug: string;
   path: string;
   raw: string;
@@ -32,7 +32,7 @@ export type WikiRewriteCurrent = {
   knowledge: KbEntryId[];
 };
 
-export type WikiRewritePatch = {
+type WikiRewritePatch = {
   title?: string;
   body?: string;
   sections?: Partial<WikiBodySections>;
@@ -221,36 +221,6 @@ export async function rewriteWikiInMutation(
   });
 
   return { path: current.path };
-}
-
-export function bubbleUpWikiKnowledgeInMutation(
-  rt: KbRuntime,
-  mutation: KbMutationEffects,
-  slug: string,
-  entryIds: readonly KbEntryId[],
-): Promise<{ path: string }> {
-  return rewriteWikiInMutation(
-    rt,
-    mutation,
-    slug,
-    (current) => {
-      if (entryIds.length === 0) {
-        return undefined;
-      }
-      const knowledge = bubbleUpKnowledgeLinks(current.sections.knowledge, entryIds);
-      return knowledge === current.sections.knowledge
-        ? undefined
-        : {
-            sections: {
-              knowledge,
-            },
-          };
-    },
-    {
-      lane: 'metadata',
-      reason: 'KB wiki metadata changed after touch drain.',
-    },
-  );
 }
 
 export function bubbleUpWikiKnowledge(

@@ -3,9 +3,9 @@ import * as louvainModule from 'graphology-communities-louvain';
 import type { DetailedLouvainOutput } from 'graphology-communities-louvain';
 import { backendLog } from '../../../infra/backend-log.js';
 import { compareLocale } from '../../validation.js';
-import { communityEntryId, type KbIndex } from '../../entry-types.js';
+import { communityEntryId } from '../../entry-types.js';
 import { communitySlugFromReference, uniqueSorted } from './identity.js';
-import { buildEntityRelationshipGraphFromIndex, computeGraphFingerprint } from './graph.js';
+import { computeGraphFingerprint } from './graph.js';
 import type { DetectedCommunity, ExistingGeneratedCommunity, TagGraph } from './contracts.js';
 
 type Louvain = {
@@ -64,7 +64,7 @@ const COMMUNITY_RESOLUTION_TARGET_MIDPOINT = (COMMUNITY_RESOLUTION_TARGET_MIN + 
 const COMMUNITY_RESOLUTION_SWEEP_STEPS = 12;
 const COMMUNITY_MODULARITY_DECIMALS = 12;
 export const COMMUNITY_LOUVAIN_NODE_CAP = 2_000;
-export const COMMUNITY_LOUVAIN_EDGE_CAP = 10_000;
+const COMMUNITY_LOUVAIN_EDGE_CAP = 10_000;
 
 function internalWeightedDegree(
   node: string,
@@ -112,10 +112,6 @@ function deriveCommunitySlug(rankedMembers: string[]): string {
   return rankedMembers.slice(0, COMMUNITY_SLUG_TAG_LIMIT).join('-') || 'community';
 }
 
-export function generateSlug(members: string[], adjacency: ReadonlyMap<string, ReadonlyMap<string, number>>): string {
-  return deriveCommunitySlug(rankCommunityMembers(members, adjacency));
-}
-
 function ensureUniqueCommunitySlug(
   baseSlug: string,
   usedSlugs: Set<string>,
@@ -142,7 +138,7 @@ function deriveCommunityTitle(rankedMembers: string[]): string {
   return titleSegments.join(' / ');
 }
 
-export function seededRng(seed: number): () => number {
+function seededRng(seed: number): () => number {
   let state = seed >>> 0;
 
   return () => {
@@ -534,24 +530,6 @@ function assignCommunitySlugs(
   return assigned.sort((left, right) => compareLocale(left.slug, right.slug));
 }
 
-export function carryOverSlugs(
-  communities: DetectedCommunitySeed[],
-  priorCommunities: ExistingGeneratedCommunity[],
-  options: { reservedSlugs?: ReadonlySet<string> } = {},
-): DetectedCommunity[] {
-  const assigned = assignCommunitySlugs(communities, priorCommunities, options);
-  const carried: DetectedCommunity[] = [];
-  for (const community of assigned) {
-    carried.push({
-      slug: community.slug,
-      title: community.title,
-      level: community.level,
-      members: community.members,
-    });
-  }
-  return carried;
-}
-
 function detectCommunitiesForHash(
   hierarchySeeds: readonly HierarchySeed[],
 ): Array<Pick<DetectedCommunity, 'slug' | 'level' | 'members' | 'parent' | 'children'>> {
@@ -679,13 +657,6 @@ export function detectCommunities(graph: TagGraph, options: DetectCommunitiesOpt
   return buildCommunityPartitionTree(graph).detect(options);
 }
 
-export function computeCommunityTopologyFingerprint(
-  index: KbIndex,
-  graph = buildEntityRelationshipGraphFromIndex(index),
-): string {
-  return buildCommunityPartitionTree(graph).computeTopologyFingerprint();
-}
-
-export function computeCommunityMembershipFingerprint(members: string[]): string {
+function computeCommunityMembershipFingerprint(members: string[]): string {
   return createHash('sha256').update(uniqueSorted(members).join('\n')).digest('hex');
 }

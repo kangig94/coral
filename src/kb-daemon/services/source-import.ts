@@ -40,7 +40,7 @@ export type KbSourceImportCompleted = {
   path: string;
 };
 
-export type KbSourceImportStarted = {
+type KbSourceImportStarted = {
   status: 'running' | 'queued';
   job: string;
   readiness: SourceImportReadiness;

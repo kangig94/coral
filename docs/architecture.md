@@ -61,6 +61,22 @@ bridge/coral-backend.cjs
 
 The Claude helper keeps its historical bridge filename. By default it launches `claude -p --input-format stream-json --output-format stream-json` and drives turns over JSONL. Operators can set `CORAL_CLAUDE_TRANSPORT=tui` to use the PTY transport instead; that path launches interactive `claude` through `@lydell/node-pty`, writes turns after terminal readiness, and derives completion/progress from Claude's JSONL transcript.
 
+## Provider Usage Reporting
+
+Usage is captured at each provider boundary before provider-specific stream shapes enter the jobs domain. Providers normalize their raw counters to the canonical additive `UsageSummary`: `{ inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, costUsd }`. Token totals are derived by renderers from the four token buckets and are never stored as `totalTokens`.
+
+The canonical storage home is the job terminal record's `diagnostics.usage` field. In the read model, that lives in `projection_jobs.diagnostics`; live wait, replay wait, SSE reconnect, and job detail all read usage from the same terminal diagnostics instead of recomputing it from provider artifacts.
+
+Provider transports are intentionally asymmetric because Coral records only what the provider reports:
+
+- Claude print (`claude -p` stream-json) reports token usage and `total_cost_usd`, so Coral can render both tokens and `costUsd`.
+- Claude TUI reports token usage from the transcript but no cost, so Coral renders tokens only.
+- Codex reports tokens only, captured from the native `thread/tokenUsage/updated` notification (`tokenUsage.total`, a cumulative `TokenUsageBreakdown`). Its `cachedInputTokens` are a subset of `inputTokens`, so Coral subtracts cached input before storing fresh `inputTokens` and records cached input as `cacheReadTokens`; Codex has no `costUsd`.
+
+Workflow usage is not written onto `workflow.completed`. It is aggregated at read time by summing child job `diagnostics.usage` rows where `projection_jobs.parent_workflow_job_id` is the workflow job id. Token fields are summed across children, including children that failed after spending tokens. Cost is summed only where present; mixed-provider workflows render partial cost as `$X+` with `(+N jobs without cost data)`.
+
+User-facing usage surfaces are deliberately narrow. `coral-cli wait` appends usage only to terminal completion lines, with `--verbose` expanding the four token buckets. `coral-cli jobs detail <jobId>` renders the terminal diagnostics usage, and workflow detail uses the same read-time aggregate as wait. When cache-read tokens dominate the total, renderers add the honesty annotation `(NN% cached)`; detail uses the fuller cache-read annotation with `billed ~0.1×`.
+
 ## Backend HTTP Surface
 
 Resource-oriented API. Sessions and jobs are first-class resources. Each endpoint has its own strict Zod schema. Request bodies are direct JSON — no `{ context, args }` envelope. `pluginRoot` is server-authoritative.
@@ -159,12 +175,14 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 2. `coral-cli wait jobs <id...> [--embed]` opens the `jobs.wait` IPC subscription
 3. The local IPC stream and the remote `POST /jobs/wait` HTTP gateway both read the same coordinator-owned wait surface, which uses the same job truth as startup recovery and steady-state launch orchestration
 4. Terminal text always includes `Result path: <path>`; `--embed` may add preview text, but the durable artifact is always at the printed path
+5. Terminal completion lines append usage when available, for example `Job <id> completed · $4.18 · 18.6M tokens (90% cached)`; `--verbose` expands the input/cache-read/cache-write/output breakdown
 
 ### Job inspection and control
 
 1. `coral-cli jobs [--phase <phase>] [--provider <name>] [--all]` reads `read-model/CoralStore` directly for local no-coordinator paths; the same shape remains available through `GET /jobs` on the HTTP gateway
-2. `coral-cli abort jobs <id...>` dispatches `jobs.abort` over IPC for local calls
-3. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
+2. `coral-cli jobs detail <jobId>` reads the detailed job projection and renders terminal diagnostics, including usage when present
+3. `coral-cli abort jobs <id...>` dispatches `jobs.abort` over IPC for local calls
+4. `coral-cli abort --all` or `coral-cli abort --phase <phase> [--provider <name>]` first resolves matching live jobs through the same read surface, then aborts the resulting job IDs
 
 ### Workflow
 
@@ -172,6 +190,7 @@ Direct does not mean ambient. CLI/bootstrap adapters choose the active plugin ro
 2. The workflow domain compiles the DSL into a semantic plan (slot id, dependencies, provider, instruction, optional agent)
 3. The executor launches provider or `coral:` atoms through the coordinator API; launch and retry stay intertwined per architecture §10.1a
 4. Workflow state is persisted as Journal events with a projection row per workflow; child job identity is derived from `parentWorkflowJobId` + `workflowSlotId`, not stored in the plan; `coral-cli wait` reads the same job store
+5. Workflow usage is resolved from child job terminal diagnostics at read time, not stored on the workflow terminal event
 
 ### Boot Eras
 
@@ -336,10 +355,10 @@ Terminal results carry a typed outcome (`TerminalOutcome`) — a discriminated u
 
 Read-time body evolution lives in per-domain upcasters at the Journal boundary. Runtime job ingestion emits canonical domain events directly.
 Domain registries own event schemas, append validators, and reducers. `store/` runs composed validators transactionally before insert, but does not hardcode domain vocabulary.
-`job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings/usage stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot.
+`job.terminal.recorded` stores `{ terminal, diagnostics?, continuity? }`: output and outcome stay under `terminal`, provider warnings and canonical `diagnostics.usage` stay under `diagnostics`, and session continuity stays in the explicit continuity snapshot. `diagnostics.usage` is the durable home for provider usage; renderers derive total token counts from its additive buckets instead of storing a separate total.
 Raw `job.terminal.recorded` object construction is owned by `jobs/store.ts`; providers, workflows, KB internal jobs, and recovery code finalize through jobs-owned append/materialization APIs.
 
-CLI wait output surfaces the outcome through five exhaustive headers:
+CLI wait output surfaces the outcome through five exhaustive headers, followed by a usage segment when terminal diagnostics carry usage:
 
 ```
 Job <id> completed

@@ -30,7 +30,7 @@ function isDirectoryLockDeps(value: DirectoryLockDeps | number | undefined): val
   return typeof value === 'object' && value !== null && 'storage' in value && 'time' in value;
 }
 
-export function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
+function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === 'EEXIST';
 }
 
@@ -136,7 +136,7 @@ async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void>
       try {
         signal.throwIfAborted();
       } catch (error) {
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     };
     signal.addEventListener('abort', abortHandler, { once: true });

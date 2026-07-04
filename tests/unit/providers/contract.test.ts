@@ -16,7 +16,9 @@ import {
   type ProviderRequest,
   type ProviderRuntime,
   type ProviderTerminalOutcome,
+  type UsageSummary,
   providerTerminalOutcomeSchema,
+  usageSummarySchema,
 } from '#src/providers/contract.js';
 import type { ProviderFailureCause } from '#src/providers/fault.js';
 
@@ -28,6 +30,18 @@ type IsEqual<A, B> =
     : false;
 
 function expectTypeParity<_T extends true>(): void {}
+
+function deriveTotalTokens(usage: UsageSummary): number {
+  if (
+    usage.inputTokens === undefined ||
+    usage.cacheReadTokens === undefined ||
+    usage.cacheWriteTokens === undefined ||
+    usage.outputTokens === undefined
+  ) {
+    throw new Error('complete token usage is required to derive a total');
+  }
+  return usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens;
+}
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -164,7 +178,55 @@ describe('compose', () => {
 });
 
 describe('contract schemas', () => {
+  it('parses canonical usage and derives totals from additive token buckets', () => {
+    const parsed = usageSummarySchema.parse({
+      inputTokens: 11,
+      cacheReadTokens: 17,
+      cacheWriteTokens: 19,
+      outputTokens: 23,
+      costUsd: 0.42,
+    });
+
+    expect(parsed).toEqual({
+      inputTokens: 11,
+      cacheReadTokens: 17,
+      cacheWriteTokens: 19,
+      outputTokens: 23,
+      costUsd: 0.42,
+    });
+    expect(deriveTotalTokens(parsed)).toBe(70);
+    expect(parsed).not.toHaveProperty('totalTokens');
+  });
+
+  it('keeps cost-only usage payloads valid', () => {
+    expect(usageSummarySchema.parse({ costUsd: 0.34 })).toEqual({ costUsd: 0.34 });
+  });
+
+  it('rejects raw Anthropic usage and stored totals at the provider boundary', () => {
+    const rawAnthropicUsage = {
+      input_tokens: 11,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 13,
+      },
+      cache_read_input_tokens: 17,
+      output_tokens: 23,
+      server_tool_use: {
+        web_search_requests: 1,
+      },
+      costUsd: 0.42,
+    };
+
+    expect(usageSummarySchema.safeParse(rawAnthropicUsage).success).toBe(false);
+    expect(usageSummarySchema.safeParse({ inputTokens: 1, outputTokens: 2, totalTokens: 3 }).success).toBe(false);
+  });
+
+  it('requires cache token buckets to be nonnegative integers', () => {
+    expect(usageSummarySchema.safeParse({ cacheReadTokens: -1 }).success).toBe(false);
+    expect(usageSummarySchema.safeParse({ cacheWriteTokens: 1.5 }).success).toBe(false);
+  });
+
   it('keeps zod inference aligned with the native failure cause and continuity types', () => {
+    expectTypeParity<IsEqual<z.infer<typeof usageSummarySchema>, UsageSummary>>();
     expectTypeParity<IsEqual<z.infer<typeof providerTerminalOutcomeSchema>, ProviderTerminalOutcome>>();
     expectTypeParity<IsEqual<z.infer<typeof providerFailureCauseSchema>, ProviderFailureCause>>();
     expectTypeParity<IsEqual<z.infer<typeof providerContinuityEventBodySchema>, ProviderContinuityEventBody>>();

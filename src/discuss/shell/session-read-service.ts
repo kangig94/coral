@@ -59,7 +59,7 @@ export function listDiscussSessions(deps: DiscussReadHelpersDeps): DiscussSummar
   return [...results.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export function isLiveDiscussSession(deps: DiscussReadHelpersDeps, source: string, sessionId: string): boolean {
+function isLiveDiscussSession(deps: DiscussReadHelpersDeps, source: string, sessionId: string): boolean {
   for (const liveSession of listAttachedSessions(deps.discussRegistry)) {
     if (liveSession.sessionId === sessionId && deps.resolveProjectSource(liveSession.projectRoot) === source) {
       return true;

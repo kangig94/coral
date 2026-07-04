@@ -5,9 +5,9 @@ import { providerInstructionSchema, type ProviderInstruction } from '../provider
 import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
 import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
-export const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
+const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
 
-export type SessionState = z.infer<typeof sessionStateSchema>;
+type SessionState = z.infer<typeof sessionStateSchema>;
 
 export const retentionPolicySchema = z
   .enum(['retain', 'discard_provider_artifacts_on_terminal'])
@@ -17,7 +17,7 @@ export const retentionPolicySchema = z
 
 export type RetentionPolicy = z.infer<typeof retentionPolicySchema>;
 
-export const providerArtifactHandleSchema = z
+const providerArtifactHandleSchema = z
   .object({
     provider: z.string().min(1),
     handle: z.string().min(1),
@@ -47,7 +47,7 @@ export const retentionDiscardCompletedOutcomeSchema = z.enum([
 
 export type RetentionDiscardCompletedOutcome = z.infer<typeof retentionDiscardCompletedOutcomeSchema>;
 
-export const retentionDiscardAttemptSchema = z
+const retentionDiscardAttemptSchema = z
   .object({
     attempt: z.number().int().nonnegative(),
     handles: z.array(z.string()).readonly(),
@@ -60,26 +60,22 @@ export const retentionDiscardAttemptSchema = z
 
 export type RetentionDiscardAttempt = z.infer<typeof retentionDiscardAttemptSchema>;
 
-export const retentionDiscardStateSchema = z
+const retentionDiscardStateSchema = z
   .object({
     attempts: z.array(retentionDiscardAttemptSchema).default([]).readonly(),
   })
   .strict();
 
-export type RetentionDiscardState = z.infer<typeof retentionDiscardStateSchema>;
+type RetentionDiscardState = z.infer<typeof retentionDiscardStateSchema>;
 
-export const continuationLeaseReasonSchema = z.enum(['stale_recovery']);
+const continuationLeaseReasonSchema = z.enum(['stale_recovery']);
 
-export type ContinuationLeaseReason = z.infer<typeof continuationLeaseReasonSchema>;
-
-export const continuationLeaseClearOutcomeSchema = z.enum([
+const continuationLeaseClearOutcomeSchema = z.enum([
   'resume_rejected',
   'launch_failed',
   'resumed_released',
   'explicit_clear',
 ]);
-
-export type ContinuationLeaseClearOutcome = z.infer<typeof continuationLeaseClearOutcomeSchema>;
 
 const continuationLeaseBaseSchema = z
   .object({
@@ -114,7 +110,7 @@ export const expiredContinuationLeaseSchema = continuationLeaseBaseSchema.extend
   expiredAt: z.string().datetime(),
 });
 
-export const sessionContinuationLeaseSchema = z.discriminatedUnion('status', [
+const sessionContinuationLeaseSchema = z.discriminatedUnion('status', [
   pendingContinuationLeaseSchema,
   claimedContinuationLeaseSchema,
   clearedContinuationLeaseSchema,
@@ -165,10 +161,10 @@ export type ClearContinuationLeaseInput = z.infer<typeof clearContinuationLeaseI
  * profile. */
 export type SessionControllerId = string;
 
-export const DEFAULT_SESSION_CONTROLLER: SessionControllerId = 'default';
+const DEFAULT_SESSION_CONTROLLER: SessionControllerId = 'default';
 export const SESSION_CONTROLLER_PROFILE_FIELDS = ['owner', 'effort', 'claudeModelCap'] as const;
 
-export const sessionControllerProfileSchema = z
+const sessionControllerProfileSchema = z
   .object({
     owner: z.string().optional(),
     effort: z.string().optional(),

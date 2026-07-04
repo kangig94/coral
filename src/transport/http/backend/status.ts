@@ -6,7 +6,7 @@ import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendHealth, isBackendPing, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 
-export type BackendStatus =
+type BackendStatus =
   | {
       // CLI-level verdict. The daemon-side coarse lifecycle field
       // (`'starting' | 'ok' | 'draining'`) is preserved as `health.status`

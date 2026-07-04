@@ -16,5 +16,3 @@ export type Principal = {
   readonly binding: ResourceBinding;
   readonly attenuatedCaps?: ReadonlySet<Capability>;
 };
-
-export const UNBOUND_RESOURCE: ResourceBinding = { kind: 'unbound' };

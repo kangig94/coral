@@ -58,7 +58,7 @@ export function emptyIndex(): KbIndex {
   };
 }
 
-export function defaultIndexState(): KbIndexState {
+function defaultIndexState(): KbIndexState {
   return {
     contentSeq: 0,
     metadataSeq: 0,
@@ -97,7 +97,7 @@ function parseNonEmptyStringArray(
   return entries;
 }
 
-export function parseEntityType(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityType {
+function parseEntityType(value: unknown, errorMessageText = 'Invalid KB entity graph'): EntityType {
   if (typeof value !== 'string' || !ENTITY_TYPE_SET.has(value)) {
     throw new Error(errorMessageText);
   }
@@ -105,7 +105,7 @@ export function parseEntityType(value: unknown, errorMessageText = 'Invalid KB e
   return value as EntityType;
 }
 
-export function parseRelationshipType(value: unknown, errorMessageText = 'Invalid KB entity graph'): RelationshipType {
+function parseRelationshipType(value: unknown, errorMessageText = 'Invalid KB entity graph'): RelationshipType {
   if (typeof value !== 'string' || !RELATIONSHIP_TYPE_SET.has(value)) {
     throw new Error(errorMessageText);
   }
@@ -306,7 +306,7 @@ function parseWikiIndexEntry(entryId: string, value: Record<string, unknown>): W
   };
 }
 
-export function parseIndex(value: unknown): KbIndex {
+function parseIndex(value: unknown): KbIndex {
   if (
     !isRecord(value) ||
     !isRecord(value.entries) ||
@@ -362,14 +362,24 @@ export function parseIndex(value: unknown): KbIndex {
     ...(value.structuralKey === undefined ? {} : { structuralKey: parseCorpusStructuralKey(value.structuralKey) }),
     ...(value.generatedCommunityGeneration === undefined
       ? {}
-      : { generatedCommunityGeneration: parseNonNegativeInteger(value.generatedCommunityGeneration, 'generatedCommunityGeneration') }),
+      : {
+          generatedCommunityGeneration: parseNonNegativeInteger(
+            value.generatedCommunityGeneration,
+            'generatedCommunityGeneration',
+          ),
+        }),
     ...(value.generatedCommunityDocsHash === undefined
       ? {}
-      : { generatedCommunityDocsHash: assertNonEmptyText(value.generatedCommunityDocsHash, 'generatedCommunityDocsHash') }),
+      : {
+          generatedCommunityDocsHash: assertNonEmptyText(
+            value.generatedCommunityDocsHash,
+            'generatedCommunityDocsHash',
+          ),
+        }),
   };
 }
 
-export function parseIndexState(value: unknown): KbIndexState {
+function parseIndexState(value: unknown): KbIndexState {
   if (!isRecord(value)) {
     throw new Error('Invalid KB index state');
   }

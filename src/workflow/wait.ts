@@ -17,7 +17,7 @@ import { describeTerminalFailure } from './command.js';
 // Originally split into `workflow/internal/format.ts` alongside two unused
 // exports (`atomTagName`, `atomDiagnosticLabel`); both dead-on-arrival, both
 // removed. `stale-recovery.ts` is the only sibling consumer.
-export function stripElapsedPrefix(message: string): string {
+function stripElapsedPrefix(message: string): string {
   if (!message.startsWith('[')) return message;
   const closeBracket = message.indexOf('] ');
   if (closeBracket < 0) return message;
@@ -80,7 +80,7 @@ export type AwaitStepState = {
   } | null;
 };
 
-export function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number): number {
+function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number): number {
   const timeoutMs = staleTimeoutMs > 0 ? Math.min(staleTimeoutMs, staleCheckIntervalMs) : staleCheckIntervalMs;
   return Math.max(1, Math.ceil(timeoutMs / 1000));
 }
@@ -97,7 +97,7 @@ function cloneSet<T>(value?: Set<T>): Set<T> {
   return value ? new Set(value) : new Set();
 }
 
-export function createAwaitStepState(
+function createAwaitStepState(
   atoms: LaunchedAtom[],
   initialState: Partial<WaitInternalState> = {},
   time: Pick<TimePort, 'now'>,
@@ -136,7 +136,7 @@ export function createAwaitStepState(
   };
 }
 
-export function snapshotWaitState(state: AwaitStepState): WaitInternalState {
+function snapshotWaitState(state: AwaitStepState): WaitInternalState {
   return {
     atoms: [...state.pending.values()],
     completedOutputs: new Map(state.results),
@@ -170,7 +170,7 @@ function enterFailureDrain(
   executionSvc.abort([...state.pending.keys()]);
 }
 
-export function handleWaitEvent(
+function handleWaitEvent(
   event: WaitStreamEvent,
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
@@ -245,7 +245,7 @@ export function handleWaitEvent(
   }
 }
 
-export async function awaitWaitCycle(
+async function awaitWaitCycle(
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,
   ctx: InvocationContext,
@@ -282,7 +282,7 @@ export async function awaitWaitCycle(
   return 'stream-ended';
 }
 
-export async function awaitStepCompletion(
+async function awaitStepCompletion(
   atoms: LaunchedAtom[],
   state: AwaitStepState,
   executionSvc: WorkflowExecutionPort,

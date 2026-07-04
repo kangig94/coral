@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
-export const ORAMA_INDEX_FILE = 'orama-index.json';
-export const ORAMA_INDEX_METADATA_FILE = 'orama-index.metadata.json';
+const ORAMA_INDEX_FILE = 'orama-index.json';
+const ORAMA_INDEX_METADATA_FILE = 'orama-index.metadata.json';
 
 export function oramaSnapshotDir(runtimeRoot: string): string {
   return join(runtimeRoot, 'orama');

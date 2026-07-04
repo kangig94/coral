@@ -13,6 +13,7 @@ import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireA
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
+import { normalizeCodexUsage, type CodexTokenUsage } from './usage.js';
 import {
   buildCodexContinuity,
   isCodexSessionUnavailable,
@@ -35,7 +36,7 @@ export const PRE_TURN_MAILBOX_CAP = 64;
 // the diagnostic message goes into `note`. See spec §7.1 `provider_exit`.
 const CODEX_RPC_FAILURE_EXIT_CODE = 1;
 
-export type PreTurnMailboxStatus = {
+type PreTurnMailboxStatus = {
   pending: number;
   dropped: number;
 };
@@ -70,6 +71,7 @@ export type CodexTurnState = {
   activeSubagentTurns: Set<string>;
   completionTimer: ReturnType<TimePort['setTimeout']> | null;
   lastAgentMessage: string;
+  latestTokenCount: CodexTokenUsage | null;
   error: { message?: string } | null;
   interruptRequest: Promise<void> | null;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
@@ -143,6 +145,7 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     activeSubagentTurns: new Set(),
     completionTimer: null,
     lastAgentMessage: '',
+    latestTokenCount: null,
     error: null,
     interruptRequest: null,
     time: runtime.time,
@@ -197,6 +200,10 @@ function emitCodexRolloutArtifactHandleOnce(state: CodexTurnState, emit: (event:
   }
 
   emitProgress(emit, result.diagnostic);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function extractThreadId(message: AppServerNotificationMessage): string | null {
@@ -466,6 +473,13 @@ function applyNotificationCore(
     case 'item/completed':
       handleItemNotification(state, notification, 'completed', describeCompletedItem, emit);
       return;
+    case 'thread/tokenUsage/updated': {
+      const total = readThreadTokenUsageTotal(message);
+      if (total !== null) {
+        state.latestTokenCount = total;
+      }
+      return;
+    }
     case 'error': {
       const params = notification.params as { error?: { message?: string } } | undefined;
       state.error = params?.error ?? { message: 'Codex app-server turn failed.' };
@@ -498,6 +512,19 @@ function maybeDiscoverTurnId(state: CodexTurnState, message: AppServerNotificati
   }
   state.turnId = turnId;
   state.threadTurnIds.set(threadId, turnId);
+}
+
+// Codex v2 reports cumulative token usage via the native `thread/tokenUsage/updated`
+// notification (params.tokenUsage.total, a camelCase TokenUsageBreakdown). This is a
+// stable notification — it needs no experimentalRawEvents flag or experimentalApi
+// capability. `total` is cumulative for the turn, so last-write-wins is correct.
+function readThreadTokenUsageTotal(message: AppServerNotificationMessage): CodexTokenUsage | null {
+  if (message.method !== 'thread/tokenUsage/updated') {
+    return null;
+  }
+  const params = (message as { params?: { tokenUsage?: { total?: unknown } } }).params;
+  const total = params?.tokenUsage?.total;
+  return isRecord(total) ? total : null;
 }
 
 function deliverNotification(
@@ -710,6 +737,26 @@ export function applyCodexNotificationForTest(
   applyNotification(state, message, emit);
 }
 
+export function buildCodexCompletedTerminalForTest(
+  state: CodexTurnState,
+  turn: Turn,
+): Extract<ProviderEventBody, { kind: 'terminal' }> {
+  return buildCompletedTerminal(state, turn);
+}
+
+export function buildCodexFailedTerminalForTest(
+  state: CodexTurnState,
+  message: string,
+): Extract<ProviderEventBody, { kind: 'terminal' }> {
+  return buildFailedTerminal(state, message);
+}
+
+export function buildCodexAbortedTerminalForTest(
+  state: CodexTurnState,
+): Extract<ProviderEventBody, { kind: 'terminal' }> {
+  return buildAbortedTerminal(state);
+}
+
 function isSuccessfulTurn(status: string | undefined): boolean {
   return status === undefined || status === 'completed';
 }
@@ -719,6 +766,7 @@ function isAbortedTurn(status: string | undefined): boolean {
 }
 
 function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody, { kind: 'terminal' }> {
+  const usage = normalizeCodexUsage(state.latestTokenCount);
   return {
     kind: 'terminal',
     terminal: buildJobTerminal({
@@ -726,12 +774,14 @@ function buildAbortedTerminal(state: CodexTurnState): Extract<ProviderEventBody,
       model: state.model,
       durationMs: state.time.now() - state.startedAt,
       outcome: { kind: 'aborted', reason: 'signal_abort' },
+      usage,
     }),
     diagnostics: buildJobDiagnostics({}),
   };
 }
 
 function buildFailedTerminal(state: CodexTurnState, message: string): Extract<ProviderEventBody, { kind: 'terminal' }> {
+  const usage = normalizeCodexUsage(state.latestTokenCount);
   return {
     kind: 'terminal',
     terminal: buildJobTerminal({
@@ -743,6 +793,7 @@ function buildFailedTerminal(state: CodexTurnState, message: string): Extract<Pr
         code: CODEX_RPC_FAILURE_EXIT_CODE,
         note: buildProviderFailureMessage('Codex', message),
       },
+      usage,
     }),
     diagnostics: buildJobDiagnostics({}),
   };
@@ -752,6 +803,7 @@ function buildCompletedTerminal(state: CodexTurnState, turn: Turn): Extract<Prov
   const turnStatus = turn?.status;
   const turnFailed = !isSuccessfulTurn(turnStatus);
   const turnAborted = isAbortedTurn(turnStatus);
+  const usage = normalizeCodexUsage(state.latestTokenCount);
   const failureNote = turnFailed
     ? (buildProviderFailureMessage('Codex', state.error?.message, turnStatus) ??
       'Codex session driver reported a failed turn.')
@@ -764,6 +816,7 @@ function buildCompletedTerminal(state: CodexTurnState, turn: Turn): Extract<Prov
       model: state.model,
       durationMs: state.time.now() - state.startedAt,
       outcome: codexTurnOutcome(turnAborted, turnFailed, failureNote),
+      usage,
     }),
     diagnostics: buildJobDiagnostics({}),
   };

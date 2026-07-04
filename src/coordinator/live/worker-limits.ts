@@ -1,6 +1,6 @@
 import type { Runtime } from '../../runtime/ports.js';
 
-export const CURATE_MAX_WORKERS = 1;
+const CURATE_MAX_WORKERS = 1;
 
 export function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;

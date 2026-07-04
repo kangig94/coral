@@ -4,7 +4,7 @@ import type { StoragePort } from '../infra/port-types.js';
 
 declare const __PLUGIN_ROOT__: string;
 
-export interface InjectEquippedTool {
+interface InjectEquippedTool {
   readonly id: string;
   readonly summary: string;
   readonly guidance?: readonly string[];

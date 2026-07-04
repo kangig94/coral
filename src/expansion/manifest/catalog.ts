@@ -30,7 +30,7 @@ function optionalArray<T>(values: readonly T[] | undefined): readonly T[] | unde
   return values === undefined || values.length === 0 ? undefined : values;
 }
 
-export function toDeclarativeManifest(manifest: EngineManifest): EngineManifest {
+function toDeclarativeManifest(manifest: EngineManifest): EngineManifest {
   return parseEngineManifest({
     id: manifest.id,
     version: manifest.version,

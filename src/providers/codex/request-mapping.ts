@@ -31,7 +31,7 @@ type CodexContinuityReadOptions = {
   cwdScope?: string;
 };
 
-export function buildCodexPrompt(
+function buildCodexPrompt(
   request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>,
 ): string {
   const parts: string[] = [];
@@ -282,7 +282,7 @@ export function buildCodexProviderServerSpec(
   );
 }
 
-export function buildCodexTurnInput(prompt: string): UserInput[] {
+function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
