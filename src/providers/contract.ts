@@ -73,7 +73,7 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
-export interface ProviderRecoveryMeta {
+interface ProviderRecoveryMeta {
   [key: string]: unknown;
 }
 
@@ -236,7 +236,7 @@ export const providerJobTerminalSchema = z
 // post-projection shape lives in `jobs/terminal/result.ts` (progress faults
 // get attached during projection); naming the two schemas distinctly avoids
 // the magnet hazard of two schemas sharing one identifier.
-export const providerTerminalDiagnosticsSchema = z
+const providerTerminalDiagnosticsSchema = z
   .object({
     byteCounts: z
       .object({
@@ -298,7 +298,7 @@ export type ProviderContinuityUpdate = {
   [key: string]: unknown;
 };
 
-export interface ProviderContinuityBridge {
+interface ProviderContinuityBridge {
   checkpoint(update: ProviderContinuityUpdate): void;
   transportClosed(closed: ProviderTransportClose): void;
 }

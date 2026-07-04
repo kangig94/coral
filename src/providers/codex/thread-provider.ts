@@ -31,7 +31,7 @@ function readOpeningContinuity(
   });
 }
 
-export const codexThreadContinuity: SessionContinuityContract<CodexPersistedContinuity> = {
+const codexThreadContinuity: SessionContinuityContract<CodexPersistedContinuity> = {
   read(persistedContinuity, request) {
     const providerState = readOpeningContinuity(persistedContinuity, request);
     return {

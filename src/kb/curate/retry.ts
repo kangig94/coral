@@ -37,20 +37,6 @@ const retryRowSchema = z.object({
   retry_count: z.number().int().nonnegative(),
 });
 
-const pendingRepairRowSchema = z.object({
-  entry_id: kbEntryIdSchema,
-  observed_at: z.string().datetime({ offset: true }),
-  observed_content_hash: z.string().min(1).nullable(),
-  reason: z.string().min(1),
-});
-
-type PendingRepairRow = Pick<KbCurateRetryQueueRow, 'entry_id' | 'observed_at' | 'observed_content_hash' | 'reason'>;
-
-export type PendingRepairRetryCandidate = Pick<
-  PendingRepair,
-  'entryId' | 'detectedAt' | 'observedContentHash' | 'reason'
->;
-
 function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
   const parsed = retryRowSchema.parse(row);
   return {
@@ -65,16 +51,6 @@ function rowToPendingRepair(row: KbCurateRetryQueueRow): PendingRepair {
     repairHint: parsed.repair_hint ?? undefined,
     retryNotBefore: parsed.retry_not_before,
     retryCount: parsed.retry_count,
-  };
-}
-
-function rowToPendingRepairRetryCandidate(row: PendingRepairRow): PendingRepairRetryCandidate {
-  const parsed = pendingRepairRowSchema.parse(row);
-  return {
-    entryId: parsed.entry_id,
-    detectedAt: parsed.observed_at,
-    observedContentHash: parsed.observed_content_hash ?? undefined,
-    reason: parsed.reason,
   };
 }
 
@@ -131,24 +107,6 @@ export function readCurateRetryQueue(db: Database | ReadonlyDatabase): PendingRe
   const entries: PendingRepair[] = [];
   for (const row of rows) {
     entries.push(rowToPendingRepair(row));
-  }
-  return entries;
-}
-
-export function readPendingRepairRows(db: Database | ReadonlyDatabase): PendingRepairRetryCandidate[] {
-  const rows = prepareCached<[], PendingRepairRow>(
-    db,
-    `SELECT
-       entry_id,
-       observed_at,
-       observed_content_hash,
-       reason
-     FROM kb_curate_retry_queue
-     ORDER BY entry_id ASC`,
-  ).all();
-  const entries: PendingRepairRetryCandidate[] = [];
-  for (const row of rows) {
-    entries.push(rowToPendingRepairRetryCandidate(row));
   }
   return entries;
 }

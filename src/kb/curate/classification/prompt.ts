@@ -41,7 +41,7 @@ const RELATIONSHIP_TYPE_PROMPT_GUIDANCE: ReadonlyArray<readonly [RelationshipTyp
   ['replaces', 'source supersedes target'],
 ];
 
-export type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
+type ClassificationBatchShape = 'source-only' | 'note-or-mixed';
 
 type ClassificationBatchPlan = {
   entries: CurateClaimedEntry[];
@@ -246,7 +246,7 @@ function createSingleSourceClassificationBatchPlan(
   };
 }
 
-export function estimateClassificationBatchTokens(
+function estimateClassificationBatchTokens(
   entries: CurateClaimedEntry[],
   tagVocab: ClassificationPromptVocabularyInput,
   principleNames: string[],

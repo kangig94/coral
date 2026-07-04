@@ -11,9 +11,9 @@ export const CURATE_ASSISTANT_MODEL = 'sonnet';
 export const CURATE_COMMUNITY_SUMMARY_AGENT_MODEL = 'sonnet[1m]';
 export const CURATE_ASSISTANT_PERMISSION_MODE = 'auto';
 
-export type CurateAssistantPermissionMode = 'default' | 'auto' | 'bypassPermissions';
+type CurateAssistantPermissionMode = 'default' | 'auto' | 'bypassPermissions';
 
-export type CurateAssistantRequest = {
+type CurateAssistantRequest = {
   prompt: string;
   purpose: CurateAssistantPurpose;
   model?: string;

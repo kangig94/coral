@@ -14,7 +14,7 @@ import type { JsonRpcErrorObject } from '../../infra/json-rpc.js';
 // vocabulary: a caller importing both knows which dialect each name refers
 // to without aliasing.
 
-export type JsonRpcEnvelopeId = string | number;
+type JsonRpcEnvelopeId = string | number;
 
 export type IpcAuthMetadata =
   | {
@@ -63,7 +63,7 @@ export type JsonRpcEnvelope<TRequestParams = unknown, TResponseResult = unknown,
 
 const jsonRpcEnvelopeIdSchema = z.union([z.string().min(1), z.number()]);
 
-export const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
+const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('boot'),
@@ -81,7 +81,7 @@ export const ipcAuthMetadataSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
-export const jsonRpcRequestEnvelopeSchema = z
+const jsonRpcRequestEnvelopeSchema = z
   .object({
     kind: z.literal('request'),
     id: jsonRpcEnvelopeIdSchema,

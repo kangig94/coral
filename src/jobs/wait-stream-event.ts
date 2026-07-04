@@ -49,7 +49,7 @@ const waitWaitingEventSchema = z
   })
   .strict();
 
-export const waitStreamEventSchema = z.discriminatedUnion('type', [
+const waitStreamEventSchema = z.discriminatedUnion('type', [
   waitProgressEventSchema,
   waitQueuedEventSchema,
   waitTerminalEventSchema,

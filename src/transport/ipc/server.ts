@@ -67,10 +67,10 @@ const KB_RESTART_UNAVAILABLE_RESPONSE = {
   code: 'not_implemented',
   message: 'KB daemon supervisor is not available',
 };
-export const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
-export const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
-export const IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES = 32 * 1024 * 1024;
-export const IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS = 5_000;
+const IPC_DEFAULT_MAX_OPEN_SOCKETS = 128;
+const IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS = 5_000;
+const IPC_DEFAULT_MAX_AGGREGATE_PENDING_FRAME_BYTES = 32 * 1024 * 1024;
+const IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS = 5_000;
 
 export type IpcServerOptions = {
   readonly maxOpenSockets?: number;

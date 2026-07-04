@@ -47,7 +47,7 @@ function shouldResumeRecoveredSession(snapshot: PersistedDiscussSnapshot): boole
   return snapshot.state.status === 'bidding';
 }
 
-export function buildAbortEndEventsForShutdown(
+function buildAbortEndEventsForShutdown(
   ctx: DiscussContext,
   sessionId: string,
   snapshot: PersistedDiscussSnapshot,
@@ -194,7 +194,7 @@ export async function recoverPersistedSessionsFromStore(
   return recovered;
 }
 
-export type DiscussStartupDeps = {
+type DiscussStartupDeps = {
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;

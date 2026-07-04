@@ -57,8 +57,8 @@ export type RecoveryAction =
     }
   | { type: 'releaseSessionClaim'; sessionId: string; jobId: string };
 
-export type RegisterAction = Extract<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
-export type CleanupAction = Exclude<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
+type RegisterAction = Extract<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
+type CleanupAction = Exclude<RecoveryAction, { type: 'registerRunning' | 'registerQueued' }>;
 
 export type RecoveryPlan = {
   register: RegisterAction[];

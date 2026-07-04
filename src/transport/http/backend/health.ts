@@ -12,7 +12,7 @@ import { isRecord } from '../../../infra/json.js';
  * keeps a local copy because layering forbids importing coordinator
  * internals like the branded `RuntimeComponentId`.
  */
-export type TransportRuntimeComponentStatus =
+type TransportRuntimeComponentStatus =
   | { id: string; phase: 'initializing'; attempt: number }
   | { id: string; phase: 'online' }
   | {
@@ -33,20 +33,13 @@ export type TransportRuntimeComponentStatus =
       };
     };
 
-export type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
+type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
 
-export type TransportKbDaemonPhase =
-  | 'disabled'
-  | 'starting'
-  | 'online'
-  | 'restarting'
-  | 'stopping'
-  | 'stopped'
-  | 'failed';
+type TransportKbDaemonPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
-export type TransportKbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+type TransportKbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
 
-export type TransportKbDaemonRuntimeHealth = {
+type TransportKbDaemonRuntimeHealth = {
   phase: TransportKbDaemonRuntimeHealthPhase;
   initializedAt?: number;
   lastError?: string;
@@ -54,7 +47,7 @@ export type TransportKbDaemonRuntimeHealth = {
   mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
 };
 
-export type TransportKbDaemonHealthSnapshot = {
+type TransportKbDaemonHealthSnapshot = {
   enabled: boolean;
   phase: TransportKbDaemonPhase;
   generation: number;

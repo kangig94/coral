@@ -166,7 +166,7 @@ export interface RoleRegistry {
   catalogView(): RoleCatalogView;
 }
 
-export interface RetrievalEntry {
+interface RetrievalEntry {
   entryId: KbEntryId;
   slug: string;
   kind: RetrievalKind;
@@ -175,18 +175,18 @@ export interface RetrievalEntry {
   principles: string[];
 }
 
-export interface RankedRetrievalHit extends RetrievalEntry {
+interface RankedRetrievalHit extends RetrievalEntry {
   rank: number;
   score: number;
 }
 
-export interface TextRetrievalHit extends RankedRetrievalHit {
+interface TextRetrievalHit extends RankedRetrievalHit {
   document: RetrievedDocument;
 }
 
 export type VectorRetrievalHit = RankedRetrievalHit;
 
-export type GraphRetrievalHit = RankedRetrievalHit;
+type GraphRetrievalHit = RankedRetrievalHit;
 
 export interface FusedRetrievalHit extends RetrievalEntry {
   rank: number;

@@ -94,7 +94,7 @@ const postInstallSchema = z.array(
   ]),
 );
 
-export const onboardingSchema = z
+const onboardingSchema = z
   .object({
     envPath: z.string().min(1),
     requiredEnv: z.array(requiredEnvRuleSchema).min(1),
@@ -168,7 +168,7 @@ export const expansionStatusSchema = z.enum([
   'installing',
   'not_equipped',
 ]);
-export type ExpansionStatus = z.infer<typeof expansionStatusSchema>;
+type ExpansionStatus = z.infer<typeof expansionStatusSchema>;
 
 export interface ExpansionView {
   readonly name: string;

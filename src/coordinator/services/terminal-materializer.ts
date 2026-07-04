@@ -39,7 +39,7 @@ type RuntimeIngestDomainBody =
   | SessionProviderFailedFault
   | SessionAdapterUnparseableFault;
 
-export type RuntimeIngestPlan =
+type RuntimeIngestPlan =
   | {
       readonly kind: 'immediate';
       readonly domainEvents: readonly [];
@@ -51,7 +51,7 @@ export type RuntimeIngestPlan =
       readonly immediateOutcome: null;
     };
 
-export type MaterializedProviderTerminal<Scope = never> = {
+type MaterializedProviderTerminal<Scope = never> = {
   terminal: JobTerminalInput<Scope>;
   diagnostics: JobTerminalDiagnostics;
 };
@@ -65,7 +65,7 @@ export type MaterializedProviderTerminalRecipe = {
 type JobRecoveryFault = JobLifecycleFault | JobProgressFault;
 type RuntimeCommitStore = Pick<JobProgressStore, 'commit'>;
 
-export function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
+function baseRefs(options: RuntimeIngestOptions): NonNullable<CoralEventInput['refs']> {
   return {
     jobId: options.jobId,
     ...(options.sessionId === undefined || options.sessionId === null ? {} : { sessionId: options.sessionId }),
@@ -82,7 +82,7 @@ function requireSessionId(options: RuntimeIngestOptions, eventType: string): str
   return options.sessionId;
 }
 
-export function baseEvent(
+function baseEvent(
   options: RuntimeIngestOptions,
   stream: CoralEventInput['stream'],
   type: string,
@@ -251,7 +251,7 @@ export function materializeProviderTerminal(
   };
 }
 
-export function materializeProviderTerminalInCommit<Scope>(
+function materializeProviderTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
@@ -289,7 +289,7 @@ function terminalRecordOptions<Scope>(
   };
 }
 
-export function recordProviderTerminalInCommit<Scope>(
+function recordProviderTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,

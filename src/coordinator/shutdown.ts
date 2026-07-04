@@ -22,7 +22,7 @@ export const SHUTDOWN_POLL_MS = 50;
  */
 export type ShutdownMode = 'handoff' | 'hard';
 
-export function shutdownModeFromReason(reason: string): ShutdownMode {
+function shutdownModeFromReason(reason: string): ShutdownMode {
   if (reason === 'replaced' || reason === 'sigterm') return 'handoff';
   return 'hard';
 }
@@ -31,7 +31,7 @@ export type LifecycleWiringState = {
   ownershipCheckerTeardown: (() => void) | null;
 };
 
-export interface ShutdownRuntimeState {
+interface ShutdownRuntimeState {
   setLifecycle(state: 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped'): void;
   readonly components: RuntimeComponentRegistry;
 }

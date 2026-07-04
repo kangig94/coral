@@ -135,7 +135,7 @@ export function markProviderCommand(command: Command): void {
   providerCommandFamily.add(command);
 }
 
-export function isProviderCommand(command: Command): boolean {
+function isProviderCommand(command: Command): boolean {
   return providerCommandFamily.has(command);
 }
 

@@ -15,9 +15,7 @@ type CreateExecutionServicesDeps = {
   createExecutionService: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
 };
 
-export function listInstantiatedExecutionServices(
-  services: ReadonlyMap<string, ProjectRequestPort>,
-): ProjectRequestPort[] {
+function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
   return [...services.values()];
 }
 

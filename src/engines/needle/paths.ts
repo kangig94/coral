@@ -3,8 +3,8 @@ import type { Runtime } from '#src/runtime/ports.js';
 
 export const NEEDLE_ADDON_FILENAME = 'coral-needle.node';
 export const NEEDLE_STORE_FILE = 'store.db';
-export const NEEDLE_MANIFEST_FILE = 'manifest.json';
-export const NEEDLE_ACTIVE_POINTER_FILE = 'ACTIVE';
+const NEEDLE_MANIFEST_FILE = 'manifest.json';
+const NEEDLE_ACTIVE_POINTER_FILE = 'ACTIVE';
 
 export function needleIndexDir(runtimeRoot: string): string {
   return join(runtimeRoot, 'needle');
@@ -18,7 +18,7 @@ export function needleAddonPath(runtime: Pick<Runtime, 'paths'>): string {
   return join(runtime.paths.coral.engine.dataDir('needle'), NEEDLE_ADDON_FILENAME);
 }
 
-export function needleSnapshotsDir(runtimeDir: string): string {
+function needleSnapshotsDir(runtimeDir: string): string {
   return join(needleIndexDir(runtimeDir), 'snapshots');
 }
 

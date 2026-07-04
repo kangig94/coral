@@ -39,7 +39,7 @@ export function canonicalizeCapabilityName<T extends string>(raw: T): T & KbCapa
   return raw as T & KbCapabilityName;
 }
 
-export function capabilityNamespaceForName(name: KbCapabilityName): KbCapabilityNamespace {
+function capabilityNamespaceForName(name: KbCapabilityName): KbCapabilityNamespace {
   return name.startsWith('kb.') ? 'kb' : 'external';
 }
 

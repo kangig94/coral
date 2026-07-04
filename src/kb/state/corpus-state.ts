@@ -39,7 +39,7 @@ function ensureCorpusStateRow(db: Database): void {
   ).run();
 }
 
-export function readCorpusStateRow(db: Database): KbCorpusStateRow {
+function readCorpusStateRow(db: Database): KbCorpusStateRow {
   ensureCorpusStateRow(db);
   return db
     .prepare(

@@ -22,7 +22,7 @@ type ActiveGenerationRow = {
   generation_id: string;
 };
 
-export function ensureCorpusAuthorityBaselineTable(db: Database): void {
+function ensureCorpusAuthorityBaselineTable(db: Database): void {
   db.prepare(
     `
       CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_generations (
@@ -59,7 +59,7 @@ export function ensureCorpusAuthorityBaselineTable(db: Database): void {
   ensureActiveBaselineGeneration(db);
 }
 
-export function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaselineMap {
+function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaselineMap {
   ensureCorpusAuthorityBaselineTable(db);
   const generationId = readActiveBaselineGenerationIdUnchecked(db);
   const rows = db
@@ -83,12 +83,12 @@ export function readCorpusAuthorityBaseline(db: Database): CorpusAuthorityBaseli
   return baseline;
 }
 
-export function readActiveBaselineGenerationId(db: Database): string {
+function readActiveBaselineGenerationId(db: Database): string {
   ensureCorpusAuthorityBaselineTable(db);
   return readActiveBaselineGenerationIdUnchecked(db);
 }
 
-export function replaceCorpusAuthorityBaseline(
+function replaceCorpusAuthorityBaseline(
   db: Database,
   records: readonly CorpusAuthorityBaselineRecord[],
   generationId: string,
@@ -98,16 +98,14 @@ export function replaceCorpusAuthorityBaseline(
   cleanupInactiveCorpusAuthorityBaselineGenerations(db);
 }
 
-export function stageCorpusAuthorityBaselineReplacement(
+function stageCorpusAuthorityBaselineReplacement(
   db: Database,
   records: readonly CorpusAuthorityBaselineRecord[],
   generationId: string,
 ): CorpusAuthorityBaselineGeneration {
   ensureCorpusAuthorityBaselineTable(db);
   withImmediate(db, () => {
-    db.prepare<[string]>('DELETE FROM kb_corpus_authority_baseline_records WHERE generation_id = ?').run(
-      generationId,
-    );
+    db.prepare<[string]>('DELETE FROM kb_corpus_authority_baseline_records WHERE generation_id = ?').run(generationId);
     db.prepare<[string]>('DELETE FROM kb_corpus_authority_baseline_generations WHERE generation_id = ?').run(
       generationId,
     );
@@ -130,7 +128,7 @@ export function stageCorpusAuthorityBaselineReplacement(
   return { generationId };
 }
 
-export function adoptCorpusAuthorityBaselineGeneration(db: Database, generationId: string): void {
+function adoptCorpusAuthorityBaselineGeneration(db: Database, generationId: string): void {
   ensureCorpusAuthorityBaselineTable(db);
   const exists =
     db
@@ -164,22 +162,20 @@ export function adoptCorpusAuthorityBaselineGeneration(db: Database, generationI
   });
 }
 
-export function discardCorpusAuthorityBaselineGeneration(db: Database, generationId: string): void {
+function discardCorpusAuthorityBaselineGeneration(db: Database, generationId: string): void {
   ensureCorpusAuthorityBaselineTable(db);
   if (readActiveBaselineGenerationIdUnchecked(db) === generationId) {
     return;
   }
   withImmediate(db, () => {
-    db.prepare<[string]>('DELETE FROM kb_corpus_authority_baseline_records WHERE generation_id = ?').run(
-      generationId,
-    );
+    db.prepare<[string]>('DELETE FROM kb_corpus_authority_baseline_records WHERE generation_id = ?').run(generationId);
     db.prepare<[string]>('DELETE FROM kb_corpus_authority_baseline_generations WHERE generation_id = ?').run(
       generationId,
     );
   });
 }
 
-export function applyCorpusAuthorityBaselineDelta(db: Database, delta: CorpusAuthorityBaselineDelta): void {
+function applyCorpusAuthorityBaselineDelta(db: Database, delta: CorpusAuthorityBaselineDelta): void {
   ensureCorpusAuthorityBaselineTable(db);
   const generationId = readActiveBaselineGenerationIdUnchecked(db);
   withImmediate(db, () => {
@@ -209,7 +205,7 @@ export function applyCorpusAuthorityBaselineDelta(db: Database, delta: CorpusAut
   });
 }
 
-export function cleanupInactiveCorpusAuthorityBaselineGenerations(db: Database): void {
+function cleanupInactiveCorpusAuthorityBaselineGenerations(db: Database): void {
   ensureCorpusAuthorityBaselineTable(db);
   const activeGenerationId = readActiveBaselineGenerationIdUnchecked(db);
   withImmediate(db, () => {
@@ -222,11 +218,11 @@ export function cleanupInactiveCorpusAuthorityBaselineGenerations(db: Database):
   });
 }
 
-export function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuthorityBaselineRecord[] {
+function collectCorpusAuthorityBaseline(scan: CorpusScanView): CorpusAuthorityBaselineRecord[] {
   return [...buildCorpusSurface(scan).baselineRecords];
 }
 
-export function rebuildCorpusAuthorityBaseline(
+function rebuildCorpusAuthorityBaseline(
   db: Database,
   scan: CorpusScanView,
   generationId: string,
@@ -240,7 +236,7 @@ export function rebuildCorpusAuthorityBaseline(
   return baseline;
 }
 
-export function ensureCorpusAuthorityBaseline(
+function ensureCorpusAuthorityBaseline(
   db: Database,
   scan: CorpusScanView,
   uuid: () => string,
@@ -256,10 +252,7 @@ export function ensureCorpusAuthorityBaseline(
   };
 }
 
-export function createCorpusAuthorityBaselineStore(
-  db: Database,
-  uuid: () => string,
-): CorpusAuthorityBaselineStore {
+export function createCorpusAuthorityBaselineStore(db: Database, uuid: () => string): CorpusAuthorityBaselineStore {
   return {
     ensure(scan) {
       return ensureCorpusAuthorityBaseline(db, scan as CorpusScanView, uuid);

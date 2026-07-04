@@ -14,10 +14,10 @@ export type PrincipalWireContext = {
   readonly credential?: Credential;
 };
 
-export const subjectSchema = z.enum(['operator', 'agent', 'system']);
-export const capabilitySchema = z.enum(CAPABILITIES);
+const subjectSchema = z.enum(['operator', 'agent', 'system']);
+const capabilitySchema = z.enum(CAPABILITIES);
 
-export const resourceBindingSchema = z.discriminatedUnion('kind', [
+const resourceBindingSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('unbound') }).strict(),
   z.object({ kind: z.literal('project'), root: z.string().min(1) }).strict(),
 ]);

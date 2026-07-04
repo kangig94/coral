@@ -15,13 +15,13 @@ import type {
 import { createSeededRng, drawUInt32, shuffleInPlace, weightedSample } from './rng.js';
 import { cartesianProduct, hammingDistance, buildKernel, eigendecompose, sampleKDpp, MAX_POOL_SIZE } from './dpp.js';
 
-export const TONE_AXES = {
+const TONE_AXES = {
   formality: ['formal', 'conversational'] as const,
   evidence: ['data-driven', 'narrative'] as const,
   pace: ['concise', 'detailed'] as const,
 } as const;
 
-export function assignTones(n: number, rng: () => number): ToneAssignment[] {
+function assignTones(n: number, rng: () => number): ToneAssignment[] {
   const toneCombinations: ToneAssignment[] = [];
 
   for (const formality of TONE_AXES.formality) {
@@ -150,7 +150,7 @@ function sampleOriginFromPool(pool: OriginPool, assignedOrigins: Set<string>, rn
   return pool.entries[0][0];
 }
 
-export function assignOrigins(
+function assignOrigins(
   n: number,
   demographics: DemographicsInput,
   rng: () => number,

@@ -9,14 +9,14 @@ import type { ProviderHostEntry } from './state.js';
 
 const GRACEFUL_CLOSE_FOLLOWUP_TIMEOUT_MS = 5_000;
 
-export function waitForTimeout<T>(timeoutMs: number, value: T, time: Pick<TimePort, 'setTimeout'>): Promise<T> {
+function waitForTimeout<T>(timeoutMs: number, value: T, time: Pick<TimePort, 'setTimeout'>): Promise<T> {
   return new Promise<T>((resolve) => {
     const timer = time.setTimeout(() => resolve(value), timeoutMs);
     timer.unref?.();
   });
 }
 
-export function waitForCloseWithin(
+function waitForCloseWithin(
   closed: Promise<Error | void>,
   timeoutMs: number,
   time: Pick<TimePort, 'setTimeout' | 'clearTimeout'>,
@@ -134,7 +134,7 @@ export async function shutdownHandle(
   await handle.close().catch(() => {});
 }
 
-export async function tryGracefulShutdown(
+async function tryGracefulShutdown(
   handle: ProviderServerHandle,
   capability: NonNullable<ProviderServerSpec['shutdownCapability']>,
   time: Pick<Runtime['time'], 'setTimeout' | 'clearTimeout'>,

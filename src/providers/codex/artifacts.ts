@@ -22,7 +22,7 @@ export type ProviderArtifactLocatorResult =
 
 const codexArtifactIndexes = new WeakMap<object, Map<string, CodexArtifactIndex>>();
 
-export function codexRolloutArtifactIdentity(threadId: string): ProviderArtifactIdentity {
+function codexRolloutArtifactIdentity(threadId: string): ProviderArtifactIdentity {
   return { kind: 'codex-rollout', threadId };
 }
 

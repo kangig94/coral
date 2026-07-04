@@ -90,7 +90,7 @@ export function measureEnv(env: Record<string, string>): number {
  * Vars in the passthrough set are never dropped.
  * Returns the original object unchanged if already within budget.
  */
-export function shedIfOverBudget(
+function shedIfOverBudget(
   base: Record<string, string>,
   budget: number,
   passthrough: Set<string>,
@@ -131,7 +131,7 @@ export function shedIfOverBudget(
 }
 
 /** Remove all keys starting with `CORAL_` from an env record. */
-export function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<string, string> {
+function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<string, string> {
   const stripped: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (key.startsWith('CORAL_')) continue;

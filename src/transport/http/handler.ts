@@ -341,16 +341,6 @@ function runOnResponseDone(res: ServerResponse, fn: () => void): void {
   res.once('close', run);
 }
 
-export function parseEventStreamFilter(url: string): string | null {
-  const qIndex = url.indexOf('?');
-  if (qIndex === -1) return null;
-  const params = new URLSearchParams(url.slice(qIndex));
-  const filter = params.get('filter');
-  if (!filter) return null;
-  const jobMatch = filter.match(/^job:(.+)$/);
-  return jobMatch?.[1] ?? null;
-}
-
 function parseEventStreamRequest(url: string): { projectRoot?: string; filterJobId: string | null } | ZodError {
   const qIndex = url.indexOf('?');
   const params = new URLSearchParams(qIndex === -1 ? '' : url.slice(qIndex));

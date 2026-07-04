@@ -27,7 +27,7 @@ export type ClaudeJsonlCleanupResult = {
 
 const claudeArtifactIndexes = new WeakMap<object, Map<string, ClaudeArtifactIndex>>();
 
-export function claudeJsonlArtifactIdentity(conversationRef: string): ProviderArtifactIdentity {
+function claudeJsonlArtifactIdentity(conversationRef: string): ProviderArtifactIdentity {
   return { kind: 'claude-jsonl', conversationRef };
 }
 

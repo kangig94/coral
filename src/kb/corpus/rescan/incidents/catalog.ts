@@ -35,7 +35,7 @@ export const REPAIR_INCIDENT_IDS = [
 
 export type RepairIncidentId = (typeof REPAIR_INCIDENT_IDS)[number];
 export type RepairLocus = RepairIncidentId extends `${infer Locus}/${string}` ? Locus : never;
-export type RepairIncidentLocus<IncidentId extends RepairIncidentId> = Extract<
+type RepairIncidentLocus<IncidentId extends RepairIncidentId> = Extract<
   RepairLocus,
   IncidentId extends `${infer Locus}/${string}` ? Locus : never
 >;

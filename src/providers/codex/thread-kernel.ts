@@ -36,7 +36,7 @@ export const PRE_TURN_MAILBOX_CAP = 64;
 // the diagnostic message goes into `note`. See spec §7.1 `provider_exit`.
 const CODEX_RPC_FAILURE_EXIT_CODE = 1;
 
-export type PreTurnMailboxStatus = {
+type PreTurnMailboxStatus = {
   pending: number;
   dropped: number;
 };

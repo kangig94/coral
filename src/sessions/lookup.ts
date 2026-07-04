@@ -2,7 +2,7 @@ import type { ReadonlyDatabase } from '../store/read-port.js';
 import type { SessionEntry } from './entry.js';
 import { readProjectionSessionEntry } from './projections.js';
 
-export type SessionLookupRef = {
+type SessionLookupRef = {
   sessionId: string;
   provider: string;
 };

@@ -9,7 +9,7 @@ import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '.
 import { isRecord, readString } from '../../infra/json.js';
 import { z } from 'zod';
 
-export const OUTPUT_STYLE_OVERRIDE =
+const OUTPUT_STYLE_OVERRIDE =
   'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.';
 
 export type PreparedClaudeRequest = {
@@ -118,7 +118,7 @@ export function resolveClaudeModel(model: string | undefined, env: Record<string
   return cappedDefault ?? envModel;
 }
 
-export function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>): EffortLevel {
+function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>): EffortLevel {
   const resolved = resolveProviderEffort(request, 'CORAL_CLAUDE_EFFORT', request.coralEnv) ?? CLAUDE_DEFAULT_EFFORT;
   if (resolved !== 'xhigh') {
     return resolved;

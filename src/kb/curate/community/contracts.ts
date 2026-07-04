@@ -3,7 +3,7 @@ import type { AbstractGraph } from 'graphology-types';
 type TagGraphNodeAttributes = Record<string, never>;
 type TagGraphEdgeAttributes = { weight: number };
 
-export type TagGraphEdge = {
+type TagGraphEdge = {
   left: string;
   right: string;
   weight: number;

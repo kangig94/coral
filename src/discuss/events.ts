@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 
 export const controlPhases = ['idle', 'observer_wait', 'evaluate_epoch', 'collect_follow_up', 'synthesize'] as const;
-export type ControlPhase = (typeof controlPhases)[number];
+type ControlPhase = (typeof controlPhases)[number];
 
 export const discussEventKinds = [
   'session.created',
@@ -27,10 +27,10 @@ export const discussEventKinds = [
 export type DiscussEventKind = (typeof discussEventKinds)[number];
 const discussEventKindSet = new Set<string>(discussEventKinds);
 
-export const discussAgentJobPurposes = ['bid', 'speech', 'epoch_evaluation', 'follow_up', 'synthesis'] as const;
+const discussAgentJobPurposes = ['bid', 'speech', 'epoch_evaluation', 'follow_up', 'synthesis'] as const;
 export type DiscussAgentJobPurpose = (typeof discussAgentJobPurposes)[number];
 
-export const discussAgentJobOutcomes = [
+const discussAgentJobOutcomes = [
   'completed',
   'non_resumable',
   'execution_error',
@@ -66,7 +66,7 @@ export const sessionCreatedConfigSchema = z
   })
   .strict();
 
-export const sessionCreatedAgentExecutionConfigSchema = z.union([
+const sessionCreatedAgentExecutionConfigSchema = z.union([
   z
     .object({
       manual: z.literal(true),
@@ -83,7 +83,7 @@ export const sessionCreatedAgentExecutionConfigSchema = z.union([
     .strict(),
 ]);
 
-export const sessionCreatedPayloadSchema = z
+const sessionCreatedPayloadSchema = z
   .object({
     input: discussCreateInputSchema,
     config: sessionCreatedConfigSchema,
@@ -99,14 +99,14 @@ export const bidSubmittedPayloadSchema = z
   })
   .strict();
 
-export const participantsExpelledPayloadSchema = z
+const participantsExpelledPayloadSchema = z
   .object({
     agents: z.array(z.string()),
     isRespawn: z.boolean(),
   })
   .strict();
 
-export const bidRoundClosedStateMutationsSchema = z
+const bidRoundClosedStateMutationsSchema = z
   .object({
     cold_start: z.boolean().optional(),
     fallback_used: z.record(z.boolean()).optional(),
@@ -115,7 +115,7 @@ export const bidRoundClosedStateMutationsSchema = z
   })
   .strict();
 
-export const bidRoundClosedOutcomeSchema = z.union([
+const bidRoundClosedOutcomeSchema = z.union([
   z
     .object({
       winner: z.string(),
@@ -130,7 +130,7 @@ export const bidRoundClosedOutcomeSchema = z.union([
     .strict(),
 ]);
 
-export const bidRoundClosedPayloadSchema = z
+const bidRoundClosedPayloadSchema = z
   .object({
     allBids: z.record(z.number()),
     effectiveBids: z.record(z.number()),
@@ -140,7 +140,7 @@ export const bidRoundClosedPayloadSchema = z
   })
   .strict();
 
-export const speechRecordedPayloadSchema = z
+const speechRecordedPayloadSchema = z
   .object({
     agent: z.string(),
     content: z.string(),
@@ -149,7 +149,7 @@ export const speechRecordedPayloadSchema = z
   })
   .strict();
 
-export const speechTimedOutPayloadSchema = z
+const speechTimedOutPayloadSchema = z
   .object({
     agent: z.string(),
     content: z.string(),
@@ -157,32 +157,32 @@ export const speechTimedOutPayloadSchema = z
   })
   .strict();
 
-export const epochSummaryRecordedPayloadSchema = z
+const epochSummaryRecordedPayloadSchema = z
   .object({
     summary: z.string(),
   })
   .strict();
 
-export const mustAnswerCarryForwardSetPayloadSchema = z
+const mustAnswerCarryForwardSetPayloadSchema = z
   .object({
     items: z.array(z.string()),
   })
   .strict();
 
-export const followUpQueueItemSchema = z
+const followUpQueueItemSchema = z
   .object({
     agent: z.string(),
     question: z.string(),
   })
   .strict();
 
-export const followUpQueueSetPayloadSchema = z
+const followUpQueueSetPayloadSchema = z
   .object({
     queue: z.array(followUpQueueItemSchema),
   })
   .strict();
 
-export const followUpAnsweredPayloadSchema = z
+const followUpAnsweredPayloadSchema = z
   .object({
     agent: z.string(),
     question: z.string(),
@@ -190,7 +190,7 @@ export const followUpAnsweredPayloadSchema = z
   })
   .strict();
 
-export const sessionEndedPayloadSchema = z
+const sessionEndedPayloadSchema = z
   .object({
     endReason: z.string().optional(),
     endReasonContent: z.string().nullable().optional(),
@@ -199,20 +199,20 @@ export const sessionEndedPayloadSchema = z
   })
   .strict();
 
-export const sessionSynthesizedPayloadSchema = z
+const sessionSynthesizedPayloadSchema = z
   .object({
     synthesis: z.string(),
   })
   .strict();
 
-export const agentRunBoundPayloadSchema = z
+const agentRunBoundPayloadSchema = z
   .object({
     agent: z.string(),
     executionSessionId: z.string(),
   })
   .strict();
 
-export const agentJobStartedPayloadSchema = z
+const agentJobStartedPayloadSchema = z
   .object({
     agent: z.string(),
     jobId: z.string(),
@@ -221,7 +221,7 @@ export const agentJobStartedPayloadSchema = z
   })
   .strict();
 
-export const agentJobFinishedPayloadSchema = z
+const agentJobFinishedPayloadSchema = z
   .object({
     agent: z.string(),
     jobId: z.string(),
@@ -303,7 +303,7 @@ export const discussEventBodySchemas = {
   'agent.job.finished': discussAgentJobFinishedBodySchema,
 } satisfies Record<DiscussEventKind, z.ZodTypeAny>;
 
-export type DiscussJournalBodyByKind = {
+type DiscussJournalBodyByKind = {
   'session.created': z.infer<typeof discussSessionCreatedBodySchema>;
   'bidding.opened': z.infer<typeof discussBiddingOpenedBodySchema>;
   'bid.submitted': z.infer<typeof discussBidSubmittedBodySchema>;
@@ -335,53 +335,53 @@ export interface DiscussEventEnvelope<K extends DiscussEventKind, P = DiscussPay
   payload: P;
 }
 
-export type SessionCreatedConfig = z.infer<typeof sessionCreatedConfigSchema>;
+type SessionCreatedConfig = z.infer<typeof sessionCreatedConfigSchema>;
 
 export type SessionCreatedAgentExecutionConfig = z.infer<typeof sessionCreatedAgentExecutionConfigSchema>;
 
-export type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema> & {
+type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema> & {
   input: DiscussCreateInput;
   config: SessionCreatedConfig;
   agentExecution: Record<string, SessionCreatedAgentExecutionConfig>;
 };
 
-export type BiddingOpenedPayload = Record<string, never>;
-export type BidSubmittedPayload = z.infer<typeof bidSubmittedPayloadSchema>;
+type BiddingOpenedPayload = Record<string, never>;
+type BidSubmittedPayload = z.infer<typeof bidSubmittedPayloadSchema>;
 
-export type ParticipantsExpelledPayload = z.infer<typeof participantsExpelledPayloadSchema>;
+type ParticipantsExpelledPayload = z.infer<typeof participantsExpelledPayloadSchema>;
 
 export type BidRoundClosedStateMutations = z.infer<typeof bidRoundClosedStateMutationsSchema>;
 
-export type BidRoundClosedOutcome = z.infer<typeof bidRoundClosedOutcomeSchema>;
+type BidRoundClosedOutcome = z.infer<typeof bidRoundClosedOutcomeSchema>;
 
-export type BidRoundClosedPayload = z.infer<typeof bidRoundClosedPayloadSchema> & {
+type BidRoundClosedPayload = z.infer<typeof bidRoundClosedPayloadSchema> & {
   outcome: BidRoundClosedOutcome;
   stateMutations: BidRoundClosedStateMutations;
 };
 
-export type SpeechRecordedPayload = z.infer<typeof speechRecordedPayloadSchema>;
+type SpeechRecordedPayload = z.infer<typeof speechRecordedPayloadSchema>;
 
-export type SpeechTimedOutPayload = z.infer<typeof speechTimedOutPayloadSchema>;
+type SpeechTimedOutPayload = z.infer<typeof speechTimedOutPayloadSchema>;
 
-export type EpochSummaryRecordedPayload = z.infer<typeof epochSummaryRecordedPayloadSchema>;
+type EpochSummaryRecordedPayload = z.infer<typeof epochSummaryRecordedPayloadSchema>;
 
-export type MustAnswerCarryForwardSetPayload = z.infer<typeof mustAnswerCarryForwardSetPayloadSchema>;
+type MustAnswerCarryForwardSetPayload = z.infer<typeof mustAnswerCarryForwardSetPayloadSchema>;
 
 export type FollowUpQueueItem = z.infer<typeof followUpQueueItemSchema>;
 
-export type FollowUpQueueSetPayload = z.infer<typeof followUpQueueSetPayloadSchema>;
+type FollowUpQueueSetPayload = z.infer<typeof followUpQueueSetPayloadSchema>;
 
-export type FollowUpAnsweredPayload = z.infer<typeof followUpAnsweredPayloadSchema>;
+type FollowUpAnsweredPayload = z.infer<typeof followUpAnsweredPayloadSchema>;
 
-export type SessionEndedPayload = z.infer<typeof sessionEndedPayloadSchema>;
+type SessionEndedPayload = z.infer<typeof sessionEndedPayloadSchema>;
 
-export type SessionSynthesizedPayload = z.infer<typeof sessionSynthesizedPayloadSchema>;
+type SessionSynthesizedPayload = z.infer<typeof sessionSynthesizedPayloadSchema>;
 
-export type AgentRunBoundPayload = z.infer<typeof agentRunBoundPayloadSchema>;
+type AgentRunBoundPayload = z.infer<typeof agentRunBoundPayloadSchema>;
 
-export type AgentJobStartedPayload = z.infer<typeof agentJobStartedPayloadSchema>;
+type AgentJobStartedPayload = z.infer<typeof agentJobStartedPayloadSchema>;
 
-export type AgentJobFinishedPayload = z.infer<typeof agentJobFinishedPayloadSchema>;
+type AgentJobFinishedPayload = z.infer<typeof agentJobFinishedPayloadSchema>;
 
 export interface DiscussPayloadByKind {
   'session.created': SessionCreatedPayload;
@@ -403,19 +403,19 @@ export interface DiscussPayloadByKind {
 }
 
 export type SessionCreatedEvent = DiscussEventEnvelope<'session.created', SessionCreatedPayload>;
-export type BiddingOpenedEvent = DiscussEventEnvelope<'bidding.opened', Record<string, never>>;
-export type BidSubmittedEvent = DiscussEventEnvelope<'bid.submitted', BidSubmittedPayload>;
-export type ParticipantsExpelledEvent = DiscussEventEnvelope<'participants.expelled', ParticipantsExpelledPayload>;
+type BiddingOpenedEvent = DiscussEventEnvelope<'bidding.opened', Record<string, never>>;
+type BidSubmittedEvent = DiscussEventEnvelope<'bid.submitted', BidSubmittedPayload>;
+type ParticipantsExpelledEvent = DiscussEventEnvelope<'participants.expelled', ParticipantsExpelledPayload>;
 export type BidRoundClosedEvent = DiscussEventEnvelope<'bid.round.closed', BidRoundClosedPayload>;
 export type SpeechRecordedEvent = DiscussEventEnvelope<'speech.recorded', SpeechRecordedPayload>;
 export type SpeechTimedOutEvent = DiscussEventEnvelope<'speech.timed_out', SpeechTimedOutPayload>;
-export type EpochSummaryRecordedEvent = DiscussEventEnvelope<'epoch.summary.recorded', EpochSummaryRecordedPayload>;
-export type MustAnswerCarryForwardSetEvent = DiscussEventEnvelope<
+type EpochSummaryRecordedEvent = DiscussEventEnvelope<'epoch.summary.recorded', EpochSummaryRecordedPayload>;
+type MustAnswerCarryForwardSetEvent = DiscussEventEnvelope<
   'must_answer.carry_forward.set',
   MustAnswerCarryForwardSetPayload
 >;
-export type FollowUpQueueSetEvent = DiscussEventEnvelope<'follow_up.queue.set', FollowUpQueueSetPayload>;
-export type FollowUpAnsweredEvent = DiscussEventEnvelope<'follow_up.answered', FollowUpAnsweredPayload>;
+type FollowUpQueueSetEvent = DiscussEventEnvelope<'follow_up.queue.set', FollowUpQueueSetPayload>;
+type FollowUpAnsweredEvent = DiscussEventEnvelope<'follow_up.answered', FollowUpAnsweredPayload>;
 export type SessionEndedEvent = DiscussEventEnvelope<'session.ended', SessionEndedPayload>;
 export type SessionSynthesizedEvent = DiscussEventEnvelope<'session.synthesized', SessionSynthesizedPayload>;
 export type AgentRunBoundEvent = DiscussEventEnvelope<'agent.run.bound', AgentRunBoundPayload>;
@@ -477,7 +477,7 @@ export function isWithinLiveSessionBoundary(snapshot: PersistedDiscussSnapshot):
   return snapshot.state.status !== 'ended' || snapshot.runtime.controlPhase !== 'idle';
 }
 
-export function isDiscussEventKind(value: string): value is DiscussEventKind {
+function isDiscussEventKind(value: string): value is DiscussEventKind {
   return discussEventKindSet.has(value);
 }
 

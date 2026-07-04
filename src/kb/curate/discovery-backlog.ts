@@ -91,7 +91,7 @@ export function readCurateDiscoveryBacklog(db: Database | ReadonlyDatabase): Pen
   return entries;
 }
 
-export function addCurateDiscoveryBacklogEntry(db: Database, entry: PendingDiscovery): void {
+function addCurateDiscoveryBacklogEntry(db: Database, entry: PendingDiscovery): void {
   const canonicalEntry = canonicalPendingDiscovery(entry);
   const entryId = backlogEntryId(canonicalEntry);
   const inserted = prepareCached<[string, string, string, string, string | null]>(
@@ -123,7 +123,7 @@ export function addCurateDiscoveryBacklogEntry(db: Database, entry: PendingDisco
   }
 }
 
-export function removeCurateDiscoveryBacklogEntry(
+function removeCurateDiscoveryBacklogEntry(
   db: Database,
   entry: Pick<PendingDiscovery, 'principle' | 'statement'>,
 ): void {

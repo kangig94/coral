@@ -8,7 +8,7 @@ import { KIWI_MODEL_FILES, KIWI_MODEL_TYPE, KIWI_MODEL_VERSION, KIWI_NLP_VERSION
 import { ensureKiwiModelArtifact, inspectKiwiModelArtifact } from './model-artifact.js';
 import { kiwiModelFilePath, kiwiWasmPath } from './paths.js';
 
-export type KiwiAnalyzerIdentity = {
+type KiwiAnalyzerIdentity = {
   readonly engine: 'kiwi';
   readonly kiwiNlpVersion: string;
   readonly modelVersion: string;
@@ -173,7 +173,7 @@ async function buildDisposableKiwi(modelFiles: ModelFiles): Promise<{
   }
 }
 
-export function kiwiAnalyzerIdentity(): KiwiAnalyzerIdentity {
+function kiwiAnalyzerIdentity(): KiwiAnalyzerIdentity {
   return {
     engine: 'kiwi',
     kiwiNlpVersion: KIWI_NLP_VERSION,

@@ -11,9 +11,9 @@ import { networkEnvSchema } from '../infra/network-env.js';
 const sourceImportReadinessSchema = z.enum(['commit', 'base-search', 'active-vector', 'all-equipped']);
 
 export const KB_SEARCH_QUERY_MAX_CODE_POINTS = 512;
-export const KB_SEARCH_QUERY_MAX_BYTES = 2 * 1024;
+const KB_SEARCH_QUERY_MAX_BYTES = 2 * 1024;
 export const KB_TEXT_FILTER_MAX_CODE_POINTS = 512;
-export const KB_TEXT_FILTER_MAX_BYTES = 2 * 1024;
+const KB_TEXT_FILTER_MAX_BYTES = 2 * 1024;
 export const KB_SLUG_MAX_BYTES = 512;
 
 function hasAtMostCodePoints(value: string, max: number): boolean {
@@ -139,6 +139,10 @@ export const kbDeleteSchema = z
   .strict();
 
 const kbWikiRefListSchema = z.array(z.string().min(1)).min(1);
+const kbWikiRefMutationShape = {
+  slug: slugSchema,
+  refs: kbWikiRefListSchema,
+} satisfies z.ZodRawShape;
 
 export const kbWikiCreateSchema = z
   .object({
@@ -156,13 +160,12 @@ export const kbWikiRewriteSchema = z
   .strict();
 
 export const kbWikiLinkSchema = z
-  .object({
-    slug: slugSchema,
-    refs: kbWikiRefListSchema,
-  })
+  .object(kbWikiRefMutationShape)
   .strict();
 
-export const kbWikiUnlinkSchema = kbWikiLinkSchema;
+export const kbWikiUnlinkSchema = z
+  .object(kbWikiRefMutationShape)
+  .strict();
 
 export const kbWikiCiteSchema = z
   .object({
@@ -278,7 +281,14 @@ export const kbPrinciplesQuerySchema = z
   })
   .strict();
 
-export const kbEntriesRequestSchema = kbSearchQuerySchema;
+export const kbEntriesRequestSchema = z
+  .object({
+    q: searchQueryTextSchema,
+    scope: z.enum(['notes', 'sources', 'communities', 'wiki', 'all']).optional(),
+    top_k: z.coerce.number().int().positive().optional(),
+    mode: z.enum(['text', 'vector', 'hybrid']).optional(),
+  })
+  .strict();
 export const kbNoteReadRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbSourceListRequestSchema = z.object({}).strict();
 export const kbSourceReadRequestSchema = z.object({ slug: slugSchema }).strict();
@@ -297,7 +307,13 @@ export const kbMemoReadRequestSchema = z
     projectRoot: projectRootSchema,
   })
   .strict();
-export const kbPrinciplesListRequestSchema = kbPrinciplesQuerySchema;
+export const kbPrinciplesListRequestSchema = z
+  .object({
+    q: optionalSearchQueryTextSchema,
+    top_k: z.coerce.number().int().positive().optional(),
+    verbose: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
+  })
+  .strict();
 export const kbPrincipleReadRequestSchema = z.object({ slug: slugSchema }).strict();
 export const kbNoteCreateRequestSchema = kbPromoteSchema.extend(transportContextFieldsShape).strict();
 export const kbWikiCreateRequestSchema = kbWikiCreateSchema.extend(transportContextFieldsShape).strict();
@@ -328,12 +344,25 @@ export const kbNoteDeleteRequestSchema = z
   .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
   .strict();
 export const kbWikiDeleteRequestSchema = kbWikiDeleteSchema.extend(optionalTransportContextFieldsShape).strict();
-export const kbWikiListRequestSchema = kbWikiListSchema;
-export const kbWikiReadRequestSchema = kbWikiReadSchema;
-export const kbWakeUpRequestSchema = kbWakeUpSchema;
+export const kbWikiListRequestSchema = z.object({}).strict();
+export const kbWikiReadRequestSchema = z.object({ slug: slugSchema }).strict();
+export const kbWakeUpRequestSchema = z
+  .object({
+    project: z.string().min(1).optional(),
+  })
+  .strict();
 export const kbSourceDeleteRequestSchema = z
   .object({ slug: slugSchema, ...optionalTransportContextFieldsShape })
   .strict();
-export const kbMemoDeleteRequestSchema = kbMemoDeleteQuerySchema;
+export const kbMemoDeleteRequestSchema = z
+  .object({
+    ...transportContextFieldsShape,
+    pattern: optionalTextFilterSchema,
+    all: z.preprocess(parseBooleanQuery, z.boolean()).optional(),
+  })
+  .strict()
+  .refine((data) => (data.pattern !== undefined) !== (data.all === true), {
+    message: 'Exactly one of pattern or all=true must be provided',
+  });
 export const kbDiagnoseSchema = z.object({}).strict();
-export const kbDiagnoseRequestSchema = kbDiagnoseSchema;
+export const kbDiagnoseRequestSchema = z.object({}).strict();

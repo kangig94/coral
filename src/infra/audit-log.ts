@@ -6,14 +6,14 @@ import type { AuthorizationFailureDetail, AuthorizationFailureReason, Decision }
 export type AuditLogLevel = 'info' | 'warn' | 'error';
 export type AuditPayload = Record<string, unknown>;
 
-export type PrincipalAuditDescriptor = {
+type PrincipalAuditDescriptor = {
   readonly subject: Principal['subject'];
   readonly transport: string;
   readonly binding: ResourceBinding;
   readonly attenuatedCaps: readonly Capability[] | null;
 };
 
-export type DecisionAuditDescriptor =
+type DecisionAuditDescriptor =
   | { readonly ok: true }
   | {
       readonly ok: false;

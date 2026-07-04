@@ -31,12 +31,6 @@ export type SDKControlSetMaxThinkingTokensRequest = {
   [key: string]: unknown;
 };
 
-export type SDKControlRequest =
-  | SDKControlInitializeRequest
-  | SDKControlInterruptRequest
-  | SDKControlSetModelRequest
-  | SDKControlSetMaxThinkingTokensRequest;
-
 export type SDKControlResponse = {
   type: 'control_response';
   response: {
@@ -96,7 +90,7 @@ export type SDKResultMessage = {
   [key: string]: unknown;
 };
 
-export type SDKKeepAliveMessage = {
+type SDKKeepAliveMessage = {
   type: 'keep_alive';
   [key: string]: unknown;
 };

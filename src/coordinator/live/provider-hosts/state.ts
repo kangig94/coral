@@ -33,7 +33,7 @@ export type ProviderHostEntry = {
   disposeHostNotifications: (() => void) | null;
 };
 
-export function normalizedHostEnvEntries(spec: Pick<ProviderServerSpec, 'env'>): Array<[string, string]> {
+function normalizedHostEnvEntries(spec: Pick<ProviderServerSpec, 'env'>): Array<[string, string]> {
   return Object.entries(spec.env ?? {}).sort(([left], [right]) => left.localeCompare(right));
 }
 

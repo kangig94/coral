@@ -37,7 +37,7 @@ export function persistCurateState(kb: KbRuntime, state: CurateState, next: Cura
   return normalizedNext;
 }
 
-export function recordCurateFailureLocked(
+function recordCurateFailureLocked(
   kb: KbRuntime,
   state: CurateState,
   through: CurateCursor | null,
@@ -57,7 +57,7 @@ export async function recordCurateFailure(kb: KbRuntime, through: CurateCursor |
   });
 }
 
-export function clearCurateRetryStateLocked(kb: KbRuntime, state: CurateState): CurateState {
+function clearCurateRetryStateLocked(kb: KbRuntime, state: CurateState): CurateState {
   return persistCurateState(kb, state, applyClearCurateRetryState(state));
 }
 
@@ -65,6 +65,7 @@ export function clearCurateClaimRetryStateLocked(kb: KbRuntime, state: CurateSta
   return persistCurateState(kb, state, applyClearCurateClaimRetryState(state));
 }
 
+/** @knipignore Reached through the curate test helper. */
 export async function clearCurateRetryState(kb: KbRuntime): Promise<void> {
   await kb.withMutationLock(() => {
     const state = readCurateState(curateDb(kb));

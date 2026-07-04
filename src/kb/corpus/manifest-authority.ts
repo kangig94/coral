@@ -153,15 +153,15 @@ export function createManifestAuthority(): ManifestAuthority {
   };
 }
 
-export function noteMetadataManifestId(slug: string): string {
+function noteMetadataManifestId(slug: string): string {
   return `note-meta:${slug}`;
 }
 
-export function sourceMetadataManifestId(slug: string): string {
+function sourceMetadataManifestId(slug: string): string {
   return `source-meta:${slug}`;
 }
 
-export function wikiMetadataManifestId(slug: string): string {
+function wikiMetadataManifestId(slug: string): string {
   return `wiki-meta:${slug}`;
 }
 
@@ -171,7 +171,7 @@ export function communityMetadataManifestId(slug: string): string {
   return `${COMMUNITY_METADATA_MANIFEST_ID_PREFIX}${slug}`;
 }
 
-export function isCommunityMetadataManifestId(manifestId: string): boolean {
+function isCommunityMetadataManifestId(manifestId: string): boolean {
   return manifestId.startsWith(COMMUNITY_METADATA_MANIFEST_ID_PREFIX);
 }
 
@@ -181,7 +181,7 @@ export function communitySlugFromMetadataManifestId(manifestId: string): string 
     : null;
 }
 
-export function principleMetadataManifestId(slug: string): string {
+function principleMetadataManifestId(slug: string): string {
   return `principle:${slug}`;
 }
 

@@ -40,7 +40,7 @@ type GraphNeighbor = {
   relationshipTypes: RelationshipType[];
 };
 
-export type GraphSearchContext = {
+type GraphSearchContext = {
   entityMeta: EntityGraph['entityMeta'];
   adjacency: Map<string, GraphNeighbor[]>;
   aliasLookup: Map<string, Set<string>>;
@@ -81,14 +81,11 @@ function addLookupValue(lookup: Map<string, Set<string>>, key: string, value: st
   existing.add(value);
 }
 
-export function isGraphSearchFresh(index: KbIndex, structuralKey: CorpusStructuralKey | null): boolean {
+function isGraphSearchFresh(index: KbIndex, structuralKey: CorpusStructuralKey | null): boolean {
   return structuralKey !== null && Object.keys(index.entityMeta).length > 0;
 }
 
-export function buildGraphSearchContext(
-  index: KbIndex,
-  structuralKey: CorpusStructuralKey | null,
-): GraphSearchContext | null {
+function buildGraphSearchContext(index: KbIndex, structuralKey: CorpusStructuralKey | null): GraphSearchContext | null {
   if (!isGraphSearchFresh(index, structuralKey)) {
     return null;
   }
@@ -331,7 +328,7 @@ function buildGraphHits(
   return hits.sort(compareRetrievalRoleHits);
 }
 
-export class RuntimeGraphRetrieval implements GraphRetrieval {
+class RuntimeGraphRetrieval implements GraphRetrieval {
   private readonly index: KbIndex;
   private readonly graph: GraphSearchContext | null;
   constructor(index: KbIndex, graph: GraphSearchContext | null) {

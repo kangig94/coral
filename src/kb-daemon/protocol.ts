@@ -19,20 +19,20 @@ export type KbDaemonRequestMethod =
   | 'kb.warmup'
   | 'expansion.rpc';
 
-export type KbDaemonParentRequestMethod = 'curate.assistant.complete' | 'curate.assistant.cancel';
+type KbDaemonParentRequestMethod = 'curate.assistant.complete' | 'curate.assistant.cancel';
 
-export const KB_DAEMON_CURATE_ASSISTANT_PURPOSES = [
+const KB_DAEMON_CURATE_ASSISTANT_PURPOSES = [
   'classification',
   'principle-discovery',
   'community-summary',
   'git-conflict-resolution',
 ] as const;
 
-export type KbDaemonCurateAssistantPurpose = (typeof KB_DAEMON_CURATE_ASSISTANT_PURPOSES)[number];
+type KbDaemonCurateAssistantPurpose = (typeof KB_DAEMON_CURATE_ASSISTANT_PURPOSES)[number];
 
-export const KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES = ['default', 'auto', 'bypassPermissions'] as const;
+const KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES = ['default', 'auto', 'bypassPermissions'] as const;
 
-export type KbDaemonCurateAssistantPermissionMode = (typeof KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES)[number];
+type KbDaemonCurateAssistantPermissionMode = (typeof KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES)[number];
 
 export const KB_DAEMON_KB_READ_METHODS = [
   'readSearch',
@@ -75,7 +75,7 @@ export const KB_DAEMON_KB_MUTATION_METHODS = [
 
 export type KbDaemonKbMutationMethod = (typeof KB_DAEMON_KB_MUTATION_METHODS)[number];
 
-export const KB_DAEMON_EXPANSION_METHODS = [
+const KB_DAEMON_EXPANSION_METHODS = [
   'equipExpansion',
   'unequipExpansion',
   'removeExpansionCatalog',
@@ -83,7 +83,7 @@ export const KB_DAEMON_EXPANSION_METHODS = [
   'readBinding',
 ] as const;
 
-export type KbDaemonExpansionMethod = (typeof KB_DAEMON_EXPANSION_METHODS)[number];
+type KbDaemonExpansionMethod = (typeof KB_DAEMON_EXPANSION_METHODS)[number];
 
 export type KbDaemonRequestContextWire = {
   readonly projectRoot?: string;
@@ -133,10 +133,6 @@ export type KbDaemonCurateAssistantCancelRequest = {
   reason?: string;
 };
 
-export type KbDaemonAbortRequest = {
-  jobIds: string[];
-};
-
 export type KbDaemonAbortResult = {
   aborted: string[];
   notFound: string[];
@@ -154,7 +150,7 @@ export type KbDaemonKbMutationResult = KbDaemonKbReadResult;
 
 export type KbDaemonExpansionResult = KbDaemonKbReadResult;
 
-export type KbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
+type KbDaemonRuntimeHealthPhase = 'not_initialized' | 'ready' | 'failed' | 'disposing' | 'disposed';
 
 export type KbDaemonKbReadHealth = {
   phase: KbDaemonRuntimeHealthPhase;
@@ -393,31 +389,29 @@ function isKbDaemonMutationBlocked(value: unknown): value is NonNullable<KbDaemo
   );
 }
 
-export function isKbDaemonKbReadMethod(value: unknown): value is KbDaemonKbReadMethod {
+function isKbDaemonKbReadMethod(value: unknown): value is KbDaemonKbReadMethod {
   return typeof value === 'string' && KB_DAEMON_KB_READ_METHODS.includes(value as KbDaemonKbReadMethod);
 }
 
-export function isKbDaemonKbMutationMethod(value: unknown): value is KbDaemonKbMutationMethod {
+function isKbDaemonKbMutationMethod(value: unknown): value is KbDaemonKbMutationMethod {
   return typeof value === 'string' && KB_DAEMON_KB_MUTATION_METHODS.includes(value as KbDaemonKbMutationMethod);
 }
 
-export function isKbDaemonExpansionMethod(value: unknown): value is KbDaemonExpansionMethod {
+function isKbDaemonExpansionMethod(value: unknown): value is KbDaemonExpansionMethod {
   return typeof value === 'string' && KB_DAEMON_EXPANSION_METHODS.includes(value as KbDaemonExpansionMethod);
 }
 
-export function isKbDaemonRequestContextWire(value: unknown): value is KbDaemonRequestContextWire {
+function isKbDaemonRequestContextWire(value: unknown): value is KbDaemonRequestContextWire {
   return kbDaemonRequestContextWireSchema.safeParse(value).success;
 }
 
-export function isKbDaemonCurateAssistantPurpose(value: unknown): value is KbDaemonCurateAssistantPurpose {
+function isKbDaemonCurateAssistantPurpose(value: unknown): value is KbDaemonCurateAssistantPurpose {
   return (
     typeof value === 'string' && KB_DAEMON_CURATE_ASSISTANT_PURPOSES.includes(value as KbDaemonCurateAssistantPurpose)
   );
 }
 
-export function isKbDaemonCurateAssistantPermissionMode(
-  value: unknown,
-): value is KbDaemonCurateAssistantPermissionMode {
+function isKbDaemonCurateAssistantPermissionMode(value: unknown): value is KbDaemonCurateAssistantPermissionMode {
   return (
     typeof value === 'string' &&
     KB_DAEMON_CURATE_ASSISTANT_PERMISSION_MODES.includes(value as KbDaemonCurateAssistantPermissionMode)

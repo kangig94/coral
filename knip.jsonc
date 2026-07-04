@@ -16,6 +16,12 @@
     "vitest/*.ts"
   ],
   "project": ["src/**/*.ts"],
+  // Const-assertion arrays that back a type via `typeof X[number]` are referenced
+  // only within their own file (in a type position), so their value export reads as
+  // "unused" — keep them by not flagging exports used in their defining file.
+  "ignoreExportsUsedInFile": true,
+  // Test-only seams reached through Vitest dynamic imports or helper indirection.
+  "tags": ["-knipignore"],
   // Host system binaries invoked by name (not npm bins).
   "ignoreBinaries": ["getconf", "ps", "wmic"],
   // mammoth/turndown: loaded via dynamic require() in kb source conversion

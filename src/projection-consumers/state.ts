@@ -73,7 +73,7 @@ export type CorpusConsumerState = ConsumerStateCommon & {
   lastAppliedGeneratedCommunityDocsHash: string;
 };
 
-export type StatelessConsumerState = ConsumerStateCommon & {
+type StatelessConsumerState = ConsumerStateCommon & {
   readonly kind: 'stateless';
   readonly reg: StatelessProviderLifecycleRegistration;
   readonly registrationKind: 'stateless';
@@ -136,8 +136,7 @@ export function createConsumerState(
     activeController: null,
     lastApplyError: null,
     lastAppliedForceGeneration: 0,
-    lastAppliedGeneratedCommunityGeneration:
-      EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityGeneration,
+    lastAppliedGeneratedCommunityGeneration: EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityGeneration,
     lastAppliedGeneratedCommunityDocsHash: EMPTY_GENERATED_COMMUNITY_FRESHNESS.generatedCommunityDocsHash,
   };
 }

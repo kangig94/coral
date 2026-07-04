@@ -14,7 +14,7 @@ export interface ProviderArtifactBuilder {
   artifacts(capability: ProviderArtifactCapability): ProviderBuildBuilder;
 }
 
-export interface ProviderBuildBuilder {
+interface ProviderBuildBuilder {
   build(): ProviderDefinition;
 }
 

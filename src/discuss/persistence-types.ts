@@ -12,7 +12,7 @@ export interface DiscussDiscoveryData {
   updatedAt: string;
 }
 
-export interface DiscussSummaryIndexRow {
+interface DiscussSummaryIndexRow {
   sessionId: string;
   projectRoot: string;
   topic: string;

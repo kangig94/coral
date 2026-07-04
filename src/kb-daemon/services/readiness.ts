@@ -16,7 +16,7 @@ function isTrustedCorpusCapability(record: RegisteredKbCapability): boolean {
 // Bundled Orama always binds kb.fts; engines like needle bind kb.vector when
 // equipped. Unbound capabilities throw 'binding_empty' from `read()`; skip them
 // so 'all-equipped' is best-effort over currently equipped corpus consumers.
-export function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'capabilityRegistry'>): string[] {
+function readBoundCorpusConsumerIds(kb: Pick<KbRuntime, 'capabilityRegistry'>): string[] {
   const runtimeView = kb.capabilityRegistry.runtimeView();
   const ids: string[] = [];
   for (const record of runtimeView.list()) {

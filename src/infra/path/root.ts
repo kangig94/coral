@@ -13,7 +13,7 @@ import { hashToken } from '../hash.js';
  * `compose -> store -> compose` cycles. Same precedent as
  * `kb/corpus/manifest-types.ts`.
  */
-export function coralRoot(baseDir?: string): string {
+function coralRoot(baseDir?: string): string {
   return baseDir ?? join(homedir(), '.coral');
 }
 

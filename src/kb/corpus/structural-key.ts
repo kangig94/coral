@@ -56,7 +56,7 @@ export function computeCommunityDocsHashFromSurfaceHashes(
   );
 }
 
-export function computeCommunityDocsHashFromRawDocuments(
+function computeCommunityDocsHashFromRawDocuments(
   documents: Iterable<RawCommunityDocument>,
   generatedCommunityFreshness: GeneratedCommunityFreshness,
   generatedCommunitySlugs: ReadonlySet<string> = new Set(),
@@ -101,7 +101,7 @@ export function createCorpusStructuralKeyFromRawSurfaces(input: {
   };
 }
 
-export function readCurrentCorpusStructuralKey(
+function readCurrentCorpusStructuralKey(
   authority: CorpusStructuralKeyAuthority,
   generatedCommunityFreshness: GeneratedCommunityFreshness,
   generatedCommunitySlugs: ReadonlySet<string> = new Set(),
@@ -151,10 +151,7 @@ export function resolveCorpusStructuralKey(input: {
   return entityGraphMatchesIndex(input.index, currentGraph) ? currentKey : null;
 }
 
-export function entityGraphMatchesIndex(
-  index: Pick<KbIndex, 'entityMeta' | 'relationships'>,
-  graph: EntityGraph,
-): boolean {
+function entityGraphMatchesIndex(index: Pick<KbIndex, 'entityMeta' | 'relationships'>, graph: EntityGraph): boolean {
   return (
     computeEntityGraphSemanticHash({
       entityMeta: index.entityMeta,

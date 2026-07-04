@@ -51,9 +51,9 @@ type BackendWorldBoundDefaults = {
   readonly terminateAllFn: NonNullable<CoordinatorCoreOptions['terminateAllFn']>;
 };
 
-export type ResolvedBackendDefaults = BackendEagerDefaults & BackendWorldBoundDefaults;
+type ResolvedBackendDefaults = BackendEagerDefaults & BackendWorldBoundDefaults;
 
-export type BackendDefaultsBindings = {
+type BackendDefaultsBindings = {
   readonly bindHost: string;
   readonly advertiseHost?: string;
   readonly getProgressStore: () => JobStore | null;

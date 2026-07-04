@@ -8,7 +8,7 @@ import { commitCorpusEntryLocked } from '../corpus/index/mutations.js';
 import { buildNoteIndexEntry } from '../corpus/index/records.js';
 import type { KbMutationEffects, KbRuntime } from '../contract.js';
 
-export async function applyNoteUpdateLocked(
+async function applyNoteUpdateLocked(
   rt: KbRuntime,
   mutation: KbMutationEffects,
   input: { note: string; title?: string; content?: string },

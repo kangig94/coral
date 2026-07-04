@@ -45,7 +45,7 @@ export interface KbPersistCorpusStateResult {
   changedLanes: KbCorpusLane[];
 }
 
-export interface KbCorpusPublishFailure {
+interface KbCorpusPublishFailure {
   stage: 'persist' | 'notify';
   snapshot: KbCorpusSnapshot;
   changedLanes: KbCorpusLane[];
@@ -65,9 +65,7 @@ export type KbGeneratedCommunityPublication = {
 } & GeneratedCommunityFreshness;
 
 export interface KbGeneratedCommunityProjectionCallbacks {
-  notifyGeneratedCommunityProjection(
-    publication: KbGeneratedCommunityPublication,
-  ): Promise<void> | void;
+  notifyGeneratedCommunityProjection(publication: KbGeneratedCommunityPublication): Promise<void> | void;
 }
 
 export interface KbIndexState {

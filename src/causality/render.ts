@@ -33,25 +33,25 @@ export function typedDescriber<S extends z.ZodTypeAny>(
   return (event) => describe(event.body as z.output<S>, event as CoralEvent<z.output<S>>);
 }
 
-export interface CauseRefEventStore {
+interface CauseRefEventStore {
   getEvent(stream: { kind: string; id: string }, seq: number): CoralEvent | undefined;
 }
 
-export interface CircularCauseRefDiagnostic {
+interface CircularCauseRefDiagnostic {
   readonly key: string;
   readonly stream: CauseRef['stream'];
   readonly seq: number;
   readonly path: readonly string[];
 }
 
-export interface MissingCauseRefDiagnostic {
+interface MissingCauseRefDiagnostic {
   readonly stream: CauseRef['stream'];
   readonly seq: number;
   readonly path: readonly string[];
   readonly hint?: string;
 }
 
-export interface CauseRefRenderResult {
+interface CauseRefRenderResult {
   readonly description: string;
   readonly chain: readonly string[];
   readonly cycle?: CircularCauseRefDiagnostic;

@@ -14,7 +14,7 @@ const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 const claudeModelCapSchema = modelNameSchema.optional();
 const claudeTransportSchema = z.string().optional();
 
-export const providerNameSchema = z
+const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 

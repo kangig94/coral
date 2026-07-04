@@ -39,7 +39,7 @@ import {
   reduceSessionRetentionDiscardRequested,
 } from './projections.js';
 
-export const RETENTION_DISCARD_DUPLICATE_ATTEMPT_CODE = 'session_retention_discard_duplicate_attempt';
+const RETENTION_DISCARD_DUPLICATE_ATTEMPT_CODE = 'session_retention_discard_duplicate_attempt';
 
 type RetentionDiscardKind = 'requested' | 'completed' | 'failed';
 
@@ -245,7 +245,7 @@ function readExistingRetentionDiscardState(
   return state;
 }
 
-export const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs) => {
+const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs) => {
   const parsed: ParsedRetentionDiscardInput[] = [];
   const sessionIds = new Set<string>();
   for (const input of inputs) {

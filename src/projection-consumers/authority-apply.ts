@@ -195,7 +195,7 @@ export function scheduleForcedCorpusApply(
   })();
 }
 
-export async function runJournalApply(
+async function runJournalApply(
   state: ConsumerState,
   reg: JournalApplyRegistration,
   target: number,
@@ -232,7 +232,7 @@ export async function runJournalApply(
   }
 }
 
-export async function runCorpusApply(
+async function runCorpusApply(
   state: ConsumerState,
   reg: CorpusConsumerRegistration,
   snapshot: KbCorpusSnapshot,
@@ -310,7 +310,7 @@ export async function runCorpusApply(
   }
 }
 
-export async function prepareCorpusProjectionInput(
+async function prepareCorpusProjectionInput(
   signal: AbortSignal,
   deps: AuthorityApplyDeps,
   generatedCommunityFreshness?: GeneratedCommunityFreshness,
@@ -327,7 +327,7 @@ export async function prepareCorpusProjectionInput(
   });
 }
 
-export function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {
+function invokeApplyFailureCallback(state: ConsumerState, applyError: ConsumerApplyError): void {
   if (state.kind === 'stateless') {
     return;
   }

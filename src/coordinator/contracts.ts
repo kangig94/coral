@@ -46,7 +46,7 @@ export interface ListResult {
   sessions: SessionEntry[];
 }
 
-export type CoordinatorLaunchCoordinator = LaunchCoordinatorPort & ProviderDurableSpawner;
+type CoordinatorLaunchCoordinator = LaunchCoordinatorPort & ProviderDurableSpawner;
 
 export interface ExecutionProviderServerAttachment {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;

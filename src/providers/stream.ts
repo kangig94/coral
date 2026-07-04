@@ -12,7 +12,7 @@ type ProviderEventQueueEntry<TEvent> =
   | { kind: 'done' }
   | { kind: 'error'; error: unknown };
 
-export const QUEUE_CAP = 1024;
+const QUEUE_CAP = 1024;
 
 export class ProviderEventBackpressureError extends Error {
   constructor(cap = QUEUE_CAP) {

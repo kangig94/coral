@@ -4,7 +4,7 @@ import type { Backed, EmbeddingService } from '../../kb/contract.js';
 import { EMBEDDING_NORMALIZATION, computeEmbeddingSpecId } from '../../kb/embedding-vector.js';
 import type { EmbeddingSpec } from './store.js';
 
-export type BoundEmbeddingMetadata = {
+type BoundEmbeddingMetadata = {
   readonly name?: string;
   readonly model?: string;
   readonly dims?: number;
@@ -22,7 +22,7 @@ function asNeedleEmbeddingProvider(service: EmbeddingService): EmbeddingService 
   return service as EmbeddingService & BoundEmbeddingMetadata;
 }
 
-export function computeNeedleProjectionIdentityHash(spec: Omit<EmbeddingSpec, 'createdAt'>): string {
+function computeNeedleProjectionIdentityHash(spec: Omit<EmbeddingSpec, 'createdAt'>): string {
   return createHash('sha256')
     .update(
       JSON.stringify({

@@ -7,7 +7,7 @@ type PublishQueueEntry = {
   persisted: boolean;
 };
 
-export const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
+const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
   persistCorpusState(snapshot) {
     return {
       snapshot,
@@ -17,7 +17,7 @@ export const NOOP_CORPUS_PUBLISH_CALLBACKS: KbCorpusPublishCallbacks = {
   notifyCorpusMutation() {},
 };
 
-export function sameCorpusSnapshot(left: CorpusSnapshot, right: CorpusSnapshot): boolean {
+function sameCorpusSnapshot(left: CorpusSnapshot, right: CorpusSnapshot): boolean {
   return (
     left.snapshotId === right.snapshotId &&
     left.contentSeq === right.contentSeq &&

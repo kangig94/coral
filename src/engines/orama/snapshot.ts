@@ -22,7 +22,7 @@ import type { KbOramaDb, KbOramaTokenizer } from './schema.js';
 import { serializeOramaProjectionArtifactInWorker } from './snapshot-worker.js';
 import type { GeneratedCommunityFreshness } from '../../kb/curate/community/generated-projection-store.js';
 
-export const ORAMA_SNAPSHOT_SAVE_WARN_MS = 250;
+const ORAMA_SNAPSHOT_SAVE_WARN_MS = 250;
 
 export interface KbCachedOramaIndex {
   db: KbOramaDb;

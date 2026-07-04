@@ -24,7 +24,7 @@ const DISCOVERY_PROMPT_BODY_LIMIT = 4000;
 const DISCOVERY_MAX_MERGES = 2;
 const DISCOVERY_MAX_REFINES = 3;
 
-export type DiscoveryBatch = {
+type DiscoveryBatch = {
   selected: NoteClaimCandidate[];
   nextHighSeq: number;
   nextOffset: number;
@@ -41,11 +41,11 @@ export type DiscoveryPromptResult = {
   corpusPath: string;
 };
 
-export function truncateDiscoveryBody(body: string): string {
+function truncateDiscoveryBody(body: string): string {
   return body.slice(0, DISCOVERY_PROMPT_BODY_LIMIT);
 }
 
-export function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
+function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal[] {
   const proposals: DiscoveryProposal[] = [];
   for (const entry of entries) {
     if (
@@ -69,7 +69,7 @@ export function extractDiscoveryProposals(entries: unknown[]): DiscoveryProposal
   return proposals;
 }
 
-export function normalizeDiscoverySlug(raw: string): string | null {
+function normalizeDiscoverySlug(raw: string): string | null {
   try {
     return assertNoteSlug(raw, 'slug');
   } catch {
@@ -173,11 +173,7 @@ export function prepareDiscoveryBatch(
   };
 }
 
-export function selectDiscoveryBatch(
-  allClassified: NoteClaimCandidate[],
-  highSeq: number,
-  offset: number,
-): DiscoveryBatch {
+function selectDiscoveryBatch(allClassified: NoteClaimCandidate[], highSeq: number, offset: number): DiscoveryBatch {
   const newNotes: NoteClaimCandidate[] = [];
   const oldNotes: NoteClaimCandidate[] = [];
   for (const candidate of allClassified) {

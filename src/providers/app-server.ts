@@ -27,7 +27,7 @@ export function bindAppServerLease(runtime: ProviderRuntime, lease: ProviderServ
   };
 }
 
-export function getAppServerLease(runtime: ProviderRuntime): ProviderServerLease | undefined {
+function getAppServerLease(runtime: ProviderRuntime): ProviderServerLease | undefined {
   return appServerLeaseBindings.get(runtime);
 }
 

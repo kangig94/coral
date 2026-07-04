@@ -7,9 +7,9 @@ import {
   turnFailureDiagnosticSchema,
 } from '../providers/turn-failure-diagnostic.js';
 
-export const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
+const sessionInterruptTriggerSchema = z.enum(['restart', 'handoff']);
 
-export const sessionContinuityStateSchema = z.enum([
+const sessionContinuityStateSchema = z.enum([
   'verified',
   'missing',
   'unavailable',
@@ -26,7 +26,7 @@ export const sessionInterruptedFaultSchema = z
   .strict();
 export type SessionInterruptedFault = z.infer<typeof sessionInterruptedFaultSchema>;
 
-export const sessionProviderFailureReasonSchema = z.enum(['session_unavailable', 'request_failed']);
+const sessionProviderFailureReasonSchema = z.enum(['session_unavailable', 'request_failed']);
 export type SessionProviderFailureReason = z.infer<typeof sessionProviderFailureReasonSchema>;
 
 export const sessionProviderFailureDiagnosticReasonSchema = turnFailureDiagnosticReasonSchema;

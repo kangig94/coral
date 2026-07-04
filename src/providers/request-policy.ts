@@ -7,7 +7,7 @@ export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 
  * Validate an effort string. Returns undefined when the input is undefined.
  * Throws with a user-friendly label when the string is non-empty but invalid.
  */
-export function parseEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
+function parseEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
   if (value === undefined) return undefined;
   if (!VALID_EFFORT_LEVELS.has(value)) {
     throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, xhigh, max`);

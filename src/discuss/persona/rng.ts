@@ -1,4 +1,4 @@
-export const UINT32_SIZE = 0x1_0000_0000;
+const UINT32_SIZE = 0x1_0000_0000;
 const EPS = 1e-12;
 
 export function drawUInt32(rng: () => number): number {

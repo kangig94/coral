@@ -39,9 +39,9 @@ import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 
 type DaemonProcessLike = ReturnType<Runtime['process']['spawn']>;
 
-export type KbDaemonPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
+type KbDaemonPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
-export type KbDaemonExit = {
+type KbDaemonExit = {
   code: number | null;
   signal: NodeJS.Signals | null;
   at: number;
@@ -173,7 +173,7 @@ function resolveDaemonBundleHash(pluginRoot: string, override: string | undefine
   }
 }
 
-export function resolveDefaultKbDaemonEntrypoint(pluginRoot: string, currentEntrypoint = process.argv[1]): string {
+function resolveDefaultKbDaemonEntrypoint(pluginRoot: string, currentEntrypoint = process.argv[1]): string {
   if (typeof currentEntrypoint === 'string' && basename(currentEntrypoint) === 'coral-backend.cjs') {
     return currentEntrypoint;
   }

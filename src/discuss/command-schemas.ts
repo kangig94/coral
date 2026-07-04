@@ -2,12 +2,12 @@ import { z } from 'zod';
 
 import type { ControversyAxis } from './session-types.js';
 
-export const ControversyAxisSchema = z.object({
+const ControversyAxisSchema = z.object({
   axis: z.string(),
   positions: z.array(z.string()),
 }) satisfies z.ZodType<ControversyAxis>;
 
-export const DemographicsSchema = z.object({
+const DemographicsSchema = z.object({
   origin_weights: z.record(z.number()),
   outlier_ratio: z.number().optional(),
 });
@@ -21,7 +21,7 @@ export const discussSeedSchema = z
   })
   .strict();
 
-export const AgentInputSchema = z.object({
+const AgentInputSchema = z.object({
   name: z.string(),
   persona: z.string(),
   participation: z.enum(['required', 'observer']).optional(),

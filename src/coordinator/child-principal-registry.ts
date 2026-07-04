@@ -7,7 +7,7 @@ import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../security/child-principal-env.js
 
 export { CORAL_CHILD_PRINCIPAL_HANDLE };
 
-export const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
+const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const CHILD_PRINCIPAL_CAPABILITIES = [
   'liveness',
   'kb:read',

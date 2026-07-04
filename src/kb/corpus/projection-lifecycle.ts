@@ -32,7 +32,7 @@ export type CorpusProjectionCandidate = {
   readonly counts: RescanCounts;
 };
 
-export type CorpusProjectionCommitPhase =
+type CorpusProjectionCommitPhase =
   | 'pending'
   | 'index_adopted'
   | 'baseline_adopted'
@@ -63,7 +63,7 @@ export type StagedCorpusProjection = {
   readonly stagedBaseline: CorpusAuthorityBaselineGeneration;
 };
 
-export type CorpusProjectionDiscardReason = 'stale_seq' | 'stale_generated_generation';
+type CorpusProjectionDiscardReason = 'stale_seq' | 'stale_generated_generation';
 
 export type CorpusProjectionCommitResult =
   | {

@@ -31,13 +31,7 @@ const GENERATED_COMMUNITY_MARKER = 'coralGeneratedCommunity';
 
 type StoreFiles = Pick<
   StoragePort,
-  | 'existsSync'
-  | 'readFileSync'
-  | 'writeFileSync'
-  | 'mkdirSync'
-  | 'renameSync'
-  | 'rmSync'
-  | 'readdirSync'
+  'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync' | 'renameSync' | 'rmSync' | 'readdirSync'
 >;
 
 type StoreHost = {
@@ -50,7 +44,7 @@ export type GeneratedCommunityFreshness = {
   readonly generatedCommunityDocsHash: string;
 };
 
-export type GeneratedCommunityGenerationSnapshot = GeneratedCommunityFreshness & {
+type GeneratedCommunityGenerationSnapshot = GeneratedCommunityFreshness & {
   readonly generationId: string;
   readonly topologyHash: string;
   readonly snapshot: KbCorpusSnapshot | null;
@@ -115,7 +109,7 @@ export type AuthoredCommunityDocument = {
   readonly content: string;
 };
 
-export type CommunityRawDocument = AuthoredCommunityDocument & {
+type CommunityRawDocument = AuthoredCommunityDocument & {
   readonly authority: 'authored' | 'generated';
 };
 
@@ -158,7 +152,7 @@ type GenerationPointer = ActivePointer & {
   readonly records: readonly GeneratedCommunityDocumentRecord[];
 };
 
-export const EMPTY_GENERATED_COMMUNITY_DOCS_HASH = computeManifestHashFromSurfaceHashes(new Map());
+const EMPTY_GENERATED_COMMUNITY_DOCS_HASH = computeManifestHashFromSurfaceHashes(new Map());
 export const EMPTY_GENERATED_COMMUNITY_FRESHNESS: GeneratedCommunityFreshness = {
   generatedCommunityGeneration: 0,
   generatedCommunityDocsHash: EMPTY_GENERATED_COMMUNITY_DOCS_HASH,
@@ -330,7 +324,7 @@ function legacyGeneratedSignatureMatches(slug: string, raw: string, detectedSlug
   return true;
 }
 
-export function classifyCorpusCommunityDocument(input: {
+function classifyCorpusCommunityDocument(input: {
   readonly slug: string;
   readonly raw: string;
   readonly detectedGeneratedSlugs: ReadonlySet<string>;
@@ -344,7 +338,9 @@ export function classifyCorpusCommunityDocument(input: {
   return 'authored-reserved';
 }
 
-function computeGenerationDocsHash(records: readonly Pick<GeneratedCommunityDocumentRecord, 'slug' | 'content'>[]): string {
+function computeGenerationDocsHash(
+  records: readonly Pick<GeneratedCommunityDocumentRecord, 'slug' | 'content'>[],
+): string {
   const hashes = new Map<string, string>();
   for (const record of [...records].sort((left, right) => left.slug.localeCompare(right.slug))) {
     hashes.set(`generated-community:${record.slug}`, computeMetadataSurfaceHash({ rawBytes: record.content }));
@@ -674,7 +670,11 @@ export class GeneratedCommunityProjectionStore {
     }
 
     const manifest = this.readManifest(join(this.rootDir, GENERATIONS_DIR, pointer.generationId, MANIFEST_FILE));
-    if (manifest === null || manifest.generation !== pointer.generation || manifest.generationId !== pointer.generationId) {
+    if (
+      manifest === null ||
+      manifest.generation !== pointer.generation ||
+      manifest.generationId !== pointer.generationId
+    ) {
       throw new Error(`Generated community generation ${pointer.generationId} is missing or malformed.`);
     }
     return {

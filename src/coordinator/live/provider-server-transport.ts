@@ -11,7 +11,7 @@ import { appendBuffer, gracefulKill, requirePipedHandles } from './process-super
 export const PROVIDER_SERVER_MAX_JSONL_LINE_BYTES = MAX_BUFFER;
 export const PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS = 30_000;
 
-export class ProviderServerLineTooLargeError extends Error {
+class ProviderServerLineTooLargeError extends Error {
   readonly code = 'provider_server_line_too_large';
   readonly maxLineBytes: number;
   readonly observedBytes: number;
@@ -25,7 +25,7 @@ export class ProviderServerLineTooLargeError extends Error {
   }
 }
 
-export type ProviderServerNotification = {
+type ProviderServerNotification = {
   method: string;
   params?: Record<string, unknown>;
 };
@@ -36,7 +36,7 @@ type ProviderServerPendingRequest = {
   reject: (error: Error) => void;
 };
 
-export type ProviderServerRpc = {
+type ProviderServerRpc = {
   request: <TResult = unknown>(method: string, params?: Record<string, unknown>) => Promise<TResult>;
   notify: (method: string, params?: Record<string, unknown>) => void;
 };
@@ -299,11 +299,9 @@ function initializeProviderServer(params: {
   const timeout = new Promise<never>((_, reject) => {
     timeoutHandle = runtime.time.setTimeout(() => {
       reject(
-        createProviderServerError(
-          entry.provider,
-          `initialize timed out after ${timeoutMs}ms`,
-          { stderr: entry.stderr },
-        ),
+        createProviderServerError(entry.provider, `initialize timed out after ${timeoutMs}ms`, {
+          stderr: entry.stderr,
+        }),
       );
     }, timeoutMs);
     timeoutHandle.unref?.();
@@ -317,16 +315,14 @@ function initializeProviderServer(params: {
           signal.addEventListener('abort', abortHandler, { once: true });
         });
 
-  return Promise.race([rpc.request(request.method, request.params), timeout, ...(abort ? [abort] : [])]).finally(
-    () => {
-      if (timeoutHandle !== null) {
-        runtime.time.clearTimeout(timeoutHandle);
-      }
-      if (abortHandler !== null && signal !== undefined) {
-        signal.removeEventListener('abort', abortHandler);
-      }
-    },
-  );
+  return Promise.race([rpc.request(request.method, request.params), timeout, ...(abort ? [abort] : [])]).finally(() => {
+    if (timeoutHandle !== null) {
+      runtime.time.clearTimeout(timeoutHandle);
+    }
+    if (abortHandler !== null && signal !== undefined) {
+      signal.removeEventListener('abort', abortHandler);
+    }
+  });
 }
 
 function createProviderServerSpawnAbortError(provider: string, signal: AbortSignal): Error {

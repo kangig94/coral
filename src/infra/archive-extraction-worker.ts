@@ -1,7 +1,7 @@
 import * as timers from 'node:timers';
 import { Worker } from 'node:worker_threads';
 
-export type TarGzEntryMatcher = {
+type TarGzEntryMatcher = {
   readonly key: string;
   readonly exactPath?: string;
   readonly suffix?: string;

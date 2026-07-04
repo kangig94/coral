@@ -85,7 +85,7 @@ export function resolveEntry(entryId: string, index: KbIndex): ResolvedKbSearchE
   };
 }
 
-export function resolveHit(hit: FtsHit, index: KbIndex): ResolvedKbSearchHit {
+function resolveHit(hit: FtsHit, index: KbIndex): ResolvedKbSearchHit {
   const resolvedEntry = resolveEntry(hit.fields.entryId, index);
 
   return {
@@ -126,7 +126,7 @@ export function rankRetrievalRoleHits<T extends { entryId: KbEntryId; score: num
   return output;
 }
 
-export function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
+function filterHitsByScope<T extends { kind: KbResult['kind'] }>(hits: T[], scope: KbSearchScope): T[] {
   const filtered: T[] = [];
   if (scope === 'all') {
     // Communities are meta-documents: include them only when explicitly requested.
@@ -164,7 +164,7 @@ function isSearchableHit(hit: ResolvedKbSearchHit, communitiesFresh: boolean): b
   return communitiesFresh;
 }
 
-export function filterSearchableHits(hits: ResolvedKbSearchHit[], communitiesFresh: boolean): ResolvedKbSearchHit[] {
+function filterSearchableHits(hits: ResolvedKbSearchHit[], communitiesFresh: boolean): ResolvedKbSearchHit[] {
   const searchableHits: ResolvedKbSearchHit[] = [];
   for (const hit of hits) {
     if (isSearchableHit(hit, communitiesFresh)) {
@@ -174,7 +174,7 @@ export function filterSearchableHits(hits: ResolvedKbSearchHit[], communitiesFre
   return searchableHits;
 }
 
-export function rerankHits<T extends { score: number; kind: KbResult['kind']; slug: string }>(hits: T[]): T[] {
+function rerankHits<T extends { score: number; kind: KbResult['kind']; slug: string }>(hits: T[]): T[] {
   return [...hits].sort((left, right) => {
     const scoreDelta = right.score - left.score;
     if (scoreDelta !== 0) {
@@ -198,7 +198,7 @@ function maxPossibleOmittedScore(hits: readonly FtsHit[]): number {
   return boundaryHit.score;
 }
 
-export function shouldContinueWidening(
+function shouldContinueWidening(
   hits: readonly FtsHit[],
   resolvedHits: ResolvedKbSearchHit[],
   communitiesFresh: boolean,

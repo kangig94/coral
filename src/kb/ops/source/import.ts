@@ -15,26 +15,26 @@ const LEADING_ATX_H1 = /^#(?!#)\s+(.+?)\s*#*\s*(?:\r?\n+|$)/;
 const LEADING_SETEXT_H1 = /^([^\r\n]+)\r?\n=+\s*(?:\r?\n+|$)/;
 
 export const USER_SOURCE_IMPORT_MAX_BYTES = 128 * 1024 * 1024;
-export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = USER_SOURCE_IMPORT_MAX_BYTES;
+export const ADMIN_SOURCE_IMPORT_MAX_BYTES_DEFAULT = 128 * 1024 * 1024;
 export const SOURCE_IMPORT_MARKDOWN_OUTPUT_MAX_BYTES = 128 * 1024 * 1024;
-export const SOURCE_IMPORT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
+const SOURCE_IMPORT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 export const ADMIN_SOURCE_IMPORT_MAX_BYTES_ENV = 'CORAL_KB_IMPORT_MAX_BYTES';
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS';
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_CONVERSION_TIMEOUT_MAX_MS';
 export const SOURCE_IMPORT_CONVERSION_WORKER_MAX_OLD_MB_ENV = 'CORAL_KB_IMPORT_CONVERSION_WORKER_MAX_OLD_MB';
 export const SOURCE_IMPORT_MARKER_DEVICE_ENV = 'CORAL_KB_IMPORT_MARKER_DEVICE';
 export const SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS_ENV = 'CORAL_KB_IMPORT_MARKER_INSTALL_TIMEOUT_MS';
-export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS';
+const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS';
 export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS';
-export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS';
-export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS';
+const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS_ENV = 'CORAL_KB_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS';
+const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS_ENV = 'CORAL_KB_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS';
 export const SOURCE_IMPORT_MARKER_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_BASE_MS = 10 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_PER_MIB_MS = 20 * 1000;
-export const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS = 45 * 60 * 1000;
+const SOURCE_IMPORT_MARKER_CPU_TIMEOUT_MAX_MS = 45 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_BASE_MS = 3 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_PER_MIB_MS = 5 * 1000;
-export const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS = 15 * 60 * 1000;
+const SOURCE_IMPORT_MARKER_GPU_TIMEOUT_MAX_MS = 15 * 60 * 1000;
 export const SOURCE_IMPORT_MARKER_GPU_DETECT_TIMEOUT_MS = 2_000;
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_BASE_MS = 2 * 60 * 1000;
 export const SOURCE_IMPORT_CONVERSION_TIMEOUT_PER_MIB_MS = 10 * 1000;
@@ -87,7 +87,7 @@ export type SourceImportReadPolicy =
 export type ResolvedSourceImportFile = { path: string };
 
 // CLI-only source import converters. Keep npm conversion dependencies isolated here.
-export interface Converter {
+interface Converter {
   isAvailable(ctx: SourceImportContext): Promise<boolean>;
   install(log: (msg: string) => void, ctx: SourceImportContext): Promise<void>;
   convert(filePath: string, ctx: SourceImportContext): Promise<ConversionResult>;
@@ -400,7 +400,7 @@ export function cleanupSourceImportRuntimeArtifacts(runtimeRoot: string, runtime
   runtime.storage.rmSync(join(runtimeRoot, 'source-import-pdf'), { recursive: true, force: true });
 }
 
-export function hasParentPathSegment(filePath: string): boolean {
+function hasParentPathSegment(filePath: string): boolean {
   return filePath.split(/[\\/]+/u).some((segment) => segment === '..');
 }
 
@@ -534,7 +534,7 @@ function titleFromFilename(filePath: string): string {
   return normalizeTitle(stem);
 }
 
-export function toKebabCase(value: string): string {
+function toKebabCase(value: string): string {
   return normalizeTitle(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -740,7 +740,7 @@ export async function prepareSourceImport(
   };
 }
 
-export class MarkdownCopyConverter implements Converter {
+class MarkdownCopyConverter implements Converter {
   async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
     return true;
   }
@@ -763,7 +763,7 @@ export class MarkdownCopyConverter implements Converter {
   }
 }
 
-export class HtmlTurndownConverter implements Converter {
+class HtmlTurndownConverter implements Converter {
   async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
     return missingPackages(['turndown']).length === 0;
   }
@@ -786,7 +786,7 @@ export class HtmlTurndownConverter implements Converter {
   }
 }
 
-export class DocxMammothConverter implements Converter {
+class DocxMammothConverter implements Converter {
   async isAvailable(_ctx: SourceImportContext): Promise<boolean> {
     return missingPackages(['mammoth', 'turndown']).length === 0;
   }
@@ -905,7 +905,7 @@ export class PdfMarkerConverter implements Converter {
   }
 }
 
-export function resolveConverter(ext: string): Converter {
+function resolveConverter(ext: string): Converter {
   switch (ext.toLowerCase()) {
     case '.md':
       return new MarkdownCopyConverter();

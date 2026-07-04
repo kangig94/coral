@@ -15,9 +15,9 @@ import type {
   ResolveResult,
 } from './session-types.js';
 
-export const DEFAULT_BID_THRESHOLD = 30;
+const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
-export const DEFAULT_QUOTA_PER_EPOCH = 3;
+const DEFAULT_QUOTA_PER_EPOCH = 3;
 const MIN_FORCED_BID_QUOTA_REMAINING = 2;
 
 export function resolveAgentName(agents: Record<string, AgentState>, name: string): string | null {
@@ -36,7 +36,7 @@ function collectSubmittedBids(state: DiscussState): Record<string, number> {
   return bids;
 }
 
-export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
+function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
   for (let i = transcript.length - 1; i >= 0; i -= 1) {
     const entry = transcript[i];
     if (entry.type === 'speech') return entry.agent;
@@ -44,7 +44,7 @@ export function findLastSpeaker(transcript: TranscriptEntry[]): string | null {
   return null;
 }
 
-export function computeEffectiveBids(
+function computeEffectiveBids(
   allBids: Record<string, number>,
   agents: Record<string, AgentState>,
   lastSpeaker: string | null,

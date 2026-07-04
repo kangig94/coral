@@ -99,11 +99,11 @@ function normalizeRoleDescriptorOrThrow(
   }
 }
 
-export function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {
+function registeredConsumerHandles(scope: Disposable): readonly ConsumerHandle[] {
   return (scope as ExpansionScope)[REGISTERED_CONSUMER_HANDLES] ?? [];
 }
 
-export function registeredArtifactPorts(scope: Disposable): readonly EngineArtifactRegistration[] {
+function registeredArtifactPorts(scope: Disposable): readonly EngineArtifactRegistration[] {
   return (scope as ExpansionScope)[REGISTERED_ARTIFACT_PORTS] ?? [];
 }
 

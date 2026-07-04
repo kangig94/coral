@@ -445,7 +445,7 @@ function uniqueTokens(tokens: string[]): string[] {
   return unique;
 }
 
-export function normalizeHyphens(raw: string): string {
+function normalizeHyphens(raw: string): string {
   return raw.replace(/-/g, ' ');
 }
 

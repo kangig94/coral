@@ -7,7 +7,7 @@ export type CliInfo =
   | { available: true; version: string; authState: 'unknown' }
   | { available: true; version: string; authState: 'unauthenticated'; authError: string };
 
-export type AuthProbeResult =
+type AuthProbeResult =
   | { authState: 'authenticated' }
   | { authState: 'unknown' }
   | { authState: 'unauthenticated'; authError: string };
@@ -15,7 +15,7 @@ export type AuthProbeResult =
 export type CliDetectorProcessPort = Pick<ProcessPort, 'exec'>;
 export type CliDetectorEnvPort = Pick<EnvPort, 'get'>;
 
-export type CliDetectorConfig = {
+type CliDetectorConfig = {
   binaryName: string;
   versionArgs: readonly string[];
   notFoundMessage: string;
@@ -129,6 +129,7 @@ export function createCliDetector(
 
 // ── Codex ──────────────────────────────────────
 
+/** @knipignore Reached through provider test fixtures. */
 export const CODEX_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
   binaryName: 'codex',
   versionArgs: Object.freeze(['--version']),

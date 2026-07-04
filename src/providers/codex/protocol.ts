@@ -12,7 +12,7 @@ export interface Turn {
   status?: string;
 }
 
-export interface ThreadInfo {
+interface ThreadInfo {
   id: string;
   name?: string;
   agentNickname?: string;
@@ -43,7 +43,7 @@ export interface ThreadResumeParams {
   serviceTier?: 'fast' | 'flex';
 }
 
-export interface ThreadResumeResponse {
+interface ThreadResumeResponse {
   thread: ThreadInfo;
 }
 
@@ -63,17 +63,17 @@ export interface TurnStartResponse {
   turn: Turn;
 }
 
-export interface TurnInterruptParams {
+interface TurnInterruptParams {
   threadId: string;
   turnId: string;
 }
 
-export interface TurnInterruptResponse {
+interface TurnInterruptResponse {
   threadId: string;
   turnId: string;
 }
 
-export interface AppServerMethodMap {
+interface AppServerMethodMap {
   'thread/start': { params: ThreadStartParams; result: ThreadStartResponse };
   'thread/resume': { params: ThreadResumeParams; result: ThreadResumeResponse };
   'turn/start': { params: TurnStartParams; result: TurnStartResponse };

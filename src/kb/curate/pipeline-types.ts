@@ -20,7 +20,7 @@ export type NoteClaimCandidate = {
   cursor: CurateCursor;
 };
 
-export type SourceClaimCandidate = {
+type SourceClaimCandidate = {
   kind: 'source';
   entryId: KbEntryId;
   slug: string;
@@ -30,7 +30,7 @@ export type SourceClaimCandidate = {
 
 export type ClaimCandidate = NoteClaimCandidate | SourceClaimCandidate;
 
-export type NoteCurateClaimedEntry = {
+type NoteCurateClaimedEntry = {
   kind: 'note';
   entryId: KbEntryId;
   slug: string;
@@ -41,7 +41,7 @@ export type NoteCurateClaimedEntry = {
   cursor: CurateCursor;
 };
 
-export type SourceCurateClaimedEntry = {
+type SourceCurateClaimedEntry = {
   kind: 'source';
   entryId: KbEntryId;
   slug: string;
