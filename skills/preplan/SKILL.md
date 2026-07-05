@@ -70,6 +70,8 @@ items with the "unconfirmed" marker, then seek user feedback.
 
     Print a markdown table that enumerates every question, every option, and the option's description. The user audits framing scope here — they may add an option, narrow choices, or correct a misframing before the picker UI commits them.
 
+    For each question, order options by recommendation strength. The LLM's recommended branch MUST be the first option for that question and MUST be labeled with `(recommend)` in the table option cell, e.g. `1.1 (recommend)`, `2.1 (recommend)`. Non-recommended options use only their numeric label, e.g. `1.2`, `1.3`.
+
     Schema:
 
     ```
@@ -79,15 +81,15 @@ items with the "unconfirmed" marker, then seek user feedback.
 
     | # | Question | Option | Description |
     |---|----------|--------|-------------|
-    | 1 | <Q1> | 1.1 | <desc> |
+    | 1 | <Q1> | 1.1 (recommend) | <desc> |
     | 1 | <Q1> | 1.2 | <desc> |
-    | 2 | <Q2> | 2.1 | <desc> |
+    | 2 | <Q2> | 2.1 (recommend) | <desc> |
     | 2 | <Q2> | 2.2 | <desc> |
     ```
 
     #### 0b. AskUserQuestion call
 
-    After printing the table, call `AskUserQuestion` with the same questions and options. Discrete branches use structured options; for genuinely open dimensions, leave free-form input to the auto-provided "Other" choice rather than adding an explicit option for it.
+    After printing the table, call `AskUserQuestion` with the same questions and options in the same order. The recommended branch MUST be the first structured option for each question. Discrete branches use structured options; for genuinely open dimensions, leave free-form input to the auto-provided "Other" choice rather than adding an explicit option for it.
 
     #### 0c. Proceed
 
