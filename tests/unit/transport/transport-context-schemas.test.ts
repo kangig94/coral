@@ -40,6 +40,7 @@ const transportContext = {
   claudeModelCap: 'sonnet',
   claudeTransport: 'print',
   networkEnv: { HTTPS_PROXY: 'http://proxy:8443' },
+  coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
 };
 
 const kbMutationContext = {
@@ -259,4 +260,35 @@ describe('transport context request schemas', () => {
       },
     },
   ])('$name accepts buildKbMutationTransportContextBody fields', expectAccepted);
+
+  // A reserved (daemon-owned) or non-CORAL key inside coralEnv must be rejected
+  // at ingress on every schema that carries the field — the security boundary
+  // does not depend on the CLI-side filter alone.
+  it.each<SchemaCase>([
+    {
+      name: 'sessions.create rejects a reserved coralEnv key',
+      schema: sessionCreateSchema,
+      body: { provider: 'claude', prompt: 'hello', projectRoot: '/tmp/project', coralEnv: { CORAL_JOB_ID: 'forged' } },
+    },
+    {
+      name: 'workflow.run rejects a non-CORAL coralEnv key',
+      schema: workflowRequestSchema,
+      body: { expression: 'architect', startPrompt: 'hi', projectRoot: '/tmp/project', coralEnv: { PATH: '/usr/bin' } },
+    },
+    {
+      name: 'kb.note.create rejects a reserved coralEnv key',
+      schema: kbNoteCreateRequestSchema,
+      body: {
+        memo: 'm',
+        title: 't',
+        content: 'b',
+        domain: 'd',
+        topic: 'tp',
+        projectRoot: '/tmp/project',
+        coralEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'forged' },
+      },
+    },
+  ])('$name', ({ schema, body }) => {
+    expect(schema.safeParse(body).success).toBe(false);
+  });
 });

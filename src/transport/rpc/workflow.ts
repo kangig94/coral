@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { workflowCommandSchema } from '../../workflow/input.js';
+import { coralEnvForwardSchema } from '../../infra/env-sanitize.js';
 import { networkEnvSchema } from '../../infra/network-env.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
@@ -14,5 +15,6 @@ export const workflowRequestSchema = workflowCommandSchema
     claudeModelCap: modelNameSchema.optional(),
     claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
+    coralEnv: coralEnvForwardSchema.optional(),
   })
   .strict();

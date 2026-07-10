@@ -89,7 +89,7 @@ const HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL: Principal = {
   attenuatedCaps: new Set<Capability>(['liveness']),
 };
 type RestrictedRemoteTransportOption = {
-  option: 'bypassPermissions' | 'networkEnv';
+  option: 'bypassPermissions' | 'networkEnv' | 'coralEnv';
   message: string;
 };
 const eventStreamQuerySchema = z
@@ -448,6 +448,12 @@ function findRestrictedRemoteTransportOption(request: unknown): RestrictedRemote
     return {
       option: 'networkEnv',
       message: '`networkEnv` forwarding is only allowed from loopback HTTP clients',
+    };
+  }
+  if (Object.prototype.hasOwnProperty.call(request, 'coralEnv') && request.coralEnv !== undefined) {
+    return {
+      option: 'coralEnv',
+      message: '`coralEnv` forwarding is only allowed from loopback HTTP clients',
     };
   }
   return null;

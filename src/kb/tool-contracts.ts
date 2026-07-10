@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { coralEnvForwardSchema } from '../infra/env-sanitize.js';
 import { parseBooleanQuery } from '../infra/json.js';
 import { networkEnvSchema } from '../infra/network-env.js';
 
@@ -78,6 +79,7 @@ const transportContextFieldsShape = {
   jobId: z.string().optional(),
   sessionId: z.string().optional(),
   networkEnv: networkEnvSchema.optional(),
+  coralEnv: coralEnvForwardSchema.optional(),
 } satisfies z.ZodRawShape;
 const optionalTransportContextFieldsShape = {
   projectRoot: projectRootSchema.optional(),
@@ -88,6 +90,7 @@ const optionalTransportContextFieldsShape = {
   jobId: z.string().optional(),
   sessionId: z.string().optional(),
   networkEnv: networkEnvSchema.optional(),
+  coralEnv: coralEnvForwardSchema.optional(),
 } satisfies z.ZodRawShape;
 
 export const kbSearchSchema = z

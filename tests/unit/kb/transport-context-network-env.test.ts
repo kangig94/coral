@@ -32,6 +32,22 @@ describe('kb transport-context schema networkEnv', () => {
     expect(() => kbNoteCreateRequestSchema.parse({ ...base, networkEnv: { PATH: '/usr/bin' } })).toThrow();
   });
 
+  it('accepts a forwarded coralEnv map on a KB mutation request', () => {
+    const parsed = kbNoteCreateRequestSchema.parse({
+      ...base,
+      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' },
+    });
+    expect(parsed.coralEnv).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' });
+  });
+
+  it('rejects a reserved (daemon-owned) key inside coralEnv', () => {
+    expect(() => kbNoteCreateRequestSchema.parse({ ...base, coralEnv: { CORAL_JOB_ID: 'job-1' } })).toThrow();
+  });
+
+  it('rejects a non-CORAL key inside coralEnv', () => {
+    expect(() => kbNoteCreateRequestSchema.parse({ ...base, coralEnv: { PATH: '/usr/bin' } })).toThrow();
+  });
+
   it('accepts transport context on a memo delete request', () => {
     const parsed = kbMemoDeleteRequestSchema.parse({
       projectRoot: '/tmp/project',

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { discussBidSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
+import { coralEnvForwardSchema } from '../../infra/env-sanitize.js';
 import { networkEnvSchema } from '../../infra/network-env.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
@@ -35,6 +36,7 @@ export const discussSessionCreateRequestSchema = discussStartSchema
     claudeModelCap: z.string().optional(),
     claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
+    coralEnv: coralEnvForwardSchema.optional(),
   })
   .strict();
 
@@ -60,6 +62,7 @@ export const discussSessionBidRequestSchema = discussBidSchema
     claudeModelCap: z.string().optional(),
     claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
+    coralEnv: coralEnvForwardSchema.optional(),
   })
   .strict();
 
@@ -73,5 +76,6 @@ export const discussSessionSpeechRequestSchema = discussSpeechSchema
     claudeModelCap: z.string().optional(),
     claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
+    coralEnv: coralEnvForwardSchema.optional(),
   })
   .strict();

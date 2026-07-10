@@ -9,6 +9,7 @@ describe('session wire schemas', () => {
       'bypassPermissions',
       'claudeModelCap',
       'claudeTransport',
+      'coralEnv',
       'effort',
       'model',
       'networkEnv',
@@ -60,5 +61,22 @@ describe('session wire schemas', () => {
         networkEnv: { PATH: '/usr/bin' },
       }),
     ).toThrow();
+  });
+
+  it('sessionCreateSchema accepts a forwardable coralEnv map and rejects reserved/non-CORAL keys', () => {
+    expect(
+      sessionCreateSchema.parse({
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/tmp/project',
+        coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
+      }).coralEnv,
+    ).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol' });
+
+    for (const coralEnv of [{ CORAL_JOB_ID: 'forged' }, { PATH: '/usr/bin' }]) {
+      expect(() =>
+        sessionCreateSchema.parse({ provider: 'claude', prompt: 'hello', projectRoot: '/tmp/project', coralEnv }),
+      ).toThrow();
+    }
   });
 });

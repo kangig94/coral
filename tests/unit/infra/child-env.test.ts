@@ -7,7 +7,12 @@ vi.mock('#src/infra/backend-log.js', () => ({
 
 import {
   buildChildEnv,
+  coralEnvForwardSchema,
+  DAEMON_OWNED_CORAL_ENV_KEYS,
+  filterForwardableCoralEnv,
+  isForwardableCoralEnvKey,
   measureEnv,
+  readForwardedCoralEnv,
   resolveEnvBudgetBytes as envBudgetBytes,
   shedInheritedClaudeCodeEnv,
 } from '#src/infra/env-sanitize.js';
@@ -222,5 +227,91 @@ describe('shedInheritedClaudeCodeEnv', () => {
     expect(env.CORAL_CHILD).toBe('1');
     expect(env.ANTHROPIC_API_KEY).toBe('sk-test');
     expect(env.CLAUDED).toBe('not-a-claude-code-var');
+  });
+});
+
+describe('forwardable CORAL_* env', () => {
+  it('accepts CORAL_* config keys and rejects non-CORAL keys', () => {
+    expect(isForwardableCoralEnvKey('CORAL_CODEX_MODEL')).toBe(true);
+    expect(isForwardableCoralEnvKey('CORAL_MAX_WORKERS')).toBe(true);
+    expect(isForwardableCoralEnvKey('PATH')).toBe(false);
+  });
+
+  it('rejects every daemon-owned key (self-updating if the set grows)', () => {
+    for (const key of DAEMON_OWNED_CORAL_ENV_KEYS) {
+      expect(isForwardableCoralEnvKey(key)).toBe(false);
+    }
+  });
+
+  describe('filterForwardableCoralEnv', () => {
+    it('keeps forwardable CORAL_* keys and drops daemon-owned, non-CORAL, and empty values', () => {
+      const result = filterForwardableCoralEnv({
+        CORAL_CODEX_MODEL: 'gpt-5.6-sol',
+        CORAL_EFFORT: 'high',
+        CORAL_JOB_ID: 'job-1',
+        CORAL_CHILD_PRINCIPAL_HANDLE: 'forged',
+        CORAL_FLAVOR: 'dev',
+        CORAL_EMPTY: '',
+        PATH: '/usr/bin',
+        UNDEF: undefined,
+      });
+
+      expect(result).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' });
+    });
+
+    it('returns an empty object for an empty input', () => {
+      expect(filterForwardableCoralEnv({})).toEqual({});
+    });
+  });
+
+  describe('readForwardedCoralEnv', () => {
+    it('returns undefined for non-object input (absent field)', () => {
+      expect(readForwardedCoralEnv(undefined)).toBeUndefined();
+      expect(readForwardedCoralEnv(null)).toBeUndefined();
+      expect(readForwardedCoralEnv('CORAL_CODEX_MODEL=x')).toBeUndefined();
+    });
+
+    it('returns an empty map (not undefined) when a present object filters to nothing', () => {
+      // Present-but-empty is authoritative: it must be distinguishable from an
+      // absent field so the daemon clears its boot config → provider default.
+      expect(readForwardedCoralEnv({})).toEqual({});
+      expect(readForwardedCoralEnv({ CORAL_JOB_ID: 'j', PATH: '/usr/bin', CORAL_FLAVOR: 'dev' })).toEqual({});
+    });
+
+    it('returns the filtered forwardable config for a valid map', () => {
+      expect(readForwardedCoralEnv({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_JOB_ID: 'j' })).toEqual({
+        CORAL_CODEX_MODEL: 'gpt-5.6-sol',
+      });
+    });
+  });
+
+  describe('coralEnvForwardSchema', () => {
+    it('parses a map of non-reserved CORAL_* keys with non-empty values', () => {
+      expect(coralEnvForwardSchema.parse({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' })).toEqual({
+        CORAL_CODEX_MODEL: 'gpt-5.6-sol',
+        CORAL_EFFORT: 'high',
+      });
+    });
+
+    it('parses an empty map', () => {
+      expect(coralEnvForwardSchema.parse({})).toEqual({});
+    });
+
+    it('rejects reserved (daemon-owned) keys', () => {
+      expect(coralEnvForwardSchema.safeParse({ CORAL_JOB_ID: 'job-1' }).success).toBe(false);
+      expect(coralEnvForwardSchema.safeParse({ CORAL_CHILD_PRINCIPAL_HANDLE: 'x' }).success).toBe(false);
+      // CORAL_KB_ENABLE is a daemon-boot decision, not a per-request caller knob.
+      expect(coralEnvForwardSchema.safeParse({ CORAL_KB_ENABLE: '0' }).success).toBe(false);
+    });
+
+    it('rejects the whole map when a reserved key is mixed with a valid one', () => {
+      expect(coralEnvForwardSchema.safeParse({ CORAL_EFFORT: 'high', CORAL_JOB_ID: 'forged' }).success).toBe(false);
+    });
+
+    it('rejects non-CORAL keys, empty values, and non-string values', () => {
+      expect(coralEnvForwardSchema.safeParse({ PATH: '/usr/bin' }).success).toBe(false);
+      expect(coralEnvForwardSchema.safeParse({ CORAL_CODEX_MODEL: '' }).success).toBe(false);
+      expect(coralEnvForwardSchema.safeParse({ CORAL_EFFORT: 42 }).success).toBe(false);
+    });
   });
 });

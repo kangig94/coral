@@ -64,6 +64,7 @@ import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/c
 import { ensure, shutdownAndAwaitRelease, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
+import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import type { Principal } from '../security/principal.js';
 import { classifyCommand, commandPath } from './classify.js';
@@ -375,6 +376,17 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Invoc
   if (Object.keys(networkEnv).length > 0) {
     body.networkEnv = networkEnv;
   }
+
+  // Forward the caller's fresh CORAL_* config (model, effort, worker caps, …)
+  // for the same reason: the daemon's CORAL_* is frozen at boot, so a change to
+  // the caller's settings only reaches spawned providers if it travels
+  // per-request. Daemon-owned identity/boot keys are filtered out here and
+  // re-asserted daemon-side. The field is attached unconditionally — even when
+  // empty — so the daemon can tell "caller cleared all config, use defaults"
+  // (present, empty) apart from "caller doesn't forward" (absent); without this
+  // the daemon would keep serving its stale boot value after the caller unset
+  // their last CORAL_* var.
+  body.coralEnv = filterForwardableCoralEnv(context.coralEnv);
 
   return body;
 }

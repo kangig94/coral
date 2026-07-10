@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { coralEnvForwardSchema } from '../infra/env-sanitize.js';
 import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
 import { networkEnvSchema } from '../infra/network-env.js';
 import { retentionPolicySchema } from './entry.js';
@@ -41,5 +42,6 @@ export const sessionCreateSchema = z
     systemPrompt: z.string().optional(),
     retention: retentionPolicySchema.optional(),
     networkEnv: networkEnvSchema.optional(),
+    coralEnv: coralEnvForwardSchema.optional(),
   })
   .strict();
