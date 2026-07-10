@@ -360,6 +360,12 @@ const GPT56_SIZE_MODEL: Record<string, string> = {
   luna: 'gpt-5.6-luna',
 };
 
+function normalizeGpt56SizeAlias(model: string | undefined): string | undefined {
+  if (model === undefined) return undefined;
+  const key = model.trim().toLowerCase();
+  return Object.hasOwn(GPT56_SIZE_MODEL, key) ? GPT56_SIZE_MODEL[key] : model;
+}
+
 /**
  * Agent frontmatter / Coral abstract tiers → Codex GPT-5.6 family aliases.
  * Agent files declare Claude-style tiers (`opus` / `sonnet` / `haiku`); Codex
@@ -482,10 +488,12 @@ export function resolveCodexServiceTier(
  * aliases; Codex has no equivalent for those Claude-style names.
  */
 function resolveCodexModel(request: ProviderRequest): string {
-  const baseline = request.coralEnv['CORAL_CODEX_MODEL'] ?? DEFAULT_CODEX_MODEL;
+  const baseline = normalizeGpt56SizeAlias(request.coralEnv['CORAL_CODEX_MODEL']) ?? DEFAULT_CODEX_MODEL;
 
   if (request.model !== undefined) {
-    const mapped = CODEX_ABSTRACT_MODEL[request.model];
+    const mapped = Object.hasOwn(CODEX_ABSTRACT_MODEL, request.model)
+      ? CODEX_ABSTRACT_MODEL[request.model]
+      : undefined;
     if (mapped !== undefined) {
       return isCodexGpt56Family(baseline) ? mapped : baseline;
     }
@@ -493,8 +501,8 @@ function resolveCodexModel(request: ProviderRequest): string {
     // abstract tiers: normalize to the canonical `gpt-5.6-<size>` id so the wire
     // model (and Codex) never sees the prefix-less alias. Unconditional — these
     // names are explicit 5.6 sizes regardless of the baseline line.
-    const sizeModel = GPT56_SIZE_MODEL[request.model.trim().toLowerCase()];
-    if (sizeModel !== undefined) {
+    const sizeModel = normalizeGpt56SizeAlias(request.model) ?? request.model;
+    if (sizeModel !== request.model) {
       return sizeModel;
     }
   }

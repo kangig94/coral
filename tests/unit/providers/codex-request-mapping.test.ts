@@ -607,6 +607,22 @@ describe('resolveCodexModel uses coralEnv', () => {
     expect(mapTurnStartParams(request, 'thread-1').model).toBe('custom-model');
   });
 
+  it.each([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+  ] as const)('normalizes bare GPT-5.6 baseline alias %s to %s', (alias, codexModel) => {
+    const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: alias } });
+
+    expect(mapThreadStartParams(request).model).toBe(codexModel);
+  });
+
+  it('preserves a non-alias CORAL_CODEX_MODEL baseline', () => {
+    const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } });
+
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.5');
+  });
+
   it('does not leak CORAL_CODEX_MODEL from the daemon process env', () => {
     vi.stubEnv('CORAL_CODEX_MODEL', 'daemon-env-model');
 
