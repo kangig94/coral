@@ -226,10 +226,10 @@ describe('mapTurnStartParams effort mapping', () => {
   });
 
   it.each([
-    ['sonnet', 'terra'],
-    ['haiku', 'luna'],
-    ['terra', 'terra'],
-    ['luna', 'luna'],
+    ['sonnet', 'gpt-5.6-terra'],
+    ['haiku', 'gpt-5.6-luna'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
     ['gpt-5.6-terra', 'gpt-5.6-terra'],
     ['gpt-5.6-luna', 'gpt-5.6-luna'],
   ] as const)('floors %s effort to xhigh (resolved model %s)', (model, resolvedModel) => {
@@ -618,9 +618,9 @@ describe('resolveCodexModel uses coralEnv', () => {
   });
 
   it.each([
-    ['opus', 'sol'],
-    ['sonnet', 'terra'],
-    ['haiku', 'luna'],
+    ['opus', 'gpt-5.6-sol'],
+    ['sonnet', 'gpt-5.6-terra'],
+    ['haiku', 'gpt-5.6-luna'],
   ] as const)('maps abstract tier %s to Codex model %s under GPT-5.6 default', (tier, codexModel) => {
     const request = makeRequest({ model: tier });
 
@@ -630,9 +630,9 @@ describe('resolveCodexModel uses coralEnv', () => {
   });
 
   it.each([
-    ['opus', 'sol'],
-    ['sonnet', 'terra'],
-    ['haiku', 'luna'],
+    ['opus', 'gpt-5.6-sol'],
+    ['sonnet', 'gpt-5.6-terra'],
+    ['haiku', 'gpt-5.6-luna'],
   ] as const)('maps abstract tier %s when CORAL_CODEX_MODEL is GPT-5.6 family', (tier, codexModel) => {
     const request = makeRequest({
       model: tier,
@@ -646,10 +646,10 @@ describe('resolveCodexModel uses coralEnv', () => {
   it('maps abstract tiers when CORAL_CODEX_MODEL is a bare GPT-5.6 alias', () => {
     const request = makeRequest({
       model: 'sonnet',
-      coralEnv: { CORAL_CODEX_MODEL: 'sol' },
+      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
     });
 
-    expect(mapThreadStartParams(request).model).toBe('terra');
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.6-terra');
   });
 
   it('collapses abstract tiers to a non-GPT-5.6 CORAL_CODEX_MODEL (no sol/terra/luna split)', () => {
