@@ -1,16 +1,35 @@
 import type { EffortLevel } from './contract.js';
+import { backendLog } from '../infra/backend-log.js';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const EFFORT_VALUES_HINT = 'low, medium, high, xhigh, max, ultra';
 export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
 /**
- * Validate an effort string. Returns undefined when the input is undefined.
- * Throws with a user-friendly label when the string is non-empty but invalid.
+ * Validate an effort string supplied directly on a request (a contract input).
+ * Returns undefined when unset; throws on a non-empty invalid value so the
+ * caller error surfaces at ingress/launch rather than mid-job.
  */
 function parseEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
   if (value === undefined) return undefined;
   if (!VALID_EFFORT_LEVELS.has(value)) {
-    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, xhigh, max, ultra`);
+    throw new Error(`Invalid ${label}="${value}". Valid values: ${EFFORT_VALUES_HINT}`);
+  }
+  return value as EffortLevel;
+}
+
+/**
+ * Validate an effort string read from forwarded CORAL_* env. Unlike the
+ * request-body path, a typo here (e.g. a bad CORAL_CODEX_EFFORT in a caller's
+ * settings) must not fail the provider turn — the value now travels per request,
+ * so a mistake would otherwise kill every job. Warn once and ignore it so the
+ * fallback chain reaches the provider default.
+ */
+function parseEnvEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
+  if (value === undefined) return undefined;
+  if (!VALID_EFFORT_LEVELS.has(value)) {
+    backendLog.warn(`Ignoring invalid ${label}="${value}" (valid: ${EFFORT_VALUES_HINT}); using default effort.`);
+    return undefined;
   }
   return value as EffortLevel;
 }
@@ -31,8 +50,8 @@ export function resolveProviderEffort(
 ): EffortLevel | undefined {
   return (
     request.effort ??
-    parseEffortLevel(env[providerEnvKey], providerEnvKey) ??
-    parseEffortLevel(env.CORAL_EFFORT, 'CORAL_EFFORT')
+    parseEnvEffortLevel(env[providerEnvKey], providerEnvKey) ??
+    parseEnvEffortLevel(env.CORAL_EFFORT, 'CORAL_EFFORT')
   );
 }
 

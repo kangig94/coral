@@ -15,6 +15,7 @@ import {
   snapshotCodexPersistedContinuity,
 } from '#src/providers/codex/request-mapping.js';
 import type { ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import { backendLog } from '#src/infra/backend-log.js';
 
 const tempHomes: string[] = [];
 type TierReadFileSync = NonNullable<NonNullable<ProviderRuntime['storage']>['readFileSync']>;
@@ -211,10 +212,23 @@ describe('mapTurnStartParams effort mapping', () => {
     expect(params.effort).toBe('medium');
   });
 
-  it('throws a user-friendly error when CORAL_CODEX_EFFORT is invalid', () => {
-    expect(() =>
-      mapTurnStartParams(makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }), 'thread-1'),
-    ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max, ultra');
+  it('warns and falls back to the default effort when CORAL_CODEX_EFFORT is invalid (no throw)', () => {
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const params = mapTurnStartParams(
+      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('high'); // CODEX_DEFAULT_EFFORT — not a thrown error
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_EFFORT="turbo"'));
+  });
+
+  it('falls back through CORAL_EFFORT when CORAL_CODEX_EFFORT is invalid', () => {
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const params = mapTurnStartParams(
+      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'nope', CORAL_EFFORT: 'medium' } }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('medium');
   });
 
   it('does not raise Sol effort above the configured value', () => {
