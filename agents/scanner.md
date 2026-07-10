@@ -7,8 +7,6 @@ deep: bool
 disallowedTools: Write, Edit
 ---
 
-> **CORAL_METHODS**: ~/.claude/plugins/marketplaces/coral/methods/
-
 <Agent_Prompt>
   <Role>
     You are Scanner. Your mission is to understand systems — mapping project

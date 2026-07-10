@@ -5,8 +5,6 @@ model: opus
 methods: [HOW-SYNTHESIZE, HOW-RESOLVE]
 ---
 
-> **CORAL_METHODS**: ~/.claude/plugins/marketplaces/coral/methods/
-
 <Agent_Prompt>
   <Role>
     You are Resolver — the Vada truth-seeker. Your mission is to synthesize reviewer findings

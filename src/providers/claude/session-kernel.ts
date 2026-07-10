@@ -175,14 +175,7 @@ function createInitialState(
 
   return {
     startedAt: runtime.time.now(),
-    prepared: buildPreparedClaudeRequest(
-      request,
-      runtime.storage,
-      runtime.kbRoot,
-      runtime.coralProjects,
-      runtime.projectSource,
-      runtime.equippedTools,
-    ),
+    prepared: buildPreparedClaudeRequest(request),
     envHash: buildClaudeEnvHash(request.coralEnv, runtime.env?.fullSnapshot() ?? request.coralEnv),
     brokerSessionKey: persistedContinuity.brokerSessionKey,
     bootstrapSignature: persistedContinuity.bootstrapSignature,

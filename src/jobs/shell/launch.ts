@@ -33,6 +33,7 @@ import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
 import { buildJobEventRefs } from '../refs.js';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
+import { applyInjectMd } from '../../providers/inject.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -528,6 +529,8 @@ export class LaunchOrchestrator {
     pool: LaunchPool,
   ): Promise<void> {
     const runtime = this.createProviderRuntime(provider, request, sessionId, jobId, signal, pool);
+    // Provider-agnostic INJECT.md: merge into systemPrompt once for every adapter.
+    const requestWithInject = applyInjectMd(request, runtime);
     let latestContinuity: JobContinuitySnapshot | null = null;
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
     const consumed = await consumeJobStream({
@@ -535,7 +538,7 @@ export class LaunchOrchestrator {
       providerName: provider.name,
       sessionId,
       initialVersion,
-      stream: provider.run(request, runtime),
+      stream: provider.run(requestWithInject, runtime),
       sessionApi: {
         checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
           if (this.quiescedAppServerJobs.has(jobId)) {

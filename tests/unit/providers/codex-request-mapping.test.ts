@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   applyCodexContinuityUpdate,
   buildCodexContinuity,
+  buildCodexPrompt,
   buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
@@ -85,6 +86,32 @@ afterEach(() => {
   }
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+});
+
+describe('buildCodexPrompt ordering', () => {
+  it('orders systemPrompt (INJECT), then instruction, then user prompt', () => {
+    const text = buildCodexPrompt(
+      makeRequest({
+        systemPrompt: 'guidelines',
+        instruction: { channel: 'system', content: 'agent body' },
+        prompt: 'user task',
+      }),
+    );
+    expect(text).toBe('guidelines\n\n---\n\nagent body\n\n---\n\nuser task');
+  });
+
+  it('skips instruction on resume but keeps systemPrompt and prompt', () => {
+    const text = buildCodexPrompt(
+      makeRequest({
+        action: 'resume',
+        systemPrompt: 'guidelines',
+        instruction: { channel: 'system', content: 'agent body' },
+        prompt: 'continue',
+      }),
+    );
+    expect(text).toBe('guidelines\n\n---\n\ncontinue');
+    expect(text).not.toContain('agent body');
+  });
 });
 
 describe('mapTurnStartParams effort mapping', () => {

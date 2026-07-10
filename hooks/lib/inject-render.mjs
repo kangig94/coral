@@ -47,11 +47,17 @@ export function renderInject({ pluginRoot, projectDir, sessionId, asOwner, kbEna
   const raw = readFileSync(join(pluginRoot, 'INJECT.md'), 'utf-8');
   const kbScoped = kbEnabled ? raw : stripKbOnly(raw);
   const base = asOwner ? kbScoped : stripOwnerOnly(kbScoped);
+  const projectRoot = projectDir ? coralProjectDir(projectDir) : undefined;
+  // Trailing slash matches skill-vars / agent path-alias conventions (`CORAL_METHODS/HOW-…`).
+  const methodsRoot = `${join(pluginRoot, 'methods')}/`;
   return base
     .replaceAll('{{CORAL_KB}}', resolveKbRoot())
     .replaceAll('{{CORAL_CLI}}', activeBridgeCommand(pluginRoot))
+    .replaceAll('{{CORAL_METHODS}}', methodsRoot)
     .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(equippedTools))
     .replaceAll('{{SESSION_ID}}', sessionId || '')
-    .replaceAll('{{CORAL_PROJECTS}}', projectDir ? coralProjectDir(projectDir) : '{{CORAL_PROJECTS}}')
+    // Singular alias used by skills/agents; plural kept for older inject copy.
+    .replaceAll('{{CORAL_PROJECT}}', projectRoot ?? '{{CORAL_PROJECT}}')
+    .replaceAll('{{CORAL_PROJECTS}}', projectRoot ?? '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectDir ? resolveProjectSource(projectDir) : '{{PROJECT_SOURCE}}');
 }

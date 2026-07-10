@@ -54,14 +54,7 @@ const claudeSessionProvider = compose(
 );
 
 const claude: Provider = (request, runtime) => {
-  const prepared = buildPreparedClaudeRequest(
-    request,
-    runtime.storage,
-    runtime.kbRoot,
-    runtime.coralProjects,
-    runtime.projectSource,
-    runtime.equippedTools,
-  );
+  const prepared = buildPreparedClaudeRequest(request);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
   if (persistedContinuity.bootstrapSignature) {

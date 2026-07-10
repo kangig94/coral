@@ -31,15 +31,22 @@ type CodexContinuityReadOptions = {
   cwdScope?: string;
 };
 
-function buildCodexPrompt(
+/**
+ * Assemble the single Codex turn text.
+ *
+ * Order is presentation-only (Codex has no separate system channel): guidelines /
+ * systemPrompt first, then agent instruction, then the user task. `INJECT.md` is
+ * pre-merged into `systemPrompt` by `applyInjectMd` at the job shell boundary.
+ */
+export function buildCodexPrompt(
   request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>,
 ): string {
   const parts: string[] = [];
-  if (request.action !== 'resume' && request.instruction) {
-    parts.push(request.instruction.content);
-  }
   if (request.systemPrompt) {
     parts.push(request.systemPrompt);
+  }
+  if (request.action !== 'resume' && request.instruction) {
+    parts.push(request.instruction.content);
   }
   parts.push(request.prompt);
   return parts.join('\n\n---\n\n');

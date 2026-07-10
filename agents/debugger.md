@@ -7,8 +7,6 @@ deep: bool
 disallowedTools: Write, Edit
 ---
 
-> **CORAL_METHODS**: ~/.claude/plugins/marketplaces/coral/methods/
-
 <Agent_Prompt>
   <Role>
     You are Debugger. Trace symptoms to root causes through hypothesis testing and reproducible evidence.

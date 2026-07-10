@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { isOwnerId } from '../infra/identifiers.js';
+import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../infra/kb-toggle.js';
 import type { StoragePort } from '../infra/port-types.js';
+import type { ProviderRequest } from './contract.js';
 
 declare const __PLUGIN_ROOT__: string;
 
@@ -75,15 +77,56 @@ export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
 
   const { ownerSessionId, kbRoot, coralProjects, projectSource } = opts;
   const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
-  const cliPath = `node "${join(pluginRoot(), 'bridge', 'coral-cli.cjs')}"`;
+  const root = pluginRoot();
+  const cliPath = `node "${join(root, 'bridge', 'coral-cli.cjs')}"`;
+  // Trailing slash matches skill-vars / agent path-alias conventions (`CORAL_METHODS/HOW-…`).
+  const methodsRoot = `${join(root, 'methods')}/`;
   const base = opts.kbEnabled === false ? stripKbOnly(md) : md;
   const rendered = base
     .replaceAll('{{CORAL_KB}}', kbRoot)
     .replaceAll('{{CORAL_CLI}}', cliPath)
+    .replaceAll('{{CORAL_METHODS}}', methodsRoot)
     .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(opts.equippedTools))
     .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
+    // Singular alias used by skills/agents; plural kept for older inject copy.
+    .replaceAll('{{CORAL_PROJECT}}', coralProjects ?? '{{CORAL_PROJECT}}')
     .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
     .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}');
   const withoutOwner = stripOwnerOnly(rendered);
   return normalizedOwner ? withoutOwner : stripSessionIdOnly(withoutOwner);
+}
+
+/**
+ * Provider-agnostic INJECT.md application.
+ *
+ * Prepends rendered guidelines onto `request.systemPrompt` (append-merge when a
+ * caller systemPrompt already exists — never overwrite). Empty inject is a no-op.
+ * Applied once at the job shell boundary before any provider adapter runs so
+ * Claude and Codex (and future providers) share the same injection policy.
+ */
+export function applyInjectMd(
+  request: ProviderRequest,
+  runtime: {
+    storage: Pick<StoragePort, 'readFileSync'>;
+    kbRoot: string;
+    coralProjects?: string;
+    projectSource?: string;
+    equippedTools?: readonly InjectEquippedTool[];
+  },
+): ProviderRequest {
+  const injectMd = resolveInjectMd({
+    storage: runtime.storage,
+    ownerSessionId: request.coralEnv?.CORAL_OWNER,
+    kbRoot: runtime.kbRoot,
+    kbEnabled: resolveKbEnabled(request.coralEnv?.[CORAL_KB_ENABLE_ENV]),
+    ...(runtime.coralProjects === undefined ? {} : { coralProjects: runtime.coralProjects }),
+    ...(runtime.projectSource === undefined ? {} : { projectSource: runtime.projectSource }),
+    ...(runtime.equippedTools === undefined ? {} : { equippedTools: runtime.equippedTools }),
+  });
+  if (!injectMd) {
+    return request;
+  }
+
+  const systemPrompt = request.systemPrompt ? `${injectMd}\n\n${request.systemPrompt}` : injectMd;
+  return { ...request, systemPrompt };
 }

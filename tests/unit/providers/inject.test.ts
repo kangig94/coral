@@ -25,13 +25,21 @@ vi.mock('#src/kb/paths.js', async () => {
 beforeEach(() => {
   mockInjectMd = '';
   mockInjectMdError = null;
-  // Reset the module-level cache by re-importing
+  // Source modules use the esbuild-injected bare identifier `__PLUGIN_ROOT__`.
+  // Vitest has no esbuild define for it — mirror the setup global onto the free name.
+  vi.stubGlobal('__PLUGIN_ROOT__', process.cwd());
+  // Reset the module-level injectMdCache by re-importing
   vi.resetModules();
 });
 
 async function loadResolve() {
   const mod = await import('#src/providers/inject.js');
   return mod.resolveInjectMd;
+}
+
+async function loadApply() {
+  const mod = await import('#src/providers/inject.js');
+  return mod.applyInjectMd;
 }
 
 describe('resolveInjectMd', () => {
@@ -199,5 +207,108 @@ describe('resolveInjectMd', () => {
 
     const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toContain('kb stuff');
+  });
+
+  it('substitutes {{CORAL_METHODS}} from plugin root with a trailing slash', async () => {
+    mockInjectMd = 'methods: {{CORAL_METHODS}}';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    expect(result).toMatch(/methods: .+\/methods\/$/);
+    expect(result).not.toContain('{{CORAL_METHODS}}');
+  });
+
+  it('substitutes {{CORAL_PROJECT}} from caller-resolved project data dir', async () => {
+    mockInjectMd = 'project: {{CORAL_PROJECT}}\nlegacy: {{CORAL_PROJECTS}}';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({
+      storage: mockStorage,
+      kbRoot: '/mock/kb',
+      coralProjects: '/mock/projects/acme-repo',
+    });
+    expect(result).toContain('project: /mock/projects/acme-repo');
+    expect(result).toContain('legacy: /mock/projects/acme-repo');
+  });
+
+  it('leaves {{CORAL_PROJECT}} placeholder when caller omits project data dir', async () => {
+    mockInjectMd = 'project: {{CORAL_PROJECT}}';
+    const resolveInjectMd = await loadResolve();
+
+    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    expect(result).toContain('project: {{CORAL_PROJECT}}');
+  });
+});
+
+describe('applyInjectMd', () => {
+  const baseRequest = {
+    action: 'exec' as const,
+    sessionId: 's-1',
+    prompt: 'task',
+    cwd: '/tmp',
+    bypassPermissions: false,
+    coralEnv: {},
+  };
+
+  function runtime(overrides: Record<string, unknown> = {}) {
+    return {
+      storage: mockStorage,
+      kbRoot: '/mock/kb',
+      ...overrides,
+    };
+  }
+
+  it('is a no-op when INJECT.md is empty/missing', async () => {
+    mockInjectMd = '';
+    const applyInjectMd = await loadApply();
+    const request = { ...baseRequest, systemPrompt: 'caller' };
+    expect(applyInjectMd(request, runtime())).toBe(request);
+  });
+
+  it('sets systemPrompt to inject when caller has none', async () => {
+    mockInjectMd = 'guidelines';
+    const applyInjectMd = await loadApply();
+    const result = applyInjectMd(baseRequest, runtime());
+    expect(result.systemPrompt).toBe('guidelines');
+    expect(result.prompt).toBe('task');
+  });
+
+  it('prepends inject and preserves caller systemPrompt (append-merge, never overwrite)', async () => {
+    mockInjectMd = 'guidelines';
+    const applyInjectMd = await loadApply();
+    const result = applyInjectMd({ ...baseRequest, systemPrompt: 'caller system' }, runtime());
+    expect(result.systemPrompt).toBe('guidelines\n\ncaller system');
+  });
+
+  it('omits KB_ONLY when coralEnv disables KB', async () => {
+    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
+    const applyInjectMd = await loadApply();
+    const result = applyInjectMd(
+      { ...baseRequest, coralEnv: { CORAL_KB_ENABLE: '0' } },
+      runtime(),
+    );
+    expect(result.systemPrompt).toContain('top');
+    expect(result.systemPrompt).not.toContain('kb stuff');
+    expect(result.systemPrompt).toContain('bottom');
+  });
+
+  it('includes equipped tools when runtime supplies them', async () => {
+    mockInjectMd = 'CLI\n{{EQUIPPED_TOOLS}}\nafter';
+    const applyInjectMd = await loadApply();
+    const result = applyInjectMd(
+      baseRequest,
+      runtime({
+        equippedTools: [
+          {
+            id: 'codebase-memory',
+            summary: 'mandatory first stop for any code work.',
+            guidance: ['Use search_graph before opening files.'],
+          },
+        ],
+      }),
+    );
+    expect(result.systemPrompt).toContain('mandatory first-pass capabilities');
+    expect(result.systemPrompt).toContain('- codebase-memory: mandatory first stop for any code work.');
+    expect(result.systemPrompt).toContain('  - Use search_graph before opening files.');
   });
 });

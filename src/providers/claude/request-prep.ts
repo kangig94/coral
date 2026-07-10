@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { resolveInjectMd } from '../inject.js';
-import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../../infra/kb-toggle.js';
-import type { ProviderEquippedToolSummary, ProviderRequest, EffortLevel } from '../contract.js';
-import type { StoragePort } from '../../infra/port-types.js';
+import type { ProviderRequest, EffortLevel } from '../contract.js';
 import { CORAL_CHILD_PRINCIPAL_HANDLE } from '../../security/child-principal-env.js';
 import { ABSTRACT_MODEL_TIERS, resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { isRecord, readString } from '../../infra/json.js';
@@ -129,31 +126,25 @@ function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' |
   return isOpusEffectiveTier(request.model, request.coralEnv) ? 'xhigh' : 'max';
 }
 
+/**
+ * Assemble the Claude system/user payloads.
+ *
+ * `INJECT.md` is applied provider-agnostically by `applyInjectMd` at the job shell
+ * boundary and arrives pre-merged into `request.systemPrompt` (guidelines first,
+ * caller systemPrompt appended). This function must not re-resolve INJECT.md.
+ */
 export function buildPreparedClaudeRequest(
   request: Pick<
     ProviderRequest,
-    'prompt' | 'instruction' | 'systemPrompt' | 'cwd' | 'coralEnv' | 'model' | 'effort' | 'bypassPermissions'
+    'prompt' | 'instruction' | 'systemPrompt' | 'coralEnv' | 'model' | 'effort'
   >,
-  storage: Pick<StoragePort, 'readFileSync'>,
-  kbRoot: string,
-  coralProjects?: string,
-  projectSource?: string,
-  equippedTools?: readonly ProviderEquippedToolSummary[],
 ): PreparedClaudeRequest {
   const systemParts: string[] = [];
   let prompt = request.prompt;
 
-  const injectMd = resolveInjectMd({
-    storage,
-    ownerSessionId: request.coralEnv?.CORAL_OWNER,
-    kbRoot,
-    kbEnabled: resolveKbEnabled(request.coralEnv?.[CORAL_KB_ENABLE_ENV]),
-    ...(coralProjects === undefined ? {} : { coralProjects }),
-    ...(projectSource === undefined ? {} : { projectSource }),
-    ...(equippedTools === undefined ? {} : { equippedTools }),
-  });
-  if (injectMd) {
-    systemParts.push(injectMd);
+  // systemPrompt first so INJECT guidelines lead the system channel.
+  if (request.systemPrompt) {
+    systemParts.push(request.systemPrompt);
   }
 
   if (request.instruction) {
@@ -162,10 +153,6 @@ export function buildPreparedClaudeRequest(
     } else {
       prompt = `${request.instruction.content}\n\n---\n\n${request.prompt}`;
     }
-  }
-
-  if (request.systemPrompt) {
-    systemParts.push(request.systemPrompt);
   }
 
   systemParts.push(OUTPUT_STYLE_OVERRIDE);

@@ -62,3 +62,48 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
     expect(out).toContain('done');
   });
 });
+
+describe('renderInject path aliases', () => {
+  it('substitutes CORAL_METHODS and CORAL_PROJECT when projectDir is set', () => {
+    const pluginRoot = pluginRootWith(
+      'methods: {{CORAL_METHODS}}\nproject: {{CORAL_PROJECT}}\nlegacy: {{CORAL_PROJECTS}}',
+    );
+    const projectDir = mkdtempSync(join(tmpdir(), 'coral-inject-project-'));
+    createdRoots.push(projectDir);
+
+    const out = renderInject({
+      pluginRoot,
+      projectDir,
+      sessionId: 's',
+      asOwner: true,
+      kbEnabled: true,
+    });
+
+    const lines = Object.fromEntries(
+      out
+        .split('\n')
+        .filter(Boolean)
+        .map((line: string) => {
+          const i = line.indexOf(': ');
+          return [line.slice(0, i), line.slice(i + 2)] as const;
+        }),
+    );
+    expect(lines.methods).toBe(`${join(pluginRoot, 'methods')}/`);
+    expect(lines.project.length).toBeGreaterThan(0);
+    expect(lines.legacy).toBe(lines.project);
+    expect(out).not.toContain('{{CORAL_METHODS}}');
+    expect(out).not.toContain('{{CORAL_PROJECT}}');
+  });
+
+  it('leaves CORAL_PROJECT placeholder when projectDir is absent', () => {
+    const out = renderInject({
+      pluginRoot: pluginRootWith('project: {{CORAL_PROJECT}}\nmethods: {{CORAL_METHODS}}'),
+      projectDir: undefined,
+      sessionId: 's',
+      asOwner: true,
+      kbEnabled: true,
+    });
+    expect(out).toContain('project: {{CORAL_PROJECT}}');
+    expect(out).toMatch(/methods: .+\/methods\/$/);
+  });
+});
