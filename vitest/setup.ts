@@ -4,12 +4,14 @@
 process.setMaxListeners(100);
 
 // Hermetic env baseline: scrub the KB-control variables a developer may export
-// in their shell (e.g. `CORAL_KB_ENABLE=0` to pause local curate, or a custom
-// `CORAL_KB_PATH`). Inherited, they would flip the KB-default-enabled behavior
-// inside every worker and silently break KB/hook/startup tests that assume the
-// default. Tests that exercise these flags set them explicitly (vi.stubEnv or a
-// subprocess env), so removing the ambient values cannot mask intended setups.
-for (const key of ['CORAL_KB_ENABLE', 'CORAL_KB_PATH']) {
+// in their shell (e.g. `CORAL_KB_ENABLE=0` to pause local curate, a custom
+// `CORAL_KB_PATH`, or `CORAL_KB_EXTRA_LANGS=ko` for local Korean morphology).
+// Inherited, they would flip the KB-default-enabled behavior or activate Kiwi
+// inside every worker and silently break KB/hook/startup/Orama tests that
+// assume the Intl-only baseline. Tests that exercise these flags set them
+// explicitly (vi.stubEnv, withKoEnv, or a subprocess env), so removing the
+// ambient values cannot mask intended setups.
+for (const key of ['CORAL_KB_ENABLE', 'CORAL_KB_PATH', 'CORAL_KB_EXTRA_LANGS']) {
   delete process.env[key];
 }
 
