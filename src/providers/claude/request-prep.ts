@@ -120,8 +120,10 @@ export function resolveClaudeModel(model: string | undefined, env: Record<string
 
 function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>): EffortLevel {
   const resolved = resolveProviderEffort(request, 'CORAL_CLAUDE_EFFORT', request.coralEnv) ?? CLAUDE_DEFAULT_EFFORT;
-  if (resolved !== 'xhigh') {
-    return resolved;
+  // Claude has no `ultra` (Codex GPT-5.6 Sol/Terra only) — collapse to Claude ceiling.
+  const withoutUltra = resolved === 'ultra' ? 'max' : resolved;
+  if (withoutUltra !== 'xhigh') {
+    return withoutUltra;
   }
 
   return isOpusEffectiveTier(request.model, request.coralEnv) ? 'xhigh' : 'max';

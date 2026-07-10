@@ -188,7 +188,7 @@ plan 모드에서는 실행 순서를 읽고 배치 단위로 디스패치하며
 
 ```
 opus 4.6 │ 5h:39% (1:23) wk:36% (5.2d) │ ctx:58% │ $1.57 50m │ coral:analyze
-gpt-5.5  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
+gpt-5.6-sol  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8d)
 ```
 
 ## 스킬
@@ -218,15 +218,15 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | 변수                       | 기본값            | 설명                                                                                                                                                                                                                                             |
 | -------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `CORAL_KB_PATH`            | `~/.coral/kb`     | KB 저장 경로                                                                                                                                                                                                                                     |
-| `CORAL_CODEX_MODEL`        | `gpt-5.5`         | Codex CLI 기본 모델                                                                                                                                                                                                                              |
-| `CORAL_CODEX_EFFORT`       | `xhigh`           | Codex 추론 노력도 (`low`, `medium`, `high`, `xhigh`)                                                                                                                                                                                             |
+| `CORAL_CODEX_MODEL`        | `gpt-5.6-sol`     | Codex CLI 기본 모델. GPT-5.6 baseline에서는 abstract tier를 `opus`→`sol`, `sonnet`→`terra`, `haiku`→`luna`로 매핑; 그 외(예: `gpt-5.5`)는 size 구분 없이 해당 baseline 하나로 통일                                                                   |
+| `CORAL_CODEX_EFFORT`       | `high`            | Codex 추론 노력도 (`low`…`ultra`). 상한: Sol/Terra `ultra`, Luna `max`, gpt-5.5 `xhigh`; Terra/Luna 하한 `xhigh`                                                                                                                                   |
 | `CORAL_CODEX_FAST`         | _(없음)_          | Codex 서비스 티어 토글 (`1` = fast, `0` = flex). 미설정 시 `~/.codex/config.toml` 최상위 `service_tier`로 폴백                                                                                                                                   |
 | `CORAL_CLAUDE_MODEL`       | _(없음)_          | Coral이 띄우는 Claude 세션의 기본 모델 — 예: `opus[1m]`(1M 컨텍스트 Opus), `opus`/`sonnet`/`haiku`, 또는 `claude-opus-4-8` 같은 전체 id. 미설정 시 Claude 자체 기본값. 요청별 모델이 우선하며, tier alias는 `CORAL_CLAUDE_MODEL_CAP`로 상한 적용 |
 | `CORAL_CLAUDE_EFFORT`      | `xhigh`           | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp                                                                                                                             |
 | `CORAL_CLAUDE_MODEL_CAP`   | `opus`            | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`)                                                                                                                                                                                                |
 | `CORAL_EFFORT`             | _(없음)_          | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용                                                                                                                                                                          |
 | `CORAL_DEV_ASSERTIONS`     | _(없음)_          | 기여자 전용 개발 어서션. 로컬 개발이나 `npm test` 실행 시 `1`로 두면 이미 비활성화된 continuity bridge 호출과 dispatcher 손상 상태를 조용히 넘기지 않고 예외로 드러냅니다. 미설정이 기본 프로덕션 동작이며, 배포 환경에서는 절대 켜지 마세요     |
-| `CORAL_MAX_WORKERS`        | `10`              | 최대 동시 워커 수 (1–10)                                                                                                                                                                                                                         |
+| `CORAL_MAX_WORKERS`        | `10`              | 최대 동시 워커 수 (1–20)                                                                                                                                                                                                                         |
 | `CORAL_DISCUSS_MAX_EPOCHS` | `2`               | 토론 자동 종료 전 최대 에포크 (1–10)                                                                                                                                                                                                             |
 | `CORAL_KB_GIT_SYNC`        | `0`               | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화)                                                                                                                                                                                           |
 | `CORAL_KB_ENABLE`          | _(미설정 → 활성)_ | `0`이면 KB 서브시스템 없이 데몬을 부팅 — 인덱싱·curate·KB 컨텍스트 주입이 모두 없습니다. 다시 `1`로 바꾸고 `kb …` 명령을 실행하면 데몬이 자동 재시작되어 재활성화됩니다 ([상세](docs/configuration.md))                                          |

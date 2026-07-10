@@ -45,24 +45,78 @@ function buildCodexPrompt(
   return parts.join('\n\n---\n\n');
 }
 
-// Codex ceiling is 'xhigh'; 'max' collapses to it.
-const CODEX_EFFORT: Record<EffortLevel, string> = {
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  xhigh: 'xhigh',
-  max: 'xhigh',
+const CODEX_DEFAULT_EFFORT: EffortLevel = 'high';
+/** Terra/Luna get a higher reasoning floor — smaller sizes compensate with more effort. */
+const CODEX_TERRA_LUNA_MIN_EFFORT: EffortLevel = 'xhigh';
+/**
+ * Effort ceilings by Codex model line:
+ * - Sol/Terra (GPT-5.6): up to `ultra`
+ * - Luna (GPT-5.6): up to `max` (no ultra)
+ * - older lines (e.g. gpt-5.5): up to `xhigh`
+ */
+const CODEX_GPT56_EFFORT_CEILING: EffortLevel = 'ultra';
+const CODEX_LUNA_EFFORT_CEILING: EffortLevel = 'max';
+const CODEX_LEGACY_EFFORT_CEILING: EffortLevel = 'xhigh';
+const EFFORT_RANK: Record<EffortLevel, number> = {
+  low: 1,
+  medium: 2,
+  high: 3,
+  xhigh: 4,
+  max: 5,
+  ultra: 6,
 };
-const CODEX_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 export type CodexServiceTier = 'fast' | 'flex';
 const serviceTierCache = new Map<string, { mtimeMs: number; value: CodexServiceTier | undefined }>();
 
+function isCodexTerraOrLuna(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return (
+    normalized === 'terra' ||
+    normalized === 'luna' ||
+    normalized.endsWith('-terra') ||
+    normalized.endsWith('-luna')
+  );
+}
+
+function isCodexLuna(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return normalized === 'luna' || normalized.endsWith('-luna');
+}
+
+function codexEffortCeiling(model: string): EffortLevel {
+  if (!isCodexGpt56Family(model)) {
+    return CODEX_LEGACY_EFFORT_CEILING;
+  }
+  if (isCodexLuna(model)) {
+    return CODEX_LUNA_EFFORT_CEILING;
+  }
+  return CODEX_GPT56_EFFORT_CEILING;
+}
+
+function clampEffort(level: EffortLevel, min: EffortLevel | undefined, max: EffortLevel): EffortLevel {
+  let result = level;
+  if (min !== undefined && EFFORT_RANK[result] < EFFORT_RANK[min]) {
+    result = min;
+  }
+  if (EFFORT_RANK[result] > EFFORT_RANK[max]) {
+    result = max;
+  }
+  return result;
+}
+
 /**
  * Precedence: explicit request effort > CORAL_CODEX_EFFORT > CORAL_EFFORT >
- * Codex default (`xhigh`, matching the official guide).
+ * Coral default (`high`). Then clamp:
+ * - Terra/Luna floor: `xhigh`
+ * - Sol/Terra ceiling: `ultra`
+ * - Luna ceiling: `max` (no ultra)
+ * - older lines (e.g. gpt-5.5) ceiling: `xhigh`
  */
-function resolveCodexEffort(request: ProviderRequest): EffortLevel {
-  return resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
+function resolveCodexEffort(request: ProviderRequest, model: string): EffortLevel {
+  const resolved =
+    resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
+  const floor = isCodexTerraOrLuna(model) ? CODEX_TERRA_LUNA_MIN_EFFORT : undefined;
+  return clampEffort(resolved, floor, codexEffortCeiling(model));
 }
 
 function resolveCodexSandbox(bypassPermissions: boolean): 'workspace-write' | 'danger-full-access' {
@@ -286,7 +340,29 @@ function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
+const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+
+/**
+ * Agent frontmatter / Coral abstract tiers → Codex GPT-5.6 family aliases.
+ * Agent files declare Claude-style tiers (`opus` / `sonnet` / `haiku`); Codex
+ * consumes the generation-family names Sol / Terra / Luna instead.
+ *
+ * Only applied when the configured baseline model is a GPT-5.6 family id.
+ * Older single-size lines (e.g. `gpt-5.5`) have no sol/terra/luna split, so
+ * abstract tiers collapse to that one baseline model.
+ */
+const CODEX_ABSTRACT_MODEL: Record<string, string> = {
+  opus: 'sol',
+  sonnet: 'terra',
+  haiku: 'luna',
+};
+
+/** True when `model` is a GPT-5.6 generation id (or bare sol/terra/luna alias). */
+function isCodexGpt56Family(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  if (normalized.includes('gpt-5.6')) return true;
+  return normalized === 'sol' || normalized === 'terra' || normalized === 'luna';
+}
 
 function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | undefined {
   if (!value) {
@@ -371,8 +447,31 @@ export function resolveCodexServiceTier(
   return normalizeServiceTierEnv(rawEnvTier);
 }
 
+/**
+ * Resolve the model id sent on Codex wire params.
+ *
+ * Precedence:
+ * 1. Abstract tier (`opus`/`sonnet`/`haiku`):
+ *    - GPT-5.6 baseline → map to `sol`/`terra`/`luna`
+ *    - otherwise → use the baseline as-is (no size split)
+ * 2. Concrete request.model (pass-through)
+ * 3. CORAL_CODEX_MODEL
+ * 4. DEFAULT_CODEX_MODEL
+ *
+ * Baseline = CORAL_CODEX_MODEL ?? DEFAULT. Abstract tiers must resolve here —
+ * `resolveModelTier` returns undefined for them so Claude can defer to CLI
+ * aliases; Codex has no equivalent for those Claude-style names.
+ */
 function resolveCodexModel(request: ProviderRequest): string {
-  return resolveModelTier(request.model) ?? request.coralEnv['CORAL_CODEX_MODEL'] ?? DEFAULT_CODEX_MODEL;
+  const baseline = request.coralEnv['CORAL_CODEX_MODEL'] ?? DEFAULT_CODEX_MODEL;
+
+  if (request.model !== undefined) {
+    const mapped = CODEX_ABSTRACT_MODEL[request.model];
+    if (mapped !== undefined) {
+      return isCodexGpt56Family(baseline) ? mapped : baseline;
+    }
+  }
+  return resolveModelTier(request.model) ?? baseline;
 }
 
 export function mapThreadStartParams(request: ProviderRequest, serviceTier?: CodexServiceTier): ThreadStartParams {
@@ -408,11 +507,12 @@ export function mapTurnStartParams(
   threadId: string,
   serviceTier?: CodexServiceTier,
 ): TurnStartParams {
+  const model = resolveCodexModel(request);
   return {
     threadId,
     input: buildCodexTurnInput(buildCodexPrompt(request)),
-    model: resolveCodexModel(request),
-    effort: CODEX_EFFORT[resolveCodexEffort(request)],
+    model,
+    effort: resolveCodexEffort(request, model),
     ...(serviceTier && { serviceTier }),
   };
 }

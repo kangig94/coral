@@ -20,7 +20,7 @@ import type {
   ProviderTransportClose,
 } from './protocol.js';
 
-export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';
 
 export const providerInstructionSchema = z

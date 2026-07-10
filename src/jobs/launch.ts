@@ -79,7 +79,7 @@ const providerJobLaunchRequestBodySchema = z
         name: z.string().optional(),
         model: z.string().optional(),
         cwd: z.string(),
-        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
         bypassPermissions: z.boolean(),
         systemPrompt: z.string().optional(),
         conversationRef: continuityRefSchema.optional(),

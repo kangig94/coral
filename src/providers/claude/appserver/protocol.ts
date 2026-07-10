@@ -342,7 +342,12 @@ function readOptionalNonEmptyString(value: unknown): string | undefined {
 }
 
 function readEffortLevel(value: unknown): EffortLevel | undefined {
-  return value === 'low' || value === 'medium' || value === 'high' || value === 'xhigh' || value === 'max'
+  return value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh' ||
+    value === 'max' ||
+    value === 'ultra'
     ? value
     : undefined;
 }
