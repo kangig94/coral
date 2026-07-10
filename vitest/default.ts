@@ -17,5 +17,11 @@ export default defineConfig({
     exclude: ['ref/**', 'node_modules/**'],
     setupFiles: ['vitest/setup.ts'],
     globalSetup: ['vitest/no-real-coral-leak.ts'],
+    // This suite is I/O-bound (IPC sockets, subprocess spawns, timers), so on a
+    // 2-core CI runner it is worker-bound rather than core-bound: oversubscribing
+    // workers overlaps the I/O waits (measured ~1m11s @2 → ~38s @4). Applied only
+    // under CI; local dev keeps vitest's default (all cores) so a many-core box
+    // stays fast. GitHub Actions sets CI=true.
+    ...(process.env.CI ? { maxWorkers: 4, minWorkers: 4 } : {}),
   },
 });
