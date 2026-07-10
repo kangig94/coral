@@ -15,6 +15,7 @@ import {
   snapshotCodexPersistedContinuity,
 } from '#src/providers/codex/request-mapping.js';
 import type { ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import { backendLog } from '#src/infra/backend-log.js';
 
 const tempHomes: string[] = [];
 type TierReadFileSync = NonNullable<NonNullable<ProviderRuntime['storage']>['readFileSync']>;
@@ -211,10 +212,23 @@ describe('mapTurnStartParams effort mapping', () => {
     expect(params.effort).toBe('medium');
   });
 
-  it('throws a user-friendly error when CORAL_CODEX_EFFORT is invalid', () => {
-    expect(() =>
-      mapTurnStartParams(makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }), 'thread-1'),
-    ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max, ultra');
+  it('warns and falls back to the default effort when CORAL_CODEX_EFFORT is invalid (no throw)', () => {
+    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const params = mapTurnStartParams(
+      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('high'); // CODEX_DEFAULT_EFFORT — not a thrown error
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('CORAL_CODEX_EFFORT="turbo"'));
+  });
+
+  it('falls back through CORAL_EFFORT when CORAL_CODEX_EFFORT is invalid', () => {
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+    const params = mapTurnStartParams(
+      makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'nope', CORAL_EFFORT: 'medium' } }),
+      'thread-1',
+    );
+    expect(params.effort).toBe('medium');
   });
 
   it('does not raise Sol effort above the configured value', () => {
@@ -247,7 +261,7 @@ describe('mapTurnStartParams effort mapping', () => {
       }),
       'thread-1',
     );
-    expect(params.model).toBe('terra');
+    expect(params.model).toBe('gpt-5.6-terra');
     expect(params.effort).toBe('xhigh');
   });
 
@@ -607,6 +621,22 @@ describe('resolveCodexModel uses coralEnv', () => {
     expect(mapTurnStartParams(request, 'thread-1').model).toBe('custom-model');
   });
 
+  it.each([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+  ] as const)('normalizes bare GPT-5.6 baseline alias %s to %s', (alias, codexModel) => {
+    const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: alias } });
+
+    expect(mapThreadStartParams(request).model).toBe(codexModel);
+  });
+
+  it('preserves a non-alias CORAL_CODEX_MODEL baseline', () => {
+    const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } });
+
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.5');
+  });
+
   it('does not leak CORAL_CODEX_MODEL from the daemon process env', () => {
     vi.stubEnv('CORAL_CODEX_MODEL', 'daemon-env-model');
 
@@ -648,6 +678,24 @@ describe('resolveCodexModel uses coralEnv', () => {
       model: 'sonnet',
       coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
     });
+
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.6-terra');
+  });
+
+  it.each([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+  ] as const)('normalizes bare GPT-5.6 size alias %s to %s', (alias, codexModel) => {
+    const request = makeRequest({ model: alias });
+
+    expect(mapThreadStartParams(request).model).toBe(codexModel);
+    expect(mapThreadResumeParams(request, 'thread-1').model).toBe(codexModel);
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe(codexModel);
+  });
+
+  it('normalizes a bare size alias even under a non-GPT-5.6 CORAL_CODEX_MODEL (explicit concrete size)', () => {
+    const request = makeRequest({ model: 'terra', coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } });
 
     expect(mapThreadStartParams(request).model).toBe('gpt-5.6-terra');
   });

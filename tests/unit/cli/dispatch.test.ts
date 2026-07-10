@@ -133,6 +133,35 @@ describe('command client routing', () => {
     );
   });
 
+  it('forwards the caller CORAL_* config to provider launches and drops daemon-owned keys', async () => {
+    vi.stubEnv('CORAL_CODEX_MODEL', 'gpt-5.6-sol');
+    // A daemon-owned key present in the caller env must never ride along on the
+    // wire. (CORAL_JOB_ID etc. are exercised in the env-sanitize unit tests;
+    // here we use an inert daemon-owned key so we don't trip child-IPC auth.)
+    vi.stubEnv('CORAL_ENV_PASSTHROUGH', 'FOO');
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'claude'));
+
+    await client.createSession('claude', 'hi', {});
+
+    const [, body] = mockState.request.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.coralEnv).toMatchObject({ CORAL_CODEX_MODEL: 'gpt-5.6-sol' });
+    expect(body.coralEnv).not.toHaveProperty('CORAL_ENV_PASSTHROUGH');
+  });
+
+  it('forwards coralEnv on the workflow launch path', async () => {
+    vi.stubEnv('CORAL_CODEX_MODEL', 'gpt-5.6-sol');
+    mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
+    const program = buildProgram();
+    const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
+
+    await client.workflow('agent("x")', { startPrompt: 'go' });
+
+    const [, body] = mockState.request.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.coralEnv).toMatchObject({ CORAL_CODEX_MODEL: 'gpt-5.6-sol' });
+  });
+
   it('omits projectRoot from jobs.list when listing across all projects', async () => {
     mockState.request.mockResolvedValueOnce({ jobs: [] });
     const program = buildProgram();

@@ -4249,6 +4249,41 @@ describe('execution backend server', () => {
       });
     });
 
+    it('rejects remote POST /workflow requests that forward caller CORAL_* config', async () => {
+      await withBaseCoralEnv(async () => {
+        const fakeService = createFakeExecutionService();
+        const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+        const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
+
+        try {
+          const response = await fetch(`${started.baseUrl}/workflow`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Coral-Backend-Token': 'test-token',
+            },
+            body: JSON.stringify({
+              expression: 'architect',
+              startPrompt: 'Begin',
+              provider: 'codex',
+              projectRoot: '/tmp/project',
+              coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
+            }),
+          });
+
+          expect(response.status).toBe(403);
+          expect(await response.json()).toEqual({
+            code: 'remote_transport_option_forbidden',
+            message: '`coralEnv` forwarding is only allowed from loopback HTTP clients',
+            detail: { option: 'coralEnv' },
+          });
+          expect(fakeService.executeWorkflow).not.toHaveBeenCalled();
+        } finally {
+          await _closeHttpServer(started.server);
+        }
+      });
+    });
+
     it("defaults omitted workflow provider to 'claude' for both executeWorkflow arguments", async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({

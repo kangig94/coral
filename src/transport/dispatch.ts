@@ -72,7 +72,15 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
   parsed: T,
 ): Omit<
   T,
-  'projectRoot' | 'owner' | 'effort' | 'claudeModelCap' | 'claudeTransport' | 'jobId' | 'sessionId' | 'networkEnv'
+  | 'projectRoot'
+  | 'owner'
+  | 'effort'
+  | 'claudeModelCap'
+  | 'claudeTransport'
+  | 'jobId'
+  | 'sessionId'
+  | 'networkEnv'
+  | 'coralEnv'
 > {
   const {
     projectRoot: _projectRoot,
@@ -83,6 +91,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     jobId: _jobId,
     sessionId: _sessionId,
     networkEnv: _networkEnv,
+    coralEnv: _coralEnv,
     ...args
   } = parsed as T & {
     projectRoot?: unknown;
@@ -93,6 +102,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     jobId?: unknown;
     sessionId?: unknown;
     networkEnv?: unknown;
+    coralEnv?: unknown;
   };
   return args;
 }
@@ -259,6 +269,7 @@ export async function executeCatalogRequest(
         claudeModelCap: _claudeModelCap,
         claudeTransport: _claudeTransport,
         networkEnv: _networkEnv,
+        coralEnv: _coralEnv,
         ...workflowCommand
       } = parsed;
       const result = await rpcPorts.workflows.execute(workflowCommand as WorkflowPortInput, ctx);

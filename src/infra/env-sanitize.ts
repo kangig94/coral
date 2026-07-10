@@ -10,12 +10,22 @@
  * - If total env fits within budget → pass everything unchanged.
  * - If over budget → drop the largest vars first until it fits.
  * - Passthrough set protects specific vars from being shed.
+ *
+ * This module also owns the CORAL_* env vocabulary that crosses the child /
+ * wire boundary: which keys the daemon strips from an inherited env
+ * (`stripInternalCoralKeys`), and which `CORAL_*` config a caller may forward
+ * per request versus the daemon-owned keys it may never set
+ * (`DAEMON_OWNED_CORAL_ENV_KEYS` / `filterForwardableCoralEnv`).
  */
 
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
+import { z } from 'zod';
+
 import { backendLog } from './backend-log.js';
+import { BUILD_FLAVOR_ENV_KEY } from './build-flavor.js';
+import { CORAL_KB_ENABLE_ENV } from './kb-toggle.js';
 
 const ENV_BUDGET_FALLBACK_BYTES = 2 * 1024 * 1024;
 const ENV_BUDGET_HEADROOM_RATIO = 0.8;
@@ -139,6 +149,102 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
   }
   return stripped;
 }
+
+/**
+ * `CORAL_*` keys the daemon owns and a caller may never set through the
+ * per-request `coralEnv` forwarding channel (see `filterForwardableCoralEnv`).
+ * A key lands here for one of two reasons:
+ *
+ * - Identity / auth / lineage. `CORAL_CHILD_PRINCIPAL_HANDLE` is minted per
+ *   child by the daemon, `CORAL_JOB_ID` / `CORAL_SESSION_ID` are set from the
+ *   validated jobId/sessionId body fields, and `CORAL_CHILD` marks the child
+ *   boundary. Taking any of these from untrusted wire input would let a caller
+ *   forge child credentials or misattribute work to another job/session.
+ * - Daemon boot-fixed infra. The build-flavor key (see {@link BUILD_FLAVOR_ENV_KEY}),
+ *   `CORAL_KB_PATH`, `CORAL_ENV_PASSTHROUGH`, and the startup markers are resolved
+ *   once at boot and pin which daemon a spawned child talks back to; they are
+ *   re-asserted from the daemon's own snapshot so a nested `coral-cli` targets the
+ *   right daemon rather than one the caller names.
+ * - Daemon-scoped decisions that are nonetheless read per request from the
+ *   controller env. `CORAL_KB_ENABLE` gates whether the daemon booted its KB
+ *   runtime at all, yet `applyInjectMd` reads it off the request's coralEnv to
+ *   decide KB injection — so it must reflect the daemon's boot state, not a value
+ *   a caller forwards, or injection would disagree with the running KB daemon.
+ *   (The parent daemon's KB boot gate and the CLI's re-enable reconcile read it
+ *   from `runtime.env`/`process.env` directly, so they are unaffected either way.)
+ */
+export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
+  'CORAL_CHILD',
+  'CORAL_CHILD_PRINCIPAL_HANDLE',
+  'CORAL_JOB_ID',
+  'CORAL_SESSION_ID',
+  BUILD_FLAVOR_ENV_KEY,
+  'CORAL_KB_PATH',
+  'CORAL_ENV_PASSTHROUGH',
+  CORAL_KB_ENABLE_ENV,
+  'CORAL_STARTUP_ATTEMPT_ID',
+  'CORAL_STARTUP_STARTED_AT',
+]);
+
+/** True when `key` is a `CORAL_*` config key a caller may forward per request. */
+export function isForwardableCoralEnvKey(key: string): boolean {
+  return key.startsWith('CORAL_') && !DAEMON_OWNED_CORAL_ENV_KEYS.has(key);
+}
+
+/**
+ * Pick the caller's forwardable `CORAL_*` config from an env snapshot: keys that
+ * pass {@link isForwardableCoralEnvKey}, with non-empty string values. Empty
+ * values are dropped so an exported-but-empty var reads as "unset" (the daemon
+ * then falls back to its code default) rather than masking that default.
+ */
+export function filterForwardableCoralEnv(source: Record<string, string | undefined>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (typeof value === 'string' && value.length > 0 && isForwardableCoralEnvKey(key)) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Parse the untrusted request-body `coralEnv` map into the forwardable
+ * `CORAL_*` config. Returns the filtered map — **possibly empty** — whenever the
+ * caller sent a `coralEnv` object; an empty result is authoritative and clears
+ * the daemon's boot config so the provider falls back to its code default.
+ * Returns `undefined` only when the field is absent (or not an object), which a
+ * caller that does not participate in config forwarding leaves untouched. The
+ * present-but-empty vs absent distinction is what makes "the caller unset their
+ * last CORAL_* var" revert to defaults instead of stalling on the boot value.
+ *
+ * Mirrors the defensive re-filtering `buildControllerEnv` applies inline for
+ * `networkEnv`: the RPC schema rejects reserved keys at ingress, and this
+ * re-applies the same allowlist on the raw body before it is trusted.
+ */
+export function readForwardedCoralEnv(value: unknown): Record<string, string> | undefined {
+  if (value === null || typeof value !== 'object') {
+    return undefined;
+  }
+  return filterForwardableCoralEnv(value as Record<string, string | undefined>);
+}
+
+const RESERVED_CORAL_ENV_KEYS = [...DAEMON_OWNED_CORAL_ENV_KEYS].join(', ');
+
+/**
+ * Request-body schema for the forwarded `CORAL_*` config map: non-reserved
+ * `CORAL_*` keys, non-empty string values. The key refinement is the
+ * reject-reserved-keys guard at RPC ingress; `buildControllerEnv` re-applies
+ * {@link readForwardedCoralEnv} defensively on the raw body before use.
+ */
+export const coralEnvForwardSchema = z.record(
+  z
+    .string()
+    .refine(
+      isForwardableCoralEnvKey,
+      `Only non-reserved CORAL_* keys may be forwarded (reserved: ${RESERVED_CORAL_ENV_KEYS})`,
+    ),
+  z.string().min(1),
+);
 
 /**
  * Delete the inherited Claude Code session identity — `CLAUDECODE` and the `CLAUDE_*`
