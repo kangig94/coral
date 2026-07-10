@@ -10,7 +10,7 @@ export function parsePositiveInt(raw: string | undefined, fallback: number): num
 }
 
 export function getMaxWorkers(env: Pick<Runtime['env'], 'get'>): number {
-  return Math.min(Math.max(parsePositiveInt(env.get('CORAL_MAX_WORKERS'), 10), 1), 10);
+  return Math.min(Math.max(parsePositiveInt(env.get('CORAL_MAX_WORKERS'), 10), 1), 20);
 }
 
 export function getDiscussMaxWorkers(env: Pick<Runtime['env'], 'get'>): number {

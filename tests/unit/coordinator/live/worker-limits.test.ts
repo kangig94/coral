@@ -33,8 +33,10 @@ describe('worker limits', () => {
     const env = { get: (name: string) => process.env[name] };
     process.env.CORAL_MAX_WORKERS = '1';
     expect(getMaxWorkers(env)).toBe(1);
+    process.env.CORAL_MAX_WORKERS = '20';
+    expect(getMaxWorkers(env)).toBe(20);
     process.env.CORAL_MAX_WORKERS = '99';
-    expect(getMaxWorkers(env)).toBe(10);
+    expect(getMaxWorkers(env)).toBe(20);
   });
 
   it('bounds CORAL_DISCUSS_MAX_WORKERS to the supported range', () => {
