@@ -28,11 +28,56 @@ All shipped hook entrypoints run `exitIfChildProcess()` first and `exitIfWrongFl
 
 The HUD auto-update hook adds one more gate: it refreshes the HUD only when `buildFlavor() === 'prod'`, so dev registrations never overwrite the prod HUD.
 
+## INJECT.md (shared guidelines)
+
+`INJECT.md` is the single source of behavioral guidelines, Tools section, path aliases, and optional KB guidance. Delivery differs by surface; the file does not.
+
+### Delivery paths
+
+| Surface | Mechanism | When |
+| --- | --- | --- |
+| Host Claude main session | `session-start.mjs` → `renderInject` (`asOwner: true`) | `SessionStart` |
+| Claude Code native subagent (`Agent` tool) | `subagent-start.mjs` → `renderInject` (`asOwner: false`) | `SubagentStart` |
+| Provider child (`coral-cli codex\|claude`, workflow atoms, discuss jobs) | `jobs/shell/launch.ts` → `applyInjectMd` → `resolveInjectMd` | Every job `executeJob` |
+
+Provider children set `CORAL_CHILD=1`, so hooks self-exit and **do not** re-inject. Adapters must not re-resolve `INJECT.md`; they consume the pre-merged `request.systemPrompt` (Claude: `--append-system-prompt`; Codex: turn-text prefix — presentation order only, not a separate system channel).
+
+### Placeholders
+
+| Placeholder | Meaning |
+| --- | --- |
+| `{{CORAL_CLI}}` | Plugin-local CLI invocation (`node "…/bridge/coral-cli.cjs"` or hook active-bridge form) |
+| `{{CORAL_METHODS}}` | Absolute `…/methods/` (trailing slash). Always filled from plugin root. |
+| `{{CORAL_PROJECT}}` | Project data dir (`~/.coral/projects/{slug}/…`). Left as placeholder if no project cwd. |
+| `{{CORAL_PROJECTS}}` | Same value as `{{CORAL_PROJECT}}` (legacy plural form) |
+| `{{PROJECT_SOURCE}}` | Project source label for the cwd |
+| `{{CORAL_KB}}` | KB root |
+| `{{SESSION_ID}}` | Owner session id when known |
+| `{{EQUIPPED_TOOLS}}` | Live `/equip` tool list, or empty |
+
+Path aliases under `# Tools` teach agents to open `CORAL_METHODS/HOW-*.md` and `CORAL_PROJECT/plans/…` via the resolved absolute paths rather than inventing marketplace/cache paths.
+
+### Conditional blocks
+
+| Block | SessionStart (`asOwner: true`) | SubagentStart (`asOwner: false`) | Provider `resolveInjectMd` |
+| --- | --- | --- | --- |
+| `OWNER_ONLY` | kept | stripped | always stripped |
+| `SESSION_ID_ONLY` | kept when session id present | kept (same parent session) | kept only when a valid owner session id is present |
+| `KB_ONLY` | kept when KB enabled | kept when KB enabled | kept when KB enabled |
+
+Owner-only content is orchestrator privilege (e.g. wiki maintenance, source import, `owner:` propagation). Subagents and provider children do not receive it.
+
+### Equipped tools
+
+The `# Tools` section's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tools Coral ships `/equip` support for and that are currently installed. `hooks/lib/equip-tools.mjs` holds the catalog; `resolveEquippedTools()` does a **live** filesystem probe under the engine data tree. Session-start and subagent-start both pass the live list; provider jobs pass the same list through `ProviderRuntime.equippedTools`. When the list is empty, the placeholder is stripped.
+
+### Skill path vars
+
+`coral-skill-vars.mjs` still injects short `CORAL_PROJECT:` / `CORAL_METHODS:` lines on skill-related `UserPromptSubmit` / `PreToolUse(Skill)` for host skill protocols. Those aliases are also present in `INJECT.md` for every inject surface above, so provider children and Claude-native subagents do not depend on the skill hook.
+
 ## SessionStart
 
-`hooks/session-start.mjs` reads `INJECT.md`, resolves project placeholders, strips owner/session-only blocks as needed, and returns the text through `hookSpecificOutput.additionalContext`.
-
-The `# Tools` section's `{{EQUIPPED_TOOLS}}` placeholder (right after the `CLI:` line) lists the agent-facing tools that Coral ships `/equip` support for and that are currently installed. `hooks/lib/equip-tools.mjs` holds the catalog (`{id, bin, summary}`, mirroring the equip-supported set in `src/expansion/install-only.ts`) and `resolveEquippedTools()` does a LIVE check: a tool surfaces iff its binary exists in the engine data tree (`<stateRoot>/<data|data-dev>/engines/<id>/<bin>`, where `/equip` installs it). Because it is a live filesystem probe rather than a snapshot, it is independent of how the tool was installed and of whether `/equip`'s own bookkeeping ran — a binary removed by any means (not just `equip uninstall`) immediately stops surfacing, and the signal works the same for MCP-server tools and CLI-only tools. This is a main-session-only surface: `subagent-start.mjs` and provider-launched sessions strip the placeholder.
+`hooks/session-start.mjs` renders `INJECT.md` via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
 
 KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
 
@@ -44,8 +89,6 @@ It also:
 - optionally creates `.claude/coral -> ~/.coral/projects/{slug}/` when `CORAL_AUTO_SYMLINK=1`
 - updates `.gitignore` for generated local files when Coral creates them
 - refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
-
-Provider-launched Codex and Claude sessions also receive `INJECT.md`, but that happens through `src/providers/inject.ts` and the provider adapters, not through a separate bridge prepend layer.
 
 ## Backend Warm-start
 
@@ -76,7 +119,14 @@ The wait guidance matches the current CLI contract: terminal text always include
 
 ## SubagentStart
 
-`hooks/subagent-start.mjs` injects the same behavioral guidance into Claude-native subagents, but strips owner-only and session-only blocks so subagents do not receive privileged memo-management instructions.
+Two different “subagent” concepts must not be mixed:
+
+| Kind | What it is | Inject path |
+| --- | --- | --- |
+| Claude Code native subagent | Host `Agent` tool spawn | `SubagentStart` → `subagent-start.mjs` |
+| Coral provider agent | `coral-cli codex\|claude <agent>`, workflow atom, discuss worker | **No hooks** (`CORAL_CHILD=1`); `applyInjectMd` in the job shell |
+
+`hooks/subagent-start.mjs` covers only the first kind. It calls `renderInject({ asOwner: false })`: same `INJECT.md` as the main session (guidelines, Tools, path aliases, equipped tools, KB guidance when enabled), but **OWNER_ONLY stripped**. `SESSION_ID_ONLY` is kept so subagents share the parent session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
 
 ## UserPromptSubmit and PreToolUse
 
@@ -84,7 +134,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
-- `coral-skill-vars.mjs` injects shared Coral variables needed by skill flows
+- `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `INJECT.md` for all inject surfaces)
 - `cli-resolve.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path
 
 ## Failure-aware KB Reminder

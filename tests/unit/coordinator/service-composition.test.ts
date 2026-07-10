@@ -672,7 +672,6 @@ describe('ExecutionService', () => {
         conversationRef: 'thread-1',
         model: 'gpt-5.1',
         bypassPermissions: true,
-        systemPrompt: 'Persisted system prompt',
         instruction,
         coralEnv: {
           CORAL_OWNER: 'alice',
@@ -680,6 +679,10 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
+      // applyInjectMd prepend-merges INJECT.md ahead of the persisted systemPrompt.
+      expect(request.systemPrompt).toContain('Persisted system prompt');
+      expect(request.systemPrompt).toContain('# Coral Guidelines');
+      expect(request.systemPrompt?.endsWith('Persisted system prompt')).toBe(true);
       expect(request.effort).toBeUndefined();
     });
 
