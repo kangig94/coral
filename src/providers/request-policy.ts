@@ -1,6 +1,6 @@
 import type { EffortLevel } from './contract.js';
 
-const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
+const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
 
 /**
@@ -10,7 +10,7 @@ export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 
 function parseEffortLevel(value: string | undefined, label: string): EffortLevel | undefined {
   if (value === undefined) return undefined;
   if (!VALID_EFFORT_LEVELS.has(value)) {
-    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, xhigh, max`);
+    throw new Error(`Invalid ${label}="${value}". Valid values: low, medium, high, xhigh, max, ultra`);
   }
   return value as EffortLevel;
 }

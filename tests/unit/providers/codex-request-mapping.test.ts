@@ -88,20 +88,22 @@ afterEach(() => {
 });
 
 describe('mapTurnStartParams effort mapping', () => {
-  const VALID_CODEX_EFFORT = new Set(['low', 'medium', 'high', 'xhigh']);
+  const VALID_CODEX_EFFORT = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 
   it.each([
     ['low', 'low'],
     ['medium', 'medium'],
     ['high', 'high'],
     ['xhigh', 'xhigh'],
-    ['max', 'xhigh'],
-  ] as const)('maps Coral effort %s to Codex %s', (coral, codex) => {
+    ['max', 'max'],
+    ['ultra', 'ultra'],
+  ] as const)('maps Coral effort %s to Codex %s on GPT-5.6 Sol default', (coral, codex) => {
+    // Default model is gpt-5.6-sol — ceiling is ultra.
     const params = mapTurnStartParams(makeRequest({ effort: coral }), 'thread-1');
     expect(params.effort).toBe(codex);
   });
 
-  it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)(
+  it.each(['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const)(
     'Coral %s produces a valid Codex effort value',
     (coral) => {
       const params = mapTurnStartParams(makeRequest({ effort: coral }), 'thread-1');
@@ -109,9 +111,50 @@ describe('mapTurnStartParams effort mapping', () => {
     },
   );
 
-  it('defaults to xhigh when no explicit or env effort is set', () => {
+  it('caps effort at xhigh on non-GPT-5.6 models (e.g. gpt-5.5)', () => {
+    expect(
+      mapTurnStartParams(
+        makeRequest({ model: 'gpt-5.5', effort: 'max', coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } }),
+        'thread-1',
+      ).effort,
+    ).toBe('xhigh');
+    expect(
+      mapTurnStartParams(
+        makeRequest({
+          model: 'sonnet',
+          effort: 'ultra',
+          coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
+        }),
+        'thread-1',
+      ).effort,
+    ).toBe('xhigh');
+  });
+
+  it('allows ultra on Sol and Terra, but caps Luna at max', () => {
+    expect(mapTurnStartParams(makeRequest({ model: 'sol', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
+    expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
+    expect(mapTurnStartParams(makeRequest({ model: 'gpt-5.6-sol', effort: 'ultra' }), 'thread-1').effort).toBe(
+      'ultra',
+    );
+    expect(mapTurnStartParams(makeRequest({ model: 'gpt-5.6-terra', effort: 'ultra' }), 'thread-1').effort).toBe(
+      'ultra',
+    );
+    expect(mapTurnStartParams(makeRequest({ model: 'luna', effort: 'ultra' }), 'thread-1').effort).toBe('max');
+    expect(mapTurnStartParams(makeRequest({ model: 'gpt-5.6-luna', effort: 'ultra' }), 'thread-1').effort).toBe(
+      'max',
+    );
+    expect(mapTurnStartParams(makeRequest({ model: 'haiku', effort: 'ultra' }), 'thread-1').effort).toBe('max');
+  });
+
+  it('allows max on all GPT-5.6 family sizes including Luna', () => {
+    expect(mapTurnStartParams(makeRequest({ model: 'sol', effort: 'max' }), 'thread-1').effort).toBe('max');
+    expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'max' }), 'thread-1').effort).toBe('max');
+    expect(mapTurnStartParams(makeRequest({ model: 'luna', effort: 'max' }), 'thread-1').effort).toBe('max');
+  });
+
+  it('defaults to high when no explicit or env effort is set', () => {
     const params = mapTurnStartParams(makeRequest({ effort: undefined }), 'thread-1');
-    expect(params.effort).toBe('xhigh');
+    expect(params.effort).toBe('high');
   });
 
   it('falls back to CORAL_CODEX_EFFORT when request effort is unset', () => {
@@ -144,7 +187,61 @@ describe('mapTurnStartParams effort mapping', () => {
   it('throws a user-friendly error when CORAL_CODEX_EFFORT is invalid', () => {
     expect(() =>
       mapTurnStartParams(makeRequest({ effort: undefined, coralEnv: { CORAL_CODEX_EFFORT: 'turbo' } }), 'thread-1'),
-    ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max');
+    ).toThrow('Invalid CORAL_CODEX_EFFORT="turbo". Valid values: low, medium, high, xhigh, max, ultra');
+  });
+
+  it('does not raise Sol effort above the configured value', () => {
+    expect(mapTurnStartParams(makeRequest({ model: 'opus', effort: 'high' }), 'thread-1').effort).toBe('high');
+    expect(mapTurnStartParams(makeRequest({ model: 'sol', effort: 'medium' }), 'thread-1').effort).toBe('medium');
+    expect(mapTurnStartParams(makeRequest({ model: 'gpt-5.6-sol', effort: undefined }), 'thread-1').effort).toBe(
+      'high',
+    );
+  });
+
+  it.each([
+    ['sonnet', 'terra'],
+    ['haiku', 'luna'],
+    ['terra', 'terra'],
+    ['luna', 'luna'],
+    ['gpt-5.6-terra', 'gpt-5.6-terra'],
+    ['gpt-5.6-luna', 'gpt-5.6-luna'],
+  ] as const)('floors %s effort to xhigh (resolved model %s)', (model, resolvedModel) => {
+    const params = mapTurnStartParams(makeRequest({ model, effort: 'high' }), 'thread-1');
+    expect(params.model).toBe(resolvedModel);
+    expect(params.effort).toBe('xhigh');
+  });
+
+  it('floors terra/luna below xhigh even when CORAL_CODEX_EFFORT is low', () => {
+    const params = mapTurnStartParams(
+      makeRequest({
+        model: 'sonnet',
+        effort: undefined,
+        coralEnv: { CORAL_CODEX_EFFORT: 'low' },
+      }),
+      'thread-1',
+    );
+    expect(params.model).toBe('terra');
+    expect(params.effort).toBe('xhigh');
+  });
+
+  it('keeps terra/luna at or above the xhigh floor without over-clipping', () => {
+    expect(mapTurnStartParams(makeRequest({ model: 'luna', effort: 'xhigh' }), 'thread-1').effort).toBe('xhigh');
+    expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'max' }), 'thread-1').effort).toBe('max');
+    expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
+  });
+
+  it('does not apply terra/luna floor on non-GPT-5.6 baselines', () => {
+    // Abstract tiers collapse to gpt-5.5 — no terra/luna identity, so no floor.
+    const params = mapTurnStartParams(
+      makeRequest({
+        model: 'sonnet',
+        effort: 'high',
+        coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
+      }),
+      'thread-1',
+    );
+    expect(params.model).toBe('gpt-5.5');
+    expect(params.effort).toBe('high');
   });
 });
 
@@ -488,8 +585,81 @@ describe('resolveCodexModel uses coralEnv', () => {
 
     const request = makeRequest();
 
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.6-sol');
+    expect(mapThreadResumeParams(request, 'thread-1').model).toBe('gpt-5.6-sol');
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe('gpt-5.6-sol');
+  });
+
+  it.each([
+    ['opus', 'sol'],
+    ['sonnet', 'terra'],
+    ['haiku', 'luna'],
+  ] as const)('maps abstract tier %s to Codex model %s under GPT-5.6 default', (tier, codexModel) => {
+    const request = makeRequest({ model: tier });
+
+    expect(mapThreadStartParams(request).model).toBe(codexModel);
+    expect(mapThreadResumeParams(request, 'thread-1').model).toBe(codexModel);
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe(codexModel);
+  });
+
+  it.each([
+    ['opus', 'sol'],
+    ['sonnet', 'terra'],
+    ['haiku', 'luna'],
+  ] as const)('maps abstract tier %s when CORAL_CODEX_MODEL is GPT-5.6 family', (tier, codexModel) => {
+    const request = makeRequest({
+      model: tier,
+      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
+    });
+
+    expect(mapThreadStartParams(request).model).toBe(codexModel);
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe(codexModel);
+  });
+
+  it('maps abstract tiers when CORAL_CODEX_MODEL is a bare GPT-5.6 alias', () => {
+    const request = makeRequest({
+      model: 'sonnet',
+      coralEnv: { CORAL_CODEX_MODEL: 'sol' },
+    });
+
+    expect(mapThreadStartParams(request).model).toBe('terra');
+  });
+
+  it('collapses abstract tiers to a non-GPT-5.6 CORAL_CODEX_MODEL (no sol/terra/luna split)', () => {
+    const request = makeRequest({
+      model: 'opus',
+      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
+    });
+
     expect(mapThreadStartParams(request).model).toBe('gpt-5.5');
     expect(mapThreadResumeParams(request, 'thread-1').model).toBe('gpt-5.5');
     expect(mapTurnStartParams(request, 'thread-1').model).toBe('gpt-5.5');
+  });
+
+  it.each(['opus', 'sonnet', 'haiku'] as const)(
+    'uses the same non-GPT-5.6 baseline for abstract tier %s',
+    (tier) => {
+      const request = makeRequest({
+        model: tier,
+        coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
+      });
+      expect(mapTurnStartParams(request, 'thread-1').model).toBe('gpt-5.5');
+    },
+  );
+
+  it('passes concrete model ids through unchanged', () => {
+    const request = makeRequest({ model: 'gpt-5.6-sol' });
+
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.6-sol');
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe('gpt-5.6-sol');
+  });
+
+  it('passes concrete model ids even when CORAL_CODEX_MODEL is a different line', () => {
+    const request = makeRequest({
+      model: 'gpt-5.4',
+      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' },
+    });
+
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.4');
   });
 });

@@ -10,7 +10,7 @@ const modelNameSchema = z
 const promptSchema = z.string().min(1, 'Prompt is required');
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const ownerSchema = z.string().regex(identPattern, 'Owner must be token-safe');
-const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
+const effortLevelSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const claudeModelCapSchema = modelNameSchema.optional();
 const claudeTransportSchema = z.string().optional();
 
