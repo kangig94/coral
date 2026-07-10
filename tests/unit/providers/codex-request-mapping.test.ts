@@ -247,7 +247,7 @@ describe('mapTurnStartParams effort mapping', () => {
       }),
       'thread-1',
     );
-    expect(params.model).toBe('terra');
+    expect(params.model).toBe('gpt-5.6-terra');
     expect(params.effort).toBe('xhigh');
   });
 
@@ -648,6 +648,24 @@ describe('resolveCodexModel uses coralEnv', () => {
       model: 'sonnet',
       coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
     });
+
+    expect(mapThreadStartParams(request).model).toBe('gpt-5.6-terra');
+  });
+
+  it.each([
+    ['sol', 'gpt-5.6-sol'],
+    ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-5.6-luna'],
+  ] as const)('normalizes bare GPT-5.6 size alias %s to %s', (alias, codexModel) => {
+    const request = makeRequest({ model: alias });
+
+    expect(mapThreadStartParams(request).model).toBe(codexModel);
+    expect(mapThreadResumeParams(request, 'thread-1').model).toBe(codexModel);
+    expect(mapTurnStartParams(request, 'thread-1').model).toBe(codexModel);
+  });
+
+  it('normalizes a bare size alias even under a non-GPT-5.6 CORAL_CODEX_MODEL (explicit concrete size)', () => {
+    const request = makeRequest({ model: 'terra', coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } });
 
     expect(mapThreadStartParams(request).model).toBe('gpt-5.6-terra');
   });

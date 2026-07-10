@@ -350,6 +350,17 @@ function buildCodexTurnInput(prompt: string): UserInput[] {
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 
 /**
+ * Canonical GPT-5.6 size model ids, keyed by their bare size alias. Single home
+ * for the `gpt-5.6-<size>` literals: the abstract-tier map, the family check, and
+ * the bare-alias normalization in `resolveCodexModel` all derive from this.
+ */
+const GPT56_SIZE_MODEL: Record<string, string> = {
+  sol: 'gpt-5.6-sol',
+  terra: 'gpt-5.6-terra',
+  luna: 'gpt-5.6-luna',
+};
+
+/**
  * Agent frontmatter / Coral abstract tiers → Codex GPT-5.6 family aliases.
  * Agent files declare Claude-style tiers (`opus` / `sonnet` / `haiku`); Codex
  * consumes the generation-family names gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna instead.
@@ -359,16 +370,16 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
  * abstract tiers collapse to that one baseline model.
  */
 const CODEX_ABSTRACT_MODEL: Record<string, string> = {
-  opus: 'gpt-5.6-sol',
-  sonnet: 'gpt-5.6-terra',
-  haiku: 'gpt-5.6-luna',
+  opus: GPT56_SIZE_MODEL.sol,
+  sonnet: GPT56_SIZE_MODEL.terra,
+  haiku: GPT56_SIZE_MODEL.luna,
 };
 
 /** True when `model` is a GPT-5.6 generation id (or bare sol/terra/luna alias). */
 function isCodexGpt56Family(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   if (normalized.includes('gpt-5.6')) return true;
-  return normalized === 'sol' || normalized === 'terra' || normalized === 'luna';
+  return GPT56_SIZE_MODEL[normalized] !== undefined;
 }
 
 function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | undefined {
@@ -459,11 +470,12 @@ export function resolveCodexServiceTier(
  *
  * Precedence:
  * 1. Abstract tier (`opus`/`sonnet`/`haiku`):
- *    - GPT-5.6 baseline → map to `sol`/`terra`/`luna`
- *    - otherwise → use the baseline as-is (no size split)
- * 2. Concrete request.model (pass-through)
- * 3. CORAL_CODEX_MODEL
- * 4. DEFAULT_CODEX_MODEL
+ *    - GPT-5.6 baseline → map to `gpt-5.6-sol`/`-terra`/`-luna`
+ *    - otherwise → collapse to the baseline as-is (no size split)
+ * 2. Bare GPT-5.6 size alias (`sol`/`terra`/`luna`) → canonical `gpt-5.6-<size>`
+ * 3. Concrete request.model (pass-through)
+ * 4. CORAL_CODEX_MODEL
+ * 5. DEFAULT_CODEX_MODEL
  *
  * Baseline = CORAL_CODEX_MODEL ?? DEFAULT. Abstract tiers must resolve here —
  * `resolveModelTier` returns undefined for them so Claude can defer to CLI
@@ -476,6 +488,14 @@ function resolveCodexModel(request: ProviderRequest): string {
     const mapped = CODEX_ABSTRACT_MODEL[request.model];
     if (mapped !== undefined) {
       return isCodexGpt56Family(baseline) ? mapped : baseline;
+    }
+    // Bare GPT-5.6 size aliases (sol/terra/luna) are concrete model requests, not
+    // abstract tiers: normalize to the canonical `gpt-5.6-<size>` id so the wire
+    // model (and Codex) never sees the prefix-less alias. Unconditional — these
+    // names are explicit 5.6 sizes regardless of the baseline line.
+    const sizeModel = GPT56_SIZE_MODEL[request.model.trim().toLowerCase()];
+    if (sizeModel !== undefined) {
+      return sizeModel;
     }
   }
   return resolveModelTier(request.model) ?? baseline;
