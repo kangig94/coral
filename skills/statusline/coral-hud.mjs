@@ -1094,6 +1094,42 @@ function alignColumns(a, b) {
   return [padVisual(a, w), padVisual(b, w)];
 }
 
+const CODEX_MODEL_DEFAULT = 'gpt-5.6-sol';
+
+// Read one key from a settings.json `env` block; undefined on any miss (no file,
+// bad JSON, absent/empty value).
+function readSettingsEnvValue(path, key) {
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf-8'))?.env?.[key];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Codex model shown on line 2. Read the effective CORAL_CODEX_MODEL fresh from
+// settings.json on every render so an edit (including unset) reflects without a
+// session restart — this statusLine subprocess inherits the parent session's
+// env, frozen at session start, so `process.env` would go stale. Precedence
+// mirrors Claude Code's settings merge: project-local > project > user; no
+// settings value means the built-in default. A shell-exported CORAL_CODEX_MODEL
+// is deliberately not consulted — it is a frozen session-start snapshot, so
+// honoring it would defeat "unset -> default".
+function resolveCodexModelDisplay(input) {
+  const projectDir = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
+  const paths = [];
+  if (projectDir) {
+    paths.push(join(projectDir, '.claude', 'settings.local.json'));
+    paths.push(join(projectDir, '.claude', 'settings.json'));
+  }
+  paths.push(join(CLAUDE_DIR, 'settings.json'));
+  for (const path of paths) {
+    const value = readSettingsEnvValue(path, 'CORAL_CODEX_MODEL');
+    if (value) return value;
+  }
+  return CODEX_MODEL_DEFAULT;
+}
+
 async function main() {
   const input = await readStdin();
   if (!input) {
@@ -1111,7 +1147,7 @@ async function main() {
 
   // Column alignment: model name + limits (up to second |)
   const claudeModel = renderModel(input);
-  const envModel = process.env.CORAL_CODEX_MODEL || 'gpt-5.6-sol';
+  const envModel = resolveCodexModelDisplay(input);
   let col1Claude, col1Codex, col2Claude, col2Codex;
   let codexCreditStr = null;
 
