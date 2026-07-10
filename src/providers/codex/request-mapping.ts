@@ -352,16 +352,16 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 /**
  * Agent frontmatter / Coral abstract tiers → Codex GPT-5.6 family aliases.
  * Agent files declare Claude-style tiers (`opus` / `sonnet` / `haiku`); Codex
- * consumes the generation-family names Sol / Terra / Luna instead.
+ * consumes the generation-family names gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna instead.
  *
  * Only applied when the configured baseline model is a GPT-5.6 family id.
  * Older single-size lines (e.g. `gpt-5.5`) have no sol/terra/luna split, so
  * abstract tiers collapse to that one baseline model.
  */
 const CODEX_ABSTRACT_MODEL: Record<string, string> = {
-  opus: 'sol',
-  sonnet: 'terra',
-  haiku: 'luna',
+  opus: 'gpt-5.6-sol',
+  sonnet: 'gpt-5.6-terra',
+  haiku: 'gpt-5.6-luna',
 };
 
 /** True when `model` is a GPT-5.6 generation id (or bare sol/terra/luna alias). */
