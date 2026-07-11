@@ -2,36 +2,21 @@
 
 ## Git Workflow
 
-- **`main`**: Release branch. Always deployable. Never commit directly.
-- **`dev`**: Integration branch. Feature branches merge here. Direct commits allowed for small changes.
-- **Feature branches**: Branch from `dev`, rebase merge back to `dev` via PR.
-- **Release**: When `dev` is stable, squash merge `dev` → `main` via PR.
-- **Hotfix**: Fix on `dev`, squash merge to `main`. Cherry-pick if `dev` has unreleased WIP.
+- **`main`**: the only long-lived branch. Protected by the "protect main" ruleset (changes via PR + 1 review). Always deployable. Never commit directly.
+- **Feature branches**: branch from `main`, open a PR back to `main`. Naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
+- **Merge**: squash (one commit per PR on `main`, traceable via PR link `(#N)`). CI (`.github/workflows/ci.yml`) builds + tests the PR on Node 24 and 26.
 
-Branch naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
+Feature PRs carry **source only**. Do **not** bump the version or rebuild `bridge/` in a feature PR — both belong to the release step (see Releasing). CI does not check `bridge/`, so a stale `bridge/` on `main` between releases is expected and harmless (installs come from tags, see below).
 
-Merge policy:
-- **feature → dev**: rebase (preserve individual commits, partial revert possible)
-- **dev → main**: squash (one commit per release, traceable via PR link `(#N)`)
+## Releasing
 
-PR procedure (dev → main):
-1. Commit all changes on `dev`, run build + tests
-2. `git fetch origin main`
-3. Rebase only new commits onto main:
-   ```bash
-   git rebase --onto origin/main \
-     $(gh pr list --base main --head dev --state merged --limit 1 --json headRefOid -q '.[0].headRefOid') dev
-   ```
-   This finds the last squash-merged PR's head SHA on dev and replays only commits after it.
-   If dev is already rebased (no prior squash-merged PR exists), use `git rebase origin/main` instead.
-   This works even when main moved forward from other sources (hotfix, other contributor) —
-   the rebase places new commits on top of the latest main regardless of divergence.
-   On conflict: resolve, `git add`, `git rebase --continue`.
-4. Verify: `git log --oneline origin/main..dev` should show only new commits
-5. `npm run build:release && npm test` - re-verify after rebase (updates bridge/)
-6. `git push origin dev --force-with-lease`
-7. `gh pr create --base main --head dev` (or update existing PR)
-8. Squash merge on GitHub
+Releases are cut by the manual **Release** GitHub Action, not by a PR:
+
+1. Actions → **Release** → *Run workflow* → enter the version (semver, no leading `v`, e.g. `0.9.14`).
+2. The workflow runs `npm test`, `npm version --no-git-tag-version`, and `npm run build:release` (which rebuilds `bridge/` for that exact version and syncs the version into `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`). It then makes a single `Release v<version>` commit (version + rebuilt `bridge/`), tags `v<version>`, pushes both to `main`, and creates a GitHub release.
+3. It authenticates as a GitHub App listed in the "protect main" ruleset bypass, so it pushes the release commit directly to protected `main`.
+
+The plugin installs from the tag (`marketplace.json` `source.ref = v<version>` on `main` is the "latest" pointer; each tag carries the exact `bridge/` for its version). The version level (patch/minor/major) is decided when cutting the release, not per PR.
 
 ## Commit Style
 

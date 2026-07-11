@@ -8,7 +8,7 @@ Keep a local dev build registered next to the marketplace prod install.
 npm run build:dev
 ```
 
-This writes the local checkout's `build/manifest.json` with `flavor: "dev"`. To update `bridge/` for commit, use `npm run build:release` instead.
+This writes the local checkout's `build/manifest.json` with `flavor: "dev"`. `bridge/` is rebuilt and committed only by the Release workflow at release time — never by hand in feature work; run `npm run build:release` locally only if you need refreshed prod `bridge/` bundles to test against.
 
 ## 2. Register the local hooks in `.claude/settings.local.json`
 

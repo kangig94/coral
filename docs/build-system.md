@@ -23,14 +23,14 @@ The bundle code is identical across flavors; the distinction lives in `manifest.
 
 ## Build Output and Bridge
 
-Build output goes to `build/` (git-ignored). The committed runtime bundles in `bridge/` are updated only by `npm run build:release`:
+Build output goes to `build/` (git-ignored). The committed runtime bundles in `bridge/` are rebuilt by `npm run build:release` and are refreshed on `main` only by the **Release** workflow (`.github/workflows/release.yml`) — not in feature PRs. The committed bundles are:
 
 - `bridge/coral-backend.cjs`
 - `bridge/coral-cli.cjs`
 - `bridge/coral-claude-appserver.cjs`
 - `bridge/manifest.json`
 
-CI verifies that committed `bridge/` files match a fresh build via hash comparison (see `.github/workflows/verify-bridge.yml`).
+`bridge/` is not checked per-PR: PR CI (`.github/workflows/ci.yml`) only builds and tests. `bridge/` is regenerated for the exact version and committed by the Release workflow at release time, so each release **tag** carries the matching bundles (the plugin installs from tags). Between releases, `bridge/` on `main` is the previous release's build — expected and harmless, since installs never come from `main`'s HEAD.
 
 ## Build Pipeline
 
