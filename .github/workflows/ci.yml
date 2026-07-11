@@ -1,0 +1,29 @@
+name: CI
+
+# Pull-request gate: the source compiles (tsc + esbuild bundle) and the test
+# suite passes, on both supported Node majors. Feature PRs carry source only —
+# they do NOT bump the version or rebuild bridge/ (the Release workflow does
+# that at release time), so there is no bridge hash check here.
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [24, 26]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

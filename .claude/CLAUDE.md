@@ -32,8 +32,8 @@ npm run dev          # tsc --watch
 
 **Runtime Note**: `bridge/*.cjs` bundles have build-time constants (`__PLUGIN_ROOT__`, `__VERSION__`) injected by esbuild. Do NOT execute them directly (`node bridge/coral-cli.cjs`) — they only work from the installed plugin path. Use `npm test` for CLI verification.
 
-**Version Upgrade**:
-Run `npm version <ver> --no-git-tag-version` then `npm run build:release`. The npm command updates both `package.json` and `package-lock.json`. The build script syncs the version to `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, and injects `__VERSION__` into the bundle.
+**Releasing**:
+Releases are cut by the manual **Release** GitHub Action (Actions → Run workflow → version), which runs tests, bumps the version, rebuilds `bridge/`, makes a single `Release v<ver>` commit, tags `v<ver>`, and pushes to `main`. Do NOT bump the version or rebuild `bridge/` in a feature PR — feature PRs carry source only. (Locally, `npm version <ver> --no-git-tag-version` updates `package.json`/`package-lock.json`, and `npm run build:release` then syncs the version into `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`, rebuilds `bridge/`, and injects `__VERSION__` — but the workflow is the canonical path.)
 
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
 
