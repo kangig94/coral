@@ -8,11 +8,11 @@ Keep a local dev build registered next to the marketplace prod install.
 npm run build:dev
 ```
 
-This writes the local checkout's `build/manifest.json` with `flavor: "dev"`. `bridge/` is rebuilt and committed only by the Release workflow at release time — never by hand in feature work; run `npm run build:release` locally only if you need refreshed prod `bridge/` bundles to test against.
+This writes the local checkout's `clients/build/manifest.json` with `flavor: "dev"`. `clients/bridge/` is rebuilt and committed only by the Release workflow at release time — never by hand in feature work; run `npm run build:release` locally only if you need refreshed prod `clients/bridge/` bundles to test against.
 
 ## 2. Register the local hooks in `.claude/settings.local.json`
 
-Keep `.claude/settings.local.json` machine-local. Point the Coral hooks at your checkout, set `CLAUDE_PLUGIN_ROOT`, and register `CORAL_FLAVOR=dev` in the settings `env` block so the dev hooks can coexist with the installed prod plugin hooks.
+Keep `.claude/settings.local.json` machine-local. The plugin surface lives under `clients/`, so point the Coral hooks at `<checkout>/clients/hooks/*.mjs`, set `CLAUDE_PLUGIN_ROOT` to `<checkout>/clients`, and register `CORAL_FLAVOR=dev` in the settings `env` block so the dev hooks can coexist with the installed prod plugin hooks.
 
 ## How it works
 

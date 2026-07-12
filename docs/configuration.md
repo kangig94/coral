@@ -125,7 +125,9 @@ Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's proces
 
 ## Config Files
 
-### `.claude-plugin/plugin.json`
+The installable plugin surface lives under `clients/` (the plugin root — it holds `.claude-plugin/plugin.json`, `.codex-plugin/`, `agents/`, `skills/`, `hooks/`, `bridge/`, `methods/`, and `INJECT.md`). The root `.claude-plugin/marketplace.json` stays at the repo root and points at `./clients` via a `git-subdir` source. At install time the `clients/` level is flattened away, so `${CLAUDE_PLUGIN_ROOT}` resolves to a directory that contains `bridge/`, `hooks/`, etc. directly.
+
+### `clients/.claude-plugin/plugin.json`
 
 Claude Code plugin manifest. Relevant fields:
 
@@ -139,7 +141,7 @@ Claude Code plugin manifest. Relevant fields:
 
 The manifest is limited to plugin metadata and the skill path. Transport registration is not part of the manifest.
 
-### `bridge/manifest.json`
+### `clients/bridge/manifest.json`
 
 Build manifest written by `scripts/build-server.mjs`:
 
@@ -152,7 +154,7 @@ Build manifest written by `scripts/build-server.mjs`:
 
 `bundleHash` tracks backend bundle bytes. `flavor` is the intrinsic build identity used by the backend and hooks to distinguish prod from dev.
 
-### `hooks/hooks.json`
+### `clients/hooks/hooks.json`
 
 Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, and Stop. See [Hooks](./hooks.md) for behavior details.
 
@@ -206,7 +208,7 @@ Live scratch artifacts:
 | `graphology-communities-louvain` | Community detection                                       |
 | `mammoth` / `turndown`           | Source import conversion                                  |
 | `@lydell/node-pty`               | Interactive Claude CLI broker transport                   |
-| `commander`                      | CLI command parsing (bundled into `bridge/coral-cli.cjs`) |
+| `commander`                      | CLI command parsing (bundled into `clients/bridge/coral-cli.cjs`) |
 | `yaml`                           | YAML parsing                                              |
 | `zod-to-json-schema`             | Schema export helpers                                     |
 
@@ -222,12 +224,14 @@ Live scratch artifacts:
 ## File Role Summary
 
 ```text
-.claude-plugin/plugin.json                     -> plugin manifest
-hooks/hooks.json                               -> hook registration
-bridge/coral-backend.cjs                       -> backend daemon bundle
-bridge/coral-cli.cjs                           -> CLI bundle
-bridge/coral-claude-appserver.cjs              -> Claude broker helper bundle
-bridge/manifest.json                           -> backend bundle hash + build flavor
+.claude-plugin/marketplace.json                -> marketplace catalog (repo root; git-subdir -> ./clients)
+clients/.claude-plugin/plugin.json             -> plugin manifest
+clients/.codex-plugin/plugin.json              -> Codex plugin manifest
+clients/hooks/hooks.json                        -> hook registration
+clients/bridge/coral-backend.cjs                -> backend daemon bundle
+clients/bridge/coral-cli.cjs                    -> CLI bundle
+clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle
+clients/bridge/manifest.json                    -> backend bundle hash + build flavor
 
 ~/.coral/run*/coordinator.json                 -> active coordinator discovery record
 ~/.coral/run*/coordinator.lock                 -> per-flavor coordinator singleton lock

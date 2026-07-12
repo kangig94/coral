@@ -8,9 +8,9 @@ Coral's product identity is a coding-assistant plugin for Claude Code and Codex.
 
 | Entry                    | Bundle                              | Role                                                                                                                                                                                                  |
 | ------------------------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Backend composition root | `bridge/coral-backend.cjs`          | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes.                                                           |
-| CLI entrypoint           | `bridge/coral-cli.cjs`              | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
-| Claude broker helper     | `bridge/coral-claude-appserver.cjs` | Provider helper that accepts broker RPC and runs Claude through the default `claude -p` stream-json transport or the opt-in PTY TUI transport.                                                         |
+| Backend composition root | `clients/bridge/coral-backend.cjs`          | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes.                                                           |
+| CLI entrypoint           | `clients/bridge/coral-cli.cjs`              | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
+| Claude broker helper     | `clients/bridge/coral-claude-appserver.cjs` | Provider helper that accepts broker RPC and runs Claude through the default `claude -p` stream-json transport or the opt-in PTY TUI transport.                                                         |
 
 ## CLI and Client
 

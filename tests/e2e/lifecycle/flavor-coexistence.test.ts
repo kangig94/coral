@@ -29,8 +29,8 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { ensure } from '#src/transport/ipc/ensure.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
-const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
-const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {
+const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
+const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
   bundleHash: string;
 };
 

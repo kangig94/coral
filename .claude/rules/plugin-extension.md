@@ -7,7 +7,7 @@ paths:
 
 ## Agent Definitions
 
-- Agent files in `agents/` use `<Agent_Prompt>` XML structure (see `skills/init-project/templates/agents/AGENT.md.template`)
+- Agent files in `clients/agents/` use `<Agent_Prompt>` XML structure (see `clients/skills/init-project/templates/agents/AGENT.md.template`)
 - Agent names use kebab-case: `architect.md`, `persona-generator.md`
 - Agent markdown is injected as protocol instructions â€” keep concise and actionable
 
@@ -48,9 +48,9 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 
 ## Plugin.json Sync
 
-- `.claude-plugin/plugin.json` is host metadata only â€” do not rely on old host-side registration files
-- Agent declarations in plugin.json must match files in `agents/`
-- Skill declarations must match directories in `skills/`
+- `clients/.claude-plugin/plugin.json` is host metadata only â€” do not rely on old host-side registration files
+- Agent declarations in plugin.json must match files in `clients/agents/`
+- Skill declarations must match directories in `clients/skills/`
 - When adding a new CLI/backend surface: update command registration, schemas, and user-facing docs together
 
 ## Codex Delegation Pattern
@@ -59,7 +59,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 Caller invokes Coral CLI:
   -> coral-cli codex <agent> -i "<prompt>" [--work-dir "<path>"] -d
   -> CLI validates args and dispatches the provider launch
-  -> backend resolves agents/<agent>.md
+  -> backend resolves clients/agents/<agent>.md
   -> detached launch prints `Job <job> <launchState> (session <session>)`
   -> coral-cli wait --jobs "<job>" --embed
   -> read the printed `Result path: <path>` for the full artifact

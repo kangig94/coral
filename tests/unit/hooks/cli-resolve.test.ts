@@ -15,7 +15,7 @@ import {
 afterEach(cleanupFixtures);
 
 describe('cli-resolve.mjs', () => {
-  const cliBundle = join(process.cwd(), 'bridge', 'coral-cli.cjs');
+  const cliBundle = join(process.cwd(), 'clients', 'bridge', 'coral-cli.cjs');
   const createdTempInputs: string[] = [];
 
   afterEach(() => {
@@ -342,7 +342,7 @@ describe('cli-resolve.mjs', () => {
   });
 
   it('rewrites a stale bridge path under the coral plugin cache to the active bridge', () => {
-    const cacheRoot = join(process.cwd(), '..');
+    const cacheRoot = process.cwd();
     const stale = join(cacheRoot, '0.0.0-nonexistent', 'bridge', 'coral-cli.cjs');
     expect(existsSync(stale)).toBe(false);
 

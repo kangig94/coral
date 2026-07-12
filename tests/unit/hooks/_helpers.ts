@@ -4,20 +4,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
-export const SESSION_START_HOOK = join(process.cwd(), 'hooks', 'session-start.mjs');
-export const SUBAGENT_START_HOOK = join(process.cwd(), 'hooks', 'subagent-start.mjs');
-export const SUBAGENT_TRACK_HOOK = join(process.cwd(), 'hooks', 'subagent-track.mjs');
-export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-memo-reminder.mjs');
-export const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'hooks', 'kb-promote-gate.mjs');
-export const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'hooks', 'kb-lookup-reminder.mjs');
-export const CLI_RESOLVE_HOOK = join(process.cwd(), 'hooks', 'cli-resolve.mjs');
-export const CLI_MONITOR_GUARD_HOOK = join(process.cwd(), 'hooks', 'cli-monitor-guard.mjs');
-export const PRE_COMPACT_HOOK = join(process.cwd(), 'hooks', 'pre-compact.mjs');
-export const POST_COMPACT_HOOK = join(process.cwd(), 'hooks', 'post-compact.mjs');
-export const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'hooks', 'coral-skill-vars.mjs');
-export const HUD_AUTO_UPDATE_HOOK = join(process.cwd(), 'hooks', 'hud-auto-update.mjs');
-export const RALPH_LOOP_HOOK = join(process.cwd(), 'hooks', 'ralph-loop.mjs');
-export const HOOKS_JSON_PATH = join(process.cwd(), 'hooks', 'hooks.json');
+export const SESSION_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'session-start.mjs');
+export const SUBAGENT_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-start.mjs');
+export const SUBAGENT_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-track.mjs');
+export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-memo-reminder.mjs');
+export const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-promote-gate.mjs');
+export const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-lookup-reminder.mjs');
+export const CLI_RESOLVE_HOOK = join(process.cwd(), 'clients', 'hooks', 'cli-resolve.mjs');
+export const CLI_MONITOR_GUARD_HOOK = join(process.cwd(), 'clients', 'hooks', 'cli-monitor-guard.mjs');
+export const PRE_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'pre-compact.mjs');
+export const POST_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'post-compact.mjs');
+export const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'clients', 'hooks', 'coral-skill-vars.mjs');
+export const HUD_AUTO_UPDATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'hud-auto-update.mjs');
+export const RALPH_LOOP_HOOK = join(process.cwd(), 'clients', 'hooks', 'ralph-loop.mjs');
+export const HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'hooks.json');
 
 export interface HookRunResult {
   stdout: string;

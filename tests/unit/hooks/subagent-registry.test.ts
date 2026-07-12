@@ -4,9 +4,9 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { hasLiveSubagent, recordStart, recordStop } from '../../../hooks/lib/subagent-registry.mjs';
+import { hasLiveSubagent, recordStart, recordStop } from '../../../clients/hooks/lib/subagent-registry.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { projectTmpDir } from '../../../hooks/lib/plugin-paths.mjs';
+import { projectTmpDir } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
 const SESSION = 'sess-11111111';
 const OTHER = 'sess-22222222';

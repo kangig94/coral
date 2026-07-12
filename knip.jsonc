@@ -10,7 +10,7 @@
     // which knip's static graph cannot follow — declare them as entrypoints.
     "src/engines/*/expansion.ts",
     "scripts/**/*.mjs",
-    "hooks/**/*.mjs",
+    "clients/hooks/**/*.mjs",
     "tools/**/*.ts",
     "tests/**/*.test.ts",
     "vitest/*.ts"

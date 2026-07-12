@@ -74,7 +74,9 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import type { KbRequestPort } from '#src/transport/rpc/ports.js';
 
-const testBackendNamespace = pluginRootNamespace(process.cwd());
+// The plugin root is clients/ (where bridge/manifest lives); the backend under
+// test derives its namespace from that root via __PLUGIN_ROOT__ (see vitest/setup.ts).
+const testBackendNamespace = pluginRootNamespace(join(process.cwd(), 'clients'));
 const foreignBackendNamespace = 'foreign-namespace-xyz';
 const waitTiming = {
   origin: 'runtime',

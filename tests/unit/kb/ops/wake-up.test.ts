@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { KbRuntime } from '#src/kb/contract.js';
 import { generateWakeUpPacket } from '#src/kb/ops/wake-up.js';
 // @ts-expect-error — hooks lib is .mjs without TypeScript types; direct import for parity test.
-import { readProjectScopedWakeUp } from '../../../../hooks/lib/wake-up-read.mjs';
+import { readProjectScopedWakeUp } from '../../../../clients/hooks/lib/wake-up-read.mjs';
 import { createKbTestDb } from '#tests/unit/kb/runtime-test-helpers.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
 import type { Database } from '#src/store/db.js';

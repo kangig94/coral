@@ -19,7 +19,7 @@ function createHookUtilsFixture(flavor: 'prod' | 'dev'): {
   createdRoots.push(root);
   mkdirSync(join(root, 'hooks', 'lib'), { recursive: true });
   mkdirSync(join(root, 'bridge'), { recursive: true });
-  writeFileSync(modulePath, readFileSync(join(process.cwd(), 'hooks', 'lib', 'hook-utils.mjs'), 'utf-8'), 'utf-8');
+  writeFileSync(modulePath, readFileSync(join(process.cwd(), 'clients', 'hooks', 'lib', 'hook-utils.mjs'), 'utf-8'), 'utf-8');
   writeFileSync(manifestPath, JSON.stringify({ bundleHash: 'test-hash', flavor }), 'utf-8');
 
   return { root, manifestPath, modulePath };

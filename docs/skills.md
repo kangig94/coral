@@ -1,10 +1,10 @@
 # Skills (Slash Commands)
 
-Slash commands provided by the Coral plugin. Each skill is defined in `skills/{name}/SKILL.md`.
+Slash commands provided by the Coral plugin. Each skill is defined in `clients/skills/{name}/SKILL.md`.
 
 ## Methods
 
-Cross-cutting methodology files live in `methods/`. Agents and skills reference them through the `CORAL_METHODS` path alias.
+Cross-cutting methodology files live in `clients/methods/`. Agents and skills reference them through the `CORAL_METHODS` path alias.
 
 Resolved absolute paths are injected in `INJECT.md` (`{{CORAL_METHODS}}` / `{{CORAL_PROJECT}}` under Tools) for host sessions, Claude-native subagents, and provider children. Host skill flows also get short alias lines from `coral-skill-vars.mjs`. See [Hooks — INJECT.md](./hooks.md#injectmd-shared-guidelines).
 
@@ -99,4 +99,4 @@ The first comma determines whether the input is parsed as a bid (`score, thought
 3. Execute the plan through Coral protocols.
 4. Report the generated artifacts.
 
-The full protocol lives in `skills/init-project/SKILL.md`.
+The full protocol lives in `clients/skills/init-project/SKILL.md`.

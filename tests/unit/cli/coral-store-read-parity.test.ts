@@ -93,7 +93,7 @@ function seedStore(projectRoot: string): void {
       'session-store-read-1',
       'codex',
       projectRoot,
-      pluginRootNamespace(REPO_ROOT),
+      pluginRootNamespace(join(REPO_ROOT, 'clients')),
       'provider',
       '2026-03-21T00:00:00.000Z',
       0,
@@ -152,7 +152,7 @@ describe('cli coral-store read parity', () => {
     mkdirSync(projectRoot, { recursive: true });
     process.env.HOME = tempHome;
     process.env.CORAL_KB_PATH = join(tempHome, 'vault');
-    process.env.CLAUDE_PLUGIN_ROOT = REPO_ROOT;
+    process.env.CLAUDE_PLUGIN_ROOT = join(REPO_ROOT, 'clients');
     process.chdir(projectRoot);
 
     writeKbFixtures(process.env.CORAL_KB_PATH);

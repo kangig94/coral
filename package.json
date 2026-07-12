@@ -16,10 +16,10 @@
   },
   "files": [
     "dist/",
-    "bridge/coral-backend.cjs",
-    "bridge/coral-cli.cjs",
-    "bridge/coral-claude-appserver.cjs",
-    "bridge/manifest.json"
+    "clients/bridge/coral-backend.cjs",
+    "clients/bridge/coral-cli.cjs",
+    "clients/bridge/coral-claude-appserver.cjs",
+    "clients/bridge/manifest.json"
   ],
   "scripts": {
     "clean:dist": "node scripts/clean-dist.mjs",

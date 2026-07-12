@@ -4,7 +4,7 @@ Coral is a coding-assistant plugin for Claude Code and Codex. Its purpose is to 
 
 Internally, Coral is a local coding-agent coordination layer. Claude Code reaches Coral through hooks, slash-command skills, and Bash calls to `coral-cli`. For local mutating and live-follow commands, `coral-cli` ensures the backend daemon is running and talks over the authenticated IPC socket. Read-only no-coordinator paths use the `read-model/CoralStore` facade directly. HTTP remains available as the remote gateway plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`). No bridge or stdio proxy remains in the runtime path.
 
-Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
+Coral also has a build flavor axis. `prod` is the marketplace-installed runtime and `dev` is a local build meant to coexist with it on the same machine. `clients/bridge/manifest.json` is the sole flavor carrier for the runtime identity fields (`bundleHash` plus `flavor`), while `CORAL_FLAVOR` is only a session-level hook selector that decides which hook set should execute.
 
 ## Design Frame
 
@@ -26,12 +26,12 @@ This frame constrains new code: first name the truth owner, then decide whether 
 
 ```text
 Claude Code
-├── Hooks (`hooks/*.mjs`)
-├── Slash-command skills (`skills/*/SKILL.md`)
+├── Hooks (`clients/hooks/*.mjs`)
+├── Slash-command skills (`clients/skills/*/SKILL.md`)
 └── Bash calls to `coral-cli`
       │
       ▼
-bridge/coral-cli.cjs
+clients/bridge/coral-cli.cjs
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
   ├── Admin commands (`backend status|shutdown`)
@@ -44,7 +44,7 @@ bridge/coral-cli.cjs
             `/health`, `/admin/shutdown`, `/events/stream`
       │
       ▼
-bridge/coral-backend.cjs
+clients/bridge/coral-backend.cjs
   ├── Coordinator bootstrap + lifecycle
   ├── IPC + HTTP/SSE transport adapters
   ├── Jobs / sessions / workflow / discuss / KB owner modules and contracts
@@ -56,7 +56,7 @@ bridge/coral-backend.cjs
       │
       ├── Codex CLI
       ├── Claude CLI
-      └── Claude broker helper (`bridge/coral-claude-appserver.cjs`, when needed)
+      └── Claude broker helper (`clients/bridge/coral-claude-appserver.cjs`, when needed)
 ```
 
 The Claude helper keeps its historical bridge filename. By default it launches `claude -p --input-format stream-json --output-format stream-json` and drives turns over JSONL. Operators can set `CORAL_CLAUDE_TRANSPORT=tui` to use the PTY transport instead; that path launches interactive `claude` through `@lydell/node-pty`, writes turns after terminal readiness, and derives completion/progress from Claude's JSONL transcript.
