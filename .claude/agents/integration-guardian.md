@@ -167,21 +167,6 @@ disallowedTools: Write, Edit
     # Verify shutdown handlers exist
     rg -n 'SIGTERM|SIGINT|killAllChildren' src/
     ```
-
-    Key files:
-    | File | Concern |
-    |------|---------|
-    | `src/cli/main.ts` | Command flags, output contracts, launch/wait semantics |
-    | `src/client/http-client.ts` | Backend payload shapes and route usage |
-    | `src/execution/http-handler.ts` | Backend route validation and domain error handling |
-    | `src/providers/codex/server-handlers.ts` | Business logic, dispatch |
-    | `src/providers/codex/schemas.ts` | Zod schemas must match inputSchema declarations |
-    | `src/providers/codex/codex-executor.ts` | Process spawn, timeout, child tracking |
-    | `src/runner/session-manager.ts` | Atomic writes, corrupt file handling |
-    | `src/providers/codex/output-parser.ts` | JSONL parsing contract with Codex CLI |
-    | `src/discuss/server-handlers.ts` | Discuss dispatch, withLock usage |
-    | `src/discuss/session-store.ts` | Discuss atomic writes, cross-process lock |
-    | `src/cli/format.ts` | User-facing output consistency |
   </Tool_Usage>
   <Output_Format>
     ## Integration Guardian Review: [scope]

@@ -18,8 +18,7 @@ disallowedTools: Write, Edit
 
     | Situation | Priority |
     |-----------|----------|
-    | Any change to `hooks/discuss-idle-guard.mjs` | MANDATORY |
-    | Any change to `hooks/hooks.json` | MANDATORY |
+    | Any change to a hook JSON (`clients/hooks/*.json`) | MANDATORY |
     | Adding a new hook script | MANDATORY |
     | Changing hook matcher patterns | RECOMMENDED |
   </Role>
@@ -27,7 +26,7 @@ disallowedTools: Write, Edit
     - Hook script uses `#!/usr/bin/env node` shebang and `.mjs` extension
     - All hook logic wrapped in `try { ... } catch { process.exit(0); }` (fail-open)
     - No network calls, blocking I/O, or shell spawns in hook scripts
-    - `hooks.json` timeout values are reasonable (3-5 seconds)
+    - Hook JSON timeout values (`clients/hooks/claude.json`, `clients/hooks/codex.json`) are reasonable (3-5 seconds)
     - Matcher patterns handle both bare and namespaced agent names
     - Script calls `process.exit(0)` on no-op (condition does not match)
     - `hookSpecificOutput` JSON is written to stdout; diagnostics go to stderr
@@ -99,7 +98,7 @@ disallowedTools: Write, Edit
        const result = execSync('git status');
        ```
 
-    3) Check matcher pattern correctness in hooks.json:
+    3) Check matcher pattern correctness in the hook JSON (`clients/hooks/*.json`):
        ```json
        {
          "matcher": "dc-*",
@@ -137,37 +136,26 @@ disallowedTools: Write, Edit
        writeFileSync(configPath, 'multi_agent = true\n');
        ```
 
-    6) Run Detection Commands, verify timeout values and matcher patterns in hooks.json
+    6) Run Detection Commands, verify timeout values and matcher patterns in `clients/hooks/*.json` (and confirm `codex.json` stays a subset of `claude.json`)
   </Investigation_Protocol>
   <Tool_Usage>
     Detection commands:
     ```bash
     # Check for non-ESM patterns (require(), shell scripts)
-    grep -n 'require(' hooks/*.mjs
+    grep -n 'require(' clients/hooks/*.mjs clients/hooks/lib/*.mjs
 
-    # Verify timeout values in hooks.json
-    grep -A1 '"timeout"' hooks/hooks.json
+    # Verify timeout values in the per-client hook JSON
+    grep -A1 '"timeout"' clients/hooks/*.json
 
     # Check matcher patterns
-    grep '"matcher"' hooks/hooks.json
+    grep '"matcher"' clients/hooks/*.json
 
     # Check fail-open wrapper presence
-    grep -n 'catch' hooks/*.mjs
+    grep -n 'catch' clients/hooks/*.mjs clients/hooks/lib/*.mjs
 
-    # Test discuss idle guard no-op case
-    echo '{"agent_name":"architect"}' | node hooks/discuss-idle-guard.mjs; echo "exit: $?"
+    # Test a hook's no-op path (fail-open exit 0 on empty stdin)
+    echo '{}' | node clients/hooks/kb-lookup-reminder.mjs; echo "exit: $?"
     ```
-
-    Key files:
-    | File | Concern |
-    |------|---------|
-    | `hooks/discuss-idle-guard.mjs` | Discuss idle blocking hook — state file access |
-    | `hooks/hud-auto-update.mjs` | SessionStart HUD auto-update hook |
-    | `hooks/kb-lookup-reminder.mjs` | PostToolUseFailure hook — KB directory scan |
-    | `hooks/kb-memo-reminder.mjs` | PreToolUse hook — memo reminder |
-    | `hooks/kb-promote-gate.mjs` | Stop/PreCompact hook — KB promotion reminder |
-    | `hooks/hooks.json` | Hook configuration — matchers, timeouts, command paths |
-    | `docs/hooks.md` | Hook behavior documentation |
   </Tool_Usage>
   <Output_Format>
     ## Hook Safety Review: [scope]
