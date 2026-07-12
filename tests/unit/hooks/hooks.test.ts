@@ -4,8 +4,9 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  CLAUDE_HOOKS_JSON_PATH,
+  CODEX_HOOKS_JSON_PATH,
   CORAL_SKILL_VARS_HOOK,
-  HOOKS_JSON_PATH,
   HUD_AUTO_UPDATE_HOOK,
   KB_LOOKUP_REMINDER_HOOK,
   KB_MEMO_REMINDER_HOOK,
@@ -499,15 +500,17 @@ describe('kb-lookup-reminder.mjs', () => {
   });
 });
 
-describe('hooks.json', () => {
+type HooksFile = {
+  hooks: Record<string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout: number }> }>>;
+};
+
+describe('claude.json', () => {
   it('does not reference migrate-coral-dir.mjs', () => {
-    expect(readFileSync(HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
+    expect(readFileSync(CLAUDE_HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
   });
 
   it('SessionStart matcher "*" array has 2 entries: session-start (10s) then hud-auto-update (3s)', () => {
-    const hooksJson = JSON.parse(readFileSync(HOOKS_JSON_PATH, 'utf-8')) as {
-      hooks: { SessionStart: Array<{ matcher: string; hooks: Array<{ command: string; timeout: number }> }> };
-    };
+    const hooksJson = JSON.parse(readFileSync(CLAUDE_HOOKS_JSON_PATH, 'utf-8')) as HooksFile;
     const wildcardEntry = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
     expect(wildcardEntry).toBeDefined();
     expect(wildcardEntry!.hooks).toHaveLength(2);
@@ -516,6 +519,31 @@ describe('hooks.json', () => {
     expect(wildcardEntry!.hooks[1].command).toContain('hud-auto-update.mjs');
     expect(wildcardEntry!.hooks[1].timeout).toBe(3);
     expect(JSON.stringify(wildcardEntry)).not.toContain('backend-warm-start.mjs');
+  });
+});
+
+describe('codex.json', () => {
+  it('does not reference migrate-coral-dir.mjs', () => {
+    expect(readFileSync(CODEX_HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
+  });
+
+  it('omits the Claude-only hooks (hud-auto-update, subagent-start, subagent-track, cli-monitor-guard)', () => {
+    const raw = readFileSync(CODEX_HOOKS_JSON_PATH, 'utf-8');
+    for (const script of ['hud-auto-update.mjs', 'subagent-start.mjs', 'subagent-track.mjs', 'cli-monitor-guard.mjs']) {
+      expect(raw).not.toContain(script);
+    }
+    const hooksJson = JSON.parse(raw) as HooksFile;
+    // Subagent events are dropped entirely (their only hooks were the excluded scripts).
+    expect(hooksJson.hooks.SubagentStart).toBeUndefined();
+    expect(hooksJson.hooks.SubagentStop).toBeUndefined();
+    // SessionStart "*" keeps only session-start (hud-auto-update removed).
+    const wildcard = hooksJson.hooks.SessionStart.find((entry) => entry.matcher === '*');
+    expect(wildcard!.hooks).toHaveLength(1);
+    expect(wildcard!.hooks[0].command).toContain('session-start.mjs');
+    // PreToolUse loses only the Monitor matcher; Skill and Bash remain.
+    const preMatchers = hooksJson.hooks.PreToolUse.map((entry) => entry.matcher);
+    expect(preMatchers).not.toContain('Monitor');
+    expect(preMatchers).toEqual(expect.arrayContaining(['Skill', 'Bash']));
   });
 });
 

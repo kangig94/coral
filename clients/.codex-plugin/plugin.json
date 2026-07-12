@@ -18,7 +18,7 @@
     "orchestration"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
+  "hooks": "./hooks/codex.json",
   "interface": {
     "displayName": "Coral",
     "shortDescription": "Structured agents and workflow orchestration for Codex.",

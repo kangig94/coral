@@ -4,7 +4,7 @@ Hooks provide automatic context injection, backend warm-start, compaction recove
 
 ## Overview
 
-Hook registration lives in `clients/hooks/hooks.json`. Coral uses these Claude Code hook events:
+Hook registration is split per client, each `plugin.json` pointing at its own file: `clients/hooks/claude.json` (Claude Code — the full set below, via `.claude-plugin/plugin.json` `"hooks": "./hooks/claude.json"`) and `clients/hooks/codex.json` (Codex — the same set minus `hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` guard, via `.codex-plugin/plugin.json` `"hooks": "./hooks/codex.json"`). The hook scripts themselves are shared; `codex.json` invokes them through Codex's native `${PLUGIN_ROOT}`, while `claude.json` uses `${CLAUDE_PLUGIN_ROOT}`. (Codex also exports `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as OOTB compat aliases of its native `PLUGIN_ROOT`/`PLUGIN_DATA`, so the shared scripts — which read `CLAUDE_PLUGIN_ROOT` internally — run unchanged under both clients.) Coral uses these Claude Code hook events:
 
 | Event                      | Scripts                                                                                 | Purpose                                                                                                            |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
