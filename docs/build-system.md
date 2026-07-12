@@ -122,6 +122,10 @@ npm test
 
 The suites cover CLI routing, client helpers, backend handlers, providers, workflow execution, KB behavior, discuss behavior, shared contracts, and the debug-only simulation harness. `npm run test:simulation` is only a narrower single-batch shortcut for that harness.
 
+## Release Notes
+
+The **Release** workflow creates the GitHub release with `gh release create --generate-notes`, which builds the release body automatically from every PR merged since the previous release. GitHub's generator is **PR- and label-based** — it uses PR titles for the entries and groups them by label; it does **not** parse commit-message prefixes. Categories are defined in [`.github/release.yml`](../.github/release.yml), and the "one type label per PR" rule plus the label↔prefix mapping live in [`.claude/rules/conventions.md` § PR Labels](../.claude/rules/conventions.md). An unlabeled PR falls under "Other Changes"; the `ignore-for-release` label omits a PR entirely.
+
 ## Claude Code Integration
 
 Claude Code reaches Coral through the plugin directory, hooks, and Bash-invoked `coral-cli`. There is no separate server-registration file and no stdio proxy bundle in the build.
