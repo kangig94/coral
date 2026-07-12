@@ -9,8 +9,8 @@ import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { storePaths } from '#src/infra/path/store.js';
 
-const sourceBackendBundle = join(process.cwd(), 'build', 'coral-backend.cjs');
-const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'build', 'manifest.json'), 'utf-8')) as {
+const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
+const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
   bundleHash: string;
 };
 

@@ -22,16 +22,16 @@ Codex delegation is a normal CLI-to-backend provider launch.
 
 | Agent | File | Role |
 | --- | --- | --- |
-| `architect` | `agents/architect.md` | Architecture analysis and plan review |
-| `critic` | `agents/critic.md` | Code and plan review |
-| `debugger` | `agents/debugger.md` | Root-cause diagnosis |
-| `scanner` | `agents/scanner.md` | Project scanning and process investigation |
-| `gap-finder` | `agents/gap-finder.md` | Requirement and scope gap analysis |
-| `resolver` | `agents/resolver.md` | Review synthesis and contradiction resolution |
-| `red-attacker` | `agents/red-attacker.md` | Adversarial test generation |
-| `pioneer` | `agents/pioneer.md` | Most-elegant-design exploration, cost-blind |
-| `persona-generator` | `agents/persona-generator.md` | Discuss persona generation |
-| `workflow-literal` | `agents/workflow-literal.md` | Pipeline step processor for workflow DSL inline prompts |
+| `architect` | `clients/agents/architect.md` | Architecture analysis and plan review |
+| `critic` | `clients/agents/critic.md` | Code and plan review |
+| `debugger` | `clients/agents/debugger.md` | Root-cause diagnosis |
+| `scanner` | `clients/agents/scanner.md` | Project scanning and process investigation |
+| `gap-finder` | `clients/agents/gap-finder.md` | Requirement and scope gap analysis |
+| `resolver` | `clients/agents/resolver.md` | Review synthesis and contradiction resolution |
+| `red-attacker` | `clients/agents/red-attacker.md` | Adversarial test generation |
+| `pioneer` | `clients/agents/pioneer.md` | Most-elegant-design exploration, cost-blind |
+| `persona-generator` | `clients/agents/persona-generator.md` | Discuss persona generation |
+| `workflow-literal` | `clients/agents/workflow-literal.md` | Pipeline step processor for workflow DSL inline prompts |
 
 These agents use Claude Code's native tools. Read-only agents declare `disallowedTools`; execution-oriented agents do not.
 
@@ -43,9 +43,9 @@ Agent bodies may say `read CORAL_METHODS/HOW-….md`. That alias resolves from i
 
 | Skill | Surface | Role |
 | --- | --- | --- |
-| `ralph` | `skills/ralph/SKILL.md` | Persistent task execution with verification |
-| `plan` | `skills/plan/SKILL.md` | Multi-round planning and review orchestration |
-| `init-project` | `skills/init-project/SKILL.md` | Project initialization orchestration |
+| `ralph` | `clients/skills/ralph/SKILL.md` | Persistent task execution with verification |
+| `plan` | `clients/skills/plan/SKILL.md` | Multi-round planning and review orchestration |
+| `init-project` | `clients/skills/init-project/SKILL.md` | Project initialization orchestration |
 
 These are protocols, not standalone agent files.
 
@@ -61,7 +61,7 @@ coral-cli wait jobs <job-id...> --embed
 
 Behavior:
 
-1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` may set default model).
+1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `clients/agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` may set default model).
 2. `jobs/shell/launch.ts` `executeJob` applies provider-agnostic `INJECT.md` via `applyInjectMd` (pre-merged into `systemPrompt`; never overwrites an existing caller systemPrompt — prepend/merge). Hooks do not run (`CORAL_CHILD=1`).
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
@@ -91,11 +91,11 @@ Coral's internal governance agents live under `.claude/agents/`. The contract-fo
 
 ### Claude-native agent
 
-Create `agents/<name>.md` and route to it through Claude Code's normal agent selection rules.
+Create `clients/agents/<name>.md` and route to it through Claude Code's normal agent selection rules.
 
 ### Codex-delegated agent
 
-Create `agents/<name>.md` and invoke it through the Codex provider surface:
+Create `clients/agents/<name>.md` and invoke it through the Codex provider surface:
 
 ```bash
 coral-cli codex <name> -i "<prompt>" --work-dir "<path>" -d
@@ -105,6 +105,6 @@ coral-cli wait jobs <job> --embed
 ### Prompt design guidance
 
 - Keep one primary responsibility per agent.
-- Reference methodology files from `methods/` instead of copying them inline.
+- Reference methodology files from `clients/methods/` instead of copying them inline.
 - Use read-only tool restrictions when the agent should never mutate files.
 - Keep output formats explicit so downstream skills can synthesize or verify the result.

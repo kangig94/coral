@@ -8,7 +8,7 @@ import * as esbuild from 'esbuild';
 const __filename = fileURLToPath(import.meta.url);
 const ROOT = resolve(dirname(__filename), '..');
 const DIST_ROOT = resolve(ROOT, 'dist');
-const BUILD_ROOT = resolve(ROOT, 'build');
+const BUILD_ROOT = resolve(ROOT, 'clients', 'build');
 const SIMULATION_BUNDLE = resolve(BUILD_ROOT, 'simulation-core.mjs');
 const DISCUSS_HELPERS_BUNDLE = resolve(BUILD_ROOT, 'discuss-golden-helpers.mjs');
 const FIXTURE_DIR = resolve(ROOT, 'tests/unit/discuss/fixtures');

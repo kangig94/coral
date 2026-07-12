@@ -26,9 +26,9 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
 
 const REPO_ROOT = process.cwd();
-const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'build', 'coral-backend.cjs');
-const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'build', 'coral-cli.cjs');
-const SOURCE_MANIFEST = join(REPO_ROOT, 'build', 'manifest.json');
+const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
+const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
+const SOURCE_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 
 const tempRoots: string[] = [];
@@ -229,7 +229,7 @@ afterEach(async () => {
 describe('mutating commands via IPC', () => {
   it('auto-launches the coordinator and completes coral-cli codex through a fake Codex app-server', async () => {
     if (!existsSync(SOURCE_BACKEND_BUNDLE) || !existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error('Expected build/coral-backend.cjs, build/coral-cli.cjs, and build/manifest.json to exist.');
+      throw new Error('Expected clients/build/coral-backend.cjs, clients/build/coral-cli.cjs, and clients/build/manifest.json to exist.');
     }
 
     const fixture = createFixture();

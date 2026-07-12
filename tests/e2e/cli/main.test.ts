@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-const CLI_BUNDLE = join(process.cwd(), 'bridge', 'coral-cli.cjs');
+const CLI_BUNDLE = join(process.cwd(), 'clients', 'bridge', 'coral-cli.cjs');
 
 function runCli(
   args: string[],

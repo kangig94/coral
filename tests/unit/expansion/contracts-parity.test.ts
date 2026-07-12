@@ -9,7 +9,7 @@ import {
   removeExpansionCatalogResultSchema,
 } from '#src/expansion/rpc-contract.js';
 
-const SKILL_MD = readFileSync(new URL('../../../skills/equip/SKILL.md', import.meta.url), 'utf-8');
+const SKILL_MD = readFileSync(new URL('../../../clients/skills/equip/SKILL.md', import.meta.url), 'utf-8');
 
 function sort(values: readonly string[]): string[] {
   return [...values].sort();

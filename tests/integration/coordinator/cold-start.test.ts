@@ -41,7 +41,7 @@ afterEach(async () => {
 describe('coordinator cold-start integration', () => {
   it('binds the IPC socket, writes coordinator.json, applies store schemas, and remains alive within the startup bound', async () => {
     if (!buildArtifactsAvailable()) {
-      throw new Error('Expected build/coral-backend.cjs to exist before running integration tests');
+      throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
     }
 
     const home = mkdtempSync(join(tmpdir(), 'coral-cold-home-'));

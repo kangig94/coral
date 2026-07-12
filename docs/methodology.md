@@ -4,7 +4,7 @@ Cross-cutting methodology files that define HOW agents perform specific reasonin
 
 ## Methodology Layer
 
-Eight HOW files in `methods/`, connected by two cross-references:
+Eight HOW files in `clients/methods/`, connected by two cross-references:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

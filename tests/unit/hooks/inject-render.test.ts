@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { renderInject } from '../../../hooks/lib/inject-render.mjs';
+import { renderInject } from '../../../clients/hooks/lib/inject-render.mjs';
 
 const TEMPLATE = '# Tools\n\nCLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\n\ndone';
 const createdRoots: string[] = [];

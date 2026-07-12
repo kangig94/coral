@@ -6,21 +6,39 @@
 - **Feature branches**: branch from `main`, open a PR back to `main`. Naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
 - **Merge**: squash (one commit per PR on `main`, traceable via PR link `(#N)`). CI (`.github/workflows/ci.yml`) builds + tests the PR on Node 24 and 26.
 
-Feature PRs carry **source only**. Do **not** bump the version or rebuild `bridge/` in a feature PR — both belong to the release step (see Releasing). CI does not check `bridge/`, so a stale `bridge/` on `main` between releases is expected and harmless (installs come from tags, see below).
+Feature PRs carry **source only**. Do **not** bump the version or rebuild `clients/bridge/` in a feature PR — both belong to the release step (see Releasing). CI does not check `clients/bridge/`, so a stale `clients/bridge/` on `main` between releases is expected and harmless (installs come from tags, see below).
+
+## PR Labels
+
+Every PR carries **exactly one type label** matching its title prefix. The label is what drives the changelog: the Release workflow groups merged PRs by label (see [`.github/release.yml`](../../.github/release.yml)), so an unlabeled PR falls under "Other Changes".
+
+| PR title prefix | Label       |
+| --------------- | ----------- |
+| `feat:`         | `feat`      |
+| `fix:`          | `fix`       |
+| `refactor:`     | `refactor`  |
+| `docs:`         | `docs`      |
+| `test:`         | `test`      |
+| `ci:`           | `ci`        |
+| `chore:`        | `chore`     |
+
+Attach the label in the same step that opens the PR — `gh pr create --label <type> …` — never leave a PR unlabeled. Use the `ignore-for-release` label to omit a PR (e.g. a revert or pure no-op) from the release notes.
 
 ## Releasing
 
 Releases are cut by the manual **Release** GitHub Action, not by a PR:
 
 1. Actions → **Release** → *Run workflow* → enter the version (semver, no leading `v`, e.g. `0.9.14`).
-2. The workflow runs `npm test`, `npm version --no-git-tag-version`, and `npm run build:release` (which rebuilds `bridge/` for that exact version and syncs the version into `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`). It then makes a single `Release v<version>` commit (version + rebuilt `bridge/`), tags `v<version>`, pushes both to `main`, and creates a GitHub release.
+2. The workflow runs `npm test`, `npm version --no-git-tag-version`, and `npm run build:release` (which rebuilds `clients/bridge/` for that exact version and syncs the version into `clients/.claude-plugin/plugin.json`, the root `.claude-plugin/marketplace.json`, and `clients/.codex-plugin/plugin.json`). It then makes a single `Release v<version>` commit (version + rebuilt `clients/bridge/`), tags `v<version>`, pushes both to `main`, and creates a GitHub release.
 3. It authenticates as a GitHub App listed in the "protect main" ruleset bypass, so it pushes the release commit directly to protected `main`.
 
-The plugin installs from the tag (`marketplace.json` `source.ref = v<version>` on `main` is the "latest" pointer; each tag carries the exact `bridge/` for its version). The version level (patch/minor/major) is decided when cutting the release, not per PR.
+The plugin installs from the tag (`marketplace.json` `source` is a `git-subdir` into `clients/` with `ref = v<version>` on `main` as the "latest" pointer; each tag carries the exact `clients/bridge/` for its version). The version level (patch/minor/major) is decided when cutting the release, not per PR.
+
+The GitHub release body is generated automatically (`gh release create --generate-notes`) from every PR merged since the previous release, grouped by the PR type labels above (see [PR Labels](#pr-labels)). The changelog is therefore only as good as the PR titles and labels — keep both correct.
 
 ## Commit Style
 
-- Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
+- Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `ci:`, `chore:` (a PR's prefix determines its label — see [PR Labels](#pr-labels))
 - Imperative mood: "add session fork support" not "added" or "adds"
 - Body explains WHY, not WHAT (the diff shows what)
 - Reference issue numbers when applicable

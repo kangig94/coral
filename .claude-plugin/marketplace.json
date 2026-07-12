@@ -13,8 +13,9 @@
         "name": "kangig94"
       },
       "source": {
-        "source": "url",
+        "source": "git-subdir",
         "url": "https://github.com/kangig94/coral.git",
+        "path": "clients",
         "ref": "v0.9.13"
       },
       "category": "productivity",

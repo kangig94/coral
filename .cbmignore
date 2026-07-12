@@ -1,2 +1,3 @@
-bridge/
-build/
+clients/bridge/
+clients/build/
+dist/

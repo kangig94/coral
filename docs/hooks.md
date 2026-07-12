@@ -4,7 +4,7 @@ Hooks provide automatic context injection, backend warm-start, compaction recove
 
 ## Overview
 
-Hook registration lives in `hooks/hooks.json`. Coral uses these Claude Code hook events:
+Hook registration lives in `clients/hooks/hooks.json`. Coral uses these Claude Code hook events:
 
 | Event                      | Scripts                                                                                 | Purpose                                                                                                            |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -69,7 +69,7 @@ Owner-only content is orchestrator privilege (e.g. wiki maintenance, source impo
 
 ### Equipped tools
 
-The `# Tools` section's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tools Coral ships `/equip` support for and that are currently installed. `hooks/lib/equip-tools.mjs` holds the catalog; `resolveEquippedTools()` does a **live** filesystem probe under the engine data tree. Session-start and subagent-start both pass the live list; provider jobs pass the same list through `ProviderRuntime.equippedTools`. When the list is empty, the placeholder is stripped.
+The `# Tools` section's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tools Coral ships `/equip` support for and that are currently installed. `clients/hooks/lib/equip-tools.mjs` holds the catalog; `resolveEquippedTools()` does a **live** filesystem probe under the engine data tree. Session-start and subagent-start both pass the live list; provider jobs pass the same list through `ProviderRuntime.equippedTools`. When the list is empty, the placeholder is stripped.
 
 ### Skill path vars
 
@@ -77,7 +77,7 @@ The `# Tools` section's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tool
 
 ## SessionStart
 
-`hooks/session-start.mjs` renders `INJECT.md` via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
+`clients/hooks/session-start.mjs` renders `INJECT.md` via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
 
 KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
 
@@ -92,7 +92,7 @@ It also:
 
 ## Backend Warm-start
 
-`hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The daemon's `bindWithHandoff` / `requestIncumbentShutdown` contention layer is the single source of truth for staleness: a healthy same-bundle peer makes the new daemon throw `BackendAlreadyRunningError` and exit; a mismatching peer triggers IPC `transport.shutdown` and the new daemon takes over the bound socket. The hook stays free of bundle/flavor comparison so the contention contract has one canonical home. Failures are ignored and the CLI can start the backend lazily later.
+`clients/hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The daemon's `bindWithHandoff` / `requestIncumbentShutdown` contention layer is the single source of truth for staleness: a healthy same-bundle peer makes the new daemon throw `BackendAlreadyRunningError` and exit; a mismatching peer triggers IPC `transport.shutdown` and the new daemon takes over the bound socket. The hook stays free of bundle/flavor comparison so the contention contract has one canonical home. Failures are ignored and the CLI can start the backend lazily later.
 
 ## Compact Recovery
 
@@ -126,7 +126,7 @@ Two different “subagent” concepts must not be mixed:
 | Claude Code native subagent | Host `Agent` tool spawn | `SubagentStart` → `subagent-start.mjs` |
 | Coral provider agent | `coral-cli codex\|claude <agent>`, workflow atom, discuss worker | **No hooks** (`CORAL_CHILD=1`); `applyInjectMd` in the job shell |
 
-`hooks/subagent-start.mjs` covers only the first kind. It calls `renderInject({ asOwner: false })`: same `INJECT.md` as the main session (guidelines, Tools, path aliases, equipped tools, KB guidance when enabled), but **OWNER_ONLY stripped**. `SESSION_ID_ONLY` is kept so subagents share the parent session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
+`clients/hooks/subagent-start.mjs` covers only the first kind. It calls `renderInject({ asOwner: false })`: same `INJECT.md` as the main session (guidelines, Tools, path aliases, equipped tools, KB guidance when enabled), but **OWNER_ONLY stripped**. `SESSION_ID_ONLY` is kept so subagents share the parent session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
 
 ## UserPromptSubmit and PreToolUse
 
@@ -139,7 +139,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 
 ## Failure-aware KB Reminder
 
-`hooks/kb-lookup-reminder.mjs` covers two cases:
+`clients/hooks/kb-lookup-reminder.mjs` covers two cases:
 
 - `PostToolUseFailure`: explicit non-zero tool exits
 - `PostToolUse` on Bash: silent failures where the shell command returned zero but emitted known failure patterns

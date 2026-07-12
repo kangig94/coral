@@ -38,7 +38,7 @@ const backendStderrRestrictions = [
 export default tseslint.config(
   // --- Global ignores ---
   {
-    ignores: ['dist/', 'bridge/', 'node_modules/', '**/*.cjs', '**/*.mjs'],
+    ignores: ['dist/', 'clients/bridge/', 'node_modules/', '**/*.cjs', '**/*.mjs'],
   },
 
   // --- Base: JS recommended + TS type-checked ---

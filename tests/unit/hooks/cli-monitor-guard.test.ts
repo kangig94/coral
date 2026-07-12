@@ -6,7 +6,7 @@ import { CLI_MONITOR_GUARD_HOOK, cleanupFixtures, runHook } from '#tests/unit/ho
 afterEach(cleanupFixtures);
 
 describe('cli-monitor-guard.mjs', () => {
-  const cliBundle = join(process.cwd(), 'bridge', 'coral-cli.cjs');
+  const cliBundle = join(process.cwd(), 'clients', 'bridge', 'coral-cli.cjs');
 
   function parseDenyOutput(stdout: string): { decision: string; reason: string } | null {
     const trimmed = stdout.trim();

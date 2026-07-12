@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 // Vitest threads pool registers SIGTERM/SIGINT handlers per test file in the
 // same worker. With 60+ files this exceeds Node's default limit of 10. These
 // handlers are cleaned up normally — raise the limit to suppress the warning.
@@ -16,7 +18,9 @@ for (const key of ['CORAL_KB_ENABLE', 'CORAL_KB_PATH', 'CORAL_KB_EXTRA_LANGS']) 
 }
 
 // `__PLUGIN_ROOT__` is an esbuild-injected build-time constant in production
-// bundles. Tests run from source so it is not naturally defined; provide the
-// repository root as the test value so modules that reference it (e.g.
-// claude broker entrypoint resolver) can run without bundle-only stubs.
-(globalThis as unknown as { __PLUGIN_ROOT__: string }).__PLUGIN_ROOT__ = process.cwd();
+// bundles, where it resolves to the plugin root that holds bridge/, INJECT.md,
+// methods/, and agents/ — i.e. clients/ in this repo (installs flatten that
+// level away). Tests run from source so it is not naturally defined; point it
+// at clients/ so modules that reference it (INJECT.md resolver, claude broker
+// entrypoint) find the real plugin surface.
+(globalThis as unknown as { __PLUGIN_ROOT__: string }).__PLUGIN_ROOT__ = join(process.cwd(), 'clients');

@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { resolveEquippedTools } from '../../../hooks/lib/equip-tools.mjs';
+import { resolveEquippedTools } from '../../../clients/hooks/lib/equip-tools.mjs';
 // @ts-expect-error — reuse the real path logic so a flavor/slot drift fails the test.
-import { buildFlavor, coralStateRoot } from '../../../hooks/lib/hook-utils.mjs';
+import { buildFlavor, coralStateRoot } from '../../../clients/hooks/lib/hook-utils.mjs';
 
 const createdRoots: string[] = [];
 let savedHome: string | undefined;

@@ -4,11 +4,11 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import * as esbuild from 'esbuild';
 
-mkdirSync('build', { recursive: true });
+mkdirSync('clients/build', { recursive: true });
 
 await esbuild.build({
   entryPoints: ['tools/simulation/cli.ts'],
-  outfile: 'build/coral-simulation.cjs',
+  outfile: 'clients/build/coral-simulation.cjs',
   bundle: true,
   platform: 'node',
   target: 'node22',
@@ -18,7 +18,7 @@ await esbuild.build({
   minify: false,
 });
 
-const result = spawnSync(process.execPath, ['build/coral-simulation.cjs', ...process.argv.slice(2)], {
+const result = spawnSync(process.execPath, ['clients/build/coral-simulation.cjs', ...process.argv.slice(2)], {
   stdio: 'inherit',
 });
 

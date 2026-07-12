@@ -13,7 +13,7 @@ function hookEnv(projectDir: string): NodeJS.ProcessEnv {
 describe('hook stubs no-op', () => {
   it('post-compact.mjs exits 0 on synthetic JSON stdin', () => {
     const projectDir = mkdtempSync(join(tmpdir(), 'coral-hook-stub-'));
-    const result = spawnSync('node', ['hooks/post-compact.mjs'], {
+    const result = spawnSync('node', ['clients/hooks/post-compact.mjs'], {
       input: JSON.stringify({ cwd: projectDir }),
       encoding: 'utf-8',
       env: hookEnv(projectDir),
@@ -31,7 +31,7 @@ describe('hook stubs no-op', () => {
 
   it('pre-compact.mjs exits 0 on synthetic JSON stdin', () => {
     const projectDir = mkdtempSync(join(tmpdir(), 'coral-hook-stub-'));
-    const result = spawnSync('node', ['hooks/pre-compact.mjs'], {
+    const result = spawnSync('node', ['clients/hooks/pre-compact.mjs'], {
       input: JSON.stringify({ cwd: projectDir }),
       encoding: 'utf-8',
       env: hookEnv(projectDir),

@@ -23,17 +23,17 @@ Claude Code plugin providing structured agents, Codex and Claude CLI integration
 
 **Build Commands**:
 ```bash
-npm run build          # tsc + esbuild bundle to build/ (prod flavor)
-npm run build:dev      # tsc + esbuild bundle to build/ (dev flavor)
-npm run build:release  # build (prod) + copy build/ to bridge/
+npm run build          # tsc + esbuild bundle to clients/build/ (prod flavor)
+npm run build:dev      # tsc + esbuild bundle to clients/build/ (dev flavor)
+npm run build:release  # build (prod) + copy clients/build/ to clients/bridge/
 npm test             # vitest run
 npm run dev          # tsc --watch
 ```
 
-**Runtime Note**: `bridge/*.cjs` bundles have build-time constants (`__PLUGIN_ROOT__`, `__VERSION__`) injected by esbuild. Do NOT execute them directly (`node bridge/coral-cli.cjs`) — they only work from the installed plugin path. Use `npm test` for CLI verification.
+**Runtime Note**: `clients/bridge/*.cjs` bundles have build-time constants (`__PLUGIN_ROOT__`, `__VERSION__`) injected by esbuild. Do NOT execute them directly (`node clients/bridge/coral-cli.cjs`) — they only work from the installed plugin path. Use `npm test` for CLI verification.
 
 **Releasing**:
-Releases are cut by the manual **Release** GitHub Action (Actions → Run workflow → version), which runs tests, bumps the version, rebuilds `bridge/`, makes a single `Release v<ver>` commit, tags `v<ver>`, and pushes to `main`. Do NOT bump the version or rebuild `bridge/` in a feature PR — feature PRs carry source only. (Locally, `npm version <ver> --no-git-tag-version` updates `package.json`/`package-lock.json`, and `npm run build:release` then syncs the version into `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.codex-plugin/plugin.json`, rebuilds `bridge/`, and injects `__VERSION__` — but the workflow is the canonical path.)
+Releases are cut by the manual **Release** GitHub Action (Actions → Run workflow → version), which runs tests, bumps the version, rebuilds `clients/bridge/`, makes a single `Release v<ver>` commit, tags `v<ver>`, and pushes to `main`. Do NOT bump the version or rebuild `clients/bridge/` in a feature PR — feature PRs carry source only. (Locally, `npm version <ver> --no-git-tag-version` updates `package.json`/`package-lock.json`, and `npm run build:release` then syncs the version into `clients/.claude-plugin/plugin.json`, the root `.claude-plugin/marketplace.json`, `clients/.codex-plugin/plugin.json`, rebuilds `clients/bridge/`, and injects `__VERSION__` — but the workflow is the canonical path.)
 
 Rules in `.claude/rules/` are auto-loaded. Domain-specific rules activate based on file paths being edited via `paths:` frontmatter.
 
@@ -47,7 +47,7 @@ Good code guides readers naturally — structure reveals intent without requirin
 
 **After Implementation** (strict order, fail-fast by cost):
 
-**Scope gate**: Steps 1-4 apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`agents/`, `skills/`, `docs/`, `hooks/`, `.claude/`) skip to step 5.
+**Scope gate**: Steps 1-4 apply only when source-affecting files are modified (`src/`, `scripts/`, `package.json`, `tsconfig.json`). Non-source changes (`clients/agents/`, `clients/skills/`, `docs/`, `clients/hooks/`, `.claude/`) skip to step 5.
 
 1. **Lint** - run linter if configured (cheapest check first)
 2. **Review Gate** - invoke `Skill(tier-review)`. BLOCKING items must pass before build.

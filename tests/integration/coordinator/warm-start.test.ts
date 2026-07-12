@@ -39,7 +39,7 @@ afterEach(async () => {
 describe('coordinator warm-start integration', () => {
   it('hands off from bundle A to bundle B within the contender budget and updates discovery to the replacement bundle', async () => {
     if (!buildArtifactsAvailable()) {
-      throw new Error('Expected build/coral-backend.cjs to exist before running integration tests');
+      throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
     }
 
     const home = mkdtempSync(join(tmpdir(), 'coral-warm-home-'));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { composeCoralThirdLine, renderTextProjectionIndicator } from '../../../skills/statusline/coral-hud.mjs';
+import { composeCoralThirdLine, renderTextProjectionIndicator } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 function visible(value: string): string {
   // eslint-disable-next-line no-control-regex -- Strips ANSI SGR escape sequences from hook output.
