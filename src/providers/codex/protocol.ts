@@ -24,7 +24,7 @@ export interface ThreadStartParams {
   model: string | null;
   approvalPolicy: string;
   sandbox: string;
-  serviceTier?: 'fast' | 'flex';
+  serviceTier?: 'default' | 'fast' | 'flex';
   serviceName?: string;
   ephemeral?: boolean;
 }
@@ -40,7 +40,7 @@ export interface ThreadResumeParams {
   model: string | null;
   approvalPolicy: string;
   sandbox?: string;
-  serviceTier?: 'fast' | 'flex';
+  serviceTier?: 'default' | 'fast' | 'flex';
 }
 
 interface ThreadResumeResponse {
@@ -55,7 +55,7 @@ export interface TurnStartParams {
   model?: string | null;
   /** @wire openai:codex — `null` requests the API default effort. */
   effort?: string | null;
-  serviceTier?: 'fast' | 'flex';
+  serviceTier?: 'default' | 'fast' | 'flex';
   outputSchema?: unknown;
 }
 

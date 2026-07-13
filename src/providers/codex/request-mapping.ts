@@ -72,16 +72,13 @@ const EFFORT_RANK: Record<EffortLevel, number> = {
   max: 5,
   ultra: 6,
 };
-export type CodexServiceTier = 'fast' | 'flex';
+export type CodexServiceTier = 'default' | 'fast' | 'flex';
 const serviceTierCache = new Map<string, { mtimeMs: number; value: CodexServiceTier | undefined }>();
 
 function isCodexTerraOrLuna(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   return (
-    normalized === 'terra' ||
-    normalized === 'luna' ||
-    normalized.endsWith('-terra') ||
-    normalized.endsWith('-luna')
+    normalized === 'terra' || normalized === 'luna' || normalized.endsWith('-terra') || normalized.endsWith('-luna')
   );
 }
 
@@ -120,8 +117,7 @@ function clampEffort(level: EffortLevel, min: EffortLevel | undefined, max: Effo
  * - older lines (e.g. gpt-5.5) ceiling: `xhigh`
  */
 function resolveCodexEffort(request: ProviderRequest, model: string): EffortLevel {
-  const resolved =
-    resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
+  const resolved = resolveProviderEffort(request, 'CORAL_CODEX_EFFORT', request.coralEnv) ?? CODEX_DEFAULT_EFFORT;
   const floor = isCodexTerraOrLuna(model) ? CODEX_TERRA_LUNA_MIN_EFFORT : undefined;
   return clampEffort(resolved, floor, codexEffortCeiling(model));
 }
@@ -395,7 +391,7 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
 
   const normalized = value.trim();
   if (normalized === '1') return 'fast';
-  if (normalized === '0') return 'flex';
+  if (normalized === '0') return 'default';
   return undefined;
 }
 
@@ -437,7 +433,7 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
       if (/^\s*\[/.test(line)) {
         break;
       }
-      const match = line.match(/^\s*service_tier\s*=\s*["']?(fast|flex)["']?\s*(#.*)?$/i);
+      const match = line.match(/^\s*service_tier\s*=\s*["']?(default|fast|flex)["']?\s*(#.*)?$/i);
       if (match) {
         const value = match[1].toLowerCase() as CodexServiceTier;
         serviceTierCache.set(configPath, { mtimeMs: cachedMtimeMs ?? 0, value });
@@ -449,7 +445,7 @@ function readCodexConfigServiceTier(runtime: Pick<ProviderRuntime, 'env' | 'stor
     if (code !== 'ENOENT' && code !== 'EACCES') {
       const message = errorMessage(error);
       backendLog.warn(
-        `Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=fast|flex to override.`,
+        `Could not read service_tier from ~/.codex/config.toml: ${message}. Set CORAL_CODEX_FAST=1|0 to override.`,
       );
     }
     return undefined;
@@ -491,9 +487,7 @@ function resolveCodexModel(request: ProviderRequest): string {
   const baseline = normalizeGpt56SizeAlias(request.coralEnv['CORAL_CODEX_MODEL']) ?? DEFAULT_CODEX_MODEL;
 
   if (request.model !== undefined) {
-    const mapped = Object.hasOwn(CODEX_ABSTRACT_MODEL, request.model)
-      ? CODEX_ABSTRACT_MODEL[request.model]
-      : undefined;
+    const mapped = Object.hasOwn(CODEX_ABSTRACT_MODEL, request.model) ? CODEX_ABSTRACT_MODEL[request.model] : undefined;
     if (mapped !== undefined) {
       return isCodexGpt56Family(baseline) ? mapped : baseline;
     }
