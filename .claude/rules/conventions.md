@@ -10,17 +10,17 @@ Feature PRs carry **source only**. Do **not** bump the version or rebuild `clien
 
 ## PR Labels
 
-Every PR carries **exactly one type label** matching its title prefix. The label is what drives the changelog: the Release workflow groups merged PRs by label (see [`.github/release.yml`](../../.github/release.yml)), so an unlabeled PR falls under "Other Changes".
+Every PR carries **exactly one type label** mapped from its title prefix. The label is what drives the changelog: the Release workflow groups merged PRs by label (see [`.github/release.yml`](../../.github/release.yml)), so an unlabeled PR falls under "Other Changes". Reuse GitHub's default labels where they express the same type.
 
-| PR title prefix | Label       |
-| --------------- | ----------- |
-| `feat:`         | `feat`      |
-| `fix:`          | `fix`       |
-| `refactor:`     | `refactor`  |
-| `docs:`         | `docs`      |
-| `test:`         | `test`      |
-| `ci:`           | `ci`        |
-| `chore:`        | `chore`     |
+| PR title prefix | Label           |
+| --------------- | --------------- |
+| `feat:`         | `enhancement`   |
+| `fix:`          | `bug`           |
+| `refactor:`     | `refactor`      |
+| `docs:`         | `documentation` |
+| `test:`         | `test`          |
+| `ci:`           | `ci`            |
+| `chore:`        | `chore`         |
 
 Attach the label in the same step that opens the PR — `gh pr create --label <type> …` — never leave a PR unlabeled. Use the `ignore-for-release` label to omit a PR (e.g. a revert or pure no-op) from the release notes.
 
@@ -38,7 +38,7 @@ The GitHub release body is generated automatically (`gh release create --generat
 
 ## Commit Style
 
-- Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `ci:`, `chore:` (a PR's prefix determines its label — see [PR Labels](#pr-labels))
+- Prefix: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `ci:`, `chore:` (a PR's prefix maps to its label — see [PR Labels](#pr-labels))
 - Imperative mood: "add session fork support" not "added" or "adds"
 - Body explains WHY, not WHAT (the diff shows what)
 - Reference issue numbers when applicable
