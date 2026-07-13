@@ -121,15 +121,6 @@ disallowedTools: Write, Edit
     # List skill descriptions
     for f in skills/*/SKILL.md; do echo "=== $f ==="; head -5 "$f"; done
     ```
-
-    Key files:
-    | File | Concern |
-    |------|---------|
-    | `src/cli/main.ts` | CLI command descriptions, flags, launch/wait flow |
-    | `src/cli/format.ts` | User-facing formatting, warnings, and wait output text |
-    | `src/client/http-client.ts` | Backend call shapes that surface through the CLI |
-    | `skills/*/SKILL.md` | Skill discoverability and descriptions |
-    | `agents/*.md` | Agent descriptions (shown in agent selection) |
   </Tool_Usage>
   <Output_Format>
     ## UX Review: [scope]

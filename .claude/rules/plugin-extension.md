@@ -38,7 +38,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 ## Hook Safety
 
 - Hook scripts are Node.js ESM modules (`.mjs`) â€” no shell scripts
-- `hooks.json` timeout values are in seconds (not milliseconds)
+- Hook JSON (`clients/hooks/*.json`) timeout values are in seconds (not milliseconds)
 - Hook scripts must:
   - Read input from stdin (JSON event payload) using an async `readStdin()` helper
   - Exit 0 on no-op (condition does not match)

@@ -154,9 +154,9 @@ Build manifest written by `scripts/build-server.mjs`:
 
 `bundleHash` tracks backend bundle bytes. `flavor` is the intrinsic build identity used by the backend and hooks to distinguish prod from dev.
 
-### `clients/hooks/hooks.json`
+### `clients/hooks/claude.json` and `clients/hooks/codex.json`
 
-Hook registration for SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, and Stop. See [Hooks](./hooks.md) for behavior details.
+Per-client hook registration, each referenced by its own `plugin.json` (`.claude-plugin` → `./hooks/claude.json`, `.codex-plugin` → `./hooks/codex.json`). `claude.json` is the full set (SessionStart, compact recovery, SubagentStart, PreCompact, PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, Stop); `codex.json` is the same minus the Claude-only hooks (`hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` guard). See [Hooks](./hooks.md) for behavior details.
 
 ## Runtime State Files
 
@@ -227,7 +227,8 @@ Live scratch artifacts:
 .claude-plugin/marketplace.json                -> marketplace catalog (repo root; git-subdir -> ./clients)
 clients/.claude-plugin/plugin.json             -> plugin manifest
 clients/.codex-plugin/plugin.json              -> Codex plugin manifest
-clients/hooks/hooks.json                        -> hook registration
+clients/hooks/claude.json                       -> hook registration (Claude Code, full set)
+clients/hooks/codex.json                        -> hook registration (Codex, subset)
 clients/bridge/coral-backend.cjs                -> backend daemon bundle
 clients/bridge/coral-cli.cjs                    -> CLI bundle
 clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle

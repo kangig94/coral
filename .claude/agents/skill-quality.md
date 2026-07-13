@@ -114,13 +114,6 @@ disallowedTools: Write, Edit
     # Check for old-style 'arguments:' YAML blocks (should be argument-hint)
     grep -n '^arguments:' skills/*/SKILL.md
     ```
-
-    Key files:
-    | File | Concern |
-    |------|---------|
-    | `skills/*/SKILL.md` | All skill definitions |
-    | `agents/*.md` | Agent files referenced by skills |
-    | `docs/skills.md` | Skill documentation and usage |
   </Tool_Usage>
   <Output_Format>
     ## Skill Quality Review: [scope]

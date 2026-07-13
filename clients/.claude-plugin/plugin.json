@@ -18,5 +18,6 @@
     "workflow",
     "bridge"
   ],
-  "skills": "./skills/"
+  "skills": "./skills/",
+  "hooks": "./hooks/claude.json"
 }

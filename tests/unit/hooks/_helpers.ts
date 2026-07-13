@@ -17,7 +17,8 @@ export const POST_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'post-c
 export const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'clients', 'hooks', 'coral-skill-vars.mjs');
 export const HUD_AUTO_UPDATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'hud-auto-update.mjs');
 export const RALPH_LOOP_HOOK = join(process.cwd(), 'clients', 'hooks', 'ralph-loop.mjs');
-export const HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'hooks.json');
+export const CLAUDE_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'claude.json');
+export const CODEX_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'codex.json');
 
 export interface HookRunResult {
   stdout: string;

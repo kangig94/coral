@@ -113,18 +113,6 @@ disallowedTools: Write, Edit
     # Run tests to verify coverage
     npm test
     ```
-
-    Key files:
-    | File | Concern |
-    |------|---------|
-    | `src/execution/tool-router.ts` | Tool dispatch patterns, route registration |
-    | `src/execution/service.ts` | Job dispatch, wait logic, provider orchestration |
-    | `src/providers/codex/schemas.ts` | Zod schema conventions |
-    | `src/providers/codex/codex-executor.ts` | Process management patterns |
-    | `src/execution/session-manager.ts` | File I/O patterns, atomic writes |
-    | `src/discuss/state-machine.ts` | Pure function patterns (no I/O) |
-    | `src/execution/discuss/session-store.ts` | Lock + atomic write patterns |
-    | `.claude/rules/conventions.md` | Naming and style rules |
   </Tool_Usage>
   <Output_Format>
     ## Code Review: [scope]

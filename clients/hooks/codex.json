@@ -1,0 +1,140 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/post-compact.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/pre-compact.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-lookup-reminder.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-lookup-reminder.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-memo-reminder.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/coral-skill-vars.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/coral-skill-vars.mjs\"",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/cli-resolve.mjs\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/ralph-loop.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/kb-promote-gate.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
