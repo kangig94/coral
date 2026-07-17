@@ -14,6 +14,7 @@ export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb
 export const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-promote-gate.mjs');
 export const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-lookup-reminder.mjs');
 export const BASH_REWRITE_HOOK = join(process.cwd(), 'clients', 'hooks', 'bash-rewrite.mjs');
+export const MONITOR_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'monitor-track.mjs');
 export const PRE_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'pre-compact.mjs');
 export const POST_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'post-compact.mjs');
 export const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'clients', 'hooks', 'coral-skill-vars.mjs');
