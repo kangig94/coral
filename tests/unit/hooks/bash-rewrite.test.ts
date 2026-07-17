@@ -261,7 +261,7 @@ describe('bash-rewrite.mjs', () => {
     expect(tempPaths.map((filePath) => readFileSync(filePath, 'utf-8')).sort()).toEqual(['ctx', 'do thing']);
   });
 
-  it('forces fixed timeout and run_in_background on wait commands', () => {
+  it('injects a fixed Bash timeout for wait commands without forcing foreground', () => {
     const result = runHook(BASH_REWRITE_HOOK, {
       hook_event_name: 'PreToolUse',
       tool_name: 'Bash',
@@ -273,7 +273,7 @@ describe('bash-rewrite.mjs', () => {
     // Fixed Bash ceiling; wait CLI emits its final event at 590s so the
     // process flushes and exits before the 600_000ms kill.
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBe(false);
+    expect(updatedInput.run_in_background).toBeUndefined(); // no longer forced foreground
   });
 
   it('does not force timeout on non-wait commands', () => {
@@ -404,7 +404,7 @@ describe('bash-rewrite.mjs', () => {
     const output = expectBashRewriteOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBe(false);
+    expect(updatedInput.run_in_background).toBeUndefined(); // no longer forced foreground
   });
 
   it('injects Bash timeout when wait is part of a compound command with $? expansion', () => {
@@ -419,7 +419,7 @@ describe('bash-rewrite.mjs', () => {
     const output = expectBashRewriteOutput(result);
     const updatedInput = output.hookSpecificOutput.updatedInput as Record<string, unknown>;
     expect(updatedInput.timeout).toBe(600_000);
-    expect(updatedInput.run_in_background).toBe(false);
+    expect(updatedInput.run_in_background).toBeUndefined(); // no longer forced foreground
   });
 });
 
@@ -459,13 +459,14 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     expect(result.stdout.trim()).toBe(''); // no rewrite emitted
   });
 
-  it('does not wrap coral-cli wait even when backgrounded (forced foreground)', () => {
+  it('tracks a backgrounded coral-cli wait like any other background command', () => {
     const fixture = createFixture();
     const result = runBg(fixture, { command: 'coral-cli wait --jobs abc123', run_in_background: true });
 
     const updatedInput = expectBashRewriteOutput(result).hookSpecificOutput.updatedInput as Record<string, unknown>;
-    expect(updatedInput.run_in_background).toBe(false); // forced foreground
-    expect(updatedInput.command).not.toContain('coral-work'); // not wrapped
+    expect(updatedInput.run_in_background).toBe(true); // no longer forced foreground
+    expect(updatedInput.timeout).toBe(600_000); // wait still gets the extended timeout
+    expect(updatedInput.command).toContain('coral-work'); // and is tracked/wrapped
   });
 
   it('both resolves coral-cli and wraps when backgrounded', () => {

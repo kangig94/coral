@@ -319,11 +319,13 @@ try {
   let changed = result?.changed ?? false;
   const invokesWait = result?.invokesWait ?? false;
 
-  // coral-cli wait is a one-shot blocking call: force it foreground so its
-  // terminal JSON returns directly — and so it is never background-wrapped below.
+  // coral-cli wait blocks up to ~590s: extend the Bash timeout so a foreground
+  // wait isn't killed early. run_in_background is left to the caller — a
+  // backgrounded wait is tracked like any other background command below. (The
+  // model is still guided to run wait foreground so its terminal JSON returns
+  // directly; that's guidance now, not enforced here.)
   if (invokesWait) {
     updatedInput.timeout = WAIT_BASH_TIMEOUT_MS;
-    updatedInput.run_in_background = false;
   }
 
   // Wrap any command that will actually run in the background so it records its
