@@ -10,6 +10,7 @@ import {
   buildCodexCompletedTerminalForTest,
   buildCodexFailedTerminalForTest,
   createCodexTurnStateForTest,
+  finishCodexCompletedForTest,
 } from '#src/providers/codex/thread-kernel.js';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
@@ -100,6 +101,7 @@ function webSearchStarted(threadId: string, query: string): AppServerNotificatio
     method: 'item/started',
     params: {
       threadId,
+      turnId: 'turn-1',
       item: {
         type: 'webSearch',
         query,
@@ -111,8 +113,9 @@ function webSearchStarted(threadId: string, query: string): AppServerNotificatio
 function prepareStartedTurn(state: ReturnType<typeof createCodexTurnStateForTest>): void {
   state.threadId = 'thread-usage';
   state.threadIds.add('thread-usage');
-  state.turnId = 'turn-usage';
-  state.threadTurnIds.set('thread-usage', 'turn-usage');
+  state.activeAttempt.turnId = 'turn-usage';
+  state.activeAttempt.startSettled = true;
+  state.activeAttempt.lifecycle = 'active';
 }
 
 function tokenUsageEvent(
@@ -158,24 +161,25 @@ describe('codexTurnKernel pre-turn mailbox', () => {
       },
       emit,
     );
-    expect(state.preTurnMailbox.status()).toEqual({ pending: 1, dropped: 0 });
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 0, dropped: 0 });
 
     applyCodexNotificationForTest(state, webSearchStarted('persisted-thread', 'oldest-matching'), emit);
     applyCodexNotificationForTest(state, webSearchStarted('foreign-thread', 'foreign-before-thread'), emit);
-    expect(state.preTurnMailbox.status()).toEqual({ pending: 2, dropped: 0 });
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 1, dropped: 0 });
 
     state.threadId = 'persisted-thread';
     state.threadIds.add('persisted-thread');
 
     applyCodexNotificationForTest(state, webSearchStarted('foreign-thread', 'foreign-after-thread-known'), emit);
-    expect(state.preTurnMailbox.status()).toEqual({ pending: 2, dropped: 0 });
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 1, dropped: 0 });
 
     for (let index = 0; index < PRE_TURN_MAILBOX_CAP; index += 1) {
       applyCodexNotificationForTest(state, webSearchStarted('persisted-thread', `keep-${index}`), emit);
     }
-    expect(state.preTurnMailbox.status()).toEqual({ pending: PRE_TURN_MAILBOX_CAP, dropped: 2 });
+    expect(state.preTurnMailbox.status()).toEqual({ pending: PRE_TURN_MAILBOX_CAP, dropped: 1 });
 
-    state.turnStartRequested = true;
+    state.activeAttempt.turnStartRequested = true;
+    state.activeAttempt.startSettled = true;
     applyCodexNotificationForTest(
       state,
       {
@@ -190,8 +194,8 @@ describe('codexTurnKernel pre-turn mailbox', () => {
       emit,
     );
 
-    expect(state.turnId).toBe('turn-1');
-    expect(state.preTurnMailbox.status()).toEqual({ pending: 0, dropped: 3 });
+    expect(state.activeAttempt.turnId).toBe('turn-1');
+    expect(state.preTurnMailbox.status()).toEqual({ pending: 0, dropped: 2 });
 
     const progressMessages = events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []));
 
@@ -245,7 +249,8 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     );
     state.threadId = 'thread-1';
     state.threadIds.add('thread-1');
-    state.turnId = 'turn-1';
+    state.activeAttempt.turnId = 'turn-1';
+    state.activeAttempt.startSettled = true;
     const events: ProviderEventBody[] = [];
     const emit = (event: ProviderEventBody) => {
       events.push(event);
@@ -278,11 +283,49 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     );
 
     expect(state.threadIds.has('')).toBe(false);
-    expect(state.turnId).toBe('turn-1');
-    expect(state.threadTurnIds.has('thread-1')).toBe(false);
+    expect(state.activeAttempt.turnId).toBe('turn-1');
+    expect(state.subagentTurnIds.has('thread-1')).toBe(false);
 
     const progressMessages = events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []));
-    expect(progressMessages).toContain('Turn started (unknown).');
+    expect(progressMessages).not.toContain('Turn started (unknown).');
+  });
+
+  it('updates routing when an owned subagent thread starts a later turn', () => {
+    const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-1' }), makeRuntime());
+    state.threadId = 'thread-1';
+    state.threadIds.add('thread-1');
+    state.threadIds.add('subagent-thread');
+    state.activeAttempt.turnId = 'turn-1';
+    state.activeAttempt.startSettled = true;
+    state.activeAttempt.subagentThreadIds.add('subagent-thread');
+
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'turn/started',
+        params: { threadId: 'subagent-thread', turn: { id: 'subagent-turn-1' } },
+      },
+      () => {},
+    );
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'turn/completed',
+        params: { threadId: 'subagent-thread', turn: { id: 'subagent-turn-1', status: 'completed' } },
+      },
+      () => {},
+    );
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'turn/started',
+        params: { threadId: 'subagent-thread', turn: { id: 'subagent-turn-2' } },
+      },
+      () => {},
+    );
+
+    expect(state.subagentTurnIds.get('subagent-thread')).toBe('subagent-turn-2');
+    expect(state.activeAttempt.activeSubagentTurns.has('subagent-thread')).toBe(true);
   });
 
   it('emits the rollout artifact handle at the first turn-completed notification after storage discovery', () => {
@@ -310,27 +353,14 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-1' }), runtime);
     state.threadId = 'thread-1';
     state.threadIds.add('thread-1');
-    state.turnId = 'turn-1';
+    state.activeAttempt.turnId = 'turn-1';
     const events: ProviderEventBody[] = [];
     const emit = (event: ProviderEventBody) => {
       operations.push(`emit:${event.kind}`);
       events.push(event);
     };
 
-    applyCodexNotificationForTest(
-      state,
-      {
-        method: 'turn/completed',
-        params: {
-          threadId: 'thread-1',
-          turn: {
-            id: 'turn-1',
-            status: 'completed',
-          },
-        },
-      },
-      emit,
-    );
+    finishCodexCompletedForTest(state, { id: 'turn-1', status: 'completed' }, emit);
 
     expect(events).toContainEqual({
       kind: 'artifact_handle',
@@ -362,26 +392,13 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-not-flushed' }), runtime);
     state.threadId = 'thread-not-flushed';
     state.threadIds.add('thread-not-flushed');
-    state.turnId = 'turn-1';
+    state.activeAttempt.turnId = 'turn-1';
     const events: ProviderEventBody[] = [];
     const emit = (event: ProviderEventBody) => {
       events.push(event);
     };
 
-    applyCodexNotificationForTest(
-      state,
-      {
-        method: 'turn/completed',
-        params: {
-          threadId: 'thread-not-flushed',
-          turn: {
-            id: 'turn-1',
-            status: 'completed',
-          },
-        },
-      },
-      emit,
-    );
+    finishCodexCompletedForTest(state, { id: 'turn-1', status: 'completed' }, emit);
 
     expect(events.filter((event) => event.kind === 'artifact_handle')).toEqual([]);
   });
@@ -389,6 +406,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
   it('does not re-emit the fixed rollout artifact handle on later turn completions', () => {
     const root = '/home/user/.codex/sessions';
     const day = `${root}/2026/05/04`;
+    const operations: string[] = [];
     const runtime = makeRuntime(
       {
         cwd: '/workspace/persisted',
@@ -396,35 +414,56 @@ describe('codexTurnKernel pre-turn mailbox', () => {
       },
       {
         env: env(),
-        storage: artifactStorage({
-          [root]: [dirent('2026', 'dir')],
-          [`${root}/2026`]: [dirent('05', 'dir')],
-          [`${root}/2026/05`]: [dirent('04', 'dir')],
-          [day]: [dirent('rollout-2026-05-04T00-00-00-thread-1.jsonl', 'file')],
-        }),
+        storage: artifactStorage(
+          {
+            [root]: [dirent('2026', 'dir')],
+            [`${root}/2026`]: [dirent('05', 'dir')],
+            [`${root}/2026/05`]: [dirent('04', 'dir')],
+            [day]: [dirent('rollout-2026-05-04T00-00-00-thread-1.jsonl', 'file')],
+          },
+          operations,
+        ),
       },
     );
     const state = createCodexTurnStateForTest(makeRequest({ conversationRef: 'thread-1' }), runtime);
     state.threadId = 'thread-1';
     state.threadIds.add('thread-1');
-    state.turnId = 'turn-1';
+    state.activeAttempt.turnId = 'turn-1';
+    state.activeAttempt.startSettled = true;
+    const checkpoint = vi.fn();
+    state.continuityBridge = { checkpoint, transportClosed: vi.fn() };
     const events: ProviderEventBody[] = [];
     const emit = (event: ProviderEventBody) => {
       events.push(event);
     };
-    const completed = {
-      method: 'turn/completed',
-      params: {
-        threadId: 'thread-1',
-        turn: {
-          id: 'turn-1',
-          status: 'completed',
+    const completed = { id: 'turn-1', status: 'completed' };
+
+    const firstTerminal = finishCodexCompletedForTest(state, completed, emit);
+    const repeatedTerminal = finishCodexCompletedForTest(state, completed, emit);
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'item/completed',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          item: { type: 'agentMessage', text: 'late answer', phase: 'final_answer' },
         },
       },
-    } satisfies AppServerNotificationMessage;
-
-    applyCodexNotificationForTest(state, completed, emit);
-    applyCodexNotificationForTest(state, completed, emit);
+      emit,
+    );
+    applyCodexNotificationForTest(
+      state,
+      {
+        method: 'thread/tokenUsage/updated',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          tokenUsage: { total: { inputTokens: 10, outputTokens: 2 } },
+        },
+      },
+      emit,
+    );
 
     expect(events.filter((event) => event.kind === 'artifact_handle')).toEqual([
       {
@@ -433,6 +472,12 @@ describe('codexTurnKernel pre-turn mailbox', () => {
         identity: { kind: 'codex-rollout', threadId: 'thread-1' },
       },
     ]);
+    expect(checkpoint).toHaveBeenCalledTimes(1);
+    expect(firstTerminal?.kind).toBe('terminal');
+    expect(repeatedTerminal).toBeNull();
+    expect(state.lastAgentMessage).toBe('');
+    expect(state.latestTokenCount).toBeNull();
+    expect(operations.filter((operation) => operation === `exists:${root}`)).toHaveLength(1);
   });
 
   it('captures cumulative tokenUsage.total (not per-step last) from thread/tokenUsage/updated', () => {

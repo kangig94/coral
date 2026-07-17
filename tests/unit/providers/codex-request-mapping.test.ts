@@ -3,12 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
+  CODEX_CAPACITY_CONTINUATION_PROMPT,
   applyCodexContinuityUpdate,
   buildCodexContinuity,
   buildCodexPrompt,
   buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
+  mapCapacityContinuationTurnStartParams,
   mapTurnStartParams,
   readCodexPersistedContinuity,
   resolveCodexServiceTier,
@@ -22,6 +24,30 @@ type TierReadFileSync = NonNullable<NonNullable<ProviderRuntime['storage']>['rea
 type TierStatSync = NonNullable<NonNullable<ProviderRuntime['storage']>['statSync']>;
 const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
 const defaultStatSync: TierStatSync = statSync as TierStatSync;
+
+describe('mapCapacityContinuationTurnStartParams', () => {
+  it('preserves resolved wire settings and replaces only the input', () => {
+    const original = mapTurnStartParams(
+      makeRequest({
+        prompt: 'original task',
+        systemPrompt: 'system rules',
+        model: 'terra',
+        effort: 'max',
+      }),
+      'thread-1',
+      'fast',
+    );
+
+    const continuation = mapCapacityContinuationTurnStartParams(original);
+
+    expect(continuation).toEqual({
+      ...original,
+      input: [{ type: 'text', text: CODEX_CAPACITY_CONTINUATION_PROMPT, text_elements: [] }],
+    });
+    expect(continuation.input[0]?.text).not.toContain('original task');
+    expect(continuation.input[0]?.text).not.toContain('system rules');
+  });
+});
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {

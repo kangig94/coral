@@ -205,7 +205,7 @@ describe('simulation app-server and recording', () => {
       },
     });
     const closePromise = waitForChildClose(child);
-    const recording = recordSpawn(child);
+    const recording = recordSpawn(child, () => runtime.time.now());
     child.stdin?.write('request-one\n');
 
     await advance(runtime, 4);

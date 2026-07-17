@@ -545,3 +545,14 @@ export function mapTurnStartParams(
     ...(serviceTier && { serviceTier }),
   };
 }
+
+export const CODEX_CAPACITY_CONTINUATION_PROMPT = `Continue the unanswered or partial response from the current thread.
+Do not repeat prior work or restate the original prompt.
+Continue from where you stopped.`;
+
+export function mapCapacityContinuationTurnStartParams(original: TurnStartParams): TurnStartParams {
+  return {
+    ...original,
+    input: buildCodexTurnInput(CODEX_CAPACITY_CONTINUATION_PROMPT),
+  };
+}
