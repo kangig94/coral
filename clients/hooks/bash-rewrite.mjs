@@ -7,7 +7,7 @@
 //     hooks a way to tell whether backgrounded work is still running.
 //
 // Invocation detection and wait-subcommand helpers live in
-// hooks/lib/coral-invocation.mjs so cli-monitor-guard can share them.
+// hooks/lib/coral-invocation.mjs.
 //
 // Sections:
 //   1. Entry-point constants
