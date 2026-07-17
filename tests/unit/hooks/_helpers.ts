@@ -3,6 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+import { projectSlug } from '../../../clients/hooks/lib/plugin-paths.mjs';
+
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
 export const SESSION_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'session-start.mjs');
 export const SUBAGENT_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'subagent-start.mjs');
@@ -55,6 +58,7 @@ export interface HookFixture {
   pluginRoot: string;
   projectRoot: string;
   snapshotDir: string;
+  workRoot: string;
 }
 
 const createdRoots: string[] = [];
@@ -81,12 +85,21 @@ export function createFixture(): HookFixture {
     pluginRoot: join(root, 'plugin-root'),
     projectRoot,
     snapshotDir: join(tmpRoot, 'coral', projectSlug),
+    workRoot: join(root, 'work-root'),
   };
 
   createdRoots.push(root);
   mkdirSync(tmpRoot, { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
+  mkdirSync(fixture.workRoot, { recursive: true });
   return fixture;
+}
+
+// Live-work registry paths for a session under the sandbox-writable root. Mirrors
+// live-work-registry.mjs; pass fixture.workRoot as CORAL_WORK_ROOT_OVERRIDE to the
+// hook subprocess so it resolves sandboxTmpDir() to the same place.
+export function liveWorkSubagentsDir(fixture: HookFixture, sessionId: string): string {
+  return join(fixture.workRoot, 'coral-work', projectSlug(fixture.projectRoot), sessionId, 'subagents');
 }
 
 export async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<boolean> {
@@ -107,6 +120,7 @@ export function runHook(
   delete env.CORAL_CHILD;
   delete env.CORAL_KB_PATH;
   delete env.CLAUDE_CONFIG_DIR;
+  delete env.CORAL_WORK_ROOT_OVERRIDE;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
@@ -145,6 +159,7 @@ export async function runHookAsync(
   delete env.CORAL_CHILD;
   delete env.CORAL_KB_PATH;
   delete env.CLAUDE_CONFIG_DIR;
+  delete env.CORAL_WORK_ROOT_OVERRIDE;
 
   for (const [key, value] of Object.entries(envOverrides)) {
     if (value === undefined) {
