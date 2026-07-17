@@ -4,7 +4,7 @@ Hooks provide automatic context injection, backend warm-start, compaction recove
 
 ## Overview
 
-Hook registration is split per client, each `plugin.json` pointing at its own file: `clients/hooks/claude.json` (Claude Code — the full set below, via `.claude-plugin/plugin.json` `"hooks": "./hooks/claude.json"`) and `clients/hooks/codex.json` (Codex — the same set minus `hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` guard, via `.codex-plugin/plugin.json` `"hooks": "./hooks/codex.json"`). The hook scripts themselves are shared; `codex.json` invokes them through Codex's native `${PLUGIN_ROOT}`, while `claude.json` uses `${CLAUDE_PLUGIN_ROOT}`. (Codex also exports `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as OOTB compat aliases of its native `PLUGIN_ROOT`/`PLUGIN_DATA`, so the shared scripts — which read `CLAUDE_PLUGIN_ROOT` internally — run unchanged under both clients.) Coral uses these Claude Code hook events:
+Hook registration is split per client, each `plugin.json` pointing at its own file: `clients/hooks/claude.json` (Claude Code — the full set below, via `.claude-plugin/plugin.json` `"hooks": "./hooks/claude.json"`) and `clients/hooks/codex.json` (Codex — the same set minus `hud-auto-update`, the `SubagentStart`/`SubagentStop` scripts, and the `PreToolUse(Monitor)` tracker, via `.codex-plugin/plugin.json` `"hooks": "./hooks/codex.json"`). The hook scripts themselves are shared; `codex.json` invokes them through Codex's native `${PLUGIN_ROOT}`, while `claude.json` uses `${CLAUDE_PLUGIN_ROOT}`. (Codex also exports `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` as OOTB compat aliases of its native `PLUGIN_ROOT`/`PLUGIN_DATA`, so the shared scripts — which read `CLAUDE_PLUGIN_ROOT` internally — run unchanged under both clients.) Coral uses these Claude Code hook events:
 
 | Event                      | Scripts                                                                                 | Purpose                                                                                                            |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
@@ -14,8 +14,8 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                                                             |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                                                             |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                                                         |
-| `PreToolUse` (`Bash`)      | `cli-resolve.mjs`                                                                       | Resolve bare `coral-cli` calls to the plugin-local bundle                                                          |
-| `PreToolUse` (`Monitor`)   | `cli-monitor-guard.mjs`                                                                 | Guard Monitor tool calls                                                                                           |
+| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                       | Resolve `coral-cli` calls + wrap `run_in_background` for lifecycle tracking                                                          |
+| `PreToolUse` (`Monitor`)   | `monitor-track.mjs`                                                                      | Wrap the Monitor command for lifecycle tracking (skips ws + persistent monitors)                                    |
 | `PostToolUseFailure`       | `kb-lookup-reminder.mjs`                                                                | KB reminder on explicit tool failures                                                                              |
 | `PostToolUse` (`Bash`)     | `kb-lookup-reminder.mjs`                                                                | KB reminder on silent-failure command output                                                                       |
 | `Stop`                     | `ralph-loop.mjs`, `kb-promote-gate.mjs`                                                 | Prompt-mode looping and KB promotion enforcement                                                                   |
@@ -110,7 +110,7 @@ Two hooks run after compaction:
 
 Implementation notes:
 
-- snapshots are written under the project temp directory (`/tmp/coral/<project-slug>/hooks/active-jobs-*.json`)
+- snapshots are written under the project temp directory (`/tmp/claude-<uid>/coral/<project-slug>/hooks/active-jobs-*.json`)
 - terminal recovery uses the durable artifact path under `~/.coral/exports/jobs/<jobId>/result.md` in prod or `~/.coral/exports-dev/jobs/<jobId>/result.md` in dev
 - `<os-tmpdir>/coral-jobs/<jobId>/` contains live scratch artifacts such as stdout/stderr/intermediates only
 - hook recovery reads CLI-visible job state and durable result artifacts, not file-backed job status records
@@ -135,7 +135,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
 - `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `INJECT.md` for all inject surfaces)
-- `cli-resolve.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path
+- `bash-rewrite.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
 
 ## Failure-aware KB Reminder
 

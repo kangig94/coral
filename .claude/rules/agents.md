@@ -38,7 +38,7 @@
 Examples:
 ```
 @integration-guardian Review schema validation in discuss server-handlers.ts
-@hook-safety Check cli-monitor-guard.mjs for timeout safety
+@hook-safety Check bash-rewrite.mjs for timeout safety
 @skill-quality Validate frontmatter in clients/skills/discuss/SKILL.md
 @code-critic Review elegance of state-machine.ts resolveWinner function
 @ux-critic Check argument ergonomics for `coral-cli discuss start`

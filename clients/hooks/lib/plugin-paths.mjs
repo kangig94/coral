@@ -3,13 +3,11 @@
 // can copy-paste them into its Bash tool — so commands returned here are
 // already shell-quoted.
 
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { coralStateRoot } from './hook-utils.mjs';
 
 export const BRIDGE_SUFFIX = '/bridge/coral-cli.cjs';
-export const JOBS_DIR = join(tmpdir(), 'coral-jobs');
 
 export function exportsJobsDir(flavor) {
   const base = flavor === 'dev' ? 'exports-dev' : 'exports';
@@ -31,18 +29,22 @@ export function projectSlug(projectDir) {
   return projectDir.replace(/\//g, '-');
 }
 
+// Per-project Coral scratch dir for ephemeral hook state (ralph loop state, KB
+// activity flags, compaction snapshots). Nested under the sandbox-writable root
+// so ALL of Coral's /tmp state lives in one place that is writable both from
+// hooks (outside the sandbox) and from a wrapped command (inside it).
 export function projectTmpDir(projectDir) {
-  return join(tmpdir(), 'coral', projectSlug(projectDir));
+  return join(sandboxTmpDir(), 'coral', projectSlug(projectDir));
 }
 
-// Sandbox-WRITABLE scratch root. Inside a command sandbox this is the per-user
-// scratch dir Claude Code exposes as $TMPDIR (`/tmp/claude-<uid>`); the reader
-// hooks run OUTSIDE the sandbox where $TMPDIR is unset, so both sides derive the
-// same path from the uid. This is the single point coupling us to the harness
-// sandbox scratch-dir convention — kept here so it changes in one place.
-// Unlike projectTmpDir (`/tmp/coral/...`, read-only inside the sandbox), this
-// path is writable from inside a sandboxed command, so a wrapper can record its
-// own liveness here. Tests set CORAL_WORK_ROOT_OVERRIDE to redirect it.
+// Sandbox-WRITABLE scratch root for everything Coral keeps in /tmp. Inside a
+// command sandbox this is the per-user scratch dir Claude Code exposes as
+// $TMPDIR (`/tmp/claude-<uid>`); the hooks run OUTSIDE the sandbox where $TMPDIR
+// is unset, so both sides derive the same path from the uid. This is the single
+// point coupling us to the harness sandbox scratch-dir convention — kept here so
+// it changes in one place. It is writable from inside a sandboxed command (the
+// canonical `/tmp/coral` is not), so a wrapper can record its own liveness here.
+// Tests set CORAL_WORK_ROOT_OVERRIDE to redirect it.
 export function sandboxTmpDir() {
   return process.env.CORAL_WORK_ROOT_OVERRIDE
     || join('/tmp', `claude-${process.getuid?.() ?? 0}`);

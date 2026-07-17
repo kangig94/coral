@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { hasLiveWork, recordSubagentStart, recordSubagentStop } from '../../../clients/hooks/lib/live-work-registry.mjs';
+import { beginBgTask, bgWrapperPreamble, hasLiveWork, recordSubagentStart, recordSubagentStop } from '../../../clients/hooks/lib/live-work-registry.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { projectSlug, sandboxTmpDir } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
@@ -102,6 +102,18 @@ function bgMarkerCount(sessionId: string): number {
     return readdirSync(bgDirFor(sessionId)).length;
   } catch {
     return 0;
+  }
+}
+
+// Run a wrapper preamble around a command in a real shell. A non-zero command
+// exit propagates through the wrapper (by design), so the throw is expected. The
+// EXIT trap kills the heartbeat subshell; a `sleep 10` child mid-iteration is
+// bounded (self-exits within one interval) and never keeps the call open.
+function runWrapped(wrapper: string, command: string): void {
+  try {
+    execFileSync('sh', ['-c', `${wrapper}\n${command}`], { stdio: 'ignore' });
+  } catch {
+    // non-zero exit is expected — the wrapper preserves the command's exit code
   }
 }
 
@@ -242,5 +254,56 @@ describe('live-work-registry: background tasks', () => {
 
     expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(true);
     expect(markerCount(SESSION)).toBe(0); // dead subagent still pruned
+  });
+});
+
+describe('live-work-registry: bg task wrapper (beginBgTask)', () => {
+  it('records a .launched marker and reports the fresh task as live', () => {
+    const task = beginBgTask(projectDir, SESSION);
+    expect(task).not.toBeNull();
+    expect(bgMarkerCount(SESSION)).toBe(1); // <id>.launched
+    expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(true);
+  });
+
+  it('returns null and writes nothing for an invalid session id', () => {
+    expect(beginBgTask(projectDir, 'bad id with spaces')).toBeNull();
+    expect(bgMarkerCount(SESSION)).toBe(0);
+  });
+
+  it('the wrapper records .started and the exit code, and reads as terminal', () => {
+    const task = beginBgTask(projectDir, SESSION);
+    runWrapped(task.wrapper, 'exit 7');
+
+    const bgDir = bgDirFor(SESSION);
+    expect(existsSync(join(bgDir, `${task.id}.started`))).toBe(true);
+    expect(existsSync(join(bgDir, `${task.id}.exited.7`))).toBe(true);
+    expect(hasLiveWork(projectDir, SESSION, parentTranscript)).toBe(false);
+  });
+
+  it('records exit code 0 for a clean command', () => {
+    const task = beginBgTask(projectDir, SESSION);
+    runWrapped(task.wrapper, 'true');
+
+    expect(existsSync(join(bgDirFor(SESSION), `${task.id}.exited.0`))).toBe(true);
+  });
+
+  it('runs the user command even when the registry dir cannot be created (fail-open under dash)', () => {
+    // Parent is a FILE, so the wrapper's `mkdir -p` and lock creation both fail.
+    // The wrapper must still let the user command run and preserve its exit code —
+    // guards the regression where a `:`-based redirect guard fatally aborted dash.
+    const blocker = join(sandbox, 'blocker-file');
+    writeFileSync(blocker, '');
+    const wrapper = bgWrapperPreamble(join(blocker, 'bg'), 'deadbeefdeadbeef');
+    const sentinel = join(sandbox, 'ran.marker');
+
+    let status = 0;
+    try {
+      execFileSync('sh', ['-c', `${wrapper}\ntouch '${sentinel}'; exit 4`], { stdio: 'ignore' });
+    } catch (err) {
+      status = (err as { status?: number }).status ?? -1;
+    }
+
+    expect(existsSync(sentinel)).toBe(true); // user command ran despite the registry failure
+    expect(status).toBe(4); // and kept its own exit code
   });
 });

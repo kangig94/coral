@@ -25,6 +25,7 @@
 // whole question and the tree relocates as a unit if the root ever moves.
 
 import { execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -69,6 +70,62 @@ export function recordSubagentStop(projectDir, sessionId, agentId) {
     unlinkSync(join(subagentsPath(projectDir, sessionId), agentId));
   } catch {}
   pruneEmptyDirs(projectDir, sessionId);
+}
+
+// === Background-task recording (writer side) ===
+
+// Called by the PreToolUse hook for a `run_in_background` Bash/Monitor command:
+// records the `.launched` marker and returns `{ id, wrapper }` — a shell preamble
+// to prepend (as leading statements, before the original command) so the process
+// records its own liveness. Returns null on invalid input or a filesystem error,
+// in which case the caller leaves the command unwrapped: recording is best-effort
+// and must never block the command from running.
+export function beginBgTask(projectDir, sessionId) {
+  if (!isValidSessionId(sessionId)) return null;
+  const id = randomBytes(8).toString('hex');
+  try {
+    const dir = bgPath(projectDir, sessionId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${id}.launched`), '');
+    return { id, wrapper: bgWrapperPreamble(dir, id) };
+  } catch {
+    return null;
+  }
+}
+
+// Shell preamble prepended before the original command. Every step is fail-open —
+// a registry-write failure must NEVER block or abort the user's command:
+//   - `true > <lock>` first proves the lock file is openable, so the guarded
+//     `exec 9>>` runs only when it cannot fatally fail (an exec redirect failure
+//     aborts a non-interactive shell). It uses `true` (an ordinary utility), NOT
+//     the `:` special built-in — a redirect failure on a special built-in fatally
+//     aborts a POSIX shell (dash) even inside an `if` condition, which would kill
+//     the very command this guard exists to protect.
+//   - the MAIN shell holds the exclusive flock on fd 9, so the kernel releases it
+//     the instant the shell dies by ANY means (incl. SIGKILL) — crash-safe
+//     liveness with no reliance on the trap.
+//   - a heartbeat subshell refreshes the lock mtime for the flock(1)-absent
+//     fallback and self-exits when the main shell dies (`kill -0 $$`), so no
+//     orphan loop survives a SIGKILL.
+//   - the EXIT trap captures `$?` first, then records `.exited.<code>` (exit-code
+//     precision only — never the liveness signal).
+//   - `|| true` / `2>/dev/null` on the remaining steps keeps them non-fatal even
+//     if the invoking shell has `set -e` active.
+export function bgWrapperPreamble(bgDir, id) {
+  const dir = shSingleQuote(bgDir);
+  return [
+    `__cbg=${dir}`,
+    `__cid='${id}'`,
+    'mkdir -p "$__cbg" 2>/dev/null || true',
+    'if true > "$__cbg/$__cid.lock" 2>/dev/null; then exec 9>>"$__cbg/$__cid.lock"; command -v flock >/dev/null 2>&1 && flock -x 9 || true; fi',
+    'true > "$__cbg/$__cid.started" 2>/dev/null',
+    '( while kill -0 $$ 2>/dev/null; do touch "$__cbg/$__cid.lock" 2>/dev/null || true; sleep 10; done ) & __chb=$!',
+    "trap '__cc=$?; kill \"$__chb\" 2>/dev/null; true > \"$__cbg/$__cid.exited.$__cc\" 2>/dev/null; exit $__cc' EXIT",
+  ].join('; ');
+}
+
+function shSingleQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 // === Combined read: is any work of this session still live? ===

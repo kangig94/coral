@@ -14,7 +14,7 @@ export function resolveFilePath(filePath: string): string {
 export function resolveInput(values: string[]): string {
   // Each token is resolved independently: existing files are read, other tokens stay literal.
   // Multi-value inputs are joined with spaces, which recovers prompts that a shell split into
-  // multiple argv entries (e.g. unquoted `-i hello world`) and prompts that the cli-resolve
+  // multiple argv entries (e.g. unquoted `-i hello world`) and prompts that the bash-rewrite
   // hook partially materialized into a temp file alongside adjacent literal tokens.
   return values.map((token) => (existsSync(token) ? readFileSync(token, 'utf8') : token)).join(' ');
 }

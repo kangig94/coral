@@ -13,8 +13,8 @@ export const SUBAGENT_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'suba
 export const KB_MEMO_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-memo-reminder.mjs');
 export const KB_PROMOTE_GATE_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-promote-gate.mjs');
 export const KB_LOOKUP_REMINDER_HOOK = join(process.cwd(), 'clients', 'hooks', 'kb-lookup-reminder.mjs');
-export const CLI_RESOLVE_HOOK = join(process.cwd(), 'clients', 'hooks', 'cli-resolve.mjs');
-export const CLI_MONITOR_GUARD_HOOK = join(process.cwd(), 'clients', 'hooks', 'cli-monitor-guard.mjs');
+export const BASH_REWRITE_HOOK = join(process.cwd(), 'clients', 'hooks', 'bash-rewrite.mjs');
+export const MONITOR_TRACK_HOOK = join(process.cwd(), 'clients', 'hooks', 'monitor-track.mjs');
 export const PRE_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'pre-compact.mjs');
 export const POST_COMPACT_HOOK = join(process.cwd(), 'clients', 'hooks', 'post-compact.mjs');
 export const CORAL_SKILL_VARS_HOOK = join(process.cwd(), 'clients', 'hooks', 'coral-skill-vars.mjs');
@@ -36,7 +36,7 @@ export interface HookOutput {
   };
 }
 
-export interface CliResolveOutput {
+export interface BashRewriteOutput {
   hookSpecificOutput: {
     hookEventName: string;
     updatedInput: {
@@ -85,13 +85,15 @@ export function createFixture(): HookFixture {
     pluginRoot: join(root, 'plugin-root'),
     projectRoot,
     snapshotDir: join(tmpRoot, 'coral', projectSlug),
-    workRoot: join(root, 'work-root'),
+    // Coral's sandbox-writable /tmp root. In tests it is the fixture's temp root;
+    // runHook mirrors it into CORAL_WORK_ROOT_OVERRIDE for the hook subprocess, so
+    // projectTmpDir (now nested under sandboxTmpDir) resolves back to snapshotDir.
+    workRoot: tmpRoot,
   };
 
   createdRoots.push(root);
   mkdirSync(tmpRoot, { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(fixture.workRoot, { recursive: true });
   return fixture;
 }
 
@@ -132,6 +134,11 @@ export function runHook(
   if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
     env.USERPROFILE = env.HOME;
   }
+  // Coral's /tmp state root (sandboxTmpDir) follows the fixture's TMPDIR in tests
+  // unless a test sets CORAL_WORK_ROOT_OVERRIDE explicitly.
+  if (env.TMPDIR !== undefined && !Object.hasOwn(envOverrides, 'CORAL_WORK_ROOT_OVERRIDE')) {
+    env.CORAL_WORK_ROOT_OVERRIDE = env.TMPDIR;
+  }
 
   const result = spawnSync('node', [hookPath], {
     input: JSON.stringify(stdinJson),
@@ -170,6 +177,11 @@ export async function runHookAsync(
   }
   if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
     env.USERPROFILE = env.HOME;
+  }
+  // Coral's /tmp state root (sandboxTmpDir) follows the fixture's TMPDIR in tests
+  // unless a test sets CORAL_WORK_ROOT_OVERRIDE explicitly.
+  if (env.TMPDIR !== undefined && !Object.hasOwn(envOverrides, 'CORAL_WORK_ROOT_OVERRIDE')) {
+    env.CORAL_WORK_ROOT_OVERRIDE = env.TMPDIR;
   }
 
   return await new Promise<HookRunResult>((resolve, reject) => {
@@ -253,8 +265,8 @@ export function expectStopOutput(result: HookRunResult): StopHookOutput {
   return output as StopHookOutput;
 }
 
-export function expectCliResolveOutput(result: HookRunResult): CliResolveOutput {
-  const output = parseJsonOutput<Partial<CliResolveOutput>>(result.stdout);
+export function expectBashRewriteOutput(result: HookRunResult): BashRewriteOutput {
+  const output = parseJsonOutput<Partial<BashRewriteOutput>>(result.stdout);
   if (
     output === null ||
     output.hookSpecificOutput === null ||
@@ -265,10 +277,10 @@ export function expectCliResolveOutput(result: HookRunResult): CliResolveOutput 
     typeof output.hookSpecificOutput.updatedInput.command !== 'string'
   ) {
     throw new Error(
-      `Expected cli-resolve JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
+      `Expected bash-rewrite JSON, received stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}`,
     );
   }
-  return output as CliResolveOutput;
+  return output as BashRewriteOutput;
 }
 
 export function extractTempInputPaths(command: string): string[] {

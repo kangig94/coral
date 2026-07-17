@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 //
-// PreToolUse:Bash hook for coral-cli command resolution.
+// PreToolUse:Bash hook — the single owner of Bash command rewriting. Two jobs:
+//   - resolve coral-cli invocations to the plugin-local bundle (+ wait foreground)
+//   - wrap `run_in_background` commands so they record their own lifecycle in the
+//     live-work registry (lib/live-work-registry.mjs beginBgTask), giving Stop
+//     hooks a way to tell whether backgrounded work is still running.
 //
 // Invocation detection and wait-subcommand helpers live in
-// hooks/lib/coral-invocation.mjs so cli-monitor-guard can share them.
+// hooks/lib/coral-invocation.mjs.
 //
 // Sections:
 //   1. Entry-point constants
@@ -11,7 +15,7 @@
 //   3. Rewriting primitives (bare → node, stale bridge → active)
 //   4. Post-processing (inline text → tempfile, unsafe metachars)
 //   5. Top-level orchestration (splitter + per-segment pipeline)
-//   6. Main I/O
+//   6. Main I/O (coral resolution + background-task wrapping)
 
 import { createHash } from 'node:crypto';
 import { existsSync, writeFileSync } from 'node:fs';
@@ -31,7 +35,8 @@ import {
   getInlineValueSegments,
   isExactToken,
 } from './lib/flag-helpers.mjs';
-import { BRIDGE_SUFFIX, activeBridgePath } from './lib/plugin-paths.mjs';
+import { BRIDGE_SUFFIX, activeBridgePath, projectDirFromInput } from './lib/plugin-paths.mjs';
+import { beginBgTask } from './lib/live-work-registry.mjs';
 import {
   detectCoralInvocation,
   textInvokesCoralWait,
@@ -296,7 +301,7 @@ function processCommand(command, input) {
   return { command: result, invokesWait, changed: anyChange };
 }
 
-// === 6. Main I/O (fail-open: any error → silent exit 0) ===
+// === 6. Main I/O (coral resolution + background-task wrapping; fail-open) ===
 
 try {
   const input = JSON.parse(await readStdin());
@@ -309,20 +314,39 @@ try {
   if (typeof command !== 'string') process.exit(0);
 
   const result = processCommand(command, input);
-  if (result === null) process.exit(0);
-  if (!result.changed && !result.invokesWait) process.exit(0);
+  const updatedInput = { ...input.tool_input };
+  let nextCommand = result?.command ?? command;
+  let changed = result?.changed ?? false;
+  const invokesWait = result?.invokesWait ?? false;
 
-  const updatedInput = { ...input.tool_input, command: result.command };
-  if (result.invokesWait) {
+  // coral-cli wait blocks up to ~590s: extend the Bash timeout so a foreground
+  // wait isn't killed early. run_in_background is left to the caller — a
+  // backgrounded wait is tracked like any other background command below. (The
+  // model is still guided to run wait foreground so its terminal JSON returns
+  // directly; that's guidance now, not enforced here.)
+  if (invokesWait) {
     updatedInput.timeout = WAIT_BASH_TIMEOUT_MS;
-    updatedInput.run_in_background = false;
   }
+
+  // Wrap any command that will actually run in the background so it records its
+  // own start/liveness/exit in the live-work registry. Best-effort: beginBgTask
+  // returns null (⇒ command left unwrapped) on invalid session or I/O error.
+  if (updatedInput.run_in_background === true) {
+    const bg = beginBgTask(projectDirFromInput(input), input.session_id);
+    if (bg) {
+      nextCommand = `${bg.wrapper}\n${nextCommand}`;
+      changed = true;
+    }
+  }
+
+  if (!changed && !invokesWait) process.exit(0);
+  updatedInput.command = nextCommand;
 
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
       permissionDecision: 'allow',
-      permissionDecisionReason: 'coral-cli auto-rewrite',
+      permissionDecisionReason: 'bash auto-rewrite',
       updatedInput,
     },
   }) + '\n');

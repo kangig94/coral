@@ -529,9 +529,9 @@ describe('codex.json', () => {
     expect(readFileSync(CODEX_HOOKS_JSON_PATH, 'utf-8')).not.toContain('migrate-coral-dir.mjs');
   });
 
-  it('omits the Claude-only hooks (hud-auto-update, subagent-start, subagent-track, cli-monitor-guard)', () => {
+  it('omits the Claude-only hooks (hud-auto-update, subagent-start, subagent-track, monitor-track)', () => {
     const raw = readFileSync(CODEX_HOOKS_JSON_PATH, 'utf-8');
-    for (const script of ['hud-auto-update.mjs', 'subagent-start.mjs', 'subagent-track.mjs', 'cli-monitor-guard.mjs']) {
+    for (const script of ['hud-auto-update.mjs', 'subagent-start.mjs', 'subagent-track.mjs', 'monitor-track.mjs']) {
       expect(raw).not.toContain(script);
     }
     const hooksJson = JSON.parse(raw) as HooksFile;

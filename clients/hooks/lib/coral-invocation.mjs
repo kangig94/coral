@@ -1,9 +1,7 @@
 // Detection helpers for coral-cli invocations inside shell commands.
-// Shared by cli-resolve (Bash command rewriting) and cli-wait-guard
-// (Monitor deny policy). These operate on token streams produced by
-// shell-parser plus the flag-helpers semantic layer.
+// Used by bash-rewrite (Bash command rewriting). These operate on token
+// streams produced by shell-parser plus the flag-helpers semantic layer.
 
-import { splitTopLevelCommands, tokenizeShell } from './shell-parser.mjs';
 import { BRIDGE_SUFFIX } from './plugin-paths.mjs';
 
 // Classifies the first tokens as a coral-cli invocation. Returns
@@ -33,7 +31,7 @@ export function detectCoralInvocation(tokens) {
 }
 
 // Returns true when the given token stream invokes `coral-cli wait`.
-// Used by cli-resolve to decide whether to inject a foreground Bash timeout.
+// Used by bash-rewrite to decide whether to inject a foreground Bash timeout.
 export function tokensInvokeCoralWait(tokens) {
   const invocation = detectCoralInvocation(tokens);
   if (invocation === null) return false;
@@ -50,19 +48,4 @@ const WAIT_INVOCATION_RE =
 
 export function textInvokesCoralWait(text) {
   return WAIT_INVOCATION_RE.test(text);
-}
-
-// Returns true when any top-level command segment invokes `coral-cli wait`.
-// Used by cli-wait-guard to deny the command from the Monitor tool.
-export function commandHasCoralWait(command) {
-  const segments = splitTopLevelCommands(command);
-  if (segments === null) return false;
-
-  for (const { start, end } of segments) {
-    const tokens = tokenizeShell(command.slice(start, end));
-    if (tokens === null) continue;
-    if (tokensInvokeCoralWait(tokens)) return true;
-  }
-
-  return false;
 }
