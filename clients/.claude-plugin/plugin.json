@@ -1,6 +1,6 @@
 {
   "name": "coral",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "description": "Claude Code plugin - structured agents with Codex and Claude CLI bridges, plus deterministic workflow orchestration",
   "author": {
     "name": "kangig94"
