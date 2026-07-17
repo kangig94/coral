@@ -84,13 +84,15 @@ export function createFixture(): HookFixture {
     pluginRoot: join(root, 'plugin-root'),
     projectRoot,
     snapshotDir: join(tmpRoot, 'coral', projectSlug),
-    workRoot: join(root, 'work-root'),
+    // Coral's sandbox-writable /tmp root. In tests it is the fixture's temp root;
+    // runHook mirrors it into CORAL_WORK_ROOT_OVERRIDE for the hook subprocess, so
+    // projectTmpDir (now nested under sandboxTmpDir) resolves back to snapshotDir.
+    workRoot: tmpRoot,
   };
 
   createdRoots.push(root);
   mkdirSync(tmpRoot, { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
-  mkdirSync(fixture.workRoot, { recursive: true });
   return fixture;
 }
 
@@ -131,6 +133,11 @@ export function runHook(
   if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
     env.USERPROFILE = env.HOME;
   }
+  // Coral's /tmp state root (sandboxTmpDir) follows the fixture's TMPDIR in tests
+  // unless a test sets CORAL_WORK_ROOT_OVERRIDE explicitly.
+  if (env.TMPDIR !== undefined && !Object.hasOwn(envOverrides, 'CORAL_WORK_ROOT_OVERRIDE')) {
+    env.CORAL_WORK_ROOT_OVERRIDE = env.TMPDIR;
+  }
 
   const result = spawnSync('node', [hookPath], {
     input: JSON.stringify(stdinJson),
@@ -169,6 +176,11 @@ export async function runHookAsync(
   }
   if (env.HOME !== undefined && !Object.hasOwn(envOverrides, 'USERPROFILE')) {
     env.USERPROFILE = env.HOME;
+  }
+  // Coral's /tmp state root (sandboxTmpDir) follows the fixture's TMPDIR in tests
+  // unless a test sets CORAL_WORK_ROOT_OVERRIDE explicitly.
+  if (env.TMPDIR !== undefined && !Object.hasOwn(envOverrides, 'CORAL_WORK_ROOT_OVERRIDE')) {
+    env.CORAL_WORK_ROOT_OVERRIDE = env.TMPDIR;
   }
 
   return await new Promise<HookRunResult>((resolve, reject) => {
