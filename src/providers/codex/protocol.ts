@@ -7,9 +7,36 @@ export interface UserInput {
   text_elements: unknown[];
 }
 
+export type NonSteerableTurnKind = 'review' | 'compact';
+
+export type CodexErrorInfo =
+  | 'contextWindowExceeded'
+  | 'sessionBudgetExceeded'
+  | 'usageLimitExceeded'
+  | 'serverOverloaded'
+  | 'cyberPolicy'
+  | 'internalServerError'
+  | 'unauthorized'
+  | 'badRequest'
+  | 'threadRollbackFailed'
+  | 'sandboxError'
+  | 'other'
+  | { httpConnectionFailed: { httpStatusCode: number | null } }
+  | { responseStreamConnectionFailed: { httpStatusCode: number | null } }
+  | { responseStreamDisconnected: { httpStatusCode: number | null } }
+  | { responseTooManyFailedAttempts: { httpStatusCode: number | null } }
+  | { activeTurnNotSteerable: { turnKind: NonSteerableTurnKind } };
+
+export interface TurnError {
+  message?: string;
+  codexErrorInfo?: CodexErrorInfo | null;
+  additionalDetails?: string | null;
+}
+
 export interface Turn {
   id: string;
   status?: string;
+  error?: TurnError | null;
 }
 
 interface ThreadInfo {
