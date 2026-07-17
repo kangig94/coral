@@ -35,6 +35,19 @@ export function projectTmpDir(projectDir) {
   return join(tmpdir(), 'coral', projectSlug(projectDir));
 }
 
+// Sandbox-WRITABLE scratch root. Inside a command sandbox this is the per-user
+// scratch dir Claude Code exposes as $TMPDIR (`/tmp/claude-<uid>`); the reader
+// hooks run OUTSIDE the sandbox where $TMPDIR is unset, so both sides derive the
+// same path from the uid. This is the single point coupling us to the harness
+// sandbox scratch-dir convention — kept here so it changes in one place.
+// Unlike projectTmpDir (`/tmp/coral/...`, read-only inside the sandbox), this
+// path is writable from inside a sandboxed command, so a wrapper can record its
+// own liveness here. Tests set CORAL_WORK_ROOT_OVERRIDE to redirect it.
+export function sandboxTmpDir() {
+  return process.env.CORAL_WORK_ROOT_OVERRIDE
+    || join('/tmp', `claude-${process.getuid?.() ?? 0}`);
+}
+
 // Resolves the project directory for hooks that mutate per-project state.
 // CLAUDE_PROJECT_DIR is the primary source; hook payloads always carry `cwd`
 // as a fallback (per Claude Code common-input-fields contract); '.' is the
