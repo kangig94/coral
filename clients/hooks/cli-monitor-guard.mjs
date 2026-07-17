@@ -4,7 +4,7 @@
 // Monitor is for streaming event sources (log tails, file watchers);
 // `coral-cli wait` is a one-shot blocking wait whose lines are progress
 // output, not discrete events. It belongs on the Bash tool, where
-// cli-resolve already injects the extended timeout and forces foreground.
+// bash-rewrite already injects the extended timeout and forces foreground.
 
 import { exitIfChildProcess, exitIfWrongFlavor, readStdin } from './lib/hook-utils.mjs';
 import { commandHasCoralWait } from './lib/coral-invocation.mjs';
@@ -13,7 +13,7 @@ exitIfWrongFlavor();
 
 const DENY_REASON = 'coral-cli wait must run via the Bash tool, not Monitor. '
   + 'Monitor streams lines as discrete events — wait is a one-shot blocking call. '
-  + 'The cli-resolve hook sets the Bash timeout ceiling and forces foreground for coral-cli wait.';
+  + 'The bash-rewrite hook sets the Bash timeout ceiling and forces foreground for coral-cli wait.';
 
 try {
   const input = JSON.parse(await readStdin());

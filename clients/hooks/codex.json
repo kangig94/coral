@@ -114,7 +114,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/cli-resolve.mjs\"",
+            "command": "test -d \"${PLUGIN_ROOT}\" || exit 0; node \"${PLUGIN_ROOT}/hooks/bash-rewrite.mjs\"",
             "timeout": 3
           }
         ]

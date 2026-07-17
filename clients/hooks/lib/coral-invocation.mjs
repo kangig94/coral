@@ -1,5 +1,5 @@
 // Detection helpers for coral-cli invocations inside shell commands.
-// Shared by cli-resolve (Bash command rewriting) and cli-wait-guard
+// Shared by bash-rewrite (Bash command rewriting) and cli-wait-guard
 // (Monitor deny policy). These operate on token streams produced by
 // shell-parser plus the flag-helpers semantic layer.
 
@@ -33,7 +33,7 @@ export function detectCoralInvocation(tokens) {
 }
 
 // Returns true when the given token stream invokes `coral-cli wait`.
-// Used by cli-resolve to decide whether to inject a foreground Bash timeout.
+// Used by bash-rewrite to decide whether to inject a foreground Bash timeout.
 export function tokensInvokeCoralWait(tokens) {
   const invocation = detectCoralInvocation(tokens);
   if (invocation === null) return false;

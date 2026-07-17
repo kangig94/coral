@@ -14,7 +14,7 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                                                             |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                                                             |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                                                         |
-| `PreToolUse` (`Bash`)      | `cli-resolve.mjs`                                                                       | Resolve bare `coral-cli` calls to the plugin-local bundle                                                          |
+| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                       | Resolve `coral-cli` calls + wrap `run_in_background` for lifecycle tracking                                                          |
 | `PreToolUse` (`Monitor`)   | `cli-monitor-guard.mjs`                                                                 | Guard Monitor tool calls                                                                                           |
 | `PostToolUseFailure`       | `kb-lookup-reminder.mjs`                                                                | KB reminder on explicit tool failures                                                                              |
 | `PostToolUse` (`Bash`)     | `kb-lookup-reminder.mjs`                                                                | KB reminder on silent-failure command output                                                                       |
@@ -135,7 +135,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
 - `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `INJECT.md` for all inject surfaces)
-- `cli-resolve.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path
+- `bash-rewrite.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
 
 ## Failure-aware KB Reminder
 
