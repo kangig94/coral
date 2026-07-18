@@ -143,26 +143,34 @@ export function readErrorNotificationEvidence(message: AppServerNotificationMess
   };
 }
 
-function isServerOverloaded(info: DecodedCodexErrorInfo): boolean {
-  return info.kind === 'known' && info.value === 'serverOverloaded';
+export type RecoverableTurnFailure = 'serverOverloaded' | 'cyberPolicy';
+
+export function recoverableTurnFailureFromInfo(info: DecodedCodexErrorInfo): RecoverableTurnFailure | null {
+  if (info.kind !== 'known') {
+    return null;
+  }
+  return info.value === 'serverOverloaded' || info.value === 'cyberPolicy' ? info.value : null;
 }
 
-export function isRecoverableServerOverload(
+export function recoverableTurnFailure(
   turn: Turn,
   terminalEvidence: readonly ErrorNotificationEvidence[],
-): boolean {
+): RecoverableTurnFailure | null {
   if (turn.status !== 'failed') {
-    return false;
+    return null;
   }
   const completedError = decodeTurnError(turn);
   if (completedError.kind === 'known') {
-    return isServerOverloaded(completedError.info);
+    return recoverableTurnFailureFromInfo(completedError.info);
   }
   if (completedError.kind !== 'absent') {
-    return false;
+    return null;
   }
   const lastTerminalError = terminalEvidence.at(-1);
-  return lastTerminalError !== undefined && !lastTerminalError.willRetry && isServerOverloaded(lastTerminalError.info);
+  if (lastTerminalError === undefined || lastTerminalError.willRetry) {
+    return null;
+  }
+  return recoverableTurnFailureFromInfo(lastTerminalError.info);
 }
 
 export function turnFailureMessage(

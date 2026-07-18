@@ -17,7 +17,7 @@ import { normalizeCodexUsage, type CodexTokenUsage } from './usage.js';
 import {
   buildCodexContinuity,
   isCodexSessionUnavailable,
-  mapCapacityContinuationTurnStartParams,
+  mapRecoveryContinuationTurnStartParams,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapTurnStartParams,
@@ -28,11 +28,13 @@ import {
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse, Turn, TurnStartParams } from './protocol.js';
 import { locateCodexRolloutArtifactFromRuntime } from './artifacts.js';
 import {
-  isRecoverableServerOverload,
+  recoverableTurnFailure,
+  recoverableTurnFailureFromInfo,
   readErrorNotificationEvidence,
   turnFailureMessage,
   type ErrorNotificationEvidence,
-} from './capacity-recovery.js';
+  type RecoverableTurnFailure,
+} from './turn-recovery.js';
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -636,8 +638,7 @@ function applyNotificationCore(
       if (!evidence.willRetry) {
         attempt.terminalErrors.push(evidence);
       }
-      const isOverload = evidence.info.kind === 'known' && evidence.info.value === 'serverOverloaded';
-      if (!isOverload) {
+      if (recoverableTurnFailureFromInfo(evidence.info) === null) {
         emitProgress(emit, `Codex error: ${evidence.message ?? 'unknown error'}`);
       }
       return;
@@ -1230,7 +1231,7 @@ function emitFinalTurnProgress(result: CodexKernelResult, emit: (event: Provider
   if (result.kind !== 'completed') {
     return;
   }
-  if (isRecoverableServerOverload(result.turn, result.attempt.terminalErrors)) {
+  if (recoverableTurnFailure(result.turn, result.attempt.terminalErrors) !== null) {
     return;
   }
   emitProgress(emit, `Turn ${result.turn.status ?? 'finished'}.`);
@@ -1260,29 +1261,38 @@ export const codexTurnKernel: Provider = (request, runtime) =>
       }
       const originalParams = mapTurnStartParams(request, state.threadId, state.serviceTier);
       let params = originalParams;
-      let recoveries = 0;
+      let continuationCount = 0;
+      const recoveredFailures = new Set<RecoverableTurnFailure>();
 
       for (;;) {
         const attempt = state.activeAttempt;
         const started = await startTurn(runtime, lease, state, attempt, params, emit);
         const result = started ?? (await waitForTurnResult(lease, runtime, state));
 
+        const recoveryReason =
+          result.kind === 'completed' ? recoverableTurnFailure(result.turn, result.attempt.terminalErrors) : null;
         if (
           result.kind === 'completed' &&
-          recoveries < 1 &&
           result.attempt.turnId !== null &&
-          isRecoverableServerOverload(result.turn, result.attempt.terminalErrors)
+          recoveryReason !== null &&
+          !recoveredFailures.has(recoveryReason)
         ) {
           retireAttempt(state, attempt);
-          emitProgress(emit, 'Codex capacity reached; retrying the same thread (1/1).');
+          emitProgress(
+            emit,
+            recoveryReason === 'serverOverloaded'
+              ? 'Codex capacity reached; retrying the same thread (1/1).'
+              : 'Codex policy check stopped the turn; retrying the same thread (1/1).',
+          );
           if (runtime.signal.aborted) {
             const terminal = finishInvocation(state, { kind: 'aborted', reason: 'signal_abort', attempt }, emit);
             if (terminal) emit(terminal);
             return;
           }
-          recoveries += 1;
-          state.activeAttempt = createAttempt(recoveries);
-          params = mapCapacityContinuationTurnStartParams(originalParams);
+          recoveredFailures.add(recoveryReason);
+          continuationCount += 1;
+          state.activeAttempt = createAttempt(continuationCount);
+          params = mapRecoveryContinuationTurnStartParams(originalParams, recoveryReason);
           continue;
         }
 

@@ -4,13 +4,14 @@ import { join } from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   CODEX_CAPACITY_CONTINUATION_PROMPT,
+  CODEX_CYBER_POLICY_CONTINUATION_PROMPT,
   applyCodexContinuityUpdate,
   buildCodexContinuity,
   buildCodexPrompt,
   buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
-  mapCapacityContinuationTurnStartParams,
+  mapRecoveryContinuationTurnStartParams,
   mapTurnStartParams,
   readCodexPersistedContinuity,
   resolveCodexServiceTier,
@@ -25,8 +26,11 @@ type TierStatSync = NonNullable<NonNullable<ProviderRuntime['storage']>['statSyn
 const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
 const defaultStatSync: TierStatSync = statSync as TierStatSync;
 
-describe('mapCapacityContinuationTurnStartParams', () => {
-  it('preserves resolved wire settings and replaces only the input', () => {
+describe('mapRecoveryContinuationTurnStartParams', () => {
+  it.each([
+    ['serverOverloaded', CODEX_CAPACITY_CONTINUATION_PROMPT],
+    ['cyberPolicy', CODEX_CYBER_POLICY_CONTINUATION_PROMPT],
+  ] as const)('preserves resolved wire settings and replaces only the input for %s', (failure, expectedPrompt) => {
     const original = mapTurnStartParams(
       makeRequest({
         prompt: 'original task',
@@ -38,14 +42,20 @@ describe('mapCapacityContinuationTurnStartParams', () => {
       'fast',
     );
 
-    const continuation = mapCapacityContinuationTurnStartParams(original);
+    const continuation = mapRecoveryContinuationTurnStartParams(original, failure);
 
     expect(continuation).toEqual({
       ...original,
-      input: [{ type: 'text', text: CODEX_CAPACITY_CONTINUATION_PROMPT, text_elements: [] }],
+      input: [{ type: 'text', text: expectedPrompt, text_elements: [] }],
     });
     expect(continuation.input[0]?.text).not.toContain('original task');
     expect(continuation.input[0]?.text).not.toContain('system rules');
+  });
+
+  it('keeps the cyber-policy continuation narrowly scoped to defensive repository quality', () => {
+    expect(CODEX_CYBER_POLICY_CONTINUATION_PROMPT).toContain('defensive software quality');
+    expect(CODEX_CYBER_POLICY_CONTINUATION_PROMPT).toContain("user's own codebase");
+    expect(CODEX_CYBER_POLICY_CONTINUATION_PROMPT).not.toContain('cyber');
   });
 });
 
