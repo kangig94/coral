@@ -26,7 +26,16 @@ export interface ClaudeBootstrapSignature {
 }
 
 const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
+const DEFAULT_CLAUDE_MODEL_CAP = 'opus';
+const CLAUDE_MODEL_TIERS: Readonly<Record<string, number>> = Object.freeze({ ...ABSTRACT_MODEL_TIERS, fable: 4 });
 const OPUS_RANK = ABSTRACT_MODEL_TIERS.opus;
+
+function resolveClaudeModelCap(env: Record<string, string>): string {
+  const configured = env.CORAL_CLAUDE_MODEL_CAP;
+  return configured !== undefined && CLAUDE_MODEL_TIERS[configured] !== undefined
+    ? configured
+    : DEFAULT_CLAUDE_MODEL_CAP;
+}
 
 /** SHA-256 hash of sorted env entries (excluding ephemeral child-boundary credentials). Shared by adapter and broker. */
 export function hashSortedEnv(env: Record<string, string>): string {
@@ -103,15 +112,15 @@ export function normalizeControllerEnv(env?: Record<string, string>): Record<str
  * value.
  */
 export function resolveClaudeModel(model: string | undefined, env: Record<string, string>): string | undefined {
-  const cap = env.CORAL_CLAUDE_MODEL_CAP ?? 'opus';
+  const cap = resolveClaudeModelCap(env);
   if (model !== undefined) {
-    return resolveModelTier(model, cap);
+    return resolveModelTier(model, cap, CLAUDE_MODEL_TIERS);
   }
   const envModel = env.CORAL_CLAUDE_MODEL;
   if (envModel === undefined || envModel.length === 0) {
     return undefined;
   }
-  const cappedDefault = resolveModelTier(envModel, cap);
+  const cappedDefault = resolveModelTier(envModel, cap, CLAUDE_MODEL_TIERS);
   return cappedDefault ?? envModel;
 }
 
@@ -123,7 +132,7 @@ function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' |
     return withoutUltra;
   }
 
-  return isOpusEffectiveTier(request.model, request.coralEnv) ? 'xhigh' : 'max';
+  return isAtLeastOpusEffectiveTier(request.model, request.coralEnv) ? 'xhigh' : 'max';
 }
 
 /**
@@ -134,10 +143,7 @@ function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' |
  * caller systemPrompt appended). This function must not re-resolve INJECT.md.
  */
 export function buildPreparedClaudeRequest(
-  request: Pick<
-    ProviderRequest,
-    'prompt' | 'instruction' | 'systemPrompt' | 'coralEnv' | 'model' | 'effort'
-  >,
+  request: Pick<ProviderRequest, 'prompt' | 'instruction' | 'systemPrompt' | 'coralEnv' | 'model' | 'effort'>,
 ): PreparedClaudeRequest {
   const systemParts: string[] = [];
   let prompt = request.prompt;
@@ -165,18 +171,19 @@ export function buildPreparedClaudeRequest(
   };
 }
 
-function isOpusEffectiveTier(model: string | undefined, env: Record<string, string>): boolean {
-  const capRank = ABSTRACT_MODEL_TIERS[env.CORAL_CLAUDE_MODEL_CAP ?? 'opus'] ?? OPUS_RANK;
-  if (model === undefined) {
-    return capRank === OPUS_RANK;
+function isAtLeastOpusEffectiveTier(model: string | undefined, env: Record<string, string>): boolean {
+  const capRank = CLAUDE_MODEL_TIERS[resolveClaudeModelCap(env)] ?? OPUS_RANK;
+  const configuredModel = model ?? (env.CORAL_CLAUDE_MODEL || undefined);
+  if (configuredModel === undefined) {
+    return capRank >= OPUS_RANK;
   }
 
-  const abstractRank = ABSTRACT_MODEL_TIERS[model];
+  const abstractRank = CLAUDE_MODEL_TIERS[configuredModel];
   if (abstractRank !== undefined) {
-    return Math.min(abstractRank, capRank) === OPUS_RANK;
+    return Math.min(abstractRank, capRank) >= OPUS_RANK;
   }
 
-  if (/sonnet|haiku/i.test(model)) {
+  if (/sonnet|haiku/i.test(configuredModel)) {
     return false;
   }
 
