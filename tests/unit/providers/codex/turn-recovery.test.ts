@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeCodexErrorInfo,
   decodeTurnError,
-  isRecoverableServerOverload,
+  recoverableTurnFailure,
   readErrorNotificationEvidence,
-} from '#src/providers/codex/capacity-recovery.js';
+} from '#src/providers/codex/turn-recovery.js';
 import type { CodexErrorInfo, Turn } from '#src/providers/codex/protocol.js';
 
 const stringVariants = [
@@ -90,7 +90,7 @@ describe('Codex structured error decoding', () => {
   });
 });
 
-describe('capacity recovery classification', () => {
+describe('turn recovery classification', () => {
   const overloadEvidence = readErrorNotificationEvidence({
     method: 'error',
     params: {
@@ -107,56 +107,67 @@ describe('capacity recovery classification', () => {
       status: 'failed',
       error: { message: 'capacity', codexErrorInfo: 'serverOverloaded' },
     } satisfies Turn;
-    expect(isRecoverableServerOverload(turn, [])).toBe(true);
+    expect(recoverableTurnFailure(turn, [])).toBe('serverOverloaded');
+
+    const cyberPolicy = {
+      ...turn,
+      error: { message: 'policy false positive', codexErrorInfo: 'cyberPolicy' },
+    } satisfies Turn;
+    expect(recoverableTurnFailure(cyberPolicy, [])).toBe('cyberPolicy');
 
     const badRequest = {
       ...turn,
       error: { message: 'bad', codexErrorInfo: 'badRequest' },
     } satisfies Turn;
-    expect(isRecoverableServerOverload(badRequest, overloadEvidence ? [overloadEvidence] : [])).toBe(false);
+    expect(recoverableTurnFailure(badRequest, overloadEvidence ? [overloadEvidence] : [])).toBeNull();
 
     const conflictingEvidence = overloadEvidence
       ? [{ ...overloadEvidence, info: decodeCodexErrorInfo('badRequest'), message: 'later bad request' }]
       : [];
-    expect(isRecoverableServerOverload(turn, conflictingEvidence)).toBe(true);
+    expect(recoverableTurnFailure(turn, conflictingEvidence)).toBe('serverOverloaded');
   });
 
-  it('keeps every non-capacity structured cause outside the recovery allowlist', () => {
-    const nonCapacity: unknown[] = [
-      ...stringVariants.filter((variant) => variant !== 'serverOverloaded'),
+  it('keeps every non-recoverable structured cause outside the recovery allowlist', () => {
+    const nonRecoverable: unknown[] = [
+      ...stringVariants.filter((variant) => variant !== 'serverOverloaded' && variant !== 'cyberPolicy'),
       { httpConnectionFailed: { httpStatusCode: 503 } },
       { responseStreamConnectionFailed: { httpStatusCode: 502 } },
       { responseStreamDisconnected: { httpStatusCode: null } },
       { responseTooManyFailedAttempts: { httpStatusCode: 429 } },
       { activeTurnNotSteerable: { turnKind: 'review' } },
     ];
-    for (const codexErrorInfo of nonCapacity) {
+    for (const codexErrorInfo of nonRecoverable) {
       const turn = {
         id: 'turn-1',
         status: 'failed',
         error: { message: 'not capacity', codexErrorInfo },
       } as unknown as Turn;
-      expect(isRecoverableServerOverload(turn, [])).toBe(false);
+      expect(recoverableTurnFailure(turn, [])).toBeNull();
     }
   });
 
   it('uses only terminal matching notification evidence when Turn.error is physically absent', () => {
     const turn = { id: 'turn-1', status: 'failed' } satisfies Turn;
     expect(overloadEvidence).not.toBeNull();
-    expect(isRecoverableServerOverload(turn, overloadEvidence ? [overloadEvidence] : [])).toBe(true);
+    expect(recoverableTurnFailure(turn, overloadEvidence ? [overloadEvidence] : [])).toBe('serverOverloaded');
+
+    const cyberEvidence = overloadEvidence
+      ? { ...overloadEvidence, info: decodeCodexErrorInfo('cyberPolicy'), message: 'policy false positive' }
+      : null;
+    expect(recoverableTurnFailure(turn, cyberEvidence ? [cyberEvidence] : [])).toBe('cyberPolicy');
 
     const retrying = overloadEvidence ? { ...overloadEvidence, willRetry: true } : null;
-    expect(isRecoverableServerOverload(turn, retrying ? [retrying] : [])).toBe(false);
+    expect(recoverableTurnFailure(turn, retrying ? [retrying] : [])).toBeNull();
 
     const badRequest = overloadEvidence
       ? { ...overloadEvidence, info: decodeCodexErrorInfo('badRequest'), message: 'later bad request' }
       : null;
     expect(
-      isRecoverableServerOverload(turn, overloadEvidence && badRequest ? [overloadEvidence, badRequest] : []),
-    ).toBe(false);
-    expect(
-      isRecoverableServerOverload(turn, overloadEvidence && badRequest ? [badRequest, overloadEvidence] : []),
-    ).toBe(true);
+      recoverableTurnFailure(turn, overloadEvidence && badRequest ? [overloadEvidence, badRequest] : []),
+    ).toBeNull();
+    expect(recoverableTurnFailure(turn, overloadEvidence && badRequest ? [badRequest, overloadEvidence] : [])).toBe(
+      'serverOverloaded',
+    );
   });
 
   it('blocks fallback when Turn.error is present but unknown, invalid, or has null info', () => {
@@ -170,7 +181,7 @@ describe('capacity recovery classification', () => {
     ]) {
       const turn = { id: 'turn-1', status: 'failed', error } as unknown as Turn;
       expect(decodeTurnError(turn).kind).not.toBe('absent');
-      expect(isRecoverableServerOverload(turn, evidence)).toBe(false);
+      expect(recoverableTurnFailure(turn, evidence)).toBeNull();
     }
   });
 

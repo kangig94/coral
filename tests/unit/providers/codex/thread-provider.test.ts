@@ -509,6 +509,84 @@ describe('codexThreadProvider', () => {
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
+  it('continues one structured cyber-policy failure in the same thread', async () => {
+    let starts = 0;
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') {
+        starts += 1;
+        return { turn: { id: `turn-${starts}`, status: 'inProgress' } };
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const eventsPromise = collect(
+      codexThreadProvider(makeRequest({ prompt: 'ordinary implementation task' }), makeRuntime(lease)),
+    );
+
+    await vi.waitFor(() => expect(starts).toBe(1));
+    lease.emit({
+      method: 'error',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        willRetry: false,
+        error: { message: 'This content was flagged for possible cybersecurity risk.', codexErrorInfo: 'cyberPolicy' },
+      },
+    });
+    lease.emit({
+      method: 'turn/completed',
+      params: {
+        threadId: 'thread-1',
+        turn: {
+          id: 'turn-1',
+          status: 'failed',
+          error: {
+            message: 'This content was flagged for possible cybersecurity risk.',
+            codexErrorInfo: 'cyberPolicy',
+          },
+        },
+      },
+    });
+
+    await vi.waitFor(() => expect(starts).toBe(2));
+    const startsParams = lease.rpcMock.mock.calls
+      .filter(([method]) => method === 'turn/start')
+      .map(([, params]) => params as Record<string, unknown>);
+    expect(startsParams[1]).toMatchObject({
+      threadId: 'thread-1',
+      input: [
+        {
+          type: 'text',
+          text: expect.stringContaining('Keep the work strictly within defensive software quality'),
+        },
+      ],
+    });
+    expect(JSON.stringify(startsParams[1])).not.toContain('ordinary implementation task');
+
+    lease.emit({
+      method: 'item/completed',
+      params: {
+        threadId: 'thread-1',
+        turnId: 'turn-2',
+        item: { type: 'agentMessage', text: 'Recovered from a policy false positive', phase: 'final_answer' },
+      },
+    });
+    lease.emit({
+      method: 'turn/completed',
+      params: { threadId: 'thread-1', turn: { id: 'turn-2', status: 'completed' } },
+    });
+
+    const events = await eventsPromise;
+    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({
+      kind: 'terminal',
+      terminal: { content: 'Recovered from a policy false positive', outcome: { kind: 'completed' } },
+    });
+    const progress = events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []));
+    expect(progress).toContain('Codex policy check stopped the turn; retrying the same thread (1/1).');
+    expect(progress.some((message) => message.startsWith('Codex error: This content was flagged'))).toBe(false);
+  });
+
   it('uses exact terminal error evidence only when the completed turn omits Turn.error', async () => {
     let starts = 0;
     const lease = makeLease(async (method) => {
@@ -634,7 +712,50 @@ describe('codexThreadProvider', () => {
     }
   });
 
-  it('spends the continuation budget once when the continuation also overloads', async () => {
+  it.each([
+    ['serverOverloaded', 'capacity'],
+    ['cyberPolicy', 'policy false positive'],
+  ] as const)(
+    'spends the continuation budget once when repeated %s failures occur',
+    async (codexErrorInfo, message) => {
+      let starts = 0;
+      const lease = makeLease(async (method) => {
+        if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+        if (method === 'turn/start') {
+          starts += 1;
+          return { turn: { id: `turn-${starts}`, status: 'inProgress' } };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      });
+      const runtime = makeRuntime(lease);
+      const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
+
+      for (const turnId of ['turn-1', 'turn-2']) {
+        await vi.waitFor(() => expect(starts).toBe(Number(turnId.at(-1))));
+        lease.emit({
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-1',
+            turn: {
+              id: turnId,
+              status: 'failed',
+              error: { message, codexErrorInfo },
+            },
+          },
+        });
+      }
+
+      const events = await eventsPromise;
+      expect(starts).toBe(2);
+      expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
+      expect(events.at(-1)).toMatchObject({
+        kind: 'terminal',
+        terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining(message) } },
+      });
+    },
+  );
+
+  it('grants one continuation to each recoverable error kind in the same thread', async () => {
     let starts = 0;
     const lease = makeLease(async (method) => {
       if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
@@ -644,31 +765,37 @@ describe('codexThreadProvider', () => {
       }
       throw new Error(`Unexpected method: ${method}`);
     });
-    const runtime = makeRuntime(lease);
-    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
+    const eventsPromise = collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
+    const failures = [
+      { codexErrorInfo: 'serverOverloaded', message: 'capacity' },
+      { codexErrorInfo: 'cyberPolicy', message: 'policy false positive' },
+      { codexErrorInfo: 'serverOverloaded', message: 'capacity again' },
+    ] as const;
 
-    for (const turnId of ['turn-1', 'turn-2']) {
-      await vi.waitFor(() => expect(starts).toBe(Number(turnId.at(-1))));
+    for (const [index, failure] of failures.entries()) {
+      const turnNumber = index + 1;
+      await vi.waitFor(() => expect(starts).toBe(turnNumber));
       lease.emit({
         method: 'turn/completed',
         params: {
           threadId: 'thread-1',
-          turn: {
-            id: turnId,
-            status: 'failed',
-            error: { message: 'capacity', codexErrorInfo: 'serverOverloaded' },
-          },
+          turn: { id: `turn-${turnNumber}`, status: 'failed', error: failure },
         },
       });
     }
 
     const events = await eventsPromise;
-    expect(starts).toBe(2);
+    expect(starts).toBe(3);
     expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
     expect(events.at(-1)).toMatchObject({
       kind: 'terminal',
-      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('capacity') } },
+      terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('capacity again') } },
     });
+    const progress = events.flatMap((event) => (event.kind === 'progress' ? [event.message] : []));
+    expect(progress.filter((message) => message.includes('retrying the same thread (1/1)'))).toEqual([
+      'Codex capacity reached; retrying the same thread (1/1).',
+      'Codex policy check stopped the turn; retrying the same thread (1/1).',
+    ]);
   });
 
   it('does not continue non-capacity failures', async () => {

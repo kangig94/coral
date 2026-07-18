@@ -14,6 +14,7 @@ import { errorMessage } from '../../infra/error-format.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
+import type { RecoverableTurnFailure } from './turn-recovery.js';
 
 type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv' | 'secretEnv'>;
 
@@ -550,9 +551,20 @@ export const CODEX_CAPACITY_CONTINUATION_PROMPT = `Continue the unanswered or pa
 Do not repeat prior work or restate the original prompt.
 Continue from where you stopped.`;
 
-export function mapCapacityContinuationTurnStartParams(original: TurnStartParams): TurnStartParams {
+export const CODEX_CYBER_POLICY_CONTINUATION_PROMPT = `Continue the unanswered or partial repository implementation from the current thread.
+Keep the work strictly within defensive software quality: code correctness, robust input handling, bounded resource use, and regression tests in the user's own codebase.
+Do not broaden the task beyond that scope.
+Do not repeat prior work or restate the original prompt.
+Continue from where you stopped.`;
+
+export function mapRecoveryContinuationTurnStartParams(
+  original: TurnStartParams,
+  failure: RecoverableTurnFailure,
+): TurnStartParams {
+  const prompt =
+    failure === 'cyberPolicy' ? CODEX_CYBER_POLICY_CONTINUATION_PROMPT : CODEX_CAPACITY_CONTINUATION_PROMPT;
   return {
     ...original,
-    input: buildCodexTurnInput(CODEX_CAPACITY_CONTINUATION_PROMPT),
+    input: buildCodexTurnInput(prompt),
   };
 }
