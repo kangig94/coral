@@ -56,12 +56,16 @@ export function resolveProviderEffort(
 }
 
 /** Resolve abstract model tiers. Returns undefined for abstract tiers (provider decides). */
-export function resolveModelTier(model: string | undefined, cap?: string): string | undefined {
+export function resolveModelTier(
+  model: string | undefined,
+  cap?: string,
+  tiers: Readonly<Record<string, number>> = ABSTRACT_MODEL_TIERS,
+): string | undefined {
   if (model === undefined) return undefined;
-  const modelRank = ABSTRACT_MODEL_TIERS[model];
+  const modelRank = tiers[model];
   if (modelRank === undefined) return model;
   if (cap !== undefined) {
-    const capRank = ABSTRACT_MODEL_TIERS[cap];
+    const capRank = tiers[cap];
     if (capRank !== undefined && modelRank > capRank) return cap;
   }
   return undefined;
