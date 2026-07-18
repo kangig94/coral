@@ -30,7 +30,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist �
 | `coral:xxx`            | **Spawn** subagent (Agent tool)    | `coral:scanner`                               |
 
 - **Path alias resolution**: absolute paths are filled in `inject/tools.md` (`{{CORAL_METHODS}}`, `{{CORAL_PROJECT}}`) for host SessionStart, Claude `SubagentStart`, and provider jobs (`applyInjectBundle`). Do not hardcode marketplace/cache paths in agent or skill bodies.
-- **Skills**: `coral-skill-vars.mjs` also injects short `CORAL_PROJECT` / `CORAL_METHODS` lines on UserPromptSubmit and PreToolUse(Skill) for host skill protocols (redundant with INJECT aliases; keep skill bodies on the alias form).
+- **Skills**: `coral-skill-vars.mjs` also injects short `CORAL_PROJECT` / `CORAL_METHODS` lines on UserPromptSubmit and PreToolUse(Skill) for host skill protocols (redundant with inject-bundle aliases; keep skill bodies on the alias form).
 - **Agents**: spawned via `Agent({ subagent_type: "coral:<name>" })` (Claude-native; SubagentStart inject) or `coral-cli codex|claude <name> -i ...` (provider job; applyInjectBundle). The framework resolves agent files — do not read agent files directly from skills.
 - `coral:xxx` references are for Agent tool's `subagent_type` only — the framework resolves them.
   Do not use `coral:xxx` when the intent is to read a file.

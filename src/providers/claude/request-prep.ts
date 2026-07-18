@@ -148,7 +148,7 @@ export function buildPreparedClaudeRequest(
   const systemParts: string[] = [];
   let prompt = request.prompt;
 
-  // systemPrompt first so INJECT guidelines lead the system channel.
+  // systemPrompt first so the inject bundle leads the system channel.
   if (request.systemPrompt) {
     systemParts.push(request.systemPrompt);
   }

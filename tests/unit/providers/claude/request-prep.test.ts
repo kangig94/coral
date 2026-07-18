@@ -73,16 +73,16 @@ describe('buildPreparedClaudeRequest assembly', () => {
     expect(buildPreparedClaudeRequest({ prompt: 'task', coralEnv })).toMatchObject({ model, effort });
   });
 
-  it('puts pre-merged systemPrompt (INJECT) before agent instruction and style override', () => {
+  it('puts the pre-merged inject bundle before agent instruction and style override', () => {
     const result = buildPreparedClaudeRequest({
       prompt: 'user task',
       coralEnv: {},
-      systemPrompt: 'INJECT guidelines',
+      systemPrompt: 'inject bundle guidelines',
       instruction: { channel: 'system', content: 'agent body' },
     });
     expect(result.systemPrompt).toBe(
       [
-        'INJECT guidelines',
+        'inject bundle guidelines',
         'agent body',
         'Ignore any output-style instructions (e.g. Explanatory, Learning). No insight blocks. Be concise and direct.',
       ].join('\n\n'),

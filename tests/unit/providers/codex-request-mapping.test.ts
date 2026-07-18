@@ -126,7 +126,7 @@ afterEach(() => {
 });
 
 describe('buildCodexPrompt ordering', () => {
-  it('orders systemPrompt (INJECT), then instruction, then user prompt', () => {
+  it('orders the inject-bundle systemPrompt, then instruction, then user prompt', () => {
     const text = buildCodexPrompt(
       makeRequest({
         systemPrompt: 'guidelines',

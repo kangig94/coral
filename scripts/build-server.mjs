@@ -1,16 +1,7 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'fs';
+import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 mkdirSync('clients/build', { recursive: true });
@@ -44,7 +35,11 @@ const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 // Sync manifest versions (single source of truth: package.json). The plugin
 // manifests live under clients/ (the plugin root); marketplace.json stays at
 // the repo root and points at ./clients via a git-subdir source.
-for (const path of ['clients/.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', 'clients/.codex-plugin/plugin.json']) {
+for (const path of [
+  'clients/.claude-plugin/plugin.json',
+  '.claude-plugin/marketplace.json',
+  'clients/.codex-plugin/plugin.json',
+]) {
   const json = JSON.parse(readFileSync(path, 'utf8'));
   let changed = false;
 
@@ -103,6 +98,17 @@ await esbuild.build({
   outfile: 'clients/build/coral-backend.cjs',
   define: { ...sharedOpts.define, __IS_CORAL_BACKEND_MAIN__: 'true' },
 });
+
+const backendBundle = readFileSync('clients/build/coral-backend.cjs', 'utf8');
+for (const fragmentPath of ['core.md', 'tools.md', 'kb/common.md', 'kb/session.md']) {
+  if (!backendBundle.includes(JSON.stringify(fragmentPath))) {
+    throw new Error(`Built backend does not reference inject fragment: ${fragmentPath}`);
+  }
+}
+const legacyInjectMonolith = 'INJECT.md';
+if (backendBundle.includes(JSON.stringify(legacyInjectMonolith))) {
+  throw new Error('Built backend still references the removed monolithic inject file');
+}
 console.log('Built clients/build/coral-backend.cjs');
 
 await esbuild.build({
@@ -121,7 +127,7 @@ await esbuild.build({
 console.log('Built clients/build/coral-claude-appserver.cjs');
 
 // Write bundle manifest with content hash for version-independent change detection
-const backendHash = createHash('sha256').update(readFileSync('clients/build/coral-backend.cjs')).digest('hex').slice(0, 16);
+const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
 const manifestPath = 'clients/build/manifest.json';
 const manifestTmp = manifestPath + '.tmp';
 
