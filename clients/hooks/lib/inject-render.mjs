@@ -40,7 +40,7 @@ function renderEquippedTools(equippedTools) {
   // Bare block — INJECT.md supplies the blank lines around the `{{EQUIPPED_TOOLS}}`
   // line (it sits on its own line, blank above and below), so the rendered Tools
   // section reads one blank line per gap.
-  return `Equipped tools (installed via /equip) — mandatory first-pass capabilities. These are live MCP tools available in this session; call them directly before using manual search/read. Use the live MCP tools in the mcp__codebase_memory_mcp namespace:\n${lines.join('\n')}`;
+  return `Equipped tools (installed via /equip):\n${lines.join('\n')}`;
 }
 
 export function renderInject({ pluginRoot, projectDir, sessionId, asOwner, kbEnabled = true, equippedTools }) {

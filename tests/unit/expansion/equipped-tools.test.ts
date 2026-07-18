@@ -49,7 +49,10 @@ describe('resolveEquippedTools', () => {
 
     expect(tools.map((tool) => tool.id)).toEqual(['codebase-memory']);
     expect(tools[0].summary).toContain('mandatory first stop');
+    expect(tools[0].guidance?.join('\n')).toContain('mcp__codebase_memory_mcp namespace first');
     expect(tools[0].guidance?.join('\n')).toContain('search_graph');
+    expect(tools[0].guidance?.join('\n')).toContain('codebase-memory-mcp cli <tool>');
+    expect(tools[0].guidance?.join('\n')).toContain('both MCP and shell CLI graph access');
   });
 
   it('does not surface a directory where the binary should be', () => {

@@ -172,8 +172,8 @@ describe('resolveInjectMd', () => {
         },
       ],
     });
-    expect(result).toContain('mandatory first-pass capabilities');
-    expect(result).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(result).toContain('Equipped tools (installed via /equip):');
+    expect(result).not.toContain('highest-priority');
     expect(result).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(result).toContain('  - Use search_graph before opening files.');
     expect(result).toContain('  - Manual grep/read is a fallback only.');
@@ -283,10 +283,7 @@ describe('applyInjectMd', () => {
   it('omits KB_ONLY when coralEnv disables KB', async () => {
     mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
     const applyInjectMd = await loadApply();
-    const result = applyInjectMd(
-      { ...baseRequest, coralEnv: { CORAL_KB_ENABLE: '0' } },
-      runtime(),
-    );
+    const result = applyInjectMd({ ...baseRequest, coralEnv: { CORAL_KB_ENABLE: '0' } }, runtime());
     expect(result.systemPrompt).toContain('top');
     expect(result.systemPrompt).not.toContain('kb stuff');
     expect(result.systemPrompt).toContain('bottom');
@@ -307,7 +304,7 @@ describe('applyInjectMd', () => {
         ],
       }),
     );
-    expect(result.systemPrompt).toContain('mandatory first-pass capabilities');
+    expect(result.systemPrompt).toContain('Equipped tools (installed via /equip):');
     expect(result.systemPrompt).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(result.systemPrompt).toContain('  - Use search_graph before opening files.');
   });

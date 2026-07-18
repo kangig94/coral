@@ -68,7 +68,7 @@ function renderEquippedTools(equippedTools: readonly InjectEquippedTool[] | unde
     `- ${tool.id}: ${tool.summary}`,
     ...(tool.guidance ?? []).map((item) => `  - ${item}`),
   ]);
-  return `Equipped tools (installed via /equip) — mandatory first-pass capabilities. These are live MCP tools available in this session; call them directly before using manual search/read. Use the live MCP tools in the mcp__codebase_memory_mcp namespace:\n${lines.join('\n')}`;
+  return `Equipped tools (installed via /equip):\n${lines.join('\n')}`;
 }
 
 export function resolveInjectMd(opts: ResolveInjectMdOptions): string {

@@ -40,8 +40,8 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       ],
     });
 
-    expect(out).toContain('mandatory first-pass capabilities');
-    expect(out).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(out).toContain('Equipped tools (installed via /equip):');
+    expect(out).not.toContain('highest-priority');
     expect(out).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(out).toContain('  - Use search_graph before opening files.');
     expect(out).toContain('  - Manual grep/read is a fallback only.');

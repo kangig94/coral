@@ -60,7 +60,10 @@ describe('resolveEquippedTools', () => {
     const tools = resolveEquippedTools();
     expect(tools.map((t: { id: string }) => t.id)).toEqual(['codebase-memory']);
     expect(tools[0].summary).toContain('mandatory first stop');
+    expect(tools[0].guidance.join('\n')).toContain('mcp__codebase_memory_mcp namespace first');
     expect(tools[0].guidance.join('\n')).toContain('search_graph');
+    expect(tools[0].guidance.join('\n')).toContain('codebase-memory-mcp cli <tool>');
+    expect(tools[0].guidance.join('\n')).toContain('both MCP and shell CLI graph access');
   });
 
   it('stops surfacing the instant the binary is removed by any means (no equip uninstall needed)', () => {
