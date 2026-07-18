@@ -23,7 +23,7 @@ import {
   liveWorkSubagentsDir,
   parseHookOutput,
   runHook,
-  writeInjectMd,
+  writeInjectBundle,
   type HookOutput,
 } from '#tests/unit/hooks/_helpers.js';
 
@@ -47,10 +47,10 @@ function seedCodebaseMemoryBinary(homeDir: string): void {
 }
 
 describe('session-start.mjs', () => {
-  it('outputs INJECT.md with session_id when both provided', () => {
+  it('outputs the inject bundle with session_id when both are provided', () => {
     const fixture = createFixture();
-    const injectMd = 'Project instructions\nSecond line';
-    writeInjectMd(fixture.pluginRoot, injectMd);
+    const coreFragment = 'Project instructions\nSecond line';
+    writeInjectBundle(fixture.pluginRoot, coreFragment);
 
     const result = runHook(SESSION_START_HOOK, { session_id: 'sess-123' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
@@ -61,13 +61,13 @@ describe('session-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toMatch(
       /^SessionStart:session_id=sess-123\nCurrent host: (claude|codex)\nClaude config dir: .+\n\n/u,
     );
-    expect(output.hookSpecificOutput.additionalContext).toContain(injectMd);
+    expect(output.hookSpecificOutput.additionalContext).toContain(coreFragment);
   });
 
   it('replaces {{CORAL_PROJECTS}} with the source-derived global project dir', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/my.repo.git');
-    writeInjectMd(fixture.pluginRoot, 'Memo dir: {{CORAL_PROJECTS}}/memo');
+    writeInjectBundle(fixture.pluginRoot, 'Memo dir: {{CORAL_PROJECTS}}/memo');
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -89,7 +89,7 @@ describe('session-start.mjs', () => {
 
   it('replaces {{CORAL_CLI}} with the shell-quoted coral-cli bridge path', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
+    writeInjectBundle(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
 
     const result = runHook(SESSION_START_HOOK, { session_id: 'sess-1' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
@@ -103,7 +103,7 @@ describe('session-start.mjs', () => {
 
   it('exits silently when session_id is missing (CORAL_CHILD guard would also catch this)', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'Only CLAUDE content');
+    writeInjectBundle(fixture.pluginRoot, 'Only CLAUDE content');
 
     const result = runHook(SESSION_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
@@ -118,12 +118,9 @@ describe('session-start.mjs', () => {
     expect(parseHookOutput(result.stdout)).toBeNull();
   });
 
-  it('keeps OWNER_ONLY block for top-level sessions', () => {
+  it('includes the orchestrator fragment for top-level sessions', () => {
     const fixture = createFixture();
-    writeInjectMd(
-      fixture.pluginRoot,
-      'base\n<!-- OWNER_ONLY:BEGIN -->\nowner instruction\n<!-- OWNER_ONLY:END -->\nrest',
-    );
+    writeInjectBundle(fixture.pluginRoot, { core: 'base\nrest', kbOrchestrator: 'owner instruction' });
 
     const result = runHook(
       SESSION_START_HOOK,
@@ -166,7 +163,7 @@ describe('session-start.mjs', () => {
 
     it('injects the current-project wiki into additionalContext', () => {
       const fixture = createFixture();
-      writeInjectMd(fixture.pluginRoot, 'inject content');
+      writeInjectBundle(fixture.pluginRoot, 'inject content');
       initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
       const kbRoot = join(fixture.root, 'kb');
       seedKbWiki(kbRoot, PROJECT_SLUG, '2026-05-04T01:00:00.000Z', 'In-scope understanding.');
@@ -194,7 +191,7 @@ describe('session-start.mjs', () => {
 
     it('omits the wake-up block entirely when the project wiki is absent', () => {
       const fixture = createFixture();
-      writeInjectMd(fixture.pluginRoot, 'inject content');
+      writeInjectBundle(fixture.pluginRoot, 'inject content');
       initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
       const kbRoot = join(fixture.root, 'kb');
       seedKbWiki(kbRoot, 'foreign', '2026-05-04T01:00:00.000Z', 'Foreign understanding.');
@@ -218,7 +215,7 @@ describe('session-start.mjs', () => {
 
     it('returns null when the project wiki has malformed frontmatter (fail-open)', () => {
       const fixture = createFixture();
-      writeInjectMd(fixture.pluginRoot, 'inject content');
+      writeInjectBundle(fixture.pluginRoot, 'inject content');
       initGitRepo(fixture.projectRoot, 'https://token@github.com/acme/repo.git');
       const kbRoot = join(fixture.root, 'kb');
       const wikiDir = join(kbRoot, 'wiki');
@@ -249,9 +246,9 @@ describe('session-start.mjs', () => {
 });
 
 describe('subagent-start.mjs', () => {
-  it('outputs INJECT.md with SubagentStart hookEventName', () => {
+  it('outputs the inject bundle with SubagentStart hookEventName', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'Guidelines for subagent');
+    writeInjectBundle(fixture.pluginRoot, 'Guidelines for subagent');
 
     const result = runHook(
       SUBAGENT_START_HOOK,
@@ -266,12 +263,9 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('Guidelines for subagent');
   });
 
-  it('keeps SESSION_ID_ONLY blocks and substitutes the parent session_id', () => {
+  it('includes session guidance and substitutes the parent session_id', () => {
     const fixture = createFixture();
-    writeInjectMd(
-      fixture.pluginRoot,
-      'visible\n<!-- SESSION_ID_ONLY:BEGIN -->\nowner={{SESSION_ID}}\n<!-- SESSION_ID_ONLY:END -->\nafter',
-    );
+    writeInjectBundle(fixture.pluginRoot, { core: 'visible\nafter', kbSession: 'owner={{SESSION_ID}}' });
 
     const result = runHook(
       SUBAGENT_START_HOOK,
@@ -285,12 +279,9 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('after');
   });
 
-  it('strips OWNER_ONLY blocks', () => {
+  it('omits the orchestrator fragment', () => {
     const fixture = createFixture();
-    writeInjectMd(
-      fixture.pluginRoot,
-      'base\n<!-- OWNER_ONLY:BEGIN -->\npropagate owner\n<!-- OWNER_ONLY:END -->\nrest',
-    );
+    writeInjectBundle(fixture.pluginRoot, { core: 'base\nrest', kbOrchestrator: 'propagate owner' });
 
     const result = runHook(
       SUBAGENT_START_HOOK,
@@ -306,7 +297,7 @@ describe('subagent-start.mjs', () => {
 
   it('replaces {{CORAL_CLI}} with bridge path', () => {
     const fixture = createFixture();
-    writeInjectMd(fixture.pluginRoot, 'CLI: {{CORAL_CLI}}');
+    writeInjectBundle(fixture.pluginRoot, 'CLI: {{CORAL_CLI}}');
 
     const result = runHook(SUBAGENT_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
@@ -319,7 +310,7 @@ describe('subagent-start.mjs', () => {
   it('renders equipped tools when the engine binary is installed', () => {
     const fixture = createFixture();
     seedCodebaseMemoryBinary(fixture.root);
-    writeInjectMd(fixture.pluginRoot, 'Tools\n\n{{EQUIPPED_TOOLS}}\n\nDone');
+    writeInjectBundle(fixture.pluginRoot, { tools: 'Tools\n\n{{EQUIPPED_TOOLS}}\n\nDone' });
 
     const result = runHook(
       SUBAGENT_START_HOOK,

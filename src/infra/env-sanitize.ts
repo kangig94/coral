@@ -167,7 +167,7 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
  *   right daemon rather than one the caller names.
  * - Daemon-scoped decisions that are nonetheless read per request from the
  *   controller env. `CORAL_KB_ENABLE` gates whether the daemon booted its KB
- *   runtime at all, yet `applyInjectMd` reads it off the request's coralEnv to
+ *   runtime at all, yet `applyInjectBundle` reads it off the request's coralEnv to
  *   decide KB injection — so it must reflect the daemon's boot state, not a value
  *   a caller forwards, or injection would disagree with the running KB daemon.
  *   (The parent daemon's KB boot gate and the CLI's re-enable reconcile read it

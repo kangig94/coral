@@ -125,7 +125,7 @@ Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's proces
 
 ## Config Files
 
-The installable plugin surface lives under `clients/` (the plugin root — it holds `.claude-plugin/plugin.json`, `.codex-plugin/`, `agents/`, `skills/`, `hooks/`, `bridge/`, `methods/`, and `INJECT.md`). The root `.claude-plugin/marketplace.json` stays at the repo root and points at `./clients` via a `git-subdir` source. At install time the `clients/` level is flattened away, so `${CLAUDE_PLUGIN_ROOT}` resolves to a directory that contains `bridge/`, `hooks/`, etc. directly.
+The installable plugin surface lives under `clients/` (the plugin root — it holds `.claude-plugin/plugin.json`, `.codex-plugin/`, `agents/`, `skills/`, `hooks/`, `bridge/`, `methods/`, and `inject/`). The root `.claude-plugin/marketplace.json` stays at the repo root and points at `./clients` via a `git-subdir` source. At install time the `clients/` level is flattened away, so `${CLAUDE_PLUGIN_ROOT}` resolves to a directory that contains `bridge/`, `hooks/`, etc. directly.
 
 ### `clients/.claude-plugin/plugin.json`
 

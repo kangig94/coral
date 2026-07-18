@@ -33,7 +33,7 @@ import { toProviderRequest } from '../provider-request.js';
 import { TerminalWriteError } from '../terminal/write-error.js';
 import { buildJobEventRefs } from '../refs.js';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
-import { applyInjectMd } from '../../providers/inject.js';
+import { applyInjectBundle } from '../../providers/inject.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -529,8 +529,8 @@ export class LaunchOrchestrator {
     pool: LaunchPool,
   ): Promise<void> {
     const runtime = this.createProviderRuntime(provider, request, sessionId, jobId, signal, pool);
-    // Provider-agnostic INJECT.md: merge into systemPrompt once for every adapter.
-    const requestWithInject = applyInjectMd(request, runtime);
+    // Provider-agnostic inject bundle: merge into systemPrompt once for every adapter.
+    const requestWithInject = applyInjectBundle(request, runtime);
     let latestContinuity: JobContinuitySnapshot | null = null;
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
     const consumed = await consumeJobStream({
@@ -691,7 +691,7 @@ export class LaunchOrchestrator {
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
       equippedTools: resolveEquippedTools(this.deps.runtime),
-      // Empty cwd is not a project root: treat it as absent so the INJECT.md
+      // Empty cwd is not a project root: treat it as absent so inject fragment
       // placeholders stay unsubstituted rather than resolving `local/` from ''.
       ...(request.cwd
         ? {

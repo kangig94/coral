@@ -18,9 +18,9 @@ for (const key of ['CORAL_KB_ENABLE', 'CORAL_KB_PATH', 'CORAL_KB_EXTRA_LANGS']) 
 }
 
 // `__PLUGIN_ROOT__` is an esbuild-injected build-time constant in production
-// bundles, where it resolves to the plugin root that holds bridge/, INJECT.md,
+// bundles, where it resolves to the plugin root that holds bridge/, inject/,
 // methods/, and agents/ — i.e. clients/ in this repo (installs flatten that
 // level away). Tests run from source so it is not naturally defined; point it
-// at clients/ so modules that reference it (INJECT.md resolver, claude broker
+// at clients/ so modules that reference it (inject bundle resolver, claude broker
 // entrypoint) find the real plugin surface.
 (globalThis as unknown as { __PLUGIN_ROOT__: string }).__PLUGIN_ROOT__ = join(process.cwd(), 'clients');

@@ -321,7 +321,7 @@ export interface ProviderRuntime {
   continuityBridge: ProviderContinuityBridge;
   /**
    * Resolved KB markdown root from `runtime.paths.coral.corpus.kbRoot`.
-   * Providers use this when rendering `INJECT.md` placeholders without
+   * Providers use this when rendering inject fragment placeholders without
    * computing KB paths themselves (which would create a `providers → kb`
    * domain leak and bypass the runtime-path ownership model).
    */

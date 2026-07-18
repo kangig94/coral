@@ -138,7 +138,7 @@ if (release) {
   // The shipped bundle (clients/bridge/) and the staging dir (clients/build/)
   // share one parent — the plugin root, clients/. So __PLUGIN_ROOT__
   // (resolve(bundleDir, '..') === clients/) is identical whether the staging or
-  // shipped bundle runs, keeping INJECT.md/methods/agents co-located with both.
+  // shipped bundle runs, keeping inject/methods/agents co-located with both.
   const bridgeDir = 'clients/bridge';
   mkdirSync(bridgeDir, { recursive: true });
   const bridgeFiles = ['coral-backend.cjs', 'coral-cli.cjs', 'coral-claude-appserver.cjs', 'manifest.json'];

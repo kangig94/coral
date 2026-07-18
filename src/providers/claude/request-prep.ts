@@ -138,9 +138,9 @@ function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' |
 /**
  * Assemble the Claude system/user payloads.
  *
- * `INJECT.md` is applied provider-agnostically by `applyInjectMd` at the job shell
+ * The inject bundle is applied provider-agnostically by `applyInjectBundle` at the job shell
  * boundary and arrives pre-merged into `request.systemPrompt` (guidelines first,
- * caller systemPrompt appended). This function must not re-resolve INJECT.md.
+ * caller systemPrompt appended). This function must not re-resolve the inject bundle.
  */
 export function buildPreparedClaudeRequest(
   request: Pick<ProviderRequest, 'prompt' | 'instruction' | 'systemPrompt' | 'coralEnv' | 'model' | 'effort'>,

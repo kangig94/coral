@@ -12,7 +12,7 @@ interface InjectEquippedTool {
   readonly guidance?: readonly string[];
 }
 
-export interface ResolveInjectMdOptions {
+export interface ResolveInjectBundleOptions {
   storage: Pick<StoragePort, 'readFileSync'>;
   ownerSessionId?: string;
   /** Resolved KB markdown root — caller passes from `runtime.paths.coral.corpus.kbRoot`. */
@@ -21,42 +21,51 @@ export interface ResolveInjectMdOptions {
   coralProjects?: string;
   /** Resolved project source — caller passes from `runtime.paths.projectSource(cwd)`; absent when no cwd. */
   projectSource?: string;
-  /** When false, strip the KB_ONLY block so no KB guidance reaches the provider. */
+  /** When false, omit all KB fragments so no KB guidance reaches the provider. */
   kbEnabled?: boolean;
   equippedTools?: readonly InjectEquippedTool[];
 }
 
-let injectMdCache: string | undefined;
+const BASE_INJECT_FRAGMENTS = ['core.md', 'tools.md'] as const;
+const KB_COMMON_INJECT_FRAGMENT = 'kb/common.md';
+const KB_SESSION_INJECT_FRAGMENT = 'kb/session.md';
+
+const injectFragmentCache = new Map<string, string>();
 
 function pluginRoot(): string {
   if (typeof __PLUGIN_ROOT__ !== 'string') {
-    throw new Error('Provider INJECT.md resolver requires __PLUGIN_ROOT__ to be defined at build time.');
+    throw new Error('Provider inject bundle resolver requires __PLUGIN_ROOT__ to be defined at build time.');
   }
   return __PLUGIN_ROOT__;
 }
 
-function getInjectMd(storage: Pick<StoragePort, 'readFileSync'>): string {
-  if (injectMdCache !== undefined) return injectMdCache;
+function readInjectFragment(storage: Pick<StoragePort, 'readFileSync'>, relativePath: string): string {
+  const cached = injectFragmentCache.get(relativePath);
+  if (cached !== undefined) return cached;
 
-  try {
-    injectMdCache = storage.readFileSync(join(pluginRoot(), 'INJECT.md'), 'utf-8');
-  } catch {
-    injectMdCache = '';
+  const fragment = storage.readFileSync(join(pluginRoot(), 'inject', relativePath), 'utf-8').trimEnd();
+  injectFragmentCache.set(relativePath, fragment);
+  return fragment;
+}
+
+function readInjectBundle(
+  storage: Pick<StoragePort, 'readFileSync'>,
+  options: { kbEnabled: boolean; hasSession: boolean },
+): string {
+  const paths: string[] = [...BASE_INJECT_FRAGMENTS];
+  if (options.kbEnabled) {
+    paths.push(KB_COMMON_INJECT_FRAGMENT);
+    if (options.hasSession) paths.push(KB_SESSION_INJECT_FRAGMENT);
   }
 
-  return injectMdCache;
-}
-
-function stripSessionIdOnly(text: string): string {
-  return text.replace(/<!-- SESSION_ID_ONLY:BEGIN -->[\s\S]*?<!-- SESSION_ID_ONLY:END -->\n?/g, '');
-}
-
-function stripOwnerOnly(text: string): string {
-  return text.replace(/<!-- OWNER_ONLY:BEGIN -->[\s\S]*?<!-- OWNER_ONLY:END -->\n?/g, '');
-}
-
-function stripKbOnly(text: string): string {
-  return text.replace(/<!-- KB_ONLY:BEGIN -->[\s\S]*?<!-- KB_ONLY:END -->\n?/g, '');
+  try {
+    return paths
+      .map((path) => readInjectFragment(storage, path))
+      .filter((fragment) => fragment.length > 0)
+      .join('\n\n');
+  } catch {
+    return '';
+  }
 }
 
 function renderEquippedTools(equippedTools: readonly InjectEquippedTool[] | undefined): string {
@@ -71,40 +80,42 @@ function renderEquippedTools(equippedTools: readonly InjectEquippedTool[] | unde
   return `Equipped tools (installed via /equip):\n${lines.join('\n')}`;
 }
 
-export function resolveInjectMd(opts: ResolveInjectMdOptions): string {
-  const md = getInjectMd(opts.storage);
-  if (!md) return '';
-
+export function resolveInjectBundle(opts: ResolveInjectBundleOptions): string {
   const { ownerSessionId, kbRoot, coralProjects, projectSource } = opts;
   const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
+  const bundle = readInjectBundle(opts.storage, {
+    kbEnabled: opts.kbEnabled !== false,
+    hasSession: normalizedOwner !== undefined,
+  });
+  if (!bundle) return '';
+
   const root = pluginRoot();
   const cliPath = `node "${join(root, 'bridge', 'coral-cli.cjs')}"`;
   // Trailing slash matches skill-vars / agent path-alias conventions (`CORAL_METHODS/HOW-…`).
   const methodsRoot = `${join(root, 'methods')}/`;
-  const base = opts.kbEnabled === false ? stripKbOnly(md) : md;
-  const rendered = base
-    .replaceAll('{{CORAL_KB}}', kbRoot)
-    .replaceAll('{{CORAL_CLI}}', cliPath)
-    .replaceAll('{{CORAL_METHODS}}', methodsRoot)
-    .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(opts.equippedTools))
-    .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
-    // Singular alias used by skills/agents; plural kept for older inject copy.
-    .replaceAll('{{CORAL_PROJECT}}', coralProjects ?? '{{CORAL_PROJECT}}')
-    .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
-    .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}');
-  const withoutOwner = stripOwnerOnly(rendered);
-  return normalizedOwner ? withoutOwner : stripSessionIdOnly(withoutOwner);
+  return (
+    bundle
+      .replaceAll('{{CORAL_KB}}', kbRoot)
+      .replaceAll('{{CORAL_CLI}}', cliPath)
+      .replaceAll('{{CORAL_METHODS}}', methodsRoot)
+      .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(opts.equippedTools))
+      .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
+      // Singular alias used by skills/agents; plural kept for older inject copy.
+      .replaceAll('{{CORAL_PROJECT}}', coralProjects ?? '{{CORAL_PROJECT}}')
+      .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
+      .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}')
+  );
 }
 
 /**
- * Provider-agnostic INJECT.md application.
+ * Provider-agnostic inject bundle application.
  *
  * Prepends rendered guidelines onto `request.systemPrompt` (append-merge when a
  * caller systemPrompt already exists — never overwrite). Empty inject is a no-op.
  * Applied once at the job shell boundary before any provider adapter runs so
  * Claude and Codex (and future providers) share the same injection policy.
  */
-export function applyInjectMd(
+export function applyInjectBundle(
   request: ProviderRequest,
   runtime: {
     storage: Pick<StoragePort, 'readFileSync'>;
@@ -114,7 +125,7 @@ export function applyInjectMd(
     equippedTools?: readonly InjectEquippedTool[];
   },
 ): ProviderRequest {
-  const injectMd = resolveInjectMd({
+  const injectBundle = resolveInjectBundle({
     storage: runtime.storage,
     ownerSessionId: request.coralEnv?.CORAL_OWNER,
     kbRoot: runtime.kbRoot,
@@ -123,10 +134,10 @@ export function applyInjectMd(
     ...(runtime.projectSource === undefined ? {} : { projectSource: runtime.projectSource }),
     ...(runtime.equippedTools === undefined ? {} : { equippedTools: runtime.equippedTools }),
   });
-  if (!injectMd) {
+  if (!injectBundle) {
     return request;
   }
 
-  const systemPrompt = request.systemPrompt ? `${injectMd}\n\n${request.systemPrompt}` : injectMd;
+  const systemPrompt = request.systemPrompt ? `${injectBundle}\n\n${request.systemPrompt}` : injectBundle;
   return { ...request, systemPrompt };
 }
