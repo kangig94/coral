@@ -87,6 +87,8 @@ describe('renderInject fragment composition', () => {
     expect(out).toContain('# Coral Guidelines');
     expect(out).toContain('# Tools');
     expect(out).toContain('invoke this CLI with sandbox bypass/escalation');
+    expect(out).toContain("Invoking a skill that uses Coral expresses the user's intent to run Coral");
+    expect(out).toContain('automatically use sandbox bypass/escalation');
     expect(out).toContain('# Knowledge Base');
     expect(out).toContain('## Wiki');
     expect(out).toContain('## Memo');
