@@ -77,7 +77,11 @@ function renderEquippedTools(equippedTools: readonly InjectEquippedTool[] | unde
     `- ${tool.id}: ${tool.summary}`,
     ...(tool.guidance ?? []).map((item) => `  - ${item}`),
   ]);
-  return `Equipped tools (installed via /equip):\n${lines.join('\n')}`;
+  return [
+    '⚠ Equipped tools are capabilities the user explicitly installed via /equip to improve your work.',
+    'You MUST use every applicable equipped tool as the highest-priority first pass, before built-in tools or manual alternatives:',
+    ...lines,
+  ].join('\n');
 }
 
 export function resolveInjectBundle(opts: ResolveInjectBundleOptions): string {

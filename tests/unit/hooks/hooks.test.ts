@@ -322,7 +322,12 @@ describe('subagent-start.mjs', () => {
     );
 
     const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('Equipped tools (installed via /equip):');
+    expect(output.hookSpecificOutput.additionalContext).toContain(
+      '⚠ Equipped tools are capabilities the user explicitly installed via /equip',
+    );
+    expect(output.hookSpecificOutput.additionalContext).toContain(
+      'MUST use every applicable equipped tool as the highest-priority first pass',
+    );
     expect(output.hookSpecificOutput.additionalContext).toContain('- codebase-memory:');
     expect(output.hookSpecificOutput.additionalContext).toContain('Use trace_path to inspect callers');
     expect(output.hookSpecificOutput.additionalContext).not.toContain('{{EQUIPPED_TOOLS}}');

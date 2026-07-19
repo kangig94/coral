@@ -141,8 +141,8 @@ describe('resolveInjectBundle', () => {
         },
       ],
     });
-    expect(result).toContain('Equipped tools (installed via /equip):');
-    expect(result).not.toContain('highest-priority');
+    expect(result).toContain('⚠ Equipped tools are capabilities the user explicitly installed via /equip');
+    expect(result).toContain('MUST use every applicable equipped tool as the highest-priority first pass');
     expect(result).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(result).toContain('  - Use search_graph before opening files.');
     expect(result).toContain('  - Manual grep/read is a fallback only.');
@@ -277,7 +277,8 @@ describe('applyInjectBundle', () => {
         ],
       }),
     );
-    expect(result.systemPrompt).toContain('Equipped tools (installed via /equip):');
+    expect(result.systemPrompt).toContain('⚠ Equipped tools are capabilities the user explicitly installed via /equip');
+    expect(result.systemPrompt).toContain('MUST use every applicable equipped tool as the highest-priority first pass');
     expect(result.systemPrompt).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(result.systemPrompt).toContain('  - Use search_graph before opening files.');
   });

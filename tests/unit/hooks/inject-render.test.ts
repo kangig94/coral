@@ -113,8 +113,8 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       ],
     });
 
-    expect(out).toContain('Equipped tools (installed via /equip):');
-    expect(out).not.toContain('highest-priority');
+    expect(out).toContain('⚠ Equipped tools are capabilities the user explicitly installed via /equip');
+    expect(out).toContain('MUST use every applicable equipped tool as the highest-priority first pass');
     expect(out).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(out).toContain('  - Use search_graph before opening files.');
     expect(out).toContain('  - Manual grep/read is a fallback only.');

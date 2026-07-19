@@ -46,7 +46,11 @@ function renderEquippedTools(equippedTools) {
   // Bare block — tools.md supplies the blank lines around the `{{EQUIPPED_TOOLS}}`
   // line (it sits on its own line, blank above and below), so the rendered Tools
   // section reads one blank line per gap.
-  return `Equipped tools (installed via /equip):\n${lines.join('\n')}`;
+  return [
+    '⚠ Equipped tools are capabilities the user explicitly installed via /equip to improve your work.',
+    'You MUST use every applicable equipped tool as the highest-priority first pass, before built-in tools or manual alternatives:',
+    ...lines,
+  ].join('\n');
 }
 
 export function renderInject({ pluginRoot, projectDir, sessionId, asOwner, kbEnabled = true, equippedTools }) {
