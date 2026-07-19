@@ -8,9 +8,9 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 
 | Event                      | Scripts                                                                                 | Purpose                                                                                                            |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `SessionStart` (`*`)       | `session-start.mjs`, `hud-auto-update.mjs`                                              | Inject `INJECT.md` (and spawn the backend daemon — absorbed from the former `backend-warm-start.mjs`), refresh HUD |
+| `SessionStart` (`*`)       | `session-start.mjs`, `hud-auto-update.mjs`                                              | Inject the shared fragment bundle (and spawn the backend daemon — absorbed from the former `backend-warm-start.mjs`), refresh HUD |
 | `SessionStart` (`compact`) | `kb-promote-gate.mjs`, `post-compact.mjs`                                               | Restore KB/promotion guidance and recover active jobs after compaction                                             |
-| `SubagentStart`            | `subagent-start.mjs`                                                                    | Inject subagent-safe `INJECT.md`                                                                                   |
+| `SubagentStart`            | `subagent-start.mjs`                                                                    | Inject the subagent-safe fragment bundle                                                                          |
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                                                             |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                                                             |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                                                         |
@@ -28,9 +28,19 @@ All shipped hook entrypoints run `exitIfChildProcess()` first and `exitIfWrongFl
 
 The HUD auto-update hook adds one more gate: it refreshes the HUD only when `buildFlavor() === 'prod'`, so dev registrations never overwrite the prod HUD.
 
-## INJECT.md (shared guidelines)
+## Inject bundle (shared guidelines)
 
-`INJECT.md` is the single source of behavioral guidelines, Tools section, path aliases, and optional KB guidance. Delivery differs by surface; the file does not.
+The `clients/inject/` directory separates behavioral guidelines, tools, and audience-scoped KB guidance:
+
+| Fragment | Role |
+| --- | --- |
+| `core.md` | Shared behavioral guidelines |
+| `tools.md` | CLI, path aliases, and the live equipped-tools placeholder |
+| `kb/common.md` | KB search and verification guidance |
+| `kb/orchestrator.md` | Top-level owner propagation, wiki maintenance, and source management |
+| `kb/session.md` | Session-scoped memo, promotion, update, and invalidation guidance |
+
+Renderers select fragments explicitly for each surface. There is no conditional-block markup inside the Markdown files.
 
 ### Delivery paths
 
@@ -38,9 +48,9 @@ The HUD auto-update hook adds one more gate: it refreshes the HUD only when `bui
 | --- | --- | --- |
 | Host Claude main session | `session-start.mjs` → `renderInject` (`asOwner: true`) | `SessionStart` |
 | Claude Code native subagent (`Agent` tool) | `subagent-start.mjs` → `renderInject` (`asOwner: false`) | `SubagentStart` |
-| Provider child (`coral-cli codex\|claude`, workflow atoms, discuss jobs) | `jobs/shell/launch.ts` → `applyInjectMd` → `resolveInjectMd` | Every job `executeJob` |
+| Provider child (`coral-cli codex\|claude`, workflow atoms, discuss jobs) | `jobs/shell/launch.ts` → `applyInjectBundle` → `resolveInjectBundle` | Every job `executeJob` |
 
-Provider children set `CORAL_CHILD=1`, so hooks self-exit and **do not** re-inject. Adapters must not re-resolve `INJECT.md`; they consume the pre-merged `request.systemPrompt` (Claude: `--append-system-prompt`; Codex: turn-text prefix — presentation order only, not a separate system channel).
+Provider children set `CORAL_CHILD=1`, so hooks self-exit and **do not** re-inject. Adapters must not re-resolve the bundle; they consume the pre-merged `request.systemPrompt` (Claude: `--append-system-prompt`; Codex: turn-text prefix — presentation order only, not a separate system channel).
 
 ### Placeholders
 
@@ -55,29 +65,31 @@ Provider children set `CORAL_CHILD=1`, so hooks self-exit and **do not** re-inje
 | `{{SESSION_ID}}` | Owner session id when known |
 | `{{EQUIPPED_TOOLS}}` | Live `/equip` tool list, or empty |
 
-Path aliases under `# Tools` teach agents to open `CORAL_METHODS/HOW-*.md` and `CORAL_PROJECT/plans/…` via the resolved absolute paths rather than inventing marketplace/cache paths.
+Path aliases in `tools.md` teach agents to open `CORAL_METHODS/HOW-*.md` and `CORAL_PROJECT/plans/…` via the resolved absolute paths rather than inventing marketplace/cache paths.
 
-### Conditional blocks
+### Fragment composition
 
-| Block | SessionStart (`asOwner: true`) | SubagentStart (`asOwner: false`) | Provider `resolveInjectMd` |
-| --- | --- | --- | --- |
-| `OWNER_ONLY` | kept | stripped | always stripped |
-| `SESSION_ID_ONLY` | kept when session id present | kept (same parent session) | kept only when a valid owner session id is present |
-| `KB_ONLY` | kept when KB enabled | kept when KB enabled | kept when KB enabled |
+| Fragment | SessionStart (`asOwner: true`) | SubagentStart (`asOwner: false`) | Owned provider | Anonymous provider | KB disabled |
+| --- | --- | --- | --- | --- | --- |
+| `core.md` | included | included | included | included | included |
+| `tools.md` | included | included | included | included | included |
+| `kb/common.md` | included | included | included | included | omitted |
+| `kb/orchestrator.md` | included | omitted | omitted | omitted | omitted |
+| `kb/session.md` | included | included | included | omitted | omitted |
 
-Owner-only content is orchestrator privilege (e.g. wiki maintenance, source import, `owner:` propagation). Subagents and provider children do not receive it.
+Orchestrator content is limited to the top-level host session. Provider children receive session guidance only when a valid `CORAL_OWNER` identifies the shared session.
 
 ### Equipped tools
 
-The `# Tools` section's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tools Coral ships `/equip` support for and that are currently installed. `clients/hooks/lib/equip-tools.mjs` holds the catalog; `resolveEquippedTools()` does a **live** filesystem probe under the engine data tree. Session-start and subagent-start both pass the live list; provider jobs pass the same list through `ProviderRuntime.equippedTools`. When the list is empty, the placeholder is stripped.
+The `tools.md` fragment's `{{EQUIPPED_TOOLS}}` placeholder lists agent-facing tools Coral ships `/equip` support for and that are currently installed. `clients/hooks/lib/equip-tools.mjs` holds the catalog; `resolveEquippedTools()` does a **live** filesystem probe under the engine data tree. Session-start and subagent-start both pass the live list; provider jobs pass the same list through `ProviderRuntime.equippedTools`. When the list is empty, the placeholder is stripped.
 
 ### Skill path vars
 
-`coral-skill-vars.mjs` still injects short `CORAL_PROJECT:` / `CORAL_METHODS:` lines on skill-related `UserPromptSubmit` / `PreToolUse(Skill)` for host skill protocols. Those aliases are also present in `INJECT.md` for every inject surface above, so provider children and Claude-native subagents do not depend on the skill hook.
+`coral-skill-vars.mjs` still injects short `CORAL_PROJECT:` / `CORAL_METHODS:` lines on skill-related `UserPromptSubmit` / `PreToolUse(Skill)` for host skill protocols. Those aliases are also present in `tools.md` for every inject surface above, so provider children and Claude-native subagents do not depend on the skill hook.
 
 ## SessionStart
 
-`clients/hooks/session-start.mjs` renders `INJECT.md` via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
+`clients/hooks/session-start.mjs` renders the fragment bundle via `renderInject({ asOwner: true })` and returns it through `hookSpecificOutput.additionalContext`.
 
 KB wake-up cache support uses hook-local path helpers only: `kbRuntimeDir(flavor)` resolves `~/.coral/data/kb` or `~/.coral/data-dev/kb`, while `storeDbPath(flavor)` resolves the separate backend store DB at `~/.coral/data/store/store.db` or `~/.coral/data-dev/store/store.db`. The snapshot reader opens `kb_corpus_state` read-only from the store DB path, or from the sibling store DB when given a KB runtime dir, and fails open with `null` on any error.
 
@@ -124,9 +136,9 @@ Two different “subagent” concepts must not be mixed:
 | Kind | What it is | Inject path |
 | --- | --- | --- |
 | Claude Code native subagent | Host `Agent` tool spawn | `SubagentStart` → `subagent-start.mjs` |
-| Coral provider agent | `coral-cli codex\|claude <agent>`, workflow atom, discuss worker | **No hooks** (`CORAL_CHILD=1`); `applyInjectMd` in the job shell |
+| Coral provider agent | `coral-cli codex\|claude <agent>`, workflow atom, discuss worker | **No hooks** (`CORAL_CHILD=1`); `applyInjectBundle` in the job shell |
 
-`clients/hooks/subagent-start.mjs` covers only the first kind. It calls `renderInject({ asOwner: false })`: same `INJECT.md` as the main session (guidelines, Tools, path aliases, equipped tools, KB guidance when enabled), but **OWNER_ONLY stripped**. `SESSION_ID_ONLY` is kept so subagents share the parent session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
+`clients/hooks/subagent-start.mjs` covers only the first kind. It calls `renderInject({ asOwner: false })`, which composes `core.md`, `tools.md`, `kb/common.md`, and `kb/session.md` when KB is enabled. It omits `kb/orchestrator.md`, while retaining session guidance because subagents share the parent session id for memo scope. `subagent-track.mjs` records live markers for Ralph / promote-gate deferral; it does not inject text.
 
 ## UserPromptSubmit and PreToolUse
 
@@ -134,7 +146,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
-- `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `INJECT.md` for all inject surfaces)
+- `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `inject/tools.md` for all inject surfaces)
 - `bash-rewrite.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
 
 ## Failure-aware KB Reminder

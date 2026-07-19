@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -16,17 +16,90 @@ afterEach(() => {
   }
 });
 
-function pluginRootWith(injectMd: string): string {
+type InjectFragments = {
+  core?: string;
+  tools?: string;
+  kbCommon?: string;
+  kbOrchestrator?: string;
+  kbSession?: string;
+};
+
+function pluginRootWith(input: string | InjectFragments): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-inject-render-'));
   createdRoots.push(root);
-  writeFileSync(join(root, 'INJECT.md'), injectMd, 'utf-8');
+  const fragments: InjectFragments = typeof input === 'string' ? { core: input } : input;
+  const injectRoot = join(root, 'inject');
+  mkdirSync(join(injectRoot, 'kb'), { recursive: true });
+  for (const [relativePath, content] of [
+    ['core.md', fragments.core],
+    ['tools.md', fragments.tools],
+    ['kb/common.md', fragments.kbCommon],
+    ['kb/orchestrator.md', fragments.kbOrchestrator],
+    ['kb/session.md', fragments.kbSession],
+  ] as const) {
+    writeFileSync(join(injectRoot, relativePath), content ?? '', 'utf-8');
+  }
   return root;
 }
+
+describe('renderInject fragment composition', () => {
+  it.each([
+    {
+      name: 'owner session',
+      asOwner: true,
+      kbEnabled: true,
+      expected: ['core', 'tools', 'kb common', 'orchestrator', 'session'],
+    },
+    {
+      name: 'subagent session',
+      asOwner: false,
+      kbEnabled: true,
+      expected: ['core', 'tools', 'kb common', 'session'],
+    },
+    { name: 'KB-disabled session', asOwner: true, kbEnabled: false, expected: ['core', 'tools'] },
+  ])('composes the $name fragment set in order', ({ asOwner, kbEnabled, expected }) => {
+    const out = renderInject({
+      pluginRoot: pluginRootWith({
+        core: 'core',
+        tools: 'tools',
+        kbCommon: 'kb common',
+        kbOrchestrator: 'orchestrator',
+        kbSession: 'session',
+      }),
+      projectDir: undefined,
+      sessionId: 's',
+      asOwner,
+      kbEnabled,
+    });
+
+    expect(out).toBe(expected.join('\n\n'));
+  });
+
+  it('renders the shipped fragment bundle without legacy control markers', () => {
+    const out = renderInject({
+      pluginRoot: join(process.cwd(), 'clients'),
+      projectDir: undefined,
+      sessionId: 's',
+      asOwner: true,
+      kbEnabled: true,
+    });
+
+    expect(out).toContain('# Coral Guidelines');
+    expect(out).toContain('# Tools');
+    expect(out).toContain('invoke this CLI with sandbox bypass/escalation');
+    expect(out).toContain("Invoking a skill that uses Coral expresses the user's intent to run Coral");
+    expect(out).toContain('automatically use sandbox bypass/escalation');
+    expect(out).toContain('# Knowledge Base');
+    expect(out).toContain('## Wiki');
+    expect(out).toContain('## Memo');
+    expect(out).not.toMatch(/<!-- (?:KB|OWNER|SESSION_ID)_ONLY:/u);
+  });
+});
 
 describe('renderInject {{EQUIPPED_TOOLS}}', () => {
   it('renders the equipped-tools block under the CLI line when tools are provided', () => {
     const out = renderInject({
-      pluginRoot: pluginRootWith(TEMPLATE),
+      pluginRoot: pluginRootWith({ tools: TEMPLATE }),
       projectDir: undefined,
       sessionId: 's',
       asOwner: true,
@@ -40,8 +113,8 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
       ],
     });
 
-    expect(out).toContain('mandatory first-pass capabilities');
-    expect(out).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(out).toContain('⚠ Equipped tools are capabilities the user explicitly installed via /equip');
+    expect(out).toContain('MUST use every applicable equipped tool as the highest-priority first pass');
     expect(out).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(out).toContain('  - Use search_graph before opening files.');
     expect(out).toContain('  - Manual grep/read is a fallback only.');
@@ -50,7 +123,7 @@ describe('renderInject {{EQUIPPED_TOOLS}}', () => {
 
   it('strips the placeholder when no tools are provided (subagents / empty snapshot)', () => {
     const out = renderInject({
-      pluginRoot: pluginRootWith(TEMPLATE),
+      pluginRoot: pluginRootWith({ tools: TEMPLATE }),
       projectDir: undefined,
       sessionId: 's',
       asOwner: false,

@@ -287,7 +287,25 @@ export function extractTempInputPaths(command: string): string[] {
   return [...command.matchAll(/coral-input-[0-9a-f]{12}\.txt/g)].map((match) => join(tmpdir(), match[0]));
 }
 
-export function writeInjectMd(pluginRoot: string, content: string): void {
-  mkdirSync(pluginRoot, { recursive: true });
-  writeFileSync(join(pluginRoot, 'INJECT.md'), content, 'utf-8');
+export type InjectBundleFixture = {
+  core?: string;
+  tools?: string;
+  kbCommon?: string;
+  kbOrchestrator?: string;
+  kbSession?: string;
+};
+
+export function writeInjectBundle(pluginRoot: string, input: string | InjectBundleFixture): void {
+  const fragments: InjectBundleFixture = typeof input === 'string' ? { core: input } : input;
+  const injectRoot = join(pluginRoot, 'inject');
+  mkdirSync(join(injectRoot, 'kb'), { recursive: true });
+  for (const [relativePath, content] of [
+    ['core.md', fragments.core],
+    ['tools.md', fragments.tools],
+    ['kb/common.md', fragments.kbCommon],
+    ['kb/orchestrator.md', fragments.kbOrchestrator],
+    ['kb/session.md', fragments.kbSession],
+  ] as const) {
+    writeFileSync(join(injectRoot, relativePath), content ?? '', 'utf-8');
+  }
 }

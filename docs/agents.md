@@ -35,7 +35,7 @@ Codex delegation is a normal CLI-to-backend provider launch.
 
 These agents use Claude Code's native tools. Read-only agents declare `disallowedTools`; execution-oriented agents do not.
 
-When spawned via Claude's `Agent` tool inside a host session, they receive `INJECT.md` through the `SubagentStart` hook (`asOwner: false` — owner-only blocks stripped). When launched as provider jobs (`coral-cli … <agent>` or workflow), they receive the same file via `applyInjectMd` (no hooks). See [Hooks — INJECT.md](./hooks.md#injectmd-shared-guidelines).
+When spawned via Claude's `Agent` tool inside a host session, they receive the subagent-scoped inject bundle through the `SubagentStart` hook (`asOwner: false` — orchestrator fragment omitted). When launched as provider jobs (`coral-cli … <agent>` or workflow), they receive the provider-scoped bundle via `applyInjectBundle` (no hooks). See [Hooks — Inject bundle](./hooks.md#inject-bundle-shared-guidelines).
 
 Agent bodies may say `read CORAL_METHODS/HOW-….md`. That alias resolves from inject path aliases (`{{CORAL_METHODS}}`); agents do not hardcode marketplace install paths.
 
@@ -62,7 +62,7 @@ coral-cli wait jobs <job-id...> --embed
 Behavior:
 
 1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `clients/agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` may set default model).
-2. `jobs/shell/launch.ts` `executeJob` applies provider-agnostic `INJECT.md` via `applyInjectMd` (pre-merged into `systemPrompt`; never overwrites an existing caller systemPrompt — prepend/merge). Hooks do not run (`CORAL_CHILD=1`).
+2. `jobs/shell/launch.ts` `executeJob` applies the provider-agnostic inject bundle via `applyInjectBundle` (pre-merged into `systemPrompt`; never overwrites an existing caller systemPrompt — prepend/merge). Hooks do not run (`CORAL_CHILD=1`).
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)

@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as KbPathsModule from '#src/kb/paths.js';
 
-let mockInjectMd = '';
-let mockInjectMdError: Error | null = null;
+let mockCoreFragment = '';
+let mockKbCommon = '';
+let mockKbSession = '';
+let mockFragmentError: Error | null = null;
 
 const mockStorage = {
   readFileSync: vi.fn((path: string, _encoding: 'utf-8') => {
-    if (path.endsWith('INJECT.md')) {
-      if (mockInjectMdError) throw mockInjectMdError;
-      return mockInjectMd;
-    }
+    if (mockFragmentError) throw mockFragmentError;
+    if (path.endsWith('/inject/core.md')) return mockCoreFragment;
+    if (path.endsWith('/inject/tools.md')) return '';
+    if (path.endsWith('/inject/kb/common.md')) return mockKbCommon;
+    if (path.endsWith('/inject/kb/session.md')) return mockKbSession;
     throw new Error(`unexpected read: ${path}`);
   }),
 };
@@ -23,89 +26,55 @@ vi.mock('#src/kb/paths.js', async () => {
 });
 
 beforeEach(() => {
-  mockInjectMd = '';
-  mockInjectMdError = null;
+  mockCoreFragment = '';
+  mockKbCommon = '';
+  mockKbSession = '';
+  mockFragmentError = null;
+  mockStorage.readFileSync.mockClear();
   // Source modules use the esbuild-injected bare identifier `__PLUGIN_ROOT__`.
   // Vitest has no esbuild define for it — mirror the setup global onto the free name.
   vi.stubGlobal('__PLUGIN_ROOT__', process.cwd());
-  // Reset the module-level injectMdCache by re-importing
+  // Reset the module-level fragment cache by re-importing.
   vi.resetModules();
 });
 
 async function loadResolve() {
   const mod = await import('#src/providers/inject.js');
-  return mod.resolveInjectMd;
+  return mod.resolveInjectBundle;
 }
 
 async function loadApply() {
   const mod = await import('#src/providers/inject.js');
-  return mod.applyInjectMd;
+  return mod.applyInjectBundle;
 }
 
-describe('resolveInjectMd', () => {
-  it('always strips OWNER_ONLY blocks even with valid owner', async () => {
-    mockInjectMd = 'base\n<!-- OWNER_ONLY:BEGIN -->\nowner only\n<!-- OWNER_ONLY:END -->\nrest';
-    const resolveInjectMd = await loadResolve();
+describe('resolveInjectBundle', () => {
+  it.each([
+    {
+      name: 'owned provider',
+      options: { ownerSessionId: 'valid-session-123' },
+      included: ['base', 'kb common', 'session content'],
+    },
+    { name: 'anonymous provider', options: {}, included: ['base', 'kb common'] },
+    { name: 'KB-disabled provider', options: { kbEnabled: false }, included: ['base'] },
+  ])('composes the $name fragment set', async ({ options, included }) => {
+    mockCoreFragment = 'base';
+    mockKbCommon = 'kb common';
+    mockKbSession = 'session content';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({
-      storage: mockStorage,
-      ownerSessionId: 'valid-session-123',
-      kbRoot: '/mock/kb',
-    });
-    expect(result).toContain('base');
-    expect(result).not.toContain('owner only');
-    expect(result).toContain('rest');
-  });
-
-  it('keeps SESSION_ID_ONLY blocks when owner is valid', async () => {
-    mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
-    const resolveInjectMd = await loadResolve();
-
-    const result = resolveInjectMd({
-      storage: mockStorage,
-      ownerSessionId: 'valid-session-123',
-      kbRoot: '/mock/kb',
-    });
-    expect(result).toContain('session content');
-  });
-
-  it('strips SESSION_ID_ONLY blocks when no owner', async () => {
-    mockInjectMd = 'base\n<!-- SESSION_ID_ONLY:BEGIN -->\nsession content\n<!-- SESSION_ID_ONLY:END -->\nrest';
-    const resolveInjectMd = await loadResolve();
-
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
-    expect(result).toContain('base');
-    expect(result).not.toContain('session content');
-    expect(result).toContain('rest');
-  });
-
-  it('strips both OWNER_ONLY and SESSION_ID_ONLY when no owner', async () => {
-    mockInjectMd = [
-      'top',
-      '<!-- OWNER_ONLY:BEGIN -->',
-      'owner stuff',
-      '<!-- OWNER_ONLY:END -->',
-      'middle',
-      '<!-- SESSION_ID_ONLY:BEGIN -->',
-      'session stuff',
-      '<!-- SESSION_ID_ONLY:END -->',
-      'bottom',
-    ].join('\n');
-    const resolveInjectMd = await loadResolve();
-
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
-    expect(result).toContain('top');
-    expect(result).not.toContain('owner stuff');
-    expect(result).toContain('middle');
-    expect(result).not.toContain('session stuff');
-    expect(result).toContain('bottom');
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb', ...options });
+    for (const fragment of included) expect(result).toContain(fragment);
+    for (const fragment of ['base', 'kb common', 'session content'].filter((item) => !included.includes(item))) {
+      expect(result).not.toContain(fragment);
+    }
   });
 
   it('substitutes {{SESSION_ID}} with owner value', async () => {
-    mockInjectMd = 'owner: {{SESSION_ID}}';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'owner: {{SESSION_ID}}';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({
+    const result = resolveInjectBundle({
       storage: mockStorage,
       ownerSessionId: 'my-session',
       kbRoot: '/mock/kb',
@@ -113,11 +82,11 @@ describe('resolveInjectMd', () => {
     expect(result).toContain('owner: my-session');
   });
 
-  it('returns empty string when INJECT.md is missing', async () => {
-    mockInjectMdError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
-    const resolveInjectMd = await loadResolve();
+  it('returns empty string when an inject fragment is missing', async () => {
+    mockFragmentError = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({
+    const result = resolveInjectBundle({
       storage: mockStorage,
       ownerSessionId: 'sess',
       kbRoot: '/mock/kb',
@@ -126,10 +95,10 @@ describe('resolveInjectMd', () => {
   });
 
   it('substitutes {{CORAL_PROJECTS}} and {{PROJECT_SOURCE}} from caller-resolved values', async () => {
-    mockInjectMd = 'projects: {{CORAL_PROJECTS}}\nsource: {{PROJECT_SOURCE}}';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'projects: {{CORAL_PROJECTS}}\nsource: {{PROJECT_SOURCE}}';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({
+    const result = resolveInjectBundle({
       storage: mockStorage,
       kbRoot: '/mock/kb',
       coralProjects: '/mock/projects/acme-repo',
@@ -140,28 +109,28 @@ describe('resolveInjectMd', () => {
   });
 
   it('leaves {{CORAL_PROJECTS}} and {{PROJECT_SOURCE}} placeholders when caller omits them', async () => {
-    mockInjectMd = 'projects: {{CORAL_PROJECTS}}\nsource: {{PROJECT_SOURCE}}';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'projects: {{CORAL_PROJECTS}}\nsource: {{PROJECT_SOURCE}}';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toContain('projects: {{CORAL_PROJECTS}}');
     expect(result).toContain('source: {{PROJECT_SOURCE}}');
   });
 
   it('strips the {{EQUIPPED_TOOLS}} placeholder when caller omits equipped tools', async () => {
-    mockInjectMd = 'CLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\nafter';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'CLI: `{{CORAL_CLI}}`{{EQUIPPED_TOOLS}}\nafter';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).not.toContain('{{EQUIPPED_TOOLS}}');
     expect(result).toContain('after');
   });
 
   it('renders equipped tools when caller provides them', async () => {
-    mockInjectMd = 'CLI: `{{CORAL_CLI}}`\n\n{{EQUIPPED_TOOLS}}\n\nafter';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'CLI: `{{CORAL_CLI}}`\n\n{{EQUIPPED_TOOLS}}\n\nafter';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({
+    const result = resolveInjectBundle({
       storage: mockStorage,
       kbRoot: '/mock/kb',
       equippedTools: [
@@ -172,8 +141,8 @@ describe('resolveInjectMd', () => {
         },
       ],
     });
-    expect(result).toContain('mandatory first-pass capabilities');
-    expect(result).toContain('Use the live MCP tools in the mcp__codebase_memory_mcp namespace');
+    expect(result).toContain('⚠ Equipped tools are capabilities the user explicitly installed via /equip');
+    expect(result).toContain('MUST use every applicable equipped tool as the highest-priority first pass');
     expect(result).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(result).toContain('  - Use search_graph before opening files.');
     expect(result).toContain('  - Manual grep/read is a fallback only.');
@@ -181,48 +150,51 @@ describe('resolveInjectMd', () => {
     expect(result).toContain('after');
   });
 
-  it('strips the KB_ONLY block when kbEnabled is false', async () => {
-    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
-    const resolveInjectMd = await loadResolve();
+  it('omits KB fragments when kbEnabled is false', async () => {
+    mockCoreFragment = 'top\nbottom';
+    mockKbCommon = 'kb stuff';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb', kbEnabled: false });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb', kbEnabled: false });
     expect(result).toContain('top');
     expect(result).not.toContain('kb stuff');
     expect(result).toContain('bottom');
   });
 
-  it('keeps KB_ONLY content when kbEnabled is true', async () => {
-    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
-    const resolveInjectMd = await loadResolve();
+  it('includes KB fragments when kbEnabled is true', async () => {
+    mockCoreFragment = 'top\nbottom';
+    mockKbCommon = 'kb stuff';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb', kbEnabled: true });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb', kbEnabled: true });
     expect(result).toContain('top');
     expect(result).toContain('kb stuff');
     expect(result).toContain('bottom');
   });
 
-  it('keeps KB_ONLY content when kbEnabled is omitted (unset inherits enabled)', async () => {
-    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
-    const resolveInjectMd = await loadResolve();
+  it('includes KB fragments when kbEnabled is omitted (unset inherits enabled)', async () => {
+    mockCoreFragment = 'top\nbottom';
+    mockKbCommon = 'kb stuff';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toContain('kb stuff');
   });
 
   it('substitutes {{CORAL_METHODS}} from plugin root with a trailing slash', async () => {
-    mockInjectMd = 'methods: {{CORAL_METHODS}}';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'methods: {{CORAL_METHODS}}';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toMatch(/methods: .+\/methods\/$/);
     expect(result).not.toContain('{{CORAL_METHODS}}');
   });
 
   it('substitutes {{CORAL_PROJECT}} from caller-resolved project data dir', async () => {
-    mockInjectMd = 'project: {{CORAL_PROJECT}}\nlegacy: {{CORAL_PROJECTS}}';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'project: {{CORAL_PROJECT}}\nlegacy: {{CORAL_PROJECTS}}';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({
+    const result = resolveInjectBundle({
       storage: mockStorage,
       kbRoot: '/mock/kb',
       coralProjects: '/mock/projects/acme-repo',
@@ -232,15 +204,15 @@ describe('resolveInjectMd', () => {
   });
 
   it('leaves {{CORAL_PROJECT}} placeholder when caller omits project data dir', async () => {
-    mockInjectMd = 'project: {{CORAL_PROJECT}}';
-    const resolveInjectMd = await loadResolve();
+    mockCoreFragment = 'project: {{CORAL_PROJECT}}';
+    const resolveInjectBundle = await loadResolve();
 
-    const result = resolveInjectMd({ storage: mockStorage, kbRoot: '/mock/kb' });
+    const result = resolveInjectBundle({ storage: mockStorage, kbRoot: '/mock/kb' });
     expect(result).toContain('project: {{CORAL_PROJECT}}');
   });
 });
 
-describe('applyInjectMd', () => {
+describe('applyInjectBundle', () => {
   const baseRequest = {
     action: 'exec' as const,
     sessionId: 's-1',
@@ -258,44 +230,42 @@ describe('applyInjectMd', () => {
     };
   }
 
-  it('is a no-op when INJECT.md is empty/missing', async () => {
-    mockInjectMd = '';
-    const applyInjectMd = await loadApply();
+  it('is a no-op when the inject bundle is empty or missing', async () => {
+    mockCoreFragment = '';
+    const applyInjectBundle = await loadApply();
     const request = { ...baseRequest, systemPrompt: 'caller' };
-    expect(applyInjectMd(request, runtime())).toBe(request);
+    expect(applyInjectBundle(request, runtime())).toBe(request);
   });
 
   it('sets systemPrompt to inject when caller has none', async () => {
-    mockInjectMd = 'guidelines';
-    const applyInjectMd = await loadApply();
-    const result = applyInjectMd(baseRequest, runtime());
+    mockCoreFragment = 'guidelines';
+    const applyInjectBundle = await loadApply();
+    const result = applyInjectBundle(baseRequest, runtime());
     expect(result.systemPrompt).toBe('guidelines');
     expect(result.prompt).toBe('task');
   });
 
   it('prepends inject and preserves caller systemPrompt (append-merge, never overwrite)', async () => {
-    mockInjectMd = 'guidelines';
-    const applyInjectMd = await loadApply();
-    const result = applyInjectMd({ ...baseRequest, systemPrompt: 'caller system' }, runtime());
+    mockCoreFragment = 'guidelines';
+    const applyInjectBundle = await loadApply();
+    const result = applyInjectBundle({ ...baseRequest, systemPrompt: 'caller system' }, runtime());
     expect(result.systemPrompt).toBe('guidelines\n\ncaller system');
   });
 
-  it('omits KB_ONLY when coralEnv disables KB', async () => {
-    mockInjectMd = 'top\n<!-- KB_ONLY:BEGIN -->\nkb stuff\n<!-- KB_ONLY:END -->\nbottom';
-    const applyInjectMd = await loadApply();
-    const result = applyInjectMd(
-      { ...baseRequest, coralEnv: { CORAL_KB_ENABLE: '0' } },
-      runtime(),
-    );
+  it('omits KB fragments when coralEnv disables KB', async () => {
+    mockCoreFragment = 'top\nbottom';
+    mockKbCommon = 'kb stuff';
+    const applyInjectBundle = await loadApply();
+    const result = applyInjectBundle({ ...baseRequest, coralEnv: { CORAL_KB_ENABLE: '0' } }, runtime());
     expect(result.systemPrompt).toContain('top');
     expect(result.systemPrompt).not.toContain('kb stuff');
     expect(result.systemPrompt).toContain('bottom');
   });
 
   it('includes equipped tools when runtime supplies them', async () => {
-    mockInjectMd = 'CLI\n{{EQUIPPED_TOOLS}}\nafter';
-    const applyInjectMd = await loadApply();
-    const result = applyInjectMd(
+    mockCoreFragment = 'CLI\n{{EQUIPPED_TOOLS}}\nafter';
+    const applyInjectBundle = await loadApply();
+    const result = applyInjectBundle(
       baseRequest,
       runtime({
         equippedTools: [
@@ -307,7 +277,8 @@ describe('applyInjectMd', () => {
         ],
       }),
     );
-    expect(result.systemPrompt).toContain('mandatory first-pass capabilities');
+    expect(result.systemPrompt).toContain('⚠ Equipped tools are capabilities the user explicitly installed via /equip');
+    expect(result.systemPrompt).toContain('MUST use every applicable equipped tool as the highest-priority first pass');
     expect(result.systemPrompt).toContain('- codebase-memory: mandatory first stop for any code work.');
     expect(result.systemPrompt).toContain('  - Use search_graph before opening files.');
   });

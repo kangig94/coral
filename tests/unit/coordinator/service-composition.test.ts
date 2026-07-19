@@ -679,7 +679,7 @@ describe('ExecutionService', () => {
           CORAL_CLAUDE_MODEL_CAP: 'opus',
         },
       });
-      // applyInjectMd prepend-merges INJECT.md ahead of the persisted systemPrompt.
+      // applyInjectBundle prepend-merges the inject bundle ahead of the persisted systemPrompt.
       expect(request.systemPrompt).toContain('Persisted system prompt');
       expect(request.systemPrompt).toContain('# Coral Guidelines');
       expect(request.systemPrompt?.endsWith('Persisted system prompt')).toBe(true);

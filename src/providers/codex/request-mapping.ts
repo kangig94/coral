@@ -36,8 +36,8 @@ type CodexContinuityReadOptions = {
  * Assemble the single Codex turn text.
  *
  * Order is presentation-only (Codex has no separate system channel): guidelines /
- * systemPrompt first, then agent instruction, then the user task. `INJECT.md` is
- * pre-merged into `systemPrompt` by `applyInjectMd` at the job shell boundary.
+ * systemPrompt first, then agent instruction, then the user task. The inject bundle is
+ * pre-merged into `systemPrompt` by `applyInjectBundle` at the job shell boundary.
  */
 export function buildCodexPrompt(
   request: Pick<ProviderRequest, 'action' | 'instruction' | 'systemPrompt' | 'prompt'>,
