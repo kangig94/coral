@@ -5,7 +5,7 @@ import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus } from '../records.js';
-import type { ProviderCredentialSet } from '../../runtime/provider-credentials.js';
+import type { ProviderCredentialSet } from '../../infra/provider-credential-sources.js';
 
 type InitJobBase = {
   jobId: string;

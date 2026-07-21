@@ -6,7 +6,7 @@ import type {
   ProviderPreflightRuntime,
   ProviderSpec,
 } from '../../providers/contract.js';
-import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
+import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
 import { buildExactProviderEnv } from '../../providers/execution-context.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';

@@ -1,6 +1,6 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';

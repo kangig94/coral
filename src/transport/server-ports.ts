@@ -5,7 +5,7 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
-import type { AmbientClaudeLocationPort, ProviderCredentialSet } from '../runtime/provider-credentials.js';
+import type { AmbientClaudeLocationPort, ProviderCredentialSet } from '../infra/provider-credential-sources.js';
 
 interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';

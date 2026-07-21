@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, normalize } from 'node:path';
 import { z } from 'zod';
-import type { StoragePort } from '../infra/port-types.js';
+import type { StoragePort } from './port-types.js';
 
-/** Account authority captured at an invocation boundary and bound to provider execution. */
+/** Current profile-routing input captured at an invocation boundary; it is not verified account identity. */
 
 const absolutePathSchema = z
   .string()

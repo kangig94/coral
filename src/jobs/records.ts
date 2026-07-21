@@ -7,7 +7,7 @@ import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
 import type { JobProgressTiming } from './event-bodies.js';
-import type { ProviderCredentialSet } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
 
 /**
  * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +

@@ -6,7 +6,7 @@ import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../
 import {
   providerCredentialSourceRefSchema,
   type ProviderCredentialSourceRef,
-} from '../runtime/provider-credentials.js';
+} from '../infra/provider-credential-sources.js';
 import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);

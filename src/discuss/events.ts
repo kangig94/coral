@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { providerCredentialSetSchema, type ProviderCredentialSet } from '../runtime/provider-credentials.js';
+import { providerCredentialSetSchema, type ProviderCredentialSet } from '../infra/provider-credential-sources.js';
 
 import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 

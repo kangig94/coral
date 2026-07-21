@@ -3,7 +3,7 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { ProviderDefinition } from '../providers/define.js';
+import type { ProviderDefinition } from '../providers/registry.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import type { StoreReadContext } from '../store/body-codec.js';

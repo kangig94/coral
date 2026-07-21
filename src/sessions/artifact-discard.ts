@@ -1,5 +1,5 @@
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { ProviderDefinition } from '../providers/define.js';
+import type { ProviderDefinition } from '../providers/registry.js';
 import type { SessionEntry } from './entry.js';
 
 /**

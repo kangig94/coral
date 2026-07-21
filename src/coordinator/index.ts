@@ -227,6 +227,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   }
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
+  (registerBuiltInProvidersFn ?? registerBuiltInProviders)(providerRegistry);
   assertCurrentStoreFormat(
     reducers,
     {
@@ -239,8 +241,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       expansionManifest: declarativeEngineManifestSchema,
     },
     [corpusAuthorityBaselineDdl],
+    providerRegistry.sealPersistedBindingCodecComponents(),
   );
-  const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
   const eventBus = coreOptions.eventBus ?? new TypedEventBus();
   // Spec §7.1: every Journal event type can be a causeRef target. Verify
   // describer coverage at boot so missing describers fail loudly instead of
@@ -547,7 +549,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
       return recoveredDiscussResumes;
     },
-    registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
+    registerBuiltInProvidersFn: () => {},
   });
   const coordinatorCore = core;
   // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.

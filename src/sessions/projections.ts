@@ -2,7 +2,7 @@ import { sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
-import { sameProviderCredentialSource } from '../runtime/provider-credentials.js';
+import { sameProviderCredentialSource } from '../infra/provider-credential-sources.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {

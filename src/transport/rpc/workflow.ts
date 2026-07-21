@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { workflowCommandSchema } from '../../workflow/input.js';
 import { coralEnvForwardSchema } from '../../infra/env-sanitize.js';
 import { networkEnvSchema } from '../../infra/network-env.js';
-import { providerCredentialSetInputSchema } from '../../runtime/provider-credentials.js';
+import { providerCredentialSetInputSchema } from '../../infra/provider-credential-sources.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const modelNameSchema = z

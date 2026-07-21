@@ -16,7 +16,7 @@ import { buildInvocationContext, buildInvocationContextFromQuery } from './invoc
 import {
   canonicalizeProviderCredentialSet,
   providerCredentialSetInputSchema,
-} from '../runtime/provider-credentials.js';
+} from '../infra/provider-credential-sources.js';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 

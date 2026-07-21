@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { managed } from '#src/providers/capability.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
@@ -14,6 +14,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 async function* noopProvider() {}
@@ -85,6 +86,7 @@ function createHarness(): {
   const discardCalls: Array<readonly string[]> = [];
   providerRegistry.register(
     defineProvider({ name: 'claude', run: noopProvider })
+      .binding(fixtureProviderBindingCodec('claude'))
       .artifacts(
         managed({
           discardArtifacts: async ({ handles }) => {

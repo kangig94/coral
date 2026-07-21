@@ -3,7 +3,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { AbortError } from '../../runtime/abort.js';
 import type { IdPort } from '../../runtime/ports.js';
-import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
+import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
 import type { EffortLevel, ProviderServerLease, ProviderServerSpec } from '../contract.js';
 import { deleteClaudeJsonlArtifactsForConversation } from './artifacts.js';
 import {

@@ -87,7 +87,8 @@ vi.mock('node:os', async () => {
   };
 });
 
-vi.mock('#src/providers/registry.js', () => ({
+vi.mock('#src/providers/registry.js', async () => ({
+  ...(await vi.importActual('#src/providers/registry.js')),
   getNewProvider: mockState.getNewProvider,
 }));
 

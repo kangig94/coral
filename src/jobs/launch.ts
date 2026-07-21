@@ -4,7 +4,7 @@ import { providerInstructionSchema, type ProviderInstruction } from '../provider
 import { continuityRefSchema } from '../sessions/continuity.js';
 import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
 import type { LaunchPool } from './contracts/admission.js';
-import { providerCredentialSetSchema } from '../runtime/provider-credentials.js';
+import { providerCredentialSetSchema } from '../infra/provider-credential-sources.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);

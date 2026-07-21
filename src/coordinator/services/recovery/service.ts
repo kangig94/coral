@@ -36,7 +36,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type {
   ProviderCredentialSourceAvailabilityPort,
   ProviderCredentialSourceRef,
-} from '../../../runtime/provider-credentials.js';
+} from '../../../infra/provider-credential-sources.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';

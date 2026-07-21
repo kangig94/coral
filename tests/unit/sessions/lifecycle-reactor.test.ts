@@ -16,10 +16,11 @@ import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registr
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import {
@@ -93,6 +94,7 @@ function createHarness(
   const discardCalls: Array<readonly string[]> = [];
   providerRegistry.register(
     defineProvider({ name: 'codex', run: noopProvider })
+      .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(
         artifactMode === 'managed'
           ? managed({

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { none } from '#src/providers/capability.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
@@ -9,6 +9,7 @@ import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registr
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-project',
@@ -56,6 +57,7 @@ describe('JobLaunchService continuation lease admission', () => {
       launchProviderJob: vi.fn(),
     };
     const provider = defineProvider({ name: 'codex', run: async function* noopProvider() {} })
+      .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('test provider has no artifacts'))
       .build();
     const service = new JobLaunchService({

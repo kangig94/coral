@@ -14,7 +14,7 @@ import type {
   TranscriptEntry,
   ResolveResult,
 } from './session-types.js';
-import type { ProviderCredentialSet } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
 
 const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;

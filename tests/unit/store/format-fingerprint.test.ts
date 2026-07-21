@@ -21,8 +21,9 @@ import { composeReducers } from '#src/store/reducers.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { workflowPlanSchema } from '#src/workflow/plan.js';
 import { corpusAuthorityBaselineDdl } from '#src/kb/corpus/rescan/authority-baseline.js';
+import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 
-const CURRENT_CODEC_NAMES = [
+const CURRENT_BOUNDARY_CODEC_NAMES = [
   'store.events.body',
   'store.events.refs',
   'store.expansion_manifest_catalog.manifest',
@@ -32,6 +33,12 @@ const CURRENT_CODEC_NAMES = [
   'store.projection_jobs.terminal',
   'store.projection_sessions.entry',
   'store.projection_workflows.plan',
+] as const;
+
+const CURRENT_COMPONENT_CODEC_NAMES = [
+  'provider.binding-envelope',
+  'provider.claude.binding',
+  'provider.codex.binding',
 ] as const;
 
 function ddlFor(...codecNames: readonly string[]): string {
@@ -51,11 +58,18 @@ const currentCodecSchemas = {
 describe('StoreFormatFingerprint', () => {
   it('describes every current persisted JSON boundary and every Journal event codec', () => {
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const format = createCurrentStoreFormat(reducers, currentCodecSchemas, [corpusAuthorityBaselineDdl]);
+    const format = createCurrentStoreFormat(
+      reducers,
+      currentCodecSchemas,
+      [corpusAuthorityBaselineDdl],
+      createBuiltInProviderRegistry().sealPersistedBindingCodecComponents(),
+    );
 
     expect(format.fingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(format.manifest.codecs.map((entry) => entry.name)).toEqual(CURRENT_CODEC_NAMES);
-    expect(persistedCodecNamesFromDdl(format.manifest.ddl)).toEqual(CURRENT_CODEC_NAMES);
+    expect(format.manifest.codecs.map((entry) => entry.name)).toEqual(
+      [...CURRENT_BOUNDARY_CODEC_NAMES, ...CURRENT_COMPONENT_CODEC_NAMES].sort(),
+    );
+    expect(persistedCodecNamesFromDdl(format.manifest.ddl)).toEqual(CURRENT_BOUNDARY_CODEC_NAMES);
     expect(format.manifest.ddl).toContain('-- @persisted-ddl kb.corpus.authority-baseline');
     expect(format.manifest.ddl).toContain('CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_records');
 
@@ -86,6 +100,18 @@ describe('StoreFormatFingerprint', () => {
 
     const ddl = ddlFor('store.value');
     expect(describeStoreFormat(ddl, before).fingerprint).not.toBe(describeStoreFormat(ddl, after).fingerprint);
+  });
+
+  it('includes nested persisted codec components without treating them as SQL boundaries', () => {
+    const first = new PersistedCodecRegistry();
+    first.registerZodComponent('provider.fixture.binding', z.object({ profile: z.string() }).strict());
+    const second = new PersistedCodecRegistry();
+    second.registerZodComponent('provider.fixture.binding', z.object({ profile: z.number() }).strict());
+
+    expect(describeStoreFormat('', first).fingerprint).not.toBe(describeStoreFormat('', second).fingerprint);
+    expect(describeStoreFormat('', first).manifest.codecs).toEqual([
+      expect.objectContaining({ name: 'provider.fixture.binding', persistence: 'component' }),
+    ]);
   });
 
   it('requires and fingerprints stable identities for semantic effects', () => {

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { discussBidSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
 import { coralEnvForwardSchema } from '../../infra/env-sanitize.js';
 import { networkEnvSchema } from '../../infra/network-env.js';
-import { providerCredentialSetInputSchema } from '../../runtime/provider-credentials.js';
+import { providerCredentialSetInputSchema } from '../../infra/provider-credential-sources.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const sessionIdSchema = z.string().min(1, 'Session ID is required');

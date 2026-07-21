@@ -13,8 +13,9 @@ import type {
   ProviderServerSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
-import { defineProvider, type ProviderDefinition } from '#src/providers/define.js';
+import { defineProvider, type ProviderDefinition } from '#src/providers/registry.js';
 import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 
 type TestProviderInvocation = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
 
@@ -134,6 +135,7 @@ export function defineFakeProvider(
     ...(appServer ? { appServer } : {}),
     ...(recovery ? { recovery } : {}),
   })
+    .binding(fixtureProviderBindingCodec(provider.name))
     .artifacts(artifactCapability)
     .build();
 

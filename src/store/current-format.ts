@@ -20,6 +20,8 @@ export type CurrentStoreCodecSchemas = Readonly<{
   expansionManifest: z.ZodTypeAny;
 }>;
 
+export type CurrentStoreCodecComponent = Readonly<{ name: string; schema: z.ZodTypeAny }>;
+
 const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
     z.null(),
@@ -47,6 +49,7 @@ export function createCurrentStoreFormat(
   reducers: ComposedReducers,
   schemas: CurrentStoreCodecSchemas,
   ddlFragments: readonly PersistedDdlFragment[],
+  components: readonly CurrentStoreCodecComponent[] = [],
 ): StoreFormatDescription {
   const codecs = new PersistedCodecRegistry();
   registerEventBodyCodec(codecs, reducers);
@@ -58,6 +61,7 @@ export function createCurrentStoreFormat(
   codecs.registerZod('store.projection_workflows.plan', schemas.workflowPlan);
   codecs.registerZod('store.kb_curate_retry_queue.signals', jsonValueSchema);
   codecs.registerZod('store.expansion_manifest_catalog.manifest', schemas.expansionManifest);
+  for (const component of components) codecs.registerZodComponent(component.name, component.schema);
   return describeStoreFormat(schemaSource, codecs, ddlFragments);
 }
 
@@ -65,6 +69,7 @@ export function assertCurrentStoreFormat(
   reducers: ComposedReducers,
   schemas: CurrentStoreCodecSchemas,
   ddlFragments: readonly PersistedDdlFragment[],
+  components: readonly CurrentStoreCodecComponent[] = [],
 ): void {
-  createCurrentStoreFormat(reducers, schemas, ddlFragments);
+  createCurrentStoreFormat(reducers, schemas, ddlFragments, components);
 }

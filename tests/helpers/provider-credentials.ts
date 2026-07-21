@@ -2,7 +2,7 @@ import type {
   ProviderCredentialSetInput,
   ProviderCredentialSet,
   ProviderCredentialSourceRef,
-} from '#src/runtime/provider-credentials.js';
+} from '#src/infra/provider-credential-sources.js';
 import type { ProviderExecutionContext } from '#src/providers/contract.js';
 
 export const TEST_CODEX_SOURCE = {

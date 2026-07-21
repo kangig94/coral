@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { managed, none } from '#src/providers/capability.js';
 import type { ProviderArtifactCapability, ProviderSpec } from '#src/providers/contract.js';
-import { defineProvider, type ProviderDefinition } from '#src/providers/define.js';
-import { ProviderRegistry } from '#src/providers/registry.js';
+import { defineProvider, ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 
 type ProviderFacetOverrides = Partial<Pick<ProviderSpec, 'preflight' | 'appServer' | 'recovery'>> & {
   readonly artifacts?: ProviderArtifactCapability;
@@ -26,6 +26,7 @@ function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): Provide
     ...(overrides.appServer ? { appServer: overrides.appServer } : {}),
     ...(overrides.recovery ? { recovery: overrides.recovery } : {}),
   })
+    .binding(fixtureProviderBindingCodec(name))
     .artifacts(overrides.artifacts ?? none(`Test provider ${name} declares no provider artifacts.`))
     .build();
 
@@ -45,6 +46,36 @@ describe('ProviderRegistry', () => {
 
     expect(registry.get('codex-like')).toBe(spec);
     expect(providerNames(registry.getAll())).toEqual(['codex-like']);
+  });
+
+  it('preserves execution behavior through the registered definition', async () => {
+    const registry = new ProviderRegistry();
+    registry.register(makeSpec('transparent'));
+    const run = registry.get('transparent')?.run;
+    if (run === undefined) throw new Error('fixture provider was not registered');
+
+    const events = [];
+    for await (const event of run({} as never, {} as never)) events.push(event);
+
+    expect(events).toEqual([
+      {
+        kind: 'terminal',
+        terminal: { content: 'transparent response', outcome: { kind: 'completed' } },
+        diagnostics: {},
+      },
+    ]);
+  });
+
+  it('seals execution registration and persisted binding components as one authority', () => {
+    const registry = new ProviderRegistry();
+    registry.register(makeSpec('fixture'));
+
+    expect(registry.sealPersistedBindingCodecComponents().map((entry) => entry.name)).toEqual([
+      'provider.binding-envelope',
+      'provider.fixture.binding',
+    ]);
+    expect(() => registry.register(makeSpec('late'))).toThrow("registry is sealed; cannot register 'late'");
+    expect(registry.get('fixture')).toBeDefined();
   });
 
   it('surfaces optional facets as undefined when absent', () => {
@@ -90,9 +121,33 @@ describe('ProviderRegistry', () => {
 
     registry.register(spec);
 
+    expect(registry.get('claude')?.appServer).toStrictEqual(appServer);
+    expect(registry.get('claude')?.recovery).toStrictEqual(recovery);
+    expect(registry.get('claude')?.artifacts).toStrictEqual(artifacts);
     expect(registry.get('claude')?.appServer).toBe(appServer);
     expect(registry.get('claude')?.recovery).toBe(recovery);
     expect(registry.get('claude')?.artifacts).toBe(artifacts);
+    expect(Object.isFrozen(registry.get('claude'))).toBe(true);
+  });
+
+  it('preserves prototype methods while snapshotting capabilities', () => {
+    class ManagedArtifacts {
+      readonly kind = 'managed' as const;
+
+      async discardArtifacts() {
+        return { kind: 'discarded' as const };
+      }
+    }
+
+    const registry = new ProviderRegistry();
+    const artifacts = new ManagedArtifacts();
+    registry.register(makeSpec('class-capability', { artifacts }));
+    const registered = registry.get('class-capability')?.artifacts;
+
+    expect(registered).toBeInstanceOf(ManagedArtifacts);
+    expect(registered?.kind).toBe('managed');
+    if (registered?.kind !== 'managed') throw new Error('managed fixture capability was lost');
+    expect(registered.discardArtifacts).toBe(ManagedArtifacts.prototype.discardArtifacts);
   });
 
   it('rejects reserved provider names', () => {
@@ -123,6 +178,32 @@ describe('ProviderRegistry', () => {
 
     registry.register(makeSpec('dup'));
     expect(() => registry.register(makeSpec('dup'))).toThrow('already registered');
+  });
+
+  it('rejects names that cannot identify a persisted binding codec', () => {
+    const registry = new ProviderRegistry();
+
+    expect(() => registry.register(makeSpec('Uppercase'))).toThrow('stable persisted codec name');
+    expect(() => registry.register(makeSpec('contains space'))).toThrow('stable persisted codec name');
+    expect(() => registry.register(makeSpec('trailing-'))).toThrow('stable persisted codec name');
+  });
+
+  it('snapshots definition and codec authority before sealing', () => {
+    const registry = new ProviderRegistry();
+    const spec = makeSpec('stable');
+    registry.register(spec);
+    const components = registry.sealPersistedBindingCodecComponents();
+
+    expect(() => Object.assign(spec, { name: 'drifted' })).toThrow();
+    expect(() => Object.assign(spec, { run: async function* () {} })).toThrow();
+    expect(registry.get('stable')?.name).toBe('stable');
+    expect(registry.get('drifted')).toBeUndefined();
+    expect(registry.sealPersistedBindingCodecComponents()).toBe(components);
+    expect(components.map((entry) => entry.name)).toEqual([
+      'provider.binding-envelope',
+      'provider.stable.binding',
+    ]);
+    expect(Object.isFrozen(components)).toBe(true);
   });
 
   it('preserves registration insertion order', () => {

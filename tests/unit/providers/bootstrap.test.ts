@@ -3,10 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { createBuiltInProviderRegistry, registerBuiltInProviders } from '#src/providers/bootstrap.js';
 import { none } from '#src/providers/capability.js';
 import type { ProviderSpec } from '#src/providers/contract.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { TEST_CLAUDE_SOURCE, TEST_CODEX_SOURCE } from '../../helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 
 function providerNames(providers: ProviderSpec[]): string[] {
   return providers.map((provider) => provider.name);
@@ -385,6 +386,7 @@ describe('registerBuiltInProviders', () => {
           };
         },
       })
+        .binding(fixtureProviderBindingCodec('codex'))
         .artifacts(none('conflict fixture declares no provider artifacts'))
         .build(),
     );

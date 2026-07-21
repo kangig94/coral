@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 import { resolvePluginRoot } from './plugin-root.js';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { captureProviderCredentialSetInput } from '../runtime/provider-credentials.js';
+import { captureProviderCredentialSetInput } from '../infra/provider-credential-sources.js';
 import { resolveUserHomeDir } from '../infra/path/index.js';
 import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';

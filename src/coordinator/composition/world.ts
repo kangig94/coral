@@ -8,12 +8,12 @@ import {
   canonicalizeProviderCredentialSet,
   captureProviderCredentialSetInput,
   filesystemProviderCredentialSourceAvailability,
-} from '../../runtime/provider-credentials.js';
+} from '../../infra/provider-credential-sources.js';
 import type {
   ProviderCredentialSet,
   ProviderCredentialSourceAvailabilityPort,
-} from '../../runtime/provider-credentials.js';
-import type { AmbientClaudeLocationPort } from '../../runtime/provider-credentials.js';
+} from '../../infra/provider-credential-sources.js';
+import type { AmbientClaudeLocationPort } from '../../infra/provider-credential-sources.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';

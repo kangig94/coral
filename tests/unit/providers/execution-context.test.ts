@@ -5,7 +5,7 @@ import {
   PROVIDER_CREDENTIAL_OVERRIDE_ENV_KEYS,
   PROVIDER_ROUTING_ENV_KEYS,
   UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS,
-} from '#src/runtime/provider-credentials.js';
+} from '#src/infra/provider-credential-sources.js';
 import { TEST_CLAUDE_SOURCE, TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 
 describe('provider execution context', () => {

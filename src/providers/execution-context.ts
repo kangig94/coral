@@ -1,11 +1,11 @@
 import type { ProviderExecutionContext, ProviderRequest } from './contract.js';
-import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
 import {
   PROVIDER_CREDENTIAL_OVERRIDE_ENV_KEYS,
   PROVIDER_ROUTING_ENV_KEYS,
   UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS,
   providerRoutingEnv,
-} from '../runtime/provider-credentials.js';
+} from '../infra/provider-credential-sources.js';
 
 const EXECUTION_ENV_ALLOWLIST = new Set([
   'PATH',

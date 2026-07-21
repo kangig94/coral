@@ -1,5 +1,5 @@
 import type { Principal } from '../security/principal.js';
-import type { ProviderCredentialSet } from './provider-credentials.js';
+import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
 
 export type InvocationContext = {
   projectRoot: string;

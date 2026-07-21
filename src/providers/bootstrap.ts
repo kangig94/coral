@@ -10,10 +10,12 @@ import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
 import { claudeProvider } from './claude/provider.js';
 import { claudeAppServerLifecycle, claudePreflight, claudeRecoveryLifecycle } from './claude/provider-facets.js';
 import { claudeArtifactCapability, locateClaudeJsonlArtifact } from './claude/artifacts.js';
+import { claudeBindingCodec } from './claude/binding.js';
 import { codexThreadProvider } from './codex/thread-provider.js';
 import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './codex/provider-facets.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from './codex/artifacts.js';
-import { defineProvider } from './define.js';
+import { codexBindingCodec } from './codex/binding.js';
+import { defineProvider } from './registry.js';
 import { ProviderRegistry } from './registry.js';
 
 type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0];
@@ -236,6 +238,7 @@ const codexProviderSpec = defineProvider({
   appServer: codexAppServerLifecycle,
   recovery: buildProviderRecovery(codexRecoveryLifecycle, finalizeCodexFromArtifacts, 'Codex'),
 })
+  .binding(codexBindingCodec)
   .artifacts(codexArtifactCapability)
   .build();
 
@@ -246,6 +249,7 @@ const claudeProviderSpec = defineProvider({
   appServer: claudeAppServerLifecycle,
   recovery: buildProviderRecovery(claudeRecoveryLifecycle, finalizeClaudeFromArtifacts, 'Claude'),
 })
+  .binding(claudeBindingCodec)
   .artifacts(claudeArtifactCapability)
   .build();
 

@@ -1,7 +1,7 @@
 import { DAEMON_OWNED_CORAL_ENV_KEYS, readForwardedCoralEnv } from '../infra/env-sanitize.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '../infra/network-env.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { ProviderCredentialSet } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
 import type { Principal } from '../security/principal.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from './context-profile.js';
 

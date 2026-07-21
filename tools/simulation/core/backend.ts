@@ -11,10 +11,10 @@ import {
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import { none } from '../../../src/providers/capability.js';
 import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../src/providers/contract.js';
-import { defineProvider, type ProviderDefinition } from '../../../src/providers/define.js';
+import { defineProvider, type ProviderDefinition } from '../../../src/providers/registry.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
-import type { ProviderCredentialSet } from '../../../src/runtime/provider-credentials.js';
+import type { ProviderCredentialSet } from '../../../src/infra/provider-credential-sources.js';
 import type { Principal } from '../../../src/security/principal.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
 import { providerRequestFailed } from '../../../src/providers/fault.js';
@@ -51,9 +51,30 @@ import { setStoreServicesForTest } from '../../testing/store-services.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
+import { z } from 'zod';
+import type { ProviderBindingCodec } from '../../../src/providers/contracts/binding.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
 type SimulationTerminalOutcome = ProviderTerminal['outcome'];
+
+const simulationSelectionSchema = z.object({ key: z.string() }).strict();
+const simulationProfileSchema = z.object({ canonicalLocation: z.string(), routing: z.object({}).strict() }).strict();
+const simulationBindingSchema = z
+  .object({ profile: simulationProfileSchema, guarantee: z.literal('profile-only') })
+  .strict();
+
+function simulationBindingCodec(
+  provider: string,
+): ProviderBindingCodec<z.infer<typeof simulationSelectionSchema>, z.infer<typeof simulationProfileSchema>> {
+  return {
+    selectionSchema: simulationSelectionSchema,
+    profileSchema: simulationProfileSchema,
+    bindingSchema: simulationBindingSchema,
+    bindingKind: 'profile',
+    selectorLabel: () => `${provider} simulation selector`,
+    presentBinding: () => `${provider} simulation profile`,
+  };
+}
 
 export type FakeProviderScenario = {
   name?: string;
@@ -331,6 +352,7 @@ export function createFakeProvider(
       },
     },
   })
+    .binding(simulationBindingCodec(providerName))
     .artifacts(none(`Simulation provider ${providerName} declares no provider artifacts.`))
     .build();
 }

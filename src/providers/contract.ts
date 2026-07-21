@@ -19,7 +19,7 @@ import type {
   ProviderCliRunner,
   ProviderTransportClose,
 } from './protocol.js';
-import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';

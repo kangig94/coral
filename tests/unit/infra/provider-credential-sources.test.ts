@@ -9,10 +9,10 @@ import {
   providerCredentialSourceKey,
   providerRoutingEnv,
   sameProviderCredentialSource,
-} from '#src/runtime/provider-credentials.js';
+} from '#src/infra/provider-credential-sources.js';
 import { buildExactProviderEnv } from '#src/providers/execution-context.js';
 
-describe('provider credential sources', () => {
+describe('provider credential source infrastructure', () => {
   it('captures explicit account selectors without consulting provider state', () => {
     expect(
       captureProviderCredentialSetInput(
@@ -110,27 +110,24 @@ describe('provider credential sources', () => {
     'CLAUDE_CODE_USE_FOUNDRY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_CUSTOM_HEADERS',
-  ])(
-    'captures globally but fails a Claude launch closed for unsupported selector %s',
-    (selector) => {
-      const input = captureProviderCredentialSetInput({ [selector]: '1' }, '/home/operator');
-      const credentials = canonicalizeProviderCredentialSet(input, ambientClaudeLocation('/home/operator'));
-      expect(() =>
-        buildExactProviderEnv({
-          baseEnv: { [selector]: '1' },
-          source: credentials.claude,
-          platform: 'linux',
-        }),
-      ).toThrow(`Unsupported Claude credential selector '${selector}'`);
-      expect(() =>
-        buildExactProviderEnv({
-          baseEnv: { [selector]: '1' },
-          source: credentials.codex,
-          platform: 'linux',
-        }),
-      ).not.toThrow();
-    },
-  );
+  ])('captures globally but fails a Claude launch closed for unsupported selector %s', (selector) => {
+    const input = captureProviderCredentialSetInput({ [selector]: '1' }, '/home/operator');
+    const credentials = canonicalizeProviderCredentialSet(input, ambientClaudeLocation('/home/operator'));
+    expect(() =>
+      buildExactProviderEnv({
+        baseEnv: { [selector]: '1' },
+        source: credentials.claude,
+        platform: 'linux',
+      }),
+    ).toThrow(`Unsupported Claude credential selector '${selector}'`);
+    expect(() =>
+      buildExactProviderEnv({
+        baseEnv: { [selector]: '1' },
+        source: credentials.codex,
+        platform: 'linux',
+      }),
+    ).not.toThrow();
+  });
 
   it('routes an explicit Claude source without leaking Codex account selection', () => {
     const credentials = canonicalizeProviderCredentialSet(

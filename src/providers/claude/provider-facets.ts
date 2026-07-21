@@ -14,7 +14,7 @@ import {
   claudeConversationRef,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
-import { providerRoutingEnv, UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../runtime/provider-credentials.js';
+import { providerRoutingEnv, UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../infra/provider-credential-sources.js';
 
 const UNSUPPORTED_CLAUDE_HELPER_SETTINGS = Object.freeze(
   new Set(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport']),

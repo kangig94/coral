@@ -12,6 +12,7 @@ export type CanonicalContractValue =
 
 export type PersistedCodecManifestEntry = {
   readonly name: string;
+  readonly persistence: 'boundary' | 'component';
   readonly contract: CanonicalContractValue;
 };
 
@@ -369,26 +370,34 @@ export function zodPersistedContract(schema: z.ZodTypeAny): CanonicalContractVal
 }
 
 export class PersistedCodecRegistry {
-  readonly #entries = new Map<string, CanonicalContractValue>();
+  readonly #entries = new Map<string, Omit<PersistedCodecManifestEntry, 'name'>>();
 
-  register(name: string, contract: unknown): void {
+  register(
+    name: string,
+    contract: unknown,
+    persistence: PersistedCodecManifestEntry['persistence'] = 'boundary',
+  ): void {
     if (!CODEC_NAME.test(name)) {
       throw new TypeError(`Invalid persisted codec name '${name}'.`);
     }
     if (this.#entries.has(name)) {
       throw new Error(`Persisted codec '${name}' is registered twice.`);
     }
-    this.#entries.set(name, canonicalizeContractValue(contract, `$.codecs.${name}`));
+    this.#entries.set(name, { persistence, contract: canonicalizeContractValue(contract, `$.codecs.${name}`) });
   }
 
   registerZod(name: string, schema: z.ZodTypeAny): void {
     this.register(name, zodPersistedContract(schema));
   }
 
+  registerZodComponent(name: string, schema: z.ZodTypeAny): void {
+    this.register(name, zodPersistedContract(schema), 'component');
+  }
+
   entries(): readonly PersistedCodecManifestEntry[] {
     return [...this.#entries.entries()]
       .sort(([left], [right]) => compareText(left, right))
-      .map(([name, contract]) => Object.freeze({ name, contract }));
+      .map(([name, entry]) => Object.freeze({ name, ...entry }));
   }
 }
 
@@ -429,7 +438,7 @@ export function ddlWithoutPersistedCodecAnnotations(ddl: string): string {
 
 function assertCodecCoverage(ddl: string, entries: readonly PersistedCodecManifestEntry[]): void {
   const declared = persistedCodecNamesFromDdl(ddl);
-  const registered = entries.map((entry) => entry.name);
+  const registered = entries.filter((entry) => entry.persistence === 'boundary').map((entry) => entry.name);
   const missing = declared.filter((name) => !registered.includes(name));
   const orphaned = registered.filter((name) => !declared.includes(name));
   if (missing.length === 0 && orphaned.length === 0) return;

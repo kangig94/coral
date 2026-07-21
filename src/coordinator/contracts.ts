@@ -16,7 +16,7 @@ import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
-import type { ProviderCredentialSourceAvailabilityPort } from '../runtime/provider-credentials.js';
+import type { ProviderCredentialSourceAvailabilityPort } from '../infra/provider-credential-sources.js';
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;

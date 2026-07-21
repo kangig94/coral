@@ -6,7 +6,7 @@ import {
   projectProviderCredentialSource,
   sameProviderCredentialSource,
   type ProviderCredentialSourceRef,
-} from '../../runtime/provider-credentials.js';
+} from '../../infra/provider-credential-sources.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';

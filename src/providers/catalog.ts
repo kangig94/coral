@@ -1,9 +1,9 @@
-import type { ProviderSpec } from './contract.js';
+import type { ProviderDefinition } from './registry.js';
 
 /** Read-only view of the provider registry. */
 export interface ProviderCatalog {
-  get(name: string): ProviderSpec | undefined;
-  getAll(): ProviderSpec[];
+  get(name: string): ProviderDefinition | undefined;
+  getAll(): ProviderDefinition[];
 }
 
 /** Narrow provider lookup used by synchronous append-time validators. */
