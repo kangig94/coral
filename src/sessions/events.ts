@@ -1,4 +1,5 @@
 import { CoralSetupError } from '../runtime/errors.js';
+import { isDeepStrictEqual } from 'node:util';
 import type { CoralEventInput } from '../store/envelope.js';
 import { rowToCoralEvent } from '../store/envelope.js';
 import { decodeStoredBody } from '../store/body-codec.js';
@@ -41,7 +42,7 @@ import {
   reduceSessionRetentionDiscardFailed,
   reduceSessionRetentionDiscardRequested,
 } from './projections.js';
-import { sessionEntrySchema, type SessionEntry } from './entry.js';
+import { providerSessionSchema, type ProviderSession } from './entry.js';
 
 const RETENTION_DISCARD_DUPLICATE_ATTEMPT_CODE = 'session_retention_discard_duplicate_attempt';
 
@@ -270,33 +271,142 @@ const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs
   }
 };
 
-function authorityIdentity(entry: SessionEntry): string {
-  return JSON.stringify({ provider: entry.provider, authority: entry.sessionAuthority });
+function bindingIdentity(entry: ProviderSession): string {
+  return JSON.stringify(entry.binding);
 }
 
-const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
+function withoutClaimTransitionFields(
+  entry: ProviderSession,
+): Omit<ProviderSession, 'activeJobId' | 'lastUsedAt' | 'version' | 'continuationLease'> {
+  const {
+    activeJobId: _activeJobId,
+    lastUsedAt: _lastUsedAt,
+    version: _version,
+    continuationLease: _continuationLease,
+    ...unchanged
+  } = entry;
+  return unchanged;
+}
+
+function claimTransitionViolation(input: CoralEventInput, jobId: string, message: string): never {
+  throw new CoralSetupError({
+    code: 'provider_session_claim_transition_invalid',
+    userMessage: `Session '${input.stream.id}' ${message}.`,
+    remediation: 'Append a complete next ProviderSession snapshot for exactly one claim transition.',
+    context: { sessionId: input.stream.id, jobId, eventType: input.type },
+  });
+}
+
+function validateClaimAuthority(
+  input: CoralEventInput,
+  prior: ProviderSession | undefined,
+  next: ProviderSession,
+): void {
+  if (input.type === 'session.opened') {
+    if (next.activeJobId !== undefined) {
+      claimTransitionViolation(input, next.activeJobId, 'cannot open with an active job claim');
+    }
+    return;
+  }
+  if (input.type === 'session.claimed' || input.type === 'session.claim.released' || prior === undefined) return;
+  if (prior.activeJobId !== next.activeJobId) {
+    claimTransitionViolation(
+      input,
+      next.activeJobId ?? prior.activeJobId ?? '<none>',
+      `cannot change its active job claim through '${input.type}'`,
+    );
+  }
+}
+
+function sameContinuationLeaseForClaim(prior: ProviderSession, next: ProviderSession, jobId: string): boolean {
+  if (isDeepStrictEqual(prior.continuationLease, next.continuationLease)) return true;
+  const before = prior.continuationLease;
+  const after = next.continuationLease;
+  if (before?.status !== 'pending' || after?.status !== 'claimed' || after.resumedJobId !== jobId) return false;
+  const { status: _beforeStatus, ...beforeBase } = before;
+  const { status: _afterStatus, resumedJobId: _resumedJobId, claimedAt: _claimedAt, ...afterBase } = after;
+  return isDeepStrictEqual(beforeBase, afterBase);
+}
+
+function sameContinuationLeaseForRelease(prior: ProviderSession, next: ProviderSession, jobId: string): boolean {
+  if (isDeepStrictEqual(prior.continuationLease, next.continuationLease)) return true;
+  const before = prior.continuationLease;
+  const after = next.continuationLease;
+  if (
+    before?.status !== 'claimed' ||
+    before.resumedJobId !== jobId ||
+    after?.status !== 'cleared' ||
+    after.clearedByJobId !== jobId ||
+    after.outcome !== 'resumed_released'
+  ) {
+    return false;
+  }
+  const { status: _beforeStatus, resumedJobId: _beforeResumed, claimedAt: _beforeClaimedAt, ...beforeBase } = before;
+  const {
+    status: _afterStatus,
+    resumedJobId: _afterResumed,
+    claimedAt: _afterClaimedAt,
+    clearedAt: _clearedAt,
+    clearedByJobId: _clearedByJobId,
+    outcome: _outcome,
+    ...afterBase
+  } = after;
+  return isDeepStrictEqual(beforeBase, afterBase);
+}
+
+function validateClaimTransition(input: CoralEventInput, prior: ProviderSession, next: ProviderSession): void {
+  const body = sessionClaimedBodySchema.parse(input.body);
+  if (
+    input.refs?.sessionId !== next.sessionId ||
+    input.refs.jobId !== body.jobId ||
+    prior.activeJobId !== undefined ||
+    next.activeJobId !== body.jobId ||
+    next.version !== prior.version + 1 ||
+    !isDeepStrictEqual(withoutClaimTransitionFields(prior), withoutClaimTransitionFields(next)) ||
+    !sameContinuationLeaseForClaim(prior, next, body.jobId)
+  ) {
+    claimTransitionViolation(input, body.jobId, 'has an invalid claim transition');
+  }
+}
+
+function validateClaimReleaseTransition(input: CoralEventInput, prior: ProviderSession, next: ProviderSession): void {
+  const body = sessionClaimReleasedBodySchema.parse(input.body);
+  if (
+    input.refs?.sessionId !== next.sessionId ||
+    input.refs.jobId !== body.jobId ||
+    prior.activeJobId !== body.jobId ||
+    next.activeJobId !== undefined ||
+    next.version !== prior.version + 1 ||
+    !isDeepStrictEqual(withoutClaimTransitionFields(prior), withoutClaimTransitionFields(next)) ||
+    !sameContinuationLeaseForRelease(prior, next, body.jobId)
+  ) {
+    claimTransitionViolation(input, body.jobId, 'has an invalid claim release transition');
+  }
+}
+
+const validateProviderSessionBinding: DomainAppendValidator = (ctx, inputs) => {
   const entries = inputs.flatMap((input) => {
     if (input.stream.kind !== 'session' || typeof input.body !== 'object' || input.body === null) return [];
     const rawEntry = (input.body as { entry?: unknown }).entry;
-    const parsed = sessionEntrySchema.safeParse(rawEntry);
+    const parsed = providerSessionSchema.safeParse(rawEntry);
     return parsed.success ? [{ input, entry: parsed.data }] : [];
   });
   if (entries.length === 0) return;
 
   const ids = [...new Set(entries.map(({ entry }) => entry.sessionId))];
-  const existing = new Map<string, SessionEntry>();
+  const existing = new Map<string, ProviderSession>();
   if (ids.length > 0) {
     const placeholders = ids.map(() => '?').join(', ');
     const rows = ctx.db
       .prepare(`SELECT session_id, entry FROM projection_sessions WHERE session_id IN (${placeholders})`)
       .all(...ids) as Array<{ session_id: string; entry: string }>;
-    for (const row of rows) existing.set(row.session_id, sessionEntrySchema.parse(JSON.parse(row.entry)));
+    for (const row of rows) existing.set(row.session_id, providerSessionSchema.parse(JSON.parse(row.entry)));
   }
 
   for (const { input, entry } of entries) {
     if (input.stream.id !== entry.sessionId) {
       throw new CoralSetupError({
-        code: 'session_authority_invalid',
+        code: 'provider_session_stream_mismatch',
         userMessage: `Session event stream does not match entry '${entry.sessionId}'.`,
         remediation: 'Write the session entry to its own session stream.',
       });
@@ -305,32 +415,51 @@ const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
     if (prior === undefined) {
       if (input.type !== 'session.opened') {
         throw new CoralSetupError({
-          code: 'session_authority_missing',
+          code: 'provider_session_missing',
           userMessage: `Session '${entry.sessionId}' must be opened before later events.`,
           remediation: 'Append session.opened first in the same batch.',
         });
       }
-      if (entry.sessionAuthority.kind === 'provider' && entry.sessionAuthority.binding.provider !== entry.provider) {
+      const provider = entry.binding.provider;
+      if (!ctx.providers.hasProvider(provider)) {
         throw new CoralSetupError({
-          code: 'session_authority_mismatch',
-          userMessage: `Session '${entry.sessionId}' provider does not match its binding.`,
-          remediation: 'Use the provider binding projected for the selected provider.',
+          code: 'provider_session_provider_unregistered',
+          userMessage: `Provider session '${entry.sessionId}' names unregistered provider '${provider}'.`,
+          remediation: 'Register the provider and append a binding produced by its current binding codec.',
+          context: { sessionId: entry.sessionId, provider },
         });
       }
+      const bindingValidation = ctx.providers.validatePersistedBinding(entry.binding);
+      if (!bindingValidation.ok) {
+        throw new CoralSetupError({
+          code: 'provider_session_binding_invalid',
+          userMessage: `Provider session '${entry.sessionId}' binding was rejected by provider '${provider}'.`,
+          remediation: bindingValidation.message,
+          context: { sessionId: entry.sessionId, provider },
+        });
+      }
+      validateClaimAuthority(input, undefined, entry);
       existing.set(entry.sessionId, entry);
       continue;
     }
     if (input.type === 'session.opened') {
       throw new CoralSetupError({
-        code: 'session_authority_invalid',
+        code: 'provider_session_already_open',
         userMessage: `Session '${entry.sessionId}' is already open.`,
         remediation: 'Do not append a second session.opened event.',
       });
     }
-    if (authorityIdentity(prior) !== authorityIdentity(entry)) {
+    if (input.type === 'session.claimed') {
+      validateClaimTransition(input, prior, entry);
+    } else if (input.type === 'session.claim.released') {
+      validateClaimReleaseTransition(input, prior, entry);
+    } else {
+      validateClaimAuthority(input, prior, entry);
+    }
+    if (bindingIdentity(prior) !== bindingIdentity(entry)) {
       throw new CoralSetupError({
-        code: 'session_authority_mismatch',
-        userMessage: `Session '${entry.sessionId}' authority is immutable.`,
+        code: 'provider_session_binding_mismatch',
+        userMessage: `Provider session '${entry.sessionId}' binding is immutable.`,
         remediation: 'Resume with the original provider binding or start a new session.',
       });
     }
@@ -409,5 +538,5 @@ export const sessionsRegistry: DomainEventRegistry = {
       reducer: reduceSessionAdapterUnparseable,
     }),
   ],
-  appendValidators: [validateRetentionDiscardStateMachine, validateSessionAuthority],
+  appendValidators: [validateRetentionDiscardStateMachine, validateProviderSessionBinding],
 };

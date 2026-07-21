@@ -34,6 +34,7 @@ import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
 import { JobStore } from '#src/jobs/store.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -41,7 +42,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { workflowRegistry } from '#src/workflow/events.js';
+import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -163,7 +164,14 @@ function createStoreServicesForProgressStore(progressStore: JobStore): Coordinat
 }
 
 function createSessionManager(projectRoot: string): SessionManager {
-  return new SessionManager(projectRoot, runtime, undefined, undefined, openTestStoreDb(runtime));
+  return new SessionManager(
+    projectRoot,
+    runtime,
+    undefined,
+    undefined,
+    openTestStoreDb(runtime),
+    permissiveProviderLookupPort,
+  );
 }
 
 vi.mock('node:os', async () => {
@@ -190,7 +198,12 @@ type FakeExecutionService = {
 function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {}): FakeExecutionService {
   return {
     start: vi.fn(),
-    executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+    executeWorkflow: vi.fn(async () => ({
+      kind: 'workflow',
+      status: 'running',
+      workflowId: 'workflow-job',
+      jobId: 'workflow-job',
+    })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
       yield {
@@ -206,7 +219,7 @@ function createFakeExecutionService(overrides: Partial<FakeExecutionService> = {
         seq: 8,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
-        result: { content: 'done', outcome: { kind: 'completed' } },
+        result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
       };
     }),
     waitStreamOnce: vi.fn(async () => ({
@@ -425,29 +438,41 @@ function stubLaunchRecord(
     provider: string;
     projectRoot: string;
     backendNamespace: string;
-    pool?: string;
+    pool?: LaunchPool;
     jobKind?: 'provider' | 'workflow';
   },
 ): void {
-  const record: JobLaunch = {
+  const common = {
     jobId: overrides.jobId,
-    sessionId: overrides.sessionId,
-    provider: overrides.provider,
     projectRoot: overrides.projectRoot,
     backendNamespace: overrides.backendNamespace,
-    jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: 0,
-    providerAction: 'exec',
     request: {
       prompt: '',
       cwd: '/tmp/test',
       bypassPermissions: false,
       coralEnv: {},
-      ...(overrides.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
     },
     createdAt: new Date().toISOString(),
-  };
+  } as const;
+  const record: JobLaunch =
+    overrides.jobKind === 'workflow'
+      ? {
+          ...common,
+          owner: { kind: 'workflow', id: overrides.jobId },
+          sessionId: null,
+          provider: null,
+          jobKind: 'workflow',
+        }
+      : {
+          ...common,
+          owner: { kind: 'provider-session', id: overrides.sessionId },
+          sessionId: overrides.sessionId,
+          provider: overrides.provider,
+          jobKind: 'provider',
+          providerAction: 'exec',
+        };
   progressStore.appendLaunchRequested(overrides.jobId, record);
 }
 
@@ -462,6 +487,7 @@ function stubRuntimeRecord(
   },
 ): void {
   progressStore.appendRuntimeStarted(overrides.jobId, {
+    transport: 'durable-cli',
     pid: overrides.pid ?? process.pid,
     stdoutPath: overrides.stdoutPath ?? join(JOBS_DIR, overrides.jobId, 'stdout.log'),
     stderrPath: overrides.stderrPath ?? join(JOBS_DIR, overrides.jobId, 'stderr.log'),
@@ -1328,6 +1354,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
       jobId,
+      owner: { kind: 'system-task', id: `kb.source_import:${jobId}` },
       sessionId: null,
       provider: null,
       projectRoot,
@@ -1443,6 +1470,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
       jobId,
+      owner: { kind: 'system-task', id: `kb.source_import:${jobId}` },
       sessionId: null,
       provider: null,
       projectRoot,
@@ -1537,6 +1565,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
       jobId,
+      owner: { kind: 'system-task', id: `kb.source_import:${jobId}` },
       sessionId: null,
       provider: null,
       projectRoot,
@@ -1579,12 +1608,12 @@ describe('execution backend server', () => {
       progressStore,
       jobId,
       null,
-      { content: 'Imported source.', outcome: { kind: 'completed' } },
+      { content: 'Imported source.', durationMs: 1_000, outcome: { kind: 'completed' } },
       'completed',
     );
     eventBus.emit('job:completed', {
       jobId,
-      result: { content: 'Imported source.', outcome: { kind: 'completed' } },
+      result: { content: 'Imported source.', durationMs: 1_000, outcome: { kind: 'completed' } },
     });
 
     const abortResponse = await fetch(`${backend.baseUrl}/jobs/abort`, {
@@ -1657,8 +1686,8 @@ describe('execution backend server', () => {
     const backend = await startBackendServer({ launchCoordinator });
 
     // Simulate two active launches via restoreActiveLaunch
-    launchCoordinator.restoreActiveLaunch('job-1', 'codex');
-    launchCoordinator.restoreActiveLaunch('job-2', 'codex');
+    launchCoordinator.restoreActiveLaunch('job-1', 'codex', { kind: 'provider-session', id: 'session-job-1' });
+    launchCoordinator.restoreActiveLaunch('job-2', 'codex', { kind: 'provider-session', id: 'session-job-2' });
 
     try {
       const response = await fetch(`${backend.baseUrl}/health?detailed=1`, {
@@ -1707,7 +1736,7 @@ describe('execution backend server', () => {
       progressStore,
       jobIdA,
       'session-a',
-      { content: 'done-a', outcome: { kind: 'completed' } },
+      { content: 'done-a', durationMs: 1_000, outcome: { kind: 'completed' } },
       'completed',
     );
 
@@ -1730,7 +1759,7 @@ describe('execution backend server', () => {
       progressStore,
       jobIdB,
       'session-b',
-      { content: 'done-b', outcome: { kind: 'completed' } },
+      { content: 'done-b', durationMs: 1_000, outcome: { kind: 'completed' } },
       'completed',
     );
 
@@ -2241,7 +2270,9 @@ describe('execution backend server', () => {
       providerRegistry.register(
         toProviderSpec({
           name: 'codex',
-          execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+          execute: vi.fn(() =>
+            streamProviderTerminal({ content: 'ok', durationMs: 1_000, outcome: { kind: 'completed' as const } }),
+          ),
         })!,
       );
       const executionService = options.executionService ?? createFakeExecutionService();
@@ -3815,7 +3846,12 @@ describe('execution backend server', () => {
     it('routes POST /sessions through service.start with accepted launch responses', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
-          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+          start: vi.fn(async () => ({
+            kind: 'provider-session',
+            status: 'running',
+            jobId: 'job-start',
+            sessionId: 'session-start',
+          })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         const started = await startHttpHandlerServer(deps);
@@ -3844,8 +3880,9 @@ describe('execution backend server', () => {
 
           expect(response.status).toBe(201);
           expect(await response.json()).toEqual({
-            session: 'session-start',
-            job: 'job-start',
+            kind: 'provider-session',
+            sessionId: 'session-start',
+            jobId: 'job-start',
             launchState: 'running',
           });
           expect(fakeService.start).toHaveBeenCalledWith(
@@ -3878,7 +3915,12 @@ describe('execution backend server', () => {
 
     it('rejects provider launch before allocation when the daemon has no named system scope', async () => {
       const fakeService = createFakeExecutionService({
-        start: vi.fn(async () => ({ status: 'running', job: 'must-not-run', session: 'must-not-run' })),
+        start: vi.fn(async () => ({
+          kind: 'provider-session',
+          status: 'running',
+          jobId: 'must-not-run',
+          sessionId: 'must-not-run',
+        })),
       });
       const { deps } = createHttpHandlerDeps({ executionService: fakeService });
       const started = await startHttpHandlerServer({ ...deps, systemProviderScope: undefined });
@@ -3940,7 +3982,12 @@ describe('execution backend server', () => {
     it('rejects remote POST /sessions requests that bypass provider permissions', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
-          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+          start: vi.fn(async () => ({
+            kind: 'provider-session',
+            status: 'running',
+            jobId: 'job-start',
+            sessionId: 'session-start',
+          })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: '203.0.113.10' });
@@ -4051,7 +4098,12 @@ describe('execution backend server', () => {
     it('rejects permission bypass requests when the peer address is unavailable', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
-          start: vi.fn(async () => ({ status: 'running', job: 'job-start', session: 'session-start' })),
+          start: vi.fn(async () => ({
+            kind: 'provider-session',
+            status: 'running',
+            jobId: 'job-start',
+            sessionId: 'session-start',
+          })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         const started = await startHttpHandlerServer(deps, undefined, { remoteAddress: null });
@@ -4087,7 +4139,12 @@ describe('execution backend server', () => {
     it('accepts POST /sessions with namespaced coral agents', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
-          start: vi.fn(async () => ({ status: 'running', job: 'job-x', session: 'session-x' })),
+          start: vi.fn(async () => ({
+            kind: 'provider-session',
+            status: 'running',
+            jobId: 'job-x',
+            sessionId: 'session-x',
+          })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         const started = await startHttpHandlerServer(deps);
@@ -4109,8 +4166,9 @@ describe('execution backend server', () => {
 
           expect(response.status).toBe(201);
           expect(await response.json()).toEqual({
-            session: 'session-x',
-            job: 'job-x',
+            kind: 'provider-session',
+            sessionId: 'session-x',
+            jobId: 'job-x',
             launchState: 'running',
           });
           expect(fakeService.start).toHaveBeenCalledWith(
@@ -4203,7 +4261,12 @@ describe('execution backend server', () => {
     it('passes canonical workflow camelCase fields to executeWorkflow', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
-          executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+          executeWorkflow: vi.fn(async () => ({
+            kind: 'workflow',
+            status: 'running',
+            workflowId: 'workflow-job',
+            jobId: 'workflow-job',
+          })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         const started = await startHttpHandlerServer(deps);
@@ -4229,8 +4292,9 @@ describe('execution backend server', () => {
 
           expect(response.status).toBe(202);
           expect(await response.json()).toEqual({
-            session: 'workflow-session',
-            job: 'workflow-job',
+            kind: 'workflow',
+            workflowId: 'workflow-job',
+            jobId: 'workflow-job',
             launchState: 'running',
           });
           expect(fakeService.executeWorkflow).toHaveBeenCalledWith(
@@ -4334,13 +4398,20 @@ describe('execution backend server', () => {
     it("defaults omitted workflow provider to 'claude' for both executeWorkflow arguments", async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
-          executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+          executeWorkflow: vi.fn(async () => ({
+            kind: 'workflow',
+            status: 'running',
+            workflowId: 'workflow-job',
+            jobId: 'workflow-job',
+          })),
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         deps.providerRegistry.register(
           toProviderSpec({
             name: 'claude',
-            execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+            execute: vi.fn(() =>
+              streamProviderTerminal({ content: 'ok', durationMs: 1_000, outcome: { kind: 'completed' as const } }),
+            ),
           })!,
         );
         const started = await startHttpHandlerServer(deps);
@@ -4687,12 +4758,14 @@ describe('execution backend server', () => {
       expect(readyChunk).toContain('"streamId":"');
 
       eventBus.emit('job:created', {
+        kind: 'provider',
         jobId: 'job-1',
         sessionId: 'session-1',
         provider: 'codex',
         projectRoot: '/tmp/project',
       });
       eventBus.emit('job:created', {
+        kind: 'provider',
         jobId: 'job-2',
         sessionId: 'session-2',
         provider: 'codex',
@@ -4732,6 +4805,7 @@ describe('execution backend server', () => {
       await stream.waitForText((text) => text.includes('event: ready'));
 
       eventBus.emit('job:created', {
+        kind: 'provider',
         jobId: 'job-no-project-root-stream',
         sessionId: 'session-no-project-root-stream',
         provider: 'codex',
@@ -4874,7 +4948,7 @@ describe('execution backend server', () => {
       progressStore,
       'job-1',
       'session-1',
-      { content: 'done', outcome: { kind: 'completed' } },
+      { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
       'completed',
     );
     seedTestJobSession(progressStore, {
@@ -5000,11 +5074,20 @@ describe('execution backend server', () => {
     const projectA = createProjectRoot('job-detail-project-a');
     const projectB = createProjectRoot('job-detail-project-b');
     const sessionManager = createSessionManager(projectA);
-    const session = allocateTestSession(sessionManager, 'codex', 'detail-session', 'gpt-5', projectA);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'detail-session',
+      'gpt-5',
+      projectA,
+      projectA,
+      testBackendNamespace,
+    );
     const jobId = 'job-detail-project-a';
     const backend = await startBackendServer();
 
     createdJobIds.add(jobId);
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
@@ -5019,7 +5102,6 @@ describe('execution backend server', () => {
       projectRoot: projectA,
       backendNamespace: testBackendNamespace,
     });
-    sessionManager.claimForJobSync(session.sessionId, jobId);
 
     const response = await fetch(`${backend.baseUrl}/jobs/${jobId}?projectRoot=${encodeURIComponent(projectB)}`, {
       headers: { 'X-Coral-Backend-Token': backend.token },
@@ -5095,7 +5177,7 @@ describe('execution backend server', () => {
         progressStore,
         'job-completed',
         'session-completed',
-        { content: 'done', outcome: { kind: 'completed' } },
+        { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
         'completed',
       );
       seedTestJobSession(progressStore, {
@@ -5376,9 +5458,19 @@ describe('execution backend server', () => {
   it('releases terminal session claims even when the referenced job dir exists', async () => {
     const progressStore = createProgressStore();
     const projectRoot = createProjectRoot('project-existing-job');
-    const session = allocateTestSession(createSessionManager(projectRoot), 'codex', 'alpha', 'gpt-5', projectRoot);
+    const sessionManager = createSessionManager(projectRoot);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'alpha',
+      'gpt-5',
+      projectRoot,
+      projectRoot,
+      testBackendNamespace,
+    );
     const jobId = 'completed-job';
     createdJobIds.add(jobId);
+    expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
     seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
@@ -5397,10 +5489,9 @@ describe('execution backend server', () => {
       progressStore,
       jobId,
       session.sessionId,
-      { content: 'done', outcome: { kind: 'completed' } },
+      { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
       'completed',
     );
-    createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
     await startBackendServer();
 
@@ -5409,31 +5500,96 @@ describe('execution backend server', () => {
     expect(recoveredSession?.activeJobId).toBeUndefined();
   });
 
-  it('recovers orphaned workflow jobs with an empty artifact, workflow diagnostics, and released session claim', async () => {
+  it('recovers workflow jobs without allocating a synthetic workflow session', async () => {
     const progressStore = createProgressStore();
     const jobId = 'workflow-orphan-job';
+    const childJobId = `${jobId}:0:0`;
     const projectRoot = createProjectRoot('workflow-project');
-    const session = createSessionManager(projectRoot).allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
-      name: 'workflow-session',
-      model: 'workflow',
-      cwd: projectRoot,
-      projectRoot,
-      backendNamespace: testBackendNamespace,
-    });
 
     createdJobIds.add(jobId);
-    initTestJob(progressStore, {
+    progressStore.commit((c) => {
+      c.append(
+        workflowPlanDeclaredEvent(
+          jobId,
+          {
+            slots: [
+              {
+                slotId: childJobId,
+                dependencies: [],
+                provider: 'codex',
+                instruction: 'architect',
+                agent: 'architect',
+              },
+            ],
+          },
+          TEST_PROVIDER_SCOPE,
+        ),
+      );
+      return undefined;
+    });
+    progressStore.appendLaunchRequested(jobId, {
       jobId,
-      sessionId: session.sessionId,
-      provider: 'codex',
+      owner: { kind: 'workflow', id: jobId },
+      sessionId: null,
+      provider: null,
       projectRoot,
       backendNamespace: testBackendNamespace,
       jobKind: 'workflow',
-      providerScope: TEST_PROVIDER_SCOPE,
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      request: {
+        prompt: '',
+        cwd: projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
     });
-    createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'workflow',
+      startTime: new Date().toISOString(),
+    });
+    const childSessionManager = createSessionManager(projectRoot);
+    const childSession = allocateTestSession(
+      childSessionManager,
+      'codex',
+      'workflow-child',
+      'gpt-5',
+      projectRoot,
+      projectRoot,
+      testBackendNamespace,
+    );
+    createdJobIds.add(childJobId);
+    expect(childSessionManager.claimForJobSync(childSession.sessionId, childJobId)).toBe(true);
+    progressStore.appendLaunchRequested(childJobId, {
+      jobId: childJobId,
+      owner: { kind: 'workflow', id: jobId },
+      sessionId: childSession.sessionId,
+      provider: 'codex',
+      providerAction: 'exec',
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      parentWorkflowJobId: jobId,
+      workflowSlotId: childJobId,
+      workflowSlotGeneration: 0,
+      request: {
+        prompt: 'architect',
+        cwd: projectRoot,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date().toISOString(),
+    });
+    commitJobTerminal(
+      progressStore,
+      childJobId,
+      childSession.sessionId,
+      { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' } },
+      'completed',
+    );
 
     const backend = await startBackendServer();
     const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
@@ -5451,28 +5607,24 @@ describe('execution backend server', () => {
     const body = await response.text();
     const status = progressStore.readStatus(jobId);
     const detail = progressStore.loadJobProjectionDetail(jobId);
-    const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
 
     expect(response.status).toBe(200);
     expect(body).toContain('event: terminal');
     expect(body).toContain(`"resultPath":"${jobResultPath(jobId)}"`);
     expect(body).not.toContain('"workflow":{"steps":[]}');
     expect(detail.exit?.diagnostics).toEqual({ progressFaults: [] });
-    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('');
+    expect(readFileSync(jobResultPath(jobId), 'utf-8')).toBe('# Step 0.0: architect\n\ndone\n');
     expect(status).toMatchObject({
-      phase: 'error',
+      owner: { kind: 'workflow', id: jobId },
+      sessionId: null,
+      provider: null,
+      phase: 'completed',
       jobKind: 'workflow',
       result: {
-        content: '',
-        outcome: {
-          kind: 'failed',
-          causeRef: {
-            stream: { kind: 'workflow', id: jobId },
-          },
-        },
+        content: 'done',
+        outcome: { kind: 'completed' },
       },
     });
-    expect(recoveredSession?.activeJobId).toBeUndefined();
   });
 
   it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
@@ -5618,6 +5770,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobId);
     progressStore.appendLaunchRequested(jobId, {
       jobId,
+      owner: { kind: 'system-task', id: `kb.source_import:${jobId}` },
       sessionId: null,
       provider: null,
       projectRoot,
@@ -5925,10 +6078,6 @@ describe('execution backend server', () => {
         providerMeta: {
           provider: 'codex',
           leaseState: 'acquired',
-          providerContinuity: {
-            provider: 'codex',
-            threadId: 'thread-1',
-          },
         },
       });
 
@@ -6395,9 +6544,19 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const jobId = 'missing-launch-unavailable-authority';
       const projectRoot = createProjectRoot('missing-launch-unavailable-authority-project');
-      const session = allocateTestSession(createSessionManager(projectRoot), 'codex', 'alpha', 'gpt-5', projectRoot);
+      const sessionManager = createSessionManager(projectRoot);
+      const session = allocateTestSession(
+        sessionManager,
+        'codex',
+        'alpha',
+        'gpt-5',
+        projectRoot,
+        projectRoot,
+        testBackendNamespace,
+      );
 
       createdJobIds.add(jobId);
+      expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
       initTestJob(progressStore, {
         jobId,
         sessionId: session.sessionId,
@@ -6406,7 +6565,6 @@ describe('execution backend server', () => {
         backendNamespace: testBackendNamespace,
         initialPhase: 'running',
       });
-      createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
       progressStore
         .getDb()
         .prepare("DELETE FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'")
@@ -6441,11 +6599,7 @@ describe('execution backend server', () => {
       const projectRoot = createProjectRoot('clean-live-project');
       writeFileSync(join(projectRoot, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
       const session = createSessionManager(projectRoot).allocate({
-        provider: 'codex',
-        sessionAuthority: {
-          kind: 'provider',
-          binding: withTestBindingLocation(TEST_CODEX_BINDING, projectRoot),
-        },
+        binding: withTestBindingLocation(TEST_CODEX_BINDING, projectRoot),
         name: 'alpha',
         model: 'gpt-5',
         cwd: projectRoot,
@@ -6487,11 +6641,7 @@ describe('execution backend server', () => {
       const projectRoot = createProjectRoot('ghost-launch-project');
       writeFileSync(join(projectRoot, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
       const session = createSessionManager(projectRoot).allocate({
-        provider: 'codex',
-        sessionAuthority: {
-          kind: 'provider',
-          binding: withTestBindingLocation(TEST_CODEX_BINDING, projectRoot),
-        },
+        binding: withTestBindingLocation(TEST_CODEX_BINDING, projectRoot),
         name: 'alpha',
         model: 'gpt-5',
         cwd: projectRoot,

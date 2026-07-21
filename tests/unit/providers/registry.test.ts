@@ -17,6 +17,7 @@ function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): Provide
         kind: 'terminal',
         terminal: {
           content: `${name} response`,
+          durationMs: 0,
           outcome: { kind: 'completed' as const },
         },
         diagnostics: {},
@@ -38,6 +39,25 @@ function providerNames(providers: ProviderSpec[]): string[] {
 }
 
 describe('ProviderRegistry', () => {
+  it('rejects an app-server provider without provider-owned recovery interpretation', () => {
+    expect(() =>
+      defineProvider({
+        name: 'uninterpreted',
+        run: async function* () {},
+        appServer: {
+          name: 'uninterpreted',
+          subscriptionPhase: 'afterInitialize',
+          buildServerSpec: () => ({
+            provider: 'uninterpreted',
+            command: 'uninterpreted',
+            args: [],
+            cwd: '/tmp',
+          }),
+        },
+      }),
+    ).toThrow("App-server provider 'uninterpreted' must define recovery interpretation.");
+  });
+
   it('registers and resolves provider specs', () => {
     const registry = new ProviderRegistry();
     const spec = makeSpec('codex-like');
@@ -60,7 +80,7 @@ describe('ProviderRegistry', () => {
     expect(events).toEqual([
       {
         kind: 'terminal',
-        terminal: { content: 'transparent response', outcome: { kind: 'completed' } },
+        terminal: { content: 'transparent response', durationMs: 0, outcome: { kind: 'completed' } },
         diagnostics: {},
       },
     ]);
@@ -108,6 +128,7 @@ describe('ProviderRegistry', () => {
           kind: 'terminal' as const,
           terminal: {
             content: 'recovered',
+            durationMs: 0,
             outcome: { kind: 'completed' as const },
           },
           diagnostics: {},
@@ -199,10 +220,7 @@ describe('ProviderRegistry', () => {
     expect(registry.get('stable')?.name).toBe('stable');
     expect(registry.get('drifted')).toBeUndefined();
     expect(registry.sealPersistedBindingCodecComponents()).toBe(components);
-    expect(components.map((entry) => entry.name)).toEqual([
-      'provider.binding-envelope',
-      'provider.stable.binding',
-    ]);
+    expect(components.map((entry) => entry.name)).toEqual(['provider.binding-envelope', 'provider.stable.binding']);
     expect(Object.isFrozen(components)).toBe(true);
   });
 

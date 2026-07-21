@@ -51,6 +51,8 @@ export interface ComposedReducers {
   readonly types: readonly string[];
   readonly reducers: Map<string, Reducer<unknown>>;
   readonly schemas: Map<string, z.ZodType>;
+  /** Canonical stream kind for each registered event type. */
+  readonly streamKinds: ReadonlyMap<string, StreamKind>;
   readonly appendValidators: readonly DomainAppendValidator[];
   /**
    * Describer-key form (`${streamKind}:${type}`) for every registered event
@@ -62,6 +64,7 @@ export interface ComposedReducers {
 export function composeReducers(...registries: DomainEventRegistry[]): ComposedReducers {
   const reducers = new Map<string, Reducer<unknown>>();
   const schemas = new Map<string, z.ZodType>();
+  const streamKinds = new Map<string, StreamKind>();
   const types: string[] = [];
   const describerKeys: string[] = [];
   const appendValidators: DomainAppendValidator[] = [];
@@ -83,12 +86,33 @@ export function composeReducers(...registries: DomainEventRegistry[]): ComposedR
         reducers.set(entry.type, entry.reducer);
       }
       schemas.set(entry.type, entry.schema);
+      streamKinds.set(entry.type, registry.streamKind);
       types.push(entry.type);
       describerKeys.push(`${registry.streamKind}:${entry.type}`);
     }
   }
 
-  return { types, reducers, schemas, appendValidators, describerKeys };
+  return { types, reducers, schemas, streamKinds, appendValidators, describerKeys };
+}
+
+export function assertRegisteredEventStream(
+  event: Pick<CoralEvent, 'type' | 'stream'>,
+  reducers: ComposedReducers,
+): void {
+  const expected = reducers.streamKinds.get(event.type);
+  if (expected === undefined || event.stream.kind === expected) return;
+
+  throw new CoralSetupError({
+    code: 'event_stream_kind_mismatch',
+    userMessage: `Event '${event.type}' belongs to the '${expected}' stream, not '${event.stream.kind}'.`,
+    remediation: `Append '${event.type}' with stream.kind='${expected}'.`,
+    context: {
+      type: event.type,
+      expectedStreamKind: expected,
+      actualStreamKind: event.stream.kind,
+      streamId: event.stream.id,
+    },
+  });
 }
 
 /**
@@ -98,6 +122,7 @@ export function composeReducers(...registries: DomainEventRegistry[]): ComposedR
  * schema without re-parsing.
  */
 export function applyReducer(db: Database, event: CoralEvent, reducers: ComposedReducers): void {
+  assertRegisteredEventStream(event, reducers);
   const reducer = reducers.reducers.get(event.type);
   if (!reducer) {
     return;

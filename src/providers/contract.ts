@@ -73,10 +73,6 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
-interface ProviderRecoveryMeta {
-  [key: string]: unknown;
-}
-
 export interface ProviderServerSpec {
   provider: string;
   command: string;
@@ -117,7 +113,7 @@ export interface ProviderTerminal {
   content: string;
   model?: string;
   outcome: ProviderTerminalOutcome;
-  durationMs?: number;
+  durationMs: number;
   /** @wire node:child_process — provider exit code; mirrors child_process exit semantics. */
   exitCode?: number | null;
   usage?: UsageSummary;
@@ -225,7 +221,7 @@ export const providerJobTerminalSchema = z
     content: z.string(),
     model: z.string().optional(),
     outcome: providerTerminalOutcomeSchema,
-    durationMs: z.number().optional(),
+    durationMs: z.number().nonnegative(),
     exitCode: z.number().nullable().optional(),
     usage: usageSummarySchema.optional(),
     warnings: z.array(z.string()).optional(),
@@ -371,9 +367,16 @@ export interface ProviderRecoveryContract {
     lease: ProviderServerLease,
     continuity: ProviderContinuityBlob,
   ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
-  finalizeInterrupted?(
+  /**
+   * Provider-owned interpretation of an interrupted app-server turn.
+   *
+   * The coordinator supplies observations only. It must never invent provider
+   * continuity semantics when the provider cannot be probed or no continuity
+   * blob has been checkpointed yet.
+   */
+  finalizeInterrupted(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
-    continuity: ProviderContinuityBlob,
+    continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
   finalizeFromArtifacts(options: {
@@ -382,7 +385,7 @@ export interface ProviderRecoveryContract {
     stderrPath: string;
     exitCode: number | null;
     signal: string | null;
-    providerMeta?: Record<string, unknown>;
+    durationMs: number;
     fallbackConversationRef?: string;
     knownArtifactHandles?: readonly ProviderArtifactHandleInput[];
     storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
@@ -395,8 +398,7 @@ export interface ProviderRecoveryContract {
       providerContinuity?: ProviderContinuityBlob;
     };
   }>;
-  buildRecoveryMeta?(request: ProviderRequest): ProviderRecoveryMeta;
-  extractProgress?(options: { stdoutPath: string; fromOffset: number; providerMeta?: Record<string, unknown> }): {
+  extractProgress?(options: { stdoutPath: string; fromOffset: number }): {
     messages: string[];
     newOffset: number;
   };
@@ -475,6 +477,7 @@ export function compose(
   // stream. Per-middleware defensive checks are not the right home; the
   // composition root sees the full chain end-to-end.
   return async function* terminalOnceProvider(request, runtime) {
+    const startedAt = runtime.time.now();
     let seenTerminal = false;
     let naturalCompletion = false;
     const inner = composed(request, runtime);
@@ -510,6 +513,7 @@ export function compose(
           kind: 'terminal',
           terminal: {
             content: '',
+            durationMs: Math.max(0, runtime.time.now() - startedAt),
             outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
           },
           diagnostics: {},

@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
 import type { SessionManager } from '#src/sessions/shell.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import { providerSessionSchema, type ProviderSession } from '#src/sessions/entry.js';
 import type { Database } from '#src/store/db.js';
-import { reduceSessionOpened } from '#src/sessions/projections.js';
-import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
+import { reduceSessionClaimed, reduceSessionOpened } from '#src/sessions/projections.js';
+import type { SessionClaimedBody, SessionOpenedBody } from '#src/sessions/event-bodies.js';
 import type { CoralEvent } from '#src/store/envelope.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { InitJobOptions } from '#src/jobs/contracts/job-store.js';
@@ -20,21 +20,23 @@ export function allocateTestSession(
   model: string | undefined,
   cwd: string,
   projectRoot = cwd,
+  backendNamespace = 'test',
 ) {
-  const sessionAuthority =
+  const binding =
     provider === 'codex'
-      ? ({ kind: 'provider', binding: TEST_CODEX_BINDING } as const)
+      ? TEST_CODEX_BINDING
       : provider === 'claude'
-        ? ({ kind: 'provider', binding: TEST_CLAUDE_BINDING } as const)
-        : ({ kind: 'orchestration' } as const);
+        ? TEST_CLAUDE_BINDING
+        : (() => {
+            throw new Error(`No binding fixture for '${provider}'.`);
+          })();
   return manager.allocate({
-    provider,
-    sessionAuthority,
+    binding,
     name,
     ...(model === undefined ? {} : { model }),
     cwd,
     projectRoot,
-    backendNamespace: 'test',
+    backendNamespace,
   });
 }
 
@@ -53,31 +55,41 @@ export function seedTestSessionProjection(
     provider: string;
     projectRoot: string;
     backendNamespace?: string;
-    orchestration?: boolean;
+    activeJobId?: string;
   },
-): SessionEntry {
+): ProviderSession {
   const existing = db
     .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
     .get(options.sessionId);
-  if (existing !== undefined) return JSON.parse(existing.entry) as SessionEntry;
+  if (existing !== undefined) {
+    const entry = providerSessionSchema.parse(JSON.parse(existing.entry));
+    if (options.activeJobId !== undefined && entry.activeJobId !== options.activeJobId) {
+      const claimed = { ...entry, activeJobId: options.activeJobId, version: entry.version + 1 };
+      reduceSessionClaimed(db, {
+        seq: 1,
+        ts: entry.lastUsedAt,
+        type: 'session.claimed',
+        stream: { kind: 'session', id: options.sessionId },
+        namespace: options.backendNamespace,
+        project: options.projectRoot,
+        refs: { sessionId: options.sessionId, jobId: options.activeJobId },
+        bodyVersion: 1,
+        body: { entry: claimed, jobId: options.activeJobId },
+      });
+      return claimed;
+    }
+    return entry;
+  }
 
   const binding =
     options.provider === 'codex' ? TEST_CODEX_BINDING : options.provider === 'claude' ? TEST_CLAUDE_BINDING : undefined;
-  if (!options.orchestration && binding === undefined) {
+  if (binding === undefined) {
     throw new Error(`Test provider session '${options.provider}' has no binding fixture.`);
   }
-  const sessionAuthority = options.orchestration
-    ? ({ kind: 'orchestration' } as const)
-    : binding === undefined
-      ? (() => {
-          throw new Error(`Test provider session '${options.provider}' has no binding fixture.`);
-        })()
-      : ({ kind: 'provider', binding } as const);
   const now = '2026-01-01T00:00:00.000Z';
-  const entry: SessionEntry = {
+  const opened: ProviderSession = {
     sessionId: options.sessionId,
-    provider: options.provider,
-    sessionAuthority,
+    binding,
     name: options.sessionId,
     state: 'ready',
     retention: 'retain',
@@ -92,9 +104,8 @@ export function seedTestSessionProjection(
     version: 1,
   };
   const body: SessionOpenedBody = {
-    entry,
+    entry: opened,
     controller: 'default',
-    provider: options.provider,
     scope_key: testSessionScopeKey(options.projectRoot),
   };
   const event: CoralEvent<SessionOpenedBody> = {
@@ -109,7 +120,23 @@ export function seedTestSessionProjection(
     body,
   };
   reduceSessionOpened(db, event);
-  return entry;
+  if (options.activeJobId === undefined) {
+    return opened;
+  }
+  const claimed: ProviderSession = {
+    ...opened,
+    activeJobId: options.activeJobId,
+    version: opened.version + 1,
+  };
+  const claimBody: SessionClaimedBody = { entry: claimed, jobId: options.activeJobId };
+  reduceSessionClaimed(db, {
+    ...event,
+    seq: 1,
+    type: 'session.claimed',
+    refs: { sessionId: options.sessionId, jobId: options.activeJobId },
+    body: claimBody,
+  });
+  return claimed;
 }
 
 export function initTestJob(store: JobStore, options: InitJobOptions): void {
@@ -123,6 +150,6 @@ export function seedTestJobSession(store: JobStore, options: InitJobOptions): vo
     provider: options.provider,
     projectRoot: options.projectRoot,
     backendNamespace: options.backendNamespace,
-    orchestration: options.jobKind === 'workflow',
+    activeJobId: options.jobId,
   });
 }

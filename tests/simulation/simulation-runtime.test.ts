@@ -7,6 +7,7 @@ import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
 import { InMemoryPaths, SealedEnv, SequentialIds } from '#tools/simulation/core/runtime-doubles.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 
 function waitForChildClose(child: Awaited<ReturnType<SimulationRuntime['process']['spawn']>>) {
   return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
@@ -490,6 +491,15 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
     expect(worldA.providerRegistry.get('codex')).toBeDefined();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(true);
+    const bound = await worldA.providerRegistry.bindProfile(
+      'codex',
+      {
+        provider: 'codex',
+        profile: { canonicalLocation: '/tmp/sim/accounts/codex', routing: { kind: 'home' } },
+      },
+      worldA.runtime.storage,
+    );
+    if (!bound.ok) throw new Error('expected the simulation Codex profile to bind');
 
     initTestJob(worldA.progressStore, {
       jobId: 'job-a',
@@ -505,9 +515,9 @@ describe('simulation runtime', () => {
       undefined,
       undefined,
       worldA.progressStore.getDb(),
+      providerLookupPortFromCatalog(worldA.providerRegistry),
     ).allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: bound.value.envelope,
       name: 'world-a',
       cwd: worldA.projectRoot,
       projectRoot: worldA.projectRoot,
@@ -517,10 +527,14 @@ describe('simulation runtime', () => {
     expect(worldA.progressStore.listJobIds()).toEqual(['job-a']);
     expect(worldB.progressStore.listJobIds()).toEqual([]);
     expect(
-      new SessionManager(worldB.projectRoot, worldB.runtime, undefined, undefined, worldB.progressStore.getDb()).get(
-        'codex',
-        sessionA.sessionId,
-      ),
+      new SessionManager(
+        worldB.projectRoot,
+        worldB.runtime,
+        undefined,
+        undefined,
+        worldB.progressStore.getDb(),
+        providerLookupPortFromCatalog(worldB.providerRegistry),
+      ).get('codex', sessionA.sessionId),
     ).toBeNull();
     expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
     expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');

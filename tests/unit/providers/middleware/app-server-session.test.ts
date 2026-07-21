@@ -124,7 +124,7 @@ function terminalEvent(
 ): Extract<ProviderEventBody, { kind: 'terminal' }> {
   return {
     kind: 'terminal',
-    terminal: buildJobTerminal({ content, outcome }),
+    terminal: buildJobTerminal({ content, durationMs: 0, outcome }),
     diagnostics: buildJobDiagnostics({}),
     ...(failureCause === undefined ? {} : { failureCause }),
   };

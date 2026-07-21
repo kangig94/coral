@@ -63,7 +63,9 @@ function epochTransitionEvents(projectRoot: string) {
 
 describe('Discuss epoch evaluation', () => {
   it('records the epoch summary and carry-forward questions for a non-converged epoch', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'eval-session' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'eval-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: JSON.stringify({
         convergence: 4,
@@ -97,11 +99,21 @@ describe('Discuss epoch evaluation', () => {
     let launchCount = 0;
     const start = vi.fn().mockImplementation(async () => {
       launchCount += 1;
-      return { status: 'running', job: `job-${launchCount}`, session: `session-${launchCount}` };
+      return {
+        kind: 'provider-session' as const,
+        status: 'running' as const,
+        jobId: `job-${launchCount}`,
+        sessionId: `session-${launchCount}`,
+      };
     });
-    const resume = vi.fn().mockImplementation(async () => {
+    const resume = vi.fn().mockImplementation(async (_provider, request: { sessionId: string }) => {
       launchCount += 1;
-      return { status: 'running', job: `job-${launchCount}`, session: 'session-2' };
+      return {
+        kind: 'provider-session' as const,
+        status: 'running' as const,
+        jobId: `job-${launchCount}`,
+        sessionId: request.sessionId,
+      };
     });
     const waitStreamOnce = vi
       .fn()

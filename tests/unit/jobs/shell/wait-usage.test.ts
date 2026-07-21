@@ -68,6 +68,7 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
         refs: { sessionId: 'wait-usage-session' },
         bodyVersion: 1,
         body: {
+          owner: { kind: 'provider-session', id: 'wait-usage-session' },
           sessionId: 'wait-usage-session',
           provider: 'codex',
           providerAction: 'exec',

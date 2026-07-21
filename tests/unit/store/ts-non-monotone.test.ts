@@ -7,8 +7,9 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 // S5: `ts` is informational only; producers (notably discuss restoration) may
 // emit `tsOverride` values earlier than MAX(ts). `seq` remains strictly
@@ -31,11 +32,10 @@ function ctx(): AppendContext {
   };
 }
 
-function sessionEntry(sessionId: string): SessionEntry {
+function sessionEntry(sessionId: string): ProviderSession {
   return {
     sessionId,
-    provider: 'codex',
-    sessionAuthority: { kind: 'orchestration' },
+    binding: TEST_CODEX_BINDING,
     name: sessionId,
     state: 'pending',
     retention: 'retain',
@@ -68,7 +68,6 @@ describe('ts non-monotone policy (S5)', () => {
             body: {
               entry: sessionEntry('session-live'),
               controller: 'default',
-              provider: 'codex',
               scope_key: 'tests',
             },
           });
@@ -83,7 +82,6 @@ describe('ts non-monotone policy (S5)', () => {
             body: {
               entry: sessionEntry('session-archived'),
               controller: 'default',
-              provider: 'codex',
               scope_key: 'tests',
             },
           });

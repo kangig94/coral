@@ -19,7 +19,6 @@ describe('consumeJobStream', () => {
 
     const result = await consumeJobStream({
       jobId: 'job-1',
-      providerName: 'codex',
       sessionId: 'session-1',
       initialVersion: 7,
       stream: (async function* () {
@@ -42,6 +41,7 @@ describe('consumeJobStream', () => {
           terminal: {
             content: 'done',
             outcome: { kind: 'completed' },
+            durationMs: 0,
           },
           diagnostics: {
             warnings: ['kept'],
@@ -82,6 +82,7 @@ describe('consumeJobStream', () => {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
       diagnostics: { warnings: ['kept'] },
     });
@@ -89,19 +90,15 @@ describe('consumeJobStream', () => {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
       diagnostics: {
         warnings: ['kept'],
       },
-      finalContinuity: {
-        conversationRef: 'thread-2',
-        resumable: false,
-        providerContinuity: { threadId: 'thread-2', state: 'closed' },
-      },
     });
   });
 
-  it('returns null continuity when the stream never emits a continuity body', async () => {
+  it('returns only the provider terminal when the stream never emits a continuity body', async () => {
     const appendProgress = vi.fn();
     const recordTerminal = vi.fn();
     const checkpointJobContinuityAtomic = vi.fn();
@@ -109,7 +106,6 @@ describe('consumeJobStream', () => {
 
     const result = await consumeJobStream({
       jobId: 'job-2',
-      providerName: 'codex',
       sessionId: 'session-2',
       initialVersion: 3,
       stream: (async function* () {
@@ -119,6 +115,7 @@ describe('consumeJobStream', () => {
           terminal: {
             content: 'done',
             outcome: { kind: 'completed' },
+            durationMs: 0,
           },
           diagnostics: {},
         } as const;
@@ -138,13 +135,13 @@ describe('consumeJobStream', () => {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
       diagnostics: {},
-      finalContinuity: null,
     });
   });
 
-  it('warns on stale checkpoints, drains the terminal, and preserves the last successful continuity', async () => {
+  it('warns on stale checkpoints and drains the terminal without copying continuity into the result', async () => {
     const appendProgress = vi.fn();
     const recordTerminal = vi.fn();
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
@@ -156,7 +153,6 @@ describe('consumeJobStream', () => {
 
     const result = await consumeJobStream({
       jobId: 'job-3',
-      providerName: 'codex',
       sessionId: 'session-3',
       initialVersion: 10,
       stream: (async function* () {
@@ -177,6 +173,7 @@ describe('consumeJobStream', () => {
           terminal: {
             content: 'done',
             outcome: { kind: 'completed' },
+            durationMs: 0,
           },
           diagnostics: {
             warnings: ['terminal-kept'],
@@ -219,6 +216,7 @@ describe('consumeJobStream', () => {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
       diagnostics: { warnings: ['terminal-kept'] },
     });
@@ -226,14 +224,10 @@ describe('consumeJobStream', () => {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
       diagnostics: {
         warnings: ['terminal-kept'],
-      },
-      finalContinuity: {
-        conversationRef: 'thread-1',
-        resumable: true,
-        providerContinuity: { threadId: 'thread-1' },
       },
     });
   });
@@ -246,7 +240,6 @@ describe('consumeJobStream', () => {
 
     const result = await consumeJobStream({
       jobId: 'job-4',
-      providerName: 'codex',
       sessionId: 'session-4',
       initialVersion: 5,
       stream: (async function* () {
@@ -266,6 +259,7 @@ describe('consumeJobStream', () => {
           terminal: {
             content: 'done',
             outcome: { kind: 'completed' },
+            durationMs: 0,
           },
           diagnostics: {},
         } as const;
@@ -281,7 +275,6 @@ describe('consumeJobStream', () => {
     expect(recordArtifactHandleAtomic).toHaveBeenCalledWith('session-4', {
       expectedActiveJobId: 'job-4',
       expectedVersion: 5,
-      provider: 'codex',
       handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
       identity: { kind: 'test-artifact', threadId: 'thread-1' },
       sourceJobId: 'job-4',
@@ -295,10 +288,6 @@ describe('consumeJobStream', () => {
         providerContinuity: { threadId: 'thread-1' },
       },
     });
-    expect(result.finalContinuity).toEqual({
-      conversationRef: 'thread-1',
-      resumable: true,
-      providerContinuity: { threadId: 'thread-1' },
-    });
+    expect(result).not.toHaveProperty('finalContinuity');
   });
 });

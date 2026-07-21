@@ -156,6 +156,7 @@ export function resolveCoordinatorDefaults(
             message,
             runtime.storage,
             runtime.paths.coral.exports.jobsRoot,
+            runtime.time.now(),
           );
         });
       const terminateAllFn = options.terminateAllFn ?? (() => bindings.launchCoordinator.terminateAll());

@@ -59,15 +59,24 @@ import {
 } from '#src/cli/format/usage.js';
 
 const runningDecision = {
+  kind: 'provider-session',
   launchState: 'running',
-  job: 'job-1',
-  session: 'session-1',
+  jobId: 'job-1',
+  sessionId: 'session-1',
 } satisfies AcceptedLaunchResponse;
 
 const queuedDecision = {
+  kind: 'provider-session',
   launchState: 'queued',
-  job: 'job-2',
-  session: 'session-2',
+  jobId: 'job-2',
+  sessionId: 'session-2',
+} satisfies AcceptedLaunchResponse;
+
+const workflowDecision = {
+  kind: 'workflow',
+  launchState: 'running',
+  workflowId: 'workflow-1',
+  jobId: 'workflow-1',
 } satisfies AcceptedLaunchResponse;
 
 const abortOnlyResult = {
@@ -162,6 +171,7 @@ const waitProgressEvent = {
 
 const waitQueuedEvent = {
   type: 'queued',
+  jobKind: 'provider',
   jobId: 'job-1',
   sessionId: 'session-1',
   queuePosition: 2,
@@ -177,6 +187,7 @@ const waitTerminalEvent = {
   resultPath: '/tmp/result.md',
   result: {
     content: 'Workflow summary',
+    durationMs: 60_000,
     outcome: { kind: 'completed' as const },
   },
 } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
@@ -189,6 +200,7 @@ const waitWaitingEvent = {
 const jobDetailResponse = {
   status: {
     jobId: 'job-1',
+    owner: { kind: 'provider-session', id: 'session-1' },
     sessionId: 'session-1',
     provider: 'codex',
     projectRoot: '/work/coral',
@@ -202,6 +214,7 @@ const jobDetailResponse = {
   readiness: 'ready',
   exit: {
     content: 'Workflow summary',
+    durationMs: 60_000,
     outcome: { kind: 'completed' },
     diagnostics: {
       progressFaults: [],
@@ -220,11 +233,15 @@ const jobDetailResponse = {
 describe('cli format', () => {
   describe('formatLaunch', () => {
     it('formats a running decision', () => {
-      expect(formatLaunch(runningDecision)).toBe('Job job-1 running (session session-1)');
+      expect(formatLaunch(runningDecision)).toBe('Provider job job-1 running (provider session session-1)');
     });
 
     it('formats a queued decision', () => {
-      expect(formatLaunch(queuedDecision)).toBe('Job job-2 queued (session session-2)');
+      expect(formatLaunch(queuedDecision)).toBe('Provider job job-2 queued (provider session session-2)');
+    });
+
+    it('distinguishes a workflow aggregate from its observable job', () => {
+      expect(formatLaunch(workflowDecision)).toBe('Workflow workflow-1 running (job workflow-1)');
     });
   });
 
@@ -236,7 +253,11 @@ describe('cli format', () => {
 
   describe('formatDetachedLaunchStatus', () => {
     it('formats detached launch status without repeating the job id', () => {
-      expect(formatDetachedLaunchStatus(runningDecision)).toBe('Job running (session session-1)');
+      expect(formatDetachedLaunchStatus(runningDecision)).toBe('Provider job running (provider session session-1)');
+    });
+
+    it('identifies detached workflows explicitly', () => {
+      expect(formatDetachedLaunchStatus(workflowDecision)).toBe('Workflow workflow-1 running (job workflow-1)');
     });
   });
 
@@ -262,7 +283,8 @@ describe('cli format', () => {
         Readiness: ready
         Provider: codex
         Kind: provider
-        Session: session-1
+        Owner: provider-session session-1
+        Provider session: session-1
         Project: /work/coral
         Updated: 2026-07-03T08:01:00.000Z
         Last seq: 5
@@ -306,7 +328,8 @@ describe('cli format', () => {
         Readiness: ready
         Provider: codex
         Kind: provider
-        Session: session-1
+        Owner: provider-session session-1
+        Provider session: session-1
         Project: /work/coral
         Updated: 2026-07-03T08:01:00.000Z
         Last seq: 5
@@ -389,6 +412,7 @@ describe('cli format', () => {
         ...jobDetailResponse,
         status: {
           ...jobDetailResponse.status,
+          owner: { kind: 'workflow' as const, id: 'job-1' },
           sessionId: null,
           provider: null,
           jobKind: 'workflow' as const,
@@ -1223,6 +1247,7 @@ describe('cli format', () => {
             ...waitTerminalEvent,
             result: {
               content: '',
+              durationMs: 60_000,
               outcome: { kind: 'aborted' as const, reason: 'signal_abort' },
             },
             usage: {
@@ -1268,6 +1293,7 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
+          durationMs: 60_000,
           outcome: { kind: 'provider_exit' as const, code: 0 },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
@@ -1282,6 +1308,7 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
+          durationMs: 60_000,
           outcome: { kind: 'aborted' as const, reason: 'signal_abort' },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
@@ -1298,6 +1325,7 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
+          durationMs: 60_000,
           outcome: {
             kind: 'job_fault' as const,
             fault: {
@@ -1320,6 +1348,7 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
+          durationMs: 60_000,
           outcome: { kind: 'provider_exit' as const, code: 7, note: 'forced timeout at 600s' },
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
@@ -1344,6 +1373,7 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
+          durationMs: 60_000,
           outcome: {
             kind: 'failed' as const,
             causeRef: {
@@ -1360,6 +1390,7 @@ describe('cli format', () => {
         ...waitTerminalEvent,
         result: {
           content: '',
+          durationMs: 60_000,
           outcome: {
             kind: 'failed' as const,
             causeRef: {

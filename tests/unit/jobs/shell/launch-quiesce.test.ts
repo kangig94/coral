@@ -9,11 +9,15 @@ import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import type { AdmittedHandle, JobAdmissionPort, LaunchPool } from '#src/jobs/contracts/admission.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
-import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
+import type { ContinuitySnapshot } from '#src/sessions/continuity.js';
 import type { ProviderServerLease, ProviderServerSpec } from '#src/providers/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
-import type { SessionJobContinuityCheckpointResult, SessionJobClaimPort } from '#src/sessions/contracts.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
+import type {
+  SessionInitialLaunchPort,
+  SessionJobContinuityCheckpointResult,
+  SessionJobClaimPort,
+} from '#src/sessions/contracts.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
@@ -129,19 +133,24 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   const checkpointSpy = vi.fn(
     async (
       _sessionId: string,
-      _options: { expectedActiveJobId: string; expectedVersion: number; snapshot: JobContinuitySnapshot },
+      _options: { expectedActiveJobId: string; expectedVersion: number; snapshot: ContinuitySnapshot },
     ): Promise<SessionJobContinuityCheckpointResult> => ({ ok: true, nextVersion: 2 }),
   );
 
-  const session: SessionEntry = {
+  const session: ProviderSession = {
     sessionId,
-    provider: 'codex',
-    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
+    binding: TEST_CODEX_BINDING,
     activeJobId: jobId,
     version: 1,
-  } as unknown as SessionEntry;
+  } as unknown as ProviderSession;
 
-  const sessionManager: SessionJobClaimPort = {
+  const sessionManager: SessionJobClaimPort & SessionInitialLaunchPort = {
+    prepare: () => {
+      throw new Error('Initial launch is outside this test.');
+    },
+    appendPreparedClaim: () => {
+      throw new Error('Initial launch is outside this test.');
+    },
     get: () => session,
     releaseJob: () => {},
     checkpointJobContinuityAtomic: checkpointSpy,
@@ -221,6 +230,7 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
     durableSpawner,
     providerRegistry,
     runtime,
+    coordinatorCommit: (cb) => progressStoreSpy.commit(cb),
     backendNamespace: 'ns',
     bundleHash: 'bundle',
     jobPools,

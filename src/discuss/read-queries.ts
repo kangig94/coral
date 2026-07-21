@@ -41,11 +41,15 @@ function toDiscussDomainEvent(
 ): DiscussDomainEvent {
   const body = decodeStoredBody(row, ctx) as Record<string, unknown>;
   const { sourceSeq, ...payload } = body;
+  const projectRoot = row.project ?? snapshot?.projectRoot;
+  if (projectRoot === undefined || projectRoot.length === 0) {
+    throw new Error(`Discussion '${row.stream_id}' has no durable project scope.`);
+  }
 
   return {
     v: 1,
     sessionId: row.stream_id,
-    projectRoot: row.project ?? snapshot?.projectRoot ?? '',
+    projectRoot,
     topic: eventTopic(payload, snapshot),
     seq: typeof sourceSeq === 'number' ? sourceSeq : row.seq,
     kind: row.type.startsWith('discuss.')

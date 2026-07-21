@@ -1,5 +1,5 @@
 import type { JobTerminal } from './records.js';
-import type { JobContinuitySnapshot } from './continuity.js';
+import type { ContinuitySnapshot } from '../sessions/continuity.js';
 import type { JobProgressTiming } from './event-bodies.js';
 import type { UsageSummary } from '../providers/contract.js';
 
@@ -48,19 +48,22 @@ export interface WaitStreamRequest extends WaitRequest {
 
 export type WaitStreamOnceResult = {
   content: string;
-  continuity: JobContinuitySnapshot | null;
+  continuity: ContinuitySnapshot | null;
+};
+
+type QueuedWaitEventBase = {
+  type: 'queued';
+  jobId: string;
+  queuePosition: number;
+  runningJobIds: string[];
+  timing: JobProgressTiming;
 };
 
 export type WaitStreamEvent =
   | { type: 'progress'; jobId: string; seq: number; message: string; timing: JobProgressTiming }
-  | {
-      type: 'queued';
-      jobId: string;
-      sessionId: string;
-      queuePosition: number;
-      runningJobIds: string[];
-      timing: JobProgressTiming;
-    }
+  | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string })
+  | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string })
+  | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string })
   | {
       type: 'terminal';
       jobId: string;
@@ -68,7 +71,7 @@ export type WaitStreamEvent =
       remainingJobIds: string[];
       resultPath: string;
       result: JobTerminal;
-      continuity?: JobContinuitySnapshot | null;
+      continuity?: ContinuitySnapshot | null;
       usage?: UsageSummary;
     }
   | { type: 'waiting'; waitingJobIds: string[] };

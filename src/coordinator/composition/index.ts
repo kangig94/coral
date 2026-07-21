@@ -683,8 +683,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           cleanupDaemonJobAbortProxy(jobId);
           continue;
         }
-        markJobAsError(progressStore, status, { kind: 'wrapper_crashed', cause: { message } }, (line) =>
-          world.log(`${line}\n`),
+        markJobAsError(
+          progressStore,
+          status,
+          { kind: 'wrapper_crashed', cause: { message } },
+          runtime.time.now(),
+          (line) => world.log(`${line}\n`),
         );
         cleanupDaemonJobAbortProxy(jobId);
         failed.push(jobId);

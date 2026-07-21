@@ -32,6 +32,7 @@ CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.pa
 -- authoritative; projection is derived via reducer + rebuildProjections.
 CREATE TABLE IF NOT EXISTS projection_jobs (
   job_id                  TEXT PRIMARY KEY,
+  execution_owner         TEXT NOT NULL,       -- JSON ExecutionOwner @persisted-codec store.projection_jobs.execution_owner
   phase                   TEXT NOT NULL,
   terminal                TEXT,            -- JSON { outcome, durationMs } or NULL @persisted-codec store.projection_jobs.terminal
   diagnostics             TEXT,            -- JSON @persisted-codec store.projection_jobs.diagnostics
@@ -42,18 +43,22 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   bundle_hash             TEXT,
   job_kind                TEXT NOT NULL,
   parent_workflow_job_id  TEXT,             -- workflow-slot parent (jobs launched by a workflow plan)
-  workflow_slot           TEXT,             -- slotId on parent's plan
+  workflow_slot           TEXT,             -- slotId on the parent workflow plan
+  workflow_slot_generation INTEGER,
+  replaces_workflow_job_id TEXT,
   created_at              TEXT NOT NULL,
   last_seq                INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
 CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);
 CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
+CREATE UNIQUE INDEX IF NOT EXISTS projection_jobs_workflow_slot_generation
+  ON projection_jobs(parent_workflow_job_id, workflow_slot, workflow_slot_generation)
+  WHERE parent_workflow_job_id IS NOT NULL AND workflow_slot IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS projection_sessions (
   session_id       TEXT PRIMARY KEY,
   controller       TEXT NOT NULL,
-  provider         TEXT NOT NULL,
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
   scope_key        TEXT NOT NULL,
@@ -70,6 +75,8 @@ CREATE TABLE IF NOT EXISTS projection_discuss (
 CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
   plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] } @persisted-codec store.projection_workflows.plan
+  provider_scope TEXT NOT NULL,    -- JSON ProviderScope @persisted-codec store.projection_workflows.provider_scope
+  lifecycle   TEXT NOT NULL,
                                    -- labels are derived at render time from `slot.agent`;
                                    -- workflowId is event.stream.id, not stored in body.
   last_seq    INTEGER NOT NULL
@@ -101,7 +108,7 @@ CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline (
 );
 
 -- Consumer cursor table — tracks every registered consumer (default and expansion-owned) per authority.
--- Cursor interpretation depends on the consumer's authority:
+-- Cursor interpretation depends on consumer authority:
 -- - Journal consumers: cursor is events.seq
 -- - Corpus consumers: snapshot_id + seq/hash fields reflect the last applied snapshot
 -- §6.4: one Orama consumer (`orama-base`), not split into FTS/vector. Splitting would force
@@ -184,7 +191,7 @@ CREATE INDEX IF NOT EXISTS kb_curate_retry_by_time ON kb_curate_retry_queue(retr
 -- Entries quarantined after a non-auto-resolvable git body conflict.
 -- The local commits are preserved on recovery_ref before the daemon resets
 -- the worktree to origin; this table prevents the curator from recreating
--- the same conflicting commit until the entry's tracked fingerprint is current.
+-- the same conflicting commit until the tracked entry fingerprint is current.
 CREATE TABLE IF NOT EXISTS kb_curate_conflict_quarantine (
   entry_id                   TEXT PRIMARY KEY,
   entry_kind                 TEXT NOT NULL,

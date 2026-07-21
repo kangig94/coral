@@ -10,6 +10,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): Database {
@@ -33,15 +34,22 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
     });
 
     try {
+      seedTestSessionProjection(db, {
+        sessionId: 'session-1',
+        provider: 'codex',
+        projectRoot: '/workspace/coral',
+        backendNamespace: 'namespace-1',
+      });
       const appended = commitInputs(
         db,
         [
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-1' },
-            refs: { sessionId: 'session-1', parentJobId: 'job-parent', workflowSlotId: 'workflow-slot-1' },
+            refs: { sessionId: 'session-1' },
             bodyVersion: 1,
             body: {
+              owner: { kind: 'provider-session', id: 'session-1' },
               sessionId: 'session-1',
               provider: 'codex',
               providerAction: 'exec',
@@ -79,7 +87,13 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
             bodyVersion: 1,
-            body: { transport: 'durable-cli', pid: 4242, startedAt: NOW.toISOString() },
+            body: {
+              transport: 'durable-cli',
+              pid: 4242,
+              stdoutPath: '/tmp/job-1.stdout',
+              stderrPath: '/tmp/job-1.stderr',
+              startedAt: NOW.toISOString(),
+            },
           },
           {
             type: 'job.progress.emitted',
@@ -145,8 +159,8 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
         diagnostics: JSON.stringify({
           progressFaults: [{ kind: 'recovery_parse_failed', cause: { message: 'partial stderr' } }],
         }),
-        parent_workflow_job_id: 'job-parent',
-        workflow_slot: 'workflow-slot-1',
+        parent_workflow_job_id: null,
+        workflow_slot: null,
         last_seq: appended.at(-1)?.seq ?? 0,
       });
 

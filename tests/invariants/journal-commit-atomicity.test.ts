@@ -280,7 +280,6 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
           causeRef: { stream: { kind: 'job', id: 'not-workflow-completed' }, seq: 99 },
         },
       },
-      continuity: null,
     }),
   );
 }
@@ -306,7 +305,6 @@ function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
           kind: 'failed',
         },
       },
-      continuity: null,
     }),
   );
 }
@@ -320,15 +318,35 @@ function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobSto
 }
 
 function initWorkflowJob(progressStore: JobStore, jobId: string): void {
-  initTestJob(progressStore, {
+  progressStore.appendLaunchRequested(jobId, {
     jobId,
-    sessionId: `${jobId}-session`,
-    provider: 'codex',
+    owner: { kind: 'workflow', id: jobId },
+    sessionId: null,
+    provider: null,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
     jobKind: 'workflow',
-    providerScope: TEST_PROVIDER_SCOPE,
-    initialPhase: 'running',
+    pool: 'default',
+    enqueueSequence: progressStore.nextEnqueueSequence(),
+    request: {
+      prompt: '',
+      cwd: PROJECT_ROOT,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: NOW,
+  });
+  progressStore.commit((c) => {
+    c.append({
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: jobId },
+      namespace: TEST_NAMESPACE,
+      project: PROJECT_ROOT,
+      refs: { jobId, workflowId: jobId },
+      bodyVersion: 1,
+      body: { transport: 'workflow', startedAt: NOW },
+    });
+    return undefined;
   });
 }
 
@@ -369,18 +387,19 @@ function createWorkflowExecutionPort(
       const jobId = String(input.jobId ?? `${coralName}-job`);
       dispatches.push({ providerName, coralName, jobId, workflowSlotId: input.workflowSlotId });
       return {
+        kind: 'provider-session',
         status: 'running',
-        job: jobId,
-        session: `${jobId}-session`,
+        jobId: jobId,
+        sessionId: `${jobId}-session`,
       };
     },
     resume: async (_providerName, input) => ({
+      kind: 'provider-session',
       status: 'running',
-      job: input.jobId ?? 'resumed-job',
-      session: input.sessionId,
+      jobId: input.jobId ?? 'resumed-job',
+      sessionId: input.sessionId,
     }),
     recordContinuationLease: async () => {},
-    claimContinuationLease: async () => true,
     clearContinuationLease: async () => true,
     abort: (jobIds) => ({ aborted: [...jobIds], notFound: [] }),
     awaitLaunch: async () => 'ready',
@@ -403,6 +422,7 @@ function createWorkflowExecutionPort(
             result: {
               content: options.terminalContentByJob?.get(jobId) ?? `result:${jobId}`,
               outcome,
+              durationMs: 0,
             },
           };
         }),
@@ -418,11 +438,11 @@ function createWorkflowRecoveryHarness(db: Db, workflowId: string, expression = 
   const plan = buildWorkflowPlan(workflowId, parseExpression(expression), {
     defaultProvider: 'codex',
   });
-  initWorkflowJob(progressStore, workflowId);
   progressStore.commit((c) => {
-    c.append(workflowPlanDeclaredEvent(workflowId, plan));
+    c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
     return undefined;
   });
+  initWorkflowJob(progressStore, workflowId);
 
   return {
     db,
@@ -444,9 +464,11 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
+    activeJobId: slot.slotId,
   });
   harness.progressStore.appendLaunchRequested(slot.slotId, {
     jobId: slot.slotId,
+    owner: { kind: 'workflow', id: harness.workflowId },
     sessionId: slotSessionId(slot),
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
@@ -457,6 +479,7 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
     providerAction: 'exec',
     parentWorkflowJobId: harness.workflowId,
     workflowSlotId: slot.slotId,
+    workflowSlotGeneration: 0,
     request: {
       prompt: '',
       cwd: PROJECT_ROOT,
@@ -477,7 +500,7 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
 function appendWorkflowSlotTerminal(
   harness: WorkflowRecoveryHarness,
   slot: PlanSlot,
-  terminal: { content: string; outcome: WaitTerminalOutcome; durationMs?: number },
+  terminal: { content: string; outcome: WaitTerminalOutcome; durationMs: number },
 ): void {
   harness.progressStore.commit((c) => {
     appendJobTerminalRecorded(c, {
@@ -488,7 +511,6 @@ function appendWorkflowSlotTerminal(
       parentJobId: harness.workflowId,
       workflowSlotId: slot.slotId,
       terminal,
-      continuity: null,
     });
     return undefined;
   });
@@ -537,6 +559,11 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
   const runtime = new SimulationRuntime();
   const progressStore = createWorkflowProgressStore(db, runtime);
   const jobId = 'workflow-executor-path';
+  const plan = buildWorkflowPlan(jobId, parseExpression('architect'), { defaultProvider: 'codex' });
+  progressStore.commit((c) => {
+    c.append(workflowPlanDeclaredEvent(jobId, plan, TEST_PROVIDER_SCOPE));
+    return undefined;
+  });
   initWorkflowJob(progressStore, jobId);
 
   const service = new WorkflowExecutionService({
@@ -546,10 +573,6 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
     bundleHash: 'bundle-a',
     providerRegistry: { get: () => null, getAll: () => [] } as never,
     coordinatorCommit: (cb) => progressStore.commit(cb),
-    sessionManager: {
-      setNonResumable() {},
-      releaseJob() {},
-    } as never,
     abortRegistry: {
       remove() {},
     } as never,
@@ -561,9 +584,9 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
 
   (
     service as unknown as {
-      handleWorkflowError(error: unknown, sessionId: string, jobId: string): void;
+      handleWorkflowError(error: unknown, jobId: string): void;
     }
-  ).handleWorkflowError(new Error('wrapper exploded'), `${jobId}-session`, jobId);
+  ).handleWorkflowError(new Error('wrapper exploded'), jobId);
 }
 
 function readSource(path: string): string {
@@ -688,6 +711,7 @@ describe('journal commit atomicity invariant', () => {
       appendWorkflowSlotTerminal(harness, slot, {
         content: 'ARCH_DONE',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       });
       const captured = captureWorkflowIntents();
 
@@ -807,6 +831,7 @@ describe('journal commit atomicity invariant', () => {
       appendWorkflowSlotTerminal(harness, failedSlot, {
         content: '',
         outcome: { kind: 'provider_exit', code: 1 },
+        durationMs: 0,
       });
       initWorkflowSlotJob(harness, pendingSlot);
       const realFinalizer = createWorkflowRecoveryFinalizer({
@@ -901,7 +926,6 @@ describe('journal commit atomicity invariant', () => {
             causeRef: { stream: { kind: 'workflow', id: harness.workflowId }, seq: completed.seq },
           },
         },
-        continuity: null,
       });
       expect(completed.seq).toBe(lifecycleFault.seq + 1);
       expect(terminal.seq).toBe(completed.seq + 1);
@@ -983,4 +1007,4 @@ describe('journal commit atomicity invariant', () => {
     );
   });
 });
-import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';

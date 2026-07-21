@@ -16,7 +16,8 @@ import type { LaunchDecision } from '../../src/jobs/launch.js';
 import { isTerminalPhase } from '../../src/jobs/phase.js';
 import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/jobs/records.js';
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
-import type { SessionEntry } from '../../src/sessions/entry.js';
+import type { ProviderSession } from '../../src/sessions/entry.js';
+import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
 
 const RESULT_FILE = 'result.md';
 
@@ -386,7 +387,7 @@ export class SimulationWorld {
     return this.current.backend.progressStore.listJobIds();
   }
 
-  listSessions(provider: string, projectRoot?: string): SessionEntry[] {
+  listSessions(provider: string, projectRoot?: string): ProviderSession[] {
     this.assertUsable();
     const targetRoot = projectRoot ?? this.current.backend.projectRoot;
     return new SessionManager(
@@ -395,6 +396,7 @@ export class SimulationWorld {
       undefined,
       () => {},
       this.current.backend.progressStore.getDb(),
+      providerLookupPortFromCatalog(this.current.backend.providerRegistry),
     ).list(provider);
   }
 

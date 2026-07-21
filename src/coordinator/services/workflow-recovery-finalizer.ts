@@ -5,7 +5,6 @@ import type { CommitEventsFn } from '../../store/append.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
-import { releaseSessionJobClaim } from '../../sessions/job-release.js';
 import { serializeWorkflowResult } from './execution-policies.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
 
@@ -13,19 +12,26 @@ export type WorkflowRecoveryFinalizer = (intent: WorkflowFinalizationIntent) => 
 
 export function createWorkflowRecoveryFinalizer(options: {
   runtime: Runtime;
-  progressStore: Pick<JobProgressStore, 'readStatus' | 'getDb'>;
+  progressStore: Pick<JobProgressStore, 'readStatus' | 'readRuntimeProjection'>;
   coordinatorCommit: CommitEventsFn;
   log?: (message: string) => void;
-  emitSessionReleased?: (payload: { sessionId: string; jobId: string }) => void;
 }): WorkflowRecoveryFinalizer {
   return (intent) => {
     const status = options.progressStore.readStatus(intent.workflowJobId);
     const namespace = status?.backendNamespace;
     const project = status?.projectRoot;
-    const sessionId = status?.sessionId ?? null;
+    const runtime = options.progressStore.readRuntimeProjection(intent.workflowJobId);
+    if (runtime?.transport !== 'workflow') {
+      throw new Error(`Workflow '${intent.workflowJobId}' has no workflow runtime start.`);
+    }
+    const startedAt = Date.parse(runtime.startTime);
+    if (!Number.isFinite(startedAt)) {
+      throw new Error(`Workflow '${intent.workflowJobId}' has an invalid runtime start timestamp.`);
+    }
+    const durationMs = Math.max(0, options.runtime.time.now() - startedAt);
 
     options.coordinatorCommit((c) => {
-      composeWorkflowFinalization(c, intent.workflowJobId, intent, { sessionId, namespace, project });
+      composeWorkflowFinalization(c, intent.workflowJobId, intent, { namespace, project, durationMs });
       return undefined;
     });
 
@@ -44,18 +50,6 @@ export function createWorkflowRecoveryFinalizer(options: {
       } else {
         backendLog.warn(message);
       }
-    }
-
-    if (status?.sessionId) {
-      releaseSessionJobClaim({
-        projectRoot: status.projectRoot,
-        runtime: options.runtime,
-        emitSessionReleased: options.emitSessionReleased ?? (() => {}),
-        db: options.progressStore.getDb(),
-        commitEvents: options.coordinatorCommit,
-        sessionId: status.sessionId,
-        jobId: status.jobId,
-      });
     }
   };
 }

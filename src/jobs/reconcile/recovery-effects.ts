@@ -5,6 +5,7 @@ import { buildJobEventRefs } from '../refs.js';
 import type { JobStore } from '../store.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import type { CommitContext } from '../../store/append.js';
+import { elapsedDurationMs } from '../duration.js';
 
 type JobRecoveryError = JobLifecycleFault | JobProgressFault;
 
@@ -31,8 +32,14 @@ export function markJobAsError(
   progressStore: Pick<JobStore, 'commit' | 'readLaunchProjection'>,
   status: JobStatus,
   fault: JobRecoveryError,
+  endTimeMs: number,
   _log: (message: string) => void,
 ): void {
+  const launch = progressStore.readLaunchProjection(status.jobId);
+  if (launch === null) {
+    throw new Error(`Cannot record recovery terminal for ${status.jobId} without its launch record.`);
+  }
+  const durationMs = elapsedDurationMs(launch.createdAt, endTimeMs, `job ${status.jobId}`);
   progressStore.commit((c) => {
     const outcome = recoveryFaultOutcome(c, status, fault);
     appendJobTerminalRecorded(c, {
@@ -40,8 +47,7 @@ export function markJobAsError(
       sessionId: status.sessionId,
       namespace: status.backendNamespace,
       project: status.projectRoot,
-      terminal: { content: '', outcome },
-      continuity: null,
+      terminal: { content: '', durationMs, outcome },
     });
     return undefined;
   });

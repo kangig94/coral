@@ -169,13 +169,12 @@ describe('discuss handoff (cross-domain integration)', () => {
         } as never;
       },
     });
-    const replacementContext = replacement.core.getDiscussContext(
-      makeInvocationContext(replacement.core.identity.pluginRoot),
-    );
+    const replacementInvocation = makeInvocationContext(replacement.core.identity.pluginRoot);
+    const replacementContext = replacement.core.getDiscussContext(replacementInvocation);
 
-    await replacementContext.service.start('codex', { prompt: 'recovered bid' });
+    await replacementContext.service.start('codex', { prompt: 'recovered bid' }, replacementInvocation);
 
-    expect(start).toHaveBeenCalledWith('codex', { prompt: 'recovered bid' });
+    expect(start).toHaveBeenCalledWith('codex', { prompt: 'recovered bid' }, replacementInvocation);
     expect(serviceContexts).toContainEqual(expect.objectContaining({ providerScope: TEST_PROVIDER_SCOPE }));
     expect(replacement.core.systemProviderScope).not.toEqual(TEST_PROVIDER_SCOPE);
   });

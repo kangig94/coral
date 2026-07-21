@@ -79,6 +79,7 @@ function terminal(content: string): ProviderEventBody {
     kind: 'terminal',
     terminal: {
       content,
+      durationMs: 0,
       outcome: { kind: 'completed' },
     },
     diagnostics: {},

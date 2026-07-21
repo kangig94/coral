@@ -8,7 +8,11 @@ import type {
 } from '../../../providers/contract.js';
 import { join } from 'node:path';
 import { buildProviderExecutionContext } from '../../../providers/execution-context.js';
-import { readContinuityRef, type ProviderContinuityBlob } from '../../../sessions/continuity.js';
+import {
+  readContinuityRef,
+  type ContinuitySnapshot,
+  type ProviderContinuityBlob,
+} from '../../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { assertNever, errorMessage } from '../../../infra/error-format.js';
@@ -24,7 +28,7 @@ import {
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
-import type { SessionAuthority, SessionEntry } from '../../../sessions/entry.js';
+import { providerSessionProvider, type ProviderSession } from '../../../sessions/entry.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type { ProviderBindingCatalog } from '../../../providers/catalog.js';
 import type { ProviderBindingFailure } from '../../../providers/contracts/binding.js';
@@ -39,11 +43,7 @@ import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registr
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
 import { CONTEXT_ENV_KEY } from '../../../transport/context-profile.js';
-import {
-  FINALIZE_CONTINUITY_MAX_RETRIES,
-  buildInterruptedAppServerReport,
-  isProviderContinuityBlob,
-} from '../execution-policies.js';
+import { FINALIZE_CONTINUITY_MAX_RETRIES, buildInterruptedAppServerReport } from '../execution-policies.js';
 import type {
   InterruptedAppServerReason,
   InterruptedProbeOutcome,
@@ -55,15 +55,12 @@ import {
   type ChildPrincipalRegistry,
 } from '../../child-principal-registry.js';
 import type { Principal } from '../../../security/principal.js';
+import { elapsedDurationMs } from '../../../jobs/duration.js';
 
 type ProviderLaunchRecord = JobLaunch & {
   sessionId: string;
   provider: string;
   jobKind: Exclude<JobLaunch['jobKind'], 'kb'>;
-};
-
-type ProviderSessionEntry = SessionEntry & {
-  sessionAuthority: Extract<SessionAuthority, { kind: 'provider' }>;
 };
 
 function requireProviderLaunchRecord(
@@ -116,7 +113,7 @@ export interface RecoveryServiceDeps {
   parentPrincipal: Principal;
   acquireServer?: (
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
+    options?: { jobId?: string; signal?: AbortSignal },
   ) => Promise<ProviderServerLease>;
 }
 
@@ -127,7 +124,7 @@ export class RecoveryService {
   }
 
   private providerContext(
-    session: SessionEntry,
+    session: ProviderSession,
     source: ProviderCredentialSourceRef,
     request: ProviderRequest,
     jobId: string,
@@ -142,7 +139,7 @@ export class RecoveryService {
     });
   }
 
-  private recoveryChildEnv(session: SessionEntry, jobId: string): Readonly<Record<string, string>> {
+  private recoveryChildEnv(session: ProviderSession, jobId: string): Readonly<Record<string, string>> {
     const childCredential = this.deps.childPrincipalRegistry.register({
       issuer: 'job-recovery',
       parentPrincipal: this.deps.parentPrincipal,
@@ -162,35 +159,31 @@ export class RecoveryService {
   private async readProviderSession(
     launchRecord: JobLaunch,
   ): Promise<
-    | { ok: true; session: ProviderSessionEntry; source: ProviderCredentialSourceRef }
+    | { ok: true; session: ProviderSession; source: ProviderCredentialSourceRef }
     | { ok: false; failure: ProviderBindingFailure }
   > {
     const provider = launchRecord.provider;
     if (provider === null || launchRecord.sessionId === null) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider: provider ?? 'unknown' } };
     }
-    let session: SessionEntry | null;
+    let session: ProviderSession | null;
     try {
       session = this.deps.sessionManager.readById(launchRecord.sessionId, { forceFresh: true });
     } catch {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
     if (session === null) return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
-    if (
-      session?.sessionAuthority.kind !== 'provider' ||
-      session.provider !== launchRecord.provider ||
-      session.sessionAuthority.binding.provider !== launchRecord.provider
-    ) {
+    if (providerSessionProvider(session) !== launchRecord.provider) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
-    const binding = this.deps.providerRegistry.rehydrateBinding(session.sessionAuthority.binding);
+    const binding = this.deps.providerRegistry.rehydrateBinding(session.binding);
     if (!binding.ok) return { ok: false, failure: binding.failure };
     if (binding.value.provider !== provider) {
       return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
     const readiness = await binding.value.readiness('recovery', this.deps.runtime.storage);
     if (!readiness.ok) return { ok: false, failure: readiness.failure };
-    return { ok: true, session: session as ProviderSessionEntry, source: binding.value.credentialSource() };
+    return { ok: true, session, source: binding.value.credentialSource() };
   }
 
   private failBindingIntegrity(launchRecord: JobLaunch, failure: ProviderBindingFailure): void {
@@ -201,12 +194,18 @@ export class RecoveryService {
       launchRecord.sessionId,
       {
         content: message,
+        durationMs: elapsedDurationMs(
+          launchRecord.createdAt,
+          this.deps.runtime.time.now(),
+          `job ${launchRecord.jobId}`,
+        ),
         outcome: {
           kind: 'job_fault',
           fault: { kind: 'provider_binding', provider: failure.provider, reason: failure.reason, message },
         },
       },
       'error',
+      { pool: launchRecord.pool },
     );
   }
 
@@ -224,22 +223,19 @@ export class RecoveryService {
 
   private requestServer(
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
+    options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
     return this.deps.acquireServer ? this.deps.acquireServer(spec, options) : this.acquireServer(spec, options);
   }
 
   async acquireServer(
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
+    options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
     const claudeTransport = readClaudeTransportMode(spec);
-    const rawConversationRef = options?.providerMeta?.conversationRef;
-    const conversationRef = typeof rawConversationRef === 'string' ? readContinuityRef(rawConversationRef) : undefined;
     if (options?.jobId) {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
         leaseState: 'waiting',
-        ...(conversationRef === undefined ? {} : { conversationRef }),
         ...(claudeTransport === undefined ? {} : { claudeTransport }),
       });
     }
@@ -249,7 +245,6 @@ export class RecoveryService {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
         leaseState: 'acquired',
         serverGeneration: lease.generation,
-        ...(conversationRef === undefined ? {} : { conversationRef }),
         ...(claudeTransport === undefined ? {} : { claudeTransport }),
       });
     }
@@ -269,12 +264,12 @@ export class RecoveryService {
       return;
     }
     const session = storedSession.session;
-    const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
+    const continuity = this.sessionProviderContinuity(session);
     if (!continuity) {
       return;
     }
 
-    const request = toProviderRequest(launchRecord);
+    const request = toProviderRequest(launchRecord, session.conversationRef);
     const spec = appServer.buildServerSpec(
       request,
       continuity,
@@ -294,7 +289,7 @@ export class RecoveryService {
   private async recoverInterruptedContinuityFromArtifacts(options: {
     launchRecord: ProviderLaunchRecord;
     runtimeRecord: AppServerRuntime;
-    session: ProviderSessionEntry;
+    session: ProviderSession;
     source: ProviderCredentialSourceRef;
     recovery: ProviderRecoveryContract;
     continuity: ProviderContinuityBlob | undefined;
@@ -308,12 +303,14 @@ export class RecoveryService {
       stderrPath: join(jobDir, 'stderr'),
       exitCode: null,
       signal: null,
-      providerMeta: {
-        ...runtimeRecord.providerMeta,
-      },
+      durationMs: elapsedDurationMs(
+        runtimeRecord.startTime,
+        this.deps.runtime.time.now(),
+        `job ${launchRecord.jobId}`,
+      ),
       fallbackConversationRef: preservedConversationRef,
       knownArtifactHandles: session.artifactHandles
-        .filter((artifact) => artifact.provider === launchRecord.provider)
+        .filter((artifact) => artifact.sourceJobId === launchRecord.jobId)
         .map((artifact) => ({
           handle: artifact.handle,
           identity: artifact.identity,
@@ -324,7 +321,6 @@ export class RecoveryService {
     if (artifactResult.artifactHandles && artifactResult.artifactHandles.length > 0) {
       await this.recordRecoveredArtifactHandles(launchRecord.sessionId, {
         jobId: launchRecord.jobId,
-        provider: launchRecord.provider,
         handles: artifactResult.artifactHandles,
       });
     }
@@ -334,24 +330,14 @@ export class RecoveryService {
         : readContinuityRef(artifactResult.continuity.conversationRef);
     const artifactResumable = artifactResult.continuity?.resumable ?? recoveredConversationRef !== undefined;
     const recoveredProviderContinuity = artifactResult.continuity?.providerContinuity ?? continuity;
-    const mutation =
-      (continuity === undefined
-        ? undefined
-        : recovery.finalizeInterrupted?.(
-            {
-              resumable: artifactResumable,
-              updatedContinuity: recoveredProviderContinuity,
-            },
-            continuity,
-            { preservedConversationRef: recoveredConversationRef },
-          )) ??
-      (recoveredConversationRef !== undefined
-        ? {
-            kind: 'set_resumable' as const,
-            conversationRef: recoveredConversationRef,
-            providerContinuity: recoveredProviderContinuity,
-          }
-        : { kind: 'clear_non_resumable' as const, providerContinuity: recoveredProviderContinuity });
+    const mutation = recovery.finalizeInterrupted(
+      {
+        resumable: artifactResumable,
+        ...(recoveredProviderContinuity === undefined ? {} : { updatedContinuity: recoveredProviderContinuity }),
+      },
+      continuity,
+      { preservedConversationRef: recoveredConversationRef },
+    );
     return {
       mutation,
       probeOutcome: artifactResumable ? 'verified' : 'missing',
@@ -360,13 +346,14 @@ export class RecoveryService {
 
   private async materializeInterruptedAppServerRecovery(options: {
     launchRecord: ProviderLaunchRecord;
+    runtimeRecord: AppServerRuntime;
     status: JobStatus;
     reason: InterruptedAppServerReason;
     probeOutcome: InterruptedProbeOutcome;
     mutation: SessionContinuityMutation;
     recoveryConversationRef: string | undefined;
   }): Promise<void> {
-    const { launchRecord, status, reason, probeOutcome, mutation, recoveryConversationRef } = options;
+    const { launchRecord, runtimeRecord, status, reason, probeOutcome, mutation, recoveryConversationRef } = options;
     const fault: SessionInterruptedFault = {
       trigger: reason,
       continuity: interruptedContinuityState(probeOutcome, mutation),
@@ -388,7 +375,14 @@ export class RecoveryService {
         namespace: status.backendNamespace,
         project: status.projectRoot,
       },
-      { content: interruptedReport },
+      {
+        content: interruptedReport,
+        durationMs: elapsedDurationMs(
+          runtimeRecord.startTime,
+          this.deps.runtime.time.now(),
+          `job ${launchRecord.jobId}`,
+        ),
+      },
     );
     try {
       writeResultArtifact(
@@ -403,7 +397,7 @@ export class RecoveryService {
     this.deps.abortRegistry.remove(launchRecord.jobId);
     this.deps.launchAdmission.releaseLaunch(
       launchRecord.jobId,
-      (this.deps.jobPools.get(launchRecord.jobId) ?? launchRecord.pool ?? 'default') as LaunchPool,
+      this.deps.jobPools.get(launchRecord.jobId) ?? launchRecord.pool,
     );
     this.deps.jobPools.delete(launchRecord.jobId);
     await this.finalizeSessionContinuityMutation(
@@ -417,7 +411,7 @@ export class RecoveryService {
   private async probeInterruptedAppServerContinuity(options: {
     launchRecord: ProviderLaunchRecord;
     runtimeRecord: AppServerRuntime;
-    session: ProviderSessionEntry;
+    session: ProviderSession;
     source: ProviderCredentialSourceRef;
     appServer: ProviderAppServerContract;
     recovery: ProviderRecoveryContract;
@@ -430,7 +424,7 @@ export class RecoveryService {
     if (probe === undefined) {
       throw new Error(`Provider '${launchRecord.provider}' has no interrupted recovery probe.`);
     }
-    const request = toProviderRequest(launchRecord);
+    const request = toProviderRequest(launchRecord, session.conversationRef);
     const spec = appServer.buildServerSpec(
       request,
       continuity,
@@ -450,13 +444,9 @@ export class RecoveryService {
         const probeResult = await probe(lease, continuity);
         return {
           probeOutcome: probeResult.resumable ? 'verified' : 'missing',
-          mutation:
-            recovery.finalizeInterrupted?.(probeResult, continuity, {
-              preservedConversationRef: recoveryConversationRef,
-            }) ??
-            (recoveryConversationRef !== undefined
-              ? { kind: 'set_resumable', conversationRef: recoveryConversationRef }
-              : { kind: 'preserve' }),
+          mutation: recovery.finalizeInterrupted(probeResult, continuity, {
+            preservedConversationRef: recoveryConversationRef,
+          }),
         };
       } finally {
         if (!liveServer) lease.release();
@@ -465,13 +455,9 @@ export class RecoveryService {
       backendLog.error(`Probe failed for ${launchRecord.jobId}: ${errorMessage(error)}`);
       return {
         probeOutcome: 'unavailable',
-        mutation:
-          recovery.finalizeInterrupted?.({ resumable: false, updatedContinuity: continuity }, continuity, {
-            preservedConversationRef: recoveryConversationRef,
-          }) ??
-          (recoveryConversationRef !== undefined
-            ? { kind: 'set_resumable', conversationRef: recoveryConversationRef }
-            : { kind: 'preserve' }),
+        mutation: recovery.finalizeInterrupted({ resumable: false, updatedContinuity: continuity }, continuity, {
+          preservedConversationRef: recoveryConversationRef,
+        }),
       };
     }
   }
@@ -479,7 +465,7 @@ export class RecoveryService {
   private async decideInterruptedAppServerRecovery(options: {
     launchRecord: ProviderLaunchRecord;
     runtimeRecord: AppServerRuntime;
-    session: ProviderSessionEntry;
+    session: ProviderSession;
     source: ProviderCredentialSourceRef;
   }): Promise<{
     mutation: SessionContinuityMutation;
@@ -490,37 +476,27 @@ export class RecoveryService {
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
     const appServer = providerEntry?.appServer;
     const recovery = providerEntry?.recovery;
-    const persistedConversationRef =
-      readContinuityRef(session.conversationRef) ?? readContinuityRef(launchRecord.request.conversationRef);
-    const recoveryConversationRef =
-      persistedConversationRef ?? readContinuityRef(runtimeRecord.providerMeta.conversationRef);
-    const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
+    const persistedConversationRef = readContinuityRef(session.conversationRef);
+    const recoveryConversationRef = persistedConversationRef;
+    const continuity = this.sessionProviderContinuity(session);
 
-    if (!appServer || !recovery) {
-      return {
-        probeOutcome: 'waiting',
-        mutation:
-          persistedConversationRef === undefined
-            ? { kind: 'clear_non_resumable' }
-            : { kind: 'set_resumable', conversationRef: persistedConversationRef },
-        recoveryConversationRef,
-      };
+    if (appServer === undefined) {
+      throw new Error(
+        `Provider '${launchRecord.provider}' produced an app-server runtime without an app-server capability.`,
+      );
+    }
+    if (recovery === undefined) {
+      throw new Error(`Provider '${launchRecord.provider}' has no interrupted app-server recovery capability.`);
     }
     if (runtimeRecord.providerMeta.leaseState === 'waiting') {
-      const mutation =
-        (continuity === undefined
-          ? undefined
-          : recovery.finalizeInterrupted?.(
-              {
-                resumable: persistedConversationRef !== undefined || continuity !== undefined,
-                updatedContinuity: continuity,
-              },
-              continuity,
-              { preservedConversationRef: persistedConversationRef },
-            )) ??
-        (persistedConversationRef === undefined
-          ? { kind: 'clear_non_resumable' as const }
-          : { kind: 'set_resumable' as const, conversationRef: persistedConversationRef });
+      const mutation = recovery.finalizeInterrupted(
+        {
+          resumable: persistedConversationRef !== undefined || continuity !== undefined,
+          ...(continuity === undefined ? {} : { updatedContinuity: continuity }),
+        },
+        continuity,
+        { preservedConversationRef: persistedConversationRef },
+      );
       return { mutation, probeOutcome: 'waiting', recoveryConversationRef };
     }
     if (recovery.probe === undefined) {
@@ -553,11 +529,15 @@ export class RecoveryService {
       };
     }
     return {
-      probeOutcome: 'waiting',
-      mutation:
-        persistedConversationRef === undefined
-          ? { kind: 'clear_non_resumable' }
-          : { kind: 'set_resumable', conversationRef: persistedConversationRef },
+      ...(await this.recoverInterruptedContinuityFromArtifacts({
+        launchRecord,
+        runtimeRecord,
+        session,
+        source,
+        recovery,
+        continuity,
+        preservedConversationRef: recoveryConversationRef,
+      })),
       recoveryConversationRef,
     };
   }
@@ -570,15 +550,8 @@ export class RecoveryService {
     requireProviderLaunchRecord(launchRecord, 'finalizeInterruptedAppServerJob');
     const status = this.deps.progressStore.readStatus(launchRecord.jobId);
     if (!status || isTerminalPhase(status.phase)) {
-      // Cross-version partial-state preservation: a pre-PR daemon wrote a
-      // terminal record before crashing mid-finalizer. The replacement
-      // recognizes it as terminal and does not re-finalize. Warn surfaces
-      // this path for operator visibility without re-running the durable
-      // mutation sequence.
       if (status && options.reason === 'handoff') {
-        backendLog.warn(
-          `skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery — likely cross-version partial-state from pre-PR daemon`,
-        );
+        backendLog.warn(`skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery`);
       }
       return;
     }
@@ -598,6 +571,7 @@ export class RecoveryService {
 
     await this.materializeInterruptedAppServerRecovery({
       launchRecord,
+      runtimeRecord,
       status,
       reason: options.reason,
       probeOutcome,
@@ -608,7 +582,7 @@ export class RecoveryService {
 
   async recoverQueuedJob(launchRecord: JobLaunch): Promise<string> {
     requireProviderLaunchRecord(launchRecord, 'recoverQueuedJob');
-    const pool = (launchRecord.pool || 'default') as LaunchPool;
+    const pool = launchRecord.pool;
     const jobId = launchRecord.jobId;
     const sessionResult = await this.readProviderSession(launchRecord);
     if (!sessionResult.ok) {
@@ -619,7 +593,12 @@ export class RecoveryService {
 
     this.deps.jobPools.set(jobId, pool);
 
-    const queuedHandle = this.deps.launchRecovery.restoreQueuedLaunch(jobId, launchRecord.provider, pool);
+    const queuedHandle = this.deps.launchRecovery.restoreQueuedLaunch(
+      jobId,
+      launchRecord.provider,
+      launchRecord.owner,
+      pool,
+    );
     this.deps.abortRegistry.register(jobId, () => {
       queuedHandle.cancel();
     });
@@ -644,11 +623,10 @@ export class RecoveryService {
     sessionId: string,
     input: {
       readonly jobId: string;
-      readonly provider: string;
       readonly handles: readonly ProviderArtifactHandleInput[];
     },
   ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }> {
-    const session = this.deps.sessionManager.get(input.provider, sessionId);
+    const session = this.deps.sessionManager.readById(sessionId, { forceFresh: true });
     if (!session) {
       return { ok: false };
     }
@@ -658,10 +636,9 @@ export class RecoveryService {
       const recorded = await this.deps.sessionManager.recordArtifactHandleAtomic(sessionId, {
         expectedActiveJobId: input.jobId,
         expectedVersion,
-        provider: input.provider,
         handle: artifact.handle,
         identity: artifact.identity,
-        sourceJobId: artifact.sourceJobId ?? input.jobId,
+        sourceJobId: input.jobId,
       });
       if (!recorded.ok) {
         return { ok: false };
@@ -677,7 +654,7 @@ export class RecoveryService {
     runtimeRecord: JobRuntime,
   ): Promise<{ adopted: boolean; cleanup: () => void }> {
     requireProviderLaunchRecord(launchRecord, 'adoptRunningJob');
-    const pool = (launchRecord.pool || 'default') as LaunchPool;
+    const pool = launchRecord.pool;
     const jobId = launchRecord.jobId;
 
     if (!isDurableCliRuntime(runtimeRecord)) {
@@ -701,7 +678,7 @@ export class RecoveryService {
 
     this.deps.jobPools.set(jobId, pool);
 
-    this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, pool);
+    this.deps.launchRecovery.restoreActiveLaunch(jobId, launchRecord.provider, launchRecord.owner, pool);
     this.deps.progressStore.rebindNamespace(jobId, this.deps.backendNamespace, this.deps.bundleHash);
 
     const pid = runtimeRecord.pid;
@@ -727,13 +704,12 @@ export class RecoveryService {
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options?: TerminalWriteOptions,
+    options: TerminalWriteOptions & { pool: LaunchPool; sessionContinuity?: ContinuitySnapshot | null },
   ): void {
     const currentStatus = this.deps.progressStore.readStatus(jobId);
     if (!currentStatus || !isTerminalPhase(currentStatus.phase)) {
       this.deps.launchOrchestrator.writeJobTerminal(jobId, sessionId, result, phase, {
-        ...options,
-        continuity: options?.continuity ?? null,
+        diagnostics: options.diagnostics,
       });
     }
     try {
@@ -747,11 +723,10 @@ export class RecoveryService {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${String(error)}`);
     }
     this.deps.abortRegistry.remove(jobId);
-    const pool = this.deps.jobPools.get(jobId) ?? 'default';
-    this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    this.deps.launchAdmission.releaseLaunch(jobId, options.pool);
     this.deps.jobPools.delete(jobId);
 
-    const continuity = options?.continuity ?? null;
+    const continuity = options.sessionContinuity ?? null;
     const continuityConversationRef = readContinuityRef(continuity?.conversationRef);
     if (continuity?.providerContinuity) {
       this.deps.sessionManager.checkpointProviderContinuity(sessionId, {
@@ -776,17 +751,10 @@ export class RecoveryService {
     };
   }
 
-  private resolveAppServerContinuity(
-    runtimeRecord: AppServerRuntime,
-    session?: Pick<SessionEntry, 'providerContinuity'> | null,
+  private sessionProviderContinuity(
+    session: Pick<ProviderSession, 'providerContinuity'>,
   ): ProviderContinuityBlob | undefined {
-    if (isProviderContinuityBlob(runtimeRecord.providerMeta.providerContinuity)) {
-      return runtimeRecord.providerMeta.providerContinuity;
-    }
-    if (isProviderContinuityBlob(session?.providerContinuity)) {
-      return session.providerContinuity;
-    }
-    return undefined;
+    return session.providerContinuity ?? undefined;
   }
 
   private writeAppServerRuntimeRecord(
@@ -803,8 +771,6 @@ export class RecoveryService {
         provider: providerName,
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
-        providerContinuity: update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
-        conversationRef: update.conversationRef ?? appRuntime?.providerMeta.conversationRef,
         claudeTransport: update.claudeTransport ?? appRuntime?.providerMeta.claudeTransport,
       },
     };

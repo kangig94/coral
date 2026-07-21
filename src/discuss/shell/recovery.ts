@@ -17,6 +17,83 @@ import { isManualParticipant } from './runtime-build.js';
 import { attachSession } from './registry.js';
 import { appendRuntimeEvents, isAbortEnded, readSessionEvents } from './persistence.js';
 
+export async function reconcileDiscussionOwnedJobs(
+  ctx: DiscussContext,
+  sessionId: string,
+): Promise<PersistedDiscussSnapshot> {
+  const owned = ctx.jobStatusReader
+    .listOwned(sessionId)
+    .slice()
+    .sort((left, right) =>
+      left.launch.createdAt === right.launch.createdAt
+        ? left.launch.jobId.localeCompare(right.launch.jobId)
+        : left.launch.createdAt.localeCompare(right.launch.createdAt),
+    );
+  const started = new Set(
+    readSessionEvents(ctx, sessionId)
+      .filter((event) => event.kind === 'agent.job.started')
+      .map((event) => event.payload.jobId),
+  );
+
+  for (const { launch } of owned) {
+    if (started.has(launch.jobId)) continue;
+    if (launch.sessionId === null || launch.discussionRun === undefined) {
+      throw new Error(`Discussion-owned job '${launch.jobId}' has no durable run descriptor.`);
+    }
+    const { agent, purpose, attempt } = launch.discussionRun;
+    const executionSessionId = launch.sessionId;
+    const reconciled = await appendRuntimeEvents(ctx, sessionId, (current) => {
+      const run = current.runtime.agentRuns[agent];
+      if (run === undefined) {
+        throw new Error(`Discussion-owned job '${launch.jobId}' names unknown agent '${agent}'.`);
+      }
+      if (run.executionSessionId !== undefined && run.executionSessionId !== executionSessionId) {
+        throw new Error(`Discussion agent '${agent}' is already bound to another provider session.`);
+      }
+      if (run.currentJobId !== undefined && run.currentJobId !== launch.jobId) {
+        throw new Error(`Discussion agent '${agent}' already has active job '${run.currentJobId}'.`);
+      }
+      if (run.currentJobId === launch.jobId) return [];
+
+      let seq = current.lastAppliedSeq + 1;
+      const events: DiscussDomainEvent[] = [];
+      if (run.executionSessionId === undefined) {
+        events.push(
+          makeEvent(
+            current.sessionId,
+            current.projectRoot,
+            current.state.topic,
+            seq++,
+            'agent.run.bound',
+            nowIsoString(ctx.runtime.time),
+            { agent, executionSessionId },
+          ),
+        );
+      }
+      events.push(
+        makeEvent(
+          current.sessionId,
+          current.projectRoot,
+          current.state.topic,
+          seq,
+          'agent.job.started',
+          nowIsoString(ctx.runtime.time),
+          { agent, jobId: launch.jobId, purpose, attempt },
+        ),
+      );
+      return events;
+    });
+    if (reconciled === null) {
+      throw new Error(`Failed to reconcile discussion-owned job '${launch.jobId}'.`);
+    }
+    started.add(launch.jobId);
+  }
+
+  const reconciled = ctx.store.load(sessionId);
+  if (reconciled === null) throw new Error(`Discuss session not found after job reconciliation: ${sessionId}`);
+  return reconciled;
+}
+
 export type RecoveredDiscussResume = {
   ctx: DiscussContext;
   sessionId: string;
@@ -162,7 +239,7 @@ export async function recoverPersistedSessionsFromStore(
     }
 
     const ctx = resolveContext(snapshot);
-    const events = readSessionEvents(ctx, candidate.sessionId);
+    let events = readSessionEvents(ctx, candidate.sessionId);
     const abortEnded = isAbortEnded(events);
     if (abortEnded) {
       continue;
@@ -172,9 +249,12 @@ export async function recoverPersistedSessionsFromStore(
       continue;
     }
 
+    const reconciledSnapshot = await reconcileDiscussionOwnedJobs(ctx, candidate.sessionId);
+    events = readSessionEvents(ctx, candidate.sessionId);
+
     attachSession(
       ctx,
-      snapshot,
+      reconciledSnapshot,
       {
         baseCursor: 0,
         events: buildWatchEvents(events),
@@ -182,11 +262,11 @@ export async function recoverPersistedSessionsFromStore(
       abortEnded,
     );
 
-    if (shouldResumeRecoveredSession(snapshot)) {
+    if (shouldResumeRecoveredSession(reconciledSnapshot)) {
       recovered.push({
         ctx,
-        sessionId: snapshot.sessionId,
-        invocationCtx: resolveInvocationContext(snapshot),
+        sessionId: reconciledSnapshot.sessionId,
+        invocationCtx: resolveInvocationContext(reconciledSnapshot),
       });
     }
   }

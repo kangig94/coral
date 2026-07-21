@@ -43,6 +43,7 @@ _innerContext.append({
     terminal: {
       content: '',
       outcome: { kind: 'failed', causeRef: _outerToken },
+      durationMs: 0,
     },
   },
 });

@@ -36,7 +36,7 @@ export function buildRecoverySnapshot(
 
   for (const sessionRef of sessionLookup.listSessionRefs()) {
     try {
-      const entry = sessionLookup.readSessionEntry(sessionRef.sessionId);
+      const entry = sessionLookup.readProviderSession(sessionRef.sessionId);
       let sessionFacts: RecoverySessionFacts | null = null;
       if (entry !== null) {
         sessionFacts = entry.activeJobId ? { activeJobId: entry.activeJobId } : {};

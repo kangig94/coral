@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';
+import { discussionJobPurposes } from '../jobs/discussion-run.js';
 
 import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 
@@ -25,13 +26,36 @@ export const discussEventKinds = [
   'agent.job.finished',
 ] as const;
 
+export const discussionAgentExecutionConfigSchema = z.discriminatedUnion('manual', [
+  z.object({ manual: z.literal(true), provider: z.undefined().optional(), model: z.undefined().optional() }).strict(),
+  z.object({ manual: z.literal(false), provider: z.string().min(1), model: z.string().min(1) }).strict(),
+]);
+
+const discussAgentJobPurposes = discussionJobPurposes;
+export type DiscussAgentJobPurpose = (typeof discussAgentJobPurposes)[number];
+
+export const discussRunBindingSchema = z
+  .object({ agent: z.string().min(1), executionSessionId: z.string().min(1) })
+  .strict();
+
+/** Persisted discussion fields consulted by discussion-owned launch validation. */
+export const discussExecutionAuthoritySchema = z
+  .object({
+    projectRoot: z.string().min(1),
+    runtime: z
+      .object({
+        agentRuns: z.record(
+          z.object({ provider: z.string().min(1), executionSessionId: z.string().min(1).optional() }).passthrough(),
+        ),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
 export type DiscussEventKind = (typeof discussEventKinds)[number];
 const discussEventKindSet = new Set<string>(discussEventKinds);
 
-const discussAgentJobPurposes = ['bid', 'speech', 'epoch_evaluation', 'follow_up', 'synthesis'] as const;
-export type DiscussAgentJobPurpose = (typeof discussAgentJobPurposes)[number];
-
-const discussAgentJobOutcomes = [
+export const discussAgentJobOutcomes = [
   'completed',
   'non_resumable',
   'execution_error',
@@ -67,28 +91,11 @@ export const sessionCreatedConfigSchema = z
   })
   .strict();
 
-const sessionCreatedAgentExecutionConfigSchema = z.union([
-  z
-    .object({
-      manual: z.literal(true),
-      provider: z.undefined().optional(),
-      model: z.undefined().optional(),
-    })
-    .strict(),
-  z
-    .object({
-      manual: z.literal(false),
-      provider: z.string(),
-      model: z.string(),
-    })
-    .strict(),
-]);
-
 const sessionCreatedPayloadSchema = z
   .object({
     input: discussCreateInputSchema,
     config: sessionCreatedConfigSchema,
-    agentExecution: z.record(sessionCreatedAgentExecutionConfigSchema),
+    agentExecution: z.record(discussionAgentExecutionConfigSchema),
     providerScope: providerScopeSchema,
   })
   .strict();
@@ -207,12 +214,7 @@ const sessionSynthesizedPayloadSchema = z
   })
   .strict();
 
-const agentRunBoundPayloadSchema = z
-  .object({
-    agent: z.string(),
-    executionSessionId: z.string(),
-  })
-  .strict();
+const agentRunBoundPayloadSchema = discussRunBindingSchema;
 
 const agentJobStartedPayloadSchema = z
   .object({
@@ -339,7 +341,7 @@ export interface DiscussEventEnvelope<K extends DiscussEventKind, P = DiscussPay
 
 type SessionCreatedConfig = z.infer<typeof sessionCreatedConfigSchema>;
 
-export type SessionCreatedAgentExecutionConfig = z.infer<typeof sessionCreatedAgentExecutionConfigSchema>;
+export type SessionCreatedAgentExecutionConfig = z.infer<typeof discussionAgentExecutionConfigSchema>;
 
 type SessionCreatedPayload = z.infer<typeof sessionCreatedPayloadSchema> & {
   input: DiscussCreateInput;

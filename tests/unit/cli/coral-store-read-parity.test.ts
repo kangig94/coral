@@ -73,6 +73,7 @@ function seedStore(projectRoot: string): void {
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id,
+         execution_owner,
          phase,
          terminal,
          diagnostics,
@@ -86,9 +87,10 @@ function seedStore(projectRoot: string): void {
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       'job-store-read-1',
+      JSON.stringify({ kind: 'provider-session', id: 'session-store-read-1' }),
       'running',
       'session-store-read-1',
       'codex',

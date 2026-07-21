@@ -28,6 +28,8 @@ import {
 } from '#src/providers/contract.js';
 import type { ProviderTransportClose } from '#src/providers/protocol.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
+import { jobRuntimeStartedBodySchema } from '#src/jobs/event-bodies.js';
+import { jobLaunchRequestBodySchema } from '#src/jobs/launch.js';
 import { loadJobProjectionDetail, readJobEvents } from '#src/jobs/read-queries.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
 import {
@@ -37,10 +39,10 @@ import {
 import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
 import { getSession } from '#src/discuss/shell/registry.js';
 import { startDiscussSession } from '#src/discuss/shell/operations.js';
-import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
+import { createProgressStoreDiscussJournal } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { AgentConfig } from '#src/discuss/shell/types.js';
-import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
+import type { ContinuitySnapshot } from '#src/sessions/continuity.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
@@ -48,6 +50,11 @@ import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { discussRegistry } from '#src/discuss/event-registry.js';
+import { workflowRegistry } from '#src/workflow/events.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -115,11 +122,11 @@ function continuitySnapshot(
   conversationRef: string | null,
   resumable: boolean,
   providerContinuity?: Record<string, unknown>,
-): JobContinuitySnapshot {
+): ContinuitySnapshot {
   return {
     conversationRef,
     resumable,
-    ...(providerContinuity === undefined ? {} : { providerContinuity }),
+    providerContinuity: providerContinuity ?? null,
   };
 }
 
@@ -184,6 +191,7 @@ describe('coordinator continuity lifecycle integration', () => {
     const progressStore = new JobStore(TEST_BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
       db: openTestStoreDb(runtime),
       eventBus,
+      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
     });
     const service = new ExecutionService(ctx, {
@@ -206,13 +214,16 @@ describe('coordinator continuity lifecycle integration', () => {
     service: ExecutionService,
     provider: string,
     prompt = 'run',
-  ): Promise<{ job: string; session: string }> {
+  ): Promise<{ jobId: string; sessionId: string }> {
     const decision = await service.start(provider, { prompt, cwd: ctx.projectRoot, bypassPermissions: false }, ctx);
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') {
       throw new Error('Expected running launch');
     }
-    return { job: decision.job, session: decision.session };
+    if (decision.sessionId === undefined) {
+      throw new Error('Provider launch must return a session');
+    }
+    return { jobId: decision.jobId, sessionId: decision.sessionId };
   }
 
   it('persists mid-stream continuity and projects it through wait and query readers', async () => {
@@ -232,6 +243,7 @@ describe('coordinator continuity lifecycle integration', () => {
           kind: 'terminal',
           terminal: {
             content: 'midstream complete',
+            durationMs: 0,
             outcome: { kind: 'completed' },
           },
           diagnostics: {},
@@ -244,9 +256,9 @@ describe('coordinator continuity lifecycle integration', () => {
     });
 
     const decision = await waitForRunningDecision(service, 'codex');
-    const once = await service.waitStreamOnce(decision.job, 5_000);
-    const detail = loadJobProjectionDetail(progressStore.getDb(), decision.job, progressStore);
-    const terminalProgress = readJobEvents(progressStore.getDb(), decision.job, progressStore).find(
+    const once = await service.waitStreamOnce(decision.jobId, 5_000);
+    const detail = loadJobProjectionDetail(progressStore.getDb(), decision.jobId, progressStore);
+    const terminalProgress = readJobEvents(progressStore.getDb(), decision.jobId, progressStore).find(
       (event) => event.type === 'terminal',
     );
     const { sessionManager } = getInternals(service);
@@ -255,22 +267,21 @@ describe('coordinator continuity lifecycle integration', () => {
       content: 'midstream complete',
       continuity: liveSnapshot,
     });
-    expect(progressStore.readStatus(decision.job)).toMatchObject({
+    expect(progressStore.readStatus(decision.jobId)).toMatchObject({
+      owner: { kind: 'provider-session', id: decision.sessionId },
+      sessionId: decision.sessionId,
       phase: 'completed',
     });
-    expect(detail.exit?.continuity).toEqual(liveSnapshot);
-    expect(terminalProgress).toMatchObject({
-      type: 'terminal',
-      continuity: liveSnapshot,
-    });
-    expect(sessionManager.get('codex', decision.session)).toMatchObject({
+    expect(detail.exit).not.toHaveProperty('continuity');
+    expect(terminalProgress).not.toHaveProperty('continuity');
+    expect(sessionManager.get('codex', decision.sessionId)).toMatchObject({
       conversationRef: 'thread-live',
       state: 'ready',
       providerContinuity: { threadId: 'thread-live' },
     });
   });
 
-  it('rejects extra continuity keys on provider terminal bodies and downstream terminal schemas', () => {
+  it('rejects provider continuity on job terminals and app-server runtime records', () => {
     const providerTerminal = providerTerminalEventBodySchema.safeParse({
       kind: 'terminal',
       terminal: {
@@ -293,13 +304,56 @@ describe('coordinator continuity lifecycle integration', () => {
         durationMs: 1,
         outcome: { kind: 'completed' },
       },
-      conversationRef: 'thread-extra',
-      resumable: true,
+      continuity: {
+        conversationRef: 'thread-extra',
+        resumable: true,
+        providerContinuity: { threadId: 'thread-extra' },
+      },
+    });
+    const runtimeWithConversationRef = jobRuntimeStartedBodySchema.safeParse({
+      transport: 'app-server',
+      startedAt: '2026-07-22T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        conversationRef: 'thread-extra',
+      },
+    });
+    const runtimeWithProviderContinuity = jobRuntimeStartedBodySchema.safeParse({
+      transport: 'app-server',
+      startedAt: '2026-07-22T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'acquired',
+        providerContinuity: { threadId: 'thread-extra' },
+      },
+    });
+    const launchWithConversationRef = jobLaunchRequestBodySchema.safeParse({
+      owner: { kind: 'provider-session', id: 'session-extra' },
+      sessionId: 'session-extra',
+      provider: 'codex',
+      providerAction: 'resume',
+      projectRoot: '/tmp/project',
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 1,
+      createdAt: '2026-07-22T00:00:00.000Z',
+      request: {
+        prompt: 'resume',
+        cwd: '/tmp/project',
+        bypassPermissions: false,
+        coralEnv: {},
+        conversationRef: 'thread-extra',
+      },
     });
 
     expect(providerTerminal.success).toBe(false);
     expect(jobTerminal.success).toBe(false);
     expect(recorded.success).toBe(false);
+    expect(runtimeWithConversationRef.success).toBe(false);
+    expect(runtimeWithProviderContinuity.success).toBe(false);
+    expect(launchWithConversationRef.success).toBe(false);
   });
 
   it('checkpoints abort continuity before the terminal event and propagates transport-closed continuity via middleware', async () => {
@@ -320,6 +374,7 @@ describe('coordinator continuity lifecycle integration', () => {
             kind: 'terminal',
             terminal: {
               content: 'aborted',
+              durationMs: 0,
               outcome: { kind: 'aborted', reason: 'user_abort' },
             },
             diagnostics: {},
@@ -345,6 +400,7 @@ describe('coordinator continuity lifecycle integration', () => {
             kind: 'terminal',
             terminal: {
               content: 'transport handled',
+              durationMs: 0,
               outcome: { kind: 'completed' },
             },
             diagnostics: {},
@@ -375,19 +431,19 @@ describe('coordinator continuity lifecycle integration', () => {
     const { sessionManager } = getInternals(service);
 
     const abortDecision = await waitForRunningDecision(service, 'codex', 'abort me');
-    service.abort([abortDecision.job]);
-    const aborted = await service.waitStreamOnce(abortDecision.job, 5_000);
+    service.abort([abortDecision.jobId]);
+    const aborted = await service.waitStreamOnce(abortDecision.jobId, 5_000);
     expect(aborted).toEqual({
       content: 'aborted',
       continuity: continuitySnapshot('thread-abort', true, { threadId: 'thread-abort', state: 'aborted' }),
     });
-    expect(sessionManager.get('codex', abortDecision.session)).toMatchObject({
+    expect(sessionManager.get('codex', abortDecision.sessionId)).toMatchObject({
       conversationRef: 'thread-abort',
       providerContinuity: { threadId: 'thread-abort', state: 'aborted' },
     });
 
     const transportDecision = await waitForRunningDecision(service, 'claude', 'close transport');
-    const transported = await service.waitStreamOnce(transportDecision.job, 5_000);
+    const transported = await service.waitStreamOnce(transportDecision.jobId, 5_000);
     expect(transported).toEqual({
       content: 'transport handled',
       continuity: continuitySnapshot('thread-transport', true, {
@@ -395,7 +451,7 @@ describe('coordinator continuity lifecycle integration', () => {
         transport: 'transport_closed',
       }),
     });
-    expect(sessionManager.get('claude', transportDecision.session)).toMatchObject({
+    expect(sessionManager.get('claude', transportDecision.sessionId)).toMatchObject({
       conversationRef: 'thread-transport',
       providerContinuity: {
         threadId: 'thread-transport',
@@ -411,7 +467,15 @@ describe('coordinator continuity lifecycle integration', () => {
     });
     const { sessionManager } = getInternals(service);
 
-    const explicitSession = allocateTestSession(sessionManager, 'codex', 'alpha', 'gpt-5', ctx.projectRoot);
+    const explicitSession = allocateTestSession(
+      sessionManager,
+      'codex',
+      'alpha',
+      'gpt-5',
+      ctx.projectRoot,
+      ctx.projectRoot,
+      TEST_BACKEND_NAMESPACE,
+    );
     const explicitJobId = `recovered-${randomUUID()}`;
     sessionManager.claimForJobSync(explicitSession.sessionId, explicitJobId);
     progressStore.initJob({
@@ -432,10 +496,11 @@ describe('coordinator continuity lifecycle integration', () => {
       explicitSession.sessionId,
       {
         content: 'artifact completion',
+        durationMs: 0,
         outcome: { kind: 'completed' },
       },
       'completed',
-      { continuity: recoveredSnapshot },
+      { pool: 'default', sessionContinuity: recoveredSnapshot },
     );
 
     // Recovery continuity flows to session state; terminal bodies never
@@ -451,7 +516,15 @@ describe('coordinator continuity lifecycle integration', () => {
       },
     });
 
-    const preservedSession = allocateTestSession(sessionManager, 'codex', 'beta', 'gpt-5', ctx.projectRoot);
+    const preservedSession = allocateTestSession(
+      sessionManager,
+      'codex',
+      'beta',
+      'gpt-5',
+      ctx.projectRoot,
+      ctx.projectRoot,
+      TEST_BACKEND_NAMESPACE,
+    );
     sessionManager.checkpointProviderContinuity(preservedSession.sessionId, {
       conversationRef: 'thread-kept',
       providerContinuity: { threadId: 'thread-kept', preserved: true },
@@ -472,9 +545,11 @@ describe('coordinator continuity lifecycle integration', () => {
       preservedSession.sessionId,
       {
         content: 'artifact preserve',
+        durationMs: 0,
         outcome: { kind: 'completed' },
       },
       'completed',
+      { pool: 'default' },
     );
 
     expect(sessionManager.get('codex', preservedSession.sessionId)).toMatchObject({
@@ -495,6 +570,7 @@ describe('coordinator continuity lifecycle integration', () => {
           kind: 'terminal',
           terminal: {
             content: '{"score": 55, "thought": "keep the freight window narrow"}',
+            durationMs: 0,
             outcome: { kind: 'completed' },
           },
           diagnostics: {},
@@ -507,15 +583,15 @@ describe('coordinator continuity lifecycle integration', () => {
     });
 
     const directDecision = await waitForRunningDecision(service, 'codex', 'score this');
-    await expect(service.waitStreamOnce(directDecision.job, 5_000)).resolves.toEqual({
+    await expect(service.waitStreamOnce(directDecision.jobId, 5_000)).resolves.toEqual({
       content: '{"score": 55, "thought": "keep the freight window narrow"}',
       continuity: null,
     });
-    expect(progressStore.loadJobProjectionDetail(directDecision.job).exit?.continuity).toBeNull();
+    expect(progressStore.loadJobProjectionDetail(directDecision.jobId).exit).not.toHaveProperty('continuity');
 
     const source = runtime.paths.projectSource(ctx.projectRoot);
     const store = new DiscussSessionStore(source, {
-      journal: createInMemoryDiscussJournal(),
+      journal: createProgressStoreDiscussJournal(runtime.paths.projectSource.bind(runtime.paths), progressStore),
     });
     const registry = createDiscussContextRegistry();
     const providerRegistry = new ProviderRegistry();
@@ -531,6 +607,7 @@ describe('coordinator continuity lifecycle integration', () => {
       jobStatusReader: {
         read: (jobId) => progressStore.readStatus(jobId),
         readExit: () => null,
+        listOwned: () => [],
       },
       providerRegistry,
     });
@@ -546,8 +623,10 @@ describe('coordinator continuity lifecycle integration', () => {
         ctx,
       );
 
-      expect(getSession(discussContext, 'discuss-continuity-null')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
-        lastAttemptOutcome: 'completed',
+      await vi.waitFor(() => {
+        expect(getSession(discussContext, 'discuss-continuity-null')?.snapshot.runtime.agentRuns.alpha).toMatchObject({
+          lastAttemptOutcome: 'completed',
+        });
       });
       expect(getSession(discussContext, 'discuss-continuity-null')?.snapshot.state.current_bids.alpha).toBe(55);
     } finally {

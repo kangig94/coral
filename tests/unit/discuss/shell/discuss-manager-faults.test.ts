@@ -45,7 +45,9 @@ function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSes
 
 describe('Discuss faults and retry recovery', () => {
   it('treats a speech wait timeout as a persisted speech timeout', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockRejectedValue(new Error('Job timed out waiting for terminal result'));
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
@@ -100,7 +102,9 @@ describe('Discuss faults and retry recovery', () => {
   });
 
   it('soft-expels a failed cold-start bidder without wiping a healthy committed bid', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-beta' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-beta' });
     const waitStreamOnce = vi.fn().mockRejectedValue(new Error('resume failed'));
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     await persistSession(harness, {
@@ -128,7 +132,9 @@ describe('Discuss faults and retry recovery', () => {
   });
 
   it('restarts malformed bid retries from the persisted attempt counter', async () => {
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: '{"score": 66, "thought": "second attempt"}',
       continuity: null,
@@ -180,6 +186,7 @@ describe('Discuss faults and retry recovery', () => {
       expect.objectContaining({
         sessionId: 'exec-alpha',
         pool: 'discuss',
+        owner: { kind: 'discussion', id: 'discuss-1' },
       }),
       harness.ctx,
     );
@@ -189,7 +196,9 @@ describe('Discuss faults and retry recovery', () => {
   });
 
   it('after recovery attach, resumeLoop re-runs a missing bid job against the persisted execution session id', async () => {
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockImplementation(async () => {
       queueMicrotask(() => {
         getSession(harness.context, 'discuss-1')?.controller.abort();
@@ -239,6 +248,7 @@ describe('Discuss faults and retry recovery', () => {
       expect.objectContaining({
         sessionId: 'exec-alpha',
         pool: 'discuss',
+        owner: { kind: 'discussion', id: 'discuss-1' },
       }),
       harness.ctx,
     );

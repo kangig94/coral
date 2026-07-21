@@ -2,6 +2,7 @@ import { formatError } from '../../infra/error-format.js';
 import type { TerminalOutcome } from '../outcome.js';
 import type { JobStore } from '../store.js';
 import { appendJobTerminalRecorded } from '../terminal/recording.js';
+import { elapsedDurationMs } from '../duration.js';
 
 /**
  * Finalize foreign-namespace live jobs by scanning projections plus the origin
@@ -16,6 +17,7 @@ import { appendJobTerminalRecorded } from '../terminal/recording.js';
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
   progressStore: Pick<JobStore, 'commit' | 'getDb' | 'loadJobProjectionDetail'>,
+  endTimeMs: number,
   log: (message: string) => void,
 ): number {
   const db = progressStore.getDb();
@@ -64,10 +66,9 @@ export function adoptOrphanedCrossNamespaceJobs(
           project: status.projectRoot,
           terminal: {
             outcome,
-            durationMs: 0,
+            durationMs: elapsedDurationMs(launch.createdAt, endTimeMs, `job ${row.job_id}`),
             content: '',
           },
-          continuity: null,
         });
         return undefined;
       });

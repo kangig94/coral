@@ -17,7 +17,12 @@ import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subs
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
+import type { SessionJobReadPort } from '#src/sessions/contracts.js';
 const runtimes = new Set<ReturnType<typeof createRealRuntime>>();
+
+const missingSessionManager = {
+  get: () => null,
+} satisfies SessionJobReadPort;
 
 const waitUsage = {
   inputTokens: 11,
@@ -81,6 +86,7 @@ describe('wait SSE reconnect', () => {
           refs: { sessionId },
           bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session', id: sessionId },
             sessionId,
             provider: 'codex',
             providerAction: 'exec',
@@ -172,7 +178,7 @@ describe('wait SSE reconnect', () => {
     appendProgress('progress-1');
 
     const coordinator = new WaitCoordinator({
-      sessionManager: {} as never,
+      sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
       jobPools: new Map(),
@@ -273,6 +279,7 @@ describe('wait SSE reconnect', () => {
           refs: { sessionId },
           bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session', id: sessionId },
             sessionId,
             provider: 'codex',
             providerAction: 'exec',
@@ -362,7 +369,7 @@ describe('wait SSE reconnect', () => {
 
     let terminalInjected = false;
     const coordinator = new WaitCoordinator({
-      sessionManager: {} as never,
+      sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
       jobPools: new Map(),

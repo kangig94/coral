@@ -102,7 +102,11 @@ describe('pipe executor coral cascade invariant', () => {
         name: 'codex',
         execute: (request) => {
           capturedLaunches.push(cloneProviderRequest(request));
-          return streamProviderTerminal({ content: 'stub-provider-result', outcome: { kind: 'completed' } });
+          return streamProviderTerminal({
+            content: 'stub-provider-result',
+            durationMs: 0,
+            outcome: { kind: 'completed' },
+          });
         },
       };
 
@@ -110,10 +114,30 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(toProviderSpec(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
-        db: openTestStoreDb(runtime),
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+      const bodyCodec = createEventBodyCodec();
+      const db = openTestStoreDb(runtime);
+      const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
+      const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
+        db,
         eventBus,
+        reducers,
         providers: permissiveProviderLookupPort,
+        observer: (appended) => {
+          if (reactorRef.current === undefined) {
+            throw new Error('Lifecycle reactor observed events before initialization');
+          }
+          reactorRef.current.observe(appended);
+        },
+      });
+      const coordinatorCommit: CommitEventsFn = (cb) => progressStore.commit(cb);
+      reactorRef.current = createLifecycleReactor({
+        db: () => db,
+        readCtx: { schemas: reducers.schemas, bodyCodec },
+        providers: providerRegistry,
+        runtime,
+        time: runtime.time,
+        commitEvents: coordinatorCommit,
       });
       const executionSvc = new ExecutionService(
         {
@@ -140,6 +164,7 @@ describe('pipe executor coral cascade invariant', () => {
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
           ...createTestJobJournalDeps(progressStore, runtime),
+          coordinatorCommit,
         },
       );
 
@@ -168,7 +193,7 @@ describe('pipe executor coral cascade invariant', () => {
       if (decision.status === 'rejected') {
         throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
       }
-      await executionSvc.waitForJobTerminal(decision.job, 1_000);
+      await executionSvc.waitForJobTerminal(decision.jobId, 1_000);
       expect(capturedLaunches).toHaveLength(1);
 
       const [launch] = capturedLaunches;
@@ -219,7 +244,7 @@ describe('pipe executor coral cascade invariant', () => {
             });
             emit({
               kind: 'terminal',
-              terminal: { content: 'artifact-cleaned', outcome: { kind: 'completed' } },
+              terminal: { content: 'artifact-cleaned', durationMs: 0, outcome: { kind: 'completed' } },
               diagnostics: {},
             });
           }),
@@ -315,7 +340,7 @@ describe('pipe executor coral cascade invariant', () => {
       if (decision.status === 'rejected') {
         throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
       }
-      await executionSvc.waitForJobTerminal(decision.job, 1_000);
+      await executionSvc.waitForJobTerminal(decision.jobId, 1_000);
 
       await vi.waitFor(
         async () => {

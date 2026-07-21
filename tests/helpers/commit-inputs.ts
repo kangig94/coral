@@ -14,13 +14,13 @@ export function commitInputs(db: Database, inputs: readonly CoralEventInput[], c
   for (const input of inputs) {
     if (input.type !== 'job.launch.requested') continue;
     const launch = jobLaunchRequestBodySchema.parse(input.body);
-    if (launch.jobKind === 'kb' || openedInBatch.has(launch.sessionId)) continue;
+    if (launch.jobKind !== 'provider' || openedInBatch.has(launch.sessionId)) continue;
     seedTestSessionProjection(db, {
       sessionId: launch.sessionId,
       provider: launch.provider,
       projectRoot: launch.projectRoot,
       backendNamespace: launch.backendNamespace,
-      orchestration: launch.jobKind === 'workflow',
+      activeJobId: input.stream.id,
     });
   }
   return commit(

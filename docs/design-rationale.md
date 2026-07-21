@@ -131,23 +131,24 @@ Coral's daemon is an appserver-shaped process: one canonical coordinator, journa
 
 The binding is explicit and durable, but its guarantee is provider-specific. Codex owns an account binding to its provider-managed workspace routing subject. Claude owns a profile binding because its supported CLI surface exposes no stable non-secret account identity. Calling both of these "verified accounts" would overstate the Claude guarantee.
 
-Implementation status is **through B03**. A provider session owns one strict provider binding. A workflow's complete caller scope is carried by its durable workflow job launch, discussion state persists its complete caller scope directly, and a system one-shot binds the configured named system scope at each use. B04 is reserved for moving complete-scope ownership onto the workflow/discussion aggregate roots; that later ownership is not described as current behavior. Descriptions of the pre-refactor baseline elsewhere in this document are historical motivation only, not live routing, a supported alternate layout, or a compatibility contract.
+Implementation status is **through B04**. A `ProviderSession` is exclusively one provider conversation and owns one strict provider binding. Workflow and discussion aggregate roots own their complete provider scopes and lifecycle; they create real provider-session children only when a provider conversation begins. Every job separately declares an `ExecutionOwner`. A system one-shot binds the configured named system scope at each use. Descriptions of the pre-refactor baseline elsewhere in this document are historical motivation only, not live routing, a supported alternate layout, or a compatibility contract.
 
 Every launch decodes the complete available scope and binds the selected profile before allocation. Resume, restart recovery, one-shot provider work, and artifact discovery rehydrate stored bindings rather than reading ambient process env. Execution env is closed over a small inherited base, validated request config, binding-derived routing, and server-minted child authority. Credential overrides and unrelated inherited variables are rejected or removed. Claude's broker is account-neutral: an explicit selector emits the bound `CLAUDE_CONFIG_DIR`, while the caller-local default emits the exact bound `HOME` and no daemon-inherited Claude selector. Codex hosts are keyed by the bound home. Unsupported alternate selectors fail closed because they are outside those binding models.
 
 The design is organized by authority role, not by a prescribed per-file layout:
 
-| Role | Owner | Invariant through B03 |
-| --- | --- | --- |
-| Caller selection capture | Local CLI invocation | Capture only profiles the operation can launch; never derive them from daemon boot env |
-| Provider vocabulary and dispatch | Provider registry/contracts | Decode complete scopes, choose the registered provider codec, and render typed failures |
-| Profile canonicalization and binding | Provider-owned codec | Codex proves a workspace account subject; Claude proves only canonical profile continuity |
-| Durable provider continuity | Provider session/job state | Persist the strict binding before allocation and reuse it for resume/recovery |
-| Multi-provider request authority | Workflow launch or discussion state | Persist a complete caller scope in the current B03 owner; aggregate-root ownership begins in B04 |
-| Daemon-internal authority | Named system scope | Bind the configured profile at each use; never fall back to daemon credentials |
-| Process routing | Provider runtime adapter | Derive the closed execution environment only from the bound provider profile |
+| Role                                 | Owner                                 | Invariant                                                                                         |
+| ------------------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Caller selection capture             | Local CLI invocation                  | Capture only profiles the operation can launch; never derive them from daemon boot env            |
+| Provider vocabulary and dispatch     | Provider registry/contracts           | Decode complete scopes, choose the registered provider codec, and render typed failures           |
+| Profile canonicalization and binding | Provider-owned codec                  | Codex proves a workspace account subject; Claude proves only canonical profile continuity         |
+| Durable provider continuity          | `ProviderSession`                     | Persist the strict binding before allocation and reuse it for resume/recovery                     |
+| Generic work ownership               | Job `ExecutionOwner`                  | Name provider-session, workflow, discussion, or system-task ownership independently of continuity |
+| Multi-provider request authority     | Workflow or discussion aggregate root | Persist the complete caller scope used for future child binding                                   |
+| Daemon-internal authority            | Named system scope                    | Bind the configured profile at each use; never fall back to daemon credentials                    |
+| Process routing                      | Provider runtime adapter              | Derive the closed execution environment only from the bound provider profile                      |
 
-This change is a destructive store epoch, not a migration. Event `bodyVersion` and snapshot `schemaVersion` values identify strict current codecs only; they select no upcaster, old-format decoder, or compatibility path. Through B03, the active reset marker is still the DDL-only `schema.sql` hash. The complete fingerprint over `schema.sql` and registered persisted codecs runs as a shadow assertion, so it detects missing fingerprint coverage without deciding whether to reset the store. B09 makes that complete fingerprint active; before B09, only a DDL hash mismatch quarantines the canonical DB/WAL/SHM and recreates the store.
+This change is a destructive store epoch, not a migration. Event `bodyVersion` and snapshot `schemaVersion` values identify strict current codecs only; they select no upcaster, old-format decoder, or compatibility path. Through B04, the active reset marker is still the DDL-only `schema.sql` hash. The complete fingerprint over `schema.sql` and registered persisted codecs runs as a shadow assertion, so it detects missing fingerprint coverage without deciding whether to reset the store. B09 makes that complete fingerprint active; before B09, only a DDL hash mismatch quarantines the canonical DB/WAL/SHM and recreates the store.
 
 ## 6. Curiosity-Driven Expansion (Zelda Metaphor)
 
@@ -359,7 +360,9 @@ State records describe the durable fact. Patch/update records describe caller in
 For state, absence is just absence:
 
 ```ts
-type SessionEntry = {
+type ProviderSession = {
+  sessionId: string;
+  binding: ProviderBindingEnvelope;
   activeJobId?: JobId;
 };
 ```

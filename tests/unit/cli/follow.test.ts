@@ -67,6 +67,7 @@ function makeProgressEvent(message = 'Still running'): Extract<WaitStreamEvent, 
 function makeQueuedEvent(): Extract<WaitStreamEvent, { type: 'queued' }> {
   return {
     type: 'queued',
+    jobKind: 'provider',
     jobId: 'job-1',
     sessionId: 'session-1',
     queuePosition: 2,
@@ -115,9 +116,10 @@ type TestLaunchAndFollowOptions = {
 function makeOptions(overrides: Partial<TestLaunchAndFollowOptions> = {}): TestLaunchAndFollowOptions {
   return {
     launchResult: {
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      jobId: 'job-1',
+      sessionId: 'session-1',
     } satisfies AcceptedLaunchResponse,
     abortJob: async () => undefined,
     pluginRoot: '/plugin/root',
@@ -303,9 +305,10 @@ describe('cli follow', () => {
   it('emits launch, queued, progress, waiting, and terminal text output with cursor resume', async () => {
     const { launchAndFollow } = await loadFollowModule();
     const launchResult = {
+      kind: 'provider-session',
       launchState: 'queued',
-      job: 'job-1',
-      session: 'session-1',
+      jobId: 'job-1',
+      sessionId: 'session-1',
     } satisfies AcceptedLaunchResponse;
     const queuedEvent = makeQueuedEvent();
     const progressEvent = makeProgressEvent('Halfway there');
@@ -412,7 +415,7 @@ describe('cli follow', () => {
 
     await expect(launchAndFollow(makeOptions())).resolves.toBe(70);
 
-    expect(stdout).toBe('Job job-1 running (session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 running (provider session session-1)\n');
     expect(stderr).toBe('fatal wait failure\n');
     expect(process.exitCode).toBe(70);
     expect(mockState.ensure).toHaveBeenCalledTimes(1);
@@ -475,7 +478,7 @@ describe('cli follow', () => {
 
     await expect(followPromise).resolves.toBe(1);
 
-    expect(stdout).toBe('Job job-1 running (session session-1)\n');
+    expect(stdout).toBe('Provider job job-1 running (provider session session-1)\n');
     expect(stderr).toBe('\nPress Ctrl+C again to abort the job.\n');
     expect(abortJob).toHaveBeenCalledTimes(1);
     expect(abortJob).toHaveBeenCalledWith('job-1');

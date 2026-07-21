@@ -10,6 +10,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -17,6 +18,7 @@ import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { loadJobProjectionDetail, loadJobProjectionDetails, readJobEvents } from '#src/jobs/read-queries.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const projectRoot = '/tmp/workflow-usage-project';
 const namespace = 'workflow-usage-ns';
@@ -66,7 +68,7 @@ function createDb(): Database {
 function commit(db: Database, inputs: readonly CoralEventInput[]) {
   return commitInputs(db, inputs, {
     now: () => new Date(createdAt),
-    reducers: composeReducers(jobsRegistry),
+    reducers: composeReducers(jobsRegistry, workflowRegistry),
     bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   });
@@ -75,13 +77,14 @@ function commit(db: Database, inputs: readonly CoralEventInput[]) {
 function launchJob(
   jobId: string,
   options: {
-    provider: string;
-    jobKind?: 'provider' | 'workflow';
     parentWorkflowJobId?: string;
+    workflowSlotId?: string;
     enqueueSequence?: number;
-  },
+  } & ({ provider: string; jobKind?: 'provider' } | { jobKind: 'workflow' }),
 ): CoralEventInput {
   const sessionId = `${jobId}-session`;
+  const workflow = options.jobKind === 'workflow';
+  const workflowOwnerId = workflow ? jobId : options.parentWorkflowJobId;
   return {
     type: 'job.launch.requested',
     stream: { kind: 'job', id: jobId },
@@ -89,19 +92,23 @@ function launchJob(
     project: projectRoot,
     correlationId: `${jobId}-correlation`,
     refs: {
-      sessionId,
+      ...(workflow ? { workflowId: jobId } : { sessionId }),
       ...(options.parentWorkflowJobId === undefined
         ? {}
         : {
             parentJobId: options.parentWorkflowJobId,
-            workflowSlotId: `${options.parentWorkflowJobId}:${jobId}`,
+            workflowId: options.parentWorkflowJobId,
+            workflowSlotId: options.workflowSlotId,
           }),
     },
     bodyVersion: 1,
     body: {
-      sessionId,
-      provider: options.provider,
-      providerAction: 'exec',
+      owner:
+        workflowOwnerId === undefined
+          ? { kind: 'provider-session', id: sessionId }
+          : { kind: 'workflow', id: workflowOwnerId },
+      ...(workflow ? {} : { sessionId, provider: options.provider, providerAction: 'exec' as const }),
+      ...(!workflow && options.workflowSlotId !== undefined ? { workflowSlotGeneration: 0 } : {}),
       projectRoot,
       backendNamespace: namespace,
       bundleHash: 'workflow-usage-bundle',
@@ -113,35 +120,40 @@ function launchJob(
         cwd: projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        ...(options.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
       },
       createdAt,
     },
   };
 }
 
-function runtimeStarted(jobId: string): CoralEventInput {
+function runtimeStarted(jobId: string, jobKind: 'provider' | 'workflow' = 'provider'): CoralEventInput {
   return {
     type: 'job.runtime.started',
     stream: { kind: 'job', id: jobId },
     namespace,
     project: projectRoot,
     correlationId: `${jobId}-correlation`,
-    refs: { sessionId: `${jobId}-session` },
+    refs: jobKind === 'workflow' ? { workflowId: jobId } : { sessionId: `${jobId}-session` },
     bodyVersion: 1,
-    body: {
-      transport: 'durable-cli',
-      pid: 123,
-      stdoutPath: `/tmp/${jobId}.out`,
-      stderrPath: `/tmp/${jobId}.err`,
-      startedAt: createdAt,
-    },
+    body:
+      jobKind === 'workflow'
+        ? { transport: 'workflow', startedAt: createdAt }
+        : {
+            transport: 'durable-cli',
+            pid: 123,
+            stdoutPath: `/tmp/${jobId}.out`,
+            stderrPath: `/tmp/${jobId}.err`,
+            startedAt: createdAt,
+          },
   };
 }
 
 function terminalRecorded(
   jobId: string,
   options: {
+    jobKind?: 'provider' | 'workflow';
+    parentWorkflowJobId?: string;
+    workflowSlotId?: string;
     usage?: UsageSummary;
     outcome?: { kind: 'completed' } | { kind: 'provider_exit'; code: number; note?: string };
   } = {},
@@ -152,7 +164,19 @@ function terminalRecorded(
     namespace,
     project: projectRoot,
     correlationId: `${jobId}-correlation`,
-    refs: { sessionId: `${jobId}-session` },
+    refs:
+      options.jobKind === 'workflow'
+        ? { workflowId: jobId }
+        : {
+            sessionId: `${jobId}-session`,
+            ...(options.parentWorkflowJobId === undefined
+              ? {}
+              : {
+                  parentJobId: options.parentWorkflowJobId,
+                  workflowId: options.parentWorkflowJobId,
+                  workflowSlotId: options.workflowSlotId,
+                }),
+          },
     bodyVersion: 1,
     body: {
       terminal: {
@@ -166,11 +190,51 @@ function terminalRecorded(
 }
 
 function seedWorkflowWithChildren(db: Database, workflowJobId: string): void {
+  seedTestSessionProjection(db, {
+    sessionId: 'claude-child-session',
+    provider: 'claude',
+    projectRoot,
+    backendNamespace: namespace,
+  });
+  seedTestSessionProjection(db, {
+    sessionId: 'codex-child-session',
+    provider: 'codex',
+    projectRoot,
+    backendNamespace: namespace,
+  });
+
   commit(db, [
-    launchJob(workflowJobId, { provider: 'workflow', jobKind: 'workflow', enqueueSequence: 1 }),
-    runtimeStarted(workflowJobId),
-    launchJob('claude-child', { provider: 'claude', parentWorkflowJobId: workflowJobId, enqueueSequence: 2 }),
+    workflowPlanDeclaredEvent(
+      workflowJobId,
+      {
+        slots: [
+          {
+            slotId: `${workflowJobId}:0:0`,
+            dependencies: [],
+            provider: 'claude',
+            instruction: 'aggregate Claude usage',
+          },
+          {
+            slotId: `${workflowJobId}:0:1`,
+            dependencies: [],
+            provider: 'codex',
+            instruction: 'aggregate Codex usage',
+          },
+        ],
+      },
+      TEST_PROVIDER_SCOPE,
+    ),
+    launchJob(workflowJobId, { jobKind: 'workflow', enqueueSequence: 1 }),
+    runtimeStarted(workflowJobId, 'workflow'),
+    launchJob('claude-child', {
+      provider: 'claude',
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId: `${workflowJobId}:0:0`,
+      enqueueSequence: 2,
+    }),
     terminalRecorded('claude-child', {
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId: `${workflowJobId}:0:0`,
       usage: {
         inputTokens: 100,
         cacheReadTokens: 50,
@@ -179,8 +243,15 @@ function seedWorkflowWithChildren(db: Database, workflowJobId: string): void {
         costUsd: 0.25,
       },
     }),
-    launchJob('codex-child', { provider: 'codex', parentWorkflowJobId: workflowJobId, enqueueSequence: 3 }),
+    launchJob('codex-child', {
+      provider: 'codex',
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId: `${workflowJobId}:0:1`,
+      enqueueSequence: 3,
+    }),
     terminalRecorded('codex-child', {
+      parentWorkflowJobId: workflowJobId,
+      workflowSlotId: `${workflowJobId}:0:1`,
       outcome: { kind: 'provider_exit', code: 1, note: 'failed after spending tokens' },
       usage: {
         inputTokens: 7,
@@ -223,7 +294,7 @@ describe('workflow usage aggregation', () => {
     try {
       const workflowJobId = 'workflow-usage-detail';
       seedWorkflowWithChildren(db, workflowJobId);
-      commit(db, [terminalRecorded(workflowJobId)]);
+      commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]);
 
       const expectedUsage = {
         inputTokens: 107,
@@ -251,7 +322,7 @@ describe('workflow usage aggregation', () => {
     try {
       const workflowJobId = 'workflow-usage-batch-detail';
       seedWorkflowWithChildren(db, workflowJobId);
-      commit(db, [terminalRecorded(workflowJobId)]);
+      commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]);
 
       expect(
         loadJobProjectionDetails(db, [workflowJobId], readCtx).get(workflowJobId)?.exit?.diagnostics.usage,
@@ -304,7 +375,7 @@ describe('workflow usage aggregation', () => {
 
       const iterator = coordinator.waitForJobs({ jobIds: [workflowJobId], timeoutSeconds: 1 })[Symbol.asyncIterator]();
       const next = iterator.next();
-      publishJobEvents(commit(db, [terminalRecorded(workflowJobId)]));
+      publishJobEvents(commit(db, [terminalRecorded(workflowJobId, { jobKind: 'workflow' })]));
 
       const terminal = await next;
       expect(terminal.done).toBe(false);

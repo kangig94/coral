@@ -10,7 +10,6 @@ import type {
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
-import { readString } from '../../infra/json.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 import {
   buildCodexProviderServerSpec,
@@ -49,10 +48,6 @@ async function rpc<M extends AppServerMethod>(
 async function interruptTurn(lease: ProviderServerLease, threadId: string, turnId: string): Promise<void> {
   await rpc(lease, 'turn/interrupt', { threadId, turnId });
 }
-
-type CodexRecoveryMeta = {
-  threadId?: string;
-};
 
 type CodexProbeResult = {
   resumable: boolean;
@@ -166,10 +161,6 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
 };
 
 export const codexRecoveryLifecycle = {
-  buildRecoveryMeta(request: ProviderRequest): CodexRecoveryMeta {
-    const conversationRef = readString(request.conversationRef);
-    return conversationRef !== undefined ? { threadId: conversationRef } : {};
-  },
   async probe(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<CodexProbeResult> {
     const parsed = readCodexPersistedContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
     const updatedContinuity = clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
@@ -196,13 +187,14 @@ export const codexRecoveryLifecycle = {
   },
   finalizeInterrupted(
     probeResult: CodexProbeResult,
-    continuity: ProviderContinuityBlob,
+    continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation {
     const nextContinuity = sanitizeCodexProviderContinuity(
-      probeResult.updatedContinuity ?? clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ),
+      probeResult.updatedContinuity ??
+        (continuity === undefined ? undefined : clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ)),
     );
-    const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity);
+    const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity ?? {});
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
     if (probeResult.resumable && effectiveConversationRef !== undefined) {
       return {
@@ -224,4 +216,4 @@ export const codexRecoveryLifecycle = {
       ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'probe' | 'finalizeInterrupted'>;
+} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;

@@ -309,7 +309,7 @@ describe('pre-PR running incumbent (R6)', () => {
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const warnArg = warnSpy.mock.calls[0][0];
       expect(warnArg).toContain('skipping finalize for already-terminal job j1');
-      expect(warnArg).toContain('cross-version partial-state');
+      expect(warnArg).toContain('during handoff recovery');
     } finally {
       warnSpy.mockRestore();
     }

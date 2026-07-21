@@ -1,4 +1,3 @@
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { ProviderEventBody, ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -6,7 +5,6 @@ import { isRecord } from '../../infra/json.js';
 
 export async function consumeJobStream(options: {
   jobId: string;
-  providerName: string;
   sessionId: string;
   initialVersion: number;
   stream: AsyncIterable<ProviderEventBody>;
@@ -16,10 +14,8 @@ export async function consumeJobStream(options: {
 }): Promise<{
   terminal: ProviderTerminalEventBody['terminal'];
   diagnostics: ProviderTerminalEventBody['diagnostics'];
-  finalContinuity: JobContinuitySnapshot | null;
 }> {
   const { sessionId, stream, sessionApi } = options;
-  let finalContinuity: JobContinuitySnapshot | null = null;
   let expectedVersion = options.initialVersion;
 
   for await (const event of stream) {
@@ -29,14 +25,13 @@ export async function consumeJobStream(options: {
     }
 
     if (event.kind === 'continuity') {
-      const continuity = toJobContinuitySnapshot(event.providerContinuity, event.conversationRef, event.resumable);
       const result = await sessionApi.checkpointJobContinuityAtomic(sessionId, {
         expectedActiveJobId: options.jobId,
         expectedVersion,
         snapshot: {
-          conversationRef: continuity.conversationRef,
-          resumable: continuity.resumable,
-          providerContinuity: continuity.providerContinuity ?? null,
+          conversationRef: event.conversationRef,
+          resumable: event.resumable,
+          providerContinuity: isRecord(event.providerContinuity) ? event.providerContinuity : null,
         },
       });
       if (!result.ok) {
@@ -47,7 +42,6 @@ export async function consumeJobStream(options: {
       }
 
       expectedVersion = result.nextVersion;
-      finalContinuity = continuity;
       continue;
     }
 
@@ -55,7 +49,6 @@ export async function consumeJobStream(options: {
       const result = await sessionApi.recordArtifactHandleAtomic(sessionId, {
         expectedActiveJobId: options.jobId,
         expectedVersion,
-        provider: options.providerName,
         handle: event.handle,
         identity: event.identity,
         sourceJobId: options.jobId,
@@ -75,21 +68,8 @@ export async function consumeJobStream(options: {
     return {
       terminal: event.terminal,
       diagnostics: event.diagnostics,
-      finalContinuity,
     };
   }
 
   throw new Error(`Provider stream for ${options.jobId} completed without a terminal event.`);
-}
-
-function toJobContinuitySnapshot(
-  providerContinuity: unknown,
-  conversationRef: string | null,
-  resumable: boolean,
-): JobContinuitySnapshot {
-  return {
-    conversationRef,
-    resumable,
-    ...(isRecord(providerContinuity) ? { providerContinuity } : {}),
-  };
 }

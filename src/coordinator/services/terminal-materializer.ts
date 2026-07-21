@@ -4,7 +4,6 @@ import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { ProviderFailureCause } from '../../providers/fault.js';
 import type { JobLifecycleFault, JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from '../../jobs/outcome.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
-import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import {
   appendJobTerminalRecorded,
@@ -238,7 +237,7 @@ export function materializeProviderTerminal(
   return {
     terminal: {
       content: terminal.terminal.content,
-      ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+      durationMs: terminal.terminal.durationMs,
     },
     outcomePlan: planProviderOutcome(terminal, options),
     diagnostics: {
@@ -272,7 +271,6 @@ function terminalRecordOptions<Scope>(
   terminal: JobTerminalInput<Scope>,
   record: {
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): JobTerminalRecordedOptions<Scope> {
   return {
@@ -286,7 +284,6 @@ function terminalRecordOptions<Scope>(
     workflowSlotId: options.workflowSlotId,
     terminal,
     diagnostics: record.diagnostics,
-    continuity: record.continuity ?? null,
   };
 }
 
@@ -294,16 +291,12 @@ function recordProviderTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
-  record: {
-    readonly continuity?: JobContinuitySnapshot | null;
-  } = {},
 ): void {
   const materialized = materializeProviderTerminalInCommit(c, terminal, options);
   appendJobTerminalRecorded(
     c,
     terminalRecordOptions(options, materialized.terminal, {
       diagnostics: materialized.diagnostics,
-      continuity: record.continuity ?? null,
     }),
   );
 }
@@ -312,12 +305,9 @@ export function recordProviderTerminal(
   progressStore: RuntimeCommitStore,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
-  record: {
-    readonly continuity?: JobContinuitySnapshot | null;
-  } = {},
 ): void {
   progressStore.commit((c) => {
-    recordProviderTerminalInCommit(c, terminal, options, record);
+    recordProviderTerminalInCommit(c, terminal, options);
     return undefined;
   });
 }
@@ -328,9 +318,8 @@ function recordTerminalWithOutcomePlan(
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
-    readonly durationMs?: number;
+    readonly durationMs: number;
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): void {
   progressStore.commit((c) => {
@@ -341,12 +330,11 @@ function recordTerminalWithOutcomePlan(
         options,
         {
           content: record.content,
-          ...(record.durationMs === undefined ? {} : { durationMs: record.durationMs }),
+          durationMs: record.durationMs,
           outcome,
         },
         {
           diagnostics: record.diagnostics,
-          continuity: record.continuity ?? null,
         },
       ),
     );
@@ -360,9 +348,8 @@ export function recordSessionInterruptedTerminal(
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
-    readonly durationMs?: number;
+    readonly durationMs: number;
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): void {
   recordTerminalWithOutcomePlan(progressStore, planSessionInterrupted(fault, options), options, record);
@@ -374,9 +361,8 @@ export function recordJobRecoveryFaultTerminal(
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
-    readonly durationMs?: number;
+    readonly durationMs: number;
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): void {
   recordTerminalWithOutcomePlan(progressStore, planJobRecoveryFault(fault, options), options, record);

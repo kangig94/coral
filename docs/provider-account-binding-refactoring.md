@@ -1,12 +1,10 @@
 # Provider multi-account execution: most-elegant target design
 
-Status: implementation complete through B03; B04-B09 remain ordered target work
+Status: implementation complete through B04; B05 is next
 
 Scope: provider multi-account execution merged by PR #275 and the provider/session/app-server/recovery boundaries it exposes
 
 Audience: Coral maintainers implementing the provider-account refactoring
-
-Authoritative design review: `docs/provider-account-binding-pioneer-review.md`
 
 ## Decision
 
@@ -39,7 +37,7 @@ This supersedes the earlier, narrower proposal in four important ways:
 
 1. A path-only value is not named `AccountBinding`; it is a credential profile or, when persisted without verifiable identity, a `ProfileBinding`.
 2. Provider modules return a cohesive `BoundProvider`, rather than exposing account, execution, recovery, and artifact facets for generic code to coordinate separately.
-3. Sessions represent provider conversations only. Workflow and discussion aggregates own provider scope directly instead of allocating synthetic provider sessions.
+3. Persisted `ProviderSession` records represent provider conversations only. Workflow and discussion aggregates own provider scope directly instead of allocating synthetic provider sessions. The discussion domain's `discuss.session.*` event names describe its own aggregate vocabulary; they are not records in the provider-session domain and do not carry provider continuity.
 4. Process configuration is separated by lifetime. A per-turn callback capability cannot be part of a reusable app-server host specification.
 
 ## Architectural boundary
@@ -86,7 +84,7 @@ The refactoring changes adjacent domains only where the new provider/account mod
 
 ## Baseline structural contradictions before this refactoring
 
-This section records the pre-B01 baseline that motivated the plan. B01-B03 have already corrected the store-manifest foundation, explicit scope origin, canonical profile capture, and verified/profile-only binding distinctions described below. Remaining items are target-state gaps, not supported alternate behavior or compatibility promises.
+This section records the pre-B01 baseline that motivated the plan. In the historical implementation sequence, B01-B03 corrected the store-manifest foundation, explicit scope origin, canonical profile capture, and verified/profile-only binding distinctions, while leaving the synthetic orchestration-session variant in place only for the next atomic cutover. B04 has now removed that variant and established real provider sessions plus independent execution ownership. Any remaining baseline descriptions below are historical motivation or post-B04 target-state gaps, not supported alternate behavior or compatibility promises.
 
 ### A locator is described as account authority
 
@@ -249,16 +247,17 @@ Each provider owns:
 
 The stable ownership boundary matters more than a proposed per-file catalog:
 
-| Role | Owner | Stable navigation point |
-| --- | --- | --- |
-| Provider selection, profile, binding, readiness, and safe errors | Each provider vertical | `src/providers/{provider}/` |
-| Type erasure and registered provider lookup | Provider registry | `src/providers/registry.ts` |
-| Generic provider contracts | Provider contracts | `src/providers/contracts/` |
-| Caller/system scope transport and validation | Transport plus provider registry | `src/transport/`, `src/infra/provider-scope.ts` |
-| Provider conversation continuity | Provider-session domain | `src/sessions/` |
-| Workflow/discussion aggregate lifecycle and future child scope | Owning aggregate | `src/workflow/`, `src/discuss/` |
-| Generic work ownership and durable finalization | Coordinator/jobs | `src/coordinator/`, `src/jobs/` |
-| Store readability and persisted-codec manifest | Store boundary | `src/store/` |
+| Role                                                             | Owner                                         | Stable navigation point                         |
+| ---------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------- |
+| Provider selection, profile, binding, readiness, and safe errors | Each provider vertical                        | `src/providers/{provider}/`                     |
+| Type erasure and registered provider lookup                      | Provider registry                             | `src/providers/registry.ts`                     |
+| Generic provider contracts                                       | Provider contracts                            | `src/providers/contracts/`                      |
+| Caller/system scope transport and validation                     | Transport plus provider registry              | `src/transport/`, `src/infra/provider-scope.ts` |
+| Provider conversation continuity                                 | Provider-session domain                       | `src/sessions/`                                 |
+| Workflow/discussion aggregate lifecycle and future child scope   | Owning aggregate                              | `src/workflow/`, `src/discuss/`                 |
+| Generic execution-owner vocabulary                               | Runtime contract used by jobs and coordinator | `src/runtime/execution-owner.ts`                |
+| Admission, job persistence, and durable finalization             | Coordinator/jobs                              | `src/coordinator/`, `src/jobs/`                 |
+| Store readability and persisted-codec manifest                   | Store boundary                                | `src/store/`                                    |
 
 Files may move as later batches collapse superseded surfaces. The invariant is that provider interpretation stays inside its provider vertical, while transport and coordinator retain only boundary policy and Coral durability.
 
@@ -324,14 +323,15 @@ Provider modules own selector labels and safe rendering details. Coordinator cod
 
 ### Provider sessions only
 
-`ProviderSession` represents one resumable provider conversation:
+`ProviderSession` represents one resumable provider conversation. The implemented persistence type contains the following load-bearing fields; operational policy, artifact, controller, path, and timestamp fields are omitted from this structural excerpt:
 
 ```ts
 type ProviderSession = {
-  id: ProviderSessionId;
+  sessionId: string;
   binding: ProviderBindingEnvelope;
-  continuity: ProviderContinuity;
-  lifecycle: ProviderSessionLifecycle;
+  state: SessionState;
+  providerContinuity: ProviderContinuityBlob | null;
+  // ...retention, artifacts, active job, model, paths, controller, and timestamps
 };
 ```
 
@@ -686,17 +686,17 @@ Recovery and adoption
       -> B09 superseded-surface cleanup and destructive adoption
 ```
 
-| Order | Batch job                                           | Status      | Depends on   | Primary output                                                    | Semantic change                                       |
-| ----: | --------------------------------------------------- | ----------- | ------------ | ----------------------------------------------------------------- | ----------------------------------------------------- |
-|     1 | B01 — complete store-fingerprint foundation         | complete    | current main | canonical persisted-codec registry and fingerprint                | fail-closed current-codec correction                  |
-|     2 | B02 — provider contracts and registry               | complete    | B01          | provider-owned codecs and one type-erasure boundary               | no                                                    |
-|     3 | B03 — explicit scope and verified binding           | complete    | B02          | caller/system scope and durable verified binding                  | yes                                                   |
-|     4 | B04 — aggregate correction                          | next        | B03          | real provider sessions and independent execution ownership        | yes                                                   |
-|     5 | B05 — `BoundProvider` execution cutover             | pending     | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
-|     6 | B06 — lifetime-scoped execution plans               | pending     | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
-|     7 | B07 — unified app-server and Codex turn capability  | pending     | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
-|     8 | B08 — bound-provider recovery pipeline              | pending     | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
-|     9 | B09 — superseded-surface cleanup and adoption reset | pending     | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
+| Order | Batch job                                           | Status   | Depends on   | Primary output                                                    | Semantic change                                       |
+| ----: | --------------------------------------------------- | -------- | ------------ | ----------------------------------------------------------------- | ----------------------------------------------------- |
+|     1 | B01 — complete store-fingerprint foundation         | complete | current main | canonical persisted-codec registry and fingerprint                | fail-closed current-codec correction                  |
+|     2 | B02 — provider contracts and registry               | complete | B01          | provider-owned codecs and one type-erasure boundary               | no                                                    |
+|     3 | B03 — explicit scope and verified binding           | complete | B02          | caller/system scope and durable verified binding                  | yes                                                   |
+|     4 | B04 — aggregate correction                          | complete | B03          | real provider sessions and independent execution ownership        | yes                                                   |
+|     5 | B05 — `BoundProvider` execution cutover             | next     | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
+|     6 | B06 — lifetime-scoped execution plans               | pending  | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
+|     7 | B07 — unified app-server and Codex turn capability  | pending  | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
+|     8 | B08 — bound-provider recovery pipeline              | pending  | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
+|     9 | B09 — superseded-surface cleanup and adoption reset | pending  | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
 
 ### Batch execution contract
 
@@ -800,7 +800,7 @@ Replace ambient account selection with explicit origin and turn credential locat
 - Keep the raw named-system scope out of detailed health and caller-forwardable `coralEnv`; health exposes only its name and provider names.
 - Remove `providerCredentialDefaults` and every ambient fallback path in the same batch.
 - Replace provider-specific coordinator messages with typed binding failures rendered by the provider.
-- Cut provider-session `SessionAuthority` directly to the strict binding envelope in this batch. The still-current orchestration variant remains only because B04 deletes synthetic orchestration sessions atomically; it does not decode, translate, or accept any earlier provider credential/source representation.
+- At the B03 boundary, cut provider-session `SessionAuthority` directly to the strict binding envelope. The orchestration variant still existed at that historical boundary only so B04 could delete synthetic orchestration sessions atomically; B04 has now removed it. B03 did not decode, translate, or accept any earlier provider credential/source representation.
 
 **Verification**
 
@@ -832,7 +832,7 @@ Make session, orchestration, and job ownership names match the durable concepts 
 - Remove `model: 'workflow'`, orchestration session authority, placeholder providers, and workflow IDs returned as provider-session IDs.
 - Delete the `SessionAuthority` union after provider sessions derive their only authority from `binding`; do not retain an alias or decoder for either removed variant.
 - Update Journal events, projections, APIs, job/admission/terminal ownership, recovery snapshots, and registered codecs atomically.
-- Do not add a legacy session decoder; B01's fingerprint resets incompatible stores.
+- Do not add a legacy session decoder. B04 changes the DDL and therefore triggers the currently active DDL-hash reset; B01's complete codec fingerprint remains a shadow coverage assertion until B09 activates it.
 
 **Verification**
 
@@ -845,6 +845,20 @@ Make session, orchestration, and job ownership names match the durable concepts 
 **Exit gate**
 
 Provider continuity exists only on `ProviderSession`, and every unit of work has an explicit independent `ExecutionOwner`.
+
+**Implemented invariants and evidence**
+
+- `ProviderSession` is the only persisted session shape. Its provider is derived from the strict binding envelope; no provider field, orchestration variant, alias, or compatibility decoder remains.
+- Every job persists one `ExecutionOwner`: provider session, workflow, discussion, or system task. Provider session identity remains separately nullable on non-provider root jobs.
+- Workflow roots persist their own provider scope and lifecycle. Child attempts persist slot id, generation, and exact predecessor; replacement claim, continuation lease, job launch, and admission are one atomic commit.
+- Discussion roots persist provider scope in `discuss.session.created`. Provider children persist a real provider session plus a discussion run descriptor; the discussion stream separately binds that session to the agent. Validation enforces provider agreement, session uniqueness across agents, and at most one outstanding child per agent.
+- This child persistence is intentionally asymmetric: workflows model an ordered replacement chain per plan slot, while discussions model an agent/run linkage and finish event. Both use real `ProviderSession` children, but neither borrows the other's orchestration vocabulary.
+- Workflow lifecycle transitions are monotone and validated by the same transition function during append and projection rebuild. Terminal workflows reject new child launches.
+- Accepted launch contracts are discriminated: provider launches expose `jobId` and `sessionId`; workflow launches expose `jobId` and `workflowId`. Queued workflow wait events never fabricate an empty provider-session id.
+- Strict provider-session decoding and rejection of removed or foreign fields are covered by [`tests/unit/sessions/provider-session-codec.test.ts`](../tests/unit/sessions/provider-session-codec.test.ts).
+- Workflow lifecycle monotonicity and identical append/replay validation are covered by [`tests/unit/workflow/lifecycle-transitions.test.ts`](../tests/unit/workflow/lifecycle-transitions.test.ts); ordered child causality and replay atomicity are covered by [`tests/unit/workflow/causal-chain.test.ts`](../tests/unit/workflow/causal-chain.test.ts).
+- Discussion job/session/agent linkage, uniqueness, crash-window recovery, and projection replay are covered by [`tests/unit/discuss/job-link-invariants.test.ts`](../tests/unit/discuss/job-link-invariants.test.ts), including cross-connection exclusion in [`tests/unit/discuss/cross-connection-launch.test.ts`](../tests/unit/discuss/cross-connection-launch.test.ts).
+- Projection rebuild, crash-window recovery, owner/linkage append invariants, strict persisted codecs, transport parity, CLI rendering, and the broader unit/integration suites cover the remaining corrected-model surfaces.
 
 ### B05 — `BoundProvider` execution cutover
 

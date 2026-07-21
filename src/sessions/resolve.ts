@@ -1,4 +1,4 @@
-import type { SessionEntry } from './entry.js';
+import { providerSessionProvider, type ProviderSession } from './entry.js';
 import type { SessionLookup } from './lookup.js';
 
 export type SessionResolveRef =
@@ -10,14 +10,14 @@ export type SessionResolveRef =
 
 export function resolveSession(
   ref: SessionResolveRef,
-  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>,
-): SessionEntry | null {
+  sessionLookup: Pick<SessionLookup, 'readProviderSession'>,
+): ProviderSession | null {
   const target = typeof ref === 'string' ? { sessionId: ref } : ref;
-  const entry = sessionLookup.readSessionEntry(target.sessionId);
+  const entry = sessionLookup.readProviderSession(target.sessionId);
   if (!entry) {
     return null;
   }
-  if (target.provider && entry.provider !== target.provider) {
+  if (target.provider && providerSessionProvider(entry) !== target.provider) {
     return null;
   }
   return entry;
@@ -25,7 +25,7 @@ export function resolveSession(
 
 export function getSessionById(
   sessionId: string,
-  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>,
-): SessionEntry | null {
+  sessionLookup: Pick<SessionLookup, 'readProviderSession'>,
+): ProviderSession | null {
   return resolveSession({ sessionId }, sessionLookup);
 }

@@ -198,6 +198,12 @@ function eraseBindingCodec<
 
 export function defineProvider(spec: ProviderDefinitionInput): ProviderBindingBuilder {
   const definitionInput = freezeAuthority(spec);
+  if (
+    definitionInput.appServer !== undefined &&
+    (definitionInput.recovery === undefined || typeof definitionInput.recovery.finalizeInterrupted !== 'function')
+  ) {
+    throw new Error(`App-server provider '${definitionInput.name}' must define recovery interpretation.`);
+  }
   return {
     binding(codec) {
       const binding = eraseBindingCodec(definitionInput.name, codec);

@@ -14,9 +14,12 @@ export type CurrentStoreCodecSchemas = Readonly<{
   eventRefs: z.ZodTypeAny;
   jobTerminal: z.ZodTypeAny;
   jobDiagnostics: z.ZodTypeAny;
-  sessionEntry: z.ZodTypeAny;
+  executionOwner: z.ZodTypeAny;
+  providerSession: z.ZodTypeAny;
   discussState: z.ZodTypeAny;
   workflowPlan: z.ZodTypeAny;
+  providerScope: z.ZodTypeAny;
+  workflowLifecycle: z.ZodTypeAny;
   expansionManifest: z.ZodTypeAny;
 }>;
 
@@ -56,9 +59,12 @@ export function createCurrentStoreFormat(
   codecs.registerZod('store.events.refs', schemas.eventRefs);
   codecs.registerZod('store.projection_jobs.terminal', schemas.jobTerminal);
   codecs.registerZod('store.projection_jobs.diagnostics', schemas.jobDiagnostics);
-  codecs.registerZod('store.projection_sessions.entry', schemas.sessionEntry);
+  codecs.registerZod('store.projection_jobs.execution_owner', schemas.executionOwner);
+  codecs.registerZod('store.projection_sessions.entry', schemas.providerSession);
   codecs.registerZod('store.projection_discuss.state', schemas.discussState);
   codecs.registerZod('store.projection_workflows.plan', schemas.workflowPlan);
+  codecs.registerZod('store.projection_workflows.provider_scope', schemas.providerScope);
+  codecs.registerZodComponent('workflow.lifecycle', schemas.workflowLifecycle);
   codecs.registerZod('store.kb_curate_retry_queue.signals', jsonValueSchema);
   codecs.registerZod('store.expansion_manifest_catalog.manifest', schemas.expansionManifest);
   for (const component of components) codecs.registerZodComponent(component.name, component.schema);

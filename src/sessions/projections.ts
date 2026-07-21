@@ -8,8 +8,9 @@ import type { Reducer } from '../store/reducers.js';
 import {
   type RetentionDiscardAttempt,
   sessionControllerFromProfile,
-  sessionEntrySchema,
-  type SessionEntry,
+  providerSessionSchema,
+  providerSessionProvider,
+  type ProviderSession,
 } from './entry.js';
 import type {
   SessionArtifactHandleRecordedBody,
@@ -34,23 +35,26 @@ export type ProjectionSessionRow = {
   resumable: boolean;
   conversationRef: string | null;
   scopeKey: string;
-  entry: SessionEntry;
+  entry: ProviderSession;
   lastSeq: number;
 };
 
-type SessionProjectionPatch = Partial<Omit<ProjectionSessionRow, 'lastSeq'>>;
+type SessionProjectionPatch = Partial<Omit<ProjectionSessionRow, 'provider' | 'lastSeq'>>;
+
+type SessionProjectionAuthority = {
+  allowClaimTransition?: boolean;
+};
 
 export function readProjectionSession(db: ReadonlyDatabase, sessionId: string): ProjectionSessionRow | null {
   const row = db
     .prepare(
-      `SELECT controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
+      `SELECT controller, resumable, conversation_ref, scope_key, entry, last_seq
          FROM projection_sessions
         WHERE session_id = ?`,
     )
     .get(sessionId) as
     | {
         controller: string;
-        provider: string;
         resumable: number;
         conversation_ref: string | null;
         scope_key: string;
@@ -63,11 +67,11 @@ export function readProjectionSession(db: ReadonlyDatabase, sessionId: string): 
     return null;
   }
 
-  const parsed = parseProjectionSessionEntry(sessionId, row.entry);
+  const parsed = parseProjectionProviderSession(sessionId, row.entry);
 
   return {
     controller: row.controller,
-    provider: row.provider,
+    provider: providerSessionProvider(parsed),
     resumable: row.resumable === 1,
     conversationRef: row.conversation_ref,
     scopeKey: row.scope_key,
@@ -76,20 +80,20 @@ export function readProjectionSession(db: ReadonlyDatabase, sessionId: string): 
   };
 }
 
-function parseProjectionSessionEntry(sessionId: string, rawEntry: string): SessionEntry {
+function parseProjectionProviderSession(sessionId: string, rawEntry: string): ProviderSession {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawEntry) as unknown;
   } catch (error: unknown) {
-    throw invalidProjectionSessionEntry(sessionId, error);
+    throw invalidProjectionProviderSession(sessionId, error);
   }
 
-  const result = sessionEntrySchema.safeParse(parsed);
+  const result = providerSessionSchema.safeParse(parsed);
   if (!result.success) {
-    throw invalidProjectionSessionEntry(sessionId, result.error);
+    throw invalidProjectionProviderSession(sessionId, result.error);
   }
   if (result.data.sessionId !== sessionId) {
-    throw invalidProjectionSessionEntry(
+    throw invalidProjectionProviderSession(
       sessionId,
       new Error(`Projection entry sessionId '${result.data.sessionId}' does not match '${sessionId}'.`),
     );
@@ -113,10 +117,10 @@ function prematureProjectionSessionEvent(sessionId: string): CoralSetupError {
   });
 }
 
-function invalidProjectionSessionEntry(sessionId: string, cause: unknown): CoralSetupError {
+function invalidProjectionProviderSession(sessionId: string, cause: unknown): CoralSetupError {
   return new CoralSetupError({
     code: 'projection_sessions_invalid_entry',
-    userMessage: `Session projection stored an invalid SessionEntry for ${sessionId}.`,
+    userMessage: `Session projection stored an invalid ProviderSession for ${sessionId}.`,
     remediation: 'Rebuild projection_sessions from Journal events after fixing the session reducer input.',
     context: {
       sessionId,
@@ -125,7 +129,7 @@ function invalidProjectionSessionEntry(sessionId: string, cause: unknown): Coral
   });
 }
 
-function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry: SessionEntry): void {
+function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry: ProviderSession): void {
   if (entry.sessionId === event.stream.id) {
     return;
   }
@@ -133,7 +137,7 @@ function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry:
   throw new CoralSetupError({
     code: 'projection_sessions_entry_stream_mismatch',
     userMessage: `Session event body entry ${entry.sessionId} does not match stream ${event.stream.id}.`,
-    remediation: 'Append session events with the SessionEntry for the same stream id.',
+    remediation: 'Append session events with the ProviderSession for the same stream id.',
     context: { streamId: event.stream.id, entrySessionId: entry.sessionId },
   });
 }
@@ -153,8 +157,9 @@ function assertEventSessionIdMatchesStream(event: { stream: { id: string } }, se
 
 function upsertProjectionSession(
   db: Database,
-  event: { stream: { id: string }; seq: number },
+  event: { type: string; stream: { id: string }; seq: number },
   patch: SessionProjectionPatch,
+  authority: SessionProjectionAuthority = {},
 ): void {
   const previous = readProjectionSession(db, event.stream.id);
   const entry = patch.entry ?? previous?.entry;
@@ -162,16 +167,28 @@ function upsertProjectionSession(
     throw prematureProjectionSessionEvent(event.stream.id);
   }
   assertEventEntryMatchesStream(event, entry);
+  if (
+    patch.entry !== undefined &&
+    !authority.allowClaimTransition &&
+    previous?.entry.activeJobId !== entry.activeJobId
+  ) {
+    throw new CoralSetupError({
+      code: 'provider_session_claim_transition_invalid',
+      userMessage: `Session '${event.stream.id}' cannot change its active job claim through '${event.type}'.`,
+      remediation: 'Use only an exact session.claimed or session.claim.released transition to change activeJobId.',
+      context: {
+        sessionId: event.stream.id,
+        eventType: event.type,
+        priorActiveJobId: previous?.entry.activeJobId,
+        nextActiveJobId: entry.activeJobId,
+      },
+    });
+  }
   if (previous !== null) {
-    const sameAuthority =
-      previous.entry.sessionAuthority.kind === entry.sessionAuthority.kind &&
-      (previous.entry.sessionAuthority.kind === 'orchestration' ||
-        (entry.sessionAuthority.kind === 'provider' &&
-          isDeepStrictEqual(previous.entry.sessionAuthority.binding, entry.sessionAuthority.binding)));
-    if (previous.entry.provider !== entry.provider || !sameAuthority) {
+    if (!isDeepStrictEqual(previous.entry.binding, entry.binding)) {
       throw new CoralSetupError({
-        code: 'session_authority_mismatch',
-        userMessage: `Session projection authority changed for ${event.stream.id}.`,
+        code: 'provider_session_binding_mismatch',
+        userMessage: `Provider session projection binding changed for ${event.stream.id}.`,
         remediation: 'Keep the provider binding immutable after session.opened.',
         context: { sessionId: event.stream.id },
       });
@@ -184,7 +201,6 @@ function upsertProjectionSession(
   }
   const next = {
     controller: patch.controller ?? previous?.controller ?? sessionControllerFromProfile(entry.controllerProfile),
-    provider: patch.provider ?? previous?.provider ?? entry.provider,
     resumable: patch.resumable ?? previous?.resumable ?? entry.state === 'ready',
     conversationRef: hasConversationRefPatch(patch)
       ? patch.conversationRef
@@ -199,7 +215,6 @@ function upsertProjectionSession(
     pkValue: event.stream.id,
     columns: {
       controller: next.controller,
-      provider: next.provider,
       resumable: next.resumable ? 1 : 0,
       conversation_ref: next.conversationRef,
       scope_key: next.scopeKey,
@@ -216,7 +231,6 @@ export const reduceSessionOpened: Reducer<SessionOpenedBody> = (db, event) => {
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
     controller: event.body.controller,
-    provider: event.body.provider,
     resumable: false,
     conversationRef: null,
     scopeKey: event.body.scope_key,
@@ -238,22 +252,32 @@ export const reduceSessionArtifactHandleRecorded: Reducer<SessionArtifactHandleR
 };
 
 export const reduceSessionClaimed: Reducer<SessionClaimedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    entry: event.body.entry,
-  });
+  upsertProjectionSession(
+    db,
+    event,
+    {
+      entry: event.body.entry,
+    },
+    { allowClaimTransition: true },
+  );
 };
 
 export const reduceSessionClaimReleased: Reducer<SessionClaimReleasedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    entry: event.body.entry,
-  });
+  upsertProjectionSession(
+    db,
+    event,
+    {
+      entry: event.body.entry,
+    },
+    { allowClaimTransition: true },
+  );
 };
 
 function upsertContinuationLease(
   db: Database,
-  event: { stream: { id: string }; seq: number },
+  event: { type: string; stream: { id: string }; seq: number },
   sessionId: string,
-  entry: SessionEntry,
+  entry: ProviderSession,
 ): void {
   assertEventSessionIdMatchesStream(event, sessionId);
   upsertProjectionSession(db, event, {
@@ -279,7 +303,7 @@ export const reduceSessionContinuationLeaseExpired: Reducer<SessionContinuationL
 
 function upsertRetentionDiscardAttempt(
   db: Database,
-  event: { stream: { id: string }; seq: number },
+  event: { type: string; stream: { id: string }; seq: number },
   attempt: RetentionDiscardAttempt,
 ): void {
   const previous = readProjectionSession(db, event.stream.id);
@@ -327,31 +351,25 @@ export const reduceSessionRetentionDiscardFailed: Reducer<SessionRetentionDiscar
 };
 
 export const reduceSessionInterrupted: Reducer<SessionInterruptedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    ...('fault' in event.body && event.body.entry !== undefined ? { entry: event.body.entry } : {}),
-  });
+  upsertProjectionSession(db, event, {});
 };
 
 export const reduceSessionProviderFailed: Reducer<SessionProviderFailedFault> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    provider: event.body.provider,
-  });
+  upsertProjectionSession(db, event, {});
 };
 
 export const reduceSessionAdapterUnparseable: Reducer<SessionAdapterUnparseableFault> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    provider: event.body.provider,
-  });
+  upsertProjectionSession(db, event, {});
 };
 
-export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: string): SessionEntry | null {
+export function readProjectionProviderSession(db: ReadonlyDatabase, sessionId: string): ProviderSession | null {
   return readProjectionSession(db, sessionId)?.entry ?? null;
 }
 
 export function readProjectionSessionEntriesById(
   db: ReadonlyDatabase,
   sessionIds: readonly string[],
-): Map<string, SessionEntry> {
+): Map<string, ProviderSession> {
   const uniqueSessionIds = [...new Set(sessionIds)];
   if (uniqueSessionIds.length === 0) {
     return new Map();
@@ -365,9 +383,9 @@ export function readProjectionSessionEntriesById(
     )
     .all(...uniqueSessionIds) as Array<{ session_id: string; entry: string }>;
 
-  const entries = new Map<string, SessionEntry>();
+  const entries = new Map<string, ProviderSession>();
   for (const row of rows) {
-    entries.set(row.session_id, parseProjectionSessionEntry(row.session_id, row.entry));
+    entries.set(row.session_id, parseProjectionProviderSession(row.session_id, row.entry));
   }
   return entries;
 }
@@ -376,13 +394,9 @@ export function listProjectionSessionEntries(
   db: ReadonlyDatabase,
   provider?: string,
   scopeKey?: string,
-): SessionEntry[] {
+): ProviderSession[] {
   const clauses: string[] = [];
   const params: string[] = [];
-  if (provider !== undefined) {
-    clauses.push('provider = ?');
-    params.push(provider);
-  }
   if (scopeKey !== undefined) {
     clauses.push('scope_key = ?');
     params.push(scopeKey);
@@ -397,5 +411,6 @@ export function listProjectionSessionEntries(
     )
     .all(...params) as Array<{ session_id: string; entry: string }>;
 
-  return rows.map((row) => parseProjectionSessionEntry(row.session_id, row.entry));
+  const entries = rows.map((row) => parseProjectionProviderSession(row.session_id, row.entry));
+  return provider === undefined ? entries : entries.filter((entry) => providerSessionProvider(entry) === provider);
 }

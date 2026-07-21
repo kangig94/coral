@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_WORKERS;
@@ -12,6 +13,10 @@ function restoreEnv(name: 'CORAL_MAX_WORKERS' | 'CORAL_DISCUSS_MAX_WORKERS', val
 
 function createCoordinator(): LaunchCoordinator {
   return new LaunchCoordinator({ runtime: createRealRuntime('prod') });
+}
+
+function providerOwner(id: string) {
+  return { kind: 'provider-session' as const, id };
 }
 
 describe('launch admission', () => {
@@ -30,17 +35,45 @@ describe('launch admission', () => {
   });
 
   it('returns an admitted outcome when capacity is available', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toEqual({
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toEqual({
       type: 'immediate',
     });
     expect(coordinator.queueDepth()).toBe(0);
     expect(coordinator.queuePosition('job-1')).toBeNull();
   });
 
-  it('returns a queued outcome with the current position when capacity is full', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
+  it('fails closed for a runtime pool value outside the exhaustive LaunchPool set', async () => {
+    const invalidPool = 'unknown-pool' as LaunchPool;
+    const invariantMessage = 'Launch admission invariant violated: unknown pool "unknown-pool".';
 
-    const queued = coordinator.requestLaunch('job-2', 'codex');
+    expect(() => coordinator.requestLaunch('intruder', 'codex', providerOwner('session'), invalidPool)).toThrow(
+      invariantMessage,
+    );
+    expect(() => coordinator.releaseLaunch('intruder', invalidPool)).toThrow(invariantMessage);
+    expect(() => coordinator.cancelQueued('intruder', invalidPool)).toThrow(invariantMessage);
+    expect(() => coordinator.queueDepth(invalidPool)).toThrow(invariantMessage);
+    expect(() => coordinator.queuePosition('intruder', invalidPool)).toThrow(invariantMessage);
+    expect(() => coordinator.getActiveJobIds(invalidPool)).toThrow(invariantMessage);
+    await expect(
+      coordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'never-spawned',
+        args: [],
+        jobDir: '/never-created',
+        permitGranted: true,
+        pool: invalidPool,
+      }),
+    ).rejects.toThrow(invariantMessage);
+    expect(coordinator.active).toBe(0);
+    expect(coordinator.queueDepth()).toBe(0);
+  });
+
+  it('returns a queued outcome with the current position when capacity is full', () => {
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+      type: 'immediate',
+    });
+
+    const queued = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'));
 
     expect(queued).not.toBe('queue_full');
     expect(queued).toMatchObject({
@@ -51,12 +84,46 @@ describe('launch admission', () => {
     expect(coordinator.queuePosition('job-2')).toBe(1);
   });
 
-  it('tracks default and discuss pools independently', async () => {
-    expect(coordinator.requestLaunch('default-1', 'codex')).toMatchObject({ type: 'immediate' });
-    expect(coordinator.requestLaunch('discuss-1', 'codex', 'discuss')).toMatchObject({ type: 'immediate' });
+  it('rejects duplicate job ids without exposing or mutating the incumbent reservation', async () => {
+    expect(coordinator.requestLaunch('active', 'codex', providerOwner('session-active'))).toMatchObject({
+      type: 'immediate',
+    });
+    const queued = coordinator.requestLaunch('queued', 'codex', providerOwner('session-queued'));
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued reservation');
 
-    const queuedDefault = coordinator.requestLaunch('default-2', 'codex');
-    const queuedDiscuss = coordinator.requestLaunch('discuss-2', 'codex', 'discuss');
+    expect(() => coordinator.requestLaunch('active', 'claude', providerOwner('intruder-active'), 'discuss')).toThrow(
+      /reservation already exists for job active/u,
+    );
+    expect(() => coordinator.requestLaunch('queued', 'claude', providerOwner('intruder-queued'), 'discuss')).toThrow(
+      /reservation already exists for job queued/u,
+    );
+
+    expect(coordinator.getActiveJobIds()).toEqual(['active']);
+    expect(coordinator.queuePosition('queued')).toBe(1);
+    expect(coordinator.getActiveJobIds('discuss')).toEqual([]);
+    expect(coordinator.queueDepth('discuss')).toBe(0);
+
+    const permit = queued.waitForPermit();
+    coordinator.releaseLaunch('active');
+    await permit;
+    expect(coordinator.getActiveJobIds()).toEqual(['queued']);
+  });
+
+  it('tracks default and discuss pools independently', async () => {
+    expect(coordinator.requestLaunch('default-1', 'codex', providerOwner('default-session-1'))).toMatchObject({
+      type: 'immediate',
+    });
+    expect(
+      coordinator.requestLaunch('discuss-1', 'codex', { kind: 'discussion', id: 'discussion-1' }, 'discuss'),
+    ).toMatchObject({ type: 'immediate' });
+
+    const queuedDefault = coordinator.requestLaunch('default-2', 'codex', providerOwner('default-session-2'));
+    const queuedDiscuss = coordinator.requestLaunch(
+      'discuss-2',
+      'codex',
+      { kind: 'discussion', id: 'discussion-1' },
+      'discuss',
+    );
 
     expect(queuedDefault).toMatchObject({ type: 'queued', queuePosition: 1 });
     expect(queuedDiscuss).toMatchObject({ type: 'queued', queuePosition: 1 });
@@ -80,10 +147,12 @@ describe('launch admission', () => {
   });
 
   it('returns queue_full when the internal queue limit is reached', () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+      type: 'immediate',
+    });
 
     for (let i = 2; i <= 21; i += 1) {
-      const result = coordinator.requestLaunch(`job-${i}`, 'codex');
+      const result = coordinator.requestLaunch(`job-${i}`, 'codex', providerOwner(`session-${i}`));
       expect(result).not.toBe('queue_full');
       if (result !== 'queue_full' && result.type === 'queued') {
         void result.waitForPermit().catch(() => null);
@@ -91,14 +160,16 @@ describe('launch admission', () => {
     }
 
     expect(coordinator.queueDepth()).toBe(20);
-    expect(coordinator.requestLaunch('job-22', 'codex')).toBe('queue_full');
+    expect(coordinator.requestLaunch('job-22', 'codex', providerOwner('session-22'))).toBe('queue_full');
     coordinator.terminateAll();
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
-    const queuedSecond = coordinator.requestLaunch('job-2', 'codex');
-    const queuedThird = coordinator.requestLaunch('job-3', 'codex');
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+      type: 'immediate',
+    });
+    const queuedSecond = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'));
+    const queuedThird = coordinator.requestLaunch('job-3', 'codex', providerOwner('session-3'));
 
     if (queuedSecond === 'queue_full' || queuedSecond.type !== 'queued') throw new Error('expected queued job-2');
     if (queuedThird === 'queue_full' || queuedThird.type !== 'queued') throw new Error('expected queued job-3');
@@ -123,9 +194,11 @@ describe('launch admission', () => {
   });
 
   it('cancelQueued rejects the queued permit and advances the queue head', async () => {
-    expect(coordinator.requestLaunch('job-1', 'codex')).toMatchObject({ type: 'immediate' });
-    const queuedSecond = coordinator.requestLaunch('job-2', 'codex');
-    const queuedThird = coordinator.requestLaunch('job-3', 'codex');
+    expect(coordinator.requestLaunch('job-1', 'codex', providerOwner('session-1'))).toMatchObject({
+      type: 'immediate',
+    });
+    const queuedSecond = coordinator.requestLaunch('job-2', 'codex', providerOwner('session-2'));
+    const queuedThird = coordinator.requestLaunch('job-3', 'codex', providerOwner('session-3'));
 
     if (queuedSecond === 'queue_full' || queuedSecond.type !== 'queued') throw new Error('expected queued job-2');
     if (queuedThird === 'queue_full' || queuedThird.type !== 'queued') throw new Error('expected queued job-3');
@@ -144,12 +217,36 @@ describe('launch admission', () => {
     expect(coordinator.queuePosition('job-3')).toBeNull();
   });
 
+  it('binds queued-handle cancellation to its exact reservation generation', async () => {
+    coordinator.requestLaunch('blocker-1', 'codex', providerOwner('blocker-session-1'));
+    const staleHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('old-session'));
+    if (staleHandle === 'queue_full' || staleHandle.type !== 'queued') throw new Error('expected old queued handle');
+
+    coordinator.releaseLaunch('blocker-1');
+    await staleHandle.waitForPermit();
+    coordinator.releaseLaunch('reused-job');
+
+    coordinator.requestLaunch('blocker-2', 'codex', providerOwner('blocker-session-2'));
+    const currentHandle = coordinator.requestLaunch('reused-job', 'codex', providerOwner('new-session'));
+    if (currentHandle === 'queue_full' || currentHandle.type !== 'queued') {
+      throw new Error('expected current queued handle');
+    }
+
+    expect(staleHandle.cancel()).toBe(false);
+    expect(coordinator.queuePosition('reused-job')).toBe(1);
+
+    const permit = currentHandle.waitForPermit();
+    coordinator.releaseLaunch('blocker-2');
+    await permit;
+    expect(coordinator.getActiveJobIds()).toEqual(['reused-job']);
+  });
+
   it('restores active and queued launches for recovery bookkeeping', async () => {
-    coordinator.restoreActiveLaunch('default-1', 'codex', 'default');
-    coordinator.restoreActiveLaunch('discuss-1', 'codex', 'discuss');
+    coordinator.restoreActiveLaunch('default-1', 'codex', providerOwner('default-session-1'), 'default');
+    coordinator.restoreActiveLaunch('discuss-1', 'codex', { kind: 'discussion', id: 'discussion-1' }, 'discuss');
     expect(coordinator.active).toBe(2);
 
-    const restored = coordinator.restoreQueuedLaunch('queued-1', 'codex', 'default');
+    const restored = coordinator.restoreQueuedLaunch('queued-1', 'codex', providerOwner('queued-session-1'), 'default');
     expect(restored).toMatchObject({ type: 'queued', queuePosition: 1 });
     expect(coordinator.queueDepth()).toBe(1);
 

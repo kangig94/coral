@@ -74,7 +74,7 @@ type StartupRecoveryContext = {
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
-  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
+  sessionLookup: Pick<SessionLookup, 'readProviderSession'>;
   signal: AbortSignal;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
@@ -193,7 +193,7 @@ export function createRecoveryCoordinator({
         if (launchRecord.provider === null || launchRecord.sessionId === null) {
           const status = progressStore.readStatus(jobId);
           if (status !== null) {
-            markJobAsError(progressStore, status, { kind: 'wrapper_lost' }, log);
+            markJobAsError(progressStore, status, { kind: 'wrapper_lost' }, runtime.time.now(), log);
           }
           state.recoveryRegistry?.remove(jobId);
           log(`Skipped adopting non-provider job: ${jobId}\n`);
@@ -215,7 +215,7 @@ export function createRecoveryCoordinator({
         if (!isDurableCliRuntime(runtimeRecord)) {
           const status = progressStore.readStatus(jobId);
           if (status !== null) {
-            markJobAsError(progressStore, status, { kind: 'wrapper_lost' }, log);
+            markJobAsError(progressStore, status, { kind: 'wrapper_lost' }, runtime.time.now(), log);
           }
           state.recoveryRegistry?.remove(jobId);
           log(`Skipped adopting unsupported runtime for job: ${jobId}\n`);
@@ -254,7 +254,6 @@ export function createRecoveryCoordinator({
             const { messages, newOffset } = recovery.extractProgress({
               stdoutPath: adoptedRuntimeRecord.stdoutPath,
               fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
-              providerMeta: adoptedRuntimeRecord.providerMeta,
             });
 
             if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
@@ -338,7 +337,7 @@ export function createRecoveryCoordinator({
           continue;
         }
         if (state.cancelledRecoveryJobIds.has(jobId)) {
-          finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
+          finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, runtime, log });
           state.recoveryRegistry?.remove(jobId);
           state.recoveryRegistry?.clearCancelled(jobId);
           log(`Aborted queued recovery job: ${jobId}\n`);
@@ -370,7 +369,7 @@ export function createRecoveryCoordinator({
       const queuedRecoverable: QueuedRecoverableJob[] = [];
       const runningRecoverable: RunningRecoverableJob[] = [];
 
-      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, progressStore, log);
+      const adoptedCount = adoptOrphanedCrossNamespaceJobs(namespace, progressStore, runtime.time.now(), log);
       if (adoptedCount > 0) {
         log(`Adopted ${adoptedCount} orphaned cross-namespace job(s)\n`);
       }
@@ -439,6 +438,7 @@ export function createRecoveryCoordinator({
                   kind: 'wrapper_crashed',
                   cause: { message: `Recovery adoption failed: ${formatError(error)}` },
                 },
+                runtime.time.now(),
                 log,
               );
               if (status.jobKind === 'workflow') {

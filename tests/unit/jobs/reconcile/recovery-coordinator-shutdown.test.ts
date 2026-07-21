@@ -11,6 +11,7 @@ import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -205,11 +206,12 @@ function stubLaunchRecord(
     projectRoot: string;
     backendNamespace: string;
     enqueueSequence?: number;
-    pool?: string;
+    pool?: LaunchPool;
   },
 ): void {
   const record: JobLaunch = {
     jobId: overrides.jobId,
+    owner: { kind: 'provider-session', id: overrides.sessionId },
     sessionId: overrides.sessionId,
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
@@ -239,6 +241,7 @@ function stubRuntimeRecord(
   },
 ): void {
   progressStore.appendRuntimeStarted(options.jobId, {
+    transport: 'durable-cli',
     pid: options.pid,
     stdoutPath: join(jobsDir(runtime.env), options.jobId, 'stdout'),
     stderrPath: join(jobsDir(runtime.env), options.jobId, 'stderr'),

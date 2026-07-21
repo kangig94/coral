@@ -32,10 +32,13 @@ import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from '../jobs/terminal/result.js';
 import { sessionsRegistry } from '../sessions/events.js';
-import { sessionEntrySchema } from '../sessions/entry.js';
+import { providerSessionSchema } from '../sessions/entry.js';
+import { executionOwnerSchema } from '../runtime/execution-owner.js';
+import { providerScopeSchema } from '../infra/provider-scope.js';
 import { discussRegistry } from '../discuss/event-registry.js';
 import { persistedDiscussSnapshotSchema } from '../discuss/projections.js';
 import { workflowRegistry } from '../workflow/events.js';
+import { workflowLifecycleSchema } from '../workflow/lifecycle.js';
 import { workflowPlanSchema } from '../workflow/plan.js';
 import { declarativeEngineManifestSchema } from '../expansion/manifest/schema.js';
 import { corpusAuthorityBaselineDdl } from '../kb/corpus/rescan/authority-baseline.js';
@@ -233,9 +236,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       eventRefs: journalEventRefsSchema,
       jobTerminal: jobTerminalSchema,
       jobDiagnostics: jobDiagnosticsSchema,
-      sessionEntry: sessionEntrySchema,
+      executionOwner: executionOwnerSchema,
+      providerSession: providerSessionSchema,
       discussState: persistedDiscussSnapshotSchema,
       workflowPlan: workflowPlanSchema,
+      providerScope: providerScopeSchema,
+      workflowLifecycle: workflowLifecycleSchema,
       expansionManifest: declarativeEngineManifestSchema,
     },
     [corpusAuthorityBaselineDdl],
@@ -505,9 +511,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       });
       signal.throwIfAborted();
 
-      await lifecycleReactor.scanStartup();
-      signal.throwIfAborted();
-
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({
         knownDiscussSources,
         getDiscussStoreForSource,
@@ -533,6 +536,12 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         drainDeadlineMs: resolveDrainDeadlineMs(runtime.env),
         staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(runtime.env),
       });
+      signal.throwIfAborted();
+
+      // Pending workflow replacement intents must be examined before the
+      // retention reactor can expire them. Workflow recovery renews or consumes
+      // the intent deterministically; only the remainder is eligible for expiry.
+      await lifecycleReactor.scanStartup();
       signal.throwIfAborted();
 
       return recoveredDiscussResumes;

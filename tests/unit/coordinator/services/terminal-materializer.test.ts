@@ -222,6 +222,7 @@ describe('terminal-materializer canonical output boundary', () => {
       kind: 'terminal',
       terminal: {
         content: 'failed',
+        durationMs: 0,
         outcome: { kind: 'failed' },
         exitCode: 1,
       },
@@ -232,7 +233,7 @@ describe('terminal-materializer canonical output boundary', () => {
       }),
     } satisfies ProviderTerminalEventBody;
 
-    recordProviderTerminal(recorder.progressStore, terminal, OPTIONS, { continuity: null });
+    recordProviderTerminal(recorder.progressStore, terminal, OPTIONS);
 
     expect(recorder.appended).toHaveLength(2);
     expect(recorder.appended[0]?.input).toMatchObject({
@@ -259,7 +260,6 @@ describe('terminal-materializer canonical output boundary', () => {
         diagnostics: {
           processExit: { exitCode: 1, signal: null },
         },
-        continuity: null,
       },
     });
   });

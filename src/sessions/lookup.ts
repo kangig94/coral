@@ -1,6 +1,6 @@
 import type { ReadonlyDatabase } from '../store/read-port.js';
-import type { SessionEntry } from './entry.js';
-import { readProjectionSessionEntry } from './projections.js';
+import { providerSessionProvider, type ProviderSession } from './entry.js';
+import { listProjectionSessionEntries, readProjectionProviderSession } from './projections.js';
 
 type SessionLookupRef = {
   sessionId: string;
@@ -9,30 +9,19 @@ type SessionLookupRef = {
 
 export interface SessionLookup {
   listSessionRefs(): SessionLookupRef[];
-  readSessionEntry(sessionId: string): SessionEntry | null;
+  readProviderSession(sessionId: string): ProviderSession | null;
 }
 
-type SessionLookupRow = {
-  session_id: string;
-  provider: string;
-};
-
 export function createProjectionSessionLookup(db: ReadonlyDatabase): SessionLookup {
-  const listStmt = db.prepare<[], SessionLookupRow>(
-    `SELECT session_id, provider
-       FROM projection_sessions
-      ORDER BY session_id ASC`,
-  );
-
   return {
     listSessionRefs(): SessionLookupRef[] {
-      return listStmt.all().map((row) => ({
-        sessionId: row.session_id,
-        provider: row.provider,
+      return listProjectionSessionEntries(db).map((entry) => ({
+        sessionId: entry.sessionId,
+        provider: providerSessionProvider(entry),
       }));
     },
-    readSessionEntry(sessionId: string): SessionEntry | null {
-      return readProjectionSessionEntry(db, sessionId);
+    readProviderSession(sessionId: string): ProviderSession | null {
+      return readProjectionProviderSession(db, sessionId);
     },
   };
 }

@@ -240,6 +240,7 @@ export function markJobsAsError(
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
   jobsRoot: string,
+  endTimeMs: number,
 ): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
@@ -250,6 +251,7 @@ export function markJobsAsError(
           kind: 'wrapper_crashed',
           cause: { message },
         },
+        endTimeMs,
         () => {},
       );
       if (status.jobKind === 'workflow') {

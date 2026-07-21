@@ -27,7 +27,7 @@ import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
 import { JobStore } from '../../../src/jobs/store.js';
 import { loadJobProjectionDetails } from '../../../src/jobs/read-queries.js';
-import { noProviderLookupPort } from '../../../src/providers/catalog.js';
+import { providerLookupPortFromCatalog } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
@@ -351,12 +351,15 @@ export function createFakeProvider(
         );
       }),
     recovery: {
-      buildRecoveryMeta: () => ({ provider: providerName }),
+      finalizeInterrupted: () => {
+        throw new Error(`Simulation provider '${providerName}' does not support app-server recovery.`);
+      },
       finalizeFromArtifacts: async ({
         stdoutPath,
         stderrPath,
         exitCode,
         signal,
+        durationMs,
       }: Parameters<NonNullable<ProviderSpec['recovery']>['finalizeFromArtifacts']>[0]) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();
         const stderr = readFileIfPresent(runtime.storage, stderrPath).trimEnd();
@@ -380,6 +383,7 @@ export function createFakeProvider(
             ...scenario?.result,
             content: scenario?.result?.content ?? stdout,
             exitCode: scenario?.result?.exitCode ?? exitCode,
+            durationMs,
             outcome,
             failureCause,
           }),
@@ -463,12 +467,16 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
+  const providerRegistry = new ProviderRegistry();
+  const fakeProvider = createFakeProvider(runtime, scenario.fakeProvider);
+  providerRegistry.register(fakeProvider);
+  const providerScope = simulationProviderScope(fakeProvider.name);
   const storeDb = openWritableStoreDbNoReset(runtime, { path: ':memory:' });
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
-    providers: noProviderLookupPort,
+    providers: providerLookupPortFromCatalog(providerRegistry),
   });
   const storeServices: CoordinatorStoreServices = {
     storeDb,
@@ -476,11 +484,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     consumerDriver: null,
   };
   const launchCoordinator = new LaunchCoordinator({ runtime });
-  const providerRegistry = new ProviderRegistry();
-  const fakeProvider = createFakeProvider(runtime, scenario.fakeProvider);
-  providerRegistry.register(fakeProvider);
-  const providerScope = simulationProviderScope(fakeProvider.name);
-
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
 
@@ -583,7 +586,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       bindHost: listenHost,
       advertiseHost: listenHost,
     },
-    createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
+    createExecutionService: (ctx, deps) =>
+      new ExecutionService(ctx, {
+        ...deps,
+        coordinatorCommit: (cb) => progressStore.commit(cb),
+      }),
     createStoreServicesFromDbFn: (openedStoreDb) => {
       if (openedStoreDb !== storeDb) {
         openedStoreDb.close();

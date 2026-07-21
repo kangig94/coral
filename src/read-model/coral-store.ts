@@ -36,7 +36,7 @@ import {
   type DiscussReadRef,
 } from '../discuss/read-queries.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
-import { readSessionEntryById } from '../sessions/read-queries.js';
+import { readProviderSessionById } from '../sessions/read-queries.js';
 import {
   listWorkflowProjections,
   readWorkflowProjection,
@@ -59,7 +59,7 @@ import type {
   KbWikiListResult,
 } from '../kb/entry-types.js';
 import type { CommunitySummaryInput, StaleCommunity } from '../kb/curate/community/summary-surface.js';
-import type { SessionEntry } from '../sessions/entry.js';
+import type { ProviderSession } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
 export type CoralStoreRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
@@ -108,7 +108,7 @@ export class CoralStore implements StoreReadContext {
     summaryIndex: (source: string) => DiscussSummaryIndexData | null;
   };
   public readonly sessions: {
-    readEntry: (sessionId: string) => SessionEntry;
+    readEntry: (sessionId: string) => ProviderSession;
   };
   public readonly workflows: {
     projection: (workflowId: string) => WorkflowProjectionRow | null;
@@ -181,7 +181,7 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.sessions = {
-      readEntry: (sessionId) => readSessionEntryById(this.db, sessionId),
+      readEntry: (sessionId) => readProviderSessionById(this.db, sessionId),
     };
 
     this.workflows = {

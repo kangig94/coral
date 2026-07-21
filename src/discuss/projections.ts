@@ -22,7 +22,7 @@ export const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot>
     schemaVersion: z.literal(3),
     providerScope: providerScopeSchema,
     sessionId: z.string(),
-    projectRoot: z.string(),
+    projectRoot: z.string().min(1),
     updatedAt: z.string(),
     lastAppliedSeq: z.number().int().nonnegative(),
     state: discussStateSchema,
@@ -108,11 +108,18 @@ function toDiscussDomainEvent(
   if (kind === null) {
     throw new Error(`Unknown discuss event type '${event.type}'.`);
   }
+  const projectRoot = previous?.projectRoot ?? event.project;
+  if (projectRoot === undefined || projectRoot.length === 0) {
+    throw new Error(`Discussion '${event.stream.id}' has no durable project scope.`);
+  }
+  if (event.project !== undefined && event.project !== projectRoot) {
+    throw new Error(`Discussion '${event.stream.id}' cannot change its durable project scope.`);
+  }
 
   return {
     v: 1,
     sessionId: event.stream.id,
-    projectRoot: event.project ?? previous?.projectRoot ?? '',
+    projectRoot,
     topic: topicForEvent(event, previous),
     seq: sourceSeq,
     kind,

@@ -1,19 +1,20 @@
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
-import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
+import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
-import type { WorkflowPlan } from '#src/workflow/plan.js';
+import type { WorkflowDeclaredBody } from '#src/workflow/events.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
+import type { SessionClaimedBody } from '#src/sessions/event-bodies.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
@@ -51,16 +52,17 @@ function bodiesBySeq(db: Database): Map<number, unknown> {
 function launchBody(jobId: string, sessionId = `session-${jobId}`): JobLaunchRequestBody {
   return {
     sessionId,
+    owner: { kind: 'provider-session', id: sessionId },
     provider: 'codex',
     providerAction: 'exec',
-    projectRoot: `/workspace/${jobId}`,
+    projectRoot: `/workspace/${sessionId}`,
     backendNamespace: 'tests',
     jobKind: 'provider',
     pool: 'default',
     enqueueSequence: 0,
     request: {
       prompt: `prompt for ${jobId}`,
-      cwd: `/workspace/${jobId}`,
+      cwd: `/workspace/${sessionId}`,
       bypassPermissions: false,
       coralEnv: {},
     },
@@ -78,11 +80,10 @@ function launchInput(jobId: string, sessionId = `session-${jobId}`): CoralEventI
   };
 }
 
-function sessionEntry(sessionId: string): SessionEntry {
+function sessionEntry(sessionId: string): ProviderSession {
   return {
     sessionId,
-    provider: 'codex',
-    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
+    binding: TEST_CODEX_BINDING,
     name: sessionId,
     state: 'pending',
     retention: 'retain',
@@ -98,21 +99,40 @@ function sessionEntry(sessionId: string): SessionEntry {
   };
 }
 
-function workflowPlanInput(workflowId: string): CoralEventInput<WorkflowPlan> {
+function claimInput(entry: ProviderSession, jobId: string): CoralEventInput<SessionClaimedBody> {
+  const claimed: ProviderSession = {
+    ...entry,
+    activeJobId: jobId,
+    lastUsedAt: NOW.toISOString(),
+    version: entry.version + 1,
+  };
+  return {
+    type: 'session.claimed',
+    stream: { kind: 'session', id: entry.sessionId },
+    refs: { sessionId: entry.sessionId, jobId },
+    bodyVersion: 1,
+    body: { entry: claimed, jobId },
+  };
+}
+
+function workflowPlanInput(workflowId: string): CoralEventInput<WorkflowDeclaredBody> {
   return {
     type: 'workflow.plan.declared',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
     bodyVersion: 1,
     body: {
-      slots: [
-        {
-          slotId: `${workflowId}:0:0`,
-          dependencies: [],
-          provider: 'codex',
-          instruction: 'test workflow slot',
-        },
-      ],
+      plan: {
+        slots: [
+          {
+            slotId: `${workflowId}:0:0`,
+            dependencies: [],
+            provider: 'codex',
+            instruction: 'test workflow slot',
+          },
+        ],
+      },
+      providerScope: TEST_PROVIDER_SCOPE,
     },
   };
 }
@@ -126,6 +146,7 @@ describe('journal commit primitive', () => {
           sessionId,
           provider: 'codex',
           projectRoot: `/workspace/${sessionId}`,
+          activeJobId: sessionId.replace('session-', 'job-'),
         });
       }
       const appended = commit(
@@ -378,7 +399,6 @@ describe('journal commit primitive', () => {
             body: {
               entry,
               controller: 'default',
-              provider: 'codex',
               scope_key: 'tests',
             },
           });
@@ -393,6 +413,7 @@ describe('journal commit primitive', () => {
               message: 'transport reset',
             },
           });
+          c.append(workflowPlanInput('workflow-chain'));
           const workflowCompleted = c.append({
             type: 'workflow.completed',
             stream: { kind: 'workflow', id: 'workflow-chain' },
@@ -404,6 +425,7 @@ describe('journal commit primitive', () => {
               stepDetails: [],
             },
           });
+          c.append(claimInput(entry, 'job-chain'));
           c.append(launchInput('job-chain', 'session-chain'));
           c.append({
             type: 'job.terminal.recorded',
@@ -423,18 +445,18 @@ describe('journal commit primitive', () => {
         ctx(),
       );
 
-      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);
+      expect(appended.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
       const bodies = bodiesBySeq(db);
-      expect(bodies.get(3)).toMatchObject({
+      expect(bodies.get(4)).toMatchObject({
         outcome: 'failed',
         causeRef: { stream: { kind: 'session', id: 'session-chain' }, seq: 2 },
       });
-      expect(bodies.get(5)).toMatchObject({
+      expect(bodies.get(7)).toMatchObject({
         terminal: {
           outcome: {
             kind: 'failed',
-            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 3 },
+            causeRef: { stream: { kind: 'workflow', id: 'workflow-chain' }, seq: 4 },
           },
         },
       });
@@ -443,7 +465,7 @@ describe('journal commit primitive', () => {
     }
   });
 
-  it('rejects a provider launch without a previously established session authority', () => {
+  it('rejects a provider launch without a previously established provider session', () => {
     const db = createDb();
     try {
       expect(() =>
@@ -454,14 +476,14 @@ describe('journal commit primitive', () => {
           },
           ctx(),
         ),
-      ).toThrow(/no authoritative parent session/u);
+      ).toThrow(/no provider session/u);
       expect(countEvents(db)).toBe(0);
     } finally {
       db.close();
     }
   });
 
-  it('makes session authority order explicit inside an atomic batch', () => {
+  it('makes provider session order explicit inside an atomic batch', () => {
     const db = createDb();
     const entry = sessionEntry('session-order');
     const opened = {
@@ -469,7 +491,7 @@ describe('journal commit primitive', () => {
       stream: { kind: 'session' as const, id: entry.sessionId },
       refs: { sessionId: entry.sessionId },
       bodyVersion: 1 as const,
-      body: { entry, controller: 'default', provider: 'codex', scope_key: 'tests' },
+      body: { entry, controller: 'default', scope_key: 'tests' },
     };
     try {
       expect(() =>
@@ -481,24 +503,29 @@ describe('journal commit primitive', () => {
           },
           ctx(),
         ),
-      ).toThrow(/no authoritative parent session/u);
+      ).toThrow(/no provider session/u);
       expect(countEvents(db)).toBe(0);
 
       const appended = commit(
         db,
         (c) => {
           c.append(opened);
+          c.append(claimInput(entry, 'job-after-open'));
           c.append(launchInput('job-after-open', entry.sessionId));
         },
         ctx(),
       );
-      expect(appended.map((event) => event.type)).toEqual(['session.opened', 'job.launch.requested']);
+      expect(appended.map((event) => event.type)).toEqual([
+        'session.opened',
+        'session.claimed',
+        'job.launch.requested',
+      ]);
     } finally {
       db.close();
     }
   });
 
-  it('rejects duplicate launch authority both within a batch and against the journal', () => {
+  it('rejects duplicate launch declarations both within a batch and against the journal', () => {
     const db = createDb();
     try {
       const entry = sessionEntry('session-duplicate');
@@ -507,25 +534,27 @@ describe('journal commit primitive', () => {
         stream: { kind: 'session' as const, id: entry.sessionId },
         refs: { sessionId: entry.sessionId },
         bodyVersion: 1 as const,
-        body: { entry, controller: 'default', provider: 'codex', scope_key: 'tests' },
+        body: { entry, controller: 'default', scope_key: 'tests' },
       };
       expect(() =>
         commit(
           db,
           (c) => {
             c.append(opened);
+            c.append(claimInput(entry, 'job-duplicate'));
             c.append(launchInput('job-duplicate', entry.sessionId));
             c.append(launchInput('job-duplicate', entry.sessionId));
           },
           ctx(),
         ),
-      ).toThrow(/already has a launch authority/u);
+      ).toThrow(/already has a launch declaration/u);
       expect(countEvents(db)).toBe(0);
 
       commit(
         db,
         (c) => {
           c.append(opened);
+          c.append(claimInput(entry, 'job-duplicate'));
           c.append(launchInput('job-duplicate', entry.sessionId));
         },
         ctx(),
@@ -538,33 +567,30 @@ describe('journal commit primitive', () => {
           },
           ctx(),
         ),
-      ).toThrow(/already has a launch authority/u);
-      expect(countEvents(db)).toBe(2);
+      ).toThrow(/already has a launch declaration/u);
+      expect(countEvents(db)).toBe(3);
     } finally {
       db.close();
     }
   });
 
-  it('rejects provider and workflow launches whose session authority kind does not match', () => {
+  it('rejects a provider launch whose provider disagrees with the session binding', () => {
     const db = createDb();
     try {
-      const providerEntry = sessionEntry('session-provider-authority');
-      const orchestrationEntry = {
-        ...sessionEntry('session-orchestration-authority'),
-        sessionAuthority: { kind: 'orchestration' as const },
+      const mismatchedEntry = {
+        ...sessionEntry('session-binding-mismatch'),
+        binding: TEST_CLAUDE_BINDING,
       };
       commit(
         db,
         (c) => {
-          for (const entry of [providerEntry, orchestrationEntry]) {
-            c.append({
-              type: 'session.opened',
-              stream: { kind: 'session', id: entry.sessionId },
-              refs: { sessionId: entry.sessionId },
-              bodyVersion: 1,
-              body: { entry, controller: 'default', provider: 'codex', scope_key: 'tests' },
-            });
-          }
+          c.append({
+            type: 'session.opened',
+            stream: { kind: 'session', id: mismatchedEntry.sessionId },
+            refs: { sessionId: mismatchedEntry.sessionId },
+            bodyVersion: 1,
+            body: { entry: mismatchedEntry, controller: 'default', scope_key: 'tests' },
+          });
         },
         ctx(),
       );
@@ -573,32 +599,13 @@ describe('journal commit primitive', () => {
         commit(
           db,
           (c) => {
-            c.append(launchInput('job-wrong-provider-authority', orchestrationEntry.sessionId));
+            c.append(claimInput(mismatchedEntry, 'job-binding-mismatch'));
+            c.append(launchInput('job-binding-mismatch', mismatchedEntry.sessionId));
           },
           ctx(),
         ),
-      ).toThrow(/does not match its session authority/u);
-
-      expect(() =>
-        commit(
-          db,
-          (c) => {
-            c.append({
-              ...launchInput('job-wrong-workflow-authority', providerEntry.sessionId),
-              body: {
-                ...launchBody('job-wrong-workflow-authority', providerEntry.sessionId),
-                jobKind: 'workflow',
-                request: {
-                  ...launchBody('job-wrong-workflow-authority', providerEntry.sessionId).request,
-                  providerScope: TEST_PROVIDER_SCOPE,
-                },
-              },
-            });
-          },
-          ctx(),
-        ),
-      ).toThrow(/does not match its session authority/u);
-      expect(countEvents(db)).toBe(2);
+      ).toThrow(/does not match its provider session binding and execution owner/u);
+      expect(countEvents(db)).toBe(1);
     } finally {
       db.close();
     }

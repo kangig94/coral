@@ -7,12 +7,39 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
-import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
+import {
+  applyTestCounterSchema,
+  TEST_COUNTER_SCHEMA,
+  testCounterRegistry,
+} from '#tests/unit/store/fixtures/test-counter-registry.js';
 import { decodeBody, type StoreReadContext } from '#src/store/body-codec.js';
-import { composeReducers } from '#src/store/reducers.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { z } from 'zod';
 import type { EventsRow } from '#src/store/schema.js';
+
+const sessionQueryRegistry: DomainEventRegistry = {
+  streamKind: 'session',
+  entries: [defineDomainEvent({ type: 'test.counter.reset', schema: TEST_COUNTER_SCHEMA })],
+};
+
+const discussQueryRegistry: DomainEventRegistry = {
+  streamKind: 'discuss',
+  entries: [defineDomainEvent({ type: 'discuss.message.recorded', schema: TEST_COUNTER_SCHEMA })],
+};
+
+const workflowQueryRegistry: DomainEventRegistry = {
+  streamKind: 'workflow',
+  entries: [defineDomainEvent({ type: 'workflow.step.completed', schema: TEST_COUNTER_SCHEMA })],
+};
+
+const queryReducers = composeReducers(
+  testCounterRegistry,
+  sessionQueryRegistry,
+  discussQueryRegistry,
+  workflowQueryRegistry,
+);
+
 describe('events queries', () => {
   let db: Database;
   let appended: ReturnType<typeof commitInputs>;
@@ -26,7 +53,7 @@ describe('events queries', () => {
     const inputs: CoralEventInput[] = [
       {
         type: 'test.counter.ticked',
-        stream: { kind: 'session', id: 'session-1' },
+        stream: { kind: 'job', id: 'job-0' },
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
@@ -71,7 +98,7 @@ describe('events queries', () => {
       },
       {
         type: 'test.counter.ticked',
-        stream: { kind: 'session', id: 'session-1' },
+        stream: { kind: 'job', id: 'job-0' },
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
@@ -82,12 +109,12 @@ describe('events queries', () => {
 
     appended = commitInputs(db, inputs, {
       now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
-      reducers: composeReducers(testCounterRegistry),
+      reducers: queryReducers,
       bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     });
     readCtx = {
-      schemas: composeReducers(testCounterRegistry).schemas,
+      schemas: queryReducers.schemas,
       bodyCodec: createEventBodyCodec(),
     };
   });
@@ -115,9 +142,9 @@ describe('events queries', () => {
   it('filters by stream kind', () => {
     const page = getEventsSince(db, 0, { streamKind: 'session' }, 1000, readCtx);
 
-    expect(page.events.map((event) => event.seq)).toEqual([1, 3, 6]);
-    expect(page.events.map((event) => event.stream.kind)).toEqual(['session', 'session', 'session']);
-    expect(page.nextCursor).toBe(6);
+    expect(page.events.map((event) => event.seq)).toEqual([3]);
+    expect(page.events.map((event) => event.stream.kind)).toEqual(['session']);
+    expect(page.nextCursor).toBe(3);
   });
 
   it('filters by type', () => {
@@ -155,8 +182,8 @@ describe('events queries', () => {
   });
 
   it('looks up a single event by stream and seq or returns undefined', () => {
-    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toEqual(appended[0]);
-    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 99, readCtx)).toBeUndefined();
+    expect(getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toEqual(appended[0]);
+    expect(getEvent(db, { kind: 'job', id: 'job-0' }, 99, readCtx)).toBeUndefined();
   });
 
   it('rejects a stored event type outside the current codec registry', () => {
@@ -174,7 +201,7 @@ describe('events queries', () => {
   it('rejects a stored event body version outside the current codec', () => {
     db.prepare('UPDATE events SET body_version = 2 WHERE seq = 1').run();
 
-    expect(() => getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toThrow(
+    expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow(
       "Stored event type 'test.counter.ticked' has body_version 2; the current codec accepts only 1",
     );
   });
@@ -182,7 +209,7 @@ describe('events queries', () => {
   it('rejects a registered stored event body that violates the current codec', () => {
     db.prepare('UPDATE events SET body = ? WHERE seq = 1').run(Buffer.from(JSON.stringify({ id: 'x', delta: 'bad' })));
 
-    expect(() => getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toThrow(
+    expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow(
       "Current codec rejected stored event type 'test.counter.ticked'",
     );
   });

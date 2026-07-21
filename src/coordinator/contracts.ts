@@ -1,4 +1,9 @@
-import type { JobLaunchRequest, JobResumeRequest, LaunchDecision } from '../jobs/launch.js';
+import type {
+  JobLaunchRequest,
+  JobResumeRequest,
+  ProviderSessionLaunchDecision,
+  WorkflowLaunchDecision,
+} from '../jobs/launch.js';
 import type { LaunchCoordinatorPort } from '../jobs/contracts/admission.js';
 import type { ProviderDurableSpawner } from '../providers/cli-runner.js';
 import type { JobProgressStore } from '../jobs/contracts/job-store.js';
@@ -9,7 +14,7 @@ import type { ProviderServerLease, ProviderServerSpec, UsageSummary } from '../p
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { SessionEntry } from '../sessions/entry.js';
+import type { ProviderSession } from '../sessions/entry.js';
 import type { CommitEventsFn } from '../store/append.js';
 import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
@@ -18,8 +23,8 @@ import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
 
 interface CoordinatorSessionOps {
-  start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;
-  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision>;
+  start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+  resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
 }
 
 interface CoordinatorJobOps {
@@ -37,13 +42,13 @@ interface CoordinatorWorkflowOps {
     input: WorkflowCommand,
     ctx: InvocationContext,
     workDir?: string,
-  ): Promise<LaunchDecision>;
+  ): Promise<WorkflowLaunchDecision>;
 }
 
 export type ProjectRequestPort = CoordinatorSessionOps & CoordinatorJobOps & CoordinatorWorkflowOps;
 
 export interface ListResult {
-  sessions: SessionEntry[];
+  sessions: ProviderSession[];
 }
 
 type CoordinatorLaunchCoordinator = LaunchCoordinatorPort & ProviderDurableSpawner;
@@ -75,7 +80,7 @@ export type ExecutionServiceDeps = {
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };
-  coordinatorCommit?: CommitEventsFn;
+  coordinatorCommit: CommitEventsFn;
   loadJobProjectionDetail: (jobId: string) => JobProjectionDetail;
   readJobEvents: (jobId: string) => JobEvent[];
   aggregateWorkflowUsage: (workflowJobId: string) => UsageSummary | undefined;

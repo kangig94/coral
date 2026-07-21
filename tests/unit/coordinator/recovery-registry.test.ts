@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
 import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
-import type { AppServerRuntime, JobLaunch } from '#src/jobs/records.js';
+import type { AppServerRuntime, ProviderJobLaunch } from '#src/jobs/records.js';
 import type { DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
 
-function makeLaunchRecord(overrides: Partial<JobLaunch> = {}): JobLaunch {
+function makeLaunchRecord(overrides: Partial<ProviderJobLaunch> = {}): ProviderJobLaunch {
   return {
     jobId: 'job-1',
+    owner: { kind: 'provider-session', id: 'sess-1' },
     sessionId: 'sess-1',
     provider: 'codex',
     projectRoot: '/tmp/test',
@@ -22,6 +23,7 @@ function makeLaunchRecord(overrides: Partial<JobLaunch> = {}): JobLaunch {
 
 function makeRuntimeRecord(overrides: Partial<DurableCliRuntimeRecord> = {}): DurableCliRuntimeRecord {
   return {
+    transport: 'durable-cli',
     pid: 12345,
     stdoutPath: '/tmp/stdout',
     stderrPath: '/tmp/stderr',

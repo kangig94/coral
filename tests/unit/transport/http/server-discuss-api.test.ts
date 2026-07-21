@@ -505,7 +505,7 @@ describe('server discuss API', () => {
     const firstSnapshot = await appendPersistedEvents(firstHarness, 'shared-session', (current) => [
       makeEvent(
         current.sessionId,
-        secondHarness.projectRoot,
+        firstHarness.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
         'bid.submitted',

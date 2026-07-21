@@ -390,12 +390,9 @@ describe('DiscussContext lifecycle boundaries', () => {
         harness.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
-        'agent.run.bound',
+        'must_answer.carry_forward.set',
         '2026-03-10T00:03:11.000Z',
-        {
-          agent: 'alpha',
-          executionSessionId: 'provider-session-1',
-        },
+        { items: ['alpha\u0000What changed?'] },
       ),
     ]);
 
@@ -404,7 +401,7 @@ describe('DiscussContext lifecycle boundaries', () => {
       'session.created',
       'bidding.opened',
       'bid.submitted',
-      'agent.run.bound',
+      'must_answer.carry_forward.set',
     ]);
     expect(harness.store.load('runtime-stale-race-session')?.lastAppliedSeq).toBe(4);
     expect(session.snapshot.lastAppliedSeq).toBe(4);

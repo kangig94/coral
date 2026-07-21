@@ -46,11 +46,20 @@ const BOUNDARIES = [
     ],
   },
   {
+    name: 'store.projection_jobs.execution_owner',
+    table: 'projection_jobs',
+    column: 'execution_owner',
+    evidence: [
+      ['src/jobs/projections.ts', 'executionOwnerSchema.parse(JSON.parse(row.execution_owner))'],
+      ['src/jobs/projections.ts', 'JSON.stringify(next.owner)'],
+    ],
+  },
+  {
     name: 'store.projection_sessions.entry',
     table: 'projection_sessions',
     column: 'entry',
     evidence: [
-      ['src/sessions/projections.ts', 'sessionEntrySchema.safeParse(parsed)'],
+      ['src/sessions/projections.ts', 'providerSessionSchema.safeParse(parsed)'],
       ['src/sessions/projections.ts', 'JSON.stringify(next.entry)'],
     ],
   },
@@ -70,6 +79,15 @@ const BOUNDARIES = [
     evidence: [
       ['src/workflow/read-queries.ts', 'workflowPlanSchema.parse(JSON.parse(row.plan))'],
       ['src/workflow/events.ts', 'JSON.stringify(nextPlan)'],
+    ],
+  },
+  {
+    name: 'store.projection_workflows.provider_scope',
+    table: 'projection_workflows',
+    column: 'provider_scope',
+    evidence: [
+      ['src/workflow/read-queries.ts', 'providerScopeSchema.parse(JSON.parse(row.provider_scope))'],
+      ['src/workflow/events.ts', 'JSON.stringify(providerScope)'],
     ],
   },
   {

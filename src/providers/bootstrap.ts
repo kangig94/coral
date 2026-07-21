@@ -22,18 +22,12 @@ type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract['finalizeFrom
 
 function buildProviderRecovery(
   lifecycle: Pick<ProviderRecoveryContract, 'finalizeInterrupted'> &
-    Partial<Pick<ProviderRecoveryContract, 'probe' | 'buildRecoveryMeta' | 'extractProgress'>>,
+    Partial<Pick<ProviderRecoveryContract, 'probe' | 'extractProgress'>>,
   finalizeFromArtifacts: ProviderRecoveryContract['finalizeFromArtifacts'],
-  providerName: string,
 ): ProviderRecoveryContract {
-  const { finalizeInterrupted } = lifecycle;
-  if (!finalizeInterrupted) {
-    throw new Error(`${providerName} recovery lifecycle must define finalizeInterrupted`);
-  }
   return {
-    finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
+    finalizeInterrupted: lifecycle.finalizeInterrupted.bind(lifecycle),
     finalizeFromArtifacts,
-    ...(lifecycle.buildRecoveryMeta ? { buildRecoveryMeta: lifecycle.buildRecoveryMeta.bind(lifecycle) } : {}),
     ...(lifecycle.extractProgress ? { extractProgress: lifecycle.extractProgress.bind(lifecycle) } : {}),
     ...(lifecycle.probe ? { probe: lifecycle.probe.bind(lifecycle) } : {}),
   };
@@ -52,6 +46,7 @@ async function finalizeClaudeFromArtifacts(
       kind: 'terminal',
       terminal: buildJobTerminal({
         content: '',
+        durationMs: options.durationMs,
         ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
         outcome,
       }),
@@ -109,6 +104,7 @@ async function finalizeCodexFromArtifacts(
       kind: 'terminal',
       terminal: buildJobTerminal({
         content: '',
+        durationMs: options.durationMs,
         ...(options.exitCode === undefined ? {} : { exitCode: options.exitCode }),
         outcome,
       }),
@@ -152,10 +148,7 @@ function readArtifact(storage: Pick<StoragePort, 'readFileSync'>, path: string):
 function locateClaudeArtifactsForRecovery(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
 ): readonly ProviderArtifactHandleInput[] | undefined {
-  const conversationRef =
-    readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId') ??
-    readProviderContinuityString(options.providerMeta, 'conversationRef') ??
-    readString(options.fallbackConversationRef);
+  const conversationRef = readString(options.fallbackConversationRef);
   if (conversationRef === undefined) {
     return undefined;
   }
@@ -180,10 +173,7 @@ function locateCodexArtifactsForRecovery(
   if (options.knownArtifactHandles !== undefined && options.knownArtifactHandles.length > 0) {
     return options.knownArtifactHandles;
   }
-  const threadId =
-    readProviderMetaString(options.providerMeta, 'threadId', 'conversationRef') ??
-    readProviderContinuityString(options.providerMeta, 'threadId') ??
-    readString(options.fallbackConversationRef);
+  const threadId = readString(options.fallbackConversationRef);
   if (threadId === undefined) {
     return undefined;
   }
@@ -203,40 +193,12 @@ function artifactHandlesFromLocator(result: {
   return result.kind === 'match' && result.artifact ? [result.artifact] : undefined;
 }
 
-function readProviderMetaString(
-  providerMeta: Record<string, unknown> | undefined,
-  ...keys: readonly string[]
-): string | undefined {
-  if (providerMeta === undefined) {
-    return undefined;
-  }
-  for (const key of keys) {
-    const value = readString(providerMeta[key]);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function readProviderContinuityString(
-  providerMeta: Record<string, unknown> | undefined,
-  key: string,
-): string | undefined {
-  const continuity = providerMeta?.providerContinuity;
-  if (!continuity || typeof continuity !== 'object') {
-    return undefined;
-  }
-  const value = (continuity as Record<string, unknown>)[key];
-  return readString(value);
-}
-
 const codexProviderSpec = defineProvider({
   name: 'codex',
   run: codexThreadProvider,
   preflight: codexPreflight,
   appServer: codexAppServerLifecycle,
-  recovery: buildProviderRecovery(codexRecoveryLifecycle, finalizeCodexFromArtifacts, 'Codex'),
+  recovery: buildProviderRecovery(codexRecoveryLifecycle, finalizeCodexFromArtifacts),
 })
   .binding(codexBindingCodec)
   .artifacts(codexArtifactCapability)
@@ -247,7 +209,7 @@ const claudeProviderSpec = defineProvider({
   run: claudeProvider,
   preflight: claudePreflight,
   appServer: claudeAppServerLifecycle,
-  recovery: buildProviderRecovery(claudeRecoveryLifecycle, finalizeClaudeFromArtifacts, 'Claude'),
+  recovery: buildProviderRecovery(claudeRecoveryLifecycle, finalizeClaudeFromArtifacts),
 })
   .binding(claudeBindingCodec)
   .artifacts(claudeArtifactCapability)

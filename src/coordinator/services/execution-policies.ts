@@ -10,7 +10,7 @@ import type { ProviderCredentialSourceRef } from '../../infra/provider-credentia
 import { buildExactProviderEnv } from '../../providers/execution-context.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { type JobLaunchRequest, type LaunchDecision, rejectLaunch } from '../../jobs/launch.js';
+import { type JobLaunchRequest, type RejectedLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -21,12 +21,11 @@ import {
   stripAgentMetadata,
   type AgentResolutionContext,
 } from '../../jobs/agent-resolution.js';
-import type { SessionAllocateOptions, SessionClaimAtomicPort } from '../../sessions/contracts.js';
+import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
-import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
-import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy, type SessionEntry } from '../../sessions/entry.js';
+import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';
 import { CONTEXT_ENV_KEY } from '../../transport/context-profile.js';
 
 export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | 'retention'> & {
@@ -79,14 +78,14 @@ export function buildSessionControllerProfile(
   return profile;
 }
 
-export function mapResolverError(err: unknown): LaunchDecision | null {
+export function mapResolverError(err: unknown): RejectedLaunchDecision | null {
   if (err instanceof InvalidAgentRefError) return rejectLaunch('invalid_agent', err.message);
   if (err instanceof AgentNotFoundError) return rejectLaunch('agent_not_found', err.message);
   if (err instanceof AgentNamespaceNotFoundError) return rejectLaunch('agent_namespace_not_found', err.message);
   return null;
 }
 
-export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | LaunchDecision {
+export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | RejectedLaunchDecision {
   const { sessionId, ...rest } = input;
   if (sessionId === undefined) {
     return rest;
@@ -275,30 +274,4 @@ export async function runProviderPreflight(
   } catch (error: unknown) {
     return errorMessage(error);
   }
-}
-
-export async function claimJobAtomic(
-  deps: {
-    sessionManager: SessionClaimAtomicPort;
-  },
-  session: SessionEntry,
-  jobId: string,
-  providerName: string,
-  projectRoot: string,
-  options: ClaimJobOptions = {},
-): Promise<SessionEntry> {
-  void providerName;
-  void projectRoot;
-  void options.jobKind;
-  void options.initialPhase;
-
-  const claimed = await deps.sessionManager.claimForJobAtomic(
-    session.sessionId,
-    jobId,
-    options.expectedVersion ?? session.version,
-  );
-  if (!claimed) {
-    throw new SessionClaimError();
-  }
-  return session;
 }

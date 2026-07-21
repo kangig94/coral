@@ -3,6 +3,8 @@ import type { JobPhase } from '../phase.js';
 import type { TerminalWriteOptions } from '../contracts/job-store.js';
 import type { ProviderArtifactHandleInput } from '../../providers/contract.js';
 import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
+import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { LaunchPool } from '../contracts/admission.js';
 
 export interface RecoveryCapableService {
   validateProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<boolean>;
@@ -22,7 +24,6 @@ export interface RecoveryCapableService {
     sessionId: string,
     input: {
       readonly jobId: string;
-      readonly provider: string;
       readonly handles: readonly ProviderArtifactHandleInput[];
     },
   ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }>;
@@ -31,6 +32,6 @@ export interface RecoveryCapableService {
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options?: TerminalWriteOptions,
+    options: TerminalWriteOptions & { pool: LaunchPool; sessionContinuity?: ContinuitySnapshot | null },
   ): void;
 }

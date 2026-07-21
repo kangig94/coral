@@ -197,7 +197,7 @@ describe('http/ipc parity', () => {
     let observedContext: Parameters<NonNullable<typeof ports.sessions.start>>[2] | undefined;
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
       observedContext = ctx;
-      return { status: 'running' as const, job: 'job-1', session: 'session-1' };
+      return { kind: 'provider-session' as const, status: 'running' as const, jobId: 'job-1', sessionId: 'session-1' };
     });
 
     await ipcAdapter(spec, ports).dispatch(
@@ -245,7 +245,12 @@ describe('http/ipc parity', () => {
     let observedScope: unknown;
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
       observedScope = ctx.providerScope;
-      return { status: 'running' as const, job: 'job-system', session: 'session-system' };
+      return {
+        kind: 'provider-session' as const,
+        status: 'running' as const,
+        jobId: 'job-system',
+        sessionId: 'session-system',
+      };
     });
 
     await ipcAdapter(spec, ports).dispatch(
@@ -319,9 +324,10 @@ describe('http/ipc parity', () => {
         binding: ctx.principal.binding,
       });
       return {
+        kind: 'provider-session' as const,
         status: 'running' as const,
-        job: `job-${observedPrincipals.length}`,
-        session: `session-${observedPrincipals.length}`,
+        jobId: `job-${observedPrincipals.length}`,
+        sessionId: `session-${observedPrincipals.length}`,
       };
     });
 
@@ -350,8 +356,8 @@ describe('http/ipc parity', () => {
     expect(httpResponse.status).toBe(201);
     expect(await httpResponse.json()).toMatchObject({
       launchState: 'running',
-      job: 'job-2',
-      session: 'session-2',
+      jobId: 'job-2',
+      sessionId: 'session-2',
     });
     expect(observedPrincipals).toEqual([
       { subject: 'operator', transport: 'ipc', binding: { kind: 'project', root: '/project-root' } },

@@ -9,7 +9,9 @@ import { describe, expect, it } from 'vitest';
 
 import { continuitySnapshotSchema } from '#src/sessions/continuity.js';
 import { sessionContinuityMutationSchema } from '#src/sessions/continuity-mutation.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { sessionContinuityCheckpointedBodySchema } from '#src/sessions/event-bodies.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 describe('Invariant #9 — continuity bodies are full snapshots', () => {
   it('continuitySnapshotSchema accepts a complete snapshot', () => {
@@ -57,12 +59,15 @@ describe('Invariant #9 — continuity bodies are full snapshots', () => {
   });
 
   it('session.continuity.checkpointed body requires entry + full snapshot', () => {
-    const entry = {
+    const entry: ProviderSession = {
       sessionId: 's-1',
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' as const },
+      binding: TEST_CODEX_BINDING,
       name: 'session-name',
       state: 'ready' as const,
+      retention: 'retain',
+      artifactHandles: [],
+      retentionDiscard: { attempts: [] },
+      conversationRef: 'conv-1',
       cwd: '/workspace/coral',
       projectRoot: '/workspace/coral',
       backendNamespace: 'tests',

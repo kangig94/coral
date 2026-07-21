@@ -9,18 +9,19 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import { providerSessionSchema, type ProviderSession } from '#src/sessions/entry.js';
+import { sessionArtifactHandleRecordedBodySchema } from '#src/sessions/event-bodies.js';
 import { providerArtifactIdentityKey } from '#src/providers/artifact-identity.js';
-import { readProjectionSessionEntry } from '#src/sessions/projections.js';
+import { readProjectionProviderSession } from '#src/sessions/projections.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'sessionId' | 'provider'>): SessionEntry {
+function sessionEntry(overrides: Partial<ProviderSession> & Pick<ProviderSession, 'sessionId'>): ProviderSession {
   return {
     sessionId: overrides.sessionId,
-    provider: overrides.provider,
-    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
+    binding: overrides.binding ?? TEST_CODEX_BINDING,
     name: overrides.name ?? overrides.sessionId,
     state: overrides.state ?? 'pending',
     retention: overrides.retention ?? 'retain',
@@ -45,6 +46,48 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
 }
 
 describe('sessions reducer equivalence', () => {
+  it('requires artifact identity and job ownership to match the session binding exactly', () => {
+    const identity = { kind: 'codex-rollout' as const, threadId: 'thread-artifact' };
+    const identityKey = providerArtifactIdentityKey('codex', identity);
+    const entry = sessionEntry({
+      sessionId: 'session-artifact-authority',
+      artifactHandles: [
+        {
+          handle: '/tmp/codex/rollout.jsonl',
+          identity,
+          identityKey,
+          sourceJobId: 'job-artifact',
+          recordedAt: NOW.toISOString(),
+        },
+      ],
+    });
+
+    expect(() =>
+      providerSessionSchema.parse({
+        ...entry,
+        artifactHandles: [{ ...entry.artifactHandles[0], identityKey: 'not-derived-from-binding' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      sessionArtifactHandleRecordedBodySchema.parse({
+        entry,
+        provider: 'codex',
+        handle: '/tmp/codex/rollout.jsonl',
+        identity,
+        identityKey,
+        sourceJobId: 'job-artifact',
+      }),
+    ).toThrow();
+    expect(() =>
+      sessionArtifactHandleRecordedBodySchema.parse({
+        entry,
+        handle: '/tmp/codex/rollout.jsonl',
+        identity,
+        identityKey,
+      }),
+    ).toThrow();
+  });
+
   it('projects session.opened retention and recorded artifact handles through entry JSON', () => {
     const db = newRawDatabase(':memory:');
     try {
@@ -53,7 +96,6 @@ describe('sessions reducer equivalence', () => {
       const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
         sessionId: 'session-artifact',
-        provider: 'codex',
         retention: 'discard_provider_artifacts_on_terminal',
       });
       const artifactEntry = sessionEntry({
@@ -61,7 +103,6 @@ describe('sessions reducer equivalence', () => {
         version: 2,
         artifactHandles: [
           {
-            provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
             identity: { kind: 'codex-rollout', threadId: 'thread-artifact' },
             identityKey: providerArtifactIdentityKey('codex', {
@@ -85,7 +126,6 @@ describe('sessions reducer equivalence', () => {
             body: {
               entry: openedEntry,
               controller: 'default',
-              provider: 'codex',
               scope_key: 'scope-artifact',
             },
           },
@@ -96,8 +136,12 @@ describe('sessions reducer equivalence', () => {
             bodyVersion: 1,
             body: {
               entry: artifactEntry,
-              provider: 'codex',
               handle: '/tmp/codex/rollout.jsonl',
+              identity: { kind: 'codex-rollout', threadId: 'thread-artifact' },
+              identityKey: providerArtifactIdentityKey('codex', {
+                kind: 'codex-rollout',
+                threadId: 'thread-artifact',
+              }),
               sourceJobId: 'job-artifact',
             },
           },
@@ -116,14 +160,13 @@ describe('sessions reducer equivalence', () => {
       if (!row) {
         throw new Error('Expected session projection row');
       }
-      const projected = JSON.parse(row.entry) as SessionEntry;
+      const projected = JSON.parse(row.entry) as ProviderSession;
 
       expect(projected).toMatchObject({
         sessionId: 'session-artifact',
         retention: 'discard_provider_artifacts_on_terminal',
         artifactHandles: [
           {
-            provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
             sourceJobId: 'job-artifact',
             recordedAt: NOW.toISOString(),
@@ -144,7 +187,6 @@ describe('sessions reducer equivalence', () => {
       const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
         sessionId: 'session-retention-discard',
-        provider: 'codex',
         retention: 'discard_provider_artifacts_on_terminal',
       });
       const handles = ['/tmp/codex/rollout-retention.jsonl'];
@@ -160,7 +202,6 @@ describe('sessions reducer equivalence', () => {
             body: {
               entry: openedEntry,
               controller: 'default',
-              provider: 'codex',
               scope_key: 'scope-retention-discard',
             },
           },
@@ -191,7 +232,7 @@ describe('sessions reducer equivalence', () => {
         { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
-      const before = readProjectionSessionEntry(db, openedEntry.sessionId);
+      const before = readProjectionProviderSession(db, openedEntry.sessionId);
       expect(before?.retentionDiscard).toEqual({
         attempts: [
           {
@@ -210,43 +251,9 @@ describe('sessions reducer equivalence', () => {
         bodyCodec,
       });
 
-      expect(readProjectionSessionEntry(db, openedEntry.sessionId)?.retentionDiscard).toEqual(before?.retentionDiscard);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('parses pre-feature projection_sessions.entry JSON with retention defaults', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db);
-      const retiredEntry = {
-        sessionId: 'session-retired-row',
-        provider: 'codex',
-        sessionAuthority: { kind: 'orchestration' as const },
-        name: 'retired',
-        state: 'pending',
-        cwd: '/tmp/project',
-        projectRoot: '/tmp/project',
-        backendNamespace: 'ns-a',
-        providerContinuity: null,
-        createdAt: NOW.toISOString(),
-        lastUsedAt: NOW.toISOString(),
-        version: 1,
-      };
-
-      db.prepare(
-        `INSERT INTO projection_sessions (
-           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run('session-retired-row', 'default', 'codex', 0, null, 'retired-scope', JSON.stringify(retiredEntry), 1);
-
-      expect(readProjectionSessionEntry(db, 'session-retired-row')).toMatchObject({
-        sessionId: 'session-retired-row',
-        retention: 'retain',
-        artifactHandles: [],
-        retentionDiscard: { attempts: [] },
-      });
+      expect(readProjectionProviderSession(db, openedEntry.sessionId)?.retentionDiscard).toEqual(
+        before?.retentionDiscard,
+      );
     } finally {
       db.close();
     }
@@ -258,8 +265,7 @@ describe('sessions reducer equivalence', () => {
       applyBundledStoreSchema(db);
       const projectedEntry = {
         sessionId: 'session-reducer-written-row',
-        provider: 'codex',
-        sessionAuthority: { kind: 'orchestration' as const },
+        binding: TEST_CODEX_BINDING,
         name: 'reducer written',
         state: 'pending',
         retention: 'discard_provider_artifacts_on_terminal',
@@ -285,12 +291,11 @@ describe('sessions reducer equivalence', () => {
 
       db.prepare(
         `INSERT INTO projection_sessions (
-           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         'session-reducer-written-row',
         'default',
-        'codex',
         0,
         null,
         'reducer-written-scope',
@@ -298,7 +303,7 @@ describe('sessions reducer equivalence', () => {
         1,
       );
 
-      expect(readProjectionSessionEntry(db, 'session-reducer-written-row')?.retentionDiscard).toEqual(
+      expect(readProjectionProviderSession(db, 'session-reducer-written-row')?.retentionDiscard).toEqual(
         projectedEntry.retentionDiscard,
       );
     } finally {
@@ -306,65 +311,7 @@ describe('sessions reducer equivalence', () => {
     }
   });
 
-  it('replays pre-feature session.opened events with retention defaults', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db);
-      const reducers = composeReducers(sessionsRegistry);
-      const bodyCodec = createEventBodyCodec();
-      const retiredEntry = {
-        sessionId: 'session-retired-opened',
-        provider: 'claude',
-        sessionAuthority: { kind: 'orchestration' as const },
-        name: 'retired opened',
-        state: 'pending',
-        cwd: '/tmp/project',
-        projectRoot: '/tmp/project',
-        backendNamespace: 'ns-a',
-        providerContinuity: null,
-        createdAt: NOW.toISOString(),
-        lastUsedAt: NOW.toISOString(),
-        version: 1,
-      };
-
-      const appended = commitInputs(
-        db,
-        [
-          {
-            type: 'session.opened',
-            stream: { kind: 'session', id: 'session-retired-opened' },
-            refs: { sessionId: 'session-retired-opened' },
-            bodyVersion: 1,
-            body: {
-              entry: retiredEntry,
-              controller: 'default',
-              provider: 'claude',
-              scope_key: 'retired-scope',
-            },
-          },
-        ],
-        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
-      );
-
-      rebuildProjections({
-        db,
-        cutoffSeq: appended.at(-1)?.seq ?? 0,
-        reducers,
-        bodyCodec,
-      });
-
-      expect(readProjectionSessionEntry(db, 'session-retired-opened')).toMatchObject({
-        sessionId: 'session-retired-opened',
-        retention: 'retain',
-        artifactHandles: [],
-        retentionDiscard: { attempts: [] },
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rebuilds projection_sessions rows byte-identically from a historical event sequence', () => {
+  it('rebuilds projection_sessions rows byte-identically from a canonical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
@@ -373,7 +320,6 @@ describe('sessions reducer equivalence', () => {
       const scopeKey = createHash('sha1').update('session-1').digest('hex').slice(0, 12);
       const openedEntry = sessionEntry({
         sessionId: 'session-1',
-        provider: 'codex',
         controllerProfile: { owner: 'team-a' },
       });
       const readyEntry = sessionEntry({
@@ -402,7 +348,6 @@ describe('sessions reducer equivalence', () => {
             body: {
               entry: openedEntry,
               controller: 'team-a',
-              provider: 'codex',
               scope_key: scopeKey,
             },
           },
@@ -486,7 +431,7 @@ describe('sessions reducer equivalence', () => {
 
       const before = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -496,7 +441,6 @@ describe('sessions reducer equivalence', () => {
       expect(before).toEqual({
         session_id: 'session-1',
         controller: 'team-a',
-        provider: 'codex',
         resumable: 0,
         conversation_ref: null,
         scope_key: scopeKey,
@@ -513,7 +457,7 @@ describe('sessions reducer equivalence', () => {
 
       const after = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -535,7 +479,7 @@ describe('sessions reducer equivalence', () => {
       const scopeKey = 'canonical-scope';
       const openedEntry = sessionEntry({
         sessionId: 'session-2',
-        provider: 'claude',
+        binding: TEST_CLAUDE_BINDING,
         controllerProfile: { owner: 'team-b' },
         backendNamespace: 'ns-b',
       });
@@ -557,7 +501,6 @@ describe('sessions reducer equivalence', () => {
             body: {
               entry: openedEntry,
               controller: 'team-b',
-              provider: 'claude',
               scope_key: scopeKey,
             },
           },
@@ -593,7 +536,7 @@ describe('sessions reducer equivalence', () => {
 
       const before = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -603,7 +546,6 @@ describe('sessions reducer equivalence', () => {
       expect(before).toEqual({
         session_id: 'session-2',
         controller: 'team-b',
-        provider: 'claude',
         resumable: 1,
         conversation_ref: 'thread-2',
         scope_key: scopeKey,
@@ -620,7 +562,7 @@ describe('sessions reducer equivalence', () => {
 
       const after = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,

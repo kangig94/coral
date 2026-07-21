@@ -5,14 +5,23 @@ export function launchToHttp(
   decision: LaunchDecision,
   acceptedStatusCode: 201 | 202,
 ): { statusCode: number; body: unknown } {
-  if (decision.status === 'running' || decision.status === 'queued') {
+  if (decision.status !== 'rejected') {
     return {
       statusCode: acceptedStatusCode,
-      body: {
-        session: decision.session,
-        job: decision.job,
-        launchState: decision.status,
-      },
+      body:
+        decision.kind === 'provider-session'
+          ? {
+              kind: decision.kind,
+              sessionId: decision.sessionId,
+              jobId: decision.jobId,
+              launchState: decision.status,
+            }
+          : {
+              kind: decision.kind,
+              workflowId: decision.workflowId,
+              jobId: decision.jobId,
+              launchState: decision.status,
+            },
     };
   }
 
@@ -37,6 +46,13 @@ export function launchToHttp(
     case 'session_busy':
     case 'non_resumable':
     case 'provider_mismatch':
+    case 'job_owner_mismatch':
+    case 'job_owner_missing':
+    case 'job_provider_session_missing':
+    case 'job_binding_owner_mismatch':
+    case 'discussion_job_launch_conflict':
+    case 'workflow_owner_terminal':
+    case 'workflow_slot_chain_invalid':
       statusCode = 409;
       break;
   }

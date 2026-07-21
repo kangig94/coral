@@ -41,6 +41,7 @@ const claudeSessionProvider = compose(
 );
 
 const claude: Provider = (request, runtime) => {
+  const startedAt = runtime.time.now();
   const prepared = buildPreparedClaudeRequest(request);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
@@ -51,6 +52,7 @@ const claude: Provider = (request, runtime) => {
         buildDispatchRejectedTerminal(
           prepared.model,
           `This Claude session already established persistent continuity with cwd=${persistedContinuity.bootstrapSignature.cwd}, systemPromptHash=${persistedContinuity.bootstrapSignature.systemPromptHash}, permissionMode=${persistedContinuity.bootstrapSignature.permissionMode}. Start a new Coral session before changing that bootstrap signature.`,
+          Math.max(0, runtime.time.now() - startedAt),
         ),
       );
     }
@@ -150,12 +152,17 @@ function isClaudeBrokerSessionUnavailable(error: unknown): boolean {
   return /session unavailable/i.test(errorMessage(error));
 }
 
-function buildDispatchRejectedTerminal(model: string | undefined, reason: string): ProviderTerminalEventBody {
+function buildDispatchRejectedTerminal(
+  model: string | undefined,
+  reason: string,
+  durationMs: number,
+): ProviderTerminalEventBody {
   return {
     kind: 'terminal' as const,
     terminal: buildJobTerminal({
       content: '',
       model,
+      durationMs,
       outcome: { kind: 'failed' },
     }),
     diagnostics: buildJobDiagnostics({}),

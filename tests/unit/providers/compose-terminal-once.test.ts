@@ -43,6 +43,7 @@ const COMPLETED_TERMINAL: ProviderEventBody = {
   kind: 'terminal',
   terminal: {
     content: 'done',
+    durationMs: 0,
     outcome: { kind: 'completed' },
   },
   diagnostics: {},
@@ -60,6 +61,7 @@ const WRAPPER_LOST_TERMINAL: ProviderEventBody = {
   kind: 'terminal',
   terminal: {
     content: '',
+    durationMs: 0,
     outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
   },
   diagnostics: {},
@@ -99,7 +101,7 @@ describe('compose() terminalOnce guard', () => {
   it('drops a second terminal yielded by a misbehaving inner stream', async () => {
     const second: ProviderEventBody = {
       kind: 'terminal',
-      terminal: { content: 'second', outcome: { kind: 'failed' } },
+      terminal: { content: 'second', durationMs: 0, outcome: { kind: 'failed' } },
       diagnostics: {},
       failureCause: {
         type: 'session.provider_failed',

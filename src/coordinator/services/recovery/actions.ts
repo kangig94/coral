@@ -17,6 +17,7 @@ import { markJobAsError } from '../../../jobs/reconcile/recovery-effects.js';
 import { recordJobRecoveryFaultTerminal, recordProviderTerminal } from '../terminal-materializer.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import type { CommitEventsFn } from '../../../store/append.js';
+import { elapsedDurationMs } from '../../../jobs/duration.js';
 
 export type QueuedRecoverableJob = { jobId: string; launchRecord: JobLaunch };
 export type RunningRecoverableJob = {
@@ -35,7 +36,7 @@ type RecoveryActionContext = {
   providerRegistry: ProviderBindingCatalog;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
-  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
+  sessionLookup: Pick<SessionLookup, 'readProviderSession'>;
   emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
   coordinatorCommit: CommitEventsFn;
 };
@@ -44,6 +45,7 @@ function recoveryAuthorityLaunch(status: JobStatus): JobLaunch | null {
   if (status.jobKind !== 'provider' || status.sessionId === null || status.provider === null) return null;
   return {
     jobId: status.jobId,
+    owner: status.owner,
     sessionId: status.sessionId,
     provider: status.provider,
     projectRoot: status.projectRoot,
@@ -98,7 +100,7 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
           return;
         }
       }
-      markJobAsError(progressStore, action.status, action.fault, log);
+      markJobAsError(progressStore, action.status, action.fault, runtime.time.now(), log);
       if (action.status.jobKind === 'workflow') {
         try {
           writeResultArtifact(runtime.storage, runtime.paths.coral.exports.jobsRoot, action.status.jobId, '');
@@ -170,7 +172,7 @@ export async function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryA
       return;
     }
     case 'releaseSessionClaim': {
-      const session = sessionLookup.readSessionEntry(action.sessionId);
+      const session = sessionLookup.readProviderSession(action.sessionId);
       if (!session) {
         log(`Skipped releasing session claim for ${action.sessionId}: session lookup missing\n`);
         return;
@@ -234,7 +236,7 @@ type FinalizeDeadAdoptedJobContext = {
   provider: ProviderLike;
   progressStore: JobStore;
   runtime: Runtime;
-  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
+  sessionLookup: Pick<SessionLookup, 'readProviderSession'>;
   cancelledJobIds?: ReadonlySet<string>;
   log: (message: string) => void;
 };
@@ -244,6 +246,7 @@ type FinalizeAbortedRecoveredJobContext = {
   launchRecord: JobLaunch;
   service: RecoveryCapableService;
   progressStore: Pick<JobStore, 'readStatus'>;
+  runtime: Pick<Runtime, 'time'>;
   log: (message: string) => void;
 };
 
@@ -252,6 +255,7 @@ export function finalizeAbortedRecoveredJob({
   launchRecord,
   service,
   progressStore,
+  runtime,
   log,
 }: FinalizeAbortedRecoveredJobContext): void {
   const status = progressStore.readStatus(jobId);
@@ -262,7 +266,17 @@ export function finalizeAbortedRecoveredJob({
   }
 
   const outcome: TerminalOutcome = { kind: 'aborted', reason: 'user_abort' };
-  service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, 'aborted');
+  service.completeRecoveredJob(
+    jobId,
+    sessionId,
+    {
+      content: '',
+      durationMs: elapsedDurationMs(launchRecord.createdAt, runtime.time.now(), `job ${jobId}`),
+      outcome,
+    },
+    'aborted',
+    { pool: launchRecord.pool },
+  );
 }
 
 export async function finalizeDeadAdoptedJob({
@@ -299,16 +313,15 @@ export async function finalizeDeadAdoptedJob({
           stderrPath: runtimeRecord.stderrPath,
           exitCode: exitRecord.exitCode,
           signal: exitRecord.signal,
-          providerMeta: runtimeRecord.providerMeta,
-          fallbackConversationRef: launchRecord.request.conversationRef,
-          knownArtifactHandles: readKnownArtifactHandles(sessionLookup, sessionId, providerName, jobId),
+          durationMs: elapsedDurationMs(runtimeRecord.startTime, Date.parse(exitRecord.endTime), `job ${jobId}`),
+          fallbackConversationRef: sessionLookup.readProviderSession(sessionId)?.conversationRef,
+          knownArtifactHandles: readKnownArtifactHandles(sessionLookup, sessionId, jobId),
           storage: runtime.storage,
         })
         .then(async (result) => {
           if (result.artifactHandles && result.artifactHandles.length > 0) {
             const recorded = await service.recordRecoveredArtifactHandles(sessionId, {
               jobId,
-              provider: providerName,
               handles: result.artifactHandles,
             });
             if (!recorded.ok) {
@@ -317,25 +330,26 @@ export async function finalizeDeadAdoptedJob({
           }
 
           const status = progressStore.readStatus(jobId);
-          recordProviderTerminal(
-            progressStore,
-            result.terminal,
-            {
-              jobId,
-              sessionId,
-              namespace: status?.backendNamespace ?? launchRecord.backendNamespace,
-              project: status?.projectRoot ?? launchRecord.projectRoot,
-            },
-            {
-              continuity: result.continuity ?? null,
-            },
-          );
+          recordProviderTerminal(progressStore, result.terminal, {
+            jobId,
+            sessionId,
+            namespace: status?.backendNamespace ?? launchRecord.backendNamespace,
+            project: status?.projectRoot ?? launchRecord.projectRoot,
+          });
           const persistedPayload = progressStore.readTerminalProjection(jobId);
           if (persistedPayload === null) {
             throw new Error(`Provider recovery did not record a terminal payload for ${jobId}.`);
           }
           service.completeRecoveredJob(jobId, sessionId, persistedPayload, phaseForOutcome(persistedPayload.outcome), {
-            ...(result.continuity ? { continuity: result.continuity } : {}),
+            pool: launchRecord.pool,
+            ...(result.continuity
+              ? {
+                  sessionContinuity: {
+                    ...result.continuity,
+                    providerContinuity: result.continuity.providerContinuity ?? null,
+                  },
+                }
+              : {}),
           });
         })
         .catch((recoverErr: unknown) => {
@@ -353,13 +367,18 @@ export async function finalizeDeadAdoptedJob({
               namespace: status?.backendNamespace ?? launchRecord.backendNamespace,
               project: status?.projectRoot ?? launchRecord.projectRoot,
             },
-            { content: '' },
+            {
+              content: '',
+              durationMs: elapsedDurationMs(runtimeRecord.startTime, runtime.time.now(), `job ${jobId}`),
+            },
           );
           const persistedPayload = progressStore.readTerminalProjection(jobId);
           if (persistedPayload === null) {
             throw new Error(`Provider recovery failure did not record a terminal payload for ${jobId}.`);
           }
-          service.completeRecoveredJob(jobId, sessionId, persistedPayload, phaseForOutcome(persistedPayload.outcome));
+          service.completeRecoveredJob(jobId, sessionId, persistedPayload, phaseForOutcome(persistedPayload.outcome), {
+            pool: launchRecord.pool,
+          });
         });
       return;
     }
@@ -367,7 +386,7 @@ export async function finalizeDeadAdoptedJob({
     const persistedPayload = progressStore.readTerminalProjection(jobId);
     if (persistedPayload !== null) {
       const phase = phaseForOutcome(persistedPayload.outcome);
-      service.completeRecoveredJob(jobId, sessionId, persistedPayload, phase);
+      service.completeRecoveredJob(jobId, sessionId, persistedPayload, phase, { pool: launchRecord.pool });
       return;
     }
 
@@ -386,12 +405,18 @@ export async function finalizeDeadAdoptedJob({
             },
           }
         : { kind: 'provider_exit', code: exitRecord.exitCode };
-    service.completeRecoveredJob(jobId, sessionId, { content: '', outcome }, phaseForOutcome(outcome));
+    service.completeRecoveredJob(jobId, sessionId, {
+      content: '',
+      durationMs: elapsedDurationMs(runtimeRecord.startTime, Date.parse(exitRecord.endTime), `job ${jobId}`),
+      outcome,
+    }, phaseForOutcome(outcome), {
+      pool: launchRecord.pool,
+    });
     return;
   }
 
   if (cancelledJobIds?.has(jobId)) {
-    finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
+    finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, runtime, log });
     return;
   }
 
@@ -403,35 +428,33 @@ export async function finalizeDeadAdoptedJob({
     sessionId,
     {
       content: '',
+      durationMs: elapsedDurationMs(runtimeRecord.startTime, runtime.time.now(), `job ${jobId}`),
       outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
     },
     'error',
+    { pool: launchRecord.pool },
   );
 }
 
 function readKnownArtifactHandles(
-  sessionLookup: Pick<SessionLookup, 'readSessionEntry'>,
+  sessionLookup: Pick<SessionLookup, 'readProviderSession'>,
   sessionId: string,
-  provider: string,
   jobId: string,
 ): readonly ProviderArtifactHandleInput[] | undefined {
-  const session = sessionLookup.readSessionEntry(sessionId);
+  const session = sessionLookup.readProviderSession(sessionId);
   if (session === null) {
     return undefined;
   }
 
   const handles: ProviderArtifactHandleInput[] = [];
   for (const artifact of session.artifactHandles) {
-    if (artifact.provider !== provider) {
-      continue;
-    }
-    if (artifact.sourceJobId !== undefined && artifact.sourceJobId !== jobId) {
+    if (artifact.sourceJobId !== jobId) {
       continue;
     }
     handles.push({
       handle: artifact.handle,
       identity: artifact.identity,
-      ...(artifact.sourceJobId === undefined ? {} : { sourceJobId: artifact.sourceJobId }),
+      sourceJobId: artifact.sourceJobId,
     });
   }
   return handles.length === 0 ? undefined : handles;

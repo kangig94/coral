@@ -28,6 +28,7 @@ import { appendRetentionDiscardRequested } from '#src/sessions/retention-outbox.
 import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 const openDbs: Array<ReturnType<typeof openStoreDatabase>> = [];
@@ -66,7 +67,10 @@ describe('sessions shell store', () => {
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb()), workDir };
+    return {
+      mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
+      workDir,
+    };
   }
 
   function setupWithJournal(projectName: string): {
@@ -107,8 +111,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir } = setup('allocate-pending');
 
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -122,7 +125,7 @@ describe('sessions shell store', () => {
     expect(entry.version).toBe(1);
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
       name: 'alpha',
       state: 'pending',
       retention: 'retain',
@@ -136,8 +139,7 @@ describe('sessions shell store', () => {
   it('allocate appends session.opened and continuity checkpoints append to the journal', () => {
     const { db, mgr, workDir } = setupWithJournal('journal-events');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -164,14 +166,13 @@ describe('sessions shell store', () => {
         controller: 'team-a',
         entry: {
           sessionId: entry.sessionId,
-          provider: 'codex',
+          binding: { provider: 'codex' },
           name: 'alpha',
           state: 'pending',
           retention: 'retain',
           artifactHandles: [],
           version: 1,
         },
-        provider: 'codex',
         scope_key: resolveScopeKey(workDir),
       });
       expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toMatchObject({
@@ -201,8 +202,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir } = setup('alloc-with-root');
 
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'beta',
       model: 'gpt-5',
       cwd: workDir,
@@ -218,8 +218,7 @@ describe('sessions shell store', () => {
   it('allocate captures explicit retention in session.opened', () => {
     const { db, mgr, workDir } = setupWithJournal('allocate-retention');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -270,8 +269,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir } = setup('alloc-with-profile');
 
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'delta',
       model: 'gpt-5',
       cwd: workDir,
@@ -342,8 +340,7 @@ describe('sessions shell store', () => {
   it('claimForJobAtomic rejects sessions with an in-flight retention discard request', async () => {
     const { mgr, workDir, coordinatorCommit } = setupWithJournal('claim-retention-discard-in-flight');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       cwd: workDir,
       projectRoot: workDir,
@@ -669,8 +666,7 @@ describe('sessions shell store', () => {
   it('recordArtifactHandleAtomic appends a lifecycle event and advances the expected version', async () => {
     const { db, mgr, workDir } = setupWithJournal('record-artifact-handle');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -690,7 +686,6 @@ describe('sessions shell store', () => {
         mgr.recordArtifactHandleAtomic(entry.sessionId, {
           expectedActiveJobId: 'job-1',
           expectedVersion: claimed.version,
-          provider: 'codex',
           handle: '/tmp/codex/rollout.jsonl',
           identity: { kind: 'test-artifact', path: '/tmp/codex/rollout.jsonl' },
           sourceJobId: 'job-1',
@@ -705,7 +700,6 @@ describe('sessions shell store', () => {
         version: claimed.version + 1,
         artifactHandles: [
           {
-            provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
             sourceJobId: 'job-1',
           },
@@ -735,7 +729,6 @@ describe('sessions shell store', () => {
         jobId: 'job-1',
       });
       expect(JSON.parse(new TextDecoder().decode(artifactRow.body))).toMatchObject({
-        provider: 'codex',
         handle: '/tmp/codex/rollout.jsonl',
         sourceJobId: 'job-1',
         entry: {
@@ -743,7 +736,6 @@ describe('sessions shell store', () => {
           retention: 'discard_provider_artifacts_on_terminal',
           artifactHandles: [
             {
-              provider: 'codex',
               handle: '/tmp/codex/rollout.jsonl',
               sourceJobId: 'job-1',
             },
@@ -835,7 +827,10 @@ describe('sessions shell store adversarial', () => {
   function setup(name: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, name);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb()), workDir };
+    return {
+      mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
+      workDir,
+    };
   }
 
   it('claimForJobSync returns false for a session that does not exist', () => {
@@ -865,8 +860,8 @@ describe('sessions shell store adversarial', () => {
     const codexSessions = mgr.list('codex');
     const claudeSessions = mgr.list('claude');
 
-    expect(codexSessions.every((s) => s.provider === 'codex')).toBe(true);
-    expect(claudeSessions.every((s) => s.provider === 'claude')).toBe(true);
+    expect(codexSessions.every((session) => session.binding.provider === 'codex')).toBe(true);
+    expect(claudeSessions.every((session) => session.binding.provider === 'claude')).toBe(true);
     expect(codexSessions).toHaveLength(1);
     expect(claudeSessions).toHaveLength(1);
   });

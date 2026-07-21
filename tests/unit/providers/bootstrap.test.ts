@@ -129,18 +129,18 @@ describe('registerBuiltInProviders', () => {
   ];
 
   it.each(codexRecoveryCases)(
-    'finalizeCodexFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
+    'finalizeCodexFromArtifacts derives recovery artifact handles from the session reference: $label',
     async ({ tree, expected }) => {
       const codex = createBuiltInProviderRegistry().get('codex');
 
       const result = await codex?.recovery?.finalizeFromArtifacts({
         source: TEST_CODEX_SOURCE,
+        durationMs: 0,
         stdoutPath: '/tmp/stdout',
         stderrPath: '/tmp/stderr',
         exitCode: 0,
         signal: null,
-        providerMeta: { threadId: 'thread-from-meta' },
-        fallbackConversationRef: 'fallback-thread',
+        fallbackConversationRef: 'thread-from-meta',
         storage: recoveryStorage({ tree }),
       });
 
@@ -148,19 +148,16 @@ describe('registerBuiltInProviders', () => {
     },
   );
 
-  it('normalizes empty Codex recovery refs before artifact lookup', async () => {
+  it('uses the session conversation reference for Codex artifact lookup', async () => {
     const codex = createBuiltInProviderRegistry().get('codex');
 
     const result = await codex?.recovery?.finalizeFromArtifacts({
       source: TEST_CODEX_SOURCE,
+      durationMs: 0,
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',
       exitCode: 0,
       signal: null,
-      providerMeta: {
-        threadId: '',
-        providerContinuity: { threadId: '' },
-      },
       fallbackConversationRef: 'fallback-thread',
       storage: recoveryStorage({
         tree: {
@@ -214,18 +211,18 @@ describe('registerBuiltInProviders', () => {
   ];
 
   it.each(claudeRecoveryCases)(
-    'finalizeClaudeFromArtifacts derives recovery artifact handles from providerMeta/env/storage: $label',
+    'finalizeClaudeFromArtifacts derives recovery artifact handles from the session reference: $label',
     async ({ tree, expected }) => {
       const claude = createBuiltInProviderRegistry().get('claude');
 
       const result = await claude?.recovery?.finalizeFromArtifacts({
         source: TEST_CLAUDE_SOURCE,
+        durationMs: 0,
         stdoutPath: '/tmp/stdout',
         stderrPath: '/tmp/stderr',
         exitCode: 0,
         signal: null,
-        providerMeta: { conversationRef: 'conversation-from-meta' },
-        fallbackConversationRef: 'fallback-conversation',
+        fallbackConversationRef: 'conversation-from-meta',
         storage: recoveryStorage({
           files: {
             '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok' }),
@@ -242,6 +239,7 @@ describe('registerBuiltInProviders', () => {
   it('uses persisted Claude source A and never hostile ambient source B for artifact recovery', async () => {
     const claude = createBuiltInProviderRegistry().get('claude');
     const result = await claude?.recovery?.finalizeFromArtifacts({
+      durationMs: 0,
       source: {
         version: 1,
         provider: 'claude',
@@ -254,7 +252,7 @@ describe('registerBuiltInProviders', () => {
       stderrPath: '/tmp/stderr',
       exitCode: 0,
       signal: null,
-      providerMeta: { conversationRef: 'same-conversation' },
+      fallbackConversationRef: 'same-conversation',
       storage: recoveryStorage({
         files: { '/tmp/stdout': '', '/tmp/stderr': '' },
         tree: {
@@ -279,11 +277,12 @@ describe('registerBuiltInProviders', () => {
     const handle = '/home/user/.claude/projects/-workspace/fresh-conversation.jsonl';
     const result = await claude?.recovery?.finalizeFromArtifacts({
       source: TEST_CLAUDE_SOURCE,
+      durationMs: 0,
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',
       exitCode: null,
       signal: null,
-      providerMeta: { conversationRef: 'fresh-conversation' },
+      fallbackConversationRef: 'fresh-conversation',
       storage: recoveryStorage({
         files: { '/tmp/stdout': '', '/tmp/stderr': '' },
         tree: {
@@ -308,11 +307,12 @@ describe('registerBuiltInProviders', () => {
     const claude = createBuiltInProviderRegistry().get('claude');
     const result = await claude?.recovery?.finalizeFromArtifacts({
       source: TEST_CLAUDE_SOURCE,
+      durationMs: 0,
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',
       exitCode: null,
       signal: null,
-      providerMeta: { conversationRef: 'planned-only' },
+      fallbackConversationRef: 'planned-only',
       storage: recoveryStorage({
         files: { '/tmp/stdout': '', '/tmp/stderr': '' },
         tree: {
@@ -326,17 +326,17 @@ describe('registerBuiltInProviders', () => {
     expect(result?.continuity).toEqual({ conversationRef: null, resumable: false });
   });
 
-  it('uses Claude recovery metadata for continuity and artifact lookup without parsing retired stdout', async () => {
+  it('uses the session conversation reference without parsing retired stdout', async () => {
     const claude = createBuiltInProviderRegistry().get('claude');
 
     const result = await claude?.recovery?.finalizeFromArtifacts({
       source: TEST_CLAUDE_SOURCE,
+      durationMs: 0,
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',
       exitCode: 0,
       signal: null,
-      providerMeta: { conversationRef: 'conversation-from-meta' },
-      fallbackConversationRef: 'fallback-conversation',
+      fallbackConversationRef: 'conversation-from-meta',
       storage: recoveryStorage({
         files: {
           '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok', session_id: '' }),
@@ -381,6 +381,7 @@ describe('registerBuiltInProviders', () => {
             kind: 'terminal',
             terminal: {
               content: 'conflict',
+              durationMs: 0,
               outcome: { kind: 'completed' as const },
             },
             diagnostics: {},

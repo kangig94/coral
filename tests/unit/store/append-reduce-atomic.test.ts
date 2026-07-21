@@ -158,6 +158,48 @@ describe('commitInputs + in-transaction projection reduction', () => {
     }
   });
 
+  it('rejects a registered event on the wrong stream kind atomically', () => {
+    const db = setupDb();
+
+    try {
+      expect(() =>
+        commitInputs(
+          db,
+          [
+            {
+              type: 'test.counter.ticked',
+              stream: { kind: 'job', id: 'valid-first' },
+              bodyVersion: 1,
+              body: { id: 'valid-first', delta: 1 },
+            },
+            {
+              type: 'test.counter.ticked',
+              stream: { kind: 'session', id: 'wrong-kind' },
+              bodyVersion: 1,
+              body: { id: 'wrong-kind', delta: 1 },
+            },
+          ],
+          {
+            now: () => new Date(0),
+            reducers: composeReducers(testCounterRegistry),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
+          },
+        ),
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'event_stream_kind_mismatch',
+          context: expect.objectContaining({ expectedStreamKind: 'job', actualStreamKind: 'session' }),
+        }),
+      );
+
+      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM projection_test_counter').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it('rejects event bodies when no registry codec is composed', () => {
     const db = setupDb();
 

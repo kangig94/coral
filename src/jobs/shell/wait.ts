@@ -22,8 +22,8 @@ import type { JobProjectionDetail } from '../read-queries.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { resultPathFor as defaultResultPathFor } from '../terminal/export.js';
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { UsageSummary } from '../../providers/contract.js';
+import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 
 const ABORTED = 'wait-aborted' as const;
 const TIMED_OUT = 'wait-timed-out' as const;
@@ -51,7 +51,7 @@ function toTerminalWaitEvent(
   event: JobTerminalEvent,
   pending: ReadonlySet<string>,
   resultPath: string,
-  continuity: JobContinuitySnapshot | null,
+  continuity: ContinuitySnapshot | null,
   usage: UsageSummary | undefined = event.usage,
 ): WaitStreamEvent {
   const remainingJobIds: string[] = [];
@@ -68,7 +68,7 @@ function toTerminalWaitEvent(
     remainingJobIds,
     resultPath,
     result: event.result,
-    continuity: event.continuity ?? continuity,
+    continuity,
     ...(usage === undefined ? {} : { usage }),
   };
 }
@@ -199,8 +199,23 @@ export class WaitCoordinator {
     return this.deps.loadJobProjectionDetail(jobId).status;
   }
 
-  private readQueryContinuity(jobId: string): JobContinuitySnapshot | null {
-    return this.readQueryStatus(jobId)?.continuity ?? null;
+  private readQueryContinuity(jobId: string): ContinuitySnapshot | null {
+    const status = this.readQueryStatus(jobId);
+    if (status?.provider === null || status?.provider === undefined || status.sessionId === null) {
+      return null;
+    }
+    const session = this.deps.sessionManager.get(status.provider, status.sessionId);
+    if (session === null) {
+      return null;
+    }
+    if (session.state === 'pending' && session.conversationRef === undefined && session.providerContinuity === null) {
+      return null;
+    }
+    return {
+      conversationRef: session.conversationRef ?? null,
+      resumable: session.state === 'ready',
+      providerContinuity: session.providerContinuity,
+    };
   }
 
   private readTerminalUsage(event: JobTerminalEvent): UsageSummary | undefined {
@@ -386,14 +401,23 @@ export class WaitCoordinator {
         if (status.phase === 'queued' && !emittedQueued.has(jobId)) {
           emittedQueued.add(jobId);
           const pool = jobPools.get(jobId) ?? 'default';
-          yield {
+          const queued = {
             type: 'queued',
             jobId,
-            sessionId: status.sessionId ?? '',
             queuePosition: launchQueue.queuePosition(jobId, pool) ?? 0,
             runningJobIds: launchQueue.getActiveJobIds(pool),
             timing: queuedProgressTiming(status, this.deps.time.now()),
-          };
+          } as const;
+          if (status.jobKind === 'provider') {
+            if (status.sessionId === null) {
+              throw new Error(`Queued provider job '${jobId}' has no provider session.`);
+            }
+            yield { ...queued, jobKind: 'provider', sessionId: status.sessionId };
+          } else if (status.jobKind === 'workflow') {
+            yield { ...queued, jobKind: 'workflow', workflowId: status.owner.id };
+          } else {
+            yield { ...queued, jobKind: 'kb', systemTaskId: status.owner.id };
+          }
         }
       }
 
@@ -494,7 +518,7 @@ export class WaitCoordinator {
       if (event.type === 'terminal' && event.jobId === jobId) {
         return {
           content: event.result.content,
-          continuity: this.readQueryContinuity(jobId) ?? event.continuity ?? null,
+          continuity: this.readQueryContinuity(jobId),
         };
       }
       if (event.type === 'waiting') {

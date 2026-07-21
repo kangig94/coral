@@ -9,6 +9,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 // M3: a workflow stream owns exactly one declared plan (spec §6.5 line 1006).
 // The append validator rejects a second `workflow.plan.declared` so the second
@@ -49,7 +50,7 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
       commit(
         db,
         (c) => {
-          c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:0'])));
+          c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:0']), TEST_PROVIDER_SCOPE));
           return undefined;
         },
         ctx(),
@@ -59,7 +60,7 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
         commit(
           db,
           (c) => {
-            c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:1'])));
+            c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:1']), TEST_PROVIDER_SCOPE));
             return undefined;
           },
           ctx(),
@@ -83,8 +84,8 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
         commit(
           db,
           (c) => {
-            c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:0'])));
-            c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:1'])));
+            c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:0']), TEST_PROVIDER_SCOPE));
+            c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:1']), TEST_PROVIDER_SCOPE));
             return undefined;
           },
           ctx(),
@@ -106,8 +107,8 @@ describe('workflow.plan.declared duplicate validator (M3)', () => {
       const appended = commit(
         db,
         (c) => {
-          c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0'])));
-          c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0'])));
+          c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0']), TEST_PROVIDER_SCOPE));
+          c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0']), TEST_PROVIDER_SCOPE));
           return undefined;
         },
         ctx(),

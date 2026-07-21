@@ -228,6 +228,7 @@ describe('sessionContinuity', () => {
         kind: 'terminal',
         terminal: {
           content: '',
+          durationMs: 0,
           outcome: { kind: 'failed' },
         },
         diagnostics: {},

@@ -11,6 +11,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 describe('jobs queries', () => {
   let db: Database;
@@ -27,13 +28,28 @@ describe('jobs queries', () => {
       bodyCodec,
     };
 
+    for (const [sessionId, projectRoot] of [
+      ['session-completed', '/workspace/coral'],
+      ['session-rejected', '/workspace/coral'],
+      ['session-queued', '/workspace/coral'],
+      ['session-other', '/workspace/other-project'],
+    ] as const) {
+      seedTestSessionProjection(db, {
+        sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: 'tests',
+      });
+    }
+
     const inputs: CoralEventInput[] = [
       {
         type: 'job.launch.requested',
         stream: { kind: 'job', id: 'job-completed' },
-        refs: { sessionId: 'session-completed', parentJobId: 'workflow-1', workflowSlotId: 'slot-1' },
+        refs: { sessionId: 'session-completed' },
         bodyVersion: 1,
         body: {
+          owner: { kind: 'provider-session', id: 'session-completed' },
           sessionId: 'session-completed',
           provider: 'codex',
           providerAction: 'resume',
@@ -51,7 +67,6 @@ describe('jobs queries', () => {
             effort: 'high',
             bypassPermissions: false,
             systemPrompt: 'Be precise.',
-            conversationRef: 'thread-completed',
             instruction: {
               content: 'Write the patch.',
               channel: 'system',
@@ -73,7 +88,6 @@ describe('jobs queries', () => {
             provider: 'codex',
             leaseState: 'acquired',
             serverGeneration: 7,
-            providerContinuity: { threadId: 'thread-completed' },
           },
         },
       },
@@ -96,11 +110,6 @@ describe('jobs queries', () => {
               costUsd: 0.56,
             },
           },
-          continuity: {
-            conversationRef: 'thread-completed',
-            resumable: true,
-            providerContinuity: { threadId: 'thread-completed' },
-          },
         },
       },
       {
@@ -109,6 +118,7 @@ describe('jobs queries', () => {
         refs: { sessionId: 'session-rejected' },
         bodyVersion: 1,
         body: {
+          owner: { kind: 'provider-session', id: 'session-rejected' },
           sessionId: 'session-rejected',
           provider: 'codex',
           providerAction: 'exec',
@@ -145,6 +155,7 @@ describe('jobs queries', () => {
         refs: { sessionId: 'session-queued' },
         bodyVersion: 1,
         body: {
+          owner: { kind: 'provider-session', id: 'session-queued' },
           sessionId: 'session-queued',
           provider: 'codex',
           providerAction: 'exec',
@@ -178,6 +189,7 @@ describe('jobs queries', () => {
         refs: {},
         bodyVersion: 1,
         body: {
+          owner: { kind: 'system-task', id: 'kb.reindex:job-kb-global' },
           projectRoot: '/workspace/other-project',
           backendNamespace: 'tests',
           bundleHash: 'bundle-kb',
@@ -195,6 +207,7 @@ describe('jobs queries', () => {
         refs: { sessionId: 'session-other' },
         bodyVersion: 1,
         body: {
+          owner: { kind: 'provider-session', id: 'session-other' },
           sessionId: 'session-other',
           provider: 'codex',
           providerAction: 'exec',
@@ -252,7 +265,6 @@ describe('jobs queries', () => {
           provider: 'codex',
           leaseState: 'acquired',
           serverGeneration: 7,
-          providerContinuity: { threadId: 'thread-completed' },
         },
       },
       exit: {
@@ -264,11 +276,6 @@ describe('jobs queries', () => {
             outputTokens: 34,
             costUsd: 0.56,
           },
-        },
-        continuity: {
-          conversationRef: 'thread-completed',
-          resumable: true,
-          providerContinuity: { threadId: 'thread-completed' },
         },
       },
     });

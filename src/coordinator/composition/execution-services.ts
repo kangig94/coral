@@ -50,6 +50,7 @@ export function createExecutionServices({
       providerRegistry: world.providerRegistry,
       childPrincipalRegistry: world.childPrincipalRegistry,
       pluginRegistry: world.pluginRegistry,
+      coordinatorCommit: (cb) => getProgressStore().commit(cb),
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),
       aggregateWorkflowUsage: (workflowJobId) => aggregateWorkflowUsage(getProgressStore().getDb(), workflowJobId),

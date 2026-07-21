@@ -4,18 +4,17 @@ import type { ProviderCredentialSourceRef } from '../infra/provider-credential-s
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
-import type { LaunchDecision, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
+import type {
+  JobLaunchRequest,
+  JobResumeRequest,
+  ProviderSessionLaunchDecision,
+  WorkflowLaunchDecision,
+} from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type {
-  AppServerRuntime,
-  JobLaunch,
-  JobRuntime,
-  JobTerminalDiagnostics,
-  JobTerminalInput,
-  LaunchReadiness,
-} from '../jobs/records.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
+import type { ContinuitySnapshot } from '../sessions/continuity.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
@@ -69,7 +68,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => deps.progressStore.commit(cb));
+    const coordinatorCommit = deps.coordinatorCommit;
     this.sessionManager = SessionManager.forProduction(
       ctx.projectRoot,
       deps.runtime,
@@ -85,13 +84,14 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.progressStore = deps.progressStore;
 
     this.launchOrchestrator = new LaunchOrchestrator({
+      sessionManager: this.sessionManager,
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
-      sessionManager: this.sessionManager,
       launchAdmission: deps.launchCoordinator,
       durableSpawner: deps.launchCoordinator,
       providerRegistry: deps.providerRegistry,
       runtime: this.runtime,
+      coordinatorCommit,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
@@ -157,7 +157,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.workflowService = new WorkflowExecutionService({
       runtime: this.runtime,
-      sessionManager: this.sessionManager,
       abortRegistry: this.abortRegistry,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
@@ -178,8 +177,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           this.runWithInvocationScope(ctx, async () => {
             this.sessionManager.recordContinuationLease(input);
           }),
-        claimContinuationLease: (input) =>
-          this.runWithInvocationScope(ctx, () => this.sessionManager.claimContinuationLease(input)),
         clearContinuationLease: (input) =>
           this.runWithInvocationScope(ctx, () => this.sessionManager.clearContinuationLease(input)),
         abort: (jobIds) => this.abortService.abort(jobIds),
@@ -213,17 +210,25 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<LaunchDecision> {
+  ): Promise<ProviderSessionLaunchDecision> {
     const normalized = normalizeCoralIntent(input);
     if ('status' in normalized) return normalized;
     return this.launchService.coralDispatch(providerName, coralName, normalized, ctx);
   }
 
-  async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
+  async start(
+    providerName: string,
+    input: JobLaunchRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderSessionLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx));
   }
 
-  async resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resume(
+    providerName: string,
+    input: JobResumeRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderSessionLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
   }
 
@@ -232,7 +237,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<LaunchDecision> {
+  ): Promise<ProviderSessionLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.dispatchCoralIntent(providerName, coralName, input, ctx));
   }
 
@@ -242,7 +247,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     input: WorkflowCommand,
     ctx: InvocationContext,
     workDir?: string,
-  ): Promise<LaunchDecision> {
+  ): Promise<WorkflowLaunchDecision> {
     return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir);
   }
 
@@ -282,7 +287,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options?: TerminalWriteOptions,
+    options: TerminalWriteOptions & { pool: LaunchPool; sessionContinuity?: ContinuitySnapshot | null },
   ): void {
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }
@@ -300,24 +305,13 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async acquireServer(
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
+    options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
     return this.recoveryService.acquireServer(spec, options);
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
     this.abortService.finishQueuedAbort(jobId, sessionId, reason);
-  }
-
-  private finishWorkflowJob(
-    sessionId: string,
-    jobId: string,
-    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: JobTerminalInput,
-    markdown: string,
-    diagnostics?: JobTerminalDiagnostics,
-  ): void {
-    this.workflowService.finishWorkflowJob(sessionId, jobId, phase, result, markdown, diagnostics);
   }
 
   async finalizeInterruptedAppServerJob(

@@ -22,6 +22,7 @@ export function adapterParseGuard(
 ): ProviderMiddleware {
   return (next) =>
     async function* adapterParseGuardProvider(request, runtime) {
+      const startedAt = runtime.time.now();
       try {
         yield* next(request, runtime);
       } catch (err) {
@@ -34,6 +35,7 @@ export function adapterParseGuard(
           kind: 'terminal',
           terminal: buildJobTerminal({
             content: '',
+            durationMs: Math.max(0, runtime.time.now() - startedAt),
             outcome: { kind: 'failed' },
           }),
           diagnostics: buildJobDiagnostics({}),

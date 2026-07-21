@@ -3,7 +3,7 @@ import type { ReadonlyDatabase } from '../store/read-port.js';
 import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import { decodeEventRefs } from '../store/envelope.js';
 import type { EventsRow } from '../store/schema.js';
-import { hasUnterminalRetentionDiscardRequest, isProtectiveContinuationLease, type SessionEntry } from './entry.js';
+import { hasUnterminalRetentionDiscardRequest, isProtectiveContinuationLease, type ProviderSession } from './entry.js';
 import { readProjectionSessionEntriesById } from './projections.js';
 
 export type SessionRetentionPair = {
@@ -12,7 +12,7 @@ export type SessionRetentionPair = {
 };
 
 export type SessionRetentionWork = SessionRetentionPair & {
-  readonly entry: SessionEntry;
+  readonly entry: ProviderSession;
 };
 
 export type RetentionSelectionOptions = {
@@ -30,7 +30,7 @@ export function readSessionRetentionWorkForSessionIds(
   options: RetentionSelectionOptions = {},
 ): SessionRetentionWork[] {
   const entriesBySession = readProjectionSessionEntriesById(db, sessionIds);
-  const entries: SessionEntry[] = [];
+  const entries: ProviderSession[] = [];
   for (const sessionId of uniqueStrings(sessionIds)) {
     const entry = entriesBySession.get(sessionId);
     if (entry !== undefined) {
@@ -43,7 +43,7 @@ export function readSessionRetentionWorkForSessionIds(
 export function readSessionRetentionWorkForEntries(
   db: ReadonlyDatabase,
   readCtx: StoreReadContext,
-  entries: readonly SessionEntry[],
+  entries: readonly ProviderSession[],
   options: RetentionSelectionOptions = {},
 ): SessionRetentionWork[] {
   const retainedEntries = uniqueRetainedEntries(entries, retentionSelectionNow(options));
@@ -109,7 +109,7 @@ function retentionSelectionNow(options: RetentionSelectionOptions): number {
   return options.nowMs ?? Date.now();
 }
 
-function isRetentionEligibleEntry(entry: SessionEntry, nowMs: number): boolean {
+function isRetentionEligibleEntry(entry: ProviderSession, nowMs: number): boolean {
   return (
     entry.retention === 'discard_provider_artifacts_on_terminal' &&
     entry.activeJobId === undefined &&
@@ -118,8 +118,8 @@ function isRetentionEligibleEntry(entry: SessionEntry, nowMs: number): boolean {
   );
 }
 
-function uniqueRetainedEntries(entries: readonly SessionEntry[], nowMs: number): SessionEntry[] {
-  const retainedEntries: SessionEntry[] = [];
+function uniqueRetainedEntries(entries: readonly ProviderSession[], nowMs: number): ProviderSession[] {
+  const retainedEntries: ProviderSession[] = [];
   const seenSessionIds = new Set<string>();
   for (const entry of entries) {
     if (!isRetentionEligibleEntry(entry, nowMs) || seenSessionIds.has(entry.sessionId)) {

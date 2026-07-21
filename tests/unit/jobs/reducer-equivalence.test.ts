@@ -8,18 +8,18 @@ import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
+import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-function sessionOpenedInput(sessionId: string, orchestration = false): CoralEventInput {
-  const entry: SessionEntry = {
+function claimedSessionInputs(sessionId: string, activeJobId: string): CoralEventInput[] {
+  const opened: ProviderSession = {
     sessionId,
-    provider: 'codex',
-    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', binding: TEST_CODEX_BINDING },
+    binding: TEST_CODEX_BINDING,
     name: sessionId,
     state: 'ready',
     retention: 'retain',
@@ -33,13 +33,23 @@ function sessionOpenedInput(sessionId: string, orchestration = false): CoralEven
     lastUsedAt: NOW.toISOString(),
     version: 1,
   };
-  return {
-    type: 'session.opened',
-    stream: { kind: 'session', id: sessionId },
-    refs: { sessionId },
-    bodyVersion: 1,
-    body: { entry, controller: 'default', provider: 'codex', scope_key: `/workspace/coral\u0000codex\u0000default` },
-  };
+  const claimed: ProviderSession = { ...opened, activeJobId, version: opened.version + 1 };
+  return [
+    {
+      type: 'session.opened',
+      stream: { kind: 'session', id: sessionId },
+      refs: { sessionId },
+      bodyVersion: 1,
+      body: { entry: opened, controller: 'default', scope_key: `/workspace/coral\u0000codex\u0000default` },
+    },
+    {
+      type: 'session.claimed',
+      stream: { kind: 'session', id: sessionId },
+      refs: { sessionId, jobId: activeJobId },
+      bodyVersion: 1,
+      body: { entry: claimed, jobId: activeJobId },
+    },
+  ];
 }
 
 describe('jobs reducer equivalence', () => {
@@ -53,13 +63,14 @@ describe('jobs reducer equivalence', () => {
       const appended = commitInputs(
         db,
         [
-          sessionOpenedInput('session-1'),
+          ...claimedSessionInputs('session-1', 'job-1'),
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-1' },
-            refs: { sessionId: 'session-1', parentJobId: 'job-parent', workflowSlotId: 'workflow-slot-1' },
+            refs: { sessionId: 'session-1' },
             bodyVersion: 1,
             body: {
+              owner: { kind: 'provider-session', id: 'session-1' },
               sessionId: 'session-1',
               provider: 'codex',
               providerAction: 'exec',
@@ -97,7 +108,13 @@ describe('jobs reducer equivalence', () => {
             stream: { kind: 'job', id: 'job-1' },
             refs: { sessionId: 'session-1' },
             bodyVersion: 1,
-            body: { transport: 'durable-cli', pid: 4242, startedAt: NOW.toISOString() },
+            body: {
+              transport: 'durable-cli',
+              pid: 4242,
+              stdoutPath: '/tmp/job-1.stdout',
+              stderrPath: '/tmp/job-1.stderr',
+              startedAt: NOW.toISOString(),
+            },
           },
           {
             type: 'job.progress.emitted',
@@ -137,9 +154,10 @@ describe('jobs reducer equivalence', () => {
 
       const before = db
         .prepare(
-          `SELECT job_id, phase, terminal, diagnostics,
+          `SELECT job_id, execution_owner, phase, terminal, diagnostics,
                 session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
-                parent_workflow_job_id, workflow_slot, last_seq
+                parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+                replaces_workflow_job_id, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -148,6 +166,7 @@ describe('jobs reducer equivalence', () => {
 
       expect(before).toEqual({
         job_id: 'job-1',
+        execution_owner: JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
         phase: 'error',
         terminal: JSON.stringify({
           content: 'partial output',
@@ -164,8 +183,10 @@ describe('jobs reducer equivalence', () => {
         bundle_hash: 'bundle-1',
         job_kind: 'provider',
         created_at: NOW.toISOString(),
-        parent_workflow_job_id: 'job-parent',
-        workflow_slot: 'workflow-slot-1',
+        parent_workflow_job_id: null,
+        workflow_slot: null,
+        workflow_slot_generation: null,
+        replaces_workflow_job_id: null,
         last_seq: appended.at(-1)?.seq,
       });
 
@@ -178,9 +199,10 @@ describe('jobs reducer equivalence', () => {
 
       const after = db
         .prepare(
-          `SELECT job_id, phase, terminal, diagnostics,
+          `SELECT job_id, execution_owner, phase, terminal, diagnostics,
                 session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
-                parent_workflow_job_id, workflow_slot, last_seq
+                parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+                replaces_workflow_job_id, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -197,22 +219,33 @@ describe('jobs reducer equivalence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry);
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
 
       const appended = commitInputs(
         db,
         [
-          sessionOpenedInput('session-rejected', true),
+          workflowPlanDeclaredEvent(
+            'job-rejected',
+            {
+              slots: [
+                {
+                  slotId: 'job-rejected:0:0',
+                  dependencies: [],
+                  provider: 'codex',
+                  instruction: 'reject this launch',
+                },
+              ],
+            },
+            TEST_PROVIDER_SCOPE,
+          ),
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-rejected' },
-            refs: { sessionId: 'session-rejected' },
+            refs: { workflowId: 'job-rejected' },
             bodyVersion: 1,
             body: {
-              sessionId: 'session-rejected',
-              provider: 'codex',
-              providerAction: 'exec',
+              owner: { kind: 'workflow', id: 'job-rejected' },
               projectRoot: '/workspace/coral',
               backendNamespace: 'namespace-1',
               jobKind: 'workflow',
@@ -223,7 +256,6 @@ describe('jobs reducer equivalence', () => {
                 cwd: '/workspace/coral',
                 bypassPermissions: false,
                 coralEnv: {},
-                providerScope: TEST_PROVIDER_SCOPE,
               },
               createdAt: NOW.toISOString(),
             },
@@ -247,9 +279,10 @@ describe('jobs reducer equivalence', () => {
 
       const before = db
         .prepare(
-          `SELECT job_id, phase, terminal, diagnostics,
+          `SELECT job_id, execution_owner, phase, terminal, diagnostics,
                 session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
-                parent_workflow_job_id, workflow_slot, last_seq
+                parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+                replaces_workflow_job_id, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -258,11 +291,12 @@ describe('jobs reducer equivalence', () => {
 
       expect(before).toEqual({
         job_id: 'job-rejected',
+        execution_owner: JSON.stringify({ kind: 'workflow', id: 'job-rejected' }),
         phase: 'error',
         terminal: null,
         diagnostics: JSON.stringify({ progressFaults: [] }),
-        session_id: 'session-rejected',
-        provider: 'codex',
+        session_id: null,
+        provider: null,
         project_root: '/workspace/coral',
         backend_namespace: 'namespace-1',
         bundle_hash: null,
@@ -270,6 +304,8 @@ describe('jobs reducer equivalence', () => {
         created_at: NOW.toISOString(),
         parent_workflow_job_id: null,
         workflow_slot: null,
+        workflow_slot_generation: null,
+        replaces_workflow_job_id: null,
         last_seq: appended.at(-1)?.seq,
       });
 
@@ -282,9 +318,10 @@ describe('jobs reducer equivalence', () => {
 
       const after = db
         .prepare(
-          `SELECT job_id, phase, terminal, diagnostics,
+          `SELECT job_id, execution_owner, phase, terminal, diagnostics,
                 session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
-                parent_workflow_job_id, workflow_slot, last_seq
+                parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+                replaces_workflow_job_id, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -307,13 +344,14 @@ describe('jobs reducer equivalence', () => {
       const appended = commitInputs(
         db,
         [
-          sessionOpenedInput('session-aborted'),
+          ...claimedSessionInputs('session-aborted', 'job-aborted'),
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-aborted' },
             refs: { sessionId: 'session-aborted' },
             bodyVersion: 1,
             body: {
+              owner: { kind: 'provider-session', id: 'session-aborted' },
               sessionId: 'session-aborted',
               provider: 'codex',
               providerAction: 'exec',
@@ -339,6 +377,8 @@ describe('jobs reducer equivalence', () => {
             body: {
               transport: 'durable-cli',
               pid: 4242,
+              stdoutPath: '/tmp/job-aborted.stdout',
+              stderrPath: '/tmp/job-aborted.stderr',
               startedAt: NOW.toISOString(),
             },
           },
@@ -355,9 +395,10 @@ describe('jobs reducer equivalence', () => {
 
       const before = db
         .prepare(
-          `SELECT job_id, phase, terminal, diagnostics,
+          `SELECT job_id, execution_owner, phase, terminal, diagnostics,
                 session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
-                parent_workflow_job_id, workflow_slot, last_seq
+                parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+                replaces_workflow_job_id, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,
@@ -366,6 +407,7 @@ describe('jobs reducer equivalence', () => {
 
       expect(before).toEqual({
         job_id: 'job-aborted',
+        execution_owner: JSON.stringify({ kind: 'provider-session', id: 'session-aborted' }),
         phase: 'aborted',
         terminal: null,
         diagnostics: JSON.stringify({ progressFaults: [] }),
@@ -378,6 +420,8 @@ describe('jobs reducer equivalence', () => {
         created_at: NOW.toISOString(),
         parent_workflow_job_id: null,
         workflow_slot: null,
+        workflow_slot_generation: null,
+        replaces_workflow_job_id: null,
         last_seq: appended.at(-1)?.seq,
       });
 
@@ -390,9 +434,10 @@ describe('jobs reducer equivalence', () => {
 
       const after = db
         .prepare(
-          `SELECT job_id, phase, terminal, diagnostics,
+          `SELECT job_id, execution_owner, phase, terminal, diagnostics,
                 session_id, provider, project_root, backend_namespace, bundle_hash, job_kind, created_at,
-                parent_workflow_job_id, workflow_slot, last_seq
+                parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+                replaces_workflow_job_id, last_seq
            FROM projection_jobs
           WHERE job_id = ?
           LIMIT 1`,

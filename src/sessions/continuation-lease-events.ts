@@ -4,9 +4,9 @@ import {
   type ClearedContinuationLease,
   type ExpiredContinuationLease,
   type PendingContinuationLease,
-  type SessionEntry,
+  type ProviderSession,
 } from './entry.js';
-import { normalizeSessionEntry } from './entry-normalization.js';
+import { normalizeProviderSession } from './entry-normalization.js';
 import type {
   SessionContinuationLeaseClaimedBody,
   SessionContinuationLeaseClearedBody,
@@ -15,10 +15,10 @@ import type {
 } from './event-bodies.js';
 
 export function sessionContinuationLeaseRecordedEvent(
-  entry: SessionEntry,
+  entry: ProviderSession,
   lease: PendingContinuationLease,
 ): CoralEventInput<SessionContinuationLeaseRecordedBody> {
-  const normalizedEntry = normalizeSessionEntry(entry);
+  const normalizedEntry = normalizeProviderSession(entry);
   return {
     type: 'session.continuation_lease.recorded',
     stream: { kind: 'session', id: normalizedEntry.sessionId },
@@ -33,10 +33,10 @@ export function sessionContinuationLeaseRecordedEvent(
 }
 
 export function sessionContinuationLeaseClaimedEvent(
-  entry: SessionEntry,
+  entry: ProviderSession,
   lease: ClaimedContinuationLease,
 ): CoralEventInput<SessionContinuationLeaseClaimedBody> {
-  const normalizedEntry = normalizeSessionEntry(entry);
+  const normalizedEntry = normalizeProviderSession(entry);
   return {
     type: 'session.continuation_lease.claimed',
     stream: { kind: 'session', id: normalizedEntry.sessionId },
@@ -54,10 +54,10 @@ export function sessionContinuationLeaseClaimedEvent(
 }
 
 export function sessionContinuationLeaseClearedEvent(
-  entry: SessionEntry,
+  entry: ProviderSession,
   lease: ClearedContinuationLease,
 ): CoralEventInput<SessionContinuationLeaseClearedBody> {
-  const normalizedEntry = normalizeSessionEntry(entry);
+  const normalizedEntry = normalizeProviderSession(entry);
   return {
     type: 'session.continuation_lease.cleared',
     stream: { kind: 'session', id: normalizedEntry.sessionId },
@@ -75,10 +75,10 @@ export function sessionContinuationLeaseClearedEvent(
 }
 
 export function sessionContinuationLeaseExpiredEvent(
-  entry: SessionEntry,
+  entry: ProviderSession,
   lease: ExpiredContinuationLease,
 ): CoralEventInput<SessionContinuationLeaseExpiredBody> {
-  const normalizedEntry = normalizeSessionEntry(entry);
+  const normalizedEntry = normalizeProviderSession(entry);
   return {
     type: 'session.continuation_lease.expired',
     stream: { kind: 'session', id: normalizedEntry.sessionId },

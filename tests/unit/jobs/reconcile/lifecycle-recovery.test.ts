@@ -7,7 +7,9 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
+import { SessionManager } from '#src/sessions/shell.js';
 import { reduceSessionOpened } from '#src/sessions/projections.js';
 import type { CoralEvent } from '#src/store/envelope.js';
 import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
@@ -27,6 +29,7 @@ import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registr
 import { TEST_CODEX_BINDING, TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
+import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -63,6 +66,9 @@ async function loadModules() {
     recoveryActionsModule,
     transportDispatchModule,
     rpcCatalogModule,
+    workflowEventsModule,
+    jobsEventsModule,
+    reducersModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/sessions/shell.js'),
@@ -77,6 +83,9 @@ async function loadModules() {
     import('#src/coordinator/services/recovery/actions.js'),
     import('#src/transport/dispatch.js'),
     import('#src/transport/rpc/catalog.js'),
+    import('#src/workflow/events.js'),
+    import('#src/jobs/events.js'),
+    import('#src/store/reducers.js'),
   ]);
 
   return {
@@ -93,6 +102,9 @@ async function loadModules() {
     recoveryActionsModule,
     transportDispatchModule,
     rpcCatalogModule,
+    workflowEventsModule,
+    jobsEventsModule,
+    reducersModule,
   };
 }
 
@@ -218,7 +230,7 @@ function createRuntimeStateMock() {
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     start: vi.fn(async () => ({ status: 'running', job: 'started-job', session: 'started-session' })),
-    executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+    executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* () {}),
     waitStreamOnce: vi.fn(async () => ({ type: 'waiting', waitingJobIds: [] })),
@@ -243,64 +255,111 @@ function stubLaunchRecord(
     projectRoot: string;
     backendNamespace: string;
     enqueueSequence?: number;
-    pool?: string;
+    pool?: LaunchPool;
     jobKind?: 'provider' | 'workflow';
   },
 ): void {
-  ensureTestSession(progressStore, {
-    sessionId: overrides.sessionId,
-    provider: overrides.provider,
-    projectRoot: overrides.projectRoot,
-    backendNamespace: overrides.backendNamespace,
-    orchestration: overrides.jobKind === 'workflow',
-  });
-  const record: JobLaunch = {
+  if (overrides.jobKind !== 'workflow') {
+    ensureTestSession(progressStore, {
+      jobId: overrides.jobId,
+      sessionId: overrides.sessionId,
+      provider: overrides.provider,
+      projectRoot: overrides.projectRoot,
+      backendNamespace: overrides.backendNamespace,
+    });
+  }
+  const workflow = overrides.jobKind === 'workflow';
+  if (workflow) {
+    progressStore.commit((c) => {
+      c.append(
+        workflowPlanDeclaredEvent(
+          overrides.jobId,
+          {
+            slots: [
+              {
+                slotId: `${overrides.jobId}:0:0`,
+                dependencies: [],
+                provider: overrides.provider,
+                instruction: 'recovery fixture',
+              },
+            ],
+          },
+          TEST_PROVIDER_SCOPE,
+        ),
+      );
+      return undefined;
+    });
+  }
+  const common = {
     jobId: overrides.jobId,
-    sessionId: overrides.sessionId,
-    provider: overrides.provider,
     projectRoot: overrides.projectRoot,
     backendNamespace: overrides.backendNamespace,
-    jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: overrides.enqueueSequence ?? 0,
-    providerAction: 'exec',
-    request: {
-      prompt: '',
-      cwd: overrides.projectRoot,
-      bypassPermissions: false,
-      coralEnv: {},
-      ...(overrides.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
-    },
     createdAt: new Date().toISOString(),
+  } as const;
+  const request = {
+    prompt: '',
+    cwd: overrides.projectRoot,
+    bypassPermissions: false,
+    coralEnv: {},
   };
+  const record: JobLaunch = workflow
+    ? {
+        ...common,
+        owner: { kind: 'workflow', id: overrides.jobId },
+        sessionId: null,
+        provider: null,
+        jobKind: 'workflow',
+        request,
+      }
+    : {
+        ...common,
+        owner: { kind: 'provider-session', id: overrides.sessionId },
+        sessionId: overrides.sessionId,
+        provider: overrides.provider,
+        jobKind: 'provider',
+        providerAction: 'exec',
+        request,
+      };
   progressStore.appendLaunchRequested(overrides.jobId, record);
 }
 
 function ensureTestSession(
   progressStore: InstanceType<LoadedModules['progressStoreModule']['JobStore']>,
   options: {
+    jobId: string;
     sessionId: string;
     provider: string;
     projectRoot: string;
     backendNamespace: string;
-    orchestration?: boolean;
   },
 ): void {
   const exists = progressStore
     .getDb()
     .prepare<[string], { found: number }>('SELECT 1 AS found FROM projection_sessions WHERE session_id = ?')
     .get(options.sessionId);
-  if (exists !== undefined) return;
-  if (!options.orchestration && options.provider !== 'codex') {
+  if (exists !== undefined) {
+    const existing = new SessionManager(
+      options.projectRoot,
+      runtime,
+      undefined,
+      undefined,
+      progressStore.getDb(),
+      permissiveProviderLookupPort,
+    ).readById(options.sessionId, { forceFresh: true });
+    if (existing?.activeJobId !== options.jobId) {
+      throw new Error(`Test session '${options.sessionId}' is not claimed by '${options.jobId}'.`);
+    }
+    return;
+  }
+  if (options.provider !== 'codex') {
     throw new Error(`Test provider session '${options.provider}' has no credential source fixture.`);
   }
   const now = new Date().toISOString();
-  const entry: SessionEntry = {
+  const entry: ProviderSession = {
     sessionId: options.sessionId,
-    provider: options.provider,
-    sessionAuthority: options.orchestration
-      ? { kind: 'orchestration' }
-      : { kind: 'provider', binding: TEST_CODEX_BINDING },
+    binding: TEST_CODEX_BINDING,
     name: options.sessionId,
     state: 'ready',
     retention: 'retain',
@@ -317,7 +376,6 @@ function ensureTestSession(
   const body: SessionOpenedBody = {
     entry,
     controller: 'default',
-    provider: options.provider,
     scope_key: pluginRootNamespace(options.projectRoot),
   };
   const event: CoralEvent<SessionOpenedBody> = {
@@ -332,6 +390,17 @@ function ensureTestSession(
     body,
   };
   reduceSessionOpened(progressStore.getDb(), event);
+  const sessionManager = new SessionManager(
+    options.projectRoot,
+    runtime,
+    undefined,
+    undefined,
+    progressStore.getDb(),
+    permissiveProviderLookupPort,
+  );
+  if (!sessionManager.claimForJobSync(options.sessionId, options.jobId)) {
+    throw new Error(`Failed to claim test session '${options.sessionId}' for '${options.jobId}'.`);
+  }
 }
 
 function appendQueuedEvent(
@@ -367,6 +436,7 @@ function stubRuntimeRecord(
   },
 ): void {
   progressStore.appendRuntimeStarted(overrides.jobId, {
+    transport: 'durable-cli',
     pid: overrides.pid ?? process.pid,
     stdoutPath: overrides.stdoutPath ?? join(progressStore.jobDir(overrides.jobId), 'stdout'),
     stderrPath: overrides.stderrPath ?? join(progressStore.jobDir(overrides.jobId), 'stderr'),
@@ -581,6 +651,7 @@ function createActualRecoveryService(
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: async function* () {} as never,
       getCurrentJournalSeq: () => 0,
+      coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
     },
   );
 }
@@ -717,6 +788,7 @@ describe('lifecycle recovery', () => {
     const callOrder: string[] = [];
     const launchRecord: JobLaunch = {
       jobId,
+      owner: { kind: 'provider-session', id: sessionId },
       sessionId,
       provider: 'codex',
       projectRoot,
@@ -730,16 +802,15 @@ describe('lifecycle recovery', () => {
         cwd: projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        conversationRef: 'fallback-thread',
       },
       createdAt: new Date().toISOString(),
     };
     const runtimeRecord = {
+      transport: 'durable-cli' as const,
       pid: 42,
       stdoutPath: '/tmp/recovered-stdout',
       stderrPath: '/tmp/recovered-stderr',
       startTime: '2026-04-12T00:00:00.000Z',
-      providerMeta: { threadId: 'thread-from-runtime-meta' },
     };
     const finalizeFromArtifacts = vi.fn<ProviderRecoveryContract['finalizeFromArtifacts']>(async () => ({
       terminal: {
@@ -747,6 +818,7 @@ describe('lifecycle recovery', () => {
         terminal: {
           content: 'recovered content',
           outcome: { kind: 'completed' },
+          durationMs: 0,
         },
         diagnostics: {},
       },
@@ -780,7 +852,13 @@ describe('lifecycle recovery', () => {
       validateProviderRecoveryAuthority: vi.fn(async () => true),
     });
 
-    ensureTestSession(progressStore, { sessionId, provider: 'codex', projectRoot, backendNamespace: namespace });
+    ensureTestSession(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
     progressStore.initJob({
       jobId,
       sessionId,
@@ -804,15 +882,15 @@ describe('lifecycle recovery', () => {
       progressStore,
       runtime,
       sessionLookup: {
-        readSessionEntry: () => ({
+        readProviderSession: () => ({
           sessionId,
-          provider: 'codex',
-          sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
+          binding: TEST_CODEX_BINDING,
           name: 'alpha',
           state: 'ready',
           retention: 'retain',
           artifactHandles: [],
           retentionDiscard: { attempts: [] },
+          conversationRef: 'fallback-thread',
           providerContinuity: null,
           cwd: projectRoot,
           projectRoot,
@@ -833,14 +911,13 @@ describe('lifecycle recovery', () => {
       expect.objectContaining({
         stdoutPath: '/tmp/recovered-stdout',
         stderrPath: '/tmp/recovered-stderr',
-        providerMeta: { threadId: 'thread-from-runtime-meta' },
+        fallbackConversationRef: 'fallback-thread',
         source: TEST_CODEX_SOURCE,
         storage: runtime.storage,
       }),
     );
     expect(service.recordRecoveredArtifactHandles).toHaveBeenCalledWith(sessionId, {
       jobId,
-      provider: 'codex',
       handles: [
         {
           handle: '/tmp/provider-artifact.jsonl',
@@ -1264,6 +1341,10 @@ describe('lifecycle recovery', () => {
       db: openTestStoreDb(runtime, ':memory:'),
       eventBus,
       providers: permissiveProviderLookupPort,
+      reducers: modules.reducersModule.composeReducers(
+        modules.jobsEventsModule.jobsRegistry,
+        modules.workflowEventsModule.workflowRegistry,
+      ),
     });
     const fakeService = createFakeExecutionAndRecoveryService();
     const foreignNamespace = 'foreign-workflow-namespace';
@@ -1410,10 +1491,20 @@ describe('lifecycle recovery', () => {
       undefined,
       undefined,
       db,
+      permissiveProviderLookupPort,
     );
-    const session = allocateTestSession(sessionManager, 'codex', 'alpha', undefined, projectRoot);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'alpha',
+      undefined,
+      projectRoot,
+      projectRoot,
+      namespace,
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
+    expect(sessionManager.claimForJobSync(session.sessionId, 'terminal-job')).toBe(true);
     progressStore.initJob({
       jobId: 'terminal-job',
       sessionId: session.sessionId,
@@ -1429,8 +1520,6 @@ describe('lifecycle recovery', () => {
       projectRoot,
       outcome: { kind: 'completed' },
     });
-    sessionManager.claimForJobSync(session.sessionId, 'terminal-job');
-
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
       progressStore,
@@ -1440,10 +1529,14 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(
-        new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db).get(
-          'codex',
-          session.sessionId,
-        )?.activeJobId,
+        new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        ).get('codex', session.sessionId)?.activeJobId,
       ).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
@@ -1468,6 +1561,7 @@ describe('lifecycle recovery', () => {
       undefined,
       undefined,
       db,
+      permissiveProviderLookupPort,
     );
     const session = allocateTestSession(sessionManager, 'codex', 'alpha', undefined, projectRoot);
     const fakeService = createFakeExecutionAndRecoveryService();
@@ -1484,10 +1578,14 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(
-        new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db).get(
-          'codex',
-          session.sessionId,
-        )?.activeJobId,
+        new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        ).get('codex', session.sessionId)?.activeJobId,
       ).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
@@ -1514,19 +1612,12 @@ describe('lifecycle recovery', () => {
       projectRoot,
       backendNamespace: namespace,
     });
-    // Inline runtime-record write (vs. the shared stubAppServerRuntime helper) is required
-    // here because the helper does not accept providerContinuity payload; this test verifies
-    // that the threadId field propagates through finalizeInterruptedAppServerJob.
     progressStore.appendRuntimeStarted('app-server-job', {
       transport: 'app-server',
       startTime: '2026-03-31T00:00:00.000Z',
       providerMeta: {
         provider: 'codex',
         leaseState: 'acquired',
-        providerContinuity: {
-          provider: 'codex',
-          threadId: 'thread-1',
-        },
       },
     });
 
@@ -1543,9 +1634,7 @@ describe('lifecycle recovery', () => {
         expect.objectContaining({ jobId: 'app-server-job' }),
         expect.objectContaining({
           transport: 'app-server',
-          providerMeta: expect.objectContaining({
-            providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
-          }),
+          providerMeta: expect.not.objectContaining({ providerContinuity: expect.anything() }),
         }),
         { reason: 'restart' },
       );
@@ -1581,10 +1670,6 @@ describe('lifecycle recovery', () => {
       providerMeta: {
         provider: 'codex',
         leaseState: 'acquired',
-        providerContinuity: {
-          provider: 'codex',
-          threadId: 'handoff-thread-1',
-        },
       },
     });
 
@@ -1602,9 +1687,7 @@ describe('lifecycle recovery', () => {
         expect.objectContaining({ jobId: 'app-server-handoff-job' }),
         expect.objectContaining({
           transport: 'app-server',
-          providerMeta: expect.objectContaining({
-            providerContinuity: expect.objectContaining({ threadId: 'handoff-thread-1' }),
-          }),
+          providerMeta: expect.not.objectContaining({ providerContinuity: expect.anything() }),
         }),
         { reason: 'handoff' },
       );

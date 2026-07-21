@@ -94,6 +94,7 @@ const child = spawn(spawnCommand, args, {
 });
 
 const runtimeRecord = {
+  transport: 'durable-cli',
   pid: child.pid,
   stdoutPath,
   stderrPath,

@@ -2,6 +2,7 @@ import type { ServerResponse } from 'node:http';
 import type { TimePort } from '../infra/port-types.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
+import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';
 import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
@@ -169,7 +170,7 @@ export type RemoteHttpAccessPolicy = {
 };
 
 export interface EventStreamHandlers {
-  onJobCreated: (payload: { jobId: string; sessionId: string; provider: string; projectRoot: string }) => void;
+  onJobCreated: (payload: JobCreatedEvent) => void;
   onPhaseChanged: (payload: { jobId: string; phase: JobPhase; previousPhase: JobPhase }) => void;
   onProgress: (payload: { jobId: string; seq: number; message: string }) => void;
   onCompleted: (payload: {

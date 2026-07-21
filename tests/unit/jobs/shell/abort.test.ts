@@ -131,10 +131,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
   launchCoordinator.releaseLaunch(jobId, pool);
 }
 
-function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
 function createService(
   ctx: InvocationContext,
   options: {
@@ -278,7 +274,7 @@ function completedOutcome() {
 }
 
 function toCompletedResult(
-  result: TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity },
+  result: TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ): TestProviderTurnResult {
   if ('outcome' in result) {
     return result;
@@ -286,7 +282,9 @@ function toCompletedResult(
   return { ...result, outcome: completedOutcome() };
 }
 
-function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): NonNullable<JobStatus['result']> {
+function toCompletedJobTerminal(
+  result: TestJobTerminal | { content: string; durationMs: number },
+): NonNullable<JobStatus['result']> {
   if ('outcome' in result && result.outcome !== undefined) {
     return result as NonNullable<JobStatus['result']>;
   }
@@ -296,8 +294,8 @@ function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): 
 function streamCompletedResult(
   result:
     | TestProviderTurnResult
-    | Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>
-    | { content: string; continuity?: ProviderTurnContinuity },
+    | Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>
+    | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ) {
   return streamProviderEvents(async (emit) => {
     const completed = toCompletedResult(await result);
@@ -317,7 +315,7 @@ function streamCompletedResult(
 function makeProvider(options?: {
   execute?: (
     ...args: Parameters<Provider['execute']>
-  ) => Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>;
+  ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
   provider: NonNullable<ReturnType<typeof toProviderSpec>>;
@@ -325,7 +323,7 @@ function makeProvider(options?: {
   preflight?: ReturnType<typeof vi.fn>;
 } {
   const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })),
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
@@ -339,7 +337,9 @@ function makeProvider(options?: {
 function _makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() =>
+      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
+    ),
     appServerLifecycle: {
       buildServerSpec: (_continuity, request) =>
         buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
@@ -382,7 +382,7 @@ function _makeCodexAppServerProvider(): Provider {
       },
       finalizeInterrupted: (probeResult, continuity, context) => {
         const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
@@ -421,7 +421,9 @@ function _makeSharedClaudeAppServerProvider(spec: {
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() =>
+      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
+    ),
     appServerLifecycle: {
       buildServerSpec: () => spec,
       interrupt: async (lease, continuity) => {
@@ -441,7 +443,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       }),
       finalizeInterrupted: (probeResult, continuity, context) => {
         const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
@@ -479,8 +481,8 @@ async function occupyProviderSlots(
     if (decision.status !== 'running') {
       throw new Error('expected running launch while occupying capacity');
     }
-    trackJob(decision.job);
-    jobIds.push(decision.job);
+    trackJob(decision.jobId);
+    jobIds.push(decision.jobId);
   }
 
   return jobIds;
@@ -579,6 +581,7 @@ function _makeStatusRecord(
 ): JobStatus {
   return {
     jobId,
+    owner: { kind: 'provider-session', id: options.sessionId ?? `${jobId}-session` },
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
@@ -605,8 +608,7 @@ function _makeTerminalReplay(
     seq: options.seq ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
-    continuity: null,
+    result: toCompletedJobTerminal(options.result ?? { content: 'done', durationMs: 0 }),
   };
 }
 
@@ -670,19 +672,19 @@ describe('ExecutionService abort', () => {
       throw new Error('expected running jobs');
     }
 
-    trackJob(first.job);
-    trackJob(second.job);
-    const result = service.abort([first.job, 'missing-job']);
+    trackJob(first.jobId);
+    trackJob(second.jobId);
+    const result = service.abort([first.jobId, 'missing-job']);
     const { abortRegistry } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
 
     expect(result).toEqual({
-      aborted: [first.job],
+      aborted: [first.jobId],
       notFound: ['missing-job'],
     });
-    expect(abortRegistry.getSignal(first.job)?.aborted).toBe(true);
-    expect(abortRegistry.getSignal(second.job)?.aborted).toBe(false);
+    expect(abortRegistry.getSignal(first.jobId)?.aborted).toBe(true);
+    expect(abortRegistry.getSignal(second.jobId)?.aborted).toBe(false);
   });
 
   it('abort persists queued jobs as aborted instead of error', async () => {
@@ -696,18 +698,18 @@ describe('ExecutionService abort', () => {
 
     expect(decision.status).toBe('queued');
     if (decision.status !== 'queued') throw new Error('expected queued launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
-    const abortResult = service.abort([decision.job]);
+    const abortResult = service.abort([decision.jobId]);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
 
     expect(abortResult).toEqual({
-      aborted: [decision.job],
+      aborted: [decision.jobId],
       notFound: [],
     });
-    expect(progressStore.readStatus(decision.job)).toMatchObject({
+    expect(progressStore.readStatus(decision.jobId)).toMatchObject({
       phase: 'aborted',
       result: {
         outcome: { kind: 'aborted', reason: 'queue_shutdown' },

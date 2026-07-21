@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { Database } from '#src/store/db.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -33,9 +34,9 @@ import {
 } from '#src/workflow/events.js';
 import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { parseExpression } from '#src/workflow/parser.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-29T00:00:00.000Z');
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'unit', 'discuss', 'fixtures');
@@ -49,15 +50,16 @@ interface ProjectionTable {
 const PROJECTION_TABLES: readonly ProjectionTable[] = [
   {
     name: 'projection_jobs',
-    query: `SELECT job_id, phase, terminal, diagnostics, session_id, provider, project_root,
+    query: `SELECT job_id, execution_owner, phase, terminal, diagnostics, session_id, provider, project_root,
                  backend_namespace, bundle_hash, job_kind, parent_workflow_job_id,
-                 workflow_slot, created_at, last_seq
+                 workflow_slot, workflow_slot_generation, replaces_workflow_job_id,
+                 created_at, last_seq
             FROM projection_jobs`,
     orderBy: 'job_id',
   },
   {
     name: 'projection_sessions',
-    query: `SELECT session_id, controller, provider, resumable, conversation_ref,
+    query: `SELECT session_id, controller, resumable, conversation_ref,
                  scope_key, entry, last_seq
             FROM projection_sessions`,
     orderBy: 'session_id',
@@ -69,23 +71,22 @@ const PROJECTION_TABLES: readonly ProjectionTable[] = [
   },
   {
     name: 'projection_workflows',
-    query: 'SELECT workflow_id, plan, last_seq FROM projection_workflows',
+    query: 'SELECT workflow_id, plan, provider_scope, lifecycle, last_seq FROM projection_workflows',
     orderBy: 'workflow_id',
   },
 ];
 
-function sessionEntry(sessionId: string, provider: 'codex' | 'claude'): SessionEntry {
+function sessionEntry(sessionId: string): ProviderSession {
   return {
     sessionId,
-    provider,
-    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
+    binding: TEST_CODEX_BINDING,
     name: sessionId,
     state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
-    cwd: '/tmp/project',
-    projectRoot: '/tmp/project',
+    cwd: '/workspace/coral',
+    projectRoot: '/workspace/coral',
     backendNamespace: 'invariant-ns',
     providerContinuity: null,
     createdAt: NOW.toISOString(),
@@ -121,6 +122,105 @@ function loadDiscussFixtureEvents(): Array<ReturnType<typeof toJournalInput>> {
     .map((envelope) => toJournalInput({ ...envelope, ts: NOW.toISOString() }));
 }
 
+const DISCUSS_EXECUTION_SESSION_ID = '00000000-0000-0000-0000-000000000001';
+const FIRST_DISCUSS_JOB_ID = '00000000-0000-0000-0000-000000000002';
+
+function discussionJobLaunchInput(
+  jobId: string,
+  purpose: 'bid' | 'speech' | 'epoch_evaluation' | 'follow_up' | 'synthesis',
+  attempt: number,
+): CoralEventInput {
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: jobId },
+    refs: { sessionId: DISCUSS_EXECUTION_SESSION_ID },
+    bodyVersion: 1,
+    body: {
+      owner: { kind: 'discussion', id: 'discuss-golden' },
+      discussionRun: { agent: 'alpha', purpose, attempt },
+      sessionId: DISCUSS_EXECUTION_SESSION_ID,
+      provider: 'codex',
+      providerAction: jobId === FIRST_DISCUSS_JOB_ID ? 'exec' : 'resume',
+      projectRoot: '<root>',
+      backendNamespace: 'invariant-ns',
+      bundleHash: 'bundle-parity',
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: Number.parseInt(jobId.slice(-1), 10),
+      request: {
+        prompt: `golden discussion ${purpose}`,
+        cwd: '<root>',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: NOW.toISOString(),
+    },
+  };
+}
+
+function sessionClaimInput(entry: ProviderSession, jobId: string): { input: CoralEventInput; entry: ProviderSession } {
+  const claimed: ProviderSession = { ...entry, activeJobId: jobId, version: entry.version + 1 };
+  return {
+    input: {
+      type: 'session.claimed',
+      stream: { kind: 'session', id: entry.sessionId },
+      refs: { sessionId: entry.sessionId, jobId },
+      bodyVersion: 1,
+      body: { entry: claimed, jobId },
+    },
+    entry: claimed,
+  };
+}
+
+function sessionReleaseInput(
+  entry: ProviderSession,
+  jobId: string,
+): { input: CoralEventInput; entry: ProviderSession } {
+  const { activeJobId: _activeJobId, ...unclaimed } = entry;
+  const released: ProviderSession = { ...unclaimed, version: entry.version + 1 };
+  return {
+    input: {
+      type: 'session.claim.released',
+      stream: { kind: 'session', id: entry.sessionId },
+      refs: { sessionId: entry.sessionId, jobId },
+      bodyVersion: 1,
+      body: { entry: released, jobId },
+    },
+    entry: released,
+  };
+}
+
+function loadAuthorizedDiscussFixtureEvents(openedSession: ProviderSession): CoralEventInput[] {
+  const inputs: CoralEventInput[] = [];
+  let session = openedSession;
+  for (const input of loadDiscussFixtureEvents()) {
+    if (input.type === 'discuss.agent.run.bound') {
+      const claim = sessionClaimInput(session, FIRST_DISCUSS_JOB_ID);
+      inputs.push(claim.input, discussionJobLaunchInput(FIRST_DISCUSS_JOB_ID, 'bid', 1));
+      session = claim.entry;
+    } else if (input.type === 'discuss.agent.job.started') {
+      const body = input.body as {
+        jobId: string;
+        purpose: Parameters<typeof discussionJobLaunchInput>[1];
+        attempt: number;
+      };
+      if (body.jobId !== FIRST_DISCUSS_JOB_ID) {
+        const claim = sessionClaimInput(session, body.jobId);
+        inputs.push(claim.input, discussionJobLaunchInput(body.jobId, body.purpose, body.attempt));
+        session = claim.entry;
+      }
+    }
+    inputs.push(input);
+    if (input.type === 'discuss.agent.job.finished') {
+      const body = input.body as { jobId: string };
+      const release = sessionReleaseInput(session, body.jobId);
+      inputs.push(release.input);
+      session = release.entry;
+    }
+  }
+  return inputs;
+}
+
 describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', () => {
   it('commit-time reducer state == rebuildProjections state, row by row, for jobs/sessions/discuss/workflow', () => {
     const db = newRawDatabase(':memory:');
@@ -134,20 +234,26 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
         defaultProvider: 'codex',
       });
 
-      // Sessions: open + checkpoint (2 events).
-      const sessionOpen = sessionEntry('session-parity', 'codex');
-      const sessionReady: SessionEntry = {
-        ...sessionOpen,
+      // Sessions: open + claim + checkpoint (3 events).
+      const sessionOpen = sessionEntry('session-parity');
+      const parityClaim = sessionClaimInput(sessionOpen, 'job-parity-1');
+      const sessionReady: ProviderSession = {
+        ...parityClaim.entry,
         state: 'ready',
         conversationRef: 'thread-parity',
         providerContinuity: { threadId: 'thread-parity', turnId: 'turn-1' },
-        version: 2,
+        version: parityClaim.entry.version + 1,
       };
 
       // Jobs: launch + queue + admit + start + terminal (5 events).
       // Discuss: replay the full golden fixture (16 events) — covers every
       // discuss event kind the production reducer handles.
-      const discussInputs = loadDiscussFixtureEvents();
+      const discussSessionOpen: ProviderSession = {
+        ...sessionEntry(DISCUSS_EXECUTION_SESSION_ID),
+        cwd: '<root>',
+        projectRoot: '<root>',
+      };
+      const discussInputs = loadAuthorizedDiscussFixtureEvents(discussSessionOpen);
 
       const inputs = [
         // Session authority must precede the provider job it owns.
@@ -159,10 +265,10 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           body: {
             entry: sessionOpen,
             controller: 'team-invariant',
-            provider: 'codex' as const,
             scope_key: 'parity-scope',
           },
         },
+        parityClaim.input,
         // Jobs
         {
           type: 'job.launch.requested' as const,
@@ -170,6 +276,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           refs: { sessionId: 'session-parity' },
           bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session' as const, id: 'session-parity' },
             sessionId: 'session-parity',
             provider: 'codex' as const,
             providerAction: 'exec' as const,
@@ -207,7 +314,13 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           stream: { kind: 'job' as const, id: 'job-parity-1' },
           refs: { sessionId: 'session-parity' },
           bodyVersion: 1,
-          body: { transport: 'durable-cli' as const, pid: 9001, startedAt: NOW.toISOString() },
+          body: {
+            transport: 'durable-cli' as const,
+            pid: 9001,
+            stdoutPath: '/tmp/job-parity-1.stdout',
+            stderrPath: '/tmp/job-parity-1.stderr',
+            startedAt: NOW.toISOString(),
+          },
         },
         {
           type: 'job.terminal.recorded' as const,
@@ -238,7 +351,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           },
         },
         // Workflow
-        workflowPlanDeclaredEvent('workflow-parity', plan),
+        workflowPlanDeclaredEvent('workflow-parity', plan, TEST_PROVIDER_SCOPE),
         workflowDrainEnteredEvent('workflow-parity', {
           firstFailureSlotId: plan.slots[1].slotId,
           drainDeadline: Date.parse('2026-04-29T00:00:15.000Z'),
@@ -248,6 +361,17 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
           causeRef: { stream: { kind: 'workflow' as const, id: 'workflow-parity' }, seq: 2 },
           stepDetails: [],
         }),
+        {
+          type: 'session.opened' as const,
+          stream: { kind: 'session' as const, id: DISCUSS_EXECUTION_SESSION_ID },
+          refs: { sessionId: DISCUSS_EXECUTION_SESSION_ID },
+          bodyVersion: 1,
+          body: {
+            entry: discussSessionOpen,
+            controller: 'team-invariant',
+            scope_key: 'parity-discuss-scope',
+          },
+        },
         // Discuss (golden fixture replay).
         ...discussInputs,
       ];

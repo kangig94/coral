@@ -1,7 +1,6 @@
 import type { AppendedEvent } from '#src/store/append.js';
 import type { JobStore } from '#src/jobs/store.js';
 import type { JobTerminalInput, JobTerminalDiagnostics } from '#src/jobs/records.js';
-import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 
@@ -29,11 +28,9 @@ export function commitJobTerminal(
     | 'aborted'
     | {
         diagnostics?: JobTerminalDiagnostics;
-        continuity?: JobContinuitySnapshot | null;
       } = {},
   maybeOptions: {
     diagnostics?: JobTerminalDiagnostics;
-    continuity?: JobContinuitySnapshot | null;
   } = {},
 ): number {
   const options = typeof phaseOrOptions === 'string' ? maybeOptions : phaseOrOptions;
@@ -46,7 +43,6 @@ export function commitJobTerminal(
       project: status?.projectRoot,
       terminal,
       diagnostics: options.diagnostics,
-      continuity: options.continuity ?? null,
     });
     return undefined;
   });

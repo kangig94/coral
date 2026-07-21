@@ -37,13 +37,13 @@ import type { CoralEventInput } from '#src/store/envelope.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 const PROJECT_ROOT = '/workspace/coral';
 const NAMESPACE = 'wf-namespace';
 const BUNDLE_HASH = 'wf-bundle';
 const WORKFLOW_ID = 'wf-1';
-const WORKFLOW_SESSION_ID = 'wf-session-1';
 const SLOT_A = `${WORKFLOW_ID}:0:0`;
 const SLOT_B = `${WORKFLOW_ID}:1:0`;
 const SLOT_C = `${WORKFLOW_ID}:1:1`;
@@ -65,19 +65,16 @@ function workflowPlan(): {
   };
 }
 
-function providerLaunchBody(args: {
-  jobKind: 'provider' | 'workflow';
-  sessionId: string;
-  enqueueSequence: number;
-}): Record<string, unknown> {
+function providerLaunchBody(args: { sessionId: string; enqueueSequence: number }): Record<string, unknown> {
   return {
+    owner: { kind: 'workflow', id: WORKFLOW_ID },
     sessionId: args.sessionId,
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: PROJECT_ROOT,
     backendNamespace: NAMESPACE,
     bundleHash: BUNDLE_HASH,
-    jobKind: args.jobKind,
+    jobKind: 'provider',
     pool: 'default',
     enqueueSequence: args.enqueueSequence,
     request: {
@@ -85,7 +82,6 @@ function providerLaunchBody(args: {
       cwd: PROJECT_ROOT,
       bypassPermissions: false,
       coralEnv: {},
-      ...(args.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
     },
     createdAt: NOW.toISOString(),
   };
@@ -109,11 +105,13 @@ function transactionLaunchAndStart(args: {
       stream: { kind: 'job', id: args.jobId },
       refs,
       bodyVersion: 1,
-      body: providerLaunchBody({
-        jobKind: args.parentJobId ? 'workflow' : 'workflow',
-        sessionId: args.sessionId,
-        enqueueSequence: args.enqueueSequence,
-      }),
+      body: {
+        ...providerLaunchBody({
+          sessionId: args.sessionId,
+          enqueueSequence: args.enqueueSequence,
+        }),
+        ...(args.workflowSlotId === undefined ? {} : { workflowSlotGeneration: 0 }),
+      },
     },
     {
       type: 'job.queue.admitted',
@@ -127,7 +125,55 @@ function transactionLaunchAndStart(args: {
       stream: { kind: 'job', id: args.jobId },
       refs,
       bodyVersion: 1,
-      body: { transport: 'durable-cli', startedAt: NOW.toISOString() },
+      body: {
+        transport: 'durable-cli',
+        pid: 1234,
+        stdoutPath: `/tmp/${args.jobId}.stdout`,
+        stderrPath: `/tmp/${args.jobId}.stderr`,
+        startedAt: NOW.toISOString(),
+      },
+    },
+  ];
+}
+
+function workflowLaunchAndStart(): CoralEventInput[] {
+  const refs = { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID };
+  return [
+    {
+      type: 'job.launch.requested',
+      stream: { kind: 'job', id: WORKFLOW_ID },
+      refs,
+      bodyVersion: 1,
+      body: {
+        owner: { kind: 'workflow', id: WORKFLOW_ID },
+        projectRoot: PROJECT_ROOT,
+        backendNamespace: NAMESPACE,
+        bundleHash: BUNDLE_HASH,
+        jobKind: 'workflow',
+        pool: 'default',
+        enqueueSequence: 0,
+        request: {
+          prompt: 'go',
+          cwd: PROJECT_ROOT,
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: NOW.toISOString(),
+      },
+    },
+    {
+      type: 'job.queue.admitted',
+      stream: { kind: 'job', id: WORKFLOW_ID },
+      refs,
+      bodyVersion: 1,
+      body: { queuePosition: 0 },
+    },
+    {
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: WORKFLOW_ID },
+      refs,
+      bodyVersion: 1,
+      body: { transport: 'workflow', startedAt: NOW.toISOString() },
     },
   ];
 }
@@ -149,6 +195,14 @@ function setup(): {
 }
 
 async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
+  for (const sessionId of ['session-a-1', 'session-b-1', 'session-c-1']) {
+    seedTestSessionProjection(db, {
+      sessionId,
+      provider: 'codex',
+      projectRoot: PROJECT_ROOT,
+      backendNamespace: NAMESPACE,
+    });
+  }
   const append = (events: CoralEventInput[]): number => {
     const result = commitInputs(db, events, {
       now: () => NOW,
@@ -166,13 +220,9 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       stream: { kind: 'workflow', id: WORKFLOW_ID },
       refs: { workflowId: WORKFLOW_ID },
       bodyVersion: 1,
-      body: workflowPlan(),
+      body: { plan: workflowPlan(), providerScope: TEST_PROVIDER_SCOPE },
     },
-    ...transactionLaunchAndStart({
-      jobId: WORKFLOW_ID,
-      sessionId: WORKFLOW_SESSION_ID,
-      enqueueSequence: 0,
-    }),
+    ...workflowLaunchAndStart(),
   ]);
 
   // Transaction 2 — slot A launched and completed.
@@ -291,7 +341,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
         {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: WORKFLOW_ID },
-          refs: { sessionId: WORKFLOW_SESSION_ID, workflowId: WORKFLOW_ID },
+          refs: { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID },
           bodyVersion: 1,
           body: {
             terminal: {

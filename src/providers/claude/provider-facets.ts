@@ -1,17 +1,10 @@
 import { dirname, join } from 'node:path';
 
 import { detectClaudeCli } from '../cli-detection.js';
-import type {
-  ProviderPreflightRuntime,
-  ProviderAppServerContract,
-  ProviderRecoveryContract,
-  ProviderRequest,
-} from '../contract.js';
-import { readString } from '../../infra/json.js';
+import type { ProviderPreflightRuntime, ProviderAppServerContract, ProviderRecoveryContract } from '../contract.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
-  claudeConversationRef,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
 import { providerRoutingEnv, UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../infra/provider-credential-sources.js';
@@ -112,12 +105,8 @@ export const claudeAppServerLifecycle: ProviderAppServerContract = {
 };
 
 export const claudeRecoveryLifecycle = {
-  buildRecoveryMeta(request: ProviderRequest) {
-    const conversationRef = readString(claudeConversationRef(request));
-    return conversationRef !== undefined ? { conversationRef } : {};
-  },
   finalizeInterrupted(probeResult, continuity, context) {
-    const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
+    const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity ?? {});
     const providerContinuity = persistedContinuity.bootstrapSignature
       ? buildClaudeContinuity({
           bootstrapSignature: persistedContinuity.bootstrapSignature,
@@ -145,4 +134,4 @@ export const claudeRecoveryLifecycle = {
       ...(providerContinuity ? { providerContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'finalizeInterrupted'>;
+} satisfies Pick<ProviderRecoveryContract, 'finalizeInterrupted'>;

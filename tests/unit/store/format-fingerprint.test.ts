@@ -7,7 +7,9 @@ import { declarativeEngineManifestSchema } from '#src/expansion/manifest/schema.
 import { jobsRegistry } from '#src/jobs/events.js';
 import { jobDiagnosticsSchema, jobTerminalSchema } from '#src/jobs/terminal/result.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { sessionEntrySchema } from '#src/sessions/entry.js';
+import { providerSessionSchema } from '#src/sessions/entry.js';
+import { executionOwnerSchema } from '#src/runtime/execution-owner.js';
+import { providerScopeSchema } from '#src/infra/provider-scope.js';
 import { createCurrentStoreFormat } from '#src/store/current-format.js';
 import { journalEventRefsSchema } from '#src/store/envelope.js';
 import {
@@ -19,6 +21,7 @@ import {
 } from '#src/store/format-fingerprint.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { workflowRegistry } from '#src/workflow/events.js';
+import { workflowLifecycleSchema } from '#src/workflow/lifecycle.js';
 import { workflowPlanSchema } from '#src/workflow/plan.js';
 import { corpusAuthorityBaselineDdl } from '#src/kb/corpus/rescan/authority-baseline.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
@@ -30,15 +33,18 @@ const CURRENT_BOUNDARY_CODEC_NAMES = [
   'store.kb_curate_retry_queue.signals',
   'store.projection_discuss.state',
   'store.projection_jobs.diagnostics',
+  'store.projection_jobs.execution_owner',
   'store.projection_jobs.terminal',
   'store.projection_sessions.entry',
   'store.projection_workflows.plan',
+  'store.projection_workflows.provider_scope',
 ] as const;
 
 const CURRENT_COMPONENT_CODEC_NAMES = [
   'provider.binding-envelope',
   'provider.claude.binding',
   'provider.codex.binding',
+  'workflow.lifecycle',
 ] as const;
 
 function ddlFor(...codecNames: readonly string[]): string {
@@ -49,9 +55,12 @@ const currentCodecSchemas = {
   eventRefs: journalEventRefsSchema,
   jobTerminal: jobTerminalSchema,
   jobDiagnostics: jobDiagnosticsSchema,
-  sessionEntry: sessionEntrySchema,
+  executionOwner: executionOwnerSchema,
+  providerSession: providerSessionSchema,
   discussState: persistedDiscussSnapshotSchema,
   workflowPlan: workflowPlanSchema,
+  providerScope: providerScopeSchema,
+  workflowLifecycle: workflowLifecycleSchema,
   expansionManifest: declarativeEngineManifestSchema,
 };
 
@@ -100,6 +109,24 @@ describe('StoreFormatFingerprint', () => {
 
     const ddl = ddlFor('store.value');
     expect(describeStoreFormat(ddl, before).fingerprint).not.toBe(describeStoreFormat(ddl, after).fingerprint);
+  });
+
+  it('fingerprints the scalar workflow lifecycle codec explicitly', () => {
+    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const current = createCurrentStoreFormat(reducers, currentCodecSchemas, [corpusAuthorityBaselineDdl]);
+    const changed = createCurrentStoreFormat(
+      reducers,
+      {
+        ...currentCodecSchemas,
+        workflowLifecycle: z.enum(['active', 'completed']),
+      },
+      [corpusAuthorityBaselineDdl],
+    );
+
+    expect(current.manifest.codecs).toContainEqual(
+      expect.objectContaining({ name: 'workflow.lifecycle', persistence: 'component' }),
+    );
+    expect(changed.fingerprint).not.toBe(current.fingerprint);
   });
 
   it('includes nested persisted codec components without treating them as SQL boundaries', () => {

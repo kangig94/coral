@@ -1,46 +1,70 @@
 import type { ProviderRequest, ProviderSpec } from '../../providers/contract.js';
-import type { RetentionPolicy, SessionEntry } from '../../sessions/entry.js';
+import type { RetentionPolicy, ProviderSession } from '../../sessions/entry.js';
 import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
-import type { LaunchDecision } from '../launch.js';
+import type { ProviderSessionLaunchDecision } from '../launch.js';
 import type { JobLaunch, JobTerminalInput } from '../records.js';
 import type { AbortReason } from '../outcome.js';
-import type { AcceptedAdmission, LaunchPool, QueuedHandle } from './admission.js';
-import type { ClaimJobOptions } from '../session-claim.js';
+import type { LaunchPool, QueuedHandle } from './admission.js';
+import type { ExecutionOwner } from '../../runtime/execution-owner.js';
+import type { DiscussionRunDescriptor } from '../discussion-run.js';
 
 export interface ProviderJobLaunchPort {
-  claimAndAdmitJob(
-    session: SessionEntry,
-    providerName: string,
-    projectRoot: string,
-    sessionBusyMessage: string,
-    claimJobAtomic: (
-      session: SessionEntry,
-      jobId: string,
-      providerName: string,
-      projectRoot: string,
-      options?: ClaimJobOptions,
-    ) => Promise<SessionEntry>,
-    expectedVersion?: number,
-    pool?: LaunchPool,
-    requestedJobId?: string,
-  ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision>;
-
-  launchProviderJob(
+  launchInitialProviderJob(
     provider: ProviderSpec,
-    sessionId: string,
-    jobId: string,
+    preparedSession: ProviderSession,
     request: ProviderRequest,
-    admission: AcceptedAdmission,
-    opts?: {
+    opts: {
+      owner: ExecutionOwner;
+      requestedJobId?: string;
       pool?: LaunchPool;
       projectRoot?: string;
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
+      workflowSlotGeneration?: number;
+      replacesWorkflowJobId?: string;
       retention?: RetentionPolicy;
-      protectedEnv?: Record<string, string>;
+      discussionRun?: DiscussionRunDescriptor;
+      mintProtectedEnv: (jobId: string) => Record<string, string>;
     },
-  ): LaunchDecision;
+  ): ProviderSessionLaunchDecision;
+
+  launchResumedProviderJob(
+    provider: ProviderSpec,
+    session: ProviderSession,
+    request: ProviderRequest,
+    opts: {
+      owner: ExecutionOwner;
+      expectedVersion: number;
+      sessionBusyMessage: string;
+      requestedJobId?: string;
+      pool?: LaunchPool;
+      projectRoot?: string;
+      parentWorkflowJobId?: string;
+      workflowSlotId?: string;
+      workflowSlotGeneration?: number;
+      replacesWorkflowJobId?: string;
+      retention?: RetentionPolicy;
+      discussionRun?: DiscussionRunDescriptor;
+      mintProtectedEnv: (jobId: string) => Record<string, string>;
+    },
+  ): ProviderSessionLaunchDecision;
+
+  launchWorkflowReplacement(
+    provider: ProviderSpec,
+    session: ProviderSession,
+    request: ProviderRequest,
+    opts: {
+      owner: Extract<ExecutionOwner, { kind: 'workflow' }>;
+      parentWorkflowJobId: string;
+      workflowSlotId: string;
+      workflowSlotGeneration: number;
+      replacesWorkflowJobId: string;
+      pool?: LaunchPool;
+      projectRoot: string;
+      mintProtectedEnv: (jobId: string) => Record<string, string>;
+    },
+  ): ProviderSessionLaunchDecision;
 }
 
 export interface QueuedJobAbortPort {

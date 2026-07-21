@@ -1,8 +1,8 @@
 import { resolve } from 'node:path';
 import type { Database } from '../store/db.js';
 
-import { commit as commitJournalEvents, type CommitEventsFn } from '../store/append.js';
-import { noProviderLookupPort } from '../providers/catalog.js';
+import { commit as commitJournalEvents, type CommitContext, type CommitEventsFn } from '../store/append.js';
+import type { ProviderLookupPort } from '../providers/catalog.js';
 import type { CoralEventInput } from '../store/envelope.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
@@ -14,11 +14,9 @@ import { composeReducers } from '../store/reducers.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { providerArtifactIdentityKey } from '../providers/artifact-identity.js';
 import {
-  claimContinuationLeaseInputSchema,
   clearContinuationLeaseInputSchema,
   type ClaimedContinuationLease,
   type ClearedContinuationLease,
-  type ClaimContinuationLeaseInput,
   type ClearContinuationLeaseInput,
   hasUnterminalRetentionDiscardRequest,
   isProtectiveContinuationLease,
@@ -28,8 +26,9 @@ import {
   type RecordContinuationLeaseInput,
   sessionControllerFromProfile,
   type SessionContinuationLease,
-  sessionEntrySchema,
-  type SessionEntry,
+  providerSessionSchema,
+  providerSessionProvider,
+  type ProviderSession,
 } from './entry.js';
 import type {
   SessionAllocateOptions,
@@ -55,8 +54,9 @@ import {
 } from './continuation-lease-events.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
 import { readContinuityRef, type ContinuitySnapshot, type ProviderContinuityBlob } from './continuity.js';
-import { normalizeSessionEntry as normalizeEntry } from './entry-normalization.js';
+import { normalizeProviderSession as normalizeEntry } from './entry-normalization.js';
 import { listProjectionSessionEntries, readProjectionSession } from './projections.js';
+import { SessionClaimError } from './claim-error.js';
 
 type SessionRuntime = Pick<Runtime, 'storage' | 'paths' | 'time' | 'ids'>;
 type SessionReleasedEmitter = (payload: { sessionId: string; jobId: string }) => void;
@@ -86,25 +86,25 @@ function toSessionNamespace(dir: string, ids: Pick<IdPort, 'sha256'>): string {
   }
 }
 
-function isValidEntry(value: unknown): value is SessionEntry {
-  const parsed = sessionEntrySchema.safeParse(value);
+function isValidEntry(value: unknown): value is ProviderSession {
+  const parsed = providerSessionSchema.safeParse(value);
   if (!parsed.success) return false;
-  if (!providerIdentPattern.test(parsed.data.provider)) return false;
+  if (!providerIdentPattern.test(providerSessionProvider(parsed.data))) return false;
   return true;
 }
 
-function withoutConversationRef(entry: SessionEntry): SessionEntry {
+function withoutConversationRef(entry: ProviderSession): ProviderSession {
   const { conversationRef: _conversationRef, ...rest } = entry;
   return rest;
 }
 
-function withoutActiveJobId(entry: SessionEntry): SessionEntry {
+function withoutActiveJobId(entry: ProviderSession): ProviderSession {
   const { activeJobId: _activeJobId, ...rest } = entry;
   return rest;
 }
 
 function snapshotFromEntry(
-  entry: Pick<SessionEntry, 'conversationRef' | 'providerContinuity' | 'state'>,
+  entry: Pick<ProviderSession, 'conversationRef' | 'providerContinuity' | 'state'>,
 ): ContinuitySnapshot {
   return {
     conversationRef: entry.conversationRef ?? null,
@@ -113,7 +113,7 @@ function snapshotFromEntry(
   };
 }
 
-function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventInput<SessionOpenedBody> {
+function sessionOpenedEvent(entry: ProviderSession, scopeKey: string): CoralEventInput<SessionOpenedBody> {
   const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.opened',
@@ -123,14 +123,13 @@ function sessionOpenedEvent(entry: SessionEntry, scopeKey: string): CoralEventIn
     body: {
       entry: normalizedEntry,
       controller: sessionControllerFromProfile(normalizedEntry.controllerProfile),
-      provider: normalizedEntry.provider,
       scope_key: scopeKey,
     },
   };
 }
 
 function sessionCheckpointedEvent(
-  entry: SessionEntry,
+  entry: ProviderSession,
   snapshot: ContinuitySnapshot,
 ): CoralEventInput<SessionContinuityCheckpointedBody> {
   const normalizedEntry = normalizeEntry(entry);
@@ -147,7 +146,7 @@ function sessionCheckpointedEvent(
 }
 
 function sessionArtifactHandleRecordedEvent(
-  entry: SessionEntry,
+  entry: ProviderSession,
   artifact: ProviderArtifactHandle,
 ): CoralEventInput<SessionArtifactHandleRecordedBody> {
   const normalizedEntry = normalizeEntry(entry);
@@ -156,21 +155,20 @@ function sessionArtifactHandleRecordedEvent(
     stream: { kind: 'session', id: normalizedEntry.sessionId },
     refs: {
       sessionId: normalizedEntry.sessionId,
-      ...(artifact.sourceJobId !== undefined ? { jobId: artifact.sourceJobId } : {}),
+      jobId: artifact.sourceJobId,
     },
     bodyVersion: 1,
     body: {
       entry: normalizedEntry,
-      provider: artifact.provider,
       handle: artifact.handle,
       identity: artifact.identity,
       identityKey: artifact.identityKey,
-      ...(artifact.sourceJobId !== undefined ? { sourceJobId: artifact.sourceJobId } : {}),
+      sourceJobId: artifact.sourceJobId,
     },
   };
 }
 
-function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimedBody> {
+function sessionClaimedEvent(entry: ProviderSession, jobId: string): CoralEventInput<SessionClaimedBody> {
   const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.claimed',
@@ -184,7 +182,7 @@ function sessionClaimedEvent(entry: SessionEntry, jobId: string): CoralEventInpu
   };
 }
 
-function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEventInput<SessionClaimReleasedBody> {
+function sessionClaimReleasedEvent(entry: ProviderSession, jobId: string): CoralEventInput<SessionClaimReleasedBody> {
   const normalizedEntry = normalizeEntry(entry);
   return {
     type: 'session.claim.released',
@@ -200,7 +198,7 @@ function sessionClaimReleasedEvent(entry: SessionEntry, jobId: string): CoralEve
 
 function claimLease(
   lease: SessionContinuationLease | undefined,
-  input: ClaimContinuationLeaseInput,
+  input: { staleJobId: string; resumedJobId: string },
   now: string,
 ): ClaimedContinuationLease | null {
   if (lease === undefined) {
@@ -244,6 +242,9 @@ function clearLease(
 
   return {
     staleJobId: lease.staleJobId,
+    workflowId: lease.workflowId,
+    workflowSlotId: lease.workflowSlotId,
+    replacementGeneration: lease.replacementGeneration,
     reason: lease.reason,
     expiresAt: lease.expiresAt,
     recordedAt: lease.recordedAt,
@@ -265,7 +266,7 @@ function clearLease(
  * the lifecycle post-commit observer; production session lifecycle facts must
  * flow through the coordinator-bound commit function supplied to forProduction.
  */
-function createLocalSessionCommit(db: Database, time: TimePort): CommitEventsFn {
+function createLocalSessionCommit(db: Database, time: TimePort, providers: ProviderLookupPort): CommitEventsFn {
   const reducers = composeReducers(sessionsRegistry);
   const bodyCodec = createEventBodyCodec();
 
@@ -274,11 +275,7 @@ function createLocalSessionCommit(db: Database, time: TimePort): CommitEventsFn 
       now: () => nowDate(time),
       reducers,
       bodyCodec,
-      // Sessions domain has no append-time provider validators today
-      // (validateWorkflowPlanValidity is workflow-only). Fail-closed baseline:
-      // any future session validator that consults providers will reject
-      // unless a real port is wired through composition.
-      providers: noProviderLookupPort,
+      providers,
     });
 }
 
@@ -289,21 +286,44 @@ export class SessionManager {
   private readonly releaseEmitter: SessionReleasedEmitter;
   private readonly scopeKey: string;
   private readonly db: Database;
-  private readonly cache = new Map<string, SessionEntry>();
+  private readonly cache = new Map<string, ProviderSession>();
   private readonly knownSessionIds = new Set<string>();
 
   constructor(
     workingDirectory: string,
     runtime: SessionRuntime,
-    commitEvents: CommitEventsFn | undefined,
-    releaseEmitter: SessionReleasedEmitter = () => {},
+    commitEvents: undefined,
+    releaseEmitter: SessionReleasedEmitter | undefined,
     db: Database,
+    providers: ProviderLookupPort,
+  );
+  constructor(
+    workingDirectory: string,
+    runtime: SessionRuntime,
+    commitEvents: CommitEventsFn,
+    releaseEmitter: SessionReleasedEmitter | undefined,
+    db: Database,
+  );
+  constructor(
+    workingDirectory: string,
+    runtime: SessionRuntime,
+    commitEvents: CommitEventsFn | undefined,
+    releaseEmitter: SessionReleasedEmitter | undefined,
+    db: Database,
+    providers?: ProviderLookupPort,
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
     this.db = db;
-    this.commitEvents = commitEvents ?? createLocalSessionCommit(this.db, this.time);
-    this.releaseEmitter = releaseEmitter;
+    if (commitEvents === undefined) {
+      if (providers === undefined) {
+        throw new Error('Standalone SessionManager requires an explicit provider lookup port.');
+      }
+      this.commitEvents = createLocalSessionCommit(this.db, this.time, providers);
+    } else {
+      this.commitEvents = commitEvents;
+    }
+    this.releaseEmitter = releaseEmitter ?? (() => {});
     this.scopeKey = toSessionNamespace(workingDirectory, this.ids);
   }
 
@@ -317,12 +337,12 @@ export class SessionManager {
     return new SessionManager(workingDirectory, runtime, commitEvents, releaseEmitter, options.db);
   }
 
-  private populateCache(sessionId: string, entry: SessionEntry): void {
+  private populateCache(sessionId: string, entry: ProviderSession): void {
     this.cache.set(sessionId, normalizeEntry(entry));
     this.knownSessionIds.add(sessionId);
   }
 
-  private readEntry(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
+  private readEntry(sessionId: string, options?: { forceFresh?: boolean }): ProviderSession | null {
     if (!options?.forceFresh) {
       const cached = this.cache.get(sessionId);
       if (cached) return normalizeEntry(cached);
@@ -346,7 +366,7 @@ export class SessionManager {
     return normalized;
   }
 
-  readById(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null {
+  readById(sessionId: string, options?: { forceFresh?: boolean }): ProviderSession | null {
     return this.readEntry(sessionId, options);
   }
 
@@ -357,13 +377,16 @@ export class SessionManager {
     });
   }
 
-  private appendEntryEvent(nextEntry: SessionEntry, eventInput: CoralEventInput<SessionStoreEventBody>): SessionEntry {
+  private appendEntryEvent(
+    nextEntry: ProviderSession,
+    eventInput: CoralEventInput<SessionStoreEventBody>,
+  ): ProviderSession {
     this.appendSessionEvent(eventInput);
     this.populateCache(nextEntry.sessionId, nextEntry);
     return normalizeEntry(nextEntry);
   }
 
-  private bumpVersion(entry: SessionEntry): number {
+  private bumpVersion(entry: ProviderSession): number {
     return (entry.version ?? 0) + 1;
   }
 
@@ -378,39 +401,20 @@ export class SessionManager {
     const lease: PendingContinuationLease = {
       status: 'pending',
       staleJobId: parsed.jobId,
+      workflowId: parsed.workflowId,
+      workflowSlotId: parsed.workflowSlotId,
+      replacementGeneration: parsed.replacementGeneration,
       reason: parsed.reason,
       expiresAt: parsed.expiresAt,
       recordedAt: now,
     };
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...entry,
       continuationLease: lease,
       lastUsedAt: now,
       version: this.bumpVersion(entry),
     };
     this.appendEntryEvent(nextEntry, sessionContinuationLeaseRecordedEvent(nextEntry, lease));
-  }
-
-  async claimContinuationLease(input: ClaimContinuationLeaseInput): Promise<boolean> {
-    const parsed = claimContinuationLeaseInputSchema.parse(input);
-    const entry = this.readEntry(parsed.sessionId, { forceFresh: true });
-    if (!entry) return false;
-
-    const now = nowIsoString(this.time);
-    const lease = claimLease(entry.continuationLease, parsed, now);
-    if (lease === null) return false;
-    if (entry.continuationLease?.status === 'claimed' && entry.continuationLease.resumedJobId === parsed.resumedJobId) {
-      return true;
-    }
-
-    const nextEntry: SessionEntry = {
-      ...entry,
-      continuationLease: lease,
-      lastUsedAt: now,
-      version: this.bumpVersion(entry),
-    };
-    this.appendEntryEvent(nextEntry, sessionContinuationLeaseClaimedEvent(nextEntry, lease));
-    return true;
   }
 
   async clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean> {
@@ -422,7 +426,7 @@ export class SessionManager {
     const lease = clearLease(entry.continuationLease, parsed, now);
     if (lease === null) return false;
 
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...entry,
       continuationLease: lease,
       lastUsedAt: now,
@@ -432,12 +436,17 @@ export class SessionManager {
     return true;
   }
 
-  open(options: SessionAllocateOptions): SessionEntry {
+  open(options: SessionAllocateOptions): ProviderSession {
+    const entry = this.prepare(options);
+    return this.appendEntryEvent(entry, sessionOpenedEvent(entry, this.scopeKey));
+  }
+
+  /** Build a first-turn session without making it visible before admission succeeds. */
+  prepare(options: SessionAllocateOptions): ProviderSession {
     const now = nowIsoString(this.time);
-    const entry: SessionEntry = {
+    return {
       sessionId: this.ids.uuid(),
-      provider: options.provider,
-      sessionAuthority: options.sessionAuthority,
+      binding: options.binding,
       name: options.name,
       state: 'pending',
       retention: options.retention ?? 'retain',
@@ -457,13 +466,101 @@ export class SessionManager {
       lastUsedAt: now,
       version: 1,
     };
+  }
 
-    return this.appendEntryEvent(entry, sessionOpenedEvent(entry, this.scopeKey));
+  /** Append the open and first claim to the caller's coordinator transaction. */
+  appendPreparedClaim<Scope>(commit: CommitContext<Scope>, prepared: ProviderSession, jobId: string): ProviderSession {
+    if (prepared.activeJobId !== undefined || prepared.version !== 1) {
+      throw new Error(`Initial claim requires a fresh prepared session: ${prepared.sessionId}`);
+    }
+    const claimed: ProviderSession = {
+      ...prepared,
+      activeJobId: jobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(prepared),
+    };
+    commit.append(sessionOpenedEvent(prepared, this.scopeKey));
+    commit.append(sessionClaimedEvent(claimed, jobId));
+    return claimed;
+  }
+
+  /** Append a resumable-session claim to the caller's launch transaction. */
+  appendJobClaim<Scope>(
+    commit: CommitContext<Scope>,
+    input: { sessionId: string; jobId: string; expectedVersion: number },
+  ): ProviderSession {
+    const entry = this.readEntry(input.sessionId, { forceFresh: true });
+    if (
+      !entry ||
+      entry.activeJobId !== undefined ||
+      entry.continuationLease?.status === 'pending' ||
+      hasUnterminalRetentionDiscardRequest(entry) ||
+      entry.version !== input.expectedVersion
+    ) {
+      throw new SessionClaimError();
+    }
+    const nextEntry: ProviderSession = {
+      ...entry,
+      activeJobId: input.jobId,
+      lastUsedAt: nowIsoString(this.time),
+      version: this.bumpVersion(entry),
+    };
+    commit.append(sessionClaimedEvent(nextEntry, input.jobId));
+    return nextEntry;
+  }
+
+  /** Append a stale-workflow replacement claim to the caller's launch transaction. */
+  appendContinuationReplacementClaim<Scope>(
+    commit: CommitContext<Scope>,
+    input: {
+      sessionId: string;
+      staleJobId: string;
+      resumedJobId: string;
+      workflowId: string;
+      workflowSlotId: string;
+      replacementGeneration: number;
+      expectedVersion: number;
+    },
+  ): ProviderSession {
+    const entry = this.readEntry(input.sessionId, { forceFresh: true });
+    const pending = entry?.continuationLease;
+    if (
+      !entry ||
+      entry.activeJobId !== undefined ||
+      entry.version !== input.expectedVersion ||
+      pending?.status !== 'pending' ||
+      pending.staleJobId !== input.staleJobId ||
+      pending.workflowId !== input.workflowId ||
+      pending.workflowSlotId !== input.workflowSlotId ||
+      pending.replacementGeneration !== input.replacementGeneration ||
+      !isProtectiveContinuationLease(pending, this.time.now())
+    ) {
+      throw new Error(`Continuation replacement claim is not available for session ${input.sessionId}.`);
+    }
+    const now = nowIsoString(this.time);
+    const lease = claimLease(pending, { staleJobId: input.staleJobId, resumedJobId: input.resumedJobId }, now);
+    if (lease === null) {
+      throw new Error(`Continuation replacement lease could not be claimed for session ${input.sessionId}.`);
+    }
+    const nextEntry: ProviderSession = {
+      ...entry,
+      activeJobId: input.resumedJobId,
+      continuationLease: lease,
+      lastUsedAt: now,
+      version: this.bumpVersion(entry),
+    };
+    commit.append(sessionClaimedEvent(nextEntry, input.resumedJobId));
+    commit.append(sessionContinuationLeaseClaimedEvent(nextEntry, lease));
+    return nextEntry;
+  }
+
+  observeCommittedEntry(entry: ProviderSession): void {
+    this.populateCache(entry.sessionId, entry);
   }
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
-  allocate(options: SessionAllocateOptions): SessionEntry;
-  allocate(options: SessionAllocateOptions): SessionEntry {
+  allocate(options: SessionAllocateOptions): ProviderSession;
+  allocate(options: SessionAllocateOptions): ProviderSession {
     return this.open(options);
   }
 
@@ -472,7 +569,7 @@ export class SessionManager {
     if (!currentEntry) return;
 
     const checkpointBase = withoutConversationRef(currentEntry);
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...checkpointBase,
       providerContinuity: snapshot.providerContinuity,
       ...(snapshot.conversationRef === null ? {} : { conversationRef: snapshot.conversationRef }),
@@ -489,7 +586,7 @@ export class SessionManager {
     const currentEntry = this.readEntry(sessionId);
     if (!currentEntry) return;
 
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...currentEntry,
       conversationRef,
       state: 'ready',
@@ -508,7 +605,7 @@ export class SessionManager {
     if (!currentEntry) return;
     const conversationRef = readContinuityRef(update.conversationRef);
 
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...currentEntry,
       providerContinuity: update.providerContinuity,
       ...(conversationRef !== undefined ? { conversationRef, state: 'ready' as const } : {}),
@@ -524,7 +621,7 @@ export class SessionManager {
     const currentEntry = this.readEntry(sessionId);
     if (!currentEntry) return;
 
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...currentEntry,
       state: 'non_resumable',
       lastUsedAt: nowIsoString(this.time),
@@ -537,40 +634,26 @@ export class SessionManager {
   async claimForJobAtomic(sessionId: string, jobId: string, expectedVersion?: number): Promise<boolean> {
     const entry = this.readEntry(sessionId, { forceFresh: true });
     if (!entry || entry.activeJobId) return false;
+    if (entry.continuationLease?.status === 'pending') return false;
     if (hasUnterminalRetentionDiscardRequest(entry)) return false;
     if (expectedVersion !== undefined && entry.version !== expectedVersion) return false;
-    const now = nowIsoString(this.time);
-    const lease =
-      entry.continuationLease?.status === 'pending'
-        ? claimLease(
-            entry.continuationLease,
-            {
-              sessionId,
-              staleJobId: entry.continuationLease.staleJobId,
-              resumedJobId: jobId,
-            },
-            now,
-          )
-        : null;
-    const nextEntry: SessionEntry = {
-      ...entry,
-      activeJobId: jobId,
-      ...(lease === null ? {} : { continuationLease: lease }),
-      lastUsedAt: now,
-      version: this.bumpVersion(entry),
-    };
-    const claimedEvent = sessionClaimedEvent(nextEntry, jobId);
-    if (lease === null) {
-      this.appendEntryEvent(nextEntry, claimedEvent);
+    try {
+      let claimed: ProviderSession | undefined;
+      this.commitEvents((commit) => {
+        claimed = this.appendJobClaim(commit, {
+          sessionId,
+          jobId,
+          expectedVersion: expectedVersion ?? entry.version,
+        });
+        return undefined;
+      });
+      if (claimed === undefined) return false;
+      this.observeCommittedEntry(claimed);
       return true;
+    } catch (error: unknown) {
+      if (error instanceof SessionClaimError) return false;
+      throw error;
     }
-    this.commitEvents((c) => {
-      c.append(claimedEvent);
-      c.append(sessionContinuationLeaseClaimedEvent(nextEntry, lease));
-      return undefined;
-    });
-    this.populateCache(sessionId, nextEntry);
-    return true;
   }
 
   async finalizeJobContinuityAtomic(
@@ -587,13 +670,13 @@ export class SessionManager {
     if (currentEntry.activeJobId !== expectedActiveJobId) return false;
     if (currentEntry.version !== expectedVersion) return false;
 
-    const checkpointBaseEntry: SessionEntry = {
+    const checkpointBaseEntry: ProviderSession = {
       ...currentEntry,
       lastUsedAt: nowIsoString(this.time),
       version: this.bumpVersion(currentEntry),
       ...(mutation.providerContinuity ? { providerContinuity: mutation.providerContinuity } : {}),
     };
-    const checkpointEntry: SessionEntry = (() => {
+    const checkpointEntry: ProviderSession = (() => {
       switch (mutation.kind) {
         case 'set_resumable':
           return {
@@ -622,7 +705,7 @@ export class SessionManager {
             now,
           )
         : null;
-    const releaseEntry: SessionEntry = {
+    const releaseEntry: ProviderSession = {
       ...releasedBase,
       ...(clearedLease === null ? {} : { continuationLease: clearedLease }),
       version: this.bumpVersion(checkpointEntry),
@@ -658,7 +741,7 @@ export class SessionManager {
     if (currentEntry.version !== expectedVersion) return { ok: false };
 
     const checkpointBase = withoutConversationRef(currentEntry);
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...checkpointBase,
       ...(snapshot.conversationRef === null ? {} : { conversationRef: snapshot.conversationRef }),
       providerContinuity: snapshot.providerContinuity,
@@ -675,34 +758,31 @@ export class SessionManager {
     sessionId: string,
     options: SessionArtifactHandleRecordOptions,
   ): Promise<SessionArtifactHandleRecordResult> {
-    const { expectedActiveJobId, expectedVersion, provider, handle, sourceJobId } = options;
+    const { expectedActiveJobId, expectedVersion, handle, sourceJobId } = options;
     const currentEntry = this.readEntry(sessionId, { forceFresh: true });
     if (!currentEntry) return { ok: false };
     if (currentEntry.activeJobId !== expectedActiveJobId) return { ok: false };
     if (currentEntry.version !== expectedVersion) return { ok: false };
 
+    const provider = providerSessionProvider(currentEntry);
     const identity = options.identity;
     const identityKey = providerArtifactIdentityKey(provider, identity);
     if (
       currentEntry.artifactHandles.some(
-        (artifact) =>
-          artifact.provider === provider &&
-          artifact.identityKey === identityKey &&
-          artifact.sourceJobId === sourceJobId,
+        (artifact) => artifact.identityKey === identityKey && artifact.sourceJobId === sourceJobId,
       )
     ) {
       return { ok: true, nextVersion: currentEntry.version };
     }
 
     const artifact: ProviderArtifactHandle = {
-      provider,
       handle,
       identity,
       identityKey,
-      ...(sourceJobId !== undefined ? { sourceJobId } : {}),
+      sourceJobId,
       recordedAt: nowIsoString(this.time),
     };
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...currentEntry,
       artifactHandles: [...currentEntry.artifactHandles, artifact],
       lastUsedAt: nowIsoString(this.time),
@@ -735,7 +815,7 @@ export class SessionManager {
             now,
           )
         : null;
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...withoutActiveJobId(entry),
       ...(clearedLease === null ? {} : { continuationLease: clearedLease }),
       lastUsedAt: now,
@@ -775,37 +855,15 @@ export class SessionManager {
   claimForJobSync(sessionId: string, jobId: string): boolean {
     const entry = this.readEntry(sessionId);
     if (!entry || entry.activeJobId) return false;
+    if (entry.continuationLease?.status === 'pending') return false;
     const now = nowIsoString(this.time);
-    const lease =
-      entry.continuationLease?.status === 'pending'
-        ? claimLease(
-            entry.continuationLease,
-            {
-              sessionId,
-              staleJobId: entry.continuationLease.staleJobId,
-              resumedJobId: jobId,
-            },
-            now,
-          )
-        : null;
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...entry,
       activeJobId: jobId,
-      ...(lease === null ? {} : { continuationLease: lease }),
       lastUsedAt: now,
       version: this.bumpVersion(entry),
     };
-    const claimedEvent = sessionClaimedEvent(nextEntry, jobId);
-    if (lease === null) {
-      this.appendEntryEvent(nextEntry, claimedEvent);
-      return true;
-    }
-    this.commitEvents((c) => {
-      c.append(claimedEvent);
-      c.append(sessionContinuationLeaseClaimedEvent(nextEntry, lease));
-      return undefined;
-    });
-    this.populateCache(sessionId, nextEntry);
+    this.appendEntryEvent(nextEntry, sessionClaimedEvent(nextEntry, jobId));
     return true;
   }
 
@@ -818,7 +876,7 @@ export class SessionManager {
       entry.continuationLease?.status === 'claimed' && entry.continuationLease.resumedJobId === jobId
         ? clearLease(entry.continuationLease, { sessionId, jobId, outcome: 'resumed_released' }, now)
         : null;
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...withoutActiveJobId(entry),
       ...(clearedLease === null ? {} : { continuationLease: clearedLease }),
       lastUsedAt: now,
@@ -839,14 +897,14 @@ export class SessionManager {
   }
 
   /** Provider-scoped lookup. Returns null if sessionId not found or provider mismatch. */
-  get(provider: string, sessionId: string): SessionEntry | null {
+  get(provider: string, sessionId: string): ProviderSession | null {
     const entry = this.readEntry(sessionId, { forceFresh: true });
-    if (!entry || entry.provider !== provider) return null;
+    if (!entry || providerSessionProvider(entry) !== provider) return null;
     return entry;
   }
 
   /** List all sessions for a provider. */
-  list(provider: string): SessionEntry[] {
+  list(provider: string): ProviderSession[] {
     const entries = listProjectionSessionEntries(this.db, provider, this.scopeKey);
     this.knownSessionIds.clear();
     for (const entry of entries) {

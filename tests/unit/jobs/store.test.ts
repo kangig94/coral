@@ -104,6 +104,7 @@ function terminalInput(jobId: string, sessionId: string): CoralEventInput {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
     },
   };
@@ -175,6 +176,7 @@ describe('JobStore', () => {
     const terminalResult: JobTerminal = {
       content: 'done',
       outcome: { kind: 'completed' },
+      durationMs: 0,
     };
 
     expect(tails).toEqual([2, 3, 4, 5, 6]);
@@ -219,7 +221,11 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    commitJobTerminal(store, 'job-done', 'session-done', { content: 'done', outcome: { kind: 'completed' } });
+    commitJobTerminal(store, 'job-done', 'session-done', {
+      content: 'done',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
 
     initTestJob(store, {
       jobId: 'job-draft',
@@ -248,10 +254,19 @@ describe('JobStore', () => {
     const sessionId = 'session-duplicate-terminal';
     initProviderJob(store, jobId, sessionId);
 
-    commitJobTerminal(store, jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } });
+    commitJobTerminal(store, jobId, sessionId, {
+      content: 'done',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
 
     expectTerminalOrderViolation(
-      () => commitJobTerminal(store, jobId, sessionId, { content: 'again', outcome: { kind: 'completed' } }),
+      () =>
+        commitJobTerminal(store, jobId, sessionId, {
+          content: 'again',
+          outcome: { kind: 'completed' },
+          durationMs: 0,
+        }),
       jobId,
       'job.terminal.recorded',
     );
@@ -267,7 +282,7 @@ describe('JobStore', () => {
       store,
       jobId,
       sessionId,
-      { content: 'done', outcome: { kind: 'completed' } },
+      { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
       { diagnostics: { byteCounts: { stdout: 123, stderr: 45 } } },
     );
 
@@ -280,7 +295,11 @@ describe('JobStore', () => {
     const sessionId = 'session-late-progress';
     initProviderJob(store, jobId, sessionId);
 
-    commitJobTerminal(store, jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } });
+    commitJobTerminal(store, jobId, sessionId, {
+      content: 'done',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
 
     expectTerminalOrderViolation(
       () => store.appendProgress(jobId, sessionId, 'too late'),
@@ -345,6 +364,7 @@ describe('JobStore', () => {
     expect(
       commitJobTerminal(store, jobId, sessionId, {
         content: 'failed',
+        durationMs: 0,
         outcome: {
           kind: 'failed',
           causeRef: {
@@ -377,7 +397,11 @@ describe('JobStore', () => {
     expect(aborted?.type).toBe('job.aborted');
     expect(store.readStatus(jobId)?.phase).toBe('aborted');
     expect(
-      commitJobTerminal(store, jobId, sessionId, { content: '', outcome: { kind: 'aborted', reason: 'user_abort' } }),
+      commitJobTerminal(store, jobId, sessionId, {
+        content: '',
+        outcome: { kind: 'aborted', reason: 'user_abort' },
+        durationMs: 0,
+      }),
     ).toBeGreaterThan(aborted.seq);
   });
 });

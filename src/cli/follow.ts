@@ -160,7 +160,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
     abortPromise =
       abortPromise ??
       Promise.resolve()
-        .then(() => options.abortJob(options.launchResult.job))
+        .then(() => options.abortJob(options.launchResult.jobId))
         .then(
           () => undefined,
           () => undefined,
@@ -205,7 +205,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         const subscription = await backend.subscribe<WaitStreamEvent>(
           'jobs.wait',
           {
-            jobIds: [options.launchResult.job],
+            jobIds: [options.launchResult.jobId],
             timeoutSeconds: FOLLOW_TIMEOUT_SECONDS,
             projectRoot: options.projectRoot,
             ...(inputCursor ? { cursor: inputCursor } : {}),

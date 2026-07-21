@@ -14,4 +14,6 @@ import type { ProviderLookupPort } from '#src/providers/catalog.js';
  */
 export const permissiveProviderLookupPort: ProviderLookupPort = {
   hasProvider: () => true,
+  validatePersistedBinding: () => ({ ok: true }),
+  validatePersistedScope: () => ({ ok: true }),
 };

@@ -12,7 +12,12 @@ import {
   type ResolvableCoralEventInput,
 } from './envelope.js';
 import type { EventBodyCodec } from './event-body-codec.js';
-import { applyReducer, type ComposedReducers, type DomainAppendValidationContext } from './reducers.js';
+import {
+  applyReducer,
+  assertRegisteredEventStream,
+  type ComposedReducers,
+  type DomainAppendValidationContext,
+} from './reducers.js';
 
 const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
 
@@ -282,6 +287,7 @@ function prepareInput(
 } {
   const parsedInput = journalEventInputSchema.parse(input) as CoralEventInput;
   assertFiniteEventBodyNumbers(parsedInput.body);
+  assertRegisteredEventStream(parsedInput, ctx.reducers);
   const schema = ctx.reducers.schemas.get(parsedInput.type);
   if (schema === undefined) {
     throw new Error(`No registered event body codec for type '${parsedInput.type}'.`);

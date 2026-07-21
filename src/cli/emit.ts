@@ -66,10 +66,27 @@ export function isAcceptedLaunchResponse(value: unknown): value is AcceptedLaunc
     return false;
   }
 
+  if (
+    (value.launchState !== 'running' && value.launchState !== 'queued') ||
+    typeof value.jobId !== 'string' ||
+    value.jobId.length === 0
+  ) {
+    return false;
+  }
+
+  if (value.kind === 'provider-session') {
+    return (
+      typeof value.sessionId === 'string' &&
+      value.sessionId.length > 0 &&
+      Object.keys(value).every((key) => ['kind', 'launchState', 'jobId', 'sessionId'].includes(key))
+    );
+  }
+
   return (
-    (value.launchState === 'running' || value.launchState === 'queued') &&
-    typeof value.job === 'string' &&
-    typeof value.session === 'string'
+    value.kind === 'workflow' &&
+    typeof value.workflowId === 'string' &&
+    value.workflowId.length > 0 &&
+    Object.keys(value).every((key) => ['kind', 'launchState', 'jobId', 'workflowId'].includes(key))
   );
 }
 

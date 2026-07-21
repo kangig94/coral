@@ -5,11 +5,15 @@ import { describe, expect, it } from 'vitest';
 import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { commit } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { workflowRegistry } from '#src/workflow/events.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
@@ -22,14 +26,15 @@ function createDb(): Database {
 function appendJobEvents(db: Database, inputs: readonly CoralEventInput[]) {
   return commitInputs(db, inputs, {
     now: () => NOW,
-    reducers: composeReducers(jobsRegistry),
+    reducers: composeReducers(jobsRegistry, workflowRegistry),
     bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   });
 }
 
-function launchBody(jobId: string): JobLaunchRequestBody {
+function launchBody(jobId: string): Extract<JobLaunchRequestBody, { jobKind: 'provider' }> {
   return {
+    owner: { kind: 'provider-session', id: `session-${jobId}` },
     sessionId: `session-${jobId}`,
     provider: 'codex',
     providerAction: 'exec',
@@ -74,6 +79,58 @@ function terminalInput(jobId: string, content = 'done'): CoralEventInput {
   };
 }
 
+function seedWorkflow(
+  db: Database,
+  workflowId: string,
+  lifecycle: 'active' | 'draining' | 'faulted' | 'completed' | 'failed' | 'aborted' = 'active',
+): void {
+  const plan = {
+    slots: [
+      {
+        slotId: `${workflowId}:0:0`,
+        dependencies: [],
+        provider: 'codex',
+        instruction: 'test workflow child',
+      },
+    ],
+  };
+  db.prepare(
+    `INSERT INTO projection_workflows (workflow_id, plan, provider_scope, lifecycle, last_seq)
+     VALUES (?, ?, ?, ?, 1)`,
+  ).run(workflowId, JSON.stringify(plan), JSON.stringify(TEST_CODEX_SCOPE), lifecycle);
+}
+
+function workflowChildInput(options: {
+  jobId: string;
+  workflowId: string;
+  slotId: string;
+  sessionId: string;
+  generation: number;
+  replaces?: string;
+}): CoralEventInput<JobLaunchRequestBody> {
+  return {
+    type: 'job.launch.requested',
+    stream: { kind: 'job', id: options.jobId },
+    refs: {
+      jobId: options.jobId,
+      sessionId: options.sessionId,
+      parentJobId: options.workflowId,
+      workflowId: options.workflowId,
+      workflowSlotId: options.slotId,
+    },
+    bodyVersion: 1,
+    body: {
+      ...launchBody(options.jobId),
+      owner: { kind: 'workflow', id: options.workflowId },
+      sessionId: options.sessionId,
+      projectRoot: '/workspace',
+      request: { ...launchBody(options.jobId).request, cwd: '/workspace' },
+      workflowSlotGeneration: options.generation,
+      ...(options.replaces === undefined ? {} : { replacesWorkflowJobId: options.replaces }),
+    },
+  };
+}
+
 function progressInput(jobId: string): CoralEventInput {
   return {
     type: 'job.progress.emitted',
@@ -103,6 +160,300 @@ function expectTerminalOrderViolation(run: () => unknown, jobId: string, type: s
 }
 
 describe('jobs append invariants', () => {
+  it('requires a provider job to hold the current ProviderSession claim', () => {
+    const db = createDb();
+    try {
+      const jobId = 'claimed-job';
+      const input = launchInput(jobId);
+      const launch = input.body as Extract<JobLaunchRequestBody, { jobKind: 'provider' }>;
+      seedTestSessionProjection(db, {
+        sessionId: launch.sessionId,
+        provider: launch.provider,
+        projectRoot: launch.projectRoot,
+        backendNamespace: launch.backendNamespace,
+        activeJobId: 'different-job',
+      });
+
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append(input);
+            return undefined;
+          },
+          {
+            now: () => NOW,
+            reducers: composeReducers(jobsRegistry, workflowRegistry),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
+          },
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'job_binding_owner_mismatch' }));
+      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('requires provider job project and backend scope to equal its ProviderSession', () => {
+    const db = createDb();
+    try {
+      const jobId = 'scope-mismatch-job';
+      const input = launchInput(jobId);
+      const launch = input.body as Extract<JobLaunchRequestBody, { jobKind: 'provider' }>;
+      seedTestSessionProjection(db, {
+        sessionId: launch.sessionId,
+        provider: launch.provider,
+        projectRoot: '/different-project',
+        backendNamespace: launch.backendNamespace,
+        activeJobId: jobId,
+      });
+
+      expect(() => appendJobEvents(db, [input])).toThrowError(
+        expect.objectContaining({ code: 'job_binding_owner_mismatch' }),
+      );
+      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['completed', 'failed', 'aborted'] as const)(
+    'rejects workflow child launch when its owner lifecycle is %s',
+    (lifecycle) => {
+      const db = createDb();
+      try {
+        seedWorkflow(db, 'workflow-terminal', lifecycle);
+        seedTestSessionProjection(db, {
+          sessionId: 'session-child',
+          provider: 'codex',
+          projectRoot: '/workspace',
+        });
+
+        expect(() =>
+          appendJobEvents(db, [
+            workflowChildInput({
+              jobId: 'child-after-terminal',
+              workflowId: 'workflow-terminal',
+              slotId: 'workflow-terminal:0:0',
+              sessionId: 'session-child',
+              generation: 0,
+            }),
+          ]),
+        ).toThrowError(
+          expect.objectContaining({
+            code: 'workflow_owner_terminal',
+            context: expect.objectContaining({
+              workflowId: 'workflow-terminal',
+              lifecycle,
+              requestedJobId: 'child-after-terminal',
+            }),
+          }),
+        );
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('rejects a workflow child launch fenced by a terminal lifecycle in the same commit', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-same-batch-terminal', 'active');
+      seedTestSessionProjection(db, {
+        sessionId: 'same-batch-terminal-session',
+        provider: 'codex',
+        projectRoot: '/workspace',
+        activeJobId: 'same-batch-terminal-child',
+      });
+      const launch = workflowChildInput({
+        jobId: 'same-batch-terminal-child',
+        workflowId: 'workflow-same-batch-terminal',
+        slotId: 'workflow-same-batch-terminal:0:0',
+        sessionId: 'same-batch-terminal-session',
+        generation: 0,
+      });
+
+      expect(() =>
+        commitInputs(
+          db,
+          [
+            launch,
+            {
+              type: 'workflow.completed',
+              stream: { kind: 'workflow', id: 'workflow-same-batch-terminal' },
+              refs: { workflowId: 'workflow-same-batch-terminal' },
+              bodyVersion: 1,
+              body: { outcome: 'completed', stepDetails: [] },
+            },
+          ],
+          {
+            now: () => NOW,
+            reducers: composeReducers(jobsRegistry, workflowRegistry),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
+          },
+        ),
+      ).toThrowError(expect.objectContaining({ code: 'workflow_owner_terminal' }));
+      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['active', 'draining', 'faulted'] as const)(
+    'allows workflow child launch while its owner lifecycle is %s',
+    (lifecycle) => {
+      const db = createDb();
+      try {
+        seedWorkflow(db, 'workflow-recoverable', lifecycle);
+        seedTestSessionProjection(db, {
+          sessionId: 'session-child',
+          provider: 'codex',
+          projectRoot: '/workspace',
+        });
+
+        expect(() =>
+          appendJobEvents(db, [
+            workflowChildInput({
+              jobId: 'child-while-recoverable',
+              workflowId: 'workflow-recoverable',
+              slotId: 'workflow-recoverable:0:0',
+              sessionId: 'session-child',
+              generation: 0,
+            }),
+          ]),
+        ).not.toThrow();
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('rejects a second current child for the same workflow slot', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-1');
+      seedTestSessionProjection(db, {
+        sessionId: 'session-child-0',
+        provider: 'codex',
+        projectRoot: '/workspace',
+      });
+      seedTestSessionProjection(db, {
+        sessionId: 'session-child-1',
+        provider: 'codex',
+        projectRoot: '/workspace',
+      });
+      appendJobEvents(db, [
+        workflowChildInput({
+          jobId: 'child-0',
+          workflowId: 'workflow-1',
+          slotId: 'workflow-1:0:0',
+          sessionId: 'session-child-0',
+          generation: 0,
+        }),
+      ]);
+
+      expect(() =>
+        appendJobEvents(db, [
+          workflowChildInput({
+            jobId: 'child-1',
+            workflowId: 'workflow-1',
+            slotId: 'workflow-1:0:0',
+            sessionId: 'session-child-1',
+            generation: 1,
+            replaces: 'child-0',
+          }),
+        ]),
+      ).toThrowError(expect.objectContaining({ code: 'workflow_slot_chain_invalid' }));
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a replacement generation that skips the terminal slot head', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-1');
+      seedTestSessionProjection(db, {
+        sessionId: 'session-child-0',
+        provider: 'codex',
+        projectRoot: '/workspace',
+      });
+      seedTestSessionProjection(db, {
+        sessionId: 'session-child-2',
+        provider: 'codex',
+        projectRoot: '/workspace',
+      });
+      appendJobEvents(db, [
+        workflowChildInput({
+          jobId: 'child-0',
+          workflowId: 'workflow-1',
+          slotId: 'workflow-1:0:0',
+          sessionId: 'session-child-0',
+          generation: 0,
+        }),
+        terminalInput('child-0'),
+      ]);
+
+      expect(() =>
+        appendJobEvents(db, [
+          workflowChildInput({
+            jobId: 'child-2',
+            workflowId: 'workflow-1',
+            slotId: 'workflow-1:0:0',
+            sessionId: 'session-child-2',
+            generation: 2,
+            replaces: 'child-0',
+          }),
+        ]),
+      ).toThrowError(expect.objectContaining({ code: 'workflow_slot_chain_invalid' }));
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a replacement launch without the exact claimed continuation intent in the same commit', () => {
+    const db = createDb();
+    try {
+      seedWorkflow(db, 'workflow-1');
+      seedTestSessionProjection(db, {
+        sessionId: 'session-child',
+        provider: 'codex',
+        projectRoot: '/workspace',
+      });
+      appendJobEvents(db, [
+        workflowChildInput({
+          jobId: 'child-0',
+          workflowId: 'workflow-1',
+          slotId: 'workflow-1:0:0',
+          sessionId: 'session-child',
+          generation: 0,
+        }),
+        terminalInput('child-0'),
+      ]);
+
+      expect(() =>
+        appendJobEvents(db, [
+          workflowChildInput({
+            jobId: 'child-1',
+            workflowId: 'workflow-1',
+            slotId: 'workflow-1:0:0',
+            sessionId: 'session-child',
+            generation: 1,
+            replaces: 'child-0',
+          }),
+        ]),
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'workflow_slot_chain_invalid',
+          message: expect.stringContaining('claimed continuation intent'),
+        }),
+      );
+    } finally {
+      db.close();
+    }
+  });
   it('rejects duplicate terminal events through raw commitInputs', () => {
     const db = createDb();
     try {

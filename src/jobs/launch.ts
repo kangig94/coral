@@ -1,32 +1,54 @@
 import { z } from 'zod';
 
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
-import { continuityRefSchema } from '../sessions/continuity.js';
 import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
-import type { LaunchPool } from './contracts/admission.js';
-import { providerScopeSchema } from '../infra/provider-scope.js';
+import { LAUNCH_POOLS, type LaunchPool } from './contracts/admission.js';
+import { discussionRunDescriptorSchema, type DiscussionRunDescriptor } from './discussion-run.js';
+import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
 export type SourceImportReadiness = z.infer<typeof sourceImportReadinessSchema>;
 export type KbJobOperation = 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
 
-export type LaunchDecision =
-  | { status: 'running'; job: string; session: string }
-  | { status: 'queued'; job: string; session: string; message?: undefined }
-  | { status: 'rejected'; phase: 'preflight'; code: string; message: string };
+export type AcceptedProviderSessionLaunchDecision =
+  | { kind: 'provider-session'; status: 'running'; jobId: string; sessionId: string }
+  | { kind: 'provider-session'; status: 'queued'; jobId: string; sessionId: string; message?: undefined };
+
+export type AcceptedWorkflowLaunchDecision =
+  | { kind: 'workflow'; status: 'running'; jobId: string; workflowId: string }
+  | { kind: 'workflow'; status: 'queued'; jobId: string; workflowId: string; message?: undefined };
+
+export type RejectedLaunchDecision = {
+  status: 'rejected';
+  phase: 'preflight';
+  code: string;
+  message: string;
+};
+
+export type ProviderSessionLaunchDecision = AcceptedProviderSessionLaunchDecision | RejectedLaunchDecision;
+export type WorkflowLaunchDecision = AcceptedWorkflowLaunchDecision | RejectedLaunchDecision;
+export type LaunchDecision = ProviderSessionLaunchDecision | AcceptedWorkflowLaunchDecision;
 
 /**
  * Coordinator response shape when a launch request is accepted (running or queued).
  * Returned over IPC and HTTP for sessions.create / workflow.run.
  */
-export type AcceptedLaunchResponse = {
-  session: string;
-  job: string;
-  launchState: 'running' | 'queued';
-};
+export type AcceptedLaunchResponse =
+  | {
+      kind: 'provider-session';
+      sessionId: string;
+      jobId: string;
+      launchState: 'running' | 'queued';
+    }
+  | {
+      kind: 'workflow';
+      workflowId: string;
+      jobId: string;
+      launchState: 'running' | 'queued';
+    };
 
-export function rejectLaunch(code: string, message: string): LaunchDecision {
+export function rejectLaunch(code: string, message: string): RejectedLaunchDecision {
   return {
     status: 'rejected',
     phase: 'preflight',
@@ -42,6 +64,8 @@ export interface JobLaunchRequest {
   cwd?: string;
   jobId?: string;
   workflowSlotId?: string;
+  workflowSlotGeneration?: number;
+  replacesWorkflowJobId?: string;
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
@@ -56,6 +80,8 @@ export interface JobLaunchRequest {
   agent?: string;
   pool?: LaunchPool;
   retention?: RetentionPolicy;
+  owner?: ExecutionOwner;
+  discussionRun?: DiscussionRunDescriptor;
 }
 
 export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
@@ -72,43 +98,65 @@ const providerLaunchRequestSchema = z
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
     bypassPermissions: z.boolean(),
     systemPrompt: z.string().optional(),
-    conversationRef: continuityRefSchema.optional(),
     instruction: providerInstructionSchema.optional(),
     retention: retentionPolicySchema.optional(),
     coralEnv: z.record(z.string()),
   })
   .strict();
 
-const providerOrWorkflowLaunchBaseSchema = z
+const workflowLaunchRequestSchema = z
   .object({
+    prompt: z.string(),
+    cwd: z.string(),
+    bypassPermissions: z.boolean(),
+    coralEnv: z.record(z.string()),
+  })
+  .strict();
+
+const providerJobLaunchBaseSchema = z
+  .object({
+    owner: executionOwnerSchema,
+    discussionRun: discussionRunDescriptorSchema.optional(),
     sessionId: z.string().min(1),
     provider: z.string().min(1),
     providerAction: z.enum(['exec', 'resume']),
     projectRoot: z.string(),
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
-    pool: z.string(),
+    pool: z.enum(LAUNCH_POOLS),
     enqueueSequence: z.number().int().nonnegative(),
     createdAt: z.string(),
+    workflowSlotGeneration: z.number().int().nonnegative().optional(),
+    replacesWorkflowJobId: z.string().min(1).optional(),
   })
   .strict();
 
-const providerJobLaunchRequestBodySchema = providerOrWorkflowLaunchBaseSchema.extend({
+const providerJobLaunchRequestBodySchema = providerJobLaunchBaseSchema.extend({
   jobKind: z.literal('provider'),
   request: providerLaunchRequestSchema,
 });
 
-const workflowJobLaunchRequestBodySchema = providerOrWorkflowLaunchBaseSchema.extend({
-  jobKind: z.literal('workflow'),
-  request: providerLaunchRequestSchema.extend({ providerScope: providerScopeSchema }),
-});
+const workflowJobLaunchRequestBodySchema = z
+  .object({
+    owner: executionOwnerSchema,
+    projectRoot: z.string(),
+    backendNamespace: z.string(),
+    bundleHash: z.string().optional(),
+    jobKind: z.literal('workflow'),
+    pool: z.enum(LAUNCH_POOLS),
+    enqueueSequence: z.number().int().nonnegative(),
+    request: workflowLaunchRequestSchema,
+    createdAt: z.string(),
+  })
+  .strict();
 
 const kbJobLaunchBaseSchema = z.object({
+  owner: executionOwnerSchema,
   projectRoot: z.string(),
   backendNamespace: z.string(),
   bundleHash: z.string().optional(),
   jobKind: z.literal('kb'),
-  pool: z.string(),
+  pool: z.enum(LAUNCH_POOLS),
   enqueueSequence: z.number().int().nonnegative(),
   createdAt: z.string(),
 });
@@ -120,6 +168,12 @@ const kbSourceImportJobRequestSchema = z
     readiness: sourceImportReadinessSchema,
   })
   .strict();
+
+export const kbJobLaunchPayloadSchema = z.discriminatedUnion('operation', [
+  z.object({ operation: z.literal('kb.source_import'), request: kbSourceImportJobRequestSchema }).strict(),
+  z.object({ operation: z.literal('kb.reindex'), request: z.object({}).strict() }).strict(),
+  z.object({ operation: z.literal('kb.community_summary'), request: z.object({}).strict() }).strict(),
+]);
 
 const kbSourceImportJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
   .extend({

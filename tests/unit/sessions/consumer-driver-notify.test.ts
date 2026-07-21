@@ -20,6 +20,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
@@ -84,8 +85,7 @@ describe('sessions consumer-driver notify', () => {
 
     try {
       const entry = manager.allocate({
-        provider: 'codex',
-        sessionAuthority: { kind: 'orchestration' },
+        binding: TEST_CODEX_BINDING,
         name: 'alpha',
         model: 'gpt-5',
         cwd: workDir,
@@ -96,17 +96,16 @@ describe('sessions consumer-driver notify', () => {
       await driver.drainAll();
       const row = db
         .prepare(
-          `SELECT controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT controller, resumable, conversation_ref, scope_key, last_seq
              FROM projection_sessions
             WHERE session_id = ?`,
         )
         .get(entry.sessionId) as
-        | { controller: string; provider: string; resumable: number; conversation_ref: string | null; last_seq: number }
+        | { controller: string; resumable: number; conversation_ref: string | null; last_seq: number }
         | undefined;
 
       expect(row).toEqual({
         controller: 'default',
-        provider: 'codex',
         resumable: 0,
         conversation_ref: null,
         scope_key: resolveScopeKey(workDir),

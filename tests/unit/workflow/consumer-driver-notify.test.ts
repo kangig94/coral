@@ -15,6 +15,7 @@ import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/event
 import { readWorkflowProjection } from '#src/workflow/read-queries.js';
 import { createWorkflowJournal } from '#src/workflow/projections.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
@@ -51,17 +52,21 @@ describe('workflow consumer-driver notify', () => {
       const journal = createWorkflowJournal({ commit: coordinatorCommit });
       journal.commit((c) => {
         c.append(
-          workflowPlanDeclaredEvent('workflow-1', {
-            slots: [
-              {
-                slotId: 'workflow-1:0:0',
-                dependencies: [],
-                provider: 'codex',
-                instruction: 'architect',
-                agent: 'architect',
-              },
-            ],
-          }),
+          workflowPlanDeclaredEvent(
+            'workflow-1',
+            {
+              slots: [
+                {
+                  slotId: 'workflow-1:0:0',
+                  dependencies: [],
+                  provider: 'codex',
+                  instruction: 'architect',
+                  agent: 'architect',
+                },
+              ],
+            },
+            TEST_PROVIDER_SCOPE,
+          ),
         );
         return undefined;
       });

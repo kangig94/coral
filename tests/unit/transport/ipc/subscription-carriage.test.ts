@@ -32,6 +32,7 @@ function makeWaitEvents(): WaitStreamEvent[] {
   return [
     {
       type: 'queued',
+      jobKind: 'provider',
       jobId: 'job-1',
       sessionId: 'session-1',
       queuePosition: 1,

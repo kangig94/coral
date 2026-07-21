@@ -36,11 +36,34 @@ export interface ProviderBindingCatalog extends ProviderCatalog {
 /** Narrow provider lookup used by synchronous append-time validators. */
 export interface ProviderLookupPort {
   hasProvider(name: string): boolean;
+  validatePersistedBinding(
+    rawEnvelope: unknown,
+  ): { readonly ok: true } | { readonly ok: false; readonly message: string };
+  validatePersistedScope(
+    rawScope: unknown,
+    requiredProviders: readonly string[],
+  ): { readonly ok: true } | { readonly ok: false; readonly message: string };
 }
 
-export function providerLookupPortFromCatalog(catalog: ProviderCatalog): ProviderLookupPort {
+export function providerLookupPortFromCatalog(catalog: ProviderBindingCatalog): ProviderLookupPort {
   return {
     hasProvider: (name) => catalog.get(name) !== undefined,
+    validatePersistedBinding(rawEnvelope) {
+      const result = catalog.rehydrateBinding(rawEnvelope);
+      return result.ok ? { ok: true } : { ok: false, message: catalog.renderBindingFailure(result.failure) };
+    },
+    validatePersistedScope(rawScope, requiredProviders) {
+      const result = catalog.decodeScope(rawScope);
+      if (!result.ok) return { ok: false, message: catalog.renderBindingFailure(result.failure) };
+      const required = new Set(requiredProviders);
+      const present = new Set(result.value.profiles.map((profile) => profile.provider));
+      const missing = [...required].find((provider) => !present.has(provider));
+      if (missing !== undefined) return { ok: false, message: `Provider scope is missing profile '${missing}'.` };
+      const unexpected = [...present].find((provider) => !required.has(provider));
+      return unexpected === undefined
+        ? { ok: true }
+        : { ok: false, message: `Provider scope contains undeclared profile '${unexpected}'.` };
+    },
   };
 }
 
@@ -54,4 +77,6 @@ export function providerLookupPortFromCatalog(catalog: ProviderCatalog): Provide
  */
 export const noProviderLookupPort: ProviderLookupPort = {
   hasProvider: () => false,
+  validatePersistedBinding: () => ({ ok: false, message: 'No provider binding codecs are registered.' }),
+  validatePersistedScope: () => ({ ok: false, message: 'No provider profile codecs are registered.' }),
 };

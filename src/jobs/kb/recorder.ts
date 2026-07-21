@@ -2,9 +2,9 @@ import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import type { JobAbortRegistryPort } from '../contracts/abort-registry.js';
 import type { JobProgressStore } from '../contracts/job-store.js';
-import type { KbSourceImportJobRequest, KbJobOperation } from '../launch.js';
+import { kbJobLaunchPayloadSchema, type KbSourceImportJobRequest, type KbJobOperation } from '../launch.js';
 import type { AbortReason, TerminalOutcome } from '../outcome.js';
-import type { InternalJobRuntime } from '../records.js';
+import type { InternalJobRuntime, JobLaunch } from '../records.js';
 import { buildJobEventRefs } from '../refs.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import type { Runtime } from '../../runtime/ports.js';
@@ -83,8 +83,9 @@ export class KbJobRecorder {
     const createdAt = nowIsoString(this.deps.runtime.time);
     const startedAtMs = this.deps.runtime.time.now();
 
-    this.deps.progressStore.appendLaunchRequested(jobId, {
+    const common = {
       jobId,
+      owner: { kind: 'system-task', id: `${params.operation}:${jobId}` },
       sessionId: null,
       provider: null,
       projectRoot: params.projectRoot,
@@ -93,10 +94,11 @@ export class KbJobRecorder {
       jobKind: 'kb',
       pool: 'default',
       enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
-      operation: params.operation,
-      request: params.request,
       createdAt,
-    });
+    } as const;
+    const payload = kbJobLaunchPayloadSchema.parse({ operation: params.operation, request: params.request });
+    const launch: JobLaunch = { ...common, ...payload };
+    this.deps.progressStore.appendLaunchRequested(jobId, launch);
     this.deps.progressStore.appendRuntimeStarted(jobId, {
       transport: 'internal',
       operation: params.operation,
@@ -160,7 +162,6 @@ export class KbJobRecorder {
           durationMs,
           content: '',
         },
-        continuity: null,
       });
       return undefined;
     });
@@ -217,7 +218,6 @@ export class KbJobRecorder {
           durationMs: Math.max(0, this.deps.runtime.time.now() - startedAtMs),
           content,
         },
-        continuity: null,
       });
       return undefined;
     });

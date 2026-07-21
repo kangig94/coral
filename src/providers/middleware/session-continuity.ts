@@ -85,6 +85,7 @@ export function sessionContinuity<TState>(
 
   return (next) =>
     async function* sessionContinuityProvider(request, runtime) {
+      const startedAt = runtime.time.now();
       const { providerState, opening } = contract.read(runtime.persistedContinuity, request);
       const queue: ContinuityQueue = {
         lastEmitted: normalizeSnapshot(opening),
@@ -139,6 +140,7 @@ export function sessionContinuity<TState>(
           kind: 'terminal',
           terminal: buildJobTerminal({
             content: '',
+            durationMs: Math.max(0, runtime.time.now() - startedAt),
             outcome: { kind: 'failed' },
           }),
           diagnostics: buildJobDiagnostics({}),

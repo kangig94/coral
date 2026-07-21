@@ -39,7 +39,7 @@ export function resolveStaleAbortTimeoutMs(env: Pick<EnvPort, 'get'>): number {
   return Math.max(parsed, 1_000);
 }
 
-const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
+export const STALE_RESUME_PROMPT = 'Your previous execution timed out due to inactivity. Continue where you left off.';
 
 type RecoverStaleOptions = Parameters<WaitStaleRecoveryHandler>[3];
 
@@ -92,10 +92,22 @@ export async function recoverStaleAtom(
       );
     }
 
+    const workflowJobId = options.workflowJobId;
+    if (workflowJobId === undefined) {
+      staleFailureMetadata(
+        atom,
+        options.buildPartialStepDetails(),
+        `Step ${atom.stepIndex}, atom '${atom.agent}' stale recovery has no workflow owner`,
+      );
+    }
+
     try {
       await executionSvc.recordContinuationLease({
         sessionId: atom.sessionId,
         jobId: atom.jobId,
+        workflowId: workflowJobId,
+        workflowSlotId: atom.slotId,
+        replacementGeneration: atom.generation + 1,
         reason: 'stale_recovery',
         expiresAt: continuationLeaseExpiresAt(now, options.staleAbortTimeoutMs),
       });
@@ -144,17 +156,16 @@ export async function recoverStaleAtom(
         sessionId: atom.sessionId,
         prompt: STALE_RESUME_PROMPT,
         cwd: options.workDir ?? ctx.projectRoot,
-        ...(options.workflowJobId === undefined
-          ? {}
-          : {
-              parentWorkflowJobId: options.workflowJobId,
-              workflowSlotId: atom.slotId,
-            }),
+        parentWorkflowJobId: workflowJobId,
+        workflowSlotId: atom.slotId,
+        workflowSlotGeneration: atom.generation + 1,
+        replacesWorkflowJobId: atom.jobId,
+        owner: { kind: 'workflow', id: workflowJobId },
       },
       ctx,
     );
 
-    if (resumed.status === 'rejected' || !resumed.job || !resumed.session) {
+    if (resumed.status === 'rejected') {
       await clearContinuationLeaseForStaleRecovery(executionSvc, atom, atom.jobId, 'resume_rejected');
       staleFailureMetadata(
         atom,
@@ -163,22 +174,10 @@ export async function recoverStaleAtom(
       );
     }
 
-    const claimed = await executionSvc.claimContinuationLease({
-      sessionId: atom.sessionId,
-      staleJobId: atom.jobId,
-      resumedJobId: resumed.job,
-    });
-    if (!claimed) {
-      // Resume admission has already launched a live replacement job. Treat a
-      // late claim miss as non-fatal so workflow ownership follows that job
-      // instead of orphaning it behind the stale job's protective lease.
-      options.onProgress(formatAtomProgress(atom, 'resumed; continuation lease claim was already unavailable'));
-    }
-
-    const launchState = await executionSvc.awaitLaunch(resumed.job, BOOTSTRAP_TIMEOUT_MS);
+    const launchState = await executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
     if (launchState === 'error') {
-      const message = await readLaunchFailureMessage(resumed.job, executionSvc, options.signal);
-      await clearContinuationLeaseForStaleRecovery(executionSvc, atom, resumed.job, 'launch_failed');
+      const message = await readLaunchFailureMessage(resumed.jobId, executionSvc, options.signal);
+      await clearContinuationLeaseForStaleRecovery(executionSvc, atom, resumed.jobId, 'launch_failed');
       staleFailureMetadata(
         atom,
         options.buildPartialStepDetails(),
@@ -187,10 +186,11 @@ export async function recoverStaleAtom(
     }
 
     state.pending.delete(atom.jobId);
-    state.pending.set(resumed.job, {
+    state.pending.set(resumed.jobId, {
       ...atom,
-      jobId: resumed.job,
-      sessionId: resumed.session,
+      jobId: resumed.jobId,
+      sessionId: resumed.sessionId,
+      generation: atom.generation + 1,
     });
     state.staleRetries.set(atom.atomKey, retries + 1);
 

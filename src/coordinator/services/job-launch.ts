@@ -1,5 +1,5 @@
 import type { ProviderSpec, ProviderRequest } from '../../providers/contract.js';
-import { hasUnterminalRetentionDiscardRequest, type SessionEntry } from '../../sessions/entry.js';
+import { hasUnterminalRetentionDiscardRequest, type ProviderSession } from '../../sessions/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
 import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
 import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
@@ -11,16 +11,21 @@ import {
 import type { RehydratedProviderBinding } from '../../providers/registry.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
+import { CoralSetupError } from '../../runtime/errors.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
-import { rejectLaunch, type LaunchDecision, type JobLaunchRequest, type JobResumeRequest } from '../../jobs/launch.js';
-import type { AcceptedAdmission, LaunchPool } from '../../jobs/contracts/admission.js';
+import {
+  rejectLaunch,
+  type JobLaunchRequest,
+  type JobResumeRequest,
+  type ProviderSessionLaunchDecision,
+  type RejectedLaunchDecision,
+} from '../../jobs/launch.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { ListResult } from '../contracts.js';
 import {
   buildEffectiveCoralEnv,
   buildSessionControllerProfile,
-  claimJobAtomic,
   type CoralIntent,
   type EffectiveContinuationProfile,
   mapResolverError,
@@ -54,7 +59,38 @@ export class JobLaunchService {
     this.deps = deps;
   }
 
-  async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
+  private rejectLaunchConflict(error: unknown): RejectedLaunchDecision | null {
+    if (!(error instanceof CoralSetupError)) return null;
+    switch (error.code) {
+      case 'job_launch_duplicate':
+      case 'job_owner_mismatch':
+      case 'job_owner_missing':
+      case 'job_provider_session_missing':
+      case 'job_binding_owner_mismatch':
+      case 'discussion_job_launch_conflict':
+      case 'workflow_owner_terminal':
+      case 'workflow_slot_chain_invalid':
+        return rejectLaunch(error.code, error.userMessage);
+      default:
+        return null;
+    }
+  }
+
+  private launchOrReject(run: () => ProviderSessionLaunchDecision): ProviderSessionLaunchDecision {
+    try {
+      return run();
+    } catch (error: unknown) {
+      const rejection = this.rejectLaunchConflict(error);
+      if (rejection !== null) return rejection;
+      throw error;
+    }
+  }
+
+  async start(
+    providerName: string,
+    input: JobLaunchRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderSessionLaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -100,9 +136,8 @@ export class JobLaunchService {
     const preflightError = await runProviderPreflight(spec, preflightRuntime);
     if (preflightError) return rejectLaunch('provider_preflight_failed', preflightError);
 
-    const session = this.deps.sessionManager.allocate({
-      provider: providerName,
-      sessionAuthority: { kind: 'provider', binding: bound.envelope },
+    const session = this.deps.sessionManager.prepare({
+      binding: bound.envelope,
       name,
       model,
       cwd,
@@ -115,16 +150,6 @@ export class JobLaunchService {
       ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
       ...(controllerProfile !== undefined ? { controllerProfile } : {}),
     });
-    const admitted = await this.claimAndAdmitJob(
-      session,
-      providerName,
-      ctx.projectRoot,
-      'Session is already running a job',
-      session.version,
-      pool,
-      input.jobId,
-    );
-    if ('status' in admitted) return admitted;
 
     const request: ProviderRequest = {
       action: 'exec',
@@ -140,17 +165,29 @@ export class JobLaunchService {
       coralEnv: effectiveCoralEnv,
     };
 
-    return this.launchProviderJob(spec, session.sessionId, admitted.jobId, request, admitted.admission, {
-      pool,
-      projectRoot: ctx.projectRoot,
-      parentWorkflowJobId: input.parentWorkflowJobId,
-      workflowSlotId: input.workflowSlotId,
-      retention,
-      protectedEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:start'),
-    });
+    return this.launchOrReject(() =>
+      this.deps.launchOrchestrator.launchInitialProviderJob(spec, session, request, {
+        owner: input.owner ?? { kind: 'provider-session', id: session.sessionId },
+        requestedJobId: input.jobId,
+        pool,
+        projectRoot: ctx.projectRoot,
+        parentWorkflowJobId: input.parentWorkflowJobId,
+        workflowSlotId: input.workflowSlotId,
+        workflowSlotGeneration: input.workflowSlotGeneration,
+        replacesWorkflowJobId: input.replacesWorkflowJobId,
+        discussionRun: input.discussionRun,
+        retention,
+        mintProtectedEnv: (jobId) =>
+          this.mintChildPrincipalSecretEnv(ctx, session.sessionId, jobId, 'job-launch:start'),
+      }),
+    );
   }
 
-  async resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resume(
+    providerName: string,
+    input: JobResumeRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderSessionLaunchDecision> {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
@@ -162,10 +199,7 @@ export class JobLaunchService {
       );
     }
 
-    if (session.sessionAuthority?.kind !== 'provider') {
-      return this.rejectBinding({ reason: 'invalid-persisted-binding', provider: providerName });
-    }
-    const persisted = this.deps.providerRegistry.rehydrateBinding(session.sessionAuthority.binding);
+    const persisted = this.deps.providerRegistry.rehydrateBinding(session.binding);
     if (!persisted.ok) return this.rejectBinding(persisted.failure);
     const persistedReadiness = await persisted.value.readiness('resume', this.bindingRuntime());
     if (!persistedReadiness.ok) return this.rejectBinding(persistedReadiness.failure);
@@ -205,7 +239,7 @@ export class JobLaunchService {
     return this.deps.runtime.storage;
   }
 
-  private rejectBinding(failure: ProviderBindingFailure): LaunchDecision {
+  private rejectBinding(failure: ProviderBindingFailure): RejectedLaunchDecision {
     return rejectLaunch(providerBindingFailureCode(failure), this.deps.providerRegistry.renderBindingFailure(failure));
   }
 
@@ -213,7 +247,7 @@ export class JobLaunchService {
     providerName: string,
     ctx: InvocationContext,
     use: 'launch' | 'resume',
-  ): Promise<RehydratedProviderBinding | LaunchDecision> {
+  ): Promise<RehydratedProviderBinding | RejectedLaunchDecision> {
     if (!hasProviderScope(ctx)) {
       return this.rejectBinding({ reason: 'missing-profile', provider: providerName });
     }
@@ -232,7 +266,7 @@ export class JobLaunchService {
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<LaunchDecision> {
+  ): Promise<ProviderSessionLaunchDecision> {
     const forcedIdent = coralName.startsWith('coral:') ? coralName : `coral:${coralName}`;
     const bypassPermissions = input.bypassPermissions ?? true;
 
@@ -244,12 +278,15 @@ export class JobLaunchService {
           prompt: input.prompt,
           jobId: input.jobId,
           workflowSlotId: input.workflowSlotId,
+          workflowSlotGeneration: input.workflowSlotGeneration,
+          replacesWorkflowJobId: input.replacesWorkflowJobId,
           agent: forcedIdent,
           cwd: input.cwd,
           effort: input.effort,
           bypassPermissions,
           systemPrompt: input.systemPrompt,
           parentWorkflowJobId: input.parentWorkflowJobId,
+          owner: input.owner,
         },
         ctx,
       );
@@ -261,12 +298,15 @@ export class JobLaunchService {
         prompt: input.prompt,
         jobId: input.jobId,
         workflowSlotId: input.workflowSlotId,
+        workflowSlotGeneration: input.workflowSlotGeneration,
+        replacesWorkflowJobId: input.replacesWorkflowJobId,
         agent: forcedIdent,
         cwd: input.cwd,
         effort: input.effort,
         bypassPermissions,
         systemPrompt: input.systemPrompt,
         parentWorkflowJobId: input.parentWorkflowJobId,
+        owner: input.owner,
         ...(input.retention !== undefined ? { retention: input.retention } : {}),
       },
       ctx,
@@ -279,7 +319,7 @@ export class JobLaunchService {
 
   private buildContinuationProfile(
     input: Pick<JobResumeRequest, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
-    session: SessionEntry,
+    session: ProviderSession,
     ctx: InvocationContext,
   ): EffectiveContinuationProfile {
     const coralEnv = buildEffectiveCoralEnv(ctx.coralEnv, {
@@ -303,11 +343,11 @@ export class JobLaunchService {
   private async resumeResolved(
     providerName: string,
     provider: ProviderSpec,
-    session: SessionEntry,
+    session: ProviderSession,
     input: JobResumeRequest,
     ctx: InvocationContext,
     credentialSource: ProviderCredentialSourceRef,
-  ): Promise<LaunchDecision> {
+  ): Promise<ProviderSessionLaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     if (session.state === 'non_resumable') {
       return rejectLaunch(
@@ -345,17 +385,6 @@ export class JobLaunchService {
     const preflightError = await runProviderPreflight(provider, preflightRuntime);
     if (preflightError) return rejectLaunch('provider_preflight_failed', preflightError);
 
-    const admitted = await this.claimAndAdmitJob(
-      session,
-      providerName,
-      ctx.projectRoot,
-      busyMessage,
-      expectedVersion,
-      pool,
-      input.jobId,
-    );
-    if ('status' in admitted) return admitted;
-
     const request: ProviderRequest = {
       action: 'resume',
       sessionId: session.sessionId,
@@ -370,62 +399,50 @@ export class JobLaunchService {
       coralEnv: continuation.coralEnv,
     };
 
-    return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
-      pool,
-      projectRoot: ctx.projectRoot,
-      parentWorkflowJobId: input.parentWorkflowJobId,
-      workflowSlotId: input.workflowSlotId,
-      protectedEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:resume'),
-    });
-  }
+    if (
+      input.owner?.kind === 'workflow' &&
+      input.parentWorkflowJobId !== undefined &&
+      input.workflowSlotId !== undefined &&
+      input.workflowSlotGeneration !== undefined &&
+      input.replacesWorkflowJobId !== undefined
+    ) {
+      const owner = input.owner;
+      const parentWorkflowJobId = input.parentWorkflowJobId;
+      const workflowSlotId = input.workflowSlotId;
+      const workflowSlotGeneration = input.workflowSlotGeneration;
+      const replacesWorkflowJobId = input.replacesWorkflowJobId;
+      return this.launchOrReject(() =>
+        this.deps.launchOrchestrator.launchWorkflowReplacement(provider, session, request, {
+          owner,
+          parentWorkflowJobId,
+          workflowSlotId,
+          workflowSlotGeneration,
+          replacesWorkflowJobId,
+          pool,
+          projectRoot: ctx.projectRoot,
+          mintProtectedEnv: (jobId) =>
+            this.mintChildPrincipalSecretEnv(ctx, session.sessionId, jobId, 'job-launch:workflow-replacement'),
+        }),
+      );
+    }
 
-  private async claimAndAdmitJob(
-    session: SessionEntry,
-    providerName: string,
-    projectRoot: string,
-    sessionBusyMessage: string,
-    expectedVersion: number = session.version,
-    pool: LaunchPool = 'default',
-    requestedJobId?: string,
-  ): Promise<{ jobId: string; admission: AcceptedAdmission } | LaunchDecision> {
-    return this.deps.launchOrchestrator.claimAndAdmitJob(
-      session,
-      providerName,
-      projectRoot,
-      sessionBusyMessage,
-      (claimSession, jobId, claimProviderName, claimProjectRoot, options) =>
-        claimJobAtomic(
-          {
-            sessionManager: this.deps.sessionManager,
-          },
-          claimSession,
-          jobId,
-          claimProviderName,
-          claimProjectRoot,
-          options,
-        ),
-      expectedVersion,
-      pool,
-      requestedJobId,
+    return this.launchOrReject(() =>
+      this.deps.launchOrchestrator.launchResumedProviderJob(provider, session, request, {
+        owner: input.owner ?? { kind: 'provider-session', id: session.sessionId },
+        expectedVersion,
+        sessionBusyMessage: busyMessage,
+        requestedJobId: input.jobId,
+        pool,
+        projectRoot: ctx.projectRoot,
+        parentWorkflowJobId: input.parentWorkflowJobId,
+        workflowSlotId: input.workflowSlotId,
+        workflowSlotGeneration: input.workflowSlotGeneration,
+        replacesWorkflowJobId: input.replacesWorkflowJobId,
+        discussionRun: input.discussionRun,
+        mintProtectedEnv: (jobId) =>
+          this.mintChildPrincipalSecretEnv(ctx, session.sessionId, jobId, 'job-launch:resume'),
+      }),
     );
-  }
-
-  private launchProviderJob(
-    provider: ProviderSpec,
-    sessionId: string,
-    jobId: string,
-    request: ProviderRequest,
-    admission: AcceptedAdmission,
-    opts: {
-      pool?: LaunchPool;
-      projectRoot?: string;
-      parentWorkflowJobId?: string;
-      workflowSlotId?: string;
-      retention?: SessionEntry['retention'];
-      protectedEnv?: Record<string, string>;
-    },
-  ): LaunchDecision {
-    return this.deps.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
   }
 
   private mintChildPrincipalSecretEnv(

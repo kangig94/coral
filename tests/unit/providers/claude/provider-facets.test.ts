@@ -120,19 +120,6 @@ describe('claudePreflight', () => {
 });
 
 describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
-  it('preassigns a fresh conversation reference from the durable Coral session id', () => {
-    expect(
-      claudeRecoveryLifecycle.buildRecoveryMeta({
-        action: 'exec',
-        sessionId: 'coral-session-1',
-        prompt: 'hello',
-        cwd: '/workspace',
-        bypassPermissions: false,
-        coralEnv: {},
-      }),
-    ).toEqual({ conversationRef: 'coral-session-1' });
-  });
-
   it('uses the preserved conversation ref when the session is resumable without a bootstrap signature', () => {
     const mutation = claudeRecoveryLifecycle.finalizeInterrupted(
       {

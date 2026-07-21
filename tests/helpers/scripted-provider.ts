@@ -29,9 +29,9 @@ type TestAppServerLifecycle = {
     lease: ProviderServerLease,
     continuity: ProviderContinuityBlob,
   ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
-  finalizeInterrupted?(
+  finalizeInterrupted(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
-    continuity: ProviderContinuityBlob,
+    continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
 };
@@ -49,8 +49,7 @@ type TestArtifactRecovery = {
         artifactHandles?: readonly ProviderArtifactHandleInput[];
       }
   >;
-  buildRecoveryMeta?(request: ProviderRequest): Record<string, unknown>;
-  extractProgress?(options: { stdoutPath: string; fromOffset: number; providerMeta?: Record<string, unknown> }): {
+  extractProgress?(options: { stdoutPath: string; fromOffset: number }): {
     messages: string[];
     newOffset: number;
   };
@@ -105,9 +104,12 @@ export function defineFakeProvider(
     provider.artifactRecovery || provider.appServerLifecycle
       ? {
           ...(provider.appServerLifecycle?.probe ? { probe: provider.appServerLifecycle.probe } : {}),
-          ...(provider.appServerLifecycle?.finalizeInterrupted
-            ? { finalizeInterrupted: provider.appServerLifecycle.finalizeInterrupted }
-            : {}),
+          finalizeInterrupted:
+            provider.appServerLifecycle === undefined
+              ? () => {
+                  throw new Error(`Provider ${provider.name} has no app-server recovery capability.`);
+                }
+              : provider.appServerLifecycle.finalizeInterrupted,
           finalizeFromArtifacts: (() => {
             const artifactRecovery = provider.artifactRecovery;
             return artifactRecovery
@@ -117,9 +119,6 @@ export function defineFakeProvider(
                   throw new Error(`Provider ${provider.name} does not support artifact recovery.`);
                 };
           })(),
-          ...(provider.artifactRecovery?.buildRecoveryMeta
-            ? { buildRecoveryMeta: provider.artifactRecovery.buildRecoveryMeta }
-            : {}),
           ...(provider.artifactRecovery?.extractProgress
             ? { extractProgress: provider.artifactRecovery.extractProgress }
             : {}),

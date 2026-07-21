@@ -26,7 +26,8 @@ import {
   type ExpiredContinuationLease,
   type PendingContinuationLease,
   type RetentionDiscardCompletedOutcome,
-  type SessionEntry,
+  type ProviderSession,
+  providerSessionProvider,
 } from './entry.js';
 import {
   readSessionRetentionWorkForEntries,
@@ -106,17 +107,17 @@ export class LifecycleReactor {
   }
 
   private async readyArtifactSource(
-    entry: SessionEntry,
+    entry: ProviderSession,
     operation: string,
   ): Promise<{ provider: ProviderDefinition; source: ProviderCredentialSourceRef } | null> {
-    if (entry.sessionAuthority.kind !== 'provider') return null;
-    const provider = this.options.providers.get(entry.provider);
+    const providerName = providerSessionProvider(entry);
+    const provider = this.options.providers.get(providerName);
     if (provider === undefined) {
-      this.log(`${operation} skipped for session ${entry.sessionId}: unknown provider '${entry.provider}'.`);
+      this.log(`${operation} skipped for session ${entry.sessionId}: unknown provider '${providerName}'.`);
       return null;
     }
-    const binding = this.options.providers.rehydrateBinding(entry.sessionAuthority.binding);
-    if (!binding.ok || binding.value.provider !== entry.provider) {
+    const binding = this.options.providers.rehydrateBinding(entry.binding);
+    if (!binding.ok || binding.value.provider !== providerName) {
       this.log(`${operation} skipped for session ${entry.sessionId}: invalid provider binding.`);
       return null;
     }
@@ -197,7 +198,7 @@ export class LifecycleReactor {
     const { provider, source } = ready;
     if (provider.artifacts.kind !== 'managed') {
       this.log(
-        `On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`,
+        `On-demand artifact discard skipped for session ${sessionId}: provider '${providerSessionProvider(entry)}' declares no artifacts.`,
       );
       return;
     }
@@ -229,12 +230,6 @@ export class LifecycleReactor {
     if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
       return;
     }
-    // Orchestration sessions own no provider-native artifact. Their child
-    // provider sessions enforce their own retention independently.
-    if (entry.sessionAuthority.kind !== 'provider') {
-      return;
-    }
-
     const ready = await this.readyArtifactSource(entry, 'Retention discard');
     if (ready === null) return;
     const { provider, source } = ready;
@@ -264,12 +259,8 @@ export class LifecycleReactor {
       return;
     }
 
-    const preDeleteEntry = this.readFreshSessionEntry(sessionId);
-    if (
-      preDeleteEntry === null ||
-      preDeleteEntry.sessionAuthority.kind !== 'provider' ||
-      this.hasRetentionProtection(preDeleteEntry)
-    ) {
+    const preDeleteEntry = this.readFreshProviderSession(sessionId);
+    if (preDeleteEntry === null || this.hasRetentionProtection(preDeleteEntry)) {
       this.appendCompleted(sessionId, attempt, recordedHandles, 'skipped_protected');
       return;
     }
@@ -304,7 +295,7 @@ export class LifecycleReactor {
   }
 
   private async archiveArtifactsBeforeDiscard(
-    entry: SessionEntry,
+    entry: ProviderSession,
     handles: readonly string[],
     jobId?: string,
   ): Promise<void> {
@@ -329,7 +320,6 @@ export class LifecycleReactor {
         await archiveProviderArtifactsForJob({
           runtime: this.options.runtime,
           entry,
-          provider: entry.provider,
           jobId: artifactJobId,
           handles: artifactHandles,
           archivedAt: new Date(this.options.time.now()).toISOString(),
@@ -342,12 +332,12 @@ export class LifecycleReactor {
     }
   }
 
-  private readFreshSessionEntry(sessionId: string): SessionEntry | null {
+  private readFreshProviderSession(sessionId: string): ProviderSession | null {
     return readProjectionSessionEntriesById(this.options.db(), [sessionId]).get(sessionId) ?? null;
   }
 
-  private readRetentionEntryForRequest(sessionId: string): SessionEntry | null {
-    const entry = this.readFreshSessionEntry(sessionId);
+  private readRetentionEntryForRequest(sessionId: string): ProviderSession | null {
+    const entry = this.readFreshProviderSession(sessionId);
     if (entry === null) {
       return null;
     }
@@ -361,7 +351,7 @@ export class LifecycleReactor {
     return entry;
   }
 
-  private hasRetentionProtection(entry: SessionEntry): boolean {
+  private hasRetentionProtection(entry: ProviderSession): boolean {
     return (
       entry.activeJobId !== undefined || isProtectiveContinuationLease(entry.continuationLease, this.options.time.now())
     );
@@ -486,9 +476,9 @@ export class LifecycleReactor {
     }
   }
 
-  private pendingContinuationLeaseEntries(): Array<SessionEntry & { continuationLease: PendingContinuationLease }> {
+  private pendingContinuationLeaseEntries(): Array<ProviderSession & { continuationLease: PendingContinuationLease }> {
     return listProjectionSessionEntries(this.options.db()).filter(
-      (entry): entry is SessionEntry & { continuationLease: PendingContinuationLease } =>
+      (entry): entry is ProviderSession & { continuationLease: PendingContinuationLease } =>
         entry.continuationLease?.status === 'pending',
     );
   }
@@ -508,19 +498,22 @@ export class LifecycleReactor {
   }
 
   private appendContinuationLeaseExpired(
-    entry: SessionEntry & { continuationLease: PendingContinuationLease },
+    entry: ProviderSession & { continuationLease: PendingContinuationLease },
     nowMs: number,
   ): boolean {
     const expiredAt = new Date(nowMs).toISOString();
     const lease: ExpiredContinuationLease = {
       staleJobId: entry.continuationLease.staleJobId,
+      workflowId: entry.continuationLease.workflowId,
+      workflowSlotId: entry.continuationLease.workflowSlotId,
+      replacementGeneration: entry.continuationLease.replacementGeneration,
       reason: entry.continuationLease.reason,
       expiresAt: entry.continuationLease.expiresAt,
       recordedAt: entry.continuationLease.recordedAt,
       status: 'expired',
       expiredAt,
     };
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...entry,
       continuationLease: lease,
       lastUsedAt: expiredAt,

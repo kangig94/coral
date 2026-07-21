@@ -21,7 +21,8 @@ import { jobsDir } from './paths.js';
 import { ensureResultMarkdownArtifact } from './terminal/export.js';
 import type { DurableProcessExit } from '../runtime/durable-runtime.js';
 import { nowDate, nowIsoString } from '../infra/time.js';
-import { createNoopJobEventBus, type JobEventBus } from './event-bus.js';
+import { createNoopJobEventBus, jobCreatedEvent, type JobEventBus } from './event-bus.js';
+import { jobLaunchRequestBodySchema } from './launch.js';
 import { jobsRegistry } from './events.js';
 import { isLivePhase } from './phase.js';
 import type { InitJobOptions, JobProgressStore } from './contracts/job-store.js';
@@ -76,14 +77,102 @@ function jobRuntimeStartedBody(runtime: JobRuntime): JobRuntimeStartedBody {
     };
   }
 
+  if (runtime.transport === 'workflow') {
+    return {
+      transport: 'workflow',
+      startedAt: runtime.startTime,
+    };
+  }
+
   return {
     transport: runtime.transport,
     pid: runtime.pid,
     stdoutPath: runtime.stdoutPath,
     stderrPath: runtime.stderrPath,
     startedAt: runtime.startTime,
-    providerMeta: runtime.providerMeta,
     tailWatermark: runtime.tailWatermark,
+  };
+}
+
+export function jobLaunchRequestedEvent(jobId: string, launch: JobLaunch) {
+  // Spec §6.1 line 813 + §13.1 worked example: every job whose lifetime
+  // belongs to a workflow carries `refs.workflowId` (the workflow stream
+  // that owns the plan). Convention: `workflowJobId === workflowId` — the
+  // workflow's own job IS its workflow stream, so its launch carries
+  // `refs.workflowId = jobId`. Workflow children carry
+  // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
+  // `refs.workflowSlotId`. Non-workflow jobs omit the field.
+  const workflowId = launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId;
+  const refs = buildJobEventRefs({
+    jobId,
+    sessionId: launch.sessionId,
+    parentJobId: launch.parentWorkflowJobId,
+    workflowId,
+    workflowSlotId: launch.workflowSlotId,
+  });
+  const body =
+    launch.jobKind === 'kb'
+      ? {
+          owner: launch.owner,
+          projectRoot: launch.projectRoot,
+          backendNamespace: launch.backendNamespace,
+          bundleHash: launch.bundleHash,
+          jobKind: launch.jobKind,
+          pool: launch.pool,
+          enqueueSequence: launch.enqueueSequence,
+          operation: launch.operation,
+          request: { ...launch.request },
+          createdAt: launch.createdAt,
+        }
+      : launch.jobKind === 'workflow'
+        ? {
+            owner: launch.owner,
+            projectRoot: launch.projectRoot,
+            backendNamespace: launch.backendNamespace,
+            bundleHash: launch.bundleHash,
+            jobKind: 'workflow' as const,
+            pool: launch.pool,
+            enqueueSequence: launch.enqueueSequence,
+            request: {
+              prompt: launch.request.prompt,
+              cwd: launch.request.cwd,
+              bypassPermissions: launch.request.bypassPermissions,
+              coralEnv: { ...launch.request.coralEnv },
+            },
+            createdAt: launch.createdAt,
+          }
+        : {
+            owner: launch.owner,
+            ...(launch.discussionRun === undefined ? {} : { discussionRun: launch.discussionRun }),
+            sessionId: launch.sessionId,
+            provider: launch.provider,
+            projectRoot: launch.projectRoot,
+            backendNamespace: launch.backendNamespace,
+            bundleHash: launch.bundleHash,
+            jobKind: launch.jobKind,
+            pool: launch.pool,
+            enqueueSequence: launch.enqueueSequence,
+            providerAction: launch.providerAction,
+            workflowSlotGeneration: launch.workflowSlotGeneration,
+            replacesWorkflowJobId: launch.replacesWorkflowJobId,
+            request: {
+              ...launch.request,
+              prompt: launch.request.prompt,
+              cwd: launch.request.cwd,
+              bypassPermissions: launch.request.bypassPermissions,
+              coralEnv: { ...launch.request.coralEnv },
+            },
+            createdAt: launch.createdAt,
+          };
+
+  return {
+    type: 'job.launch.requested' as const,
+    stream: { kind: 'job' as const, id: jobId },
+    namespace: launch.backendNamespace,
+    project: launch.projectRoot,
+    refs,
+    bodyVersion: 1,
+    body,
   };
 }
 
@@ -254,18 +343,9 @@ export class JobStore implements JobProgressStore {
       }
 
       if (event.type === 'job.launch.requested') {
-        const body = event.body as {
-          sessionId?: string;
-          provider?: string;
-          projectRoot?: string;
-        };
+        const launch = jobLaunchRequestBodySchema.parse(event.body);
         this.namespaceOverrides.delete(event.stream.id);
-        this.eventBus.emit('job:created', {
-          jobId: event.stream.id,
-          sessionId: body.sessionId ?? '',
-          provider: body.provider ?? 'kb',
-          projectRoot: body.projectRoot ?? '',
-        });
+        this.eventBus.emit('job:created', jobCreatedEvent(event.stream.id, launch));
         continue;
       }
 
@@ -331,12 +411,13 @@ export class JobStore implements JobProgressStore {
     const createdAt = nowIsoString(this.runtime.time);
     this.appendLaunchRequested(opts.jobId, {
       jobId: opts.jobId,
+      owner: { kind: 'provider-session', id: opts.sessionId },
       sessionId: opts.sessionId,
       provider: opts.provider,
       projectRoot: opts.projectRoot,
       backendNamespace: opts.backendNamespace,
       ...(opts.bundleHash === undefined ? {} : { bundleHash: opts.bundleHash }),
-      jobKind: opts.jobKind ?? 'provider',
+      jobKind: 'provider',
       pool: 'default',
       enqueueSequence: 0,
       providerAction: 'exec',
@@ -345,7 +426,6 @@ export class JobStore implements JobProgressStore {
         cwd: opts.projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        ...(opts.jobKind === 'workflow' ? { providerScope: opts.providerScope } : {}),
       },
       createdAt,
     });
@@ -379,7 +459,12 @@ export class JobStore implements JobProgressStore {
           refs: buildJobEventRefs({ jobId: opts.jobId, sessionId: opts.sessionId }),
           bodyVersion: 1,
           body: {
+            transport: 'app-server',
             startedAt: createdAt,
+            providerMeta: {
+              provider: opts.provider,
+              leaseState: 'waiting',
+            },
           },
         });
         return undefined;
@@ -414,69 +499,8 @@ export class JobStore implements JobProgressStore {
 
   appendLaunchRequested(jobId: string, launch: JobLaunch): void {
     this.runtime.storage.mkdirSync(this.jobDir(jobId), { recursive: true });
-    // Spec §6.1 line 813 + §13.1 worked example: every job whose lifetime
-    // belongs to a workflow carries `refs.workflowId` (the workflow stream
-    // that owns the plan). Convention: `workflowJobId === workflowId` — the
-    // workflow's own job IS its workflow stream, so its launch carries
-    // `refs.workflowId = jobId`. Workflow children carry
-    // `refs.workflowId = parentWorkflowJobId` plus `refs.parentJobId` and
-    // `refs.workflowSlotId`. Non-workflow jobs omit the field.
-    const workflowId = launch.jobKind === 'workflow' ? jobId : launch.parentWorkflowJobId;
-    const refs = buildJobEventRefs({
-      jobId,
-      sessionId: launch.sessionId,
-      parentJobId: launch.parentWorkflowJobId,
-      workflowId,
-      workflowSlotId: launch.workflowSlotId,
-    });
-    const body =
-      launch.jobKind === 'kb'
-        ? {
-            projectRoot: launch.projectRoot,
-            backendNamespace: launch.backendNamespace,
-            bundleHash: launch.bundleHash,
-            jobKind: launch.jobKind,
-            pool: launch.pool,
-            enqueueSequence: launch.enqueueSequence,
-            operation: launch.operation ?? 'kb.source_import',
-            request: { ...launch.request },
-            createdAt: launch.createdAt,
-          }
-        : (() => {
-            if (launch.sessionId === null || launch.provider === null) {
-              throw new Error(`Provider job '${jobId}' requires sessionId and provider.`);
-            }
-            return {
-              sessionId: launch.sessionId,
-              provider: launch.provider,
-              projectRoot: launch.projectRoot,
-              backendNamespace: launch.backendNamespace,
-              bundleHash: launch.bundleHash,
-              jobKind: launch.jobKind,
-              pool: launch.pool,
-              enqueueSequence: launch.enqueueSequence,
-              providerAction: launch.providerAction ?? 'exec',
-              request: {
-                ...launch.request,
-                prompt: launch.request.prompt ?? '',
-                cwd: launch.request.cwd ?? launch.projectRoot,
-                bypassPermissions: launch.request.bypassPermissions ?? false,
-                coralEnv: { ...(launch.request.coralEnv ?? {}) },
-              },
-              createdAt: launch.createdAt,
-            };
-          })();
-
     this.commit((c) => {
-      c.append({
-        type: 'job.launch.requested',
-        stream: { kind: 'job', id: jobId },
-        namespace: launch.backendNamespace,
-        project: launch.projectRoot,
-        refs,
-        bodyVersion: 1,
-        body,
-      });
+      c.append(jobLaunchRequestedEvent(jobId, launch));
       return undefined;
     });
   }

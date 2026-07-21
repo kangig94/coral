@@ -1,13 +1,10 @@
 import type { Runtime } from '../../runtime/ports.js';
-import {
-  type CliExecResult,
-  type SpawnDurableJobOptions,
-  spawnDurableJobTransport,
-} from './durable-transport.js';
+import { type CliExecResult, type SpawnDurableJobOptions, spawnDurableJobTransport } from './durable-transport.js';
 import { type SpawnProviderServerOptions, spawnProviderServerTransport } from './provider-server-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
-import type { AdmissionResult, AdmittedHandle, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';
+import type { AdmissionResult, LaunchPool, QueuedHandle } from '../../jobs/contracts/admission.js';
+import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 
 /**
  * Admission queue capacity per pool. Operator knob — see §16(d) triage rule:
@@ -22,50 +19,59 @@ export function getMaxQueueSize(env: Pick<Runtime['env'], 'get'>): number {
 type QueuedLaunchEntry = {
   jobId: string;
   provider: string;
+  owner: ExecutionOwner;
   promise: Promise<void>;
   resolve: () => void;
   reject: (error: Error) => void;
 };
 
-type PoolState = { active: Map<string, string>; queued: QueuedLaunchEntry[] };
+type PoolState = { active: Map<string, { provider: string; owner: ExecutionOwner }>; queued: QueuedLaunchEntry[] };
 
-const IMMEDIATE_ADMISSION: AdmittedHandle = { type: 'immediate' };
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
+
+function unknownLaunchPool(pool: never): never {
+  throw new Error(`Launch admission invariant violated: unknown pool ${JSON.stringify(pool)}.`);
+}
+
+export class DuplicateLaunchReservationError extends Error {
+  constructor(jobId: string, pool: LaunchPool) {
+    super(`Launch reservation already exists for job ${jobId} in pool ${pool}.`);
+    this.name = 'DuplicateLaunchReservationError';
+  }
+}
 
 export class LaunchCoordinator {
   private readonly cleanupHandles = new Map<symbol, () => void>();
   private nextProviderServerGeneration = 1;
-  private readonly pools: Map<LaunchPool, PoolState> = new Map<LaunchPool, PoolState>();
+  private readonly pools: Record<LaunchPool, PoolState> = {
+    default: { active: new Map(), queued: [] },
+    discuss: { active: new Map(), queued: [] },
+    curate: { active: new Map(), queued: [] },
+  };
   private shutdownRequested = false;
   private readonly runtime: Runtime;
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
-    this.pools.set('default', { active: new Map<string, string>(), queued: [] });
-    this.pools.set('discuss', { active: new Map<string, string>(), queued: [] });
-    this.pools.set('curate', { active: new Map<string, string>(), queued: [] });
   }
 
   get active(): number {
     let total = 0;
-    for (const state of this.pools.values()) {
+    for (const state of Object.values(this.pools)) {
       total += state.active.size;
     }
     return total;
   }
 
-  requestLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): AdmissionResult {
+  requestLaunch(jobId: string, provider: string, owner: ExecutionOwner, pool: LaunchPool = 'default'): AdmissionResult {
     const activeLaunches = this.getActiveMap(pool);
     const queuedLaunches = this.getQueue(pool);
-    if (activeLaunches.has(jobId)) return IMMEDIATE_ADMISSION;
-
-    const existingQueued = this.findQueuedLaunch(jobId, pool);
-    if (existingQueued) return this.queuedHandle(existingQueued, pool);
+    this.rejectDuplicateReservation(jobId);
 
     if (queuedLaunches.length === 0 && this.hasLaunchCapacity(pool)) {
-      activeLaunches.set(jobId, provider);
-      return IMMEDIATE_ADMISSION;
+      activeLaunches.set(jobId, { provider, owner });
+      return { type: 'immediate' };
     }
 
     if (queuedLaunches.length >= getMaxQueueSize(this.runtime.env)) return 'queue_full';
@@ -77,7 +83,7 @@ export class LaunchCoordinator {
       reject = rejectPromise;
     });
 
-    const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
+    const entry: QueuedLaunchEntry = { jobId, provider, owner, promise, resolve, reject };
     queuedLaunches.push(entry);
     return this.queuedHandle(entry, pool);
   }
@@ -92,10 +98,8 @@ export class LaunchCoordinator {
     const queuedLaunches = this.getQueue(pool);
     const index = queuedLaunches.findIndex((entry) => entry.jobId === jobId);
     if (index === -1) return false;
-    const [entry] = queuedLaunches.splice(index, 1);
-    entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
-    this.admitQueueHead(pool);
-    return true;
+    const entry = queuedLaunches[index];
+    return entry === undefined ? false : this.cancelQueuedEntry(entry, pool);
   }
 
   queueDepth(pool: LaunchPool = 'default'): number {
@@ -143,11 +147,18 @@ export class LaunchCoordinator {
     });
   }
 
-  restoreActiveLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): void {
-    this.getActiveMap(pool).set(jobId, provider);
+  restoreActiveLaunch(jobId: string, provider: string, owner: ExecutionOwner, pool: LaunchPool = 'default'): void {
+    this.rejectDuplicateReservation(jobId);
+    this.getActiveMap(pool).set(jobId, { provider, owner });
   }
 
-  restoreQueuedLaunch(jobId: string, provider: string, pool: LaunchPool = 'default'): QueuedHandle {
+  restoreQueuedLaunch(
+    jobId: string,
+    provider: string,
+    owner: ExecutionOwner,
+    pool: LaunchPool = 'default',
+  ): QueuedHandle {
+    this.rejectDuplicateReservation(jobId);
     const queuedLaunches = this.getQueue(pool);
 
     let resolve!: () => void;
@@ -157,7 +168,7 @@ export class LaunchCoordinator {
       reject = rejectPromise;
     });
 
-    const entry: QueuedLaunchEntry = { jobId, provider, promise, resolve, reject };
+    const entry: QueuedLaunchEntry = { jobId, provider, owner, promise, resolve, reject };
     queuedLaunches.push(entry);
 
     return this.queuedHandle(entry, pool);
@@ -172,12 +183,25 @@ export class LaunchCoordinator {
     this.cleanupHandles.clear();
   }
 
-  private getActiveMap(pool: LaunchPool): Map<string, string> {
-    return this.pools.get(pool)?.active ?? new Map<string, string>();
+  private getActiveMap(pool: LaunchPool): Map<string, { provider: string; owner: ExecutionOwner }> {
+    return this.getPoolState(pool).active;
   }
 
   private getQueue(pool: LaunchPool): QueuedLaunchEntry[] {
-    return this.pools.get(pool)?.queued ?? [];
+    return this.getPoolState(pool).queued;
+  }
+
+  private getPoolState(pool: LaunchPool): PoolState {
+    switch (pool) {
+      case 'default':
+        return this.pools.default;
+      case 'discuss':
+        return this.pools.discuss;
+      case 'curate':
+        return this.pools.curate;
+      default:
+        return unknownLaunchPool(pool);
+    }
   }
 
   private hasLaunchCapacity(pool: LaunchPool): boolean {
@@ -189,13 +213,14 @@ export class LaunchCoordinator {
     pool: LaunchPool,
     prefix: string,
   ): string | null {
+    const poolState = this.getPoolState(pool);
     const usingReservedPermit = options.permitGranted === true;
     if (usingReservedPermit) {
       return null;
     }
 
-    const activeLaunches = this.getActiveMap(pool);
-    const queuedLaunches = this.getQueue(pool);
+    const activeLaunches = poolState.active;
+    const queuedLaunches = poolState.queued;
     const globalActive = activeLaunches.size;
     const globalLimit = getActiveLimit(pool, this.runtime.env);
     if (queuedLaunches.length > 0 || globalActive >= globalLimit) {
@@ -208,7 +233,10 @@ export class LaunchCoordinator {
     }
 
     const internalPermitJobId = `${prefix}-${this.runtime.ids.uuid()}`;
-    activeLaunches.set(internalPermitJobId, options.provider);
+    activeLaunches.set(internalPermitJobId, {
+      provider: options.provider,
+      owner: { kind: 'system-task', id: internalPermitJobId },
+    });
     return internalPermitJobId;
   }
 
@@ -218,17 +246,26 @@ export class LaunchCoordinator {
       type: 'queued',
       queuePosition,
       waitForPermit: () => entry.promise,
-      cancel: () => {
-        this.cancelQueued(entry.jobId, pool);
-      },
+      cancel: () => this.cancelQueuedEntry(entry, pool),
     };
   }
 
-  private findQueuedLaunch(jobId: string, pool: LaunchPool): QueuedLaunchEntry | null {
-    for (const entry of this.getQueue(pool)) {
-      if (entry.jobId === jobId) return entry;
+  private cancelQueuedEntry(entry: QueuedLaunchEntry, pool: LaunchPool): boolean {
+    const queuedLaunches = this.getQueue(pool);
+    const index = queuedLaunches.indexOf(entry);
+    if (index === -1) return false;
+    queuedLaunches.splice(index, 1);
+    entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
+    this.admitQueueHead(pool);
+    return true;
+  }
+
+  private rejectDuplicateReservation(jobId: string): void {
+    for (const [existingPool, state] of Object.entries(this.pools) as Array<[LaunchPool, PoolState]>) {
+      if (state.active.has(jobId) || state.queued.some((entry) => entry.jobId === jobId)) {
+        throw new DuplicateLaunchReservationError(jobId, existingPool);
+      }
     }
-    return null;
   }
 
   private admitQueueHead(pool: LaunchPool): void {
@@ -237,13 +274,13 @@ export class LaunchCoordinator {
     if (!head) return;
     if (!this.hasLaunchCapacity(pool)) return;
     queue.shift();
-    this.getActiveMap(pool).set(head.jobId, head.provider);
+    this.getActiveMap(pool).set(head.jobId, { provider: head.provider, owner: head.owner });
     head.resolve();
   }
 
   private drainQueuedLaunches(message: string): void {
     const error = new Error(message);
-    for (const state of this.pools.values()) {
+    for (const state of Object.values(this.pools)) {
       const drained = state.queued.splice(0, state.queued.length);
       for (const entry of drained) {
         entry.reject(error);

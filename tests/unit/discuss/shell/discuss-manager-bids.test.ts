@@ -24,8 +24,8 @@ describe('Discuss bid collection', () => {
   it('records valid JSON bids during session start', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
-      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({
@@ -63,8 +63,12 @@ describe('Discuss bid collection', () => {
   });
 
   it('retries malformed JSON and persists the second-attempt success', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({ content: 'not json at all', continuity: null })
@@ -106,8 +110,8 @@ describe('Discuss bid collection', () => {
     });
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
-      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
       .mockImplementationOnce(async () => {
@@ -152,8 +156,8 @@ describe('Discuss bid collection', () => {
   it('does not auto-bid for manual observer participants', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
-      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', continuity: null })
@@ -165,8 +169,8 @@ describe('Discuss bid collection', () => {
       'discuss-1',
       DEFAULT_TOPIC,
       [
-        { name: 'alpha', persona: 'Alpha', provider: 'codex' },
-        { name: 'beta', persona: 'Beta', provider: 'codex' },
+        { name: 'alpha', persona: 'Alpha', provider: 'codex', model: 'gpt-5' },
+        { name: 'beta', persona: 'Beta', provider: 'codex', model: 'gpt-5' },
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       { min_bid_delay_ms: 1000 },
@@ -188,7 +192,7 @@ describe('Discuss bid collection', () => {
       harness.context,
       'launch-throw-discuss',
       DEFAULT_TOPIC,
-      defaultAgents().map((agent) => ({ ...agent, provider: 'claude' })),
+      defaultAgents().map((agent) => ({ ...agent, provider: 'claude', model: 'claude-sonnet-4-5' })),
       {},
       harness.ctx,
     );
@@ -203,8 +207,8 @@ describe('Discuss bid collection', () => {
   it('converts post-launch runtime persistence failure into bid failure instead of throwing', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
-      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
     const waitStreamOnce = vi.fn();
     const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
     const originalAppend = harness.store.append.bind(harness.store);
@@ -220,7 +224,7 @@ describe('Discuss bid collection', () => {
       harness.context,
       'runtime-persist-failure-discuss',
       DEFAULT_TOPIC,
-      defaultAgents().map((agent) => ({ ...agent, provider: 'claude' })),
+      defaultAgents().map((agent) => ({ ...agent, provider: 'claude', model: 'claude-sonnet-4-5' })),
       {},
       harness.ctx,
     );

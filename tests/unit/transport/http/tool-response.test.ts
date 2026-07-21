@@ -110,16 +110,18 @@ describe('tool response domain helpers', () => {
 describe('launchToHttp', () => {
   it('maps running launches to the accepted status code and includes launchState', () => {
     const decision = {
+      kind: 'provider-session',
       status: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      jobId: 'job-1',
+      sessionId: 'session-1',
     } satisfies LaunchDecision;
 
     expect(launchToHttp(decision, 201)).toEqual({
       statusCode: 201,
       body: {
-        session: 'session-1',
-        job: 'job-1',
+        kind: 'provider-session',
+        sessionId: 'session-1',
+        jobId: 'job-1',
         launchState: 'running',
       },
     });
@@ -127,33 +129,37 @@ describe('launchToHttp', () => {
 
   it('maps queued launches to the accepted status code and includes launchState', () => {
     const decision = {
+      kind: 'provider-session',
       status: 'queued',
-      job: 'job-2',
-      session: 'session-2',
+      jobId: 'job-2',
+      sessionId: 'session-2',
     } satisfies LaunchDecision;
 
     expect(launchToHttp(decision, 201)).toEqual({
       statusCode: 201,
       body: {
-        session: 'session-2',
-        job: 'job-2',
+        kind: 'provider-session',
+        sessionId: 'session-2',
+        jobId: 'job-2',
         launchState: 'queued',
       },
     });
   });
 
-  it('uses 202 when the caller passes it for accepted launches', () => {
+  it('maps workflow launches without inventing a provider session', () => {
     const decision = {
+      kind: 'workflow',
       status: 'running',
-      job: 'job-3',
-      session: 'session-3',
+      workflowId: 'job-3',
+      jobId: 'job-3',
     } satisfies LaunchDecision;
 
     expect(launchToHttp(decision, 202)).toEqual({
       statusCode: 202,
       body: {
-        session: 'session-3',
-        job: 'job-3',
+        kind: 'workflow',
+        workflowId: 'job-3',
+        jobId: 'job-3',
         launchState: 'running',
       },
     });
@@ -172,6 +178,23 @@ describe('launchToHttp', () => {
       body: {
         code: 'provider_mismatch',
         message: 'Session session-1 belongs to provider codex',
+      },
+    });
+  });
+
+  it('maps execution-owner conflicts to a safe HTTP 409 rejection', () => {
+    const decision = {
+      status: 'rejected',
+      phase: 'preflight',
+      code: 'job_binding_owner_mismatch',
+      message: "Job 'job-1' does not match its provider session binding and execution owner.",
+    } satisfies LaunchDecision;
+
+    expect(launchToHttp(decision, 201)).toEqual({
+      statusCode: 409,
+      body: {
+        code: 'job_binding_owner_mismatch',
+        message: "Job 'job-1' does not match its provider session binding and execution owner.",
       },
     });
   });

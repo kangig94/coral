@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import {
   UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS,
@@ -538,9 +539,8 @@ describe('provider binding lifecycle', () => {
 
     const storeRuntime = new SimulationRuntime();
     const db = openTestStoreDb(storeRuntime, ':memory:');
-    new SessionManager(root, storeRuntime, undefined, undefined, db).allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'provider', binding: bound.value.envelope },
+    new SessionManager(root, storeRuntime, undefined, undefined, db, providerLookupPortFromCatalog(registry)).allocate({
+      binding: bound.value.envelope,
       name: 'durable-secret-boundary',
       cwd: root,
       projectRoot: root,

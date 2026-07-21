@@ -11,6 +11,7 @@ const run: ProviderSpec['run'] = async function* () {
     kind: 'terminal',
     terminal: {
       content: 'ok',
+      durationMs: 0,
       outcome: { kind: 'completed' },
     },
     diagnostics: {},

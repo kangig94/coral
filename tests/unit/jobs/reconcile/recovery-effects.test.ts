@@ -10,6 +10,8 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { SessionManager } from '#src/sessions/shell.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 
 const NOW = new Date('2026-04-28T00:00:00.000Z');
 
@@ -33,6 +35,7 @@ function createProgressStore(db: Database): JobStore {
 function recoveryStatus(): JobStatus {
   return {
     jobId: 'job-recovery-synthetic-launch',
+    owner: { kind: 'provider-session', id: 'session-recovery-synthetic-launch' },
     sessionId: 'session-recovery-synthetic-launch',
     provider: 'codex',
     projectRoot: '/workspace/recovery-synthetic-launch',
@@ -57,13 +60,13 @@ function readEvents(db: Database): Array<{ seq: number; type: string; body: unkn
 }
 
 describe('recovery effects', () => {
-  it('records recovery fault and terminal on an existing projection whose launch event is missing', () => {
+  it('rejects recording a recovery terminal when the launch event is missing', () => {
     const db = createDb();
     try {
       const progressStore = createProgressStore(db);
       const commitSpy = vi.spyOn(progressStore, 'commit');
       const status = recoveryStatus();
-      seedTestSessionProjection(db, {
+      const session = seedTestSessionProjection(db, {
         sessionId: status.sessionId ?? '',
         provider: status.provider ?? 'codex',
         projectRoot: status.projectRoot,
@@ -72,6 +75,16 @@ describe('recovery effects', () => {
       if (status.sessionId === null || status.provider === null) throw new Error('provider status required');
       const sessionId = status.sessionId;
       const provider = status.provider;
+      const sessionManager = new SessionManager(
+        status.projectRoot,
+        createRealRuntime('prod'),
+        undefined,
+        undefined,
+        db,
+        permissiveProviderLookupPort,
+      );
+      expect(sessionManager.claimForJobSync(sessionId, status.jobId)).toBe(true);
+      expect(sessionManager.readById(sessionId, { forceFresh: true })?.version).toBe(session.version + 1);
       progressStore.commit((c) => {
         c.append({
           type: 'job.launch.requested',
@@ -81,6 +94,7 @@ describe('recovery effects', () => {
           refs: { jobId: status.jobId, sessionId },
           bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session', id: sessionId },
             sessionId,
             provider,
             projectRoot: status.projectRoot,
@@ -101,46 +115,25 @@ describe('recovery effects', () => {
       expect(progressStore.readLaunchProjection(status.jobId)).toBeNull();
       commitSpy.mockClear();
 
-      markJobAsError(progressStore, status, { kind: 'missing_launch_record' }, () => {});
+      expect(() =>
+        markJobAsError(progressStore, status, { kind: 'missing_launch_record' }, NOW.getTime(), () => {}),
+      ).toThrow(`Cannot record recovery terminal for ${status.jobId} without its launch record.`);
 
-      expect(commitSpy).toHaveBeenCalledTimes(1);
+      expect(commitSpy).not.toHaveBeenCalled();
       expect(readEvents(db)).toEqual([
         expect.objectContaining({
           seq: 1,
-          type: 'job.progress.emitted',
-          body: { kind: 'missing_launch_record' },
-        }),
-        expect.objectContaining({
-          seq: 2,
-          type: 'job.terminal.recorded',
+          type: 'session.claimed',
           body: expect.objectContaining({
-            terminal: expect.objectContaining({
-              outcome: {
-                kind: 'failed',
-                causeRef: {
-                  stream: { kind: 'job', id: status.jobId },
-                  seq: 1,
-                },
-              },
-            }),
+            jobId: status.jobId,
+            entry: expect.objectContaining({ activeJobId: status.jobId }),
           }),
         }),
       ]);
 
       const detail = progressStore.loadJobProjectionDetail(status.jobId);
       expect(detail.launch).toBeNull();
-      expect(detail.status).toMatchObject({
-        phase: 'error',
-        result: {
-          outcome: {
-            kind: 'failed',
-            causeRef: {
-              stream: { kind: 'job', id: status.jobId },
-              seq: 1,
-            },
-          },
-        },
-      });
+      expect(detail.status).toMatchObject({ phase: 'launching' });
     } finally {
       db.close();
     }

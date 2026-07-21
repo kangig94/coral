@@ -2,14 +2,13 @@ import { z } from 'zod';
 
 import { jobProgressFaultSchema, terminalOutcomeSchema } from '../outcome.js';
 import { usageSummarySchema } from '../../providers/contract.js';
-import { jobContinuitySnapshotSchema, type JobContinuitySnapshot } from '../continuity.js';
 import type { JobTerminal, JobTerminalDiagnostics, JobTerminalInput } from '../records.js';
 
 export const jobTerminalSchema = z
   .object({
     content: z.string(),
     outcome: terminalOutcomeSchema,
-    durationMs: z.number().default(0),
+    durationMs: z.number().nonnegative(),
   })
   .strict();
 
@@ -46,7 +45,7 @@ export function normalizeJobTerminal<Scope>(input: JobTerminalInput<Scope>): Job
   return {
     content: input.content,
     outcome: input.outcome,
-    durationMs: input.durationMs ?? 0,
+    durationMs: input.durationMs,
   };
 }
 
@@ -54,7 +53,6 @@ export const jobTerminalRecordedBodySchema = z
   .object({
     terminal: jobTerminalSchema,
     diagnostics: jobTerminalDiagnosticsSchema.optional(),
-    continuity: jobContinuitySnapshotSchema.nullable().optional(),
   })
   .strict();
 
@@ -63,5 +61,4 @@ export type JobTerminaledBody = z.infer<typeof jobTerminalRecordedBodySchema>;
 export interface JobTerminalRecordedInputBody<Scope = never> {
   terminal: JobTerminalInput<Scope>;
   diagnostics?: JobTerminalDiagnostics;
-  continuity?: JobContinuitySnapshot | null;
 }

@@ -10,6 +10,7 @@ import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
+import { executionOwnerSchema, type ExecutionOwner } from '../runtime/execution-owner.js';
 import type { JobPhase } from './phase.js';
 import { phaseForOutcome, type JobAbortedBody, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
 import {
@@ -27,6 +28,7 @@ import type {
 } from './event-bodies.js';
 
 type ProjectedJobState = {
+  owner: ExecutionOwner;
   phase: JobPhase;
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics;
@@ -38,6 +40,8 @@ type ProjectedJobState = {
   jobKind: 'provider' | 'workflow' | 'kb';
   parentWorkflowJobId: string | null;
   workflowSlot: string | null;
+  workflowSlotGeneration: number | null;
+  replacesWorkflowJobId: string | null;
   createdAt: string;
 };
 
@@ -137,12 +141,14 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
     patch.projectRoot === undefined ||
     patch.backendNamespace === undefined ||
     patch.jobKind === undefined ||
-    patch.createdAt === undefined
+    patch.createdAt === undefined ||
+    patch.owner === undefined
   ) {
     throw prematureProjectionJobEvent(event);
   }
 
   return {
+    owner: patch.owner,
     phase: patch.phase ?? 'launching',
     terminal: patch.terminal ?? null,
     diagnostics: patch.diagnostics ?? emptyJobDiagnostics(),
@@ -154,6 +160,8 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
     jobKind: patch.jobKind,
     parentWorkflowJobId: patch.parentWorkflowJobId ?? event.refs?.parentJobId ?? null,
     workflowSlot: patch.workflowSlot ?? event.refs?.workflowSlotId ?? null,
+    workflowSlotGeneration: patch.workflowSlotGeneration ?? null,
+    replacesWorkflowJobId: patch.replacesWorkflowJobId ?? null,
     createdAt: patch.createdAt,
   };
 }
@@ -161,14 +169,16 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
 function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
   const row = db
     .prepare(
-      `SELECT phase, terminal, diagnostics,
+      `SELECT execution_owner, phase, terminal, diagnostics,
               session_id, provider, project_root, backend_namespace, bundle_hash,
-              job_kind, parent_workflow_job_id, workflow_slot, created_at
+              job_kind, parent_workflow_job_id, workflow_slot, workflow_slot_generation,
+              replaces_workflow_job_id, created_at
          FROM projection_jobs
         WHERE job_id = ?`,
     )
     .get(jobId) as
     | {
+        execution_owner: string;
         phase: string;
         terminal: string | null;
         diagnostics: string | null;
@@ -180,6 +190,8 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
         job_kind: string;
         parent_workflow_job_id: string | null;
         workflow_slot: string | null;
+        workflow_slot_generation: number | null;
+        replaces_workflow_job_id: string | null;
         created_at: string;
       }
     | undefined;
@@ -189,6 +201,7 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
   }
 
   return {
+    owner: executionOwnerSchema.parse(JSON.parse(row.execution_owner)),
     phase: row.phase as JobPhase,
     terminal: row.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(row.terminal)),
     diagnostics:
@@ -201,6 +214,8 @@ function readProjectionJob(db: Database, jobId: string): ProjectedJobState | nul
     jobKind: row.job_kind as 'provider' | 'workflow' | 'kb',
     parentWorkflowJobId: row.parent_workflow_job_id,
     workflowSlot: row.workflow_slot,
+    workflowSlotGeneration: row.workflow_slot_generation,
+    replacesWorkflowJobId: row.replaces_workflow_job_id,
     createdAt: row.created_at,
   };
 }
@@ -213,13 +228,14 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
   if (previous && event.type === 'job.launch.requested') {
     throw new CoralSetupError({
       code: 'job_launch_duplicate',
-      userMessage: `Job '${event.stream.id}' already has a launch authority.`,
+      userMessage: `Job '${event.stream.id}' already has a launch declaration.`,
       remediation: 'A job stream must contain exactly one job.launch.requested event.',
     });
   }
 
   const base = previous ?? createInitialProjectionJobState(event, patch);
   const next: ProjectedJobState = {
+    owner: patch.owner ?? base.owner,
     phase: patch.phase ?? base.phase,
     terminal: patch.terminal ?? base.terminal,
     diagnostics: patch.diagnostics ?? base.diagnostics,
@@ -231,6 +247,8 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
     jobKind: patch.jobKind ?? base.jobKind,
     parentWorkflowJobId: patch.parentWorkflowJobId ?? base.parentWorkflowJobId,
     workflowSlot: patch.workflowSlot ?? base.workflowSlot,
+    workflowSlotGeneration: patch.workflowSlotGeneration ?? base.workflowSlotGeneration,
+    replacesWorkflowJobId: patch.replacesWorkflowJobId ?? base.replacesWorkflowJobId,
     createdAt: patch.createdAt ?? base.createdAt,
   };
 
@@ -239,6 +257,7 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
     pkColumn: 'job_id',
     pkValue: event.stream.id,
     columns: {
+      execution_owner: JSON.stringify(next.owner),
       phase: next.phase,
       terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
       diagnostics: JSON.stringify(next.diagnostics),
@@ -250,6 +269,8 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
       job_kind: next.jobKind,
       parent_workflow_job_id: next.parentWorkflowJobId,
       workflow_slot: next.workflowSlot,
+      workflow_slot_generation: next.workflowSlotGeneration,
+      replaces_workflow_job_id: next.replacesWorkflowJobId,
       created_at: next.createdAt,
     },
     lastSeq: event.seq,
@@ -257,9 +278,10 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
 }
 
 export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, event) => {
-  const sessionId = event.body.jobKind === 'kb' ? null : event.body.sessionId;
-  const provider = event.body.jobKind === 'kb' ? null : event.body.provider;
+  const sessionId = event.body.jobKind === 'provider' ? event.body.sessionId : null;
+  const provider = event.body.jobKind === 'provider' ? event.body.provider : null;
   upsertProjectionJob(db, event, {
+    owner: event.body.owner,
     phase: 'launching',
     sessionId,
     provider,
@@ -269,6 +291,8 @@ export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, even
     jobKind: event.body.jobKind,
     parentWorkflowJobId: event.refs?.parentJobId ?? null,
     workflowSlot: event.refs?.workflowSlotId ?? null,
+    workflowSlotGeneration: event.body.jobKind === 'provider' ? (event.body.workflowSlotGeneration ?? null) : null,
+    replacesWorkflowJobId: event.body.jobKind === 'provider' ? (event.body.replacesWorkflowJobId ?? null) : null,
     createdAt: event.body.createdAt,
   });
 };

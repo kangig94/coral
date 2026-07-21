@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { jobContinuitySnapshotSchema } from './continuity.js';
+import { continuitySnapshotSchema } from '../sessions/continuity.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobTerminalSchema } from './terminal/result.js';
 import { usageSummarySchema } from '../providers/contract.js';
@@ -18,14 +18,32 @@ const waitProgressEventSchema = z
   })
   .strict();
 
-const waitQueuedEventSchema = z
-  .object({
-    type: z.literal('queued'),
-    jobId: z.string(),
-    sessionId: z.string(),
-    queuePosition: z.number(),
-    runningJobIds: z.array(z.string()),
-    timing: jobProgressTimingSchema,
+const waitQueuedEventBaseSchema = z.object({
+  type: z.literal('queued'),
+  jobId: z.string(),
+  queuePosition: z.number(),
+  runningJobIds: z.array(z.string()),
+  timing: jobProgressTimingSchema,
+});
+
+const waitQueuedProviderEventSchema = waitQueuedEventBaseSchema
+  .extend({
+    jobKind: z.literal('provider'),
+    sessionId: z.string().min(1),
+  })
+  .strict();
+
+const waitQueuedWorkflowEventSchema = waitQueuedEventBaseSchema
+  .extend({
+    jobKind: z.literal('workflow'),
+    workflowId: z.string().min(1),
+  })
+  .strict();
+
+const waitQueuedKbEventSchema = waitQueuedEventBaseSchema
+  .extend({
+    jobKind: z.literal('kb'),
+    systemTaskId: z.string().min(1),
   })
   .strict();
 
@@ -37,7 +55,7 @@ const waitTerminalEventSchema = z
     remainingJobIds: z.array(z.string()),
     resultPath: z.string(),
     result: jobTerminalSchema,
-    continuity: jobContinuitySnapshotSchema.nullable().optional(),
+    continuity: continuitySnapshotSchema.nullable().optional(),
     usage: usageSummarySchema.optional(),
   })
   .strict();
@@ -49,9 +67,11 @@ const waitWaitingEventSchema = z
   })
   .strict();
 
-const waitStreamEventSchema = z.discriminatedUnion('type', [
+const waitStreamEventSchema = z.union([
   waitProgressEventSchema,
-  waitQueuedEventSchema,
+  waitQueuedProviderEventSchema,
+  waitQueuedWorkflowEventSchema,
+  waitQueuedKbEventSchema,
   waitTerminalEventSchema,
   waitWaitingEventSchema,
 ]);

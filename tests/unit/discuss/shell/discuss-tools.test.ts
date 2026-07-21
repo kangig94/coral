@@ -187,7 +187,9 @@ describe('execution discuss tools', () => {
   it('discuss_start creates a live session and returns its id', async () => {
     const harness = createDiscussHarness(
       createExecutionServiceStub({
-        start: vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-1' }),
+        start: vi
+          .fn()
+          .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-1' }),
         waitStreamOnce: vi.fn().mockResolvedValue({ content: '{"score": 61, "thought": "alpha"}', continuity: null }),
       }),
     );
@@ -195,7 +197,7 @@ describe('execution discuss tools', () => {
     getOrCreateDiscussContext(
       registry,
       harness.projectRoot,
-      harness.service,
+      harness.context.service,
       harness.store,
       discussContextOptions(harness),
     );
@@ -208,14 +210,14 @@ describe('execution discuss tools', () => {
         args: {
           topic: DEFAULT_TOPIC,
           agents: [
-            { name: 'alpha', persona: '# Alpha', provider: 'codex' },
-            { name: 'beta', persona: '# Beta', provider: 'codex' },
+            { name: 'alpha', persona: '# Alpha', provider: 'codex', model: 'gpt-5' },
+            { name: 'beta', persona: '# Beta', provider: 'codex', model: 'gpt-5' },
             { name: 'user', persona: '# User', participation: 'observer' },
           ],
         },
         context: harness.ctx,
       },
-      createHelpers(registry, stores, harness.service),
+      createHelpers(registry, stores, harness.context.service as ExecutionService),
     );
 
     const parsed = parseToolBody<{ session: string }>(result);

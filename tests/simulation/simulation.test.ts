@@ -496,10 +496,10 @@ describe('deterministic simulation lifecycle replay', () => {
       throw new Error(`Expected a launched job, received ${launch.status}`);
     }
 
-    const runtimeWait = await world.waitUntil(launch.job, { runtimeRecorded: true }, 5, { maxSteps: 5 });
+    const runtimeWait = await world.waitUntil(launch.jobId, { runtimeRecorded: true }, 5, { maxSteps: 5 });
     expect(runtimeWait.ok).toBe(true);
 
-    const runtime = getDurableRuntime(world, launch.job);
+    const runtime = getDurableRuntime(world, launch.jobId);
     const jobDir = dirname(runtime.stdoutPath);
     const generation = world.generation();
     const envPath = join(jobDir, 'env.json');

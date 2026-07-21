@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  CoralSetupError,
   documentedCoralSetupError,
   serializeCoralSetupError,
   type DocumentedCoralSetupErrorCode,
@@ -264,6 +265,23 @@ async function requestHttpErrorPayload(
 }
 
 describe('coral setup error parity', () => {
+  it('serializes workflow lifecycle conflicts as a safe HTTP 409 response', () => {
+    const response = buildTransportErrorResponse(
+      new CoralSetupError({
+        code: 'workflow_lifecycle_invalid',
+        userMessage: "Workflow 'workflow-1' is already terminal.",
+        remediation: 'Reload the workflow before retrying.',
+        context: { workflowId: 'workflow-1', current: 'completed' },
+      }),
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      code: 'workflow_lifecycle_invalid',
+      message: "Workflow 'workflow-1' is already terminal.",
+      remediation: 'Reload the workflow before retrying.',
+    });
+  });
   it.each(ADDED_DOCUMENTED_SETUP_ERRORS)(
     'surfaces $code through IPC and HTTP with matching setup payloads',
     async ({ code, context }) => {

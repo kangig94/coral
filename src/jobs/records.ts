@@ -1,13 +1,13 @@
-import type { JobContinuitySnapshot } from './continuity.js';
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
 import type { UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
-import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { RetentionPolicy } from '../sessions/entry.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
+import type { DiscussionRunDescriptor } from './discussion-run.js';
 import type { JobProgressTiming } from './event-bodies.js';
-import type { ProviderScope } from '../infra/provider-scope.js';
+import type { ExecutionOwner } from '../runtime/execution-owner.js';
+import type { LaunchPool } from './contracts/admission.js';
 
 /**
  * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +
@@ -35,13 +35,13 @@ export function isWorkflowJobKind(kind: JobKind | null | undefined): kind is 'wo
 export interface JobTerminal {
   content: string;
   outcome: TerminalOutcome;
-  durationMs?: number;
+  durationMs: number;
 }
 
 export interface JobTerminalInput<Scope = never> {
   content: string;
   outcome: TerminalOutcomeInput<Scope>;
-  durationMs?: number;
+  durationMs: number;
 }
 
 export interface JobTerminalDiagnostics {
@@ -70,12 +70,12 @@ export function emptyJobDiagnostics(): JobDiagnostics {
 
 export interface JobExit extends JobTerminal {
   diagnostics: JobDiagnostics;
-  continuity?: JobContinuitySnapshot | null;
   endTime: string;
 }
 
 export interface JobStatus {
   jobId: string;
+  owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
@@ -86,42 +86,106 @@ export interface JobStatus {
   updatedAt: string;
   lastSeq?: number;
   result?: JobTerminal;
-  continuity?: JobContinuitySnapshot | null;
 }
 
-export interface JobLaunch {
+interface JobLaunchBase {
   jobId: string;
+  owner: ExecutionOwner;
   sessionId: string | null;
   provider: string | null;
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind: JobKind;
-  pool: string;
+  pool: LaunchPool;
   enqueueSequence: number;
+  createdAt: string;
+  discussionRun?: DiscussionRunDescriptor;
   providerAction?: ProviderAction;
   operation?: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
-  request: {
-    prompt?: string;
-    name?: string;
-    model?: string;
-    cwd?: string;
-    effort?: string;
-    bypassPermissions?: boolean;
-    systemPrompt?: string;
-    conversationRef?: string;
-    instruction?: ProviderInstruction;
-    retention?: RetentionPolicy;
-    coralEnv?: Record<string, string>;
-    providerScope?: ProviderScope;
-    filePath?: string;
-    slug?: string;
-    readiness?: SourceImportReadiness;
-  };
   parentWorkflowJobId?: string;
   workflowSlotId?: string;
-  createdAt: string;
+  workflowSlotGeneration?: number;
+  replacesWorkflowJobId?: string;
 }
+
+interface ProviderLaunchRequestRecord {
+  prompt: string;
+  cwd: string;
+  bypassPermissions: boolean;
+  coralEnv: Record<string, string>;
+  name?: string;
+  model?: string;
+  effort?: string;
+  systemPrompt?: string;
+  instruction?: ProviderInstruction;
+  retention?: RetentionPolicy;
+}
+
+export interface ProviderJobLaunch extends JobLaunchBase {
+  jobKind: 'provider';
+  discussionRun?: DiscussionRunDescriptor;
+  sessionId: string;
+  provider: string;
+  providerAction: ProviderAction;
+  operation?: never;
+  request: ProviderLaunchRequestRecord;
+  parentWorkflowJobId?: string;
+  workflowSlotId?: string;
+  workflowSlotGeneration?: number;
+  replacesWorkflowJobId?: string;
+}
+
+export interface WorkflowJobLaunch extends JobLaunchBase {
+  jobKind: 'workflow';
+  sessionId: null;
+  provider: null;
+  discussionRun?: never;
+  providerAction?: never;
+  operation?: never;
+  parentWorkflowJobId?: never;
+  workflowSlotId?: never;
+  workflowSlotGeneration?: never;
+  replacesWorkflowJobId?: never;
+  request: Pick<ProviderLaunchRequestRecord, 'prompt' | 'cwd' | 'bypassPermissions' | 'coralEnv'>;
+}
+
+interface KbJobLaunchBase extends JobLaunchBase {
+  jobKind: 'kb';
+  sessionId: null;
+  provider: null;
+  discussionRun?: never;
+  providerAction?: never;
+  parentWorkflowJobId?: never;
+  workflowSlotId?: never;
+  workflowSlotGeneration?: never;
+  replacesWorkflowJobId?: never;
+}
+
+export interface KbSourceImportJobLaunch extends KbJobLaunchBase {
+  operation: 'kb.source_import';
+  request: {
+    filePath: string;
+    slug?: string;
+    readiness: SourceImportReadiness;
+  };
+}
+
+export interface KbReindexJobLaunch extends KbJobLaunchBase {
+  operation: 'kb.reindex';
+  request: Record<string, never>;
+}
+
+export interface KbCommunitySummaryJobLaunch extends KbJobLaunchBase {
+  operation: 'kb.community_summary';
+  request: Record<string, never>;
+}
+
+export type JobLaunch =
+  | ProviderJobLaunch
+  | WorkflowJobLaunch
+  | KbSourceImportJobLaunch
+  | KbReindexJobLaunch
+  | KbCommunitySummaryJobLaunch;
 
 export interface AppServerRuntime {
   transport: 'app-server';
@@ -130,8 +194,6 @@ export interface AppServerRuntime {
     provider: string;
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
-    providerContinuity?: ProviderContinuityBlob;
-    conversationRef?: string;
     claudeTransport?: string;
   };
 }
@@ -143,7 +205,12 @@ export interface InternalJobRuntime {
   startTime: string;
 }
 
-export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime | InternalJobRuntime;
+export interface WorkflowJobRuntime {
+  transport: 'workflow';
+  startTime: string;
+}
+
+export type JobRuntime = DurableCliRuntimeRecord | AppServerRuntime | InternalJobRuntime | WorkflowJobRuntime;
 
 export function isAppServerRuntime(record: JobRuntime | null | undefined): record is AppServerRuntime {
   return record?.transport === 'app-server';
@@ -165,7 +232,6 @@ export interface JobProgressEvent extends JobEventBase {
 export interface JobTerminalEvent extends JobEventBase {
   type: 'terminal';
   result: JobTerminal;
-  continuity: JobContinuitySnapshot | null;
   usage?: UsageSummary;
 }
 
@@ -178,15 +244,14 @@ export type JobsListResponse = {
 
 /** Response shape for jobs.detail. Includes:
  *
- * - `status`: stable launch identity + lifecycle summary (phase, lastSeq,
- *   continuity, etc.)
+ * - `status`: stable launch identity + lifecycle summary (phase, lastSeq, etc.)
  * - `events`: progress + terminal events for chain-walk rendering
  * - `readiness`: derived 4-way launch-readiness view (`'pending' | 'queued'
  *   | 'ready' | 'error'`) so callers can see whether a job has settled past
  *   its launch boundary without re-deriving from `phase` + `runtime`
  * - `exit`: the terminal record + per-job diagnostics (byteCounts, warnings,
- *   usage, processExit, progressFaults) and continuity snapshot when the
- *   job has terminated. `null` while the job is still live.
+ *   usage, processExit, progressFaults) when the job has terminated. `null`
+ *   while the job is still live.
  */
 export type JobDetailResponse = {
   status: JobStatus;

@@ -27,6 +27,7 @@ import {
   type SessionContinuityState,
   type SessionProviderFailureDiagnostic,
 } from './fault.js';
+import { providerSessionProvider } from './entry.js';
 
 // sessions/fault.ts is the canonical authority with exhaustive-switch +
 // assertNever. Runtime-injected values are rendered as diagnostics instead of
@@ -74,7 +75,7 @@ const continuityCheckpointed = typedDescriber(
 );
 const artifactHandleRecorded = typedDescriber(
   sessionArtifactHandleRecordedBodySchema,
-  (body) => `Session artifact handle recorded for ${body.provider}.`,
+  (body) => `Session artifact handle recorded for ${providerSessionProvider(body.entry)}.`,
 );
 const claimed = typedDescriber(sessionClaimedBodySchema, (body) => `Session claimed by job ${body.jobId}.`);
 const claimReleased = typedDescriber(
@@ -111,14 +112,9 @@ const retentionDiscardFailed = typedDescriber(
 );
 
 const interrupted = typedDescriber(sessionInterruptedBodySchema, (body) => {
-  // sessionInterruptedBodySchema is a union of two shapes; both expose a
-  // `trigger` and `continuity` reachable through the fault, so normalize first.
-  const fault = 'fault' in body ? body.fault : body;
-  const continuity = fault.continuity ?? 'unavailable';
+  const continuity = body.continuity ?? 'unavailable';
   const triggerText =
-    fault.trigger === 'restart'
-      ? 'App-server restarted during the turn'
-      : 'App-server handoff occurred during the turn';
+    body.trigger === 'restart' ? 'App-server restarted during the turn' : 'App-server handoff occurred during the turn';
   return `${triggerText}; ${safeContinuitySentenceFragment(continuity)}.`;
 });
 

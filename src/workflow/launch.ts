@@ -89,6 +89,10 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     completedStepDetails,
   } = context;
   const promptSlot = isPromptSlot(slot);
+  const workflowJobId = context.workflowJobId;
+  if (workflowJobId === undefined) {
+    throw new Error(`Workflow slot '${slot.slotId}' cannot launch without its workflow owner.`);
+  }
   const coralName = promptSlot ? 'workflow-literal' : slot.instruction;
 
   let atomPrompt: string;
@@ -113,14 +117,16 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       prompt: atomPrompt,
       jobId: slot.jobId,
       workflowSlotId: slot.slotId,
+      workflowSlotGeneration: 0,
       cwd: workDir ?? ctx.projectRoot,
-      parentWorkflowJobId: context.workflowJobId,
+      parentWorkflowJobId: workflowJobId,
+      owner: { kind: 'workflow', id: workflowJobId },
       retention: 'discard_provider_artifacts_on_terminal',
     },
     ctx,
   );
 
-  if (decision.status === 'rejected' || !decision.job || !decision.session) {
+  if (decision.status === 'rejected') {
     throw createWorkflowExecutionError(
       `Step ${slot.stepIndex}, atom '${slot.label}' launch failed: ${decision.message ?? 'unknown error'}`,
       false,
@@ -129,9 +135,9 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
     );
   }
 
-  const launchState = await executionSvc.awaitLaunch(decision.job, BOOTSTRAP_TIMEOUT_MS);
+  const launchState = await executionSvc.awaitLaunch(decision.jobId, BOOTSTRAP_TIMEOUT_MS);
   if (launchState === 'error') {
-    const failure = await readLaunchFailure(decision.job, executionSvc, signal);
+    const failure = await readLaunchFailure(decision.jobId, executionSvc, signal);
     throw createWorkflowExecutionError(
       `Step ${slot.stepIndex}, atom '${slot.label}' failed: ${failure?.message ?? 'unknown error'}`,
       failure?.aborted ?? false,
@@ -139,7 +145,7 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
       {
         failedStep: slot.stepIndex,
         failedAtom: slot.label,
-        failedJobId: decision.job,
+        failedJobId: decision.jobId,
         failedSlotId: slot.slotId,
         ...(failure?.causeRef === undefined ? {} : { causeRef: failure.causeRef }),
         ...(failure?.terminalOutcome === undefined ? {} : { terminalOutcome: failure.terminalOutcome }),
@@ -149,14 +155,15 @@ export async function launchAtomWithRetry(context: LaunchContext): Promise<Launc
 
   return {
     slotId: slot.slotId,
-    jobId: decision.job,
-    sessionId: decision.session,
+    jobId: decision.jobId,
+    sessionId: decision.sessionId,
     providerName: slot.provider,
     agent: slot.label,
     tagName: slot.tagName,
     stepIndex: slot.stepIndex,
     atomIndex,
     atomKey: slot.atomKey,
+    generation: 0,
   };
 }
 

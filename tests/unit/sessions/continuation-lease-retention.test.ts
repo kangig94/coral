@@ -6,6 +6,7 @@ import { managed } from '#src/providers/capability.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { commit, type CommitEventsFn } from '#src/store/append.js';
@@ -61,7 +62,6 @@ function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
     CREATE TABLE projection_sessions (
       session_id TEXT PRIMARY KEY,
       controller TEXT NOT NULL,
-      provider TEXT NOT NULL,
       resumable INTEGER NOT NULL,
       conversation_ref TEXT,
       scope_key TEXT NOT NULL,
@@ -134,8 +134,7 @@ async function openClaimedSession(
   jobId: string,
 ): Promise<{ readonly sessionId: string; readonly version: number }> {
   const session = sessionManager.allocate({
-    provider: 'claude',
-    sessionAuthority: { kind: 'provider', binding: TEST_CLAUDE_BINDING },
+    binding: TEST_CLAUDE_BINDING,
     name: 'claude-session',
     cwd: '/tmp/project',
     projectRoot: '/tmp/project',
@@ -155,7 +154,6 @@ async function recordArtifact(sessionManager: SessionManager, sessionId: string,
     sessionManager.recordArtifactHandleAtomic(sessionId, {
       expectedActiveJobId: jobId,
       expectedVersion: claimed.version,
-      provider: 'claude',
       handle: `/tmp/${jobId}.jsonl`,
       identity: { kind: 'test-artifact', jobId },
       sourceJobId: jobId,
@@ -170,8 +168,7 @@ function appendTerminal(commitEvents: CommitEventsFn, jobId: string, sessionId: 
       sessionId,
       namespace: 'test-ns',
       project: '/tmp/project',
-      terminal: { content: 'done', outcome: { kind: 'completed' } },
-      continuity: null,
+      terminal: { content: 'done', durationMs: 0, outcome: { kind: 'completed' } },
     });
     return undefined;
   });
@@ -187,6 +184,9 @@ describe('continuation lease retention integration', () => {
       sessionManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-stale',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
@@ -198,17 +198,31 @@ describe('continuation lease retention integration', () => {
 
       const afterStaleRelease = sessionManager.get('claude', session.sessionId);
       if (afterStaleRelease === null) throw new Error('expected released session');
-      await expect(
-        sessionManager.claimForJobAtomic(session.sessionId, 'job-resumed', afterStaleRelease.version),
-      ).resolves.toBe(true);
+      const claimedEntries: ProviderSession[] = [];
+      coordinatorCommit((c) => {
+        claimedEntries.push(
+          sessionManager.appendContinuationReplacementClaim(c, {
+            sessionId: session.sessionId,
+            staleJobId: 'job-stale',
+            resumedJobId: 'job-resumed',
+            workflowId: 'workflow-1',
+            workflowSlotId: 'workflow-1:0:0',
+            replacementGeneration: 1,
+            expectedVersion: afterStaleRelease.version,
+          }),
+        );
+        return undefined;
+      });
+      const claimedEntry = claimedEntries[0];
+      if (claimedEntry === undefined) throw new Error('expected committed replacement claim');
+      sessionManager.observeCommittedEntry(claimedEntry);
       coordinatorCommit((c) => {
         appendJobTerminalRecorded(c, {
           jobId: 'job-resumed',
           sessionId: session.sessionId,
           namespace: 'test-ns',
           project: '/tmp/project',
-          terminal: { content: 'done', outcome: { kind: 'completed' } },
-          continuity: null,
+          terminal: { content: 'done', durationMs: 0, outcome: { kind: 'completed' } },
         });
         return undefined;
       });
@@ -231,6 +245,9 @@ describe('continuation lease retention integration', () => {
       sessionManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-rejected-resume',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
@@ -264,6 +281,9 @@ describe('continuation lease retention integration', () => {
       sessionManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-launch-failure-stale',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
@@ -274,9 +294,24 @@ describe('continuation lease retention integration', () => {
 
       const afterStaleRelease = sessionManager.get('claude', session.sessionId);
       if (afterStaleRelease === null) throw new Error('expected released session');
-      await expect(
-        sessionManager.claimForJobAtomic(session.sessionId, 'job-launch-failed-resume', afterStaleRelease.version),
-      ).resolves.toBe(true);
+      const claimedEntries: ProviderSession[] = [];
+      coordinatorCommit((c) => {
+        claimedEntries.push(
+          sessionManager.appendContinuationReplacementClaim(c, {
+            sessionId: session.sessionId,
+            staleJobId: 'job-launch-failure-stale',
+            resumedJobId: 'job-launch-failed-resume',
+            workflowId: 'workflow-1',
+            workflowSlotId: 'workflow-1:0:0',
+            replacementGeneration: 1,
+            expectedVersion: afterStaleRelease.version,
+          }),
+        );
+        return undefined;
+      });
+      const claimedEntry = claimedEntries[0];
+      if (claimedEntry === undefined) throw new Error('expected committed replacement claim');
+      sessionManager.observeCommittedEntry(claimedEntry);
       await expect(
         sessionManager.clearContinuationLease({
           sessionId: session.sessionId,

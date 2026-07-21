@@ -21,9 +21,6 @@ export const testCounterRegistry: DomainEventRegistry = {
         ).run(event.body.id, event.body.delta, event.seq);
       },
     }),
-    defineDomainEvent({ type: 'test.counter.reset', schema: TEST_COUNTER_SCHEMA }),
-    defineDomainEvent({ type: 'discuss.message.recorded', schema: TEST_COUNTER_SCHEMA }),
-    defineDomainEvent({ type: 'workflow.step.completed', schema: TEST_COUNTER_SCHEMA }),
   ],
 };
 

@@ -1,11 +1,9 @@
 import type { Database } from '../../store/db.js';
 
 import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../store/append.js';
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus } from '../records.js';
-import type { ProviderScope } from '../../infra/provider-scope.js';
 
 type InitJobBase = {
   jobId: string;
@@ -17,11 +15,9 @@ type InitJobBase = {
   initialPhase?: JobStatus['phase'];
 };
 
-export type InitJobOptions = InitJobBase &
-  ({ jobKind?: Exclude<JobStatus['jobKind'], 'workflow'> } | { jobKind: 'workflow'; providerScope: ProviderScope });
+export type InitJobOptions = InitJobBase & { jobKind?: 'provider' };
 
 export type TerminalWriteOptions = {
-  continuity?: JobContinuitySnapshot | null;
   diagnostics?: JobTerminalDiagnostics;
 };
 

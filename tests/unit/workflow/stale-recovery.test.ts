@@ -24,6 +24,7 @@ function atom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
     stepIndex: 0,
     atomIndex: 0,
     atomKey: '0:0',
+    generation: 0,
     ...overrides,
   };
 }
@@ -42,10 +43,19 @@ function stateFor(staleAtom: LaunchedAtom): AwaitStepState {
 
 function executionPort(overrides: Partial<WorkflowExecutionPort> = {}): WorkflowExecutionPort {
   return {
-    coralDispatch: vi.fn(async () => ({ status: 'running' as const, job: 'job-new', session: 'session-new' })),
-    resume: vi.fn(async () => ({ status: 'running' as const, job: 'job-resumed', session: 'session-stale' })),
+    coralDispatch: vi.fn(async () => ({
+      kind: 'provider-session' as const,
+      status: 'running' as const,
+      jobId: 'job-new',
+      sessionId: 'session-new',
+    })),
+    resume: vi.fn(async () => ({
+      kind: 'provider-session' as const,
+      status: 'running' as const,
+      jobId: 'job-resumed',
+      sessionId: 'session-stale',
+    })),
     recordContinuationLease: vi.fn(async () => {}),
-    claimContinuationLease: vi.fn(async () => true),
     clearContinuationLease: vi.fn(async () => true),
     abort: vi.fn((jobIds: string[]) => ({ aborted: [...jobIds], notFound: [] })),
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
@@ -56,7 +66,7 @@ function executionPort(overrides: Partial<WorkflowExecutionPort> = {}): Workflow
 }
 
 describe('recoverStaleAtom continuation lease', () => {
-  it('records the lease before aborting and claims it after resume admission', async () => {
+  it('records replacement intent before aborting and passes its generation to atomic resume admission', async () => {
     const staleAtom = atom();
     const port = executionPort();
 
@@ -65,6 +75,7 @@ describe('recoverStaleAtom continuation lease', () => {
         time: { now: () => 100_000 },
         staleTimeoutMs: 1,
         staleAbortTimeoutMs: 30_000,
+        workflowJobId: 'workflow-1',
         onProgress: vi.fn(),
         buildPartialStepDetails: () => [],
       }),
@@ -73,46 +84,46 @@ describe('recoverStaleAtom continuation lease', () => {
     expect(port.recordContinuationLease).toHaveBeenCalledWith({
       sessionId: 'session-stale',
       jobId: 'job-stale',
+      workflowId: 'workflow-1',
+      workflowSlotId: 'workflow-1:0:0',
+      replacementGeneration: 1,
       reason: 'stale_recovery',
       expiresAt: expect.any(String),
     });
     expect(port.abort).toHaveBeenCalledWith(['job-stale']);
+    expect(port.resume).toHaveBeenCalledWith(
+      'claude',
+      expect.objectContaining({
+        parentWorkflowJobId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        workflowSlotGeneration: 1,
+        replacesWorkflowJobId: 'job-stale',
+        owner: { kind: 'workflow', id: 'workflow-1' },
+      }),
+      ctx,
+    );
     expect(vi.mocked(port.recordContinuationLease).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(port.abort).mock.invocationCallOrder[0],
     );
-    expect(port.claimContinuationLease).toHaveBeenCalledWith({
-      sessionId: 'session-stale',
-      staleJobId: 'job-stale',
-      resumedJobId: 'job-resumed',
-    });
-    expect(vi.mocked(port.resume).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(port.claimContinuationLease).mock.invocationCallOrder[0],
-    );
   });
 
-  it('continues with the resumed job when lease claim returns false after resume admission', async () => {
+  it('continues with the replacement returned by atomic resume admission', async () => {
     const staleAtom = atom();
     const state = stateFor(staleAtom);
     const onProgress = vi.fn();
-    const port = executionPort({
-      claimContinuationLease: vi.fn(async () => false),
-    });
+    const port = executionPort();
 
     await expect(
       recoverStaleAtom(state, port, ctx, {
         time: { now: () => 100_000 },
         staleTimeoutMs: 1,
         staleAbortTimeoutMs: 30_000,
+        workflowJobId: 'workflow-1',
         onProgress,
         buildPartialStepDetails: () => [],
       }),
     ).resolves.toBe(true);
 
-    expect(port.claimContinuationLease).toHaveBeenCalledWith({
-      sessionId: 'session-stale',
-      staleJobId: 'job-stale',
-      resumedJobId: 'job-resumed',
-    });
     expect(port.awaitLaunch).toHaveBeenCalledWith('job-resumed', expect.any(Number));
     expect(port.clearContinuationLease).not.toHaveBeenCalled();
     expect(state.pending.has('job-stale')).toBe(false);
@@ -120,9 +131,7 @@ describe('recoverStaleAtom continuation lease', () => {
       jobId: 'job-resumed',
       sessionId: 'session-stale',
     });
-    expect(onProgress).toHaveBeenCalledWith(
-      expect.stringContaining('resumed; continuation lease claim was already unavailable'),
-    );
+    expect(onProgress).toHaveBeenCalledWith(expect.stringContaining('resumed'));
   });
 
   it('does not abort when lease recording fails', async () => {
@@ -138,6 +147,7 @@ describe('recoverStaleAtom continuation lease', () => {
         time: { now: () => 100_000 },
         staleTimeoutMs: 1,
         staleAbortTimeoutMs: 30_000,
+        workflowJobId: 'workflow-1',
         onProgress: vi.fn(),
         buildPartialStepDetails: () => [],
       }),
@@ -160,6 +170,7 @@ describe('recoverStaleAtom continuation lease', () => {
         time: { now: () => 100_000 },
         staleTimeoutMs: 1,
         staleAbortTimeoutMs: 30_000,
+        workflowJobId: 'workflow-1',
         onProgress: vi.fn(),
         buildPartialStepDetails: () => [],
       }),
