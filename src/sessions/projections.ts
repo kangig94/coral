@@ -2,7 +2,7 @@ import { sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
-import { sameProviderCredentialSource } from '../infra/provider-credential-sources.js';
+import { isDeepStrictEqual } from 'node:util';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {
@@ -167,12 +167,12 @@ function upsertProjectionSession(
       previous.entry.sessionAuthority.kind === entry.sessionAuthority.kind &&
       (previous.entry.sessionAuthority.kind === 'orchestration' ||
         (entry.sessionAuthority.kind === 'provider' &&
-          sameProviderCredentialSource(previous.entry.sessionAuthority.source, entry.sessionAuthority.source)));
+          isDeepStrictEqual(previous.entry.sessionAuthority.binding, entry.sessionAuthority.binding)));
     if (previous.entry.provider !== entry.provider || !sameAuthority) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_mismatch',
+        code: 'session_authority_mismatch',
         userMessage: `Session projection authority changed for ${event.stream.id}.`,
-        remediation: 'Keep provider and credential source immutable after session.opened.',
+        remediation: 'Keep the provider binding immutable after session.opened.',
         context: { sessionId: event.stream.id },
       });
     }

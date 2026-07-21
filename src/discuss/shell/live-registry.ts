@@ -13,6 +13,7 @@ import type {
 } from './types.js';
 import type { WatchEvent } from '../watch.js';
 import { isWithinLiveSessionBoundary } from '../events.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 
 const WATCH_BUFFER_CAP = 500;
 const subscriberCursors = new WeakMap<LiveDiscussSession, Map<WatchSubscriber, number>>();
@@ -83,6 +84,7 @@ export type DiscussContextRegistry = {
 export type DiscussContextConstructionOptions = {
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
+  providerRegistry: ProviderBindingCatalog;
   discardSessionArtifacts?: (sessionId: string) => Promise<void>;
 };
 
@@ -111,6 +113,7 @@ export function getOrCreate(
     store,
     runtime: options.runtime,
     jobStatusReader: options.jobStatusReader,
+    providerRegistry: options.providerRegistry,
     ...(options.discardSessionArtifacts !== undefined
       ? { discardSessionArtifacts: options.discardSessionArtifacts }
       : {}),

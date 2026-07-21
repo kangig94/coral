@@ -1,7 +1,11 @@
-import { DAEMON_OWNED_CORAL_ENV_KEYS, readForwardedCoralEnv } from '../infra/env-sanitize.js';
+import {
+  DAEMON_OWNED_CORAL_ENV_KEYS,
+  invocationCoralEnvSnapshot,
+  readForwardedCoralEnv,
+} from '../infra/env-sanitize.js';
 import { FORWARDED_NETWORK_ENV_KEYS } from '../infra/network-env.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
+import type { ProviderScope } from '../infra/provider-scope.js';
 import type { Principal } from '../security/principal.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from './context-profile.js';
 
@@ -9,7 +13,7 @@ export function buildControllerEnv(
   body: Record<string, unknown>,
   coralEnvSnapshot: Readonly<Record<string, string>>,
 ): Record<string, string> {
-  const env = { ...coralEnvSnapshot };
+  const env = invocationCoralEnvSnapshot(coralEnvSnapshot);
   // Caller-forwarded CORAL_* config is authoritative over the daemon's boot
   // snapshot. The daemon's own CORAL_* is frozen at boot, so a value the caller
   // changed — or removed from settings — after the daemon started would never
@@ -73,7 +77,7 @@ export function buildInvocationContext(
   pluginRoot: string,
   coralEnvSnapshot: Readonly<Record<string, string>>,
   principal: Principal,
-  providerCredentials?: ProviderCredentialSet,
+  providerScope?: ProviderScope,
 ): InvocationContext | null {
   if (typeof body.projectRoot !== 'string' || body.projectRoot.length === 0) {
     return null;
@@ -83,7 +87,7 @@ export function buildInvocationContext(
     pluginRoot,
     coralEnv: buildControllerEnv(body, coralEnvSnapshot),
     principal,
-    ...(providerCredentials === undefined ? {} : { providerCredentials }),
+    ...(providerScope === undefined ? {} : { providerScope }),
   };
 }
 
@@ -93,5 +97,5 @@ export function buildInvocationContextFromQuery(
   coralEnvSnapshot: Readonly<Record<string, string>>,
   principal: Principal,
 ): InvocationContext {
-  return { projectRoot, pluginRoot, coralEnv: { ...coralEnvSnapshot }, principal };
+  return { projectRoot, pluginRoot, coralEnv: invocationCoralEnvSnapshot(coralEnvSnapshot), principal };
 }

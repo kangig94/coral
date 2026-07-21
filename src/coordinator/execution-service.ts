@@ -90,6 +90,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       sessionManager: this.sessionManager,
       launchAdmission: deps.launchCoordinator,
       durableSpawner: deps.launchCoordinator,
+      providerRegistry: deps.providerRegistry,
       runtime: this.runtime,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
@@ -134,7 +135,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchOrchestrator: this.launchOrchestrator,
       childPrincipalRegistry: deps.childPrincipalRegistry,
       parentPrincipal: ctx.principal,
-      providerCredentialSourceAvailability: deps.providerCredentialSourceAvailability,
       acquireServer: (spec, options) => this.acquireServer(spec, options),
     });
     this.launchService = new JobLaunchService({
@@ -258,19 +258,22 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.waitService.waitForJobTerminal(jobId, timeoutMs);
   }
 
-  recoverQueuedJob(launchRecord: JobLaunch): string {
+  recoverQueuedJob(launchRecord: JobLaunch): Promise<string> {
     return this.recoveryService.recoverQueuedJob(launchRecord);
   }
 
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean {
+  validateProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<boolean> {
     return this.recoveryService.validateProviderRecoveryAuthority(launchRecord);
   }
 
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null {
+  providerCredentialSourceForRecovery(launchRecord: JobLaunch): Promise<ProviderCredentialSourceRef | null> {
     return this.recoveryService.providerCredentialSourceForRecovery(launchRecord);
   }
 
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void } {
+  adoptRunningJob(
+    launchRecord: JobLaunch,
+    runtimeRecord: JobRuntime,
+  ): Promise<{ adopted: boolean; cleanup: () => void }> {
     return this.recoveryService.adoptRunningJob(launchRecord, runtimeRecord);
   }
 

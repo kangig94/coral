@@ -511,6 +511,7 @@ export function mapThreadStartParams(request: ProviderRequest, serviceTier?: Cod
   return {
     cwd: request.cwd,
     model: resolveCodexModel(request),
+    modelProvider: 'openai',
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
     ephemeral: false,
@@ -527,6 +528,7 @@ export function mapThreadResumeParams(
     threadId,
     cwd: request.cwd,
     model: resolveCodexModel(request),
+    modelProvider: 'openai',
     approvalPolicy: 'never',
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
     // ThreadMetadata — omitting sandbox causes a downgrade to the config default (read-only).

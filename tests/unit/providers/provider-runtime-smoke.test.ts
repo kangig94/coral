@@ -42,7 +42,9 @@ type SmokeRuntime = ProviderRuntime & {
 function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>): MockLease {
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
-  const rpcMock = vi.fn((method: string, params: Record<string, unknown>) => rpcImpl(method, params));
+  const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
+    method === 'config/read' ? Promise.resolve({ config: {} }) : rpcImpl(method, params),
+  );
   const subscribeMock = vi.fn((handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     handlers.add(handler);
     return () => {

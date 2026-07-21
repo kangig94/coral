@@ -14,7 +14,7 @@ import type {
   TranscriptEntry,
   ResolveResult,
 } from './session-types.js';
-import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
+import type { ProviderScope } from '../infra/provider-scope.js';
 
 const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
@@ -109,7 +109,7 @@ export interface SessionCreateOptions {
   maxEpochs?: number;
   quotaPerEpoch?: number;
   agentExecution?: Record<string, SessionCreatedAgentExecutionConfig>;
-  providerCredentials: ProviderCredentialSet;
+  providerScope: ProviderScope;
 }
 
 export type DecisionContext = {
@@ -153,7 +153,7 @@ export function decideSessionCreate(
           quotaPerEpoch,
         },
         agentExecution,
-        providerCredentials: opts.providerCredentials,
+        providerScope: opts.providerScope,
       }),
       makeEvent(sessionId, projectRoot, topic, seq + 1, 'bidding.opened', ts, {}),
     ],

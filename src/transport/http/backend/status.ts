@@ -23,6 +23,7 @@ type BackendStatus =
       kernel: BackendHealth['kernel'];
       textProjectionState: BackendHealth['textProjectionState'];
       components: BackendHealth['components'];
+      systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
     }
   | {

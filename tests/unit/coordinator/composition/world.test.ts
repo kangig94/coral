@@ -9,6 +9,7 @@ import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-superviso
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
 const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
+const SYSTEM_PROVIDER_SCOPE_ENV = 'CORAL_SYSTEM_PROVIDER_SCOPE';
 
 function envSnapshot(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
   const snapshot: Record<string, string> = {};
@@ -203,5 +204,34 @@ describe('createCoordinatorWorld bind host guard', () => {
     expect(thrown).toBeInstanceOf(CoralSetupError);
     const setupError = thrown as CoralSetupError;
     expect(setupError.code).toBe('backend_remote_bind_invalid_allowlist');
+  });
+});
+
+describe('createCoordinatorWorld system provider scope', () => {
+  const systemScope = {
+    origin: 'system',
+    name: 'automation',
+    profiles: [
+      {
+        provider: 'codex',
+        profile: { canonicalLocation: '/accounts/codex-system', routing: { kind: 'home' } },
+      },
+    ],
+  } as const;
+
+  it('loads a strict named system scope from daemon boot configuration', () => {
+    const world = createWorld({ [SYSTEM_PROVIDER_SCOPE_ENV]: JSON.stringify(systemScope) });
+
+    expect(world.systemProviderScope).toEqual(systemScope);
+  });
+
+  it.each([
+    ['caller origin', { ...systemScope, origin: 'caller', name: undefined }],
+    ['missing name', { origin: 'system', profiles: systemScope.profiles }],
+    ['unknown field', { ...systemScope, ambient: true }],
+  ])('rejects %s before coordinator composition', (_name, value) => {
+    expect(() => createWorld({ [SYSTEM_PROVIDER_SCOPE_ENV]: JSON.stringify(value) })).toThrowError(
+      expect.objectContaining({ code: 'system_provider_scope_invalid' }),
+    );
   });
 });

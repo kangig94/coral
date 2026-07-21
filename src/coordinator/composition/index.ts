@@ -13,6 +13,7 @@ import type { ServerResponse } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
+import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
@@ -519,7 +520,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const readOnlyInvocationContext: InvocationContext = {
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
-    coralEnv: { ...world.coralEnvSnapshot },
+    coralEnv: invocationCoralEnvSnapshot(world.coralEnvSnapshot),
     principal: {
       subject: 'system',
       transport: 'internal',
@@ -848,8 +849,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     identity,
     time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
-    providerCredentialDefaults: world.providerCredentialDefaults,
-    ambientClaudeLocation: world.ambientClaudeLocation,
+    ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     remoteAccess: world.remoteAccess,
     childPrincipals: world.childPrincipalRegistry,
     admin: {
@@ -870,6 +870,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     health: {
       read: () => {
         const env = { ...world.coralEnvSnapshot };
+        delete env.CORAL_SYSTEM_PROVIDER_SCOPE;
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
         // Coarse `status` field for clients that validate the strict
@@ -890,6 +891,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         // transport types use `string` because the brand is enforced producer-side.
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
+        const systemProviderScope = world.systemProviderScope;
 
         const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
           storeServices === null ? [] : (options.getConsumerStuck() ?? []);
@@ -932,6 +934,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           kbDaemon,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
+          ...(systemProviderScope === undefined
+            ? {}
+            : {
+                systemProviderScope: {
+                  name: systemProviderScope.name,
+                  providers: systemProviderScope.profiles.map((profile) => profile.provider).sort(),
+                },
+              }),
         };
       },
     },
@@ -1012,6 +1022,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     eventBus: world.eventBus,
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
+    ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     server,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
@@ -1079,7 +1090,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
-    providerCredentialDefaults: world.providerCredentialDefaults,
+    ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

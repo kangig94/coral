@@ -44,6 +44,33 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
 
 describe('claudePreflight', () => {
   it.each([
+    {
+      layer: 'selected-profile',
+      settingsPath: '/home/user/.claude/settings.json',
+      contents: '{invalid',
+      problem: 'contain invalid JSON',
+    },
+    {
+      layer: 'project',
+      settingsPath: '/workspace/project/.claude/settings.json',
+      contents: '[]',
+      problem: 'are not a JSON object',
+    },
+  ])('identifies the $layer settings layer and gives path-safe recovery for malformed JSON', async (fixture) => {
+    const runtime = claudePreflightRuntime({ [fixture.settingsPath]: fixture.contents });
+
+    const failure = await claudePreflight(runtime).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain(`the ${fixture.layer} settings ${fixture.problem}`);
+    expect(message).toContain('Repair or remove that settings file, then retry.');
+    expect(message).toContain('docs/configuration.md#multi-account-provider-routing');
+    expect(message).not.toContain(fixture.settingsPath);
+    expect(runtime.runExact).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ['account settings', '/home/user/.claude/settings.json'],
     ['project settings', '/workspace/project/.claude/settings.json'],
     ['local project settings', '/workspace/project/.claude/settings.local.json'],
@@ -54,7 +81,7 @@ describe('claudePreflight', () => {
     });
 
     await expect(claudePreflight(runtime)).rejects.toThrow(
-      `Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK' in '${settingsPath}'`,
+      "Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK'",
     );
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
@@ -66,7 +93,7 @@ describe('claudePreflight', () => {
     });
 
     await expect(claudePreflight(runtime)).rejects.toThrow(
-      `Unsupported Claude credential selector 'claude_code_use_bedrock' in '${settingsPath}'`,
+      "Unsupported Claude credential selector 'claude_code_use_bedrock'",
     );
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
@@ -77,9 +104,7 @@ describe('claudePreflight', () => {
       const settingsPath = '/home/user/.claude/settings.json';
       const runtime = claudePreflightRuntime({ [settingsPath]: JSON.stringify({ [helper]: '/usr/bin/helper' }) });
 
-      await expect(claudePreflight(runtime)).rejects.toThrow(
-        `Unsupported Claude credential helper '${helper}' in '${settingsPath}'`,
-      );
+      await expect(claudePreflight(runtime)).rejects.toThrow(`Unsupported Claude credential helper '${helper}'`);
       expect(runtime.runExact).not.toHaveBeenCalled();
     },
   );

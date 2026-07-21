@@ -229,7 +229,7 @@ describe('execution discuss tools', () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
     const stores = new Map([[harness.projectRoot, harness]]);
-    const { providerCredentials: _providerCredentials, ...unboundContext } = harness.ctx;
+    const { providerScope: _providerScope, ...unboundContext } = harness.ctx;
 
     const result = await callDiscussTool(
       {
@@ -247,9 +247,8 @@ describe('execution discuss tools', () => {
     );
     const error = parseToolError(result);
 
-    expect(error).toMatchObject({ error: 'provider_credential_source_missing' });
-    expect(String(error.message)).toContain('current Coral CLI');
-    expect(String(error.message)).toContain('CODEX_HOME and CLAUDE_CONFIG_DIR');
+    expect(error).toMatchObject({ error: 'provider_scope_missing' });
+    expect(String(error.message)).toContain('launch-capable client');
 
     harness.cleanup();
   });

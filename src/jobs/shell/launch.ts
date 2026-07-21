@@ -35,6 +35,9 @@ import { TerminalWriteError } from '../terminal/write-error.js';
 import { buildJobEventRefs } from '../refs.js';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 import { applyInjectBundle } from '../../providers/inject.js';
+import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
+import { ProviderBindingRuntimeError } from '../../providers/contracts/binding.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 
 const QUEUE_FULL_MESSAGE = 'All slots and queue are full. Try again later.';
 type LauncherJobEventBody = JobQueueAdmittedBody | JobQueueQueuedBody | JobAbortedBody;
@@ -67,6 +70,7 @@ export interface LaunchOrchestratorDeps {
   sessionManager: SessionJobClaimPort;
   launchAdmission: JobAdmissionPort;
   durableSpawner: ProviderDurableSpawner;
+  providerRegistry: ProviderBindingCatalog;
   runtime: Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'paths'>;
   backendNamespace: string;
   bundleHash: string;
@@ -535,7 +539,37 @@ export class LaunchOrchestrator {
     pool: LaunchPool,
     protectedEnv?: Record<string, string>,
   ): Promise<void> {
-    const runtime = this.createProviderRuntime(provider, request, sessionId, jobId, signal, pool, protectedEnv);
+    const session = this.deps.sessionManager.get(provider.name, sessionId);
+    if (session?.sessionAuthority?.kind !== 'provider') {
+      throw new ProviderBindingRuntimeError(
+        { reason: 'invalid-persisted-binding', provider: provider.name },
+        `Provider session ${sessionId} has no binding.`,
+      );
+    }
+    const binding = this.deps.providerRegistry.rehydrateBinding(session.sessionAuthority.binding);
+    if (!binding.ok || binding.value.provider !== provider.name) {
+      const failure = binding.ok
+        ? { reason: 'invalid-persisted-binding' as const, provider: provider.name }
+        : binding.failure;
+      throw new ProviderBindingRuntimeError(failure, this.deps.providerRegistry.renderBindingFailure(failure));
+    }
+    const readiness = await binding.value.readiness('launch', this.deps.runtime.storage);
+    if (!readiness.ok) {
+      throw new ProviderBindingRuntimeError(
+        readiness.failure,
+        this.deps.providerRegistry.renderBindingFailure(readiness.failure),
+      );
+    }
+    const runtime = this.createProviderRuntime(
+      provider,
+      binding.value.credentialSource(),
+      request,
+      sessionId,
+      jobId,
+      signal,
+      pool,
+      protectedEnv,
+    );
     // Provider-agnostic inject bundle: merge into systemPrompt once for every adapter.
     const requestWithInject = applyInjectBundle(request, runtime);
     let latestContinuity: JobContinuitySnapshot | null = null;
@@ -634,6 +668,22 @@ export class LaunchOrchestrator {
       return;
     }
 
+    if (error instanceof ProviderBindingRuntimeError) {
+      this.failJob(jobId, sessionId, {
+        content: '',
+        outcome: {
+          kind: 'job_fault',
+          fault: {
+            kind: 'provider_binding',
+            provider: error.failure.provider,
+            reason: error.failure.reason,
+            message: error.message,
+          },
+        },
+      });
+      return;
+    }
+
     this.failJob(jobId, sessionId, {
       content: '',
       outcome: {
@@ -656,6 +706,7 @@ export class LaunchOrchestrator {
 
   private createProviderRuntime(
     provider: ProviderSpec,
+    credentialSource: ProviderCredentialSourceRef,
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
@@ -663,12 +714,8 @@ export class LaunchOrchestrator {
     pool: LaunchPool,
     protectedEnv?: Record<string, string>,
   ): ProviderRuntime {
-    const session = this.deps.sessionManager.get(provider.name, sessionId);
-    if (session?.sessionAuthority?.kind !== 'provider' || session.sessionAuthority.source.provider !== provider.name) {
-      throw new Error(`provider_credential_source_missing: ${sessionId}`);
-    }
     const providerContext = buildProviderExecutionContext({
-      source: session.sessionAuthority.source,
+      source: credentialSource,
       request,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
       protectedEnv,

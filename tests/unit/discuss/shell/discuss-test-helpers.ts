@@ -36,7 +36,9 @@ import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/di
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
@@ -171,6 +173,8 @@ export function createDiscussContextOptions(
   runtime: Pick<Runtime, 'ids' | 'env' | 'time' | 'storage' | 'paths'>,
   progressStore?: Pick<JobStore, 'readStatus'>,
 ): DiscussContextConstructionOptions {
+  const providerRegistry = new ProviderRegistry();
+  registerBuiltInProviders(providerRegistry);
   return {
     runtime: {
       ids: runtime.ids,
@@ -183,6 +187,7 @@ export function createDiscussContextOptions(
       read: (jobId) => progressStore?.readStatus(jobId) ?? null,
       readExit: () => null,
     },
+    providerRegistry,
   };
 }
 
@@ -230,7 +235,7 @@ export function createDiscussHarness(
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_PROVIDER_SCOPE,
   };
   let cleaned = false;
 
@@ -322,7 +327,7 @@ export async function persistSession(
     createdAt,
     {
       agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
-      providerCredentials: harness.ctx.providerCredentials ?? TEST_PROVIDER_CREDENTIALS,
+      providerScope: harness.ctx.providerScope ?? TEST_PROVIDER_SCOPE,
     },
   );
   if (!created.ok) {

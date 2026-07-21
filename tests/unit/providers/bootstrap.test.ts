@@ -248,6 +248,7 @@ describe('registerBuiltInProviders', () => {
         kind: 'config-dir',
         configDir: '/accounts/claude-a',
         projectsRoot: '/accounts/claude-a/projects',
+        emitConfigDir: true,
       },
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',

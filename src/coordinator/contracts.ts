@@ -11,12 +11,11 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { SessionEntry } from '../sessions/entry.js';
 import type { CommitEventsFn } from '../store/append.js';
-import type { ProviderCatalog } from '../providers/catalog.js';
+import type { ProviderBindingCatalog } from '../providers/catalog.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
-import type { ProviderCredentialSourceAvailabilityPort } from '../infra/provider-credential-sources.js';
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;
@@ -71,9 +70,8 @@ export type ExecutionServiceDeps = {
   providerHostManager: ExecutionProviderHostManager;
   launchCoordinator: CoordinatorLaunchCoordinator;
   eventBus: TypedEventBus;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   childPrincipalRegistry: ChildPrincipalRegistry;
-  providerCredentialSourceAvailability: ProviderCredentialSourceAvailabilityPort;
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };

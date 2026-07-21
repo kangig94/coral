@@ -1,7 +1,7 @@
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
@@ -82,7 +82,7 @@ function sessionEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
     provider: 'codex',
-    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
     name: sessionId,
     state: 'pending',
     retention: 'retain',
@@ -590,7 +590,7 @@ describe('journal commit primitive', () => {
                 jobKind: 'workflow',
                 request: {
                   ...launchBody('job-wrong-workflow-authority', providerEntry.sessionId).request,
-                  providerCredentials: TEST_PROVIDER_CREDENTIALS,
+                  providerScope: TEST_PROVIDER_SCOPE,
                 },
               },
             });

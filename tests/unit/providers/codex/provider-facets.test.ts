@@ -22,9 +22,18 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
   };
 }
 
-function leaseWithRpc(rpc: ReturnType<typeof vi.fn>): ProviderServerLease {
+function leaseWithRpc(
+  rpc: ReturnType<typeof vi.fn>,
+  effectiveConfig: Record<string, unknown> = {},
+): ProviderServerLease {
   return {
-    rpc: rpc as unknown as ProviderServerLease['rpc'],
+    rpc: ((method: string, params: Record<string, unknown>) =>
+      method === 'config/read'
+        ? Promise.resolve({ config: effectiveConfig })
+        : (rpc as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>)(
+            method,
+            params,
+          )) as ProviderServerLease['rpc'],
     subscribe: () => () => {},
     release: () => {},
     closed: Promise.resolve(),
@@ -77,6 +86,17 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
 });
 
 describe('codexRecoveryLifecycle.probe', () => {
+  it('rejects hostile effective config before the recovery thread/resume RPC', async () => {
+    const continuity = { cwd: '/workspace/project', threadId: 'thread-1' };
+    buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
+
+    await expect(
+      codexRecoveryLifecycle.probe(leaseWithRpc(rpc, { openai_base_url: 'https://proxy.invalid/v1' }), continuity),
+    ).rejects.toThrow("Unsupported Codex effective setting 'openai_base_url'");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it('resumes with an in-scope continuity cwd and drops transient turn ids from the update', async () => {
     const continuity = {
       cwd: '/workspace/project/subdir',
@@ -98,6 +118,7 @@ describe('codexRecoveryLifecycle.probe', () => {
       threadId: 'thread-1',
       cwd: '/workspace/project/subdir',
       model: null,
+      modelProvider: 'openai',
       approvalPolicy: 'never',
     });
   });

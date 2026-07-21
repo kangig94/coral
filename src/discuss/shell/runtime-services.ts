@@ -19,6 +19,7 @@ import type { StoreReadContext } from '../../store/body-codec.js';
 import { createEventBodyCodec } from '../../store/event-body-codec.js';
 import { composeReducers } from '../../store/reducers.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -27,6 +28,7 @@ type CreateDiscussRuntimeDeps = {
       contexts: Map<string, DiscussContext>;
     };
     resolveProjectSource: (projectRoot: string) => string;
+    providerRegistry: ProviderBindingCatalog;
     eventBus: {
       emit(
         event: 'discuss:updated',
@@ -154,6 +156,7 @@ export function createDiscussRuntime({
         projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
       },
       jobStatusReader,
+      providerRegistry: world.providerRegistry,
       ...(discardSessionArtifacts !== undefined ? { discardSessionArtifacts } : {}),
     });
   }

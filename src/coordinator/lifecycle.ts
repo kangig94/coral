@@ -46,6 +46,8 @@ import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
+import type { SystemProviderScope } from '../infra/provider-scope.js';
+import { CoralSetupError } from '../runtime/errors.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -344,6 +346,7 @@ export type LifecycleDeps = {
   readonly eventBus: TypedEventBus;
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
+  readonly systemProviderScope?: SystemProviderScope;
   readonly server: Server;
   readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -558,6 +561,16 @@ async function runLifecycleStartup({
     signal.throwIfAborted();
 
     registerBuiltInProvidersFn(providerRegistry);
+    if (deps.systemProviderScope !== undefined) {
+      const decodedScope = providerRegistry.decodeScope(deps.systemProviderScope);
+      if (!decodedScope.ok) {
+        throw new CoralSetupError({
+          code: 'system_provider_scope_invalid',
+          userMessage: `Named system provider scope '${deps.systemProviderScope.name}' is invalid.`,
+          remediation: providerRegistry.renderBindingFailure(decodedScope.failure),
+        });
+      }
+    }
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
     // recovery work. KB daemon startup cannot gate daemon liveness. The CLI's

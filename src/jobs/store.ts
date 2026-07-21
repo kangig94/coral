@@ -345,7 +345,7 @@ export class JobStore implements JobProgressStore {
         cwd: opts.projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        ...(opts.jobKind === 'workflow' ? { providerCredentials: opts.providerCredentials } : {}),
+        ...(opts.jobKind === 'workflow' ? { providerScope: opts.providerScope } : {}),
       },
       createdAt,
     });

@@ -19,7 +19,10 @@ export type KbDaemonRequestMethod =
   | 'kb.warmup'
   | 'expansion.rpc';
 
-type KbDaemonParentRequestMethod = 'curate.assistant.complete' | 'curate.assistant.cancel';
+type KbDaemonParentRequestMethod =
+  | 'curate.assistant.complete'
+  | 'curate.usage-budget.exhausted'
+  | 'curate.request.cancel';
 
 const KB_DAEMON_CURATE_ASSISTANT_PURPOSES = [
   'classification',
@@ -128,7 +131,7 @@ export type KbDaemonCurateAssistantCompleteRequest = {
   permissionMode?: KbDaemonCurateAssistantPermissionMode;
 };
 
-export type KbDaemonCurateAssistantCancelRequest = {
+export type KbDaemonCurateRequestCancelRequest = {
   requestId: string;
   reason?: string;
 };
@@ -323,7 +326,9 @@ export function isKbDaemonParentRequestMessage(value: unknown): value is KbDaemo
     record.type === KB_DAEMON_PARENT_REQUEST_MESSAGE &&
     typeof record.id === 'string' &&
     record.id.length > 0 &&
-    (record.method === 'curate.assistant.complete' || record.method === 'curate.assistant.cancel')
+    (record.method === 'curate.assistant.complete' ||
+      record.method === 'curate.usage-budget.exhausted' ||
+      record.method === 'curate.request.cancel')
   );
 }
 
@@ -466,7 +471,7 @@ export function isKbDaemonCurateAssistantCompleteRequest(
   );
 }
 
-export function isKbDaemonCurateAssistantCancelRequest(value: unknown): value is KbDaemonCurateAssistantCancelRequest {
+export function isKbDaemonCurateRequestCancelRequest(value: unknown): value is KbDaemonCurateRequestCancelRequest {
   if (value === null || typeof value !== 'object') {
     return false;
   }

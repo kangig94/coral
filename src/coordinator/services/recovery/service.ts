@@ -26,17 +26,15 @@ import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { SessionAuthority, SessionEntry } from '../../../sessions/entry.js';
 import { nowIsoString } from '../../../infra/time.js';
-import type { ProviderCatalog } from '../../../providers/catalog.js';
+import type { ProviderBindingCatalog } from '../../../providers/catalog.js';
+import type { ProviderBindingFailure } from '../../../providers/contracts/binding.js';
 import type { ProviderArtifactHandleInput } from '../../../providers/contract.js';
 import type { ExecutionProviderServerAttachment, ExecutionProviderHostManager } from '../../contracts.js';
 import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../../jobs/contracts/admission.js';
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import type {
-  ProviderCredentialSourceAvailabilityPort,
-  ProviderCredentialSourceRef,
-} from '../../../infra/provider-credential-sources.js';
+import type { ProviderCredentialSourceRef } from '../../../infra/provider-credential-sources.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
@@ -111,12 +109,11 @@ export interface RecoveryServiceDeps {
   providerHostManager: ExecutionProviderHostManager;
   launchAdmission: Pick<JobAdmissionPort, 'releaseLaunch'>;
   launchRecovery: JobLaunchRecoveryPort;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   jobPools: Map<string, LaunchPool>;
   launchOrchestrator: RecoveredJobLifecyclePort;
   childPrincipalRegistry: ChildPrincipalRegistry;
   parentPrincipal: Principal;
-  providerCredentialSourceAvailability: ProviderCredentialSourceAvailabilityPort;
   acquireServer?: (
     spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
@@ -129,16 +126,15 @@ export class RecoveryService {
     this.deps = deps;
   }
 
-  private providerContext(session: SessionEntry, request: ProviderRequest, jobId: string): ProviderExecutionContext {
-    if (
-      session.sessionAuthority?.kind !== 'provider' ||
-      session.sessionAuthority.source.provider !== session.provider
-    ) {
-      throw new Error(`provider_credential_source_missing: ${session.sessionId}`);
-    }
+  private providerContext(
+    session: SessionEntry,
+    source: ProviderCredentialSourceRef,
+    request: ProviderRequest,
+    jobId: string,
+  ): ProviderExecutionContext {
     const protectedEnv = this.recoveryChildEnv(session, jobId);
     return buildProviderExecutionContext({
-      source: session.sessionAuthority.source,
+      source,
       request,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
       protectedEnv,
@@ -163,36 +159,43 @@ export class RecoveryService {
     });
   }
 
-  private readProviderSession(
+  private async readProviderSession(
     launchRecord: JobLaunch,
-  ): { ok: true; session: ProviderSessionEntry } | { ok: false; reason: 'missing' | 'mismatch' | 'unavailable' } {
-    if (launchRecord.provider === null || launchRecord.sessionId === null) return { ok: false, reason: 'missing' };
+  ): Promise<
+    | { ok: true; session: ProviderSessionEntry; source: ProviderCredentialSourceRef }
+    | { ok: false; failure: ProviderBindingFailure }
+  > {
+    const provider = launchRecord.provider;
+    if (provider === null || launchRecord.sessionId === null) {
+      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider: provider ?? 'unknown' } };
+    }
     let session: SessionEntry | null;
     try {
       session = this.deps.sessionManager.readById(launchRecord.sessionId, { forceFresh: true });
     } catch {
-      return { ok: false, reason: 'mismatch' };
+      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
-    if (session === null) return { ok: false, reason: 'missing' };
+    if (session === null) return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     if (
       session?.sessionAuthority.kind !== 'provider' ||
       session.provider !== launchRecord.provider ||
-      session.sessionAuthority.source.provider !== launchRecord.provider
+      session.sessionAuthority.binding.provider !== launchRecord.provider
     ) {
-      return { ok: false, reason: 'mismatch' };
+      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
-    if (!this.deps.providerCredentialSourceAvailability.isAvailable(session.sessionAuthority.source)) {
-      return { ok: false, reason: 'unavailable' };
+    const binding = this.deps.providerRegistry.rehydrateBinding(session.sessionAuthority.binding);
+    if (!binding.ok) return { ok: false, failure: binding.failure };
+    if (binding.value.provider !== provider) {
+      return { ok: false, failure: { reason: 'invalid-persisted-binding', provider } };
     }
-    return { ok: true, session: session as ProviderSessionEntry };
+    const readiness = await binding.value.readiness('recovery', this.deps.runtime.storage);
+    if (!readiness.ok) return { ok: false, failure: readiness.failure };
+    return { ok: true, session: session as ProviderSessionEntry, source: binding.value.credentialSource() };
   }
 
-  private failSourceIntegrity(
-    launchRecord: JobLaunch,
-    reason: 'missing' | 'mismatch' | 'unavailable',
-    message: string,
-  ): void {
+  private failBindingIntegrity(launchRecord: JobLaunch, failure: ProviderBindingFailure): void {
     if (launchRecord.sessionId === null) return;
+    const message = this.deps.providerRegistry.renderBindingFailure(failure);
     this.completeRecoveredJob(
       launchRecord.jobId,
       launchRecord.sessionId,
@@ -200,26 +203,22 @@ export class RecoveryService {
         content: message,
         outcome: {
           kind: 'job_fault',
-          fault: { kind: 'provider_credential_source', reason, message },
+          fault: { kind: 'provider_binding', provider: failure.provider, reason: failure.reason, message },
         },
       },
       'error',
     );
   }
 
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean {
-    return this.providerCredentialSourceForRecovery(launchRecord) !== null;
+  async validateProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<boolean> {
+    return (await this.providerCredentialSourceForRecovery(launchRecord)) !== null;
   }
 
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null {
+  async providerCredentialSourceForRecovery(launchRecord: JobLaunch): Promise<ProviderCredentialSourceRef | null> {
     requireProviderLaunchRecord(launchRecord, 'validateProviderRecoveryAuthority');
-    const result = this.readProviderSession(launchRecord);
-    if (result.ok) return result.session.sessionAuthority.source;
-    this.failSourceIntegrity(
-      launchRecord,
-      result.reason,
-      `Recovered job ${launchRecord.jobId} has ${result.reason} provider account authority and cannot continue safely. Start a new session or workflow after selecting and authenticating the intended provider account.`,
-    );
+    const result = await this.readProviderSession(launchRecord);
+    if (result.ok) return result.source;
+    this.failBindingIntegrity(launchRecord, result.failure);
     return null;
   }
 
@@ -264,13 +263,9 @@ export class RecoveryService {
     if (!appServer?.interrupt) {
       return;
     }
-    const storedSession = this.readProviderSession(launchRecord);
+    const storedSession = await this.readProviderSession(launchRecord);
     if (!storedSession.ok) {
-      this.failSourceIntegrity(
-        launchRecord,
-        storedSession.reason,
-        `Recovered job ${launchRecord.jobId} has ${storedSession.reason} provider account authority and cannot be interrupted safely. Start a new session after selecting and authenticating the intended provider account.`,
-      );
+      this.failBindingIntegrity(launchRecord, storedSession.failure);
       return;
     }
     const session = storedSession.session;
@@ -284,7 +279,7 @@ export class RecoveryService {
       request,
       continuity,
       { storage: this.deps.runtime.storage },
-      this.providerContext(session, request, launchRecord.jobId),
+      this.providerContext(session, storedSession.source, request, launchRecord.jobId),
     );
     const liveServer = await this.deps.providerHostManager.borrowLiveServer(spec, {
       serverGeneration: runtimeRecord.providerMeta.serverGeneration,
@@ -300,14 +295,15 @@ export class RecoveryService {
     launchRecord: ProviderLaunchRecord;
     runtimeRecord: AppServerRuntime;
     session: ProviderSessionEntry;
+    source: ProviderCredentialSourceRef;
     recovery: ProviderRecoveryContract;
     continuity: ProviderContinuityBlob | undefined;
     preservedConversationRef: string | undefined;
   }): Promise<{ mutation: SessionContinuityMutation; probeOutcome: InterruptedProbeOutcome }> {
-    const { launchRecord, runtimeRecord, session, recovery, continuity, preservedConversationRef } = options;
+    const { launchRecord, runtimeRecord, session, source, recovery, continuity, preservedConversationRef } = options;
     const jobDir = this.deps.progressStore.jobDir(launchRecord.jobId);
     const artifactResult = await recovery.finalizeFromArtifacts({
-      source: session.sessionAuthority.source,
+      source,
       stdoutPath: join(jobDir, 'stdout'),
       stderrPath: join(jobDir, 'stderr'),
       exitCode: null,
@@ -422,12 +418,14 @@ export class RecoveryService {
     launchRecord: ProviderLaunchRecord;
     runtimeRecord: AppServerRuntime;
     session: ProviderSessionEntry;
+    source: ProviderCredentialSourceRef;
     appServer: ProviderAppServerContract;
     recovery: ProviderRecoveryContract;
     continuity: ProviderContinuityBlob;
     recoveryConversationRef: string | undefined;
   }): Promise<{ mutation: SessionContinuityMutation; probeOutcome: InterruptedProbeOutcome }> {
-    const { launchRecord, runtimeRecord, session, appServer, recovery, continuity, recoveryConversationRef } = options;
+    const { launchRecord, runtimeRecord, session, source, appServer, recovery, continuity, recoveryConversationRef } =
+      options;
     const probe = recovery.probe;
     if (probe === undefined) {
       throw new Error(`Provider '${launchRecord.provider}' has no interrupted recovery probe.`);
@@ -437,7 +435,7 @@ export class RecoveryService {
       request,
       continuity,
       { storage: this.deps.runtime.storage },
-      this.providerContext(session, request, launchRecord.jobId),
+      this.providerContext(session, source, request, launchRecord.jobId),
     );
 
     try {
@@ -482,12 +480,13 @@ export class RecoveryService {
     launchRecord: ProviderLaunchRecord;
     runtimeRecord: AppServerRuntime;
     session: ProviderSessionEntry;
+    source: ProviderCredentialSourceRef;
   }): Promise<{
     mutation: SessionContinuityMutation;
     probeOutcome: InterruptedProbeOutcome;
     recoveryConversationRef: string | undefined;
   }> {
-    const { launchRecord, runtimeRecord, session } = options;
+    const { launchRecord, runtimeRecord, session, source } = options;
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
     const appServer = providerEntry?.appServer;
     const recovery = providerEntry?.recovery;
@@ -530,6 +529,7 @@ export class RecoveryService {
           launchRecord,
           runtimeRecord,
           session,
+          source,
           recovery,
           continuity,
           preservedConversationRef: recoveryConversationRef,
@@ -543,6 +543,7 @@ export class RecoveryService {
           launchRecord,
           runtimeRecord,
           session,
+          source,
           appServer,
           recovery,
           continuity,
@@ -582,13 +583,9 @@ export class RecoveryService {
       return;
     }
 
-    const storedSession = this.readProviderSession(launchRecord);
+    const storedSession = await this.readProviderSession(launchRecord);
     if (!storedSession.ok) {
-      this.failSourceIntegrity(
-        launchRecord,
-        storedSession.reason,
-        `Recovered job ${launchRecord.jobId} has ${storedSession.reason} provider account authority and cannot continue safely. Start a new session or workflow after selecting and authenticating the intended provider account.`,
-      );
+      this.failBindingIntegrity(launchRecord, storedSession.failure);
       return;
     }
     const session = storedSession.session;
@@ -596,6 +593,7 @@ export class RecoveryService {
       launchRecord,
       runtimeRecord,
       session,
+      source: storedSession.source,
     });
 
     await this.materializeInterruptedAppServerRecovery({
@@ -608,17 +606,13 @@ export class RecoveryService {
     });
   }
 
-  recoverQueuedJob(launchRecord: JobLaunch): string {
+  async recoverQueuedJob(launchRecord: JobLaunch): Promise<string> {
     requireProviderLaunchRecord(launchRecord, 'recoverQueuedJob');
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
-    const sessionResult = this.readProviderSession(launchRecord);
+    const sessionResult = await this.readProviderSession(launchRecord);
     if (!sessionResult.ok) {
-      this.failSourceIntegrity(
-        launchRecord,
-        sessionResult.reason,
-        `Recovered queued job ${jobId} has ${sessionResult.reason} provider account authority and cannot continue safely. Start a new session after selecting and authenticating the intended provider account.`,
-      );
+      this.failBindingIntegrity(launchRecord, sessionResult.failure);
       return jobId;
     }
     const session = sessionResult.session;
@@ -678,7 +672,10 @@ export class RecoveryService {
     return { ok: true, nextVersion: expectedVersion };
   }
 
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void } {
+  async adoptRunningJob(
+    launchRecord: JobLaunch,
+    runtimeRecord: JobRuntime,
+  ): Promise<{ adopted: boolean; cleanup: () => void }> {
     requireProviderLaunchRecord(launchRecord, 'adoptRunningJob');
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
@@ -686,14 +683,19 @@ export class RecoveryService {
     if (!isDurableCliRuntime(runtimeRecord)) {
       throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
     }
-    const sessionResult = this.readProviderSession(launchRecord);
+    const sessionResult = await this.readProviderSession(launchRecord);
     if (!sessionResult.ok) {
-      this.deps.runtime.process.kill(runtimeRecord.pid, 'SIGTERM');
-      this.failSourceIntegrity(
-        launchRecord,
-        sessionResult.reason,
-        `Recovered running job ${jobId} has ${sessionResult.reason} provider account authority and cannot continue safely. Start a new session after selecting and authenticating the intended provider account.`,
-      );
+      try {
+        const signalled = this.deps.runtime.process.kill(runtimeRecord.pid, 'SIGTERM');
+        if (!signalled) {
+          backendLog.warn(`Could not signal provider process ${runtimeRecord.pid} for rejected recovery ${jobId}.`);
+        }
+      } catch (error: unknown) {
+        backendLog.warn(
+          `Could not signal provider process ${runtimeRecord.pid} for rejected recovery ${jobId}: ${errorMessage(error)}`,
+        );
+      }
+      this.failBindingIntegrity(launchRecord, sessionResult.failure);
       return { adopted: false, cleanup: () => {} };
     }
 

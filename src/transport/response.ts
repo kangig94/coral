@@ -58,7 +58,7 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
   let statusCode = 500;
   switch (result.code) {
     case 'invalid_request':
-    case 'provider_credential_source_missing':
+    case 'provider_scope_missing':
       statusCode = 400;
       break;
     case 'not_found':
@@ -83,6 +83,9 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
       break;
     case 'kb_daemon_protocol_error':
       statusCode = 502;
+      break;
+    default:
+      if (result.code.startsWith('provider_binding_')) statusCode = 400;
       break;
   }
   const body = {

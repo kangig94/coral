@@ -14,7 +14,7 @@ import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../
 import { defineProvider, type ProviderDefinition } from '../../../src/providers/registry.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
-import type { ProviderCredentialSet } from '../../../src/infra/provider-credential-sources.js';
+import type { ProviderScope } from '../../../src/infra/provider-scope.js';
 import type { Principal } from '../../../src/security/principal.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
 import { providerRequestFailed } from '../../../src/providers/fault.js';
@@ -52,13 +52,21 @@ import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js'
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
 import { z } from 'zod';
-import type { ProviderBindingCodec } from '../../../src/providers/contracts/binding.js';
+import { bindingFailure, bindingSuccess, type ProviderBindingCodec } from '../../../src/providers/contracts/binding.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
 type SimulationTerminalOutcome = ProviderTerminal['outcome'];
 
 const simulationSelectionSchema = z.object({ key: z.string() }).strict();
-const simulationProfileSchema = z.object({ canonicalLocation: z.string(), routing: z.object({}).strict() }).strict();
+const simulationProfileSchema = z
+  .object({
+    canonicalLocation: z.string(),
+    routing: z.union([
+      z.object({ kind: z.literal('home') }).strict(),
+      z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
+    ]),
+  })
+  .strict();
 const simulationBindingSchema = z
   .object({ profile: simulationProfileSchema, guarantee: z.literal('profile-only') })
   .strict();
@@ -71,7 +79,45 @@ function simulationBindingCodec(
     profileSchema: simulationProfileSchema,
     bindingSchema: simulationBindingSchema,
     bindingKind: 'profile',
+    captureSelection: () => bindingSuccess({ key: provider }),
+    async canonicalizeProfile(selection) {
+      return bindingSuccess({
+        canonicalLocation: `/${selection.key}`,
+        routing:
+          provider === 'claude'
+            ? { kind: 'config-dir' as const, emitConfigDir: true as const }
+            : { kind: 'home' as const },
+      });
+    },
     selectorLabel: () => `${provider} simulation selector`,
+    renderFailure: (failure) => `${provider} simulation binding failed: ${failure.reason}`,
+    async bindProfile(profile) {
+      return bindingSuccess({ profile, guarantee: 'profile-only' });
+    },
+    async readiness(_binding, use) {
+      return bindingSuccess({ ready: true, use });
+    },
+    credentialSource(binding) {
+      return provider === 'claude'
+        ? {
+            version: 1,
+            provider: 'claude',
+            kind: 'config-dir',
+            configDir: binding.profile.canonicalLocation,
+            projectsRoot: join(binding.profile.canonicalLocation, 'projects'),
+            emitConfigDir: true,
+          }
+        : {
+            version: 1,
+            provider: 'codex',
+            kind: 'home',
+            home: binding.profile.canonicalLocation,
+          };
+    },
+    compareBinding: (left, right) =>
+      left.profile.canonicalLocation === right.profile.canonicalLocation
+        ? bindingSuccess(true)
+        : bindingFailure({ reason: 'profile-mismatch', provider }),
     presentBinding: () => `${provider} simulation profile`,
   };
 }
@@ -106,17 +152,23 @@ const DEFAULT_BUNDLE_HASH = 'sim-bundle';
 const DEFAULT_FAKE_PROVIDER = 'codex';
 const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_LISTEN_PORT = 4_100;
-const SIMULATION_PROVIDER_CREDENTIALS = {
-  version: 1,
-  codex: { version: 1, provider: 'codex', kind: 'home', home: '/tmp/sim/accounts/codex' },
-  claude: {
-    version: 1,
-    provider: 'claude',
-    kind: 'config-dir',
-    configDir: '/tmp/sim/accounts/claude',
-    projectsRoot: '/tmp/sim/accounts/claude/projects',
-  },
-} as const satisfies ProviderCredentialSet;
+function simulationProviderScope(provider: string): ProviderScope {
+  return {
+    origin: 'caller',
+    profiles: [
+      {
+        provider,
+        profile: {
+          canonicalLocation: `/tmp/sim/accounts/${provider}`,
+          routing:
+            provider === 'claude'
+              ? { kind: 'config-dir' as const, emitConfigDir: true as const }
+              : { kind: 'home' as const },
+        },
+      },
+    ],
+  };
+}
 
 export type SimulationScenario = {
   epochMs?: number;
@@ -425,7 +477,9 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   };
   const launchCoordinator = new LaunchCoordinator({ runtime });
   const providerRegistry = new ProviderRegistry();
-  providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
+  const fakeProvider = createFakeProvider(runtime, scenario.fakeProvider);
+  providerRegistry.register(fakeProvider);
+  const providerScope = simulationProviderScope(fakeProvider.name);
 
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
@@ -460,7 +514,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       pluginRoot,
       coralEnv: { ...coralEnv },
       principal,
-      providerCredentials: SIMULATION_PROVIDER_CREDENTIALS,
+      providerScope,
     };
   };
 

@@ -7,7 +7,7 @@ import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
 import type { SourceImportReadiness } from './launch.js';
 import type { JobProgressTiming } from './event-bodies.js';
-import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
+import type { ProviderScope } from '../infra/provider-scope.js';
 
 /**
  * Derived launch-readiness view of a job — a 4-way coarsening of `phase` +
@@ -113,7 +113,7 @@ export interface JobLaunch {
     instruction?: ProviderInstruction;
     retention?: RetentionPolicy;
     coralEnv?: Record<string, string>;
-    providerCredentials?: ProviderCredentialSet;
+    providerScope?: ProviderScope;
     filePath?: string;
     slug?: string;
     readiness?: SourceImportReadiness;

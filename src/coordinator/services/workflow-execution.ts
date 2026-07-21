@@ -1,9 +1,9 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import { hasProviderCredentials, type InvocationContext } from '../../runtime/invocation-context.js';
+import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ProviderCatalog } from '../../providers/catalog.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type { SessionWorkflowPort } from '../../sessions/contracts.js';
 import type { CommitEventsFn } from '../../store/append.js';
@@ -31,6 +31,8 @@ import { SessionClaimError } from '../../jobs/session-claim.js';
 import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
+import { workflowProviderNames } from '../../workflow/normalize.js';
+import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
@@ -39,7 +41,7 @@ export interface WorkflowExecutionServiceDeps {
   backendNamespace: string;
   bundleHash: string;
   progressStore: JobProgressStore;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   coordinatorCommit: CommitEventsFn;
   launchOrchestrator: WorkflowJobLifecyclePort;
   executionPort: WorkflowExecutionPort;
@@ -61,14 +63,25 @@ export class WorkflowExecutionService {
     if (!this.deps.providerRegistry.get(providerName)) {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
-    if (!hasProviderCredentials(ctx)) {
+    if (!hasProviderScope(ctx)) {
       return rejectLaunch(
-        'provider_credential_source_missing',
-        'This workflow request has no provider account bindings. Re-run it with the current Coral CLI after selecting and authenticating CODEX_HOME and CLAUDE_CONFIG_DIR.',
+        'provider_scope_missing',
+        'This workflow request has no provider scope. Start it again from a launch-capable client with the selected provider profile.',
       );
     }
+    const decodedScope = this.deps.providerRegistry.decodeCompleteScope(
+      ctx.providerScope,
+      workflowProviderNames(ast, providerName),
+    );
+    if (!decodedScope.ok) {
+      return rejectLaunch(
+        providerBindingFailureCode(decodedScope.failure),
+        this.deps.providerRegistry.renderBindingFailure(decodedScope.failure),
+      );
+    }
+    const boundCtx: InvocationContext = { ...ctx, providerScope: decodedScope.value };
 
-    const controllerProfile = buildSessionControllerProfile(ctx.coralEnv);
+    const controllerProfile = buildSessionControllerProfile(boundCtx.coralEnv);
     // The workflow-level session uses model='workflow' and owns no provider artifact,
     // so the SessionManager default retention='retain' is intentional here.
     const session = this.deps.sessionManager.allocate({
@@ -76,8 +89,8 @@ export class WorkflowExecutionService {
       sessionAuthority: { kind: 'orchestration' },
       name: `workflow-${this.deps.runtime.time.now()}`,
       model: 'workflow',
-      cwd: ctx.projectRoot,
-      projectRoot: ctx.projectRoot,
+      cwd: boundCtx.projectRoot,
+      projectRoot: boundCtx.projectRoot,
       backendNamespace: this.deps.backendNamespace,
       ...(controllerProfile !== undefined ? { controllerProfile } : {}),
     });
@@ -105,12 +118,12 @@ export class WorkflowExecutionService {
       throw error;
     }
 
-    const workflowLaunchCwd = workDir ?? ctx.projectRoot;
+    const workflowLaunchCwd = workDir ?? boundCtx.projectRoot;
     this.deps.progressStore.appendLaunchRequested(jobId, {
       jobId,
       sessionId: session.sessionId,
       provider: providerName,
-      projectRoot: ctx.projectRoot,
+      projectRoot: boundCtx.projectRoot,
       backendNamespace: this.deps.backendNamespace,
       bundleHash: this.deps.bundleHash,
       jobKind: 'workflow',
@@ -121,8 +134,8 @@ export class WorkflowExecutionService {
         prompt: input.startPrompt,
         cwd: workflowLaunchCwd,
         bypassPermissions: false,
-        coralEnv: { ...ctx.coralEnv },
-        providerCredentials: ctx.providerCredentials,
+        coralEnv: { ...boundCtx.coralEnv },
+        providerScope: decodedScope.value,
       },
       createdAt: nowIsoString(this.deps.runtime.time),
     });
@@ -142,7 +155,7 @@ export class WorkflowExecutionService {
     });
     this.deps.launchOrchestrator.markJobRunning(jobId);
 
-    this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx, workDir);
+    this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, boundCtx, workDir);
     return { status: 'running', job: jobId, session: session.sessionId };
   }
 

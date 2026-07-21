@@ -35,8 +35,8 @@ function deriveErrorMessage(code: string, detail?: unknown): string {
     return detail.message;
   }
 
-  if (code === 'provider_credential_source_missing') {
-    return 'This discussion has no provider account binding. Re-run it with the current Coral CLI after selecting and authenticating CODEX_HOME and CLAUDE_CONFIG_DIR.';
+  if (code === 'provider_scope_missing') {
+    return 'This discussion has no provider scope. Start it again from a launch-capable client with the profiles used by its agents.';
   }
 
   return code.replaceAll('_', ' ');

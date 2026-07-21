@@ -42,6 +42,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
@@ -54,10 +55,13 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import {
-  TEST_CLAUDE_SOURCE,
+  TEST_CLAUDE_BINDING,
+  TEST_CODEX_BINDING,
+  TEST_CODEX_SCOPE,
+  TEST_CODEX_SCOPE_INPUT,
   TEST_CODEX_SOURCE,
-  TEST_PROVIDER_CREDENTIAL_INPUT,
-  TEST_PROVIDER_CREDENTIALS,
+  TEST_SYSTEM_PROVIDER_SCOPE,
+  withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
 
 type ProviderTurnContinuity = {
@@ -155,6 +159,9 @@ function createService(
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const providerRegistry = new ProviderRegistry();
+  const provider = resolveProvider('codex');
+  if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -200,7 +207,6 @@ function createService(
   };
   return new ExecutionService(ctx, {
     childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -208,10 +214,7 @@ function createService(
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
-    providerRegistry: {
-      get: resolveProvider,
-      getAll: () => [],
-    } as never,
+    providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
@@ -616,7 +619,7 @@ function _createScopedContext(name: string): InvocationContext {
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_CODEX_SCOPE,
   };
 }
 
@@ -654,7 +657,7 @@ function createSessionTransportPorts(service: ExecutionService, pluginRoot: stri
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
-    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
+    systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,
@@ -725,7 +728,7 @@ describe('ExecutionService launch', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -785,17 +788,11 @@ describe('ExecutionService launch', () => {
     const service = createService(ctx);
     const contextA = {
       ...ctx,
-      providerCredentials: {
-        ...TEST_PROVIDER_CREDENTIALS,
-        codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/accounts/codex-a' },
-      },
+      providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/accounts/codex-a'),
     };
     const contextB = {
       ...ctx,
-      providerCredentials: {
-        ...TEST_PROVIDER_CREDENTIALS,
-        codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/accounts/codex-b' },
-      },
+      providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/accounts/codex-b'),
     };
 
     const first = await service.start('codex', { prompt: 'account A' }, contextA);
@@ -844,7 +841,7 @@ describe('ExecutionService launch', () => {
       provider: 'codex',
       prompt: 'hello',
       projectRoot: ctx.projectRoot,
-      providerCredentials: TEST_PROVIDER_CREDENTIAL_INPUT,
+      providerScope: TEST_CODEX_SCOPE_INPUT,
       retention: 'discard_provider_artifacts_on_terminal',
     });
 
@@ -1277,7 +1274,7 @@ describe('ExecutionService launch', () => {
       getInternals(service);
     const session = sessionManager.allocate({
       provider: 'codex',
-      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
       name: 'abort-session',
       cwd: ctx.projectRoot,
       projectRoot: ctx.projectRoot,
@@ -1345,20 +1342,19 @@ describe('ExecutionService launch', () => {
     };
     const server = createFakeProviderServerHandle();
     const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
+    mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
     const service = createService(ctx);
     const { sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
     const session = sessionManager.allocate({
       provider: 'claude',
-      sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+      sessionAuthority: { kind: 'provider', binding: TEST_CLAUDE_BINDING },
       name: 'shared-interrupt-session',
       cwd: ctx.projectRoot,
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
     });
-    mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
-
     const firstLease = await service.acquireServer(spec);
     const acquireServerSpy = vi.spyOn(service, 'acquireServer');
 
@@ -1443,7 +1439,7 @@ describe('ExecutionService launch', () => {
     expect(decision).toEqual({
       status: 'rejected',
       phase: 'preflight',
-      code: 'provider_credential_source_unavailable',
+      code: 'provider_preflight_failed',
       message: 'not ready',
     });
   });
@@ -1699,6 +1695,7 @@ describe('ExecutionService launch', () => {
 
   it('coralDispatch rejects an empty sessionId before launch resolution', async () => {
     const service = createService(ctx);
+    mockState.getNewProvider.mockClear();
 
     const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello', sessionId: '' }, ctx);
 

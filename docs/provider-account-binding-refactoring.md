@@ -1,6 +1,6 @@
 # Provider multi-account execution: most-elegant target design
 
-Status: cost-unconstrained target architecture
+Status: implementation complete through B03; B04-B09 remain ordered target work
 
 Scope: provider multi-account execution merged by PR #275 and the provider/session/app-server/recovery boundaries it exposes
 
@@ -84,7 +84,9 @@ The refactoring changes adjacent domains only where the new provider/account mod
 - Moving Journal/CAS/admission/terminal finalization into provider code.
 - Supporting legacy store migration. Adoption intentionally resets an incompatible store.
 
-## Current structural contradictions
+## Baseline structural contradictions before this refactoring
+
+This section records the pre-B01 baseline that motivated the plan. B01-B03 have already corrected the store-manifest foundation, explicit scope origin, canonical profile capture, and verified/profile-only binding distinctions described below. Remaining items are target-state gaps, not supported alternate behavior or compatibility promises.
 
 ### A locator is described as account authority
 
@@ -130,7 +132,7 @@ DDL hashing cannot see incompatible TypeScript/Zod persistence changes. Local `v
 
 ### Provider selection
 
-`ProviderSelection` is caller or system input at a transport/configuration boundary. It may be relative, implicit in a caller shell, or otherwise unsuitable for persistence. It is never used directly for execution.
+`ProviderSelection` is provider-owned input captured at an invocation or daemon-configuration boundary. Filesystem selectors must already be absolute; shell expansion and relative-path interpretation are caller concerns. A selection is still unsuitable for persistence until the provider resolves it to a physical canonical profile, and it is never used directly for execution.
 
 ### Credential profile
 
@@ -160,7 +162,7 @@ Display names, emails, access tokens, and auth file contents are not identity ke
 
 ### Provider binding
 
-A verified binding fixes credential routing and provider identity together:
+An account binding fixes credential routing and a verified provider identity together:
 
 ```ts
 type ProviderBinding<P, S> = {
@@ -174,9 +176,9 @@ type ProfileBinding<P> = {
 };
 ```
 
-Binding succeeds only after the provider verifies the subject available through the canonical profile. Resume and recovery reverify that the profile still resolves to the persisted subject.
+Account binding succeeds only after the provider verifies the subject available through the canonical profile. Resume and recovery reverify that the profile still resolves to the persisted subject.
 
-If a provider cannot expose a stable subject, it declares that limitation and produces `ProfileBinding<P>`. Generic code preserves the distinction; it does not relabel a profile guarantee as an account guarantee.
+If a provider cannot expose a stable subject, it declares that limitation and produces `ProfileBinding<P>`. Its readiness check proves only that the same canonical profile and required routing are available; it cannot report subject mismatch. Generic code preserves the distinction and never relabels profile readiness as account readiness.
 
 ### Persisted envelope
 
@@ -218,9 +220,11 @@ type ProviderScope =
 
 There is no generic default provider scope.
 
-- IPC constructs caller scope from the invoking process.
-- The CLI resolves caller-default Claude explicitly; the daemon does not substitute its own default.
+- A scope contains at most one profile for each registered provider and is complete for the set of providers its owner may launch. Duplicate, unknown, extra-secret-bearing, or malformed profiles fail provider-owned decoding before persistence.
+- The CLI captures and canonicalizes a caller scope from the invoking process; IPC only transports that already-decoded scope.
+- The CLI resolves caller-default Claude and Codex profiles explicitly; the daemon does not substitute its own default.
 - HTTP provider execution requires a configured named system scope or is rejected.
+- The daemon parses the named system scope at boot and the registry decodes every profile through its owning provider codec before the listener becomes launch-capable.
 - KB curation and other daemon-internal provider work require an explicit named system scope.
 - Workflow and discussion children use the scope persisted by their parent aggregate.
 - Resume compares the current caller binding with the session binding.
@@ -243,49 +247,20 @@ Each provider owns:
 - provider recovery interpretation;
 - artifact location and continuity evidence.
 
-Suggested layout:
+The stable ownership boundary matters more than a proposed per-file catalog:
 
-```text
-src/providers/
-  contracts/
-    binding.ts
-    scope.ts
-    execution-plan.ts
-    bound-provider.ts
-    app-server-session.ts
-  registry.ts
-  exact-environment.ts
+| Role | Owner | Stable navigation point |
+| --- | --- | --- |
+| Provider selection, profile, binding, readiness, and safe errors | Each provider vertical | `src/providers/{provider}/` |
+| Type erasure and registered provider lookup | Provider registry | `src/providers/registry.ts` |
+| Generic provider contracts | Provider contracts | `src/providers/contracts/` |
+| Caller/system scope transport and validation | Transport plus provider registry | `src/transport/`, `src/infra/provider-scope.ts` |
+| Provider conversation continuity | Provider-session domain | `src/sessions/` |
+| Workflow/discussion aggregate lifecycle and future child scope | Owning aggregate | `src/workflow/`, `src/discuss/` |
+| Generic work ownership and durable finalization | Coordinator/jobs | `src/coordinator/`, `src/jobs/` |
+| Store readability and persisted-codec manifest | Store boundary | `src/store/` |
 
-  claude/
-    selection.ts
-    binding.ts
-    execution.ts
-    app-server.ts
-    recovery.ts
-    artifacts.ts
-    definition.ts
-
-  codex/
-    selection.ts
-    binding.ts
-    execution.ts
-    app-server.ts
-    recovery.ts
-    artifacts.ts
-    definition.ts
-```
-
-Coordinator and transport modules own policy at their boundaries, not provider interpretation:
-
-```text
-src/transport/provider-scope.ts
-src/coordinator/provider-session.ts
-src/coordinator/execution-owner.ts
-src/coordinator/child-principal.ts
-src/coordinator/services/recovery/
-src/store/format-fingerprint.ts
-src/store/persisted-codecs.ts
-```
+Files may move as later batches collapse superseded surfaces. The invariant is that provider interpretation stays inside its provider vertical, while transport and coordinator retain only boundary policy and Coral durability.
 
 ### Binding transition
 
@@ -293,10 +268,10 @@ The provider registry exposes one type-erased closure boundary:
 
 ```ts
 interface ProviderDefinition<Selection, Profile, Subject, Prepared> {
-  capture(input: unknown): Selection;
-  canonicalize(selection: Selection): Promise<Profile>;
-  bind(profile: Profile): Promise<ProviderBinding<Profile, Subject> | ProfileBinding<Profile>>;
-  rehydrate(envelope: ProviderBindingEnvelope): BoundProvider;
+  capture(input: unknown): ProviderBindingResult<Selection>;
+  canonicalize(selection: Selection): Promise<ProviderBindingResult<Profile>>;
+  bind(profile: Profile): Promise<ProviderBindingResult<ProviderBinding<Profile, Subject> | ProfileBinding<Profile>>>;
+  rehydrate(envelope: ProviderBindingEnvelope): ProviderBindingResult<BoundProvider>;
 }
 ```
 
@@ -307,8 +282,8 @@ interface BoundProvider {
   readonly name: string;
   readonly envelope: ProviderBindingEnvelope;
 
-  readiness(use: 'launch' | 'resume' | 'recovery'): Promise<ProviderReadiness>;
-  prepare(input: ProviderExecutionInput): ProviderExecutionPlan;
+  readiness(use: 'launch' | 'resume' | 'recovery'): Promise<ProviderBindingResult<ProviderReadiness>>;
+  prepare(input: ProviderExecutionInput): ProviderBindingResult<ProviderExecutionPlan>;
   preflight(plan: ProviderExecutionPlan): Promise<void>;
   execute(plan: ProviderExecutionPlan): Promise<ProviderResult>;
   recover(input: ProviderRecoveryInput): Promise<ProviderRecoveryPlan>;
@@ -327,12 +302,23 @@ type ProviderBindingFailure =
   | { reason: 'missing-profile'; provider: string }
   | { reason: 'profile-unavailable'; provider: string; selector: string }
   | { reason: 'identity-unavailable'; provider: string }
+  | { reason: 'profile-mismatch'; provider: string }
   | { reason: 'subject-mismatch'; provider: string }
   | { reason: 'unsupported-selection'; provider: string; selector: string }
   | { reason: 'invalid-persisted-binding'; provider: string };
 ```
 
 Provider modules own selector labels and safe rendering details. Coordinator code maps typed outcomes to protocol errors but does not know `CODEX_HOME` or `CLAUDE_CONFIG_DIR` semantics.
+
+| Failure                     | Meaning at the boundary                                               | Safe next action owned by provider rendering                   |
+| --------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `missing-profile`           | the explicit scope has no profile for the requested provider          | select that provider profile                                   |
+| `profile-unavailable`       | the canonical profile cannot be resolved or read                      | restore or authenticate the selected directory                 |
+| `identity-unavailable`      | an account-binding provider cannot derive a consistent stable subject | authenticate the profile so its provider identity is available |
+| `profile-mismatch`          | resume selected another physical profile                              | use the original profile or start a new session                |
+| `subject-mismatch`          | the same Codex profile now routes to another workspace                | restore the original workspace login or start a new session    |
+| `unsupported-selection`     | an alternate override or malformed scope was used                     | remove the override and use the provider's profile selector    |
+| `invalid-persisted-binding` | the strict current provider codec rejected durable data               | stop before execution and create fresh valid state             |
 
 ## Aggregate model
 
@@ -532,8 +518,9 @@ Consequences:
 
 ```text
 CLI captures caller ProviderSelection
-  -> transport constructs caller ProviderScope
   -> provider canonicalizes CredentialProfile
+  -> CLI assembles complete caller ProviderScope
+  -> IPC transports the decoded scope unchanged
   -> provider introspects AccountSubject when supported
   -> provider creates binding
   -> registry returns BoundProvider
@@ -558,7 +545,7 @@ persisted ProviderSession.binding
   -> prepare next turn
 ```
 
-Resume rejects missing profile, unavailable identity, subject mismatch, provider mismatch, and profile mismatch as distinct typed failures.
+Resume rejects missing profile, unavailable identity, subject mismatch, profile mismatch, and invalid persisted binding as distinct typed failures. A provider-name disagreement is an invalid durable binding, not a separate undocumented failure code.
 
 ### Workflow and discussion
 
@@ -576,7 +563,8 @@ Restart recovery reads the aggregate's persisted scope for not-yet-bound childre
 
 ```text
 configured named system scope
-  -> HTTP gateway or internal service
+  -> daemon boot parses JSON and provider registry decodes every profile
+  -> HTTP gateway or internal service selects the required provider profile
   -> ordinary provider binding flow
 ```
 
@@ -698,17 +686,17 @@ Recovery and adoption
       -> B09 superseded-surface cleanup and destructive adoption
 ```
 
-| Order | Batch job                                           | Depends on   | Primary output                                                    | Semantic change                                       |
-| ----: | --------------------------------------------------- | ------------ | ----------------------------------------------------------------- | ----------------------------------------------------- |
-|     1 | B01 — complete store-fingerprint foundation         | current main | canonical persisted-codec registry and fingerprint                | fail-closed current-codec correction                  |
-|     2 | B02 — provider contracts and registry               | B01          | provider-owned codecs and one type-erasure boundary               | no                                                    |
-|     3 | B03 — explicit scope and verified binding           | B02          | caller/system scope and durable verified binding                  | yes                                                   |
-|     4 | B04 — aggregate correction                          | B03          | real provider sessions and independent execution ownership        | yes                                                   |
-|     5 | B05 — `BoundProvider` execution cutover             | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
-|     6 | B06 — lifetime-scoped execution plans               | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
-|     7 | B07 — unified app-server and Codex turn capability  | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
-|     8 | B08 — bound-provider recovery pipeline              | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
-|     9 | B09 — superseded-surface cleanup and adoption reset | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
+| Order | Batch job                                           | Status      | Depends on   | Primary output                                                    | Semantic change                                       |
+| ----: | --------------------------------------------------- | ----------- | ------------ | ----------------------------------------------------------------- | ----------------------------------------------------- |
+|     1 | B01 — complete store-fingerprint foundation         | complete    | current main | canonical persisted-codec registry and fingerprint                | fail-closed current-codec correction                  |
+|     2 | B02 — provider contracts and registry               | complete    | B01          | provider-owned codecs and one type-erasure boundary               | no                                                    |
+|     3 | B03 — explicit scope and verified binding           | complete    | B02          | caller/system scope and durable verified binding                  | yes                                                   |
+|     4 | B04 — aggregate correction                          | next        | B03          | real provider sessions and independent execution ownership        | yes                                                   |
+|     5 | B05 — `BoundProvider` execution cutover             | pending     | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
+|     6 | B06 — lifetime-scoped execution plans               | pending     | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
+|     7 | B07 — unified app-server and Codex turn capability  | pending     | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
+|     8 | B08 — bound-provider recovery pipeline              | pending     | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
+|     9 | B09 — superseded-surface cleanup and adoption reset | pending     | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
 
 ### Batch execution contract
 
@@ -801,19 +789,28 @@ Replace ambient account selection with explicit origin and turn credential locat
 - Capture caller-default Claude and explicit Claude/Codex selections at the CLI boundary.
 - Canonicalize physical credential-profile locations through the provider module.
 - Implement provider-specific non-secret subject introspection where supported.
-- Produce `ProviderBinding(profile, subject)` or explicitly weaker `ProfileBinding(profile)` according to provider capability.
+- Bind Codex to its provider-managed `tokens.account_id` workspace-routing identity, requiring agreement with the provider workspace claim when that claim is present. Treat the local profile filesystem as the trust boundary; do not claim cryptographic token verification.
+- Accept a Codex workspace subject only when `auth.json` resolves to ChatGPT authentication. Pin `modelProvider: "openai"` for start, resume, and recovery, and reject unsafe effective transport, credential-store, remote-config, and config-lock overrides using Codex's own `config/read` view before a thread operation.
+- Produce `ProviderBinding(profile, subject)` for Codex and the explicitly weaker `ProfileBinding(profile)` for Claude, whose supported CLI surface exposes no stable non-secret account subject.
 - Reverify the subject for resume and persisted-binding readiness.
 - Construct `ProviderScope` only as caller scope or a configured named system scope.
 - Require named system scope for HTTP and daemon-internal provider work, including KB one-shot work.
+- Derive the KB curate usage-budget check from the same verified named-system Claude binding through the daemon-to-parent control channel; the KB daemon scheduler must not inspect ambient `CLAUDE_CONFIG_DIR`.
+- Compute the complete provider set of every workflow expression and discussion roster before scope capture. Reject an incomplete decoded scope before session/job allocation.
+- Keep the raw named-system scope out of detailed health and caller-forwardable `coralEnv`; health exposes only its name and provider names.
 - Remove `providerCredentialDefaults` and every ambient fallback path in the same batch.
 - Replace provider-specific coordinator messages with typed binding failures rendered by the provider.
+- Cut provider-session `SessionAuthority` directly to the strict binding envelope in this batch. The still-current orchestration variant remains only because B04 deletes synthetic orchestration sessions atomically; it does not decode, translate, or accept any earlier provider credential/source representation.
 
 **Verification**
 
-- Two caller scopes with different profiles execute concurrently through one daemon.
+- Two caller scopes backed by distinct real Codex profile directories and distinct workspace subjects execute concurrently through one daemon.
 - Caller-default Claude is independent of the daemon boot environment.
 - Reauthentication to a different subject in the same profile rejects resume.
 - HTTP/internal provider launch without a configured system scope rejects before allocation.
+- A mixed Claude/Codex workflow carries both profiles and an incomplete scope rejects before allocation.
+- KB quota checks read only the configured system Claude profile, independently of daemon boot selectors.
+- Codex alternate auth modes and effective transport overrides fail closed; start, resume, and recovery stay pinned to the official OpenAI provider.
 - Missing profile, unavailable identity, subject mismatch, and unsupported selection remain distinct.
 
 **Exit gate**
@@ -833,6 +830,7 @@ Make session, orchestration, and job ownership names match the durable concepts 
 - Move provider scope, lifecycle, and future child-selection ownership directly onto workflow and discussion aggregates.
 - Create real `ProviderSession` children only when provider conversations begin.
 - Remove `model: 'workflow'`, orchestration session authority, placeholder providers, and workflow IDs returned as provider-session IDs.
+- Delete the `SessionAuthority` union after provider sessions derive their only authority from `binding`; do not retain an alias or decoder for either removed variant.
 - Update Journal events, projections, APIs, job/admission/terminal ownership, recovery snapshots, and registered codecs atomically.
 - Do not add a legacy session decoder; B01's fingerprint resets incompatible stores.
 

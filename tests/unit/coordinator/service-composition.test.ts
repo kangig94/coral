@@ -35,6 +35,8 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -51,9 +53,12 @@ import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import {
+  TEST_CLAUDE_BINDING,
   TEST_CLAUDE_SOURCE,
+  TEST_CODEX_BINDING,
   TEST_CODEX_SOURCE,
-  TEST_PROVIDER_CREDENTIALS,
+  TEST_PROVIDER_SCOPE,
+  withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
 import { ChildPrincipalRegistry, CORAL_CHILD_PRINCIPAL_HANDLE } from '#src/coordinator/child-principal-registry.js';
 
@@ -74,6 +79,10 @@ const mockState = vi.hoisted(() => ({
   resolveAgent: vi.fn(),
 }));
 const TEST_BACKEND_NAMESPACE = 'test-namespace';
+const TEST_CODEX_SCOPE = {
+  origin: 'caller',
+  profiles: TEST_PROVIDER_SCOPE.profiles.filter((entry) => entry.provider === 'codex'),
+} as const satisfies InvocationContext['providerScope'];
 
 vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof NodeOs>('node:os');
@@ -126,7 +135,7 @@ function allocateCodexSession(
 ): ReturnType<SessionManager['allocate']> {
   return manager.allocate({
     provider: 'codex',
-    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
     name,
     model,
     cwd,
@@ -184,10 +193,47 @@ function createService(
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
     childPrincipalRegistry?: ChildPrincipalRegistry;
-    providerCredentialSourceAvailable?: boolean;
+    providerBindingReady?: boolean;
+    providerAccountSubject?: (profile: { readonly canonicalLocation: string }) => {
+      readonly issuer: string;
+      readonly subject: string;
+    };
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const providerRegistry = new ProviderRegistry();
+  const provider = resolveProvider('codex');
+  if (provider !== undefined) {
+    providerRegistry.register(
+      options.providerBindingReady === false || options.providerAccountSubject !== undefined
+        ? defineProvider({
+            name: provider.name,
+            run: provider.run,
+            ...(provider.preflight === undefined ? {} : { preflight: provider.preflight }),
+            ...(provider.appServer === undefined ? {} : { appServer: provider.appServer }),
+            ...(provider.recovery === undefined ? {} : { recovery: provider.recovery }),
+          })
+            .binding(
+              fixtureProviderBindingCodec(provider.name, {
+                ...(options.providerBindingReady === false
+                  ? {
+                      readinessFailure: {
+                        reason: 'profile-unavailable' as const,
+                        provider: provider.name,
+                        selector: 'fixture profile',
+                      },
+                    }
+                  : {}),
+                ...(options.providerAccountSubject === undefined
+                  ? {}
+                  : { accountSubject: options.providerAccountSubject }),
+              }),
+            )
+            .artifacts(provider.artifacts)
+            .build()
+        : provider,
+    );
+  }
   const progressStore = options.progressStore ?? createProgressStore();
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -239,15 +285,9 @@ function createService(
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
-    providerRegistry: {
-      get: resolveProvider,
-      getAll: () => [],
-    } as never,
+    providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     childPrincipalRegistry: options.childPrincipalRegistry ?? new ChildPrincipalRegistry(runtime.ids),
-    providerCredentialSourceAvailability: {
-      isAvailable: () => options.providerCredentialSourceAvailable ?? true,
-    },
     coordinatorCommit: (cb) => progressStore.commit(cb),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
@@ -327,7 +367,7 @@ function makeLaunchRecord(overrides: Partial<JobLaunch> & { jobId: string; sessi
     ...overrides,
   };
   if (record.jobKind === 'workflow') {
-    record.request.providerCredentials = TEST_PROVIDER_CREDENTIALS;
+    record.request.providerScope = TEST_PROVIDER_SCOPE;
   }
   return record;
 }
@@ -631,7 +671,7 @@ describe('ExecutionService', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -663,6 +703,168 @@ describe('ExecutionService', () => {
   });
 
   describe('queue admission', () => {
+    it('rejects an incomplete mixed-provider workflow scope before allocation', async () => {
+      const { provider, execute } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx);
+      const { sessionManager } =
+        /* @intentional-private-access — verify the workflow allocation fence */
+        getInternals(service);
+      const allocate = vi.spyOn(sessionManager, 'allocate');
+      const dirsBefore = listJobDirs();
+
+      const decision = await service.executeWorkflow(
+        'codex',
+        parseExpression('architect@codex -> resolver@claude'),
+        {
+          expression: 'architect@codex -> resolver@claude',
+          startPrompt: 'seed',
+          provider: 'codex',
+        },
+        { ...ctx, providerScope: TEST_CODEX_SCOPE },
+      );
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_binding_missing_profile',
+      });
+      expect(allocate).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(queueDepth()).toBe(0);
+      expect(listJobDirs()).toEqual(dirsBefore);
+    });
+
+    it('rejects an HTTP launch without configured system scope before allocation', async () => {
+      const preflight = vi.fn(async () => {});
+      const { provider, execute } = makeProvider({ preflight });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const requestCtx: InvocationContext = {
+        ...ctx,
+        principal: testProjectPrincipal(ctx.projectRoot, { transport: 'http' }),
+        providerScope: undefined,
+      };
+      const service = createService(requestCtx);
+      const { sessionManager } =
+        /* @intentional-private-access — verify the allocation fence */
+        getInternals(service);
+      const allocate = vi.spyOn(sessionManager, 'allocate');
+      const dirsBefore = listJobDirs();
+
+      const decision = await service.start('codex', { prompt: 'hello' }, requestCtx);
+
+      expect(decision).toMatchObject({
+        status: 'rejected',
+        phase: 'preflight',
+        code: 'provider_binding_missing_profile',
+      });
+      expect(allocate).not.toHaveBeenCalled();
+      expect(preflight).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(queueDepth()).toBe(0);
+      expect(listJobDirs()).toEqual(dirsBefore);
+    });
+
+    it('executes two caller profiles concurrently through one service with distinct bindings', async () => {
+      const { provider, execute } = makeProvider();
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx, {
+        providerAccountSubject: (profile) => ({
+          issuer: 'https://api.openai.com/chatgpt-account',
+          subject: `workspace:${profile.canonicalLocation}`,
+        }),
+      });
+      const callerA = {
+        ...ctx,
+        providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/accounts/codex-a'),
+      };
+      const callerB = {
+        ...ctx,
+        providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/accounts/codex-b'),
+      };
+
+      const [left, right] = await Promise.all([
+        service.start('codex', { prompt: 'left' }, callerA),
+        service.start('codex', { prompt: 'right' }, callerB),
+      ]);
+      expect(left.status).toBe('running');
+      expect(right.status).toBe('running');
+      if (left.status !== 'running' || right.status !== 'running') {
+        throw new Error('expected both caller launches to run');
+      }
+      trackJob(left.job);
+      trackJob(right.job);
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+
+      const homeByPrompt = new Map(
+        execute.mock.calls.map((call) => [
+          (call[0] as ProviderRequest).prompt,
+          (call[1] as { providerContext: { source: { home: string } } }).providerContext.source.home,
+        ]),
+      );
+      expect(homeByPrompt).toEqual(
+        new Map([
+          ['left', '/accounts/codex-a'],
+          ['right', '/accounts/codex-b'],
+        ]),
+      );
+      const { sessionManager } =
+        /* @intentional-private-access — inspect persisted binding identity */
+        getInternals(service);
+      expect(sessionManager.readById(left.session)?.sessionAuthority).toMatchObject({
+        kind: 'provider',
+        binding: {
+          binding: {
+            profile: { canonicalLocation: '/accounts/codex-a' },
+            subject: { subject: 'workspace:/accounts/codex-a' },
+          },
+        },
+      });
+      expect(sessionManager.readById(right.session)?.sessionAuthority).toMatchObject({
+        kind: 'provider',
+        binding: {
+          binding: {
+            profile: { canonicalLocation: '/accounts/codex-b' },
+            subject: { subject: 'workspace:/accounts/codex-b' },
+          },
+        },
+      });
+    });
+
+    it('rechecks a queued binding after permit grant and cleans up when the account changed in the queue', async () => {
+      let subject = 'account-a';
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const service = createService(ctx, {
+        providerAccountSubject: () => ({
+          issuer: 'https://api.openai.com/chatgpt-account',
+          subject,
+        }),
+      });
+      const occupied = await occupyProviderSlots(service, ctx, 'codex');
+      const callsAtCapacity = execute.mock.calls.length;
+
+      const decision = await service.start('codex', { prompt: 'queued-account-a' }, ctx);
+      expect(decision.status).toBe('queued');
+      if (decision.status !== 'queued') throw new Error('expected queued launch');
+      trackJob(decision.job);
+      expect(queueDepth()).toBe(1);
+
+      subject = 'account-b';
+      releaseLaunch(occupied[0]);
+
+      const terminal = await waitForTerminalEvent(service, decision.job);
+      expect(execute).toHaveBeenCalledTimes(callsAtCapacity);
+      expect(terminal.result.outcome).toMatchObject({
+        kind: 'job_fault',
+        fault: { kind: 'provider_binding', provider: 'codex', reason: 'subject-mismatch' },
+      });
+      expect(queueDepth()).toBe(0);
+      expect(getActiveJobIds()).not.toContain(decision.job);
+      expect(createSessionManager(ctx.projectRoot).get('codex', decision.session)?.activeJobId).toBeUndefined();
+    });
+
     it('resume rejects when the session is missing', async () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
@@ -681,9 +883,9 @@ describe('ExecutionService', () => {
     });
 
     it.each([
-      ['unbound session', 'provider_credential_source_missing'] as const,
-      ['missing caller authority', 'provider_credential_source_missing'] as const,
-      ['different caller account', 'provider_credential_source_mismatch'] as const,
+      ['unbound session', 'provider_binding_invalid_persisted_binding'] as const,
+      ['missing caller authority', 'provider_binding_missing_profile'] as const,
+      ['different caller profile', 'provider_binding_profile_mismatch'] as const,
     ])('resume rejects %s before preflight, admission, claim, or spawn', async (scenario, code) => {
       const preflight = vi.fn(async () => {});
       const { provider, execute } = makeProvider({ preflight });
@@ -695,14 +897,11 @@ describe('ExecutionService', () => {
           : allocateCodexSession(mgr, 'bound', 'gpt-5', ctx.projectRoot);
       const requestCtx: InvocationContext =
         scenario === 'missing caller authority'
-          ? { ...ctx, providerCredentials: undefined }
-          : scenario === 'different caller account'
+          ? { ...ctx, providerScope: undefined }
+          : scenario === 'different caller profile'
             ? {
                 ...ctx,
-                providerCredentials: {
-                  ...TEST_PROVIDER_CREDENTIALS,
-                  codex: { ...TEST_CODEX_SOURCE, home: '/home/user/.codex-other' },
-                },
+                providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/home/user/.codex-other'),
               }
             : ctx;
       const service = createService(requestCtx);
@@ -718,6 +917,41 @@ describe('ExecutionService', () => {
       expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBeUndefined();
     });
 
+    it.each([
+      ['subject', 'https://api.openai.com/chatgpt-account', 'different-account'],
+      ['issuer', 'https://issuer.changed.example', 'test-account'],
+    ] as const)(
+      'rejects resume when the same profile has a different account %s',
+      async (_field, nextIssuer, nextSubject) => {
+        let issuer = 'https://api.openai.com/chatgpt-account';
+        let subject = 'test-account';
+        const preflight = vi.fn(async () => {});
+        const { provider, execute } = makeProvider({ preflight });
+        mockState.getNewProvider.mockReturnValue(provider);
+        const manager = createSessionManager(ctx.projectRoot);
+        const session = allocateCodexSession(manager, 'bound', 'gpt-5', ctx.projectRoot);
+        const service = createService(ctx, {
+          providerAccountSubject: () => ({ issuer, subject }),
+        });
+        issuer = nextIssuer;
+        subject = nextSubject;
+        const dirsBefore = listJobDirs();
+
+        const decision = await service.resume('codex', { sessionId: session.sessionId, prompt: 'hello' }, ctx);
+
+        expect(decision).toMatchObject({
+          status: 'rejected',
+          phase: 'preflight',
+          code: 'provider_binding_subject_mismatch',
+        });
+        expect(preflight).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+        expect(queueDepth()).toBe(0);
+        expect(listJobDirs()).toEqual(dirsBefore);
+        expect(manager.get('codex', session.sessionId)?.activeJobId).toBeUndefined();
+      },
+    );
+
     it('resume inherits stored continuation profile fields when the input omits them', async () => {
       realizePluginRoot(ctx);
       const never = new Promise<ProviderTurnResult>(() => {});
@@ -730,7 +964,7 @@ describe('ExecutionService', () => {
       const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate({
         provider: 'codex',
-        sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+        sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
         name: 'alpha',
         model: 'gpt-5.1',
         cwd: ctx.projectRoot,
@@ -799,8 +1033,8 @@ describe('ExecutionService', () => {
       const never = new Promise<ProviderTurnResult>(() => {});
       const blockingProvider = makeProvider({ execute: () => never });
       mockState.getNewProvider.mockReturnValue(blockingProvider.provider);
-      const service = createService(ctx);
-      await occupyProviderSlots(service, ctx, 'codex');
+      const capacityService = createService(ctx);
+      await occupyProviderSlots(capacityService, ctx, 'codex');
 
       const gate = createDeferred<void>();
       const racingProvider = makeProvider({
@@ -809,6 +1043,7 @@ describe('ExecutionService', () => {
         },
       });
       mockState.getNewProvider.mockReturnValue(racingProvider.provider);
+      const service = createService(ctx);
 
       const mgr = createSessionManager(ctx.projectRoot);
       const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
@@ -1356,7 +1591,7 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     });
     progressStore.appendLaunchRequested(
       jobId,
@@ -1442,7 +1677,7 @@ describe('ExecutionService', () => {
         projectRoot: ctx.projectRoot,
         backendNamespace: 'test-ns',
         jobKind: 'workflow',
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_CODEX_SCOPE,
       });
       progressStore.appendLaunchRequested(
         jobId,
@@ -1535,7 +1770,7 @@ describe('ExecutionService', () => {
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     });
     progressStore.appendLaunchRequested(
       jobId,
@@ -1627,17 +1862,17 @@ describe('ExecutionService', () => {
     }
 
     describe('recoverQueuedJob', () => {
-      it.each([['missing', 'delete'] as const, ['mismatch', 'replace'] as const])(
-        'fails with typed credential-source %s before restoring queue admission',
-        (reason, corruption) => {
+      it.each([['missing session', 'delete'] as const, ['foreign binding', 'replace'] as const])(
+        'fails with typed invalid persisted binding for %s before restoring queue admission',
+        async (_scenario, corruption) => {
           const { provider } = makeProvider();
           mockState.getNewProvider.mockReturnValue(provider);
           const service = createService(ctx);
           const { progressStore, sessionManager } =
             /* @intentional-private-access — seed or inspect execution internals with no public test seam */
             getInternals(service);
-          const jobId = `recover-source-${reason}-${randomUUID()}`;
-          const sessionId = `session-source-${reason}-${randomUUID()}`;
+          const jobId = `recover-binding-${corruption}-${randomUUID()}`;
+          const sessionId = `session-binding-${corruption}-${randomUUID()}`;
           trackJob(jobId);
           seedTestJobSession(progressStore, {
             jobId,
@@ -1658,24 +1893,24 @@ describe('ExecutionService', () => {
             vi.spyOn(sessionManager, 'readById').mockReturnValue({
               ...current,
               provider: 'claude',
-              sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+              sessionAuthority: { kind: 'provider', binding: TEST_CLAUDE_BINDING },
             });
           }
 
           const priorQueueDepth = queueDepth();
-          expect(service.recoverQueuedJob(launchRecord)).toBe(jobId);
+          expect(await service.recoverQueuedJob(launchRecord)).toBe(jobId);
           expect(queueDepth()).toBe(priorQueueDepth);
           expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
             kind: 'job_fault',
-            fault: expect.objectContaining({ kind: 'provider_credential_source', reason }),
+            fault: expect.objectContaining({ kind: 'provider_binding', reason: 'invalid-persisted-binding' }),
           });
         },
       );
 
-      it('fails with typed credential-source unavailable before restoring queue admission', () => {
+      it('preserves the provider binding readiness failure before restoring queue admission', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
-        const service = createService(ctx, { providerCredentialSourceAvailable: false });
+        const service = createService(ctx, { providerBindingReady: false });
         const { progressStore } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
           getInternals(service);
@@ -1693,13 +1928,57 @@ describe('ExecutionService', () => {
         progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId }));
 
         const priorQueueDepth = queueDepth();
-        expect(service.recoverQueuedJob(makeLaunchRecord({ jobId, sessionId }))).toBe(jobId);
+        expect(await service.recoverQueuedJob(makeLaunchRecord({ jobId, sessionId }))).toBe(jobId);
         expect(queueDepth()).toBe(priorQueueDepth);
         expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
           kind: 'job_fault',
-          fault: expect.objectContaining({ kind: 'provider_credential_source', reason: 'unavailable' }),
+          fault: expect.objectContaining({ kind: 'provider_binding', reason: 'profile-unavailable' }),
         });
       });
+
+      it.each([
+        ['subject', 'https://api.openai.com/chatgpt-account', 'different-account'],
+        ['issuer', 'https://issuer.changed.example', 'test-account'],
+      ] as const)(
+        'fails recovery closed when the persisted profile now authenticates with a different %s',
+        async (_field, nextIssuer, nextSubject) => {
+          let issuer = 'https://api.openai.com/chatgpt-account';
+          let subject = 'test-account';
+          const { provider, execute } = makeProvider();
+          mockState.getNewProvider.mockReturnValue(provider);
+          const service = createService(ctx, {
+            providerAccountSubject: () => ({ issuer, subject }),
+          });
+          const { progressStore } =
+            /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+            getInternals(service);
+          const jobId = `recover-subject-${randomUUID()}`;
+          const sessionId = `session-subject-${randomUUID()}`;
+          trackJob(jobId);
+          seedTestJobSession(progressStore, {
+            jobId,
+            sessionId,
+            provider: 'codex',
+            projectRoot: ctx.projectRoot,
+            backendNamespace: 'old-backend-ns',
+            initialPhase: 'queued',
+          });
+          const launchRecord = makeLaunchRecord({ jobId, sessionId });
+          progressStore.appendLaunchRequested(jobId, launchRecord);
+          issuer = nextIssuer;
+          subject = nextSubject;
+
+          const priorQueueDepth = queueDepth();
+          await service.recoverQueuedJob(launchRecord);
+
+          expect(queueDepth()).toBe(priorQueueDepth);
+          expect(execute).not.toHaveBeenCalled();
+          expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'provider_binding', reason: 'subject-mismatch' }),
+          });
+        },
+      );
 
       it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
         const { provider } = makeProvider();
@@ -1725,13 +2004,13 @@ describe('ExecutionService', () => {
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
-        const recovered = service.recoverQueuedJob(launchRecord);
+        const recovered = await service.recoverQueuedJob(launchRecord);
 
         expect(recovered).toBe(jobId);
         expect(queueDepth()).toBeGreaterThanOrEqual(1);
       });
 
-      it('restores the complete protected child tuple before a queued provider can launch', () => {
+      it('restores the complete protected child tuple before a queued provider can launch', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx, { childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids) });
@@ -1771,7 +2050,7 @@ describe('ExecutionService', () => {
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
-        service.recoverQueuedJob(launchRecord);
+        await service.recoverQueuedJob(launchRecord);
 
         expect(runRecoveredQueuedJob).toHaveBeenCalledWith(provider, launchRecord, expect.anything(), 'default', {
           CORAL_JOB_ID: jobId,
@@ -1804,13 +2083,13 @@ describe('ExecutionService', () => {
         const launchRecord = makeLaunchRecord({ jobId, sessionId });
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
-        service.recoverQueuedJob(launchRecord);
+        await service.recoverQueuedJob(launchRecord);
 
         const status = progressStore.readStatus(jobId);
         expect(status?.backendNamespace).not.toBe('old-backend-ns');
       });
 
-      it('recovers queued jobs without hydrating retired progress counters', () => {
+      it('recovers queued jobs without hydrating retired progress counters', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
         const service = createService(ctx);
@@ -1837,7 +2116,7 @@ describe('ExecutionService', () => {
         const firstProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-1');
         const secondProgressSeq = progressStore.appendProgress(jobId, sessionId, 'step-2');
 
-        service.recoverQueuedJob(launchRecord);
+        await service.recoverQueuedJob(launchRecord);
 
         expect(progressStore.readJobEvents(jobId).map((event) => event.seq)).toEqual([
           firstProgressSeq,
@@ -1872,7 +2151,7 @@ describe('ExecutionService', () => {
         const launchRecord = makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot });
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
-        service.recoverQueuedJob(launchRecord);
+        await service.recoverQueuedJob(launchRecord);
 
         expect(queueDepth()).toBeGreaterThanOrEqual(1);
 
@@ -1889,7 +2168,12 @@ describe('ExecutionService', () => {
     });
 
     describe('adoptRunningJob', () => {
-      it('adopts a running job with a live PID and returns a cleanup handle', () => {
+      beforeEach(() => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+      });
+
+      it('adopts a running job with a live PID and returns a cleanup handle', async () => {
         const service = createService(ctx);
         const { progressStore } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -1914,7 +2198,7 @@ describe('ExecutionService', () => {
         const runtimeRecord = makeRuntimeRecord();
         progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
-        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+        const { cleanup } = await service.adoptRunningJob(launchRecord, runtimeRecord);
 
         expect(typeof cleanup).toBe('function');
         expect(getActiveJobIds()).toContain(jobId);
@@ -1924,7 +2208,99 @@ describe('ExecutionService', () => {
         expect(getActiveJobIds()).not.toContain(jobId);
       });
 
-      it('restores pool mapping and active permit', () => {
+      it.each([
+        ['returns false', (): boolean => false] as const,
+        [
+          'throws',
+          (): boolean => {
+            throw new Error('process table unavailable');
+          },
+        ] as const,
+      ])('terminalizes a running job whose binding is no longer ready even when kill %s', async (_mode, kill) => {
+        const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(kill);
+        const service = createService(ctx, { providerBindingReady: false });
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `adopt-binding-unavailable-${randomUUID()}`;
+        const sessionId = `session-binding-unavailable-${randomUUID()}`;
+        trackJob(jobId);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        const runtimeRecord = makeRuntimeRecord({ pid: 54322 });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
+
+        const adoption = await service.adoptRunningJob(launchRecord, runtimeRecord);
+
+        expect(adoption.adopted).toBe(false);
+        expect(killSpy).toHaveBeenCalledWith(54322, 'SIGTERM');
+        expect(getActiveJobIds()).not.toContain(jobId);
+        expect(sessionManager.readById(sessionId)?.activeJobId).toBeUndefined();
+        expect(progressStore.readStatus(jobId)).toMatchObject({
+          phase: 'error',
+          result: {
+            outcome: {
+              kind: 'job_fault',
+              fault: { kind: 'provider_binding', provider: 'codex', reason: 'profile-unavailable' },
+            },
+          },
+        });
+      });
+
+      it('does not leak admission or a session claim when rejected-recovery terminal commit fails', async () => {
+        vi.spyOn(runtime.process, 'kill').mockReturnValue(false);
+        const service = createService(ctx, { providerBindingReady: false });
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `adopt-binding-terminal-failure-${randomUUID()}`;
+        const sessionId = `session-binding-terminal-failure-${randomUUID()}`;
+        trackJob(jobId);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'running',
+        });
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        const runtimeRecord = makeRuntimeRecord({ pid: 54323 });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
+        const originalCommit = progressStore.commit.bind(progressStore);
+        vi.spyOn(progressStore, 'commit').mockImplementation((cb) =>
+          originalCommit(<Scope>(c: CommitContext<Scope>) => {
+            let sawTerminal = false;
+            const tracked: CommitContext<Scope> = {
+              append(input) {
+                sawTerminal = sawTerminal || input.type === 'job.terminal.recorded';
+                return c.append(input);
+              },
+            };
+            const result = cb(tracked);
+            if (sawTerminal) throw new Error('terminal storage unavailable');
+            return result;
+          }),
+        );
+
+        await expect(service.adoptRunningJob(launchRecord, runtimeRecord)).rejects.toThrow(
+          'Failed to append terminal event',
+        );
+        expect(getActiveJobIds()).not.toContain(jobId);
+        expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+        expect(sessionManager.readById(sessionId)?.activeJobId).toBeUndefined();
+      });
+
+      it('restores pool mapping and active permit', async () => {
         const service = createService(ctx);
         const { progressStore } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -1952,13 +2328,13 @@ describe('ExecutionService', () => {
         const activeIdsBefore = getActiveJobIds();
         expect(activeIdsBefore).not.toContain(jobId);
 
-        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+        const { cleanup } = await service.adoptRunningJob(launchRecord, runtimeRecord);
 
         expect(getActiveJobIds()).toContain(jobId);
         cleanup();
       });
 
-      it('rebinds namespace', () => {
+      it('rebinds namespace', async () => {
         const service = createService(ctx);
         const { progressStore } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -1983,14 +2359,14 @@ describe('ExecutionService', () => {
         const runtimeRecord = makeRuntimeRecord();
         progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
-        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+        const { cleanup } = await service.adoptRunningJob(launchRecord, runtimeRecord);
 
         const status = progressStore.readStatus(jobId);
         expect(status?.backendNamespace).not.toBe('old-backend-ns');
         cleanup();
       });
 
-      it('routes abort through runtime.process.kill', () => {
+      it('routes abort through runtime.process.kill', async () => {
         const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(() => true);
         const service = createService(ctx);
         const { progressStore, abortRegistry } =
@@ -2015,7 +2391,7 @@ describe('ExecutionService', () => {
         progressStore.appendLaunchRequested(jobId, launchRecord);
         progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
-        const { cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord);
+        const { cleanup } = await service.adoptRunningJob(launchRecord, runtimeRecord);
 
         expect(abortRegistry.abort([jobId])).toEqual({
           aborted: [jobId],
@@ -2079,6 +2455,7 @@ describe('ExecutionService', () => {
       it('skips the probe for lease-waiting jobs and preserves an existing conversationRef', async () => {
         const spawnProviderServerMock = vi.fn();
         spawnProviderServer = spawnProviderServerMock as unknown as SpawnProviderServerFn;
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         const service = createService(ctx);
         const { progressStore, sessionManager } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -2093,8 +2470,6 @@ describe('ExecutionService', () => {
           conversationRef: 'thread-existing',
         });
         sessionManager.claimForJobSync(session.sessionId, jobId);
-        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-
         seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
@@ -2157,6 +2532,7 @@ describe('ExecutionService', () => {
       });
 
       it('marks a fresh lease-waiting session non-resumable without treating its planned ref as evidence', async () => {
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         const service = createService(ctx);
         const { progressStore, sessionManager } =
           /* @intentional-private-access — seed or inspect execution internals with no public test seam */
@@ -2165,7 +2541,6 @@ describe('ExecutionService', () => {
         trackJob(jobId);
         const session = allocateCodexSession(sessionManager, 'recover-waiting-fresh', 'gpt-5', ctx.projectRoot);
         sessionManager.claimForJobSync(session.sessionId, jobId);
-        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
@@ -2402,7 +2777,7 @@ describe('ExecutionService', () => {
         trackJob(jobId);
         const session = sessionManager.allocate({
           provider: 'claude',
-          sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+          sessionAuthority: { kind: 'provider', binding: TEST_CLAUDE_BINDING },
           name: 'recover-claude-artifact',
           model: 'sonnet',
           cwd: ctx.projectRoot,
@@ -2666,7 +3041,7 @@ describe('ExecutionService adversarial', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();

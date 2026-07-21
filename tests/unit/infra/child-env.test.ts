@@ -250,11 +250,13 @@ describe('forwardable CORAL_* env', () => {
         CORAL_EFFORT: 'high',
         CORAL_JOB_ID: 'job-1',
         CORAL_CHILD_PRINCIPAL_HANDLE: 'forged',
+        CORAL_SYSTEM_PROVIDER_SCOPE: '{"origin":"system","name":"private"}',
         CORAL_FLAVOR: 'dev',
         CORAL_EMPTY: '',
         PATH: '/usr/bin',
         UNDEF: undefined,
       });
+      expect(result).not.toHaveProperty('CORAL_SYSTEM_PROVIDER_SCOPE');
 
       expect(result).toEqual({ CORAL_CODEX_MODEL: 'gpt-5.6-sol', CORAL_EFFORT: 'high' });
     });

@@ -679,15 +679,15 @@ export async function resumeAll(options: {
     }
 
     const launch = options.progressStore.readLaunchProjection(jobId);
-    const persistedCredentials = launch?.jobKind === 'workflow' ? launch.request.providerCredentials : undefined;
-    if (persistedCredentials === undefined) {
+    const persistedScope = launch?.jobKind === 'workflow' ? launch.request.providerScope : undefined;
+    if (persistedScope === undefined) {
       options.finalizeWorkflow({
         outcome: 'failed',
         workflowJobId: jobId,
         lifecycleFault: {
           kind: 'recovery_failed',
           message:
-            'Workflow recovery found no valid stored provider account bindings and stopped before launching work. Start a new workflow with the current Coral CLI after selecting and authenticating the intended provider accounts.',
+            'Workflow recovery found no valid stored provider bindings and stopped before launching work. Resolve each provider binding failure, then start a new workflow with an explicit caller scope.',
         },
         stepDetails: [],
       });
@@ -697,7 +697,7 @@ export async function resumeAll(options: {
     const baseCtx = options.createInvocationContext(status.projectRoot);
     const ctx: InvocationContext = {
       ...baseCtx,
-      providerCredentials: persistedCredentials,
+      providerScope: persistedScope,
     };
     let recovered: RecoveredWorkflowFinalization | null;
     try {

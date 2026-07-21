@@ -4,7 +4,7 @@ import { providerInstructionSchema, type ProviderInstruction } from '../provider
 import { continuityRefSchema } from '../sessions/continuity.js';
 import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
 import type { LaunchPool } from './contracts/admission.js';
-import { providerCredentialSetSchema } from '../infra/provider-credential-sources.js';
+import { providerScopeSchema } from '../infra/provider-scope.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
@@ -100,7 +100,7 @@ const providerJobLaunchRequestBodySchema = providerOrWorkflowLaunchBaseSchema.ex
 
 const workflowJobLaunchRequestBodySchema = providerOrWorkflowLaunchBaseSchema.extend({
   jobKind: z.literal('workflow'),
-  request: providerLaunchRequestSchema.extend({ providerCredentials: providerCredentialSetSchema }),
+  request: providerLaunchRequestSchema.extend({ providerScope: providerScopeSchema }),
 });
 
 const kbJobLaunchBaseSchema = z.object({

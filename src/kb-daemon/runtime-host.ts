@@ -12,6 +12,7 @@ import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
 import { runCommunitySummaryAgent } from '../kb/curate/community/summary-agent.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import { cleanupSourceImportRuntimeArtifacts } from '../kb/ops/source/import.js';
@@ -65,6 +66,7 @@ type KbDaemonWriteRuntimeOptions = {
   version?: string;
   now?: () => number;
   curateAssistant?: CurateAssistantPort;
+  curateUsageBudget: CurateUsageBudgetPort;
   onJournalEvents?: (appended: readonly AppendedEvent[]) => void;
   onCorpusMutation?: (publication: KbCorpusPublication) => void;
   kiwiAnalyzer?: KiwiSearchAnalyzerPort;
@@ -450,6 +452,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           processPort: runtime.process,
           storagePort: runtime.storage,
           envPort: runtime.env,
+          usageBudget: options.curateUsageBudget,
           runCommunitySummaryJob: (signal) => runCommunitySummaryAgent(kb, curateAssistant, signal),
         }),
       };

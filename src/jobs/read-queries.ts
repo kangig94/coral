@@ -389,7 +389,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       instruction: body.request.instruction,
       retention: body.request.retention,
       coralEnv: { ...body.request.coralEnv },
-      ...(body.jobKind === 'workflow' ? { providerCredentials: body.request.providerCredentials } : {}),
+      ...(body.jobKind === 'workflow' ? { providerScope: body.request.providerScope } : {}),
     },
     ...refs,
     createdAt: body.createdAt,

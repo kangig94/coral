@@ -49,6 +49,7 @@ interface ThreadInfo {
 export interface ThreadStartParams {
   cwd: string;
   model: string | null;
+  modelProvider: 'openai';
   approvalPolicy: string;
   sandbox: string;
   serviceTier?: 'default' | 'fast' | 'flex';
@@ -65,6 +66,7 @@ export interface ThreadResumeParams {
   threadId: string;
   cwd: string;
   model: string | null;
+  modelProvider: 'openai';
   approvalPolicy: string;
   sandbox?: string;
   serviceTier?: 'default' | 'fast' | 'flex';
@@ -101,6 +103,10 @@ interface TurnInterruptResponse {
 }
 
 interface AppServerMethodMap {
+  'config/read': {
+    params: { includeLayers: false; cwd: string };
+    result: { config: Record<string, unknown> };
+  };
   'thread/start': { params: ThreadStartParams; result: ThreadStartResponse };
   'thread/resume': { params: ThreadResumeParams; result: ThreadResumeResponse };
   'turn/start': { params: TurnStartParams; result: TurnStartResponse };

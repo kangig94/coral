@@ -55,12 +55,10 @@ import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import {
   createDefaultKbDaemonSupervisor,
   createDisabledKbDaemonSupervisor,
-  type KbDaemonCurateAssistantHandler,
   type KbDaemonSupervisor,
 } from './live/kb-daemon-supervisor.js';
 import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
-import { runClaudeOneShotTurn } from '../providers/claude/one-shot.js';
-import { buildExactProviderEnv } from '../providers/execution-context.js';
+import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from './services/kb-curate-assistant.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -256,39 +254,28 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
   let handleKbDaemonEvent: ((message: KbDaemonEventMessage) => void) | null = null;
-  const completeKbDaemonCurateAssistant: KbDaemonCurateAssistantHandler = (request, { signal }) => {
+  const completeKbDaemonCurateAssistant = createKbCurateAssistantHandler({
+    runtime,
+    providerRegistry,
+    readActiveRuntime: () => {
+      const activeCore = core;
+      return activeCore === null
+        ? null
+        : {
+            systemProviderScope: activeCore.systemProviderScope,
+            acquireServer: (spec, serverOptions) => activeCore.providerHostManager.acquireServer(spec, serverOptions),
+          };
+    },
+  });
+  const readActiveSystemProviderRuntime = () => {
     const activeCore = core;
-    if (activeCore === null) {
-      throw documentedCoralSetupError('startup_not_ready');
-    }
-    return runClaudeOneShotTurn(
-      {
-        storage: runtime.storage,
-        ids: runtime.ids,
-        providerContext: {
-          source: activeCore.providerCredentialDefaults.claude,
-          brokerEnv: buildExactProviderEnv({
-            baseEnv: runtime.env.fullSnapshot(),
-            platform: runtime.env.platform(),
-          }),
-          controllerEnv: buildExactProviderEnv({
-            baseEnv: runtime.env.fullSnapshot(),
-            source: activeCore.providerCredentialDefaults.claude,
-            platform: runtime.env.platform(),
-          }),
-          projectsRoot: activeCore.providerCredentialDefaults.claude.projectsRoot,
-        },
-        acquireServer: (spec, options) => activeCore.providerHostManager.acquireServer(spec, options),
-      },
-      {
-        cwd: runtime.env.cwd(),
-        prompt: request.prompt,
-        ...(request.model === undefined ? {} : { model: request.model }),
-        ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
-        signal,
-      },
-    );
+    return activeCore === null ? null : { systemProviderScope: activeCore.systemProviderScope };
   };
+  const checkKbDaemonCurateUsageBudget = createKbCurateUsageBudgetHandler({
+    runtime,
+    providerRegistry,
+    readActiveRuntime: readActiveSystemProviderRuntime,
+  });
   const kbDaemonSupervisor = (() => {
     if (coreOptions.kbDaemonSupervisor) {
       return coreOptions.kbDaemonSupervisor;
@@ -310,6 +297,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ? {}
         : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
       curateAssistant: completeKbDaemonCurateAssistant,
+      curateUsageBudget: checkKbDaemonCurateUsageBudget,
       onEvent: (message) => handleKbDaemonEvent?.(message),
       log: (message) => backendLog.warn(message),
     });

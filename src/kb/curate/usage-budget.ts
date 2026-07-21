@@ -9,15 +9,15 @@ type UsageBudgetStorage = Pick<StoragePort, 'readFileSync'>;
 
 export type UsageBudgetOptions = {
   storage: UsageBudgetStorage;
-  claudeConfigDir?: string;
+  claudeConfigDir: string;
   now: () => number;
 };
 
-export function isUsageBudgetExhausted({ storage, claudeConfigDir, now }: UsageBudgetOptions): boolean {
-  if (claudeConfigDir === undefined) {
-    return false;
-  }
+export interface CurateUsageBudgetPort {
+  isExhausted(signal: AbortSignal): Promise<boolean>;
+}
 
+export function isUsageBudgetExhausted({ storage, claudeConfigDir, now }: UsageBudgetOptions): boolean {
   try {
     const cachePath = join(claudeConfigDir, 'hud', '.coral-cache.json');
     const raw = JSON.parse(storage.readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;

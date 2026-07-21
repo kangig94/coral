@@ -50,6 +50,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { PreflightRuntime, UsageSummary } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
@@ -59,7 +60,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '#src/jobs/terminal/recording.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
@@ -179,6 +180,9 @@ function createService(
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const providerRegistry = new ProviderRegistry();
+  const provider = resolveProvider('codex');
+  if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -224,7 +228,6 @@ function createService(
   };
   return new ExecutionService(ctx, {
     childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -232,10 +235,7 @@ function createService(
     providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
-    providerRegistry: {
-      get: resolveProvider,
-      getAll: () => [],
-    } as never,
+    providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
@@ -635,7 +635,7 @@ function _createScopedContext(name: string): InvocationContext {
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_CODEX_SCOPE,
   };
 }
 
@@ -707,7 +707,7 @@ describe('ExecutionService wait', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();

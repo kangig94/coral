@@ -180,11 +180,18 @@ export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
   'CORAL_SESSION_ID',
   BUILD_FLAVOR_ENV_KEY,
   'CORAL_KB_PATH',
+  'CORAL_SYSTEM_PROVIDER_SCOPE',
   'CORAL_ENV_PASSTHROUGH',
   CORAL_KB_ENABLE_ENV,
   'CORAL_STARTUP_ATTEMPT_ID',
   'CORAL_STARTUP_STARTED_AT',
 ]);
+
+export function invocationCoralEnvSnapshot(source: Readonly<Record<string, string>>): Record<string, string> {
+  const snapshot = { ...source };
+  delete snapshot.CORAL_SYSTEM_PROVIDER_SCOPE;
+  return snapshot;
+}
 
 /** True when `key` is a `CORAL_*` config key a caller may forward per request. */
 export function isForwardableCoralEnvKey(key: string): boolean {

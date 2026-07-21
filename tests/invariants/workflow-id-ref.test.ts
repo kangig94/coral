@@ -14,7 +14,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 interface PersistedRefs {
   jobId?: string;
@@ -72,7 +72,7 @@ function makeProviderLaunch(overrides: Partial<JobLaunch> & Pick<JobLaunch, 'job
       cwd: `/workspace/${overrides.jobId}`,
       bypassPermissions: false,
       coralEnv: {},
-      ...(overrides.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
+      ...(overrides.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
     },
     createdAt: '2026-04-29T00:00:00.000Z',
     ...rest,

@@ -135,7 +135,7 @@ describe('scenario runner', () => {
         message: 'simulated preflight failure',
         decision: {
           status: 'rejected',
-          code: 'provider_credential_source_unavailable',
+          code: 'provider_preflight_failed',
         },
       },
     });

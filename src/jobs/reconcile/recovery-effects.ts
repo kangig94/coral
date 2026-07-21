@@ -56,7 +56,7 @@ function recoveryFaultOutcome<Scope>(
     case 'ghost_launch':
     case 'wrapper_lost':
     case 'wrapper_crashed':
-    case 'provider_credential_source':
+    case 'provider_binding':
       return { kind: 'job_fault', fault };
     case 'missing_launch_record':
     case 'recovery_parse_failed': {

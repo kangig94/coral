@@ -15,12 +15,12 @@ import {
 } from './events.js';
 import type { TranscriptEntry } from './session-types.js';
 import { discussStateSchema } from './session-types.js';
-import { providerCredentialSetSchema } from '../infra/provider-credential-sources.js';
+import { providerScopeSchema } from '../infra/provider-scope.js';
 
 export const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot> = z
   .object({
     schemaVersion: z.literal(3),
-    providerCredentials: providerCredentialSetSchema,
+    providerScope: providerScopeSchema,
     sessionId: z.string(),
     projectRoot: z.string(),
     updatedAt: z.string(),

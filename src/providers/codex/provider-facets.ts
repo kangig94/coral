@@ -20,6 +20,7 @@ import {
   type CodexPersistedContinuity,
   readCodexPersistedContinuity,
 } from './request-mapping.js';
+import { verifyCodexEffectiveTransport } from './transport-policy.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
@@ -177,10 +178,12 @@ export const codexRecoveryLifecycle = {
     }
 
     try {
+      await verifyCodexEffectiveTransport(lease, parsed.cwd);
       await rpc(lease, 'thread/resume', {
         threadId: parsed.threadId,
         cwd: parsed.cwd,
         model: null,
+        modelProvider: 'openai',
         approvalPolicy: 'never',
       });
       return codexProbeResult(true, updatedContinuity);

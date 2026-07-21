@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
+import {
+  TEST_CODEX_BINDING,
+  TEST_CODEX_SOURCE,
+  TEST_CLAUDE_SOURCE,
+  TEST_PROVIDER_SCOPE,
+  TEST_SYSTEM_PROVIDER_SCOPE,
+  withTestBindingLocation,
+} from '../../../helpers/provider-credentials.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import {
   createServer,
@@ -437,7 +444,7 @@ function stubLaunchRecord(
       cwd: '/tmp/test',
       bypassPermissions: false,
       coralEnv: {},
-      ...(overrides.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
+      ...(overrides.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
     },
     createdAt: new Date().toISOString(),
   };
@@ -588,6 +595,7 @@ describe('execution backend server', () => {
         ...bootOverrides,
       },
       cleanupStaleJobsFn: () => {},
+      systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
       ...defaultKbDaemonSupervisor,
       ...restOverrides,
     });
@@ -608,6 +616,23 @@ describe('execution backend server', () => {
     mkdirSync(projectRoot, { recursive: true });
     return projectRoot;
   }
+
+  it('rejects a semantically invalid named system scope before binding the listener', async () => {
+    const duplicate = TEST_SYSTEM_PROVIDER_SCOPE.profiles[0];
+
+    await expect(
+      startBackendServer({
+        systemProviderScope: {
+          origin: 'system',
+          name: 'duplicate-provider',
+          profiles: [duplicate, duplicate],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'system_provider_scope_invalid',
+      remediation: expect.stringContaining('duplicate codex credential profile'),
+    });
+  });
 
   it('preserves flavored backend info and rejects records without flavor', async () => {
     const { backendInfo } = await loadExecutionModules();
@@ -677,7 +702,12 @@ describe('execution backend server', () => {
       liveDiscuss: 0,
       inflightRequests: 0,
       queueDepth: 0,
+      systemProviderScope: { name: 'test-system', providers: ['claude', 'codex'] },
     });
+    const serializedHealth = JSON.stringify(body);
+    expect(serializedHealth).not.toContain(TEST_CODEX_SOURCE.home);
+    expect(serializedHealth).not.toContain(TEST_CLAUDE_SOURCE.configDir);
+    expect(serializedHealth).not.toContain('test-account');
     expect(typeof body.uptimeMs).toBe('number');
     expect(Array.isArray(body.components)).toBe(true);
     const components = body.components as Array<{ id: string; phase: string }>;
@@ -1879,7 +1909,7 @@ describe('execution backend server', () => {
       },
       1,
       '2026-03-11T00:00:00.000Z',
-      { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+      { providerScope: TEST_PROVIDER_SCOPE },
     );
     if (!created.ok) {
       throw new Error(created.error);
@@ -2248,6 +2278,7 @@ describe('execution backend server', () => {
           log: () => {},
         },
         coralEnvSnapshot,
+        systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
         remoteAccess: options.remoteAccess,
         runtime: { ids: runtime.ids, time: runtime.time, storage: runtime.storage },
         runtimeState,
@@ -3845,6 +3876,67 @@ describe('execution backend server', () => {
       });
     });
 
+    it('rejects provider launch before allocation when the daemon has no named system scope', async () => {
+      const fakeService = createFakeExecutionService({
+        start: vi.fn(async () => ({ status: 'running', job: 'must-not-run', session: 'must-not-run' })),
+      });
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer({ ...deps, systemProviderScope: undefined });
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({ provider: 'codex', prompt: 'hello', projectRoot: '/tmp/project' }),
+        });
+
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({
+          code: 'system_provider_scope_unconfigured',
+          message: 'Provider execution is disabled because this Coral daemon has no named system provider scope.',
+          remediation: 'Configure CORAL_SYSTEM_PROVIDER_SCOPE on the daemon and restart it.',
+        });
+        expect(fakeService.start).not.toHaveBeenCalled();
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('rejects client-supplied provider scope with daemon-owned remediation', async () => {
+      const fakeService = createFakeExecutionService();
+      const { deps } = createHttpHandlerDeps({ executionService: fakeService });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/sessions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({
+            provider: 'codex',
+            prompt: 'hello',
+            projectRoot: '/tmp/project',
+            providerScope: TEST_PROVIDER_SCOPE,
+          }),
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+          code: 'invalid_request',
+          message: 'Remove `providerScope` from the request; HTTP provider identity is selected by the daemon.',
+          remediation: 'Omit providerScope and retry; HTTP identity is daemon-owned.',
+        });
+        expect(fakeService.start).not.toHaveBeenCalled();
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
     it('rejects remote POST /sessions requests that bypass provider permissions', async () => {
       await withBaseCoralEnv(async () => {
         const fakeService = createFakeExecutionService({
@@ -5339,7 +5431,7 @@ describe('execution backend server', () => {
       projectRoot,
       backendNamespace: testBackendNamespace,
       jobKind: 'workflow',
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_PROVIDER_SCOPE,
     });
     createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
@@ -5978,7 +6070,7 @@ describe('execution backend server', () => {
         { sessionId: 'startup-candidate', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:00:00.000Z',
-        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { providerScope: TEST_PROVIDER_SCOPE },
       );
       if (!startupCandidateCreated.ok) {
         throw new Error(startupCandidateCreated.error);
@@ -6000,7 +6092,7 @@ describe('execution backend server', () => {
         { sessionId: 'terminal-history', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:05:00.000Z',
-        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { providerScope: TEST_PROVIDER_SCOPE },
       );
       if (!terminalHistoryCreated.ok) {
         throw new Error(terminalHistoryCreated.error);
@@ -6328,7 +6420,13 @@ describe('execution backend server', () => {
         result: {
           outcome: {
             kind: 'job_fault',
-            fault: { kind: 'provider_credential_source', reason: 'unavailable' },
+            fault: {
+              kind: 'provider_binding',
+              provider: 'codex',
+              reason: 'profile-unavailable',
+              message:
+                'The selected Codex credential profile is unavailable. Select an existing authenticated Codex profile and retry.',
+            },
           },
         },
       });
@@ -6341,11 +6439,12 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const jobId = 'clean-live-job';
       const projectRoot = createProjectRoot('clean-live-project');
+      writeFileSync(join(projectRoot, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
       const session = createSessionManager(projectRoot).allocate({
         provider: 'codex',
         sessionAuthority: {
           kind: 'provider',
-          source: { ...TEST_CODEX_SOURCE, home: projectRoot },
+          binding: withTestBindingLocation(TEST_CODEX_BINDING, projectRoot),
         },
         name: 'alpha',
         model: 'gpt-5',
@@ -6386,11 +6485,12 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const jobId = 'ghost-launch-job';
       const projectRoot = createProjectRoot('ghost-launch-project');
+      writeFileSync(join(projectRoot, 'auth.json'), JSON.stringify({ tokens: { account_id: 'test-account' } }));
       const session = createSessionManager(projectRoot).allocate({
         provider: 'codex',
         sessionAuthority: {
           kind: 'provider',
-          source: { ...TEST_CODEX_SOURCE, home: projectRoot },
+          binding: withTestBindingLocation(TEST_CODEX_BINDING, projectRoot),
         },
         name: 'alpha',
         model: 'gpt-5',

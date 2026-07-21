@@ -189,7 +189,7 @@ describe('launchToHttp', () => {
     ['non_resumable', 409],
     ['provider_mismatch', 409],
     ['invalid_request', 400],
-    ['provider_credential_source_missing', 400],
+    ['provider_scope_missing', 400],
   ])('maps rejected launch code %s to HTTP %i', (code, statusCode) => {
     const decision = {
       status: 'rejected',

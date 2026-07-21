@@ -296,7 +296,7 @@ const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
   for (const { input, entry } of entries) {
     if (input.stream.id !== entry.sessionId) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_invalid',
+        code: 'session_authority_invalid',
         userMessage: `Session event stream does not match entry '${entry.sessionId}'.`,
         remediation: 'Write the session entry to its own session stream.',
       });
@@ -305,16 +305,16 @@ const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
     if (prior === undefined) {
       if (input.type !== 'session.opened') {
         throw new CoralSetupError({
-          code: 'provider_credential_source_missing',
+          code: 'session_authority_missing',
           userMessage: `Session '${entry.sessionId}' must be opened before later events.`,
           remediation: 'Append session.opened first in the same batch.',
         });
       }
-      if (entry.sessionAuthority.kind === 'provider' && entry.sessionAuthority.source.provider !== entry.provider) {
+      if (entry.sessionAuthority.kind === 'provider' && entry.sessionAuthority.binding.provider !== entry.provider) {
         throw new CoralSetupError({
-          code: 'provider_credential_source_mismatch',
-          userMessage: `Session '${entry.sessionId}' provider does not match its credential source.`,
-          remediation: 'Use the credential source projected for the selected provider.',
+          code: 'session_authority_mismatch',
+          userMessage: `Session '${entry.sessionId}' provider does not match its binding.`,
+          remediation: 'Use the provider binding projected for the selected provider.',
         });
       }
       existing.set(entry.sessionId, entry);
@@ -322,16 +322,16 @@ const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
     }
     if (input.type === 'session.opened') {
       throw new CoralSetupError({
-        code: 'provider_credential_source_invalid',
+        code: 'session_authority_invalid',
         userMessage: `Session '${entry.sessionId}' is already open.`,
         remediation: 'Do not append a second session.opened event.',
       });
     }
     if (authorityIdentity(prior) !== authorityIdentity(entry)) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_mismatch',
+        code: 'session_authority_mismatch',
         userMessage: `Session '${entry.sessionId}' authority is immutable.`,
-        remediation: 'Resume with the original credential source or start a new session.',
+        remediation: 'Resume with the original provider binding or start a new session.',
       });
     }
     existing.set(entry.sessionId, entry);

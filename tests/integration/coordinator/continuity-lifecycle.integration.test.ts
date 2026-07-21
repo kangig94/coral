@@ -18,7 +18,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import {
   type ProviderSpec,
   type Provider,
@@ -43,6 +43,10 @@ import type { AgentConfig } from '#src/discuss/shell/types.js';
 import type { JobContinuitySnapshot } from '#src/jobs/continuity.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
+import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { none } from '#src/providers/capability.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const mockState = vi.hoisted(() => ({
@@ -137,7 +141,7 @@ describe('coordinator continuity lifecycle integration', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_PROVIDER_SCOPE,
     };
     mkdirSync(ctx.pluginRoot, { recursive: true });
     runtime = createRealRuntime('prod');
@@ -152,7 +156,31 @@ describe('coordinator continuity lifecycle integration', () => {
     vi.restoreAllMocks();
   });
 
-  function createService(providerRegistry: { get(name: string): ProviderSpec | undefined; getAll(): ProviderSpec[] }) {
+  function createService(providerCatalog: { get(name: string): ProviderSpec | undefined; getAll(): ProviderSpec[] }) {
+    const providerRegistry = new ProviderRegistry();
+    const providers = providerCatalog.getAll();
+    for (const provider of providers) {
+      providerRegistry.register(
+        defineProvider({
+          name: provider.name,
+          run: provider.run,
+          ...(provider.preflight === undefined ? {} : { preflight: provider.preflight }),
+          ...(provider.appServer === undefined ? {} : { appServer: provider.appServer }),
+          ...(provider.recovery === undefined ? {} : { recovery: provider.recovery }),
+        })
+          .binding(fixtureProviderBindingCodec(provider.name))
+          .artifacts(none('continuity fixture has no provider artifacts'))
+          .build(),
+      );
+    }
+    const registeredProviders = new Set(providers.map((provider) => provider.name));
+    ctx = {
+      ...ctx,
+      providerScope: {
+        origin: 'caller',
+        profiles: TEST_PROVIDER_SCOPE.profiles.filter((profile) => registeredProviders.has(profile.provider)),
+      },
+    };
     const progressStore = new JobStore(TEST_BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
       db: openTestStoreDb(runtime),
       eventBus,
@@ -160,7 +188,6 @@ describe('coordinator continuity lifecycle integration', () => {
     });
     const service = new ExecutionService(ctx, {
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-      providerCredentialSourceAvailability: { isAvailable: () => true },
       runtime,
       progressStore,
       backendNamespace: TEST_BACKEND_NAMESPACE,
@@ -168,7 +195,7 @@ describe('coordinator continuity lifecycle integration', () => {
       providerHostManager: createProviderHostManager({ runtime, spawnProviderServer }),
       launchCoordinator,
       eventBus,
-      providerRegistry: providerRegistry as never,
+      providerRegistry,
       pluginRegistry: { discoverPluginRoot: () => null },
       ...createTestJobJournalDeps(progressStore, runtime),
     });
@@ -491,6 +518,8 @@ describe('coordinator continuity lifecycle integration', () => {
       journal: createInMemoryDiscussJournal(),
     });
     const registry = createDiscussContextRegistry();
+    const providerRegistry = new ProviderRegistry();
+    registerBuiltInProviders(providerRegistry);
     const discussContext = getOrCreateDiscussContext(registry, ctx.projectRoot, service, store, {
       runtime: {
         ids: runtime.ids,
@@ -503,6 +532,7 @@ describe('coordinator continuity lifecycle integration', () => {
         read: (jobId) => progressStore.readStatus(jobId),
         readExit: () => null,
       },
+      providerRegistry,
     });
     const agents: AgentConfig[] = [{ name: 'alpha', persona: '# Alpha', provider: 'codex', model: 'gpt-5' }];
 

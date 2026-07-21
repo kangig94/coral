@@ -171,13 +171,17 @@ describe('curate related-resolution and budget guards', () => {
   let internals: CurateTestHandle;
   let gitSyncRuntime: ReturnType<typeof createRealRuntime>;
 
-  function useScheduler(curateAssistant: CurateAssistantPort): void {
+  function useScheduler(
+    curateAssistant: CurateAssistantPort,
+    usageBudget = { isExhausted: async (_signal: AbortSignal) => false },
+  ): void {
     scheduler = createCurateScheduler({
       kb: runtime,
       curateAssistant,
       processPort: gitSyncRuntime.process,
       storagePort: gitSyncRuntime.storage,
       envPort: gitSyncRuntime.env,
+      usageBudget,
       scheduleDebounceMs: 0,
     });
     internals = createCurateTestHandle({
@@ -206,6 +210,18 @@ describe('curate related-resolution and budget guards', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('checks the injected system-account budget before any curate work', async () => {
+    const usageBudget = { isExhausted: vi.fn(async () => true) };
+    const inboundSync = vi.spyOn(runtime, 'runInboundSync');
+    useScheduler(assistantFromText('[]'), usageBudget);
+
+    await scheduler.start();
+    await settleCurateRuntime(scheduler);
+
+    expect(usageBudget.isExhausted).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(inboundSync).not.toHaveBeenCalled();
   });
 
   it('appends note related links without removing existing ones', async () => {

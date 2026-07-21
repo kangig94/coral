@@ -4,9 +4,9 @@ import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { backendLog } from '../../../infra/backend-log.js';
 import { errorMessage } from '../../../infra/error-format.js';
 import { buildBidPrompt, buildFirstTurnInstruction } from '../prompts.js';
+import { DEFAULT_DISCUSS_PROVIDER } from '../../command-schemas.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
-  DEFAULT_DISCUSS_PROVIDER,
   PURPOSE_BID,
   currentAgentRun,
   executeAgentAttempt,

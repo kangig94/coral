@@ -4,7 +4,7 @@ import {
   KB_DAEMON_PARENT_REQUEST_MESSAGE,
   KB_DAEMON_PARENT_RESPONSE_MESSAGE,
   KB_DAEMON_REQUEST_MESSAGE,
-  isKbDaemonCurateAssistantCancelRequest,
+  isKbDaemonCurateRequestCancelRequest,
   isKbDaemonCurateAssistantCompleteRequest,
   isKbDaemonExpansionRequest,
   isKbDaemonJobsResult,
@@ -121,16 +121,31 @@ describe('KB daemon protocol', () => {
     ).toBe(true);
   });
 
-  it('accepts daemon-to-parent curate assistant cancel requests', () => {
+  it('accepts usage-budget requests and the single generic curate cancel request', () => {
+    expect(
+      isKbDaemonParentRequestMessage({
+        type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
+        id: 'parent:budget',
+        method: 'curate.usage-budget.exhausted',
+      }),
+    ).toBe(true);
     expect(
       isKbDaemonParentRequestMessage({
         type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
         id: 'parent:2',
-        method: 'curate.assistant.cancel',
+        method: 'curate.request.cancel',
         params: { requestId: 'parent:1', reason: 'stopping' },
       }),
     ).toBe(true);
-    expect(isKbDaemonCurateAssistantCancelRequest({ requestId: 'parent:1', reason: 'stopping' })).toBe(true);
-    expect(isKbDaemonCurateAssistantCancelRequest({ requestId: '' })).toBe(false);
+    expect(
+      isKbDaemonParentRequestMessage({
+        type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
+        id: 'parent:legacy',
+        method: 'curate.assistant.cancel',
+        params: { requestId: 'parent:1' },
+      }),
+    ).toBe(false);
+    expect(isKbDaemonCurateRequestCancelRequest({ requestId: 'parent:1', reason: 'stopping' })).toBe(true);
+    expect(isKbDaemonCurateRequestCancelRequest({ requestId: '' })).toBe(false);
   });
 });

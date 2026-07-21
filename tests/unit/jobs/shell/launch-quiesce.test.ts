@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
-import type { ProviderEventBody, ProviderRequest, ProviderSpec } from '#src/providers/contract.js';
+import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { none } from '#src/providers/capability.js';
+import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
 import type { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import type { AdmittedHandle, JobAdmissionPort, LaunchPool } from '#src/jobs/contracts/admission.js';
@@ -11,7 +14,7 @@ import type { ProviderServerLease, ProviderServerSpec } from '#src/providers/con
 import type { Runtime } from '#src/runtime/ports.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import type { SessionJobContinuityCheckpointResult, SessionJobClaimPort } from '#src/sessions/contracts.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -133,7 +136,7 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   const session: SessionEntry = {
     sessionId,
     provider: 'codex',
-    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
     activeJobId: jobId,
     version: 1,
   } as unknown as SessionEntry;
@@ -209,12 +212,14 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
     } as unknown as ProviderServerLease;
   };
 
+  const providerRegistry = new ProviderRegistry();
   const orchestrator = new LaunchOrchestrator({
     abortRegistry,
     progressStore: progressStoreSpy,
     sessionManager,
     launchAdmission,
     durableSpawner,
+    providerRegistry,
     runtime,
     backendNamespace: 'ns',
     bundleHash: 'bundle',
@@ -228,7 +233,7 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   // Provide a synthetic provider whose `run` returns the controlled stream and
   // calls runtime.acquireServer on first invocation so the orchestrator marks
   // the job as app-server.
-  const provider = {
+  const provider = defineProvider({
     name: 'codex',
     run: ((
       _request: ProviderRequest,
@@ -238,7 +243,11 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
       void providerRuntime.acquireServer({ provider: 'codex', shared: false } as ProviderServerSpec).catch(() => {});
       return providerStream.iterable;
     }) as never,
-  } as unknown as ProviderSpec;
+  })
+    .binding(fixtureProviderBindingCodec('codex'))
+    .artifacts(none('quiesce fixture owns no provider artifacts'))
+    .build();
+  providerRegistry.register(provider);
 
   const request: ProviderRequest = {
     action: 'start',

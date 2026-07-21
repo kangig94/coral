@@ -516,6 +516,7 @@ describe('cli format', () => {
           'Version: 1.2.3',
           'Uptime: 4m12s',
           'Kernel: running since 2026-05-05T12:00:00.000Z',
+          'System provider scope: unconfigured',
           '',
           'Runtime Components:',
           '  kb: online',
@@ -524,6 +525,19 @@ describe('cli format', () => {
           'Queue depth: 0',
         ].join('\n'),
       );
+    });
+
+    it('formats the redacted system provider scope without profile details', () => {
+      const status = {
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          systemProviderScope: { name: 'maintenance', providers: ['claude', 'codex'] },
+          components: [],
+        },
+      } satisfies BackendStatusFull;
+
+      expect(formatBackendStatus(status)).toContain('System provider scope: maintenance (claude, codex)');
     });
 
     it('omits the kernel timestamp when readyAt is null', () => {
@@ -1035,9 +1049,7 @@ describe('cli format', () => {
     });
 
     it('pluralizes the missing-cost note for one workflow child', () => {
-      expect(formatUsageSegment({ costUsd: 0.5, jobsWithoutCostData: 1 })).toBe(
-        '$0.50+ · (+1 job without cost data)',
-      );
+      expect(formatUsageSegment({ costUsd: 0.5, jobsWithoutCostData: 1 })).toBe('$0.50+ · (+1 job without cost data)');
     });
 
     it('formats progress events with elapsed time when no label is passed (single-job case)', () => {

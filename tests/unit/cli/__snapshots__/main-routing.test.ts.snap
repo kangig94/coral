@@ -18,7 +18,8 @@ Commands:
 exports[`cli main routing > preserves help output for 'codex' via snapshot 1`] = `
 "Usage: coral-cli codex [options] [agent]
 
-Run via codex; captures CODEX_HOME and binds the session to that account
+Run via codex; captures its provider profile and binds the session to it. Select
+the profile with CODEX_HOME (default: ~/.codex).
 
 Arguments:
   agent                          Agent name (optional; omit for a raw prompt
@@ -47,8 +48,8 @@ Options:
 
 Commands:
   seed [options]         Generate discussion personas
-  start [options]        Start a discussion; captures CODEX_HOME and
-                         CLAUDE_CONFIG_DIR for its full lifetime
+  start [options]        Start a discussion; binds only the provider profiles
+                         used by its agents
   watch [options]        Fetch discussion events since cursor (returns new
                          events; increment cursor for next call)
   participate [options]  Submit bid or speech
@@ -141,8 +142,8 @@ Commands:
 exports[`cli main routing > preserves help output for 'workflow' via snapshot 1`] = `
 "Usage: coral-cli workflow [options]
 
-Execute a workflow; captures CODEX_HOME and CLAUDE_CONFIG_DIR for its full
-lifetime
+Execute a workflow; binds every provider profile referenced by the workflow for
+its full lifetime
 
 Options:
   -e, --expression <expr>               Pipeline DSL expression
@@ -171,16 +172,18 @@ Options:
   -h, --help                display help for command
 
 Commands:
-  codex [options] [agent]   Run via codex; captures CODEX_HOME and binds the
-                            session to that account
-  claude [options] [agent]  Run via claude; captures CLAUDE_CONFIG_DIR and binds
-                            the session to that account
+  codex [options] [agent]   Run via codex; captures its provider profile and
+                            binds the session to it. Select the profile with
+                            CODEX_HOME (default: ~/.codex).
+  claude [options] [agent]  Run via claude; captures its provider profile and
+                            binds the session to it. Select the profile with
+                            CLAUDE_CONFIG_DIR (default: ~/.claude).
   jobs [options]            List live jobs across all projects (current project
                             first, then KB jobs, then other directories)
   wait                      Stream job progress (text output)
   abort [options]           Abort running jobs
-  workflow [options]        Execute a workflow; captures CODEX_HOME and
-                            CLAUDE_CONFIG_DIR for its full lifetime
+  workflow [options]        Execute a workflow; binds every provider profile
+                            referenced by the workflow for its full lifetime
   backend                   Backend daemon control
   discuss                   Discussion operations
   kb                        Knowledge base operations

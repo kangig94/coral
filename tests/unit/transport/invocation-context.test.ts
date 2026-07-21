@@ -48,6 +48,19 @@ describe('buildControllerEnv networkEnv overlay', () => {
 });
 
 describe('buildControllerEnv coralEnv forwarding', () => {
+  it('never places the raw named-system provider scope in an invocation environment', () => {
+    const env = buildControllerEnv(
+      { coralEnv: { CORAL_SYSTEM_PROVIDER_SCOPE: '{"origin":"caller"}' } },
+      {
+        CORAL_SYSTEM_PROVIDER_SCOPE: '{"origin":"system","name":"private"}',
+        CORAL_FLAVOR: 'prod',
+      },
+    );
+
+    expect(env).toEqual({ CORAL_FLAVOR: 'prod' });
+    expect(JSON.stringify(env)).not.toContain('private');
+  });
+
   it('lets the caller override the daemon boot value for a config key', () => {
     const env = buildControllerEnv(
       { coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' } },
@@ -58,10 +71,7 @@ describe('buildControllerEnv coralEnv forwarding', () => {
   });
 
   it('drops a daemon boot config key the caller did not forward (unset → code default)', () => {
-    const env = buildControllerEnv(
-      { coralEnv: { CORAL_EFFORT: 'high' } },
-      { CORAL_CODEX_MODEL: 'gpt-5.5' },
-    );
+    const env = buildControllerEnv({ coralEnv: { CORAL_EFFORT: 'high' } }, { CORAL_CODEX_MODEL: 'gpt-5.5' });
 
     expect(env).not.toHaveProperty('CORAL_CODEX_MODEL');
     expect(env.CORAL_EFFORT).toBe('high');

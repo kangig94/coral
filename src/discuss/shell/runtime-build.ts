@@ -15,8 +15,8 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type { AgentConfig, DiscussContext } from './types.js';
+import { discussAgentExecution } from '../execution-policy.js';
 
-export const DEFAULT_DISCUSS_PROVIDER = 'claude';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set<DiscussAgentJobOutcome>([
   'execution_error',
   'recovery_failed',
@@ -140,19 +140,7 @@ export function normalizeModel(model: string | undefined): string | undefined {
 export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string, SessionCreatedAgentExecutionConfig> {
   const config: Record<string, SessionCreatedAgentExecutionConfig> = {};
   for (const agent of agents) {
-    const isManualObserver =
-      (agent.participation ?? 'required') === 'observer' && agent.provider === undefined && agent.model === undefined;
-
-    if (isManualObserver) {
-      config[agent.name] = { manual: true };
-      continue;
-    }
-
-    config[agent.name] = {
-      manual: false,
-      provider: agent.provider ?? DEFAULT_DISCUSS_PROVIDER,
-      model: agent.model ?? '',
-    };
+    config[agent.name] = discussAgentExecution(agent);
   }
   return config;
 }

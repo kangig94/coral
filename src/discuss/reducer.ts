@@ -363,7 +363,7 @@ export function createDiscussSnapshot(event: DiscussDomainEvent): PersistedDiscu
   }
   return {
     schemaVersion: 3,
-    providerCredentials: event.payload.providerCredentials,
+    providerScope: event.payload.providerScope,
     sessionId: event.sessionId,
     projectRoot: event.projectRoot,
     updatedAt: event.ts,

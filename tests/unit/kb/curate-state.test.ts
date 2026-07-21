@@ -227,6 +227,7 @@ beforeEach(() => {
     processPort: gitSyncRuntime.process,
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
+    usageBudget: { isExhausted: async () => false },
   });
   internals = createCurateTestHandle({
     kb: runtime,

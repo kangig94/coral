@@ -2,9 +2,9 @@ import { makeEvent, type FollowUpQueueItem } from '../../events.js';
 import { decideEnd, decideEpochSummary } from '../../state-machine.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { errorMessage } from '../../../infra/error-format.js';
+import { DEFAULT_DISCUSS_PROVIDER } from '../../command-schemas.js';
 import {
   FOLLOW_UP_TURN_INSTRUCTION,
-  DEFAULT_DISCUSS_PROVIDER,
   PURPOSE_EPOCH_EVALUATION,
   PURPOSE_FOLLOW_UP,
   currentAgentRun,

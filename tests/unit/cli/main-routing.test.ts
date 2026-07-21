@@ -1006,8 +1006,11 @@ describe('cli main routing', () => {
     expect(codex?.helpInformation()).toContain('-i, --input');
     expect(codex?.helpInformation()).toContain('-b, --bypass-permissions');
     expect(codex?.helpInformation()).toContain('-d, --detach');
+    expect(codex?.helpInformation()).toContain('CODEX_HOME (default: ~/.codex)');
+    expect(findCommand(program, 'claude').helpInformation()).toContain('CLAUDE_CONFIG_DIR (default: ~/.claude)');
     expect(workflow?.helpInformation()).toContain('--detach');
     expect(workflow?.helpInformation()).toContain('-s, --start-prompt');
+    expect(workflow?.helpInformation()).toContain('binds every provider profile referenced by the workflow');
   });
 
   it('passes unified flags through raw provider launches and resolves -i file input', async () => {

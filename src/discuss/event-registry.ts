@@ -55,14 +55,14 @@ const validateDiscussCreation: DomainAppendValidator = (ctx, inputs) => {
     const isCreate = input.type === 'discuss.session.created';
     if (!exists && !isCreate) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_missing',
+        code: 'discuss_session_missing',
         userMessage: `Discuss session '${input.stream.id}' must be created before later events.`,
         remediation: 'Append discuss.session.created first in the same batch.',
       });
     }
     if (exists && isCreate) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_invalid',
+        code: 'discuss_session_duplicate',
         userMessage: `Discuss session '${input.stream.id}' is already created.`,
         remediation: 'Do not append a second discuss.session.created event.',
       });

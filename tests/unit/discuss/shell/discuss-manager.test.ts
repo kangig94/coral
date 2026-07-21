@@ -26,7 +26,7 @@ import {
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -44,7 +44,7 @@ async function recoverSessions(harness: DiscussHarness) {
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
-      providerCredentials: snapshot.providerCredentials ?? TEST_PROVIDER_CREDENTIALS,
+      providerScope: snapshot.providerScope ?? TEST_PROVIDER_SCOPE,
     }),
   );
 }
@@ -131,6 +131,34 @@ describe('Discuss context registry', () => {
     await expect(abortDiscussSession(harness.context, 'subscriber-throws')).resolves.toBeUndefined();
     expect(harness.store.load('subscriber-throws')?.state.status).toBe('ended');
     expect(getSession(harness.context, 'subscriber-throws')).toBeUndefined();
+
+    harness.cleanup();
+  });
+});
+
+describe('Discuss provider scope', () => {
+  it('rejects an incomplete mixed-provider scope before durable discussion allocation', async () => {
+    const harness = createDiscussHarness();
+
+    await expect(
+      startDiscussSession(
+        harness.context,
+        'incomplete-provider-scope',
+        DEFAULT_TOPIC,
+        [
+          { name: 'alpha', persona: '# Alpha', provider: 'codex' },
+          { name: 'beta', persona: '# Beta', provider: 'claude' },
+        ],
+        {},
+        { ...harness.ctx, providerScope: TEST_CODEX_SCOPE },
+      ),
+    ).rejects.toMatchObject({
+      code: 'provider_binding_missing_profile',
+      detail: { message: expect.stringContaining('Claude credential profile') },
+    });
+
+    expect(harness.store.load('incomplete-provider-scope')).toBeNull();
+    expect(harness.service.start).not.toHaveBeenCalled();
 
     harness.cleanup();
   });

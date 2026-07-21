@@ -14,6 +14,18 @@ export class UsageError extends Error {
   }
 }
 
+export class ProviderSelectionError extends Error {
+  readonly code: string;
+  readonly remediation: string;
+
+  constructor(code: string, message: string, remediation: string) {
+    super(message);
+    this.name = 'ProviderSelectionError';
+    this.code = code;
+    this.remediation = remediation;
+  }
+}
+
 /**
  * Collapses a ZodError from CLI argument validation into a UsageError whose
  * message reads as flag guidance (issue messages already phrased as `--flag ...`
@@ -96,6 +108,10 @@ export function buildErrorEnvelope(error: unknown): { envelope: CliErrorEnvelope
 
   if (error instanceof UsageError || error instanceof CommanderError) {
     return withExitCode({ error: true, code: 'invalid_usage', message: error.message }, 2);
+  }
+
+  if (error instanceof ProviderSelectionError) {
+    return withExitCode({ error: true, code: error.code, message: error.message, remediation: error.remediation }, 2);
   }
 
   if (error instanceof TransientHttpError) {

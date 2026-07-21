@@ -10,13 +10,13 @@ Coral has **two distinct truths**, not one. Forcing a single substrate on both w
 
 ### 1.1 Why a Journal for process-like domains
 
-Jobs, sessions, discussions, and workflows are **temporal**: they have a beginning, unfold in ordered steps, and terminate. The ordered event history *is* the story; replay reconstructs any projection at any past `seq`. Causal references (`causeRef = { stream, seq }`) and cross-stream atomicity fall out naturally from a single global ordering.
+Jobs, sessions, discussions, and workflows are **temporal**: they have a beginning, unfold in ordered steps, and terminate. The ordered event history _is_ the story; replay reconstructs any projection at any past `seq`. Causal references (`causeRef = { stream, seq }`) and cross-stream atomicity fall out naturally from a single global ordering.
 
 Global ordering is cheap: SQLite ROWID is monotonic per database, so every event has a universally comparable `seq`. Cross-log ordering would be expensive — one journal avoids that cost.
 
 ### 1.2 Why a Corpus for knowledge-like domains
 
-KB notes, sources, principles, communities, and wiki entries are **spatial**: they accumulate, get edited, reference each other. What matters is the current state, not the sequence of edits. Obsidian-as-editor reinforces this — users edit markdown files directly; the filesystem *is* the truth they see and manipulate. Wiki entries push this further with a strict 2-section body (`## Understanding` rewritable summary, `## Knowledge` self-organizing list of `[[wikilinks]]` where each link owns its own evidence timeline as nested sub-bullets) — link removal physically removes the evidence with it, so no separate sync layer is needed.
+KB notes, sources, principles, communities, and wiki entries are **spatial**: they accumulate, get edited, reference each other. What matters is the current state, not the sequence of edits. Obsidian-as-editor reinforces this — users edit markdown files directly; the filesystem _is_ the truth they see and manipulate. Wiki entries push this further with a strict 2-section body (`## Understanding` rewritable summary, `## Knowledge` self-organizing list of `[[wikilinks]]` where each link owns its own evidence timeline as nested sub-bullets) — link removal physically removes the evidence with it, so no separate sync layer is needed.
 
 Event-sourcing the KB would force bi-directional sync: external edits → synthetic events → reconstructed markdown, with conflict resolution for Obsidian-vs-coordinator races. The filesystem already offers atomic rename; git already provides sync. Reinventing these inside a journal adds complexity without elegance gain.
 
@@ -40,7 +40,7 @@ Corpus-scale rebuilds are not ordinary mutations. A point mutation changes autho
 
 Journal events do not embed Corpus entries via a typed pointer. The two authorities are independent: process-like state (Journal) does not reference knowledge-like state (Corpus), and the recovery paths of each authority do not consume the other's events as input.
 
-KB has its own retry/rebuild surface (`kb_curate_retry_queue`, Corpus rescan, authority baseline rebuild). Job lifecycle records the *fact* of a hosted KB attempt and its failure on the hosting `job/<id>` stream, but the slug/identity of the targeted KB entry is the caller's input and is not re-persisted into the Journal envelope.
+KB has its own retry/rebuild surface (`kb_curate_retry_queue`, Corpus rescan, authority baseline rebuild). Job lifecycle records the _fact_ of a hosted KB attempt and its failure on the hosting `job/<id>` stream, but the slug/identity of the targeted KB entry is the caller's input and is not re-persisted into the Journal envelope.
 
 If a future surface ("cited evidence" UI, forensic listener) needs cross-authority references, that surface introduces the shape together with its consumer. The architecture does not pre-declare a placeholder.
 
@@ -95,8 +95,8 @@ Adding a new provider is declaring its middleware stack. Provider implementation
 Journal and Corpus consumers are deliberately split:
 
 - **Journal consumers** advance against a single `events.seq` axis. Two flavors:
-  - *Cursor-only* base projections (jobs/sessions/discuss/workflows): rows are written by the commit-time reducer inside the same `BEGIN IMMEDIATE` that appends the events; the driver only advances the durable cursor on `notify`.
-  - *Apply-kind* expansion-tier consumers: range-based replay through `apply({ upToSeq, signal })`.
+  - _Cursor-only_ base projections (jobs/sessions/discuss/workflows): rows are written by the commit-time reducer inside the same `BEGIN IMMEDIATE` that appends the events; the driver only advances the durable cursor on `notify`.
+  - _Apply-kind_ expansion-tier consumers: range-based replay through `apply({ upToSeq, signal })`.
 - **Corpus consumers** advance against `(contentSeq, metadataSeq)` pairs. Snapshot-based content-hash diff through `apply({ snapshot, journalReader, corpusStateReader, projectionInput, signal })`.
 
 A unified interface would have to embed both shapes; one would always be a no-op for half the consumers. Splitting the interface reflects the different freshness mechanics directly.
@@ -117,23 +117,37 @@ Module-level helpers like `composeCoralPaths(flavor, opts?)` exist for the boots
 
 ### 5.2 Why eager port construction
 
-Port objects are eager constants: `runtime.paths.coral` is composed once at `createRealRuntime(flavor, opts?)` and is referentially stable across accesses. Tests that mock `node:os.homedir()` per-test must construct the runtime *after* the mock is set; do not rely on lazy re-evaluation. Lazy ports invite "did the value change since I read it last?" bugs that don't exist if the port is materialized once.
+Port objects are eager constants: `runtime.paths.coral` is composed once at `createRealRuntime(flavor, opts?)` and is referentially stable across accesses. Tests that mock `node:os.homedir()` per-test must construct the runtime _after_ the mock is set; do not rely on lazy re-evaluation. Lazy ports invite "did the value change since I read it last?" bugs that don't exist if the port is materialized once.
 
 ### 5.3 Per-project data dir is a composed path family, not an ambient read
 
 The per-project data directory is a first-class `CoralPaths` family (`runtime.paths.coral.projects`), flavor-separated like every other family (`projects` for prod, `projects-dev` for dev — enforced by `tests/invariants/flavor-path-separation.test.ts`). `runtime.paths.projectData(projectRoot)` resolves to `<coralRoot>/projects/<source-slug>` by composing the git-derived source (`projectSource`) with the composed root; the KB memo scratch tree then lives at `<projectDataDir>/memo` (the `/memo` subdir is appended by `kb/paths.ts`, not part of the `projects` family shape). KB memo ops and `promote`/`adopt` receive the already-resolved data dir; they never recompute it from a bare `coralRoot()`.
 
-This closed a real gap: the dir was previously computed ad-hoc by a `projectDataDir(projectRoot)` helper co-located with source resolution (since removed from `infra/project-source.ts`, which now owns *only* `resolveProjectSource`), built from a bare `coralRoot()` (ambient `homedir()`) that bypassed the runtime port. That made it impossible to isolate in tests without mocking `node:os` — any test exercising memo paths leaked empty `~/.coral/projects/*` dirs into the developer's real home. Tests now isolate the whole tree via `createRealRuntime(flavor, { baseDir })` or `SimulationRuntime { roots.coralRoot }`; `vitest/no-real-coral-leak.ts` (a vitest `globalSetup` wired into the default, e2e, e2e-lifecycle, and integration configs) fails the run if anything writes into the real `~/.coral/projects` or `~/.coral/projects-dev`.
+This closed a real gap: the dir was previously computed ad-hoc by a `projectDataDir(projectRoot)` helper co-located with source resolution (since removed from `infra/project-source.ts`, which now owns _only_ `resolveProjectSource`), built from a bare `coralRoot()` (ambient `homedir()`) that bypassed the runtime port. That made it impossible to isolate in tests without mocking `node:os` — any test exercising memo paths leaked empty `~/.coral/projects/*` dirs into the developer's real home. Tests now isolate the whole tree via `createRealRuntime(flavor, { baseDir })` or `SimulationRuntime { roots.coralRoot }`; `vitest/no-real-coral-leak.ts` (a vitest `globalSetup` wired into the default, e2e, e2e-lifecycle, and integration configs) fails the run if anything writes into the real `~/.coral/projects` or `~/.coral/projects-dev`.
 
 ### 5.4 Provider accounts are request authority, not daemon identity
 
-Coral's daemon is an appserver-shaped process: one canonical coordinator, journal, provider-host pool, and KB runtime serve every invocation of the installed bundle. It therefore cannot use the environment of the process that happened to boot it as provider-account authority. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are captured by the invoking CLI, canonicalized at the local IPC boundary, and bound to the session. The daemon state tree remains account-neutral and contains no `by-config` routing.
+Coral's daemon is an appserver-shaped process: one canonical coordinator, journal, provider-host pool, and KB runtime serve every invocation of the installed bundle. It therefore cannot use the environment of the process that happened to boot it as provider-account authority. The invoking CLI captures `CODEX_HOME` and `CLAUDE_CONFIG_DIR`; provider-owned codecs canonicalize them before IPC transports the resulting caller scope. The daemon state tree remains account-neutral and contains no account-derived routing.
 
-The binding is explicit and durable. A provider session owns exactly one provider source; workflow and discuss roots own the complete credential-source set because they may launch both providers later. Every launch validates against the parent authority. Resume, restart recovery, one-shot Claude work, and artifact discovery all receive the stored source rather than reading ambient process env. This makes account continuity a property of domain state, not a convention at call sites.
+The binding is explicit and durable, but its guarantee is provider-specific. Codex owns an account binding to its provider-managed workspace routing subject. Claude owns a profile binding because its supported CLI surface exposes no stable non-secret account identity. Calling both of these "verified accounts" would overstate the Claude guarantee.
 
-Execution env is closed over a small inherited base, validated request config, the selected routing variable, and server-minted child authority. Credential overrides and other unrelated inherited variables are removed. Claude's broker is account-neutral; each controller receives exact `controllerEnv` plus the selected `projectsRoot`. Codex hosts are keyed by the selected home. Ambient Claude deliberately emits no `CLAUDE_CONFIG_DIR`; its canonical locator is used only where Coral must find artifacts. Unsupported cloud selectors fail closed because they do not yet have a complete source model.
+Implementation status is **through B03**. A provider session owns one strict provider binding. A workflow's complete caller scope is carried by its durable workflow job launch, discussion state persists its complete caller scope directly, and a system one-shot binds the configured named system scope at each use. B04 is reserved for moving complete-scope ownership onto the workflow/discussion aggregate roots; that later ownership is not described as current behavior. Descriptions of the pre-refactor baseline elsewhere in this document are historical motivation only, not live routing, a supported alternate layout, or a compatibility contract.
 
-This change is a destructive store epoch, not a legacy-layout migration. The full `schema.sql` hash already controls `PRAGMA user_version`; a mismatch quarantines the canonical DB/WAL/SHM and recreates the store. Old `by-config` trees are outside the runtime topology and remain untouched. Event bodies stay at version 1, while discuss snapshots use strict schema version 3; those numbers describe serialized shapes, not the database reset mechanism.
+Every launch decodes the complete available scope and binds the selected profile before allocation. Resume, restart recovery, one-shot provider work, and artifact discovery rehydrate stored bindings rather than reading ambient process env. Execution env is closed over a small inherited base, validated request config, binding-derived routing, and server-minted child authority. Credential overrides and unrelated inherited variables are rejected or removed. Claude's broker is account-neutral: an explicit selector emits the bound `CLAUDE_CONFIG_DIR`, while the caller-local default emits the exact bound `HOME` and no daemon-inherited Claude selector. Codex hosts are keyed by the bound home. Unsupported alternate selectors fail closed because they are outside those binding models.
+
+The design is organized by authority role, not by a prescribed per-file layout:
+
+| Role | Owner | Invariant through B03 |
+| --- | --- | --- |
+| Caller selection capture | Local CLI invocation | Capture only profiles the operation can launch; never derive them from daemon boot env |
+| Provider vocabulary and dispatch | Provider registry/contracts | Decode complete scopes, choose the registered provider codec, and render typed failures |
+| Profile canonicalization and binding | Provider-owned codec | Codex proves a workspace account subject; Claude proves only canonical profile continuity |
+| Durable provider continuity | Provider session/job state | Persist the strict binding before allocation and reuse it for resume/recovery |
+| Multi-provider request authority | Workflow launch or discussion state | Persist a complete caller scope in the current B03 owner; aggregate-root ownership begins in B04 |
+| Daemon-internal authority | Named system scope | Bind the configured profile at each use; never fall back to daemon credentials |
+| Process routing | Provider runtime adapter | Derive the closed execution environment only from the bound provider profile |
+
+This change is a destructive store epoch, not a migration. Event `bodyVersion` and snapshot `schemaVersion` values identify strict current codecs only; they select no upcaster, old-format decoder, or compatibility path. Through B03, the active reset marker is still the DDL-only `schema.sql` hash. The complete fingerprint over `schema.sql` and registered persisted codecs runs as a shadow assertion, so it detects missing fingerprint coverage without deciding whether to reset the store. B09 makes that complete fingerprint active; before B09, only a DDL hash mismatch quarantines the canonical DB/WAL/SHM and recreates the store.
 
 ## 6. Curiosity-Driven Expansion (Zelda Metaphor)
 
@@ -175,7 +189,7 @@ Replay-from-zero exists as a regression test fixture, not a production recovery 
 
 ### 7.2 Corpus recovery
 
-Recovery = **rescan + staged projection reconciliation**. There is no event history to replay; the markdown filesystem *is* the truth. Coordinator startup scans the Corpus, diffs content/metadata hashes against last-known state, reconciles any interrupted staged projection commit, and rebuilds retrieval projections via the registered CorpusConsumers.
+Recovery = **rescan + staged projection reconciliation**. There is no event history to replay; the markdown filesystem _is_ the truth. Coordinator startup scans the Corpus, diffs content/metadata hashes against last-known state, reconciles any interrupted staged projection commit, and rebuilds retrieval projections via the registered CorpusConsumers.
 
 External edits (Obsidian, git pull, direct filesystem writes) are first-class — the rescan absorbs them without backfilling synthetic events.
 
@@ -189,7 +203,7 @@ There is one serving owner for projections with live runtime state. A projection
 
 Local CLI commands that need a served runtime, mutation, or subscription go through the coordinator over **IPC** (`coordinator.sock`, authenticated). `directRead` commands bypass IPC and read authority directly through `read-model/CoralStore`. The HTTP gateway is server-side exposure for non-CLI consumers (`coral-reef`, future browser/external clients) plus the operational carveouts (`/health`, `/admin/shutdown`, `/events/stream`).
 
-HTTP is *not* a CLI dispatch path — remote CLI dispatch is not supported.
+HTTP is _not_ a CLI dispatch path — remote CLI dispatch is not supported.
 
 ### 8.1 Why command-class routing
 
@@ -218,7 +232,7 @@ The `.claude/rules/design-philosophy.md` §7 summarizes load-bearing naming rule
 
 ### 9.2 Allowed filenames (scope-bound)
 
-Discipline is on *content/size*, not *name*:
+Discipline is on _content/size_, not _name_:
 
 - `index.ts` — conventional entry/orchestrator for a cohesive component dir. Allowed at any depth. Don't use it as a barrel that re-exports everything; it's the public surface, not a hiding mechanism.
 - `types.ts` — type vocabulary for the parent dir. Allowed at any depth; the directory provides scope. If unrelated types accumulate, MUST split.
@@ -227,9 +241,9 @@ Discipline is on *content/size*, not *name*:
 
 ### 9.3 Magnet vs registry
 
-When a file holds a *typed-identifier registry* (HTTP status codes, POSIX errno, `CoralSetupError` documented codes), accumulation is the *correct* shape — that is what a canonical registry looks like. Don't split it per-domain just because the codes name domain things; the codes are wire-level identifiers, not domain logic.
+When a file holds a _typed-identifier registry_ (HTTP status codes, POSIX errno, `CoralSetupError` documented codes), accumulation is the _correct_ shape — that is what a canonical registry looks like. Don't split it per-domain just because the codes name domain things; the codes are wire-level identifiers, not domain logic.
 
-The magnet anti-pattern only applies when a file absorbs *unrelated logic* through a content-blank name. **Counter-example we got wrong once**: an early attempt split `runtime/errors.ts` into per-domain catalogs to "avoid magnet" — it created a cycle and proliferated files. The catalog stays as one registry; it is not a magnet, it is a registry.
+The magnet anti-pattern only applies when a file absorbs _unrelated logic_ through a content-blank name. **Counter-example we got wrong once**: an early attempt split `runtime/errors.ts` into per-domain catalogs to "avoid magnet" — it created a cycle and proliferated files. The catalog stays as one registry; it is not a magnet, it is a registry.
 
 ### 9.4 Filename honesty
 
@@ -243,15 +257,15 @@ When in doubt, ask: would a reader who never opened this file guess its role fro
 
 ### 9.5 Re-export discipline
 
-A module's `import { X } from 'A'; export { X };` block creates a *second* canonical home for `X`. Future contributors then face an ambiguous import path — the same type is reachable from two places, with no rule to pick between them. Both paths stay alive (neither is wrong), and over time grep can no longer tell which is the real home. This is the same anti-pattern as the magnet file (§9.3), one level up: instead of unrelated logic accumulating under a content-blank filename, unrelated *home identities* accumulate under a module's export surface.
+A module's `import { X } from 'A'; export { X };` block creates a _second_ canonical home for `X`. Future contributors then face an ambiguous import path — the same type is reachable from two places, with no rule to pick between them. Both paths stay alive (neither is wrong), and over time grep can no longer tell which is the real home. This is the same anti-pattern as the magnet file (§9.3), one level up: instead of unrelated logic accumulating under a content-blank filename, unrelated _home identities_ accumulate under a module's export surface.
 
 The rule:
 
 - **A module exports only what it owns.** Names defined in the module are exported; names imported from elsewhere stay local to the module's own use.
-- **Exception — a directory's `index.ts`** may publish that directory's own internal members as the public surface (e.g., `coordinator/index.ts` publishes coordinator-owned exports). It must not republish a *foreign* module's exports as its own.
+- **Exception — a directory's `index.ts`** may publish that directory's own internal members as the public surface (e.g., `coordinator/index.ts` publishes coordinator-owned exports). It must not republish a _foreign_ module's exports as its own.
 - When a type belongs to a different layer, callers import it from that layer directly. Don't add a re-export "for convenience" — convenience is exactly what dilutes the canonical home.
 
-**Counter-example we got wrong once**: `runtime/ports.ts` accumulated a re-export block aliasing nine port primitives (`TimePort`, `StoragePort`, `EnvPort`, …) from `infra/port-types.ts`. The module's actual responsibility is *runtime composition* (`Runtime`, `ProcessPort`, `IdPort`, `RuntimeObserver`); the re-export block turned it into a *second* canonical home for the primitives. Imports across the codebase split between the two paths with no consistent rule, and `runtime/ports.ts`'s identity blurred. The fix is to delete the re-export block — primitives must be imported from `infra/port-types.ts` directly.
+**Counter-example we got wrong once**: `runtime/ports.ts` accumulated a re-export block aliasing nine port primitives (`TimePort`, `StoragePort`, `EnvPort`, …) from `infra/port-types.ts`. The module's actual responsibility is _runtime composition_ (`Runtime`, `ProcessPort`, `IdPort`, `RuntimeObserver`); the re-export block turned it into a _second_ canonical home for the primitives. Imports across the codebase split between the two paths with no consistent rule, and `runtime/ports.ts`'s identity blurred. The fix is to delete the re-export block — primitives must be imported from `infra/port-types.ts` directly.
 
 The pattern to look for: any non-`index.ts` module that contains both `import { … } from '…'` and `export { … }` of the same names. That is always either an `index.ts` re-publishing its own directory (allowed), a re-export aggregator (delete it), or a typedef-rename like `export type Y = X` (allowed — it's a new name, not a second home for the old one).
 
@@ -275,11 +289,11 @@ Counts: 3 files = borderline (subdivide only if cohesion is unmistakable and the
 
 - `infra/` is the canonical low-level dump by design; subdividing into `infra/paths/`, `infra/errors/`, etc. creates competing canonical homes inside a layer that should stay flat.
   - **Exception**: `infra/path/` is permitted as a cohesive path-composition component (5 files: `compose`, `coordinator`, `engine`, `root`, `store`). The exception applies to components where the directory name names a clear internal concept and the file count justifies a subdir; it does NOT permit `infra/utils/`, `infra/helpers/`, or other content-blank groupings.
-- The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a *minimum* shape — `events.ts` and `read-queries.ts` at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
+- The 4 Journal-stream domains (`jobs`, `sessions`, `discuss`, `workflow`) share a _minimum_ shape — `events.ts` and `read-queries.ts` at the domain root, plus `event-describers.ts` for cause-ref rendering. Beyond that minimum, each domain adds files to fit its own complexity, not a forced template:
   - `projections.ts` exists when the domain projects events to SQL tables (sessions/discuss/workflow).
   - `reducer.ts` exists only when the domain reconstructs in-memory state from events (currently only `discuss/`). Domains that project directly to SQL don't need a separate pure reducer.
   - `paths.ts` exists when the domain owns filesystem paths.
-  Don't manufacture files just to mirror discuss's shape across domains that don't have the same concerns.
+    Don't manufacture files just to mirror discuss's shape across domains that don't have the same concerns.
 - "Pure label" subdirs (e.g., grouping unrelated files into `gateway/` or `io/` because they "feel related") add navigation cost without scope clarity.
 
 ### 9.8 Lifecycle/process-flow naming
@@ -288,7 +302,7 @@ When a directory owns a pipeline, name files for the stage they sit at so the di
 
 ### 9.9 Discipline is content/size, not name
 
-When a file *does* drift (unrelated logic absorbed, file grows large, cohesion lost), the response is to split it, not to invent a new mechanical naming rule. Per-file line-count caps were a rewrite-time scaffold and were removed once the rewrite landed; growth discipline now lives in code review.
+When a file _does_ drift (unrelated logic absorbed, file grows large, cohesion lost), the response is to split it, not to invent a new mechanical naming rule. Per-file line-count caps were a rewrite-time scaffold and were removed once the rewrite landed; growth discipline now lives in code review.
 
 ## 10. Boot Eras and Runtime Health Components
 
@@ -296,7 +310,7 @@ When a file *does* drift (unrelated logic absorbed, file grows large, cohesion l
 
 ### 10.1 Why three eras
 
-Era I (Kernel) and Era II (Recovery) are sequenced because their outputs are prerequisites for everything that follows: the IPC socket must be bound and the Journal must be at-head before the CLI can do anything useful, and recovery must finish before live work can be admitted without colliding with in-flight reconcile decisions. Era III (Runtime Health Components) is parallel/fire-and-forget because these components are *observers/consumers* of kernel/recovery state, not contributors to it. Making KB block the kernel was a 0.7.0 mistake that turned a transient KB failure into a multi-minute CLI hang.
+Era I (Kernel) and Era II (Recovery) are sequenced because their outputs are prerequisites for everything that follows: the IPC socket must be bound and the Journal must be at-head before the CLI can do anything useful, and recovery must finish before live work can be admitted without colliding with in-flight reconcile decisions. Era III (Runtime Health Components) is parallel/fire-and-forget because these components are _observers/consumers_ of kernel/recovery state, not contributors to it. Making KB block the kernel was a 0.7.0 mistake that turned a transient KB failure into a multi-minute CLI hang.
 
 ### 10.2 Why RuntimeComponent as a health contract, not a bespoke branch
 

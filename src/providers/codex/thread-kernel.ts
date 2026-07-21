@@ -27,6 +27,7 @@ import {
 } from './request-mapping.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse, Turn, TurnStartParams } from './protocol.js';
 import { locateCodexRolloutArtifactFromRuntime } from './artifacts.js';
+import { verifyCodexEffectiveTransport } from './transport-policy.js';
 import {
   recoverableTurnFailure,
   recoverableTurnFailureFromInfo,
@@ -797,6 +798,7 @@ async function initializeThread(
   state: CodexTurnState,
   emit: (event: ProviderEventBody) => void,
 ): Promise<void> {
+  await verifyCodexEffectiveTransport(lease, request.cwd);
   let threadId: string;
 
   if (request.action === 'resume') {

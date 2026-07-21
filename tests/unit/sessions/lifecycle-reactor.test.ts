@@ -19,7 +19,7 @@ import { ProviderRegistry } from '#src/providers/registry.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
@@ -174,7 +174,7 @@ async function openClaimedSession(
 ): Promise<string> {
   const entry = harness.sessionManager.allocate({
     provider: 'codex',
-    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', binding: TEST_CODEX_BINDING },
     name: `session-${jobId}`,
     cwd: harness.projectRoot,
     projectRoot: harness.projectRoot,
@@ -267,9 +267,7 @@ function initRunningJob(
   } as const;
   initTestJob(
     harness.progressStore,
-    jobKind === 'workflow'
-      ? { ...base, jobKind, providerCredentials: TEST_PROVIDER_CREDENTIALS }
-      : { ...base, jobKind },
+    jobKind === 'workflow' ? { ...base, jobKind, providerScope: TEST_PROVIDER_SCOPE } : { ...base, jobKind },
   );
 }
 
@@ -604,7 +602,7 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({
       provider: 'codex',
-      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
       name: 'session-retention-validator',
       cwd: harness.projectRoot,
       projectRoot: harness.projectRoot,
@@ -643,7 +641,7 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({
       provider: 'codex',
-      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
       name: 'session-retention-duplicate',
       cwd: harness.projectRoot,
       projectRoot: harness.projectRoot,
@@ -1052,7 +1050,7 @@ describe('LifecycleReactor retention enforcement', () => {
       throw new Error(`Expected status for ${jobId}`);
     }
 
-    applyRecoveryAction(
+    await applyRecoveryAction(
       { type: 'markError', jobId, status, fault: { kind: 'wrapper_lost' } },
       {
         progressStore: harness.progressStore,
@@ -1170,7 +1168,6 @@ describe('LifecycleReactor retention enforcement', () => {
       runtime: harness.runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(harness.runtime.ids),
       parentPrincipal: testProjectPrincipal(harness.projectRoot),
-      providerCredentialSourceAvailability: { isAvailable: () => true },
       sessionManager: harness.sessionManager,
       abortRegistry: {
         register: () => 'abort-key',

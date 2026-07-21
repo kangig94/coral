@@ -11,7 +11,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
   createDiscussContextRegistry,
@@ -35,6 +35,8 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';
@@ -139,6 +141,8 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   activeStores.push(store);
   const service = createExecutionServiceStub();
   const registry = createDiscussContextRegistry();
+  const providerRegistry = new ProviderRegistry();
+  registerBuiltInProviders(providerRegistry);
   const context = getOrCreateDiscussContext(registry, projectRoot, service, store, {
     runtime: {
       ids: runtime.ids,
@@ -151,13 +155,14 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
       read: (jobId) => progressStore.readStatus(jobId),
       readExit: () => null,
     },
+    providerRegistry,
   });
   const invocationCtx: InvocationContext = {
     projectRoot,
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_PROVIDER_SCOPE,
   };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
@@ -177,7 +182,7 @@ async function appendCreatedSession(
     null,
     unwrap(
       decideSessionCreate(input, { sessionId: sessionId, projectRoot: harness.projectRoot, topic: TOPIC }, 1, ts, {
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_PROVIDER_SCOPE,
       }),
     ),
   );
@@ -364,7 +369,7 @@ describe('runtime-sealed discuss behavior', () => {
         { sessionId: 'backend-recovered-discuss', projectRoot: world.projectRoot, topic: TOPIC },
         1,
         '2035-04-15T01:02:03.000Z',
-        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { providerScope: TEST_PROVIDER_SCOPE },
       ),
     );
     const created = commitJobInputs(

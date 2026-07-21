@@ -11,7 +11,7 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type { WaitStreamRequest } from '#src/jobs/wait.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
-import { TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
+import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
 const httpServers: HttpServer[] = [];
@@ -66,10 +66,7 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
-    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
-    ambientClaudeLocation: {
-      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
-    },
+    systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,

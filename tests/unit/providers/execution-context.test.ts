@@ -49,24 +49,27 @@ describe('provider execution context', () => {
   );
 
   it.each([...UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS])(
-    'rejects inherited Claude selector %s only for Claude launches',
+    'does not let daemon-inherited Claude selector %s affect a bound execution',
     (key) => {
-      expect(() =>
+      expect(
         buildExactProviderEnv({
           baseEnv: { PATH: '/bin', [key]: '1' },
           source: TEST_CLAUDE_SOURCE,
           platform: 'linux',
         }),
-      ).toThrow(`Unsupported Claude credential selector '${key}'`);
-      expect(
-        buildExactProviderEnv({
-          baseEnv: { PATH: '/bin', [key]: '1' },
-          source: TEST_CODEX_SOURCE,
-          platform: 'linux',
-        }),
-      ).toEqual({ PATH: '/bin', CODEX_HOME: TEST_CODEX_SOURCE.home });
+      ).toEqual({ PATH: '/bin', CLAUDE_CONFIG_DIR: TEST_CLAUDE_SOURCE.configDir });
     },
   );
+
+  it('does not emit CLAUDE_CONFIG_DIR for a caller-default Claude profile', () => {
+    expect(
+      buildExactProviderEnv({
+        baseEnv: { PATH: '/bin', CLAUDE_CONFIG_DIR: '/daemon/profile' },
+        source: { ...TEST_CLAUDE_SOURCE, emitConfigDir: false, homeDir: '/caller' },
+        platform: 'linux',
+      }),
+    ).toEqual({ PATH: '/bin', HOME: '/caller' });
+  });
 
   it('rejects case-insensitive Windows collisions across environment layers', () => {
     expect(() =>

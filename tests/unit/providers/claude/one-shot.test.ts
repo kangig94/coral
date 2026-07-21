@@ -16,6 +16,7 @@ function systemContext(configDir: string) {
       kind: 'config-dir' as const,
       configDir,
       projectsRoot: join(configDir, 'projects'),
+      emitConfigDir: true as const,
     },
     brokerEnv: {},
     controllerEnv: { CLAUDE_CONFIG_DIR: configDir },

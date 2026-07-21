@@ -3,7 +3,6 @@ import type { ProviderCredentialSourceRef } from '../infra/provider-credential-s
 import {
   PROVIDER_CREDENTIAL_OVERRIDE_ENV_KEYS,
   PROVIDER_ROUTING_ENV_KEYS,
-  UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS,
   providerRoutingEnv,
 } from '../infra/provider-credential-sources.js';
 
@@ -71,20 +70,11 @@ export function buildExactProviderEnv(options: {
     const folded = foldedKey(key, windows);
     const prior = seen.get(folded);
     if (prior !== undefined && prior !== key) {
-      throw new Error(`provider_credential_source_invalid: environment key collision '${prior}'/'${key}'`);
+      throw new Error(`provider_execution_environment_invalid: environment key collision '${prior}'/'${key}'`);
     }
     seen.set(folded, key);
     output[key] = value;
   };
-  if (options.source?.provider === 'claude') {
-    for (const [key, value] of Object.entries(options.baseEnv)) {
-      if (value.trim() && setHasKey(UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS, key, windows)) {
-        throw new Error(
-          `Unsupported Claude credential selector '${key}'. Unset it and select a supported account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.`,
-        );
-      }
-    }
-  }
   for (const [key, value] of Object.entries(options.baseEnv)) {
     if (setHasKey(EXECUTION_ENV_ALLOWLIST, key, windows)) assign(key, value);
   }
@@ -93,7 +83,7 @@ export function buildExactProviderEnv(options: {
       setHasKey(PROVIDER_ROUTING_ENV_KEYS, key, windows) ||
       setHasKey(PROVIDER_CREDENTIAL_OVERRIDE_ENV_KEYS, key, windows)
     ) {
-      throw new Error(`provider_credential_source_invalid: protected environment override '${key}'`);
+      throw new Error(`provider_execution_environment_invalid: protected environment override '${key}'`);
     }
     if (setHasKey(EXECUTION_ENV_ALLOWLIST, key, windows) || setHasKey(PROVIDER_CORAL_ENV_ALLOWLIST, key, windows)) {
       assign(key, value);

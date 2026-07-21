@@ -1,5 +1,5 @@
 import type { Principal } from '../security/principal.js';
-import type { ProviderCredentialSet } from '../infra/provider-credential-sources.js';
+import type { ProviderScope } from '../infra/provider-scope.js';
 
 export type InvocationContext = {
   projectRoot: string;
@@ -7,13 +7,13 @@ export type InvocationContext = {
   coralEnv: Record<string, string>;
   principal: Principal;
   /** Present for provider-launching requests; omitted from unrelated read paths. */
-  providerCredentials?: ProviderCredentialSet;
+  providerScope?: ProviderScope;
 };
 
 export type ProviderInvocationContext = InvocationContext & {
-  providerCredentials: ProviderCredentialSet;
+  providerScope: ProviderScope;
 };
 
-export function hasProviderCredentials(ctx: InvocationContext): ctx is ProviderInvocationContext {
-  return ctx.providerCredentials !== undefined;
+export function hasProviderScope(ctx: InvocationContext): ctx is ProviderInvocationContext {
+  return ctx.providerScope !== undefined;
 }

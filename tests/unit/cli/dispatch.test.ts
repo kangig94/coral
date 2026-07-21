@@ -1,5 +1,8 @@
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const mockState = vi.hoisted(() => ({
   request: vi.fn(),
@@ -12,6 +15,14 @@ const mockState = vi.hoisted(() => ({
     },
   },
 }));
+
+const tempDirs: string[] = [];
+
+function makeTempDir(): string {
+  const root = mkdtempSync(join(tmpdir(), 'coral-cli-provider-scope-'));
+  tempDirs.push(root);
+  return root;
+}
 
 vi.mock('#src/transport/ipc/ensure.js', () => ({
   ensure: vi.fn(async () => ({
@@ -74,6 +85,97 @@ describe('command client routing', () => {
   afterEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    for (const root of tempDirs.splice(0)) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('captures caller-default Claude as an explicit physical profile without requiring Codex', async () => {
+    const callerHome = makeTempDir();
+    const physicalClaude = join(callerHome, 'physical-claude');
+    const callerDefaultClaude = join(callerHome, '.claude');
+    mkdirSync(physicalClaude);
+    symlinkSync(physicalClaude, callerDefaultClaude, 'dir');
+    vi.stubEnv('HOME', callerHome);
+    vi.stubEnv('USERPROFILE', '');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '');
+    vi.stubEnv('CODEX_HOME', join(callerHome, 'absent-codex'));
+    vi.stubEnv(
+      'CORAL_SYSTEM_PROVIDER_SCOPE',
+      JSON.stringify({
+        origin: 'system',
+        name: 'daemon-account',
+        profiles: [{ provider: 'claude', profile: { canonicalLocation: '/daemon/.claude', routing: {} } }],
+      }),
+    );
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'claude'));
+
+    await client.createSession('claude', 'hi', {});
+
+    const [, body] = mockState.request.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.providerScope).toEqual({
+      origin: 'caller',
+      profiles: [
+        {
+          provider: 'claude',
+          profile: {
+            canonicalLocation: realpathSync(physicalClaude),
+            routing: { kind: 'config-dir', emitConfigDir: false, homeDir: callerHome },
+          },
+        },
+      ],
+    });
+  });
+
+  it('canonicalizes the explicit caller Codex profile without requiring Claude', async () => {
+    const callerHome = makeTempDir();
+    const physicalCodex = join(callerHome, 'physical-codex');
+    const selectedCodex = join(callerHome, 'selected-codex');
+    mkdirSync(physicalCodex);
+    symlinkSync(physicalCodex, selectedCodex, 'dir');
+    vi.stubEnv('HOME', callerHome);
+    vi.stubEnv('CODEX_HOME', selectedCodex);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(callerHome, 'absent-claude'));
+    mockState.request.mockResolvedValueOnce({ job: 'session-job' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'claude'));
+
+    await client.createSession('codex', 'hi', {});
+
+    const [, body] = mockState.request.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.providerScope).toEqual({
+      origin: 'caller',
+      profiles: [
+        {
+          provider: 'codex',
+          profile: { canonicalLocation: realpathSync(physicalCodex), routing: { kind: 'home' } },
+        },
+      ],
+    });
+  });
+
+  it('captures every provider referenced by a mixed-provider workflow', async () => {
+    const callerHome = makeTempDir();
+    const codexHome = join(callerHome, 'codex');
+    const claudeHome = join(callerHome, 'claude');
+    mkdirSync(codexHome);
+    mkdirSync(claudeHome);
+    vi.stubEnv('HOME', callerHome);
+    vi.stubEnv('CODEX_HOME', codexHome);
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claudeHome);
+    mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
+    const client = makeClient('/tmp/project', findCommand(buildProgram(), 'workflow'));
+
+    await client.workflow('architect@claude -> resolver@codex', { provider: 'claude', startPrompt: 'seed' });
+
+    const [, body] = mockState.request.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.providerScope).toMatchObject({
+      origin: 'caller',
+      profiles: [
+        { provider: 'claude', profile: { canonicalLocation: realpathSync(claudeHome) } },
+        { provider: 'codex', profile: { canonicalLocation: realpathSync(codexHome) } },
+      ],
+    });
   });
 
   it('forwards the caller shell proxy/CA env to provider launches as networkEnv', async () => {
@@ -120,11 +222,12 @@ describe('command client routing', () => {
       vi.stubEnv(key, '');
     }
     vi.stubEnv('HTTPS_PROXY', 'http://proxy:8443');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', makeTempDir());
     mockState.request.mockResolvedValueOnce({ job: 'workflow-job' });
     const program = buildProgram();
     const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
 
-    await client.workflow('agent("x")', { startPrompt: 'go' });
+    await client.workflow('agent', { startPrompt: 'go' });
 
     expect(mockState.request).toHaveBeenCalledWith(
       'workflow.run',
@@ -135,6 +238,7 @@ describe('command client routing', () => {
 
   it('forwards the caller CORAL_* config to provider launches and drops daemon-owned keys', async () => {
     vi.stubEnv('CORAL_CODEX_MODEL', 'gpt-5.6-sol');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', makeTempDir());
     // A daemon-owned key present in the caller env must never ride along on the
     // wire. (CORAL_JOB_ID etc. are exercised in the env-sanitize unit tests;
     // here we use an inert daemon-owned key so we don't trip child-IPC auth.)
@@ -156,7 +260,7 @@ describe('command client routing', () => {
     const program = buildProgram();
     const client = makeClient('/tmp/project', findCommand(program, 'workflow'));
 
-    await client.workflow('agent("x")', { startPrompt: 'go' });
+    await client.workflow('agent', { startPrompt: 'go' });
 
     const [, body] = mockState.request.mock.calls[0] as [string, Record<string, unknown>];
     expect(body.coralEnv).toMatchObject({ CORAL_CODEX_MODEL: 'gpt-5.6-sol' });

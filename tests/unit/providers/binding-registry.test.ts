@@ -3,9 +3,16 @@ import { z } from 'zod';
 
 import { none } from '#src/providers/capability.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import type { ProviderBindingCodec } from '#src/providers/contracts/binding.js';
+import {
+  bindingFailure,
+  bindingSuccess,
+  type ProviderBindingCodec,
+  type ProviderBindingResult,
+} from '#src/providers/contracts/binding.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
+import type { RehydratedProviderBinding } from '#src/providers/registry.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 const CLAUDE_BINDING_ENVELOPE = {
   provider: 'claude',
@@ -19,16 +26,27 @@ const CLAUDE_BINDING_ENVELOPE = {
   },
 } as const;
 
+function successfulBinding(result: ProviderBindingResult<RehydratedProviderBinding>): RehydratedProviderBinding {
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error(`Unexpected binding failure: ${result.failure.reason}`);
+  return result.value;
+}
+
 describe('provider binding registry boundary', () => {
   it('rehydrates a provider-private binding without exposing its typed value', () => {
     const registry = createBuiltInProviderRegistry();
 
-    const binding = registry.rehydrateBinding(CLAUDE_BINDING_ENVELOPE);
+    const binding = successfulBinding(registry.rehydrateBinding(CLAUDE_BINDING_ENVELOPE));
 
     expect(binding.provider).toBe('claude');
     expect(binding.present()).toBe('Claude credential profile');
     expect(binding.present()).not.toContain('/accounts/claude-a');
-    expect(Object.keys(binding).sort()).toEqual(['envelope', 'present', 'provider']);
+    expect(Object.isFrozen(binding)).toBe(true);
+    expect(binding.credentialSource()).toMatchObject({
+      provider: 'claude',
+      configDir: '/accounts/claude-a',
+    });
+    expect(binding.compareIdentity(binding.envelope)).toEqual({ ok: true, value: true });
     expectTypeOf(binding).not.toHaveProperty('profile');
     expectTypeOf(binding).not.toHaveProperty('subject');
   });
@@ -36,10 +54,11 @@ describe('provider binding registry boundary', () => {
   it('rejects unknown providers, foreign payloads, and mismatched binding kinds', () => {
     const registry = createBuiltInProviderRegistry();
 
-    expect(() => registry.rehydrateBinding({ ...CLAUDE_BINDING_ENVELOPE, provider: 'foreign' })).toThrow(
-      "provider 'foreign' is not registered",
-    );
-    expect(() =>
+    expect(registry.rehydrateBinding({ ...CLAUDE_BINDING_ENVELOPE, provider: 'foreign' })).toEqual({
+      ok: false,
+      failure: { reason: 'invalid-persisted-binding', provider: 'foreign' },
+    });
+    expect(
       registry.rehydrateBinding({
         ...CLAUDE_BINDING_ENVELOPE,
         binding: {
@@ -47,19 +66,105 @@ describe('provider binding registry boundary', () => {
           guarantee: 'profile-only',
         },
       }),
-    ).toThrow();
-    expect(() => registry.rehydrateBinding({ ...CLAUDE_BINDING_ENVELOPE, kind: 'account' })).toThrow(
-      'expected claude/profile',
+    ).toEqual({ ok: false, failure: { reason: 'invalid-persisted-binding', provider: 'claude' } });
+    expect(registry.rehydrateBinding({ ...CLAUDE_BINDING_ENVELOPE, kind: 'account' })).toEqual({
+      ok: false,
+      failure: { reason: 'invalid-persisted-binding', provider: 'claude' },
+    });
+  });
+
+  it('renders an unregistered provider with the registered choices and routing help', () => {
+    const registry = createBuiltInProviderRegistry();
+
+    expect(
+      registry.renderBindingFailure({
+        reason: 'unsupported-selection',
+        provider: 'foreign',
+        selector: 'foreign',
+      }),
+    ).toBe(
+      "Provider 'foreign' is not registered. Choose one of: claude, codex. See docs/configuration.md#multi-account-provider-routing.",
     );
   });
 
   it('owns selection validation and safe selector labels', () => {
     const registry = createBuiltInProviderRegistry();
 
-    expect(registry.selectorLabel('claude', { kind: 'ambient' })).toBe('caller-default Claude profile');
+    expect(
+      registry.selectorLabel('claude', {
+        kind: 'config-dir',
+        configDir: '/accounts/claude-a',
+        emitConfigDir: true,
+      }),
+    ).toBe('Claude config directory');
+    expect(() => registry.selectorLabel('claude', { kind: 'unsupported' })).toThrow();
     expect(registry.selectorLabel('codex', { kind: 'home', home: '/accounts/codex-a' })).toBe('Codex home');
     expect(() => registry.selectorLabel('codex', { kind: 'home', home: 'relative' })).toThrow();
     expect(() => registry.selectorLabel('foreign', {})).toThrow('unsupported_provider_selection: foreign');
+  });
+
+  it('decodes complete scopes through provider-owned profile codecs before persistence', () => {
+    const registry = createBuiltInProviderRegistry();
+
+    expect(registry.decodeScope(TEST_PROVIDER_SCOPE)).toEqual({ ok: true, value: TEST_PROVIDER_SCOPE });
+    expect(
+      registry.decodeScope({
+        ...TEST_PROVIDER_SCOPE,
+        profiles: [...TEST_PROVIDER_SCOPE.profiles, TEST_PROVIDER_SCOPE.profiles[0]],
+      }),
+    ).toEqual({
+      ok: false,
+      failure: {
+        reason: 'unsupported-selection',
+        provider: 'codex',
+        selector: 'duplicate codex credential profile',
+      },
+    });
+    expect(
+      registry.decodeScope({
+        origin: 'caller',
+        profiles: [
+          {
+            provider: 'codex',
+            profile: {
+              canonicalLocation: '/accounts/codex-a',
+              routing: { kind: 'home' },
+              accessToken: 'must-not-persist',
+            },
+          },
+        ],
+      }),
+    ).toEqual({
+      ok: false,
+      failure: {
+        reason: 'profile-unavailable',
+        provider: 'codex',
+        selector: 'codex credential profile',
+      },
+    });
+    expect(
+      registry.decodeScope({
+        origin: 'caller',
+        profiles: [{ provider: 'foreign', profile: {} }],
+      }),
+    ).toEqual({
+      ok: false,
+      failure: { reason: 'unsupported-selection', provider: 'foreign', selector: 'foreign' },
+    });
+    expect(
+      registry.decodeScope({
+        origin: 'system',
+        name: 'invalid-relative-profile',
+        profiles: [{ provider: 'codex', profile: { canonicalLocation: 'relative', routing: { kind: 'home' } } }],
+      }),
+    ).toEqual({
+      ok: false,
+      failure: {
+        reason: 'profile-unavailable',
+        provider: 'codex',
+        selector: 'codex credential profile',
+      },
+    });
   });
 
   it('exports one stable persisted component per provider plus the envelope', () => {
@@ -87,7 +192,33 @@ describe('provider binding registry boundary', () => {
       profileSchema,
       bindingSchema,
       bindingKind: 'account',
+      captureSelection: () => bindingSuccess({ account: 'fixture' }),
+      async canonicalizeProfile() {
+        return bindingSuccess({ canonicalLocation: '/accounts/private', routing: { kind: 'fixture' } });
+      },
       selectorLabel: () => 'fixture account',
+      renderFailure: (failure) => failure.reason,
+      async bindProfile(profile) {
+        return bindingSuccess({
+          profile,
+          subject: { issuer: 'issuer-private', subject: 'subject-private' },
+        });
+      },
+      async readiness(_binding, use) {
+        return bindingSuccess({ ready: true, use });
+      },
+      credentialSource: (binding) => ({
+        version: 1,
+        provider: 'codex',
+        kind: 'home',
+        home: binding.profile.canonicalLocation,
+      }),
+      compareBinding: (left, right) =>
+        left.profile.canonicalLocation === right.profile.canonicalLocation &&
+        left.subject.issuer === right.subject.issuer &&
+        left.subject.subject === right.subject.subject
+          ? bindingSuccess(true)
+          : bindingFailure({ reason: 'subject-mismatch', provider: 'account-fixture' }),
       presentBinding: () => 'verified fixture account',
     };
     const registry = new ProviderRegistry();
@@ -106,20 +237,21 @@ describe('provider binding registry boundary', () => {
         subject: { issuer: 'issuer-private', subject: 'subject-private' },
       },
     } as const;
-    const rehydrated = registry.rehydrateBinding(raw);
+    const rehydrated = successfulBinding(registry.rehydrateBinding(raw));
 
     expect(rehydrated.envelope.kind).toBe('account');
     expect(rehydrated.present()).toBe('verified fixture account');
     expect(rehydrated.present()).not.toContain('private');
-    expect(() =>
+    expect(
       registry.rehydrateBinding({
         ...raw,
         binding: { ...raw.binding, subject: { issuer: 'issuer-private' } },
       }),
-    ).toThrow();
-    expect(() => registry.rehydrateBinding({ ...raw, kind: 'profile' })).toThrow(
-      'expected account-fixture/account',
-    );
+    ).toEqual({ ok: false, failure: { reason: 'invalid-persisted-binding', provider: 'account-fixture' } });
+    expect(registry.rehydrateBinding({ ...raw, kind: 'profile' })).toEqual({
+      ok: false,
+      failure: { reason: 'invalid-persisted-binding', provider: 'account-fixture' },
+    });
     expect(registry.sealPersistedBindingCodecComponents().map((entry) => entry.name)).toContain(
       'provider.account-fixture.binding',
     );
@@ -128,18 +260,18 @@ describe('provider binding registry boundary', () => {
   it('rejects contradictory Claude routing profiles', () => {
     const registry = createBuiltInProviderRegistry();
 
-    expect(() =>
+    expect(
       registry.rehydrateBinding({
         ...CLAUDE_BINDING_ENVELOPE,
         binding: {
           profile: {
             canonicalLocation: '/accounts/claude-a',
-            routing: { kind: 'ambient', emitConfigDir: true },
+            routing: { kind: 'unsupported', emitConfigDir: true },
           },
           guarantee: 'profile-only',
         },
       }),
-    ).toThrow();
+    ).toEqual({ ok: false, failure: { reason: 'invalid-persisted-binding', provider: 'claude' } });
   });
 
   it('preserves codec method receivers inside the erased boundary', () => {
@@ -164,16 +296,16 @@ describe('provider binding registry boundary', () => {
 
     expect(registry.selectorLabel('receiver', { key: 'selection' })).toBe('receiver-safe');
     expect(
-      registry
-        .rehydrateBinding({
+      successfulBinding(
+        registry.rehydrateBinding({
           provider: 'receiver',
           kind: 'profile',
           binding: {
             profile: { canonicalLocation: '/accounts/receiver', routing: {} },
             guarantee: 'profile-only',
           },
-        })
-        .present(),
+        }),
+      ).present(),
     ).toBe('receiver-safe');
   });
 });

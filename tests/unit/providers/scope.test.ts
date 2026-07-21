@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { providerScopeSchema } from '#src/providers/contracts/scope.js';
+import { providerScopeSchema } from '#src/infra/provider-scope.js';
 
 const profile = { provider: 'codex', profile: { canonicalLocation: '/accounts/codex-a' } } as const;
 

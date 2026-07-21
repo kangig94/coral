@@ -16,7 +16,7 @@ import type { ProviderInstruction, ProviderRequest } from '#src/providers/contra
 import { managed } from '#src/providers/capability.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { streamProviderEvents, streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
@@ -121,11 +121,10 @@ describe('pipe executor coral cascade invariant', () => {
           pluginRoot: coralPluginRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_CODEX_SCOPE,
         },
         {
           childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-          providerCredentialSourceAvailability: { isAvailable: () => true },
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-cascade-test',
@@ -149,7 +148,7 @@ describe('pipe executor coral cascade invariant', () => {
         pluginRoot: coralPluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_CODEX_SCOPE,
       };
       const compiled = workflowCompiler.compile(
         {
@@ -268,11 +267,10 @@ describe('pipe executor coral cascade invariant', () => {
           pluginRoot: coralPluginRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_CODEX_SCOPE,
         },
         {
           childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-          providerCredentialSourceAvailability: { isAvailable: () => true },
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-retention-test',
@@ -297,7 +295,7 @@ describe('pipe executor coral cascade invariant', () => {
         pluginRoot: coralPluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_CODEX_SCOPE,
       };
       const compiled = workflowCompiler.compile(
         {

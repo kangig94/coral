@@ -53,17 +53,4 @@ describe('curate usage budget runtime isolation', () => {
   it('blocks curate at the weekly guardrail', () => {
     expect(usageBudgetExhausted({ fiveHour: 10, weekly: 70 })).toBe(true);
   });
-
-  it('does not read ambient home when no home is injected', () => {
-    const exhausted = isUsageBudgetExhausted({
-      now: () => 1_000,
-      storage: {
-        readFileSync() {
-          throw new Error('storage should not be read without an injected home');
-        },
-      },
-    });
-
-    expect(exhausted).toBe(false);
-  });
 });

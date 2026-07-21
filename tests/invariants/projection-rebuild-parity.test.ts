@@ -35,7 +35,7 @@ import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-29T00:00:00.000Z');
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'unit', 'discuss', 'fixtures');
@@ -78,7 +78,7 @@ function sessionEntry(sessionId: string, provider: 'codex' | 'claude'): SessionE
   return {
     sessionId,
     provider,
-    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
     name: sessionId,
     state: 'pending',
     retention: 'retain',

@@ -31,7 +31,7 @@ import { initializeCurateStateIfNeeded } from './state/bootstrap.js';
 import type { GitSyncRuntimePicks } from './pipeline-types.js';
 import type { CurateAssistantPort } from './assistant.js';
 
-import { isUsageBudgetExhausted } from './usage-budget.js';
+import type { CurateUsageBudgetPort } from './usage-budget.js';
 import { curateDb } from './db-access.js';
 import { bubbleUpWikiKnowledge } from '../ops/wiki/mutation.js';
 import { runPendingKbMigrations } from '../migrations/index.js';
@@ -143,6 +143,7 @@ export function createCurateScheduler({
   processPort,
   storagePort,
   envPort,
+  usageBudget,
   runCommunitySummaryJob,
   scheduleDebounceMs = CURATE_SCHEDULE_DEBOUNCE_MS,
 }: {
@@ -151,6 +152,7 @@ export function createCurateScheduler({
   processPort: GitSyncRuntimePicks['processPort'];
   storagePort: GitSyncRuntimePicks['storagePort'];
   envPort: GitSyncRuntimePicks['envPort'];
+  usageBudget: CurateUsageBudgetPort;
   runCommunitySummaryJob?: RunCommunitySummaryJob;
   scheduleDebounceMs?: number;
 }): CurateHandle {
@@ -347,21 +349,20 @@ export function createCurateScheduler({
     const disabledLanes = permanentlyDisabledLanes(readCurateState(curateDb(kb)));
     // Keep capped lanes operator-visible even when budget exhaustion prevents work.
     warnPermanentlyDisabledLanes(disabledLanes);
-    if (
-      isUsageBudgetExhausted({
-        claudeConfigDir: envPort.claudeConfigDir(),
-        now: kb.time.now,
-        storage: storagePort,
-      })
-    ) {
-      return;
-    }
     const runController = new AbortController();
     activeRunController = runController;
     activeRun = (async () => {
       let lastCompletedThrough: CurateCursor | null = null;
 
       try {
+        try {
+          if (await usageBudget.isExhausted(runController.signal)) return;
+        } catch (error: unknown) {
+          if (!runController.signal.aborted) {
+            backendLog.error('kb_curate: usage budget check failed; provider work remains disabled', error);
+          }
+          return;
+        }
         lastCompletedThrough = disabledLanes.claim ? null : await runScheduledCurate(runController.signal);
         if (!stopped && !runController.signal.aborted && lastCompletedThrough === null) {
           if (

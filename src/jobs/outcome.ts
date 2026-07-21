@@ -9,6 +9,7 @@ import {
   type ResolvableCauseRef,
 } from '../causality/cause-ref.js';
 import type { JobPhase } from './phase.js';
+import { providerBindingFailureReasonSchema } from '../providers/contracts/binding.js';
 
 const abortReasonSchema = z.enum(['signal_abort', 'user_abort', 'queue_shutdown']);
 export type AbortReason = z.infer<typeof abortReasonSchema>;
@@ -26,8 +27,9 @@ const jobLifecycleFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('wrapper_crashed'), cause: externalErrorSchema }).strict(),
   z
     .object({
-      kind: z.literal('provider_credential_source'),
-      reason: z.enum(['missing', 'mismatch', 'unavailable']),
+      kind: z.literal('provider_binding'),
+      provider: z.string(),
+      reason: providerBindingFailureReasonSchema,
       message: z.string(),
     })
     .strict(),
@@ -150,8 +152,8 @@ export function describeTerminalOutcome(
             `Provider wrapper crashed: ${outcome.fault.cause.message}.`,
             outcome.fault.cause.stack,
           );
-        case 'provider_credential_source':
-          return `Provider credential source ${outcome.fault.reason}: ${ensureSentence(outcome.fault.message)}`;
+        case 'provider_binding':
+          return `Provider binding ${outcome.fault.reason}: ${ensureSentence(outcome.fault.message)}`;
         default:
           return assertNever(outcome.fault);
       }

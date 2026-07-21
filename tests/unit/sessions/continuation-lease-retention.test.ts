@@ -13,7 +13,7 @@ import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#s
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CLAUDE_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -135,7 +135,7 @@ async function openClaimedSession(
 ): Promise<{ readonly sessionId: string; readonly version: number }> {
   const session = sessionManager.allocate({
     provider: 'claude',
-    sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+    sessionAuthority: { kind: 'provider', binding: TEST_CLAUDE_BINDING },
     name: 'claude-session',
     cwd: '/tmp/project',
     projectRoot: '/tmp/project',

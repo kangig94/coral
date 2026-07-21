@@ -21,7 +21,7 @@ import { attachSession, getSession } from '#src/discuss/shell/registry.js';
 import type { DiscussCreateInput } from '#src/discuss/session-types.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
 
@@ -72,7 +72,7 @@ describe('discuss handoff (cross-domain integration)', () => {
       { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
       1,
       SEED_TS,
-      { agentExecution: defaultAgentExecution(agents), providerCredentials: TEST_PROVIDER_CREDENTIALS },
+      { agentExecution: defaultAgentExecution(agents), providerScope: TEST_PROVIDER_SCOPE },
     );
     if (!created.ok) {
       throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
@@ -111,7 +111,7 @@ describe('discuss handoff (cross-domain integration)', () => {
         { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
         1,
         SEED_TS,
-        { agentExecution: defaultAgentExecution(agents), providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { agentExecution: defaultAgentExecution(agents), providerScope: TEST_PROVIDER_SCOPE },
       );
       if (!created.ok) {
         throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
@@ -149,7 +149,7 @@ describe('discuss handoff (cross-domain integration)', () => {
         { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
         1,
         SEED_TS,
-        { agentExecution: defaultAgentExecution(agents), providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { agentExecution: defaultAgentExecution(agents), providerScope: TEST_PROVIDER_SCOPE },
       );
       if (!created.ok) throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
       attachSession(context, await store.append(SESSION_ID, null, created.value));
@@ -176,7 +176,7 @@ describe('discuss handoff (cross-domain integration)', () => {
     await replacementContext.service.start('codex', { prompt: 'recovered bid' });
 
     expect(start).toHaveBeenCalledWith('codex', { prompt: 'recovered bid' });
-    expect(serviceContexts).toContainEqual(expect.objectContaining({ providerCredentials: TEST_PROVIDER_CREDENTIALS }));
-    expect(replacement.core.providerCredentialDefaults).not.toEqual(TEST_PROVIDER_CREDENTIALS);
+    expect(serviceContexts).toContainEqual(expect.objectContaining({ providerScope: TEST_PROVIDER_SCOPE }));
+    expect(replacement.core.systemProviderScope).not.toEqual(TEST_PROVIDER_SCOPE);
   });
 });

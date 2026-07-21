@@ -5,15 +5,18 @@ import type { ProviderArtifactHandleInput } from '../../providers/contract.js';
 import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
 
 export interface RecoveryCapableService {
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean;
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null;
+  validateProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<boolean>;
+  providerCredentialSourceForRecovery(launchRecord: JobLaunch): Promise<ProviderCredentialSourceRef | null>;
   finalizeInterruptedAppServerJob(
     launchRecord: JobLaunch,
     runtimeRecord: AppServerRuntime,
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void>;
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void };
-  recoverQueuedJob(launchRecord: JobLaunch): string;
+  adoptRunningJob(
+    launchRecord: JobLaunch,
+    runtimeRecord: JobRuntime,
+  ): Promise<{ adopted: boolean; cleanup: () => void }>;
+  recoverQueuedJob(launchRecord: JobLaunch): Promise<string>;
   interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void>;
   recordRecoveredArtifactHandles(
     sessionId: string,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '#src/discuss/events.js';
 import { reduceDiscussEvent, replayDiscussEvents } from '#src/discuss/reducer.js';
-import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 import {
   decideBid,
   decideBidRoundClose,
@@ -53,7 +53,7 @@ function createSnapshot(
   return replayDiscussEvents(
     unwrap(
       decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW, {
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_PROVIDER_SCOPE,
         ...(agentExecution ? { agentExecution } : {}),
       }),
     ),
@@ -70,7 +70,7 @@ describe('discuss reducer', () => {
     const history: DiscussDomainEvent[] = [];
     const created = unwrap(
       decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW, {
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_PROVIDER_SCOPE,
       }),
     );
     history.push(...created);
@@ -148,7 +148,7 @@ describe('discuss reducer', () => {
     ]);
     const created = unwrap(
       decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW, {
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_PROVIDER_SCOPE,
       }),
     );
     const history: DiscussDomainEvent[] = [

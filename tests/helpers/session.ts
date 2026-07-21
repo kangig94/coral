@@ -11,7 +11,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { InitJobOptions } from '#src/jobs/contracts/job-store.js';
 import type { JobStore } from '#src/jobs/store.js';
 
-import { TEST_CLAUDE_SOURCE, TEST_CODEX_SOURCE } from './provider-credentials.js';
+import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from './provider-credentials.js';
 
 export function allocateTestSession(
   manager: Pick<SessionManager, 'allocate'>,
@@ -23,9 +23,9 @@ export function allocateTestSession(
 ) {
   const sessionAuthority =
     provider === 'codex'
-      ? ({ kind: 'provider', source: TEST_CODEX_SOURCE } as const)
+      ? ({ kind: 'provider', binding: TEST_CODEX_BINDING } as const)
       : provider === 'claude'
-        ? ({ kind: 'provider', source: TEST_CLAUDE_SOURCE } as const)
+        ? ({ kind: 'provider', binding: TEST_CLAUDE_BINDING } as const)
         : ({ kind: 'orchestration' } as const);
   return manager.allocate({
     provider,
@@ -61,22 +61,18 @@ export function seedTestSessionProjection(
     .get(options.sessionId);
   if (existing !== undefined) return JSON.parse(existing.entry) as SessionEntry;
 
-  const source =
-    options.provider === 'codex'
-      ? TEST_CODEX_SOURCE
-      : options.provider === 'claude'
-        ? TEST_CLAUDE_SOURCE
-        : undefined;
-  if (!options.orchestration && source === undefined) {
-    throw new Error(`Test provider session '${options.provider}' has no credential source fixture.`);
+  const binding =
+    options.provider === 'codex' ? TEST_CODEX_BINDING : options.provider === 'claude' ? TEST_CLAUDE_BINDING : undefined;
+  if (!options.orchestration && binding === undefined) {
+    throw new Error(`Test provider session '${options.provider}' has no binding fixture.`);
   }
   const sessionAuthority = options.orchestration
     ? ({ kind: 'orchestration' } as const)
-    : source === undefined
+    : binding === undefined
       ? (() => {
-          throw new Error(`Test provider session '${options.provider}' has no credential source fixture.`);
+          throw new Error(`Test provider session '${options.provider}' has no binding fixture.`);
         })()
-      : ({ kind: 'provider', source } as const);
+      : ({ kind: 'provider', binding } as const);
   const now = '2026-01-01T00:00:00.000Z';
   const entry: SessionEntry = {
     sessionId: options.sessionId,

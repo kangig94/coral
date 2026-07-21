@@ -13,7 +13,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { loadJobProjectionDetail, loadJobProjectionDetails, readJobEvents } from '#src/jobs/read-queries.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
@@ -113,7 +113,7 @@ function launchJob(
         cwd: projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        ...(options.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
+        ...(options.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
       },
       createdAt,
     },

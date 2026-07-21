@@ -11,7 +11,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
@@ -19,7 +19,7 @@ function sessionOpenedInput(sessionId: string, orchestration = false): CoralEven
   const entry: SessionEntry = {
     sessionId,
     provider: 'codex',
-    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', binding: TEST_CODEX_BINDING },
     name: sessionId,
     state: 'ready',
     retention: 'retain',
@@ -223,7 +223,7 @@ describe('jobs reducer equivalence', () => {
                 cwd: '/workspace/coral',
                 bypassPermissions: false,
                 coralEnv: {},
-                providerCredentials: TEST_PROVIDER_CREDENTIALS,
+                providerScope: TEST_PROVIDER_SCOPE,
               },
               createdAt: NOW.toISOString(),
             },

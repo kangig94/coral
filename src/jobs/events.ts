@@ -71,7 +71,7 @@ const validateLaunchAuthority: DomainAppendValidator = (ctx, inputs) => {
     const session = loadSession(launch.sessionId);
     if (session === undefined) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_missing',
+        code: 'job_parent_session_missing',
         userMessage: `Job '${input.stream.id}' has no authoritative parent session.`,
         remediation: 'Open the matching provider or orchestration session before launching the job.',
       });
@@ -80,11 +80,11 @@ const validateLaunchAuthority: DomainAppendValidator = (ctx, inputs) => {
       launch.jobKind === 'provider' &&
       session?.sessionAuthority.kind === 'provider' &&
       session.provider === launch.provider &&
-      session.sessionAuthority.source.provider === launch.provider;
+      session.sessionAuthority.binding.provider === launch.provider;
     const validWorkflow = launch.jobKind === 'workflow' && session?.sessionAuthority.kind === 'orchestration';
     if (!validProvider && !validWorkflow) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_mismatch',
+        code: 'job_session_authority_mismatch',
         userMessage: `Job '${input.stream.id}' does not match its session authority.`,
         remediation: 'Open the matching provider or orchestration session before launching the job.',
       });

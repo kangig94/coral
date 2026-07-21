@@ -1,13 +1,15 @@
 import type { ProviderSpec, ProviderRequest } from '../../providers/contract.js';
 import { hasUnterminalRetentionDiscardRequest, type SessionEntry } from '../../sessions/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
-import { hasProviderCredentials, type InvocationContext } from '../../runtime/invocation-context.js';
+import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
+import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
 import {
-  projectProviderCredentialSource,
-  sameProviderCredentialSource,
-  type ProviderCredentialSourceRef,
-} from '../../infra/provider-credential-sources.js';
-import type { ProviderCatalog } from '../../providers/catalog.js';
+  providerBindingFailureCode,
+  type ProviderBindingFailure,
+  type ProviderBindingRuntime,
+} from '../../providers/contracts/binding.js';
+import type { RehydratedProviderBinding } from '../../providers/registry.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
 import type { ProviderJobLaunchPort } from '../../jobs/contracts/job-runner.js';
@@ -37,7 +39,7 @@ export interface JobLaunchServiceDeps {
   sessionManager: SessionExecutionPort;
   backendNamespace: string;
   bundleHash: string;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };
@@ -56,23 +58,9 @@ export class JobLaunchService {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    if (!hasProviderCredentials(ctx)) {
-      return rejectLaunch(
-        'provider_credential_source_missing',
-        `This request has no ${providerName} account binding. Re-run it with the current Coral CLI after selecting and authenticating ${
-          providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'
-        }.`,
-      );
-    }
-    let credentialSource;
-    try {
-      credentialSource = projectProviderCredentialSource(ctx.providerCredentials, providerName);
-    } catch {
-      return rejectLaunch(
-        'unsupported_provider_credential_binding',
-        `Provider '${providerName}' has no credential-source binding.`,
-      );
-    }
+    const bound = await this.bindInvocationProfile(providerName, ctx, 'launch');
+    if ('status' in bound) return bound;
+    const credentialSource = bound.credentialSource();
 
     let resolvedAgent: ReturnType<typeof resolveAgentLaunchProfile> | null = null;
     if (input.agent) {
@@ -104,14 +92,17 @@ export class JobLaunchService {
     try {
       preflightRuntime = toPreflightRuntime(this.deps.runtime, credentialSource, cwd, effectiveCoralEnv);
     } catch (error: unknown) {
-      return rejectLaunch('provider_credential_source_invalid', error instanceof Error ? error.message : String(error));
+      return rejectLaunch(
+        'provider_execution_environment_invalid',
+        error instanceof Error ? error.message : String(error),
+      );
     }
     const preflightError = await runProviderPreflight(spec, preflightRuntime);
-    if (preflightError) return rejectLaunch('provider_credential_source_unavailable', preflightError);
+    if (preflightError) return rejectLaunch('provider_preflight_failed', preflightError);
 
     const session = this.deps.sessionManager.allocate({
       provider: providerName,
-      sessionAuthority: { kind: 'provider', source: credentialSource },
+      sessionAuthority: { kind: 'provider', binding: bound.envelope },
       name,
       model,
       cwd,
@@ -172,36 +163,14 @@ export class JobLaunchService {
     }
 
     if (session.sessionAuthority?.kind !== 'provider') {
-      return rejectLaunch(
-        'provider_credential_source_missing',
-        `Session ${input.sessionId} has no stored account binding and cannot resume. Start a new session.`,
-      );
+      return this.rejectBinding({ reason: 'invalid-persisted-binding', provider: providerName });
     }
-    if (!hasProviderCredentials(ctx)) {
-      return rejectLaunch(
-        'provider_credential_source_missing',
-        `This request has no ${providerName} account binding. Re-run it with the current Coral CLI and the same ${
-          providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'
-        } used to create the session, or start a new session.`,
-      );
-    }
-    let callerSource;
-    try {
-      callerSource = projectProviderCredentialSource(ctx.providerCredentials, providerName);
-    } catch {
-      return rejectLaunch(
-        'unsupported_provider_credential_binding',
-        `Provider '${providerName}' has no credential-source binding.`,
-      );
-    }
-    if (!sameProviderCredentialSource(session.sessionAuthority.source, callerSource)) {
-      return rejectLaunch(
-        'provider_credential_source_mismatch',
-        `Session ${input.sessionId} belongs to a different ${providerName} account. Select the same ${
-          providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'
-        } used to create it, or start a new session.`,
-      );
-    }
+    const persisted = this.deps.providerRegistry.rehydrateBinding(session.sessionAuthority.binding);
+    if (!persisted.ok) return this.rejectBinding(persisted.failure);
+    const persistedReadiness = await persisted.value.readiness('resume', this.bindingRuntime());
+    if (!persistedReadiness.ok) return this.rejectBinding(persistedReadiness.failure);
+    const caller = await this.bindInvocationProfile(providerName, ctx, 'resume');
+    if ('status' in caller) return caller;
 
     let effectiveInput = input;
     if (input.agent) {
@@ -226,7 +195,36 @@ export class JobLaunchService {
       };
     }
 
-    return this.resumeResolved(providerName, spec, session, effectiveInput, ctx, callerSource);
+    const identity = persisted.value.compareIdentity(caller.envelope);
+    if (!identity.ok) return this.rejectBinding(identity.failure);
+
+    return this.resumeResolved(providerName, spec, session, effectiveInput, ctx, persisted.value.credentialSource());
+  }
+
+  private bindingRuntime(): ProviderBindingRuntime {
+    return this.deps.runtime.storage;
+  }
+
+  private rejectBinding(failure: ProviderBindingFailure): LaunchDecision {
+    return rejectLaunch(providerBindingFailureCode(failure), this.deps.providerRegistry.renderBindingFailure(failure));
+  }
+
+  private async bindInvocationProfile(
+    providerName: string,
+    ctx: InvocationContext,
+    use: 'launch' | 'resume',
+  ): Promise<RehydratedProviderBinding | LaunchDecision> {
+    if (!hasProviderScope(ctx)) {
+      return this.rejectBinding({ reason: 'missing-profile', provider: providerName });
+    }
+    const binding = await this.deps.providerRegistry.bindFromScope(
+      ctx.providerScope,
+      providerName,
+      use,
+      this.bindingRuntime(),
+    );
+    if (!binding.ok) return this.rejectBinding(binding.failure);
+    return binding.value;
   }
 
   async coralDispatch(
@@ -339,10 +337,13 @@ export class JobLaunchService {
         continuation.coralEnv,
       );
     } catch (error: unknown) {
-      return rejectLaunch('provider_credential_source_invalid', error instanceof Error ? error.message : String(error));
+      return rejectLaunch(
+        'provider_execution_environment_invalid',
+        error instanceof Error ? error.message : String(error),
+      );
     }
     const preflightError = await runProviderPreflight(provider, preflightRuntime);
-    if (preflightError) return rejectLaunch('provider_credential_source_unavailable', preflightError);
+    if (preflightError) return rejectLaunch('provider_preflight_failed', preflightError);
 
     const admitted = await this.claimAndAdmitJob(
       session,

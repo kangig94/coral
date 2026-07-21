@@ -1,5 +1,6 @@
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderDefinition } from '../providers/registry.js';
+import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
 import type { SessionEntry } from './entry.js';
 
 /**
@@ -13,6 +14,7 @@ import type { SessionEntry } from './entry.js';
 export function collectArtifactHandles(
   entry: SessionEntry,
   provider: ProviderDefinition,
+  source: ProviderCredentialSourceRef,
   runtime: ArtifactCleanupRuntime,
   opts: { jobId?: string } = {},
 ): string[] {
@@ -33,7 +35,7 @@ export function collectArtifactHandles(
     if (entry.sessionAuthority?.kind !== 'provider') return handles;
     const located = provider.artifacts.locateArtifact({
       conversationRef: entry.conversationRef,
-      source: entry.sessionAuthority.source,
+      source,
       runtime,
     });
     if (located !== null) {

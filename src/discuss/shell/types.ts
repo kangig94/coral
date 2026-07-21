@@ -5,6 +5,7 @@ import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { JobExit, JobStatus } from '../../jobs/records.js';
 import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 
 export type AgentConfig = {
   name: string;
@@ -78,6 +79,7 @@ export type DiscussContext = {
   store: DiscussSessionStore;
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
+  providerRegistry: ProviderBindingCatalog;
   /**
    * Discards a participant session's provider native log. Wired from the lifecycle
    * reactor at composition; absent in lightweight harnesses, so callers guard with `?.`.

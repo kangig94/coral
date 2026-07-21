@@ -48,6 +48,7 @@
     "graphology-communities-louvain": "^2.0.2",
     "kiwi-nlp": "^0.23.0",
     "mammoth": "^1.12.0",
+    "smol-toml": "^1.7.0",
     "turndown": "^7.2.2",
     "yaml": "^2.4.2",
     "zod": "^3.23.8"

@@ -18,11 +18,16 @@ type MockLease = ProviderServerLease & {
   subscribeMock: ReturnType<typeof vi.fn>;
 };
 
-function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>): MockLease {
+function makeLease(
+  rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+  effectiveConfig: Record<string, unknown> = {},
+): MockLease {
   let handler: ((message: { method: string; params?: Record<string, unknown> }) => void) | null = null;
   const closed = createDeferred<Error | void>();
   const releaseMock = vi.fn();
-  const rpcMock = vi.fn((method: string, params: Record<string, unknown>) => rpcImpl(method, params));
+  const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
+    method === 'config/read' ? Promise.resolve({ config: effectiveConfig }) : rpcImpl(method, params),
+  );
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
     handler = next;
     return () => {
@@ -104,6 +109,37 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('codexThreadProvider', () => {
+  it.each([
+    ['start', { action: 'exec' as const, conversationRef: undefined }, {}],
+    ['resume', { action: 'resume' as const, conversationRef: 'thread-1' }, { cwd: '/workspace', threadId: 'thread-1' }],
+  ])('rejects hostile effective config before %s RPCs and releases the lease', async (_mode, request, continuity) => {
+    const downstreamRpc = vi.fn(async (method: string) => {
+      throw new Error(`must not call ${method}`);
+    });
+    const lease = makeLease(downstreamRpc, { model_provider: 'hostile-proxy' });
+    const runtime = makeRuntime(lease, continuity);
+
+    const events = await collect(codexThreadProvider(makeRequest(request), runtime));
+
+    expect(lease.rpcMock).toHaveBeenCalledWith('config/read', { cwd: '/workspace', includeLayers: false });
+    expect(downstreamRpc).not.toHaveBeenCalled();
+    expect(lease.rpcMock.mock.calls.map(([method]) => method)).not.toEqual(
+      expect.arrayContaining(['thread/start', 'thread/resume', 'turn/start']),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: 'terminal',
+      terminal: {
+        outcome: {
+          kind: 'provider_exit',
+          code: 1,
+          note: expect.stringContaining("Unsupported Codex effective setting 'model_provider'"),
+        },
+      },
+    });
+    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
+  });
+
   it('runs the composed stack end-to-end and emits live continuity deltas before the terminal', async () => {
     const lease = makeLease(async (method) => {
       if (method === 'thread/resume') {

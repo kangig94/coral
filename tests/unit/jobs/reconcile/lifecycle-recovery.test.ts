@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
-import { TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type * as NodeOs from 'node:os';
@@ -24,7 +24,9 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { none } from '#src/providers/capability.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -92,6 +94,18 @@ async function loadModules() {
     transportDispatchModule,
     rpcCatalogModule,
   };
+}
+
+function createRecoveryProviderRegistry(modules: LoadedModules) {
+  const registry = new modules.providerRegistryModule.ProviderRegistry();
+  registry.register(
+    modules.providerRegistryModule
+      .defineProvider({ name: 'codex', run: async function* noopProvider() {} })
+      .binding(fixtureProviderBindingCodec('codex'))
+      .artifacts(none('recovery fixture owns no provider artifacts'))
+      .build(),
+  );
+  return registry;
 }
 
 function createProjectRoot(name: string): string {
@@ -208,10 +222,10 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* () {}),
     waitStreamOnce: vi.fn(async () => ({ type: 'waiting', waitingJobIds: [] })),
-    adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: vi.fn() })),
-    validateProviderRecoveryAuthority: vi.fn(() => true),
-    providerCredentialSourceForRecovery: vi.fn(() => TEST_CODEX_SOURCE),
-    recoverQueuedJob: vi.fn(() => 'recovered-job'),
+    adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
+    validateProviderRecoveryAuthority: vi.fn(async () => true),
+    providerCredentialSourceForRecovery: vi.fn(async () => TEST_CODEX_SOURCE),
+    recoverQueuedJob: vi.fn(async () => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
     interruptAppServerJob: vi.fn(async () => {}),
@@ -255,7 +269,7 @@ function stubLaunchRecord(
       cwd: overrides.projectRoot,
       bypassPermissions: false,
       coralEnv: {},
-      ...(overrides.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
+      ...(overrides.jobKind === 'workflow' ? { providerScope: TEST_PROVIDER_SCOPE } : {}),
     },
     createdAt: new Date().toISOString(),
   };
@@ -286,7 +300,7 @@ function ensureTestSession(
     provider: options.provider,
     sessionAuthority: options.orchestration
       ? { kind: 'orchestration' }
-      : { kind: 'provider', source: TEST_CODEX_SOURCE },
+      : { kind: 'provider', binding: TEST_CODEX_BINDING },
     name: options.sessionId,
     state: 'ready',
     retention: 'retain',
@@ -422,7 +436,7 @@ function createLifecycleHarness(
   const namespace = modules.pathsModule.pluginRootNamespace(options.pluginRoot);
   const { runtimeState } = createRuntimeStateMock();
   const idleTimer = createFakeIdleTimer();
-  const providerRegistry = options.providerRegistry ?? new modules.providerRegistryModule.ProviderRegistry();
+  const providerRegistry = options.providerRegistry ?? createRecoveryProviderRegistry(modules);
   const launchCoordinator = options.launchCoordinator ?? createLaunchCoordinator(modules);
   const servicesByProjectRoot = options.servicesByProjectRoot ?? new Map<string, unknown>();
   const getExecutionService =
@@ -552,7 +566,6 @@ function createActualRecoveryService(
     {
       runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-      providerCredentialSourceAvailability: { isAvailable: () => true },
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
@@ -764,7 +777,7 @@ describe('lifecycle recovery', () => {
         });
         callOrder.push('complete');
       }),
-      validateProviderRecoveryAuthority: vi.fn(() => true),
+      validateProviderRecoveryAuthority: vi.fn(async () => true),
     });
 
     ensureTestSession(progressStore, { sessionId, provider: 'codex', projectRoot, backendNamespace: namespace });
@@ -782,7 +795,7 @@ describe('lifecycle recovery', () => {
       endTime: '2026-04-12T00:01:00.000Z',
     });
 
-    modules.recoveryActionsModule.finalizeDeadAdoptedJob({
+    await modules.recoveryActionsModule.finalizeDeadAdoptedJob({
       jobId,
       launchRecord,
       runtimeRecord,
@@ -794,7 +807,7 @@ describe('lifecycle recovery', () => {
         readSessionEntry: () => ({
           sessionId,
           provider: 'codex',
-          sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+          sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
           name: 'alpha',
           state: 'ready',
           retention: 'retain',
@@ -850,7 +863,7 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -912,7 +925,7 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -997,7 +1010,7 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1063,7 +1076,7 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1612,7 +1625,7 @@ describe('lifecycle recovery', () => {
       providers: permissiveProviderLookupPort,
     });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,

@@ -5,6 +5,7 @@ import {
   createDisabledKbDaemonSupervisor,
   createKbDaemonSupervisor,
   type KbDaemonCurateAssistantHandler,
+  type KbDaemonCurateUsageBudgetHandler,
 } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import type { Runtime, RuntimeSpawnOptions } from '#src/runtime/ports.js';
 import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
@@ -602,6 +603,32 @@ describe('KB daemon supervisor', () => {
     );
   });
 
+  it('serves daemon usage-budget requests through the configured parent handler', async () => {
+    const daemonProcess = new FakeDaemonProcess(161);
+    const { runtime } = createRuntime([daemonProcess]);
+    const curateUsageBudget = vi.fn<KbDaemonCurateUsageBudgetHandler>(async () => true);
+    const supervisor = createKbDaemonSupervisor({
+      runtime,
+      pluginRoot: '/plugin',
+      entrypoint: '/plugin/bridge/coral-backend.cjs',
+      command: '/node',
+      curateUsageBudget,
+    });
+
+    const start = supervisor.start();
+    await flushMicrotasks();
+    writeReady(daemonProcess);
+    await start;
+
+    writeParentRequest(daemonProcess, 'parent:budget', 'curate.usage-budget.exhausted');
+    await flushMicrotasks(4);
+
+    expect(curateUsageBudget).toHaveBeenCalledWith({ signal: expect.any(AbortSignal) });
+    expect(parentResponses(daemonProcess)).toContainEqual(
+      expect.objectContaining({ id: 'parent:budget', ok: true, result: true }),
+    );
+  });
+
   it('returns parent request errors when the configured curate handler throws synchronously', async () => {
     const daemonProcess = new FakeDaemonProcess(160);
     const { runtime } = createRuntime([daemonProcess]);
@@ -721,7 +748,7 @@ describe('KB daemon supervisor', () => {
     await flushMicrotasks();
     expect(observed.signal?.aborted).toBe(false);
 
-    writeParentRequest(daemonProcess, 'parent:2', 'curate.assistant.cancel', {
+    writeParentRequest(daemonProcess, 'parent:2', 'curate.request.cancel', {
       requestId: 'parent:1',
       reason: 'scheduler stopped',
     });

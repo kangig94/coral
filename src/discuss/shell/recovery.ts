@@ -215,14 +215,14 @@ export const runStartup: DiscussRunStartup = async (deps) => {
           const base = deps.createInvocationContext(snapshot.projectRoot);
           return deps.getDiscussContext({
             ...base,
-            providerCredentials: snapshot.providerCredentials,
+            providerScope: snapshot.providerScope,
           });
         },
         (snapshot) => {
           const base = deps.createInvocationContext(snapshot.projectRoot);
           return {
             ...base,
-            providerCredentials: snapshot.providerCredentials,
+            providerScope: snapshot.providerScope,
           };
         },
       );

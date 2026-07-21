@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { none } from '#src/providers/capability.js';
-import { defineProvider } from '#src/providers/registry.js';
+import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 
 const ctx: InvocationContext = {
@@ -16,14 +16,14 @@ const ctx: InvocationContext = {
   pluginRoot: '/tmp/coral-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-project'),
-  providerCredentials: TEST_PROVIDER_CREDENTIALS,
+  providerScope: TEST_CODEX_SCOPE,
 };
 
 function sessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
     sessionId: 'session-retention-lock',
     provider: 'codex',
-    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
     name: 'session-retention-lock',
     state: 'ready',
     retention: 'discard_provider_artifacts_on_terminal',
@@ -60,6 +60,8 @@ describe('JobLaunchService continuation lease admission', () => {
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('test provider has no artifacts'))
       .build();
+    const providerRegistry = new ProviderRegistry();
+    providerRegistry.register(provider);
     const service = new JobLaunchService({
       runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
@@ -75,10 +77,7 @@ describe('JobLaunchService continuation lease admission', () => {
       },
       backendNamespace: 'test-ns',
       bundleHash: 'test-bundle',
-      providerRegistry: {
-        get: vi.fn(() => provider),
-        getAll: vi.fn(() => [provider]),
-      },
+      providerRegistry,
       pluginRegistry: { discoverPluginRoot: vi.fn(() => null) },
       progressStore: {} as never,
       launchOrchestrator: launchOrchestrator as never,

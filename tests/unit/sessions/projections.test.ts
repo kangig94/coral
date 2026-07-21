@@ -12,7 +12,7 @@ import type { CoralEventInput } from '#src/store/envelope.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, withTestBindingLocation } from '#tests/helpers/provider-credentials.js';
 import {
   listProjectionSessionEntries,
   readProjectionSession,
@@ -194,7 +194,7 @@ describe('sessions projections', () => {
     try {
       const opened = sessionEntry({
         sessionId: 'session-authority-immutable',
-        sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+        sessionAuthority: { kind: 'provider', binding: TEST_CODEX_BINDING },
       });
       h.commit([openedInput(opened, 'scope-authority-immutable')]);
       const changed = sessionEntry({
@@ -202,13 +202,13 @@ describe('sessions projections', () => {
         version: 2,
         sessionAuthority: {
           kind: 'provider',
-          source: { ...TEST_CODEX_SOURCE, home: '/accounts/codex-b' },
+          binding: withTestBindingLocation(TEST_CODEX_BINDING, '/accounts/codex-b'),
         },
       });
 
       expectSetupError(
         () => h.commit([checkpointedInput(changed, { conversationRef: null, resumable: false })]),
-        'provider_credential_source_mismatch',
+        'session_authority_mismatch',
       );
       expect(readProjectionSessionEntry(h.db, opened.sessionId)?.sessionAuthority).toEqual(opened.sessionAuthority);
     } finally {
@@ -304,7 +304,7 @@ describe('sessions projections', () => {
       const entry = sessionEntry({ sessionId: 'session-premature' });
       expectSetupError(
         () => h.commit([checkpointedInput(entry, { conversationRef: null, resumable: false })]),
-        'provider_credential_source_missing',
+        'session_authority_missing',
       );
       expectSetupError(
         () =>
@@ -344,7 +344,7 @@ describe('sessions projections', () => {
               body: { entry, controller: 'default', provider: 'codex', scope_key: 'scope-mismatch' },
             },
           ]),
-        'provider_credential_source_invalid',
+        'session_authority_invalid',
       );
     } finally {
       h.close();

@@ -3,10 +3,7 @@ import { z } from 'zod';
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
 import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
-import {
-  providerCredentialSourceRefSchema,
-  type ProviderCredentialSourceRef,
-} from '../infra/provider-credential-sources.js';
+import { providerBindingEnvelopeSchema, type ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
 import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
@@ -185,10 +182,10 @@ const sessionControllerProfileSchema = z
 
 export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
 
-export type SessionAuthority = { kind: 'provider'; source: ProviderCredentialSourceRef } | { kind: 'orchestration' };
+export type SessionAuthority = { kind: 'provider'; binding: ProviderBindingEnvelope } | { kind: 'orchestration' };
 
 export const sessionAuthoritySchema = z.union([
-  z.object({ kind: z.literal('provider'), source: providerCredentialSourceRefSchema }).strict(),
+  z.object({ kind: z.literal('provider'), binding: providerBindingEnvelopeSchema }).strict(),
   z.object({ kind: z.literal('orchestration') }).strict(),
 ]);
 

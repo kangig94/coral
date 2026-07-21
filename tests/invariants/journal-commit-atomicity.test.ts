@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
@@ -248,7 +248,7 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
       projectRoot: '/workspace/orphan',
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_PROVIDER_SCOPE,
       pool: 'default',
       enqueueSequence: 1,
       providerAction: 'exec',
@@ -327,7 +327,7 @@ function initWorkflowJob(progressStore: JobStore, jobId: string): void {
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
     jobKind: 'workflow',
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_PROVIDER_SCOPE,
     initialPhase: 'running',
   });
 }

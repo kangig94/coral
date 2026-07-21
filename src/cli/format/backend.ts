@@ -37,6 +37,7 @@ function formatRunningStatus(health: RunningHealth): string {
     `Version: ${health.version}`,
     `Uptime: ${formatDuration(health.uptimeMs)}`,
     formatKernelLine(health.kernel),
+    `System provider scope: ${formatSystemProviderScope(health.systemProviderScope)}`,
     '',
     'Runtime Components:',
     ...componentLines,
@@ -47,6 +48,11 @@ function formatRunningStatus(health: RunningHealth): string {
     lines.push(`Queue depth: ${health.queueDepth}`);
   }
   return lines.join('\n');
+}
+
+function formatSystemProviderScope(scope: RunningHealth['systemProviderScope']): string {
+  if (scope === undefined) return 'unconfigured';
+  return `${scope.name} (${scope.providers.join(', ')})`;
 }
 
 function formatKernelLine(kernel: RunningHealth['kernel']): string {

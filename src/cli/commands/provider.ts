@@ -9,10 +9,15 @@ import { resolveInput } from '../flags.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
-    const selector = providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR';
+    const routingHelp =
+      providerName === 'codex'
+        ? ' Select the profile with CODEX_HOME (default: ~/.codex).'
+        : providerName === 'claude'
+          ? ' Select the profile with CLAUDE_CONFIG_DIR (default: ~/.claude).'
+          : '';
     const provider = program
       .command(providerName)
-      .description(`Run via ${providerName}; captures ${selector} and binds the session to that account`);
+      .description(`Run via ${providerName}; captures its provider profile and binds the session to it.${routingHelp}`);
     markProviderCommand(provider);
     provider
       .argument('[agent]', 'Agent name (optional; omit for a raw prompt run)')

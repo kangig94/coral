@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { providerCredentialSetSchema, type ProviderCredentialSet } from '../infra/provider-credential-sources.js';
+import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';
 
 import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 
@@ -89,7 +89,7 @@ const sessionCreatedPayloadSchema = z
     input: discussCreateInputSchema,
     config: sessionCreatedConfigSchema,
     agentExecution: z.record(sessionCreatedAgentExecutionConfigSchema),
-    providerCredentials: providerCredentialSetSchema,
+    providerScope: providerScopeSchema,
   })
   .strict();
 
@@ -482,7 +482,7 @@ export const persistedDiscussRuntimeSchema: z.ZodType<PersistedDiscussRuntime> =
 
 export interface PersistedDiscussSnapshot {
   schemaVersion: 3;
-  providerCredentials: ProviderCredentialSet;
+  providerScope: ProviderScope;
   sessionId: string;
   projectRoot: string;
   updatedAt: string;

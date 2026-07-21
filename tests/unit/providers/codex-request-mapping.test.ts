@@ -449,6 +449,13 @@ describe('resolveCodexServiceTier precedence', () => {
 });
 
 describe('mapThreadStartParams serviceTier', () => {
+  it('pins the official OpenAI model provider for start and resume', () => {
+    const request = makeRequest();
+
+    expect(mapThreadStartParams(request).modelProvider).toBe('openai');
+    expect(mapThreadResumeParams(request, 'thread-1').modelProvider).toBe('openai');
+  });
+
   it('includes serviceTier when resolved from env', () => {
     const home = useTempCodexConfig();
     const request = makeRequest({ coralEnv: { CORAL_CODEX_FAST: '1' } });

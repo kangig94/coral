@@ -1,5 +1,5 @@
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
@@ -115,7 +115,7 @@ function createHarness(options: {
     projectRoot: PROJECT_ROOT,
     backendNamespace: BACKEND_NAMESPACE,
     jobKind: 'workflow',
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_PROVIDER_SCOPE,
     initialPhase: 'running',
   });
 
@@ -268,13 +268,10 @@ describe('workflow recovery branch rules', () => {
 
   it('relaunches an absent step with persisted source A instead of replacement-daemon source B', async () => {
     const harness = createHarness({ atomPhase: null, projectionPhase: null });
-    const replacementCredentials = {
-      ...TEST_PROVIDER_CREDENTIALS,
-      codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/replacement/.codex-b' },
-    };
+    const replacementCredentials = withTestProfileLocation(TEST_PROVIDER_SCOPE, 'codex', '/replacement/.codex-b');
     const createReplacementContext = (projectRoot: string): InvocationContext => ({
       ...harness.createInvocationContext(projectRoot),
-      providerCredentials: replacementCredentials,
+      providerScope: replacementCredentials,
     });
     const getExecutionService = vi.fn(() => harness.executionSvc);
     try {
@@ -299,12 +296,10 @@ describe('workflow recovery branch rules', () => {
         }),
         expect.objectContaining({
           ...harness.createInvocationContext(PROJECT_ROOT),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_PROVIDER_SCOPE,
         }),
       );
-      expect(getExecutionService).toHaveBeenCalledWith(
-        expect.objectContaining({ providerCredentials: TEST_PROVIDER_CREDENTIALS }),
-      );
+      expect(getExecutionService).toHaveBeenCalledWith(expect.objectContaining({ providerScope: TEST_PROVIDER_SCOPE }));
       expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
     } finally {
@@ -379,7 +374,7 @@ describe('workflow recovery branch rules', () => {
         }),
         expect.objectContaining({
           ...harness.createInvocationContext(PROJECT_ROOT),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_PROVIDER_SCOPE,
         }),
       );
       expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalledWith(
@@ -467,7 +462,7 @@ describe('workflow recovery branch rules', () => {
         }),
         expect.objectContaining({
           ...harness.createInvocationContext(PROJECT_ROOT),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_PROVIDER_SCOPE,
         }),
       );
       expect(harness.executionSvc.abort).toHaveBeenCalledWith([pendingSlot.slotId]);

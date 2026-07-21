@@ -2,7 +2,7 @@ import { formatError } from '../../../infra/error-format.js';
 import { isAppServerRuntime } from '../../../jobs/records.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
-import type { ProviderCatalog } from '../../../providers/catalog.js';
+import type { ProviderBindingCatalog } from '../../../providers/catalog.js';
 import type { JobStore } from '../../../jobs/store.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
@@ -49,7 +49,7 @@ type RecoveryCoordinatorContext = {
   runtime: Runtime;
   runtimeState: { setLaunchFenceActive(active: boolean): void };
   eventBus: JobEventBus;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   log: (message: string) => void;
@@ -60,7 +60,7 @@ type StartupRecoveryContext = {
   bundleHash: string;
   runtime: Runtime;
   progressStore: JobStore;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   signal: AbortSignal;
@@ -224,7 +224,7 @@ export function createRecoveryCoordinator({
 
         let adoptedRuntimeRecord = runtimeRecord;
         signal.throwIfAborted();
-        const adoption = service.adoptRunningJob(launchRecord, runtimeRecord);
+        const adoption = await service.adoptRunningJob(launchRecord, runtimeRecord);
         cleanup = adoption.cleanup;
         if (!adoption.adopted) {
           state.recoveryRegistry?.remove(jobId);
@@ -291,7 +291,7 @@ export function createRecoveryCoordinator({
           }
 
           drainRecoveredProgress();
-          finalizeDeadAdoptedJob({
+          void finalizeDeadAdoptedJob({
             jobId,
             launchRecord,
             runtimeRecord: adoptedRuntimeRecord,
@@ -302,10 +302,15 @@ export function createRecoveryCoordinator({
             sessionLookup,
             cancelledJobIds: state.cancelledRecoveryJobIds,
             log,
-          });
-          state.recoveryRegistry?.clearCancelled(jobId);
-          retainedCleanup?.();
-          maybeReleaseRecoveryRegistry();
+          })
+            .catch((error: unknown) => {
+              log(`Failed to finalize adopted job ${jobId}: ${formatError(error)}\n`);
+            })
+            .finally(() => {
+              state.recoveryRegistry?.clearCancelled(jobId);
+              retainedCleanup?.();
+              maybeReleaseRecoveryRegistry();
+            });
         }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
         state.recoveryPollIntervals.set(jobId, pollInterval);
@@ -326,7 +331,7 @@ export function createRecoveryCoordinator({
       try {
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         signal.throwIfAborted();
-        if (!service.validateProviderRecoveryAuthority(launchRecord)) {
+        if (!(await service.validateProviderRecoveryAuthority(launchRecord))) {
           state.recoveryRegistry?.remove(jobId);
           state.recoveryRegistry?.clearCancelled(jobId);
           log(`Rejected queued recovery with invalid provider authority: ${jobId}\n`);
@@ -339,7 +344,7 @@ export function createRecoveryCoordinator({
           log(`Aborted queued recovery job: ${jobId}\n`);
           continue;
         }
-        service.recoverQueuedJob(launchRecord);
+        await service.recoverQueuedJob(launchRecord);
         state.recoveryRegistry?.remove(jobId);
         log(`Recovered queued job: ${jobId}\n`);
       } catch (error: unknown) {
@@ -373,9 +378,9 @@ export function createRecoveryCoordinator({
       const snapshot = buildRecoverySnapshot(progressStore, namespace, log, ctx.sessionLookup, runtime.process);
       const plan = planRecovery(snapshot);
 
-      const applyPlanAction = (action: Parameters<typeof applyRecoveryAction>[0]): void => {
+      const applyPlanAction = async (action: Parameters<typeof applyRecoveryAction>[0]): Promise<void> => {
         try {
-          applyRecoveryAction(action, {
+          await applyRecoveryAction(action, {
             progressStore,
             recoveryRegistry,
             queuedRecoverable,
@@ -397,10 +402,10 @@ export function createRecoveryCoordinator({
       };
 
       for (const action of plan.register) {
-        applyPlanAction(action);
+        await applyPlanAction(action);
       }
       for (const action of plan.cleanup) {
-        applyPlanAction(action);
+        await applyPlanAction(action);
       }
 
       cleanupStaleJobs(bundleHash);

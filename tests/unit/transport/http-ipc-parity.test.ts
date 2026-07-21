@@ -10,7 +10,11 @@ import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
 import { testPrincipal } from '../../helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
+import {
+  TEST_PROVIDER_SCOPE,
+  TEST_SYSTEM_PROVIDER_SCOPE,
+  withTestProfileLocation,
+} from '../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
 const httpServers: Server[] = [];
@@ -37,10 +41,7 @@ function createPorts(): HttpHandlerPorts {
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
-    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
-    ambientClaudeLocation: {
-      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
-    },
+    systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,
@@ -181,28 +182,17 @@ afterEach(async () => {
 });
 
 describe('http/ipc parity', () => {
-  it('binds IPC ambient Claude to daemon-home authority instead of the daemon boot account', async () => {
+  it('preserves the explicit IPC caller scope independently of the configured system scope', async () => {
     const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
     if (!spec) throw new Error('sessions.create spec not found');
 
     const ports: HttpHandlerPorts = {
       ...createPorts(),
-      providerCredentialDefaults: {
-        ...TEST_PROVIDER_CREDENTIALS,
-        claude: {
-          version: 1,
-          provider: 'claude',
-          kind: 'config-dir',
-          configDir: '/accounts/daemon-boot-claude',
-          projectsRoot: '/accounts/daemon-boot-claude/projects',
-        },
-      },
-      ambientClaudeLocation: {
-        locate: () => ({
-          configDirLocator: '/home/daemon-owner/.claude',
-          projectsRoot: '/home/daemon-owner/.claude/projects',
-        }),
-      },
+      systemProviderScope: withTestProfileLocation(
+        TEST_SYSTEM_PROVIDER_SCOPE,
+        'claude',
+        '/accounts/system-claude',
+      ) as typeof TEST_SYSTEM_PROVIDER_SCOPE,
     };
     let observedContext: Parameters<NonNullable<typeof ports.sessions.start>>[2] | undefined;
     ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
@@ -215,22 +205,103 @@ describe('http/ipc parity', () => {
         provider: 'claude',
         prompt: 'hello',
         projectRoot: '/project-root',
-        providerCredentials: {
-          version: 1,
-          codex: { kind: 'home', home: '/accounts/codex-a' },
-          claude: { kind: 'ambient' },
-        },
+        providerScope: withTestProfileLocation(TEST_PROVIDER_SCOPE, 'claude', '/accounts/caller-claude'),
       },
       testPrincipal({ transport: 'ipc' }),
     );
 
-    expect(observedContext?.providerCredentials?.claude).toEqual({
-      version: 1,
-      provider: 'claude',
-      kind: 'ambient',
-      configDirLocator: '/home/daemon-owner/.claude',
-      projectsRoot: '/home/daemon-owner/.claude/projects',
+    expect(observedContext?.providerScope).toEqual(
+      withTestProfileLocation(TEST_PROVIDER_SCOPE, 'claude', '/accounts/caller-claude'),
+    );
+  });
+
+  it('rejects a system-origin scope supplied over IPC', async () => {
+    const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
+    if (!spec) throw new Error('sessions.create spec not found');
+    const ports = createPorts();
+
+    await expect(
+      ipcAdapter(spec, ports).dispatch(
+        {
+          provider: 'claude',
+          prompt: 'hello',
+          projectRoot: '/project-root',
+          providerScope: TEST_SYSTEM_PROVIDER_SCOPE,
+        },
+        testPrincipal({ transport: 'ipc' }),
+      ),
+    ).resolves.toEqual({
+      kind: 'unary',
+      statusCode: 400,
+      body: { code: 'invalid_request', message: 'invalid request' },
     });
+    expect(ports.sessions.start).not.toHaveBeenCalled();
+  });
+
+  it('uses only the configured named system scope for HTTP provider work', async () => {
+    const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
+    if (!spec) throw new Error('sessions.create spec not found');
+    const ports = createPorts();
+    let observedScope: unknown;
+    ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
+      observedScope = ctx.providerScope;
+      return { status: 'running' as const, job: 'job-system', session: 'session-system' };
+    });
+
+    await ipcAdapter(spec, ports).dispatch(
+      { provider: 'claude', prompt: 'hello', projectRoot: '/project-root' },
+      testPrincipal({ transport: 'http' }),
+    );
+
+    expect(observedScope).toEqual(TEST_SYSTEM_PROVIDER_SCOPE);
+  });
+
+  it.each([
+    {
+      name: 'session',
+      path: '/sessions',
+      body: { provider: 'codex', prompt: 'hello', projectRoot: '/project-root' },
+      allocation: (ports: HttpHandlerPorts) => ports.sessions.start,
+    },
+    {
+      name: 'workflow',
+      path: '/workflow',
+      body: { expression: 'architect@codex', startPrompt: 'hello', projectRoot: '/project-root' },
+      allocation: (ports: HttpHandlerPorts) => ports.workflows.execute,
+    },
+    {
+      name: 'discussion',
+      path: '/discuss/sessions',
+      body: {
+        projectRoot: '/project-root',
+        topic: 'Should we ship?',
+        agents: [
+          { name: 'alpha', persona: '# Alpha' },
+          { name: 'beta', persona: '# Beta' },
+        ],
+      },
+      allocation: (ports: HttpHandlerPorts) => ports.discuss.start,
+    },
+  ])('rejects HTTP $name allocation when the daemon system scope is absent', async ({ path, body, allocation }) => {
+    const { systemProviderScope: _systemProviderScope, ...ports } = createPorts();
+    const { baseUrl } = await startHttpServer(ports);
+
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Coral-Backend-Token': ports.identity.token,
+      },
+      body: JSON.stringify(body),
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      code: 'system_provider_scope_unconfigured',
+      message: 'Provider execution is disabled because this Coral daemon has no named system provider scope.',
+      remediation: 'Configure CORAL_SYSTEM_PROVIDER_SCOPE on the daemon and restart it.',
+    });
+    expect(allocation(ports)).not.toHaveBeenCalled();
   });
 
   it('derives invocation principal from the transport boundary', async () => {
