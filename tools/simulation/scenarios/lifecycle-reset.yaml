@@ -20,7 +20,7 @@ steps:
   - type: expect
     jobCount: 0
     sessionCount:
-      provider: fake-provider
+      provider: codex
       count: 0
   - type: launch
     prompt: simulate clean reset world

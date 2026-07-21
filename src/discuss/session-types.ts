@@ -80,6 +80,102 @@ export type DiscussState = {
   min_bid_delay_ms: number;
 };
 
+const transcriptMetadataSchema = {
+  step: z.number().int().nonnegative(),
+  epoch: z.number().int().nonnegative(),
+  ts: z.string(),
+};
+
+const transcriptEntrySchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      type: z.literal('bids'),
+      ...transcriptMetadataSchema,
+      bids: z.record(z.number()),
+      effective_bids: z.record(z.number()).optional(),
+      thoughts: z.record(z.string()).optional(),
+      winner: z.string().nullable(),
+      resolve_type: z.enum(transcriptResolveTypes),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('speech'),
+      ...transcriptMetadataSchema,
+      agent: z.string(),
+      display_name: z.string(),
+      content: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('follow_up'),
+      agent: z.string(),
+      question: z.string(),
+      answer: z.string(),
+      epoch: z.number().int().nonnegative(),
+      ts: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('epoch_summary'),
+      summary: z.string(),
+      epoch: z.number().int().nonnegative(),
+      ts: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('session_event'),
+      event: z.enum(sessionEventKinds),
+      detail: z.string(),
+      epoch: z.number().int().nonnegative(),
+      ts: z.string(),
+    })
+    .strict(),
+]);
+
+const agentStateSchema = z
+  .object({
+    persona: z.string(),
+    display_name: z.string(),
+    participation: z.enum(participationTypes),
+    quota_remaining: z.number(),
+    total_speaks: z.number(),
+    fallback_used: z.boolean(),
+    banned: z.boolean(),
+  })
+  .strict();
+
+export const discussStateSchema: z.ZodType<DiscussState> = z
+  .object({
+    session_id: z.string(),
+    topic: z.string(),
+    status: z.enum(discussStatuses),
+    step: z.number().int().nonnegative(),
+    epoch: z.number().int().nonnegative(),
+    max_epochs: z.number().int().positive(),
+    quota_per_epoch: z.number().int().positive(),
+    cold_start: z.boolean(),
+    agents: z.record(agentStateSchema),
+    current_bids: z.record(z.number().nullable()),
+    current_thoughts: z.record(z.string()),
+    pending_bidders: z.array(z.string()),
+    current_speaker: z.string().nullable(),
+    speaker_type: z.enum(speakerTypes).nullable(),
+    epoch_summary_written: z.number().int().nullable(),
+    created_at: z.string(),
+    last_activity_at: z.string(),
+    last_speech_step: z.number().int().nonnegative(),
+    bid_release_step: z.number().int().nonnegative(),
+    end_reason_content: z.string().nullable(),
+    transcript: z.array(transcriptEntrySchema),
+    bid_threshold: z.number(),
+    min_bid_delay_ms: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string; detail?: Record<string, unknown> };
 
 type ResolveReason = (typeof resolveReasons)[number];
@@ -156,3 +252,4 @@ export type PersonaAssignment = {
   suggested_origin?: string;
   is_outlier?: boolean;
 };
+import { z } from 'zod';

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { allocateTestSession } from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,21 +16,12 @@ vi.mock('node:os', async () => {
 });
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { composeReducers } from '#src/store/reducers.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
-import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import { jobsRegistry } from '#src/jobs/events.js';
-import { discussRegistry } from '#src/discuss/event-registry.js';
-import { sessionsRegistry } from '#src/sessions/events.js';
-import { workflowRegistry } from '#src/workflow/events.js';
 import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell.js';
-import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 let db: ReturnType<typeof openStoreDatabase>;
@@ -62,7 +54,7 @@ describe('sessions shell resolve', () => {
 
   it('projection lookup lists and reads allocated sessions', () => {
     const { mgr, workDir } = setup('open-shard');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     const lookup = createProjectionSessionLookup(db);
 
     expect(lookup.listSessionRefs()).toContainEqual(
@@ -84,6 +76,7 @@ describe('sessions shell resolve', () => {
     const sessionLookup = createProjectionSessionLookup(db);
     const sessionA = alpha.mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: alpha.workDir,
@@ -92,6 +85,7 @@ describe('sessions shell resolve', () => {
     });
     const sessionB = beta.mgr.allocate({
       provider: 'claude',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'beta',
       model: 'sonnet',
       cwd: beta.workDir,
@@ -124,6 +118,7 @@ describe('sessions shell resolve', () => {
     const alpha = setup('projection-entry-owner');
     const entry = alpha.mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: alpha.workDir,
@@ -153,8 +148,8 @@ describe('sessions shell resolve', () => {
     const alpha = setup('resolve-shard-a');
     const beta = setup('resolve-shard-b');
     const sessionLookup = createProjectionSessionLookup(db);
-    const sessionA = alpha.mgr.allocate('codex', 'alpha', 'gpt-5', alpha.workDir);
-    const sessionB = beta.mgr.allocate('claude', 'beta', 'sonnet', beta.workDir);
+    const sessionA = allocateTestSession(alpha.mgr, 'codex', 'alpha', 'gpt-5', alpha.workDir);
+    const sessionB = allocateTestSession(beta.mgr, 'claude', 'beta', 'sonnet', beta.workDir);
 
     expect(
       resolveSession(
@@ -195,48 +190,17 @@ describe('sessions shell resolve', () => {
     const { mgr, workDir } = setup('canonical-lookup');
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
       projectRoot: workDir,
       backendNamespace: 'ns-a',
     });
-    const scopeKey = pluginRootNamespace(workDir);
-    const db = createSessionDb();
-
-    try {
-      const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-      commitInputs(
-        db,
-        [
-          {
-            type: 'session.opened',
-            stream: { kind: 'session', id: entry.sessionId },
-            refs: { sessionId: entry.sessionId },
-            bodyVersion: 1,
-            body: {
-              entry,
-              controller: 'default',
-              provider: 'codex',
-              scope_key: scopeKey,
-            },
-          },
-        ],
-        {
-          now: () => new Date('2026-04-20T00:00:00.000Z'),
-          reducers,
-          upcasters: createDefaultUpcasterRegistry(),
-          providers: permissiveProviderLookupPort,
-        },
-      );
-
-      const sessionLookup = createProjectionSessionLookup(db);
-      expect(sessionLookup.readSessionEntry(entry.sessionId)).toMatchObject({
-        sessionId: entry.sessionId,
-        provider: 'codex',
-      });
-    } finally {
-      db.close();
-    }
+    const sessionLookup = createProjectionSessionLookup(db);
+    expect(sessionLookup.readSessionEntry(entry.sessionId)).toMatchObject({
+      sessionId: entry.sessionId,
+      provider: 'codex',
+    });
   });
 });

@@ -140,9 +140,12 @@ export function appServerSession(contract: AppServerContract): ProviderMiddlewar
       if (!runtime.storage) {
         throw new Error('appServerSession requires runtime.storage to build the provider server spec.');
       }
-      const spec: ProviderServerSpec = contract.buildServerSpec(request, runtime.persistedContinuity, {
-        storage: runtime.storage,
-      });
+      const spec: ProviderServerSpec = contract.buildServerSpec(
+        request,
+        runtime.persistedContinuity,
+        { storage: runtime.storage },
+        runtime.providerContext,
+      );
       const lease: ProviderServerLease = await runtime.acquireServer(spec);
       const clearBoundLease = bindAppServerLease(runtime, lease);
       const removeAbortRelay = installAbortRelay(runtime, lease, contract.interrupt.bind(contract));

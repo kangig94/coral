@@ -14,6 +14,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { initTestJob } from '#tests/helpers/session.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { workflowRecover } from '#src/workflow/recover.js';
@@ -78,16 +80,17 @@ describe('workflow handoff (cross-domain integration)', () => {
       permissiveProviderLookupPort,
     );
     const progressStore = incumbent.core.storeServicesRef.get().progressStore;
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: WORKFLOW_ID,
       sessionId: 'workflow-session-1',
       provider: 'codex',
       projectRoot: PROJECT_ROOT,
       backendNamespace: incumbent.core.identity.namespace,
       jobKind: 'workflow',
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
       initialPhase: 'running',
     });
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: slotJobId,
       sessionId: 'session-slot-1',
       provider: 'codex',

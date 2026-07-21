@@ -47,8 +47,9 @@ const codexThreadContinuity: SessionContinuityContract<CodexPersistedContinuity>
 
 const codexAppServerContract = {
   name: 'codex',
-  buildServerSpec(request, persistedContinuity) {
-    return buildCodexProviderServerSpec(request, persistedContinuity);
+  buildServerSpec(request, persistedContinuity, _ports, providerContext) {
+    if (providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
+    return { ...buildCodexProviderServerSpec(request, persistedContinuity), env: { ...providerContext.appServerEnv } };
   },
   interrupt: mapCodexInterrupt,
   subscriptionPhase: 'afterInitialize',

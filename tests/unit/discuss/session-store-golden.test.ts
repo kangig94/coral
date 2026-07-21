@@ -25,7 +25,7 @@ function loadFixtureEvents(): DiscussDomainEvent[] {
 
 describe('discuss session-store golden master', () => {
   it('replays the normalized fixture through projection_discuss byte-identically', () => {
-    const expectedState = fs.readFileSync(FIXTURE_JSON, 'utf8');
+    const expectedState = fs.readFileSync(FIXTURE_JSON, 'utf8').trimEnd();
     const events = loadFixtureEvents();
     const db = newRawDatabase(':memory:');
 

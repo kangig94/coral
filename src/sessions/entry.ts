@@ -3,6 +3,10 @@ import { z } from 'zod';
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
 import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
+import {
+  providerCredentialSourceRefSchema,
+  type ProviderCredentialSourceRef,
+} from '../runtime/provider-credentials.js';
 import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
@@ -179,9 +183,17 @@ const sessionControllerProfileSchema = z
 
 export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
 
+export type SessionAuthority = { kind: 'provider'; source: ProviderCredentialSourceRef } | { kind: 'orchestration' };
+
+export const sessionAuthoritySchema = z.union([
+  z.object({ kind: z.literal('provider'), source: providerCredentialSourceRefSchema }).strict(),
+  z.object({ kind: z.literal('orchestration') }).strict(),
+]);
+
 export interface SessionEntry {
   sessionId: string;
   provider: string;
+  sessionAuthority: SessionAuthority;
   name: string;
   state: SessionState;
   retention: RetentionPolicy;
@@ -209,6 +221,7 @@ export const sessionEntrySchema = z
   .object({
     sessionId: z.string().min(1),
     provider: z.string().min(1),
+    sessionAuthority: sessionAuthoritySchema,
     name: z.string().min(1),
     state: sessionStateSchema,
     retention: retentionPolicySchema.default('retain'),

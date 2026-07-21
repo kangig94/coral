@@ -2,10 +2,27 @@ import type { Database } from '../../src/store/db.js';
 
 import { commit, type AppendContext, type AppendedEvent } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
+import { jobLaunchRequestBodySchema } from '#src/jobs/launch.js';
+import { seedTestSessionProjection } from './session.js';
 
 export type { AppendContext };
 
 export function commitInputs(db: Database, inputs: readonly CoralEventInput[], ctx: AppendContext): AppendedEvent[] {
+  const openedInBatch = new Set(
+    inputs.filter((input) => input.type === 'session.opened').map((input) => input.stream.id),
+  );
+  for (const input of inputs) {
+    if (input.type !== 'job.launch.requested') continue;
+    const launch = jobLaunchRequestBodySchema.parse(input.body);
+    if (launch.jobKind === 'kb' || openedInBatch.has(launch.sessionId)) continue;
+    seedTestSessionProjection(db, {
+      sessionId: launch.sessionId,
+      provider: launch.provider,
+      projectRoot: launch.projectRoot,
+      backendNamespace: launch.backendNamespace,
+      orchestration: launch.jobKind === 'workflow',
+    });
+  }
   return commit(
     db,
     (c) => {

@@ -1,7 +1,7 @@
 import { type DiscussSummaryDto } from '../read-contract.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../events.js';
 import type { DiscussDiscoverySession } from '../persistence-types.js';
-import { makeEmptySnapshot, reduceDiscussEvent } from '../reducer.js';
+import { createDiscussSnapshot, reduceDiscussEvent } from '../reducer.js';
 
 type DiscussSessionStoreOptions = {
   journal: DiscussSessionJournal;
@@ -81,20 +81,23 @@ export class DiscussSessionStore {
     expectedSeq: number | null,
     events: DiscussDomainEvent[],
   ): Promise<PersistedDiscussSnapshot> {
-    const currentSnapshot =
-      this.journal.readSnapshot(sessionId) ?? makeEmptySnapshot(sessionId, events[0]?.projectRoot ?? '');
+    const currentSnapshot = this.journal.readSnapshot(sessionId);
 
-    if (expectedSeq !== null && expectedSeq !== currentSnapshot.lastAppliedSeq) {
-      throw new DiscussStaleWriteError(expectedSeq, currentSnapshot.lastAppliedSeq);
+    if (expectedSeq !== null && expectedSeq !== (currentSnapshot?.lastAppliedSeq ?? 0)) {
+      throw new DiscussStaleWriteError(expectedSeq, currentSnapshot?.lastAppliedSeq ?? 0);
     }
 
     if (events.length === 0) {
+      if (currentSnapshot === null) throw new Error(`Discuss session '${sessionId}' has not been created.`);
       return currentSnapshot;
     }
 
-    validateAppendBatch(sessionId, currentSnapshot.lastAppliedSeq, events);
+    validateAppendBatch(sessionId, currentSnapshot?.lastAppliedSeq ?? 0, events);
 
-    const nextSnapshot = events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), currentSnapshot);
+    const nextSnapshot =
+      currentSnapshot === null
+        ? replayCreatedBatch(events)
+        : events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), currentSnapshot);
     this.journal.append(this.source, nextSnapshot, events);
     this.onCommit?.(nextSnapshot, events);
     return nextSnapshot;
@@ -123,4 +126,10 @@ export class DiscussSessionStore {
   }
 
   dispose(): void {}
+}
+
+function replayCreatedBatch(events: readonly DiscussDomainEvent[]): PersistedDiscussSnapshot {
+  const [first, ...rest] = events;
+  if (first === undefined) throw new Error('Discuss creation batch is empty.');
+  return rest.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), createDiscussSnapshot(first));
 }

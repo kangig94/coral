@@ -7,7 +7,6 @@ import {
   buildClaudeBootstrapSignature,
   buildClaudeProviderServerSpec,
   readClaudePersistedContinuity,
-  withClaudeContinuity,
   type ClaudePersistedContinuity,
 } from './request-mapping.js';
 import { claudeSessionKernel, mapClaudeInterrupt } from './session-kernel.js';
@@ -20,32 +19,20 @@ import type { ProviderTerminalEventBody } from '../contract.js';
 
 type ClaudeContinuityState = ClaudePersistedContinuity & {
   resumable: boolean;
+  conversationRef?: string;
 };
 
 const claudeAppServerContract = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
-  buildServerSpec(request, _persistedContinuity, ports) {
-    return buildClaudeProviderServerSpec(request, ports.storage);
+  buildServerSpec(request, _persistedContinuity, ports, providerContext) {
+    if (providerContext.provider !== 'claude') throw new Error('Claude provider context required.');
+    return buildClaudeProviderServerSpec(request, ports.storage, providerContext.brokerEnv);
   },
   interrupt: mapClaudeInterrupt,
 } satisfies AppServerContract;
 
-const claudeBrokerContinuity = createClaudeContinuityContract(
-  inferBrokerResumable,
-  isClaudeBrokerSessionUnavailable,
-  (state) => {
-    if (state.brokerTurnId === undefined) {
-      return state;
-    }
-
-    const { brokerTurnId: _brokerTurnId, ...continuity } = withClaudeContinuity(undefined, state);
-    return {
-      ...continuity,
-      resumable: inferBrokerResumable(continuity),
-    };
-  },
-);
+const claudeBrokerContinuity = createClaudeContinuityContract(inferBrokerResumable, isClaudeBrokerSessionUnavailable);
 
 const claudeSessionProvider = compose(
   sessionContinuity('claude', claudeBrokerContinuity),
@@ -95,8 +82,17 @@ function createClaudeContinuityContract(
     applyUpdate(state, update) {
       const continuity =
         update.providerContinuity === undefined
-          ? applyConversationRefOverride(withClaudeContinuity(undefined, state), update.conversationRef)
-          : readClaudePersistedContinuity(update.providerContinuity as ProviderContinuityBlob | undefined);
+          ? applyConversationRefOverride(state, update.conversationRef)
+          : {
+              ...readClaudePersistedContinuity(update.providerContinuity as ProviderContinuityBlob | undefined),
+              ...(update.conversationRef === undefined
+                ? state.conversationRef === undefined
+                  ? {}
+                  : { conversationRef: state.conversationRef }
+                : update.conversationRef === null
+                  ? {}
+                  : { conversationRef: update.conversationRef }),
+            };
 
       return {
         ...continuity,
@@ -119,7 +115,7 @@ function snapshotClaudeContinuity(state: ClaudeContinuityState) {
   return {
     conversationRef: state.conversationRef ?? null,
     resumable: state.resumable,
-    providerContinuity: toProviderContinuityBlob(withClaudeContinuity(undefined, state)),
+    providerContinuity: toProviderContinuityBlob(readClaudePersistedContinuity(state)),
   };
 }
 
@@ -128,9 +124,9 @@ function toProviderContinuityBlob(continuity: ClaudePersistedContinuity): Provid
 }
 
 function applyConversationRefOverride(
-  continuity: ClaudePersistedContinuity,
+  continuity: ClaudeContinuityState,
   conversationRef: ProviderContinuityUpdate['conversationRef'],
-): ClaudePersistedContinuity {
+): ClaudeContinuityState {
   if (conversationRef === undefined) {
     return continuity;
   }
@@ -147,11 +143,7 @@ function applyConversationRefOverride(
 }
 
 function inferBrokerResumable(continuity: ClaudePersistedContinuity): boolean {
-  return (
-    continuity.bootstrapSignature !== undefined ||
-    continuity.brokerSessionKey !== undefined ||
-    continuity.conversationRef !== undefined
-  );
+  return continuity.bootstrapSignature !== undefined;
 }
 
 function isClaudeBrokerSessionUnavailable(error: unknown): boolean {

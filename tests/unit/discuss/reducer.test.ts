@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeEvent, type DiscussDomainEvent, type PersistedDiscussSnapshot } from '#src/discuss/events.js';
-import { makeEmptySnapshot, reduceDiscussEvent, replayDiscussEvents } from '#src/discuss/reducer.js';
+import { reduceDiscussEvent, replayDiscussEvents } from '#src/discuss/reducer.js';
+import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
 import {
   decideBid,
   decideBidRoundClose,
@@ -51,13 +52,10 @@ function createSnapshot(
 ): PersistedDiscussSnapshot {
   return replayDiscussEvents(
     unwrap(
-      decideSessionCreate(
-        input,
-        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic },
-        1,
-        NOW,
-        agentExecution ? { agentExecution } : {},
-      ),
+      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW, {
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        ...(agentExecution ? { agentExecution } : {}),
+      }),
     ),
   );
 }
@@ -70,13 +68,13 @@ describe('discuss reducer', () => {
     ]);
 
     const history: DiscussDomainEvent[] = [];
-    let snapshot = makeEmptySnapshot(SESSION_ID, PROJECT_ROOT);
-
     const created = unwrap(
-      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW),
+      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW, {
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      }),
     );
     history.push(...created);
-    snapshot = replay(snapshot, created);
+    let snapshot = replay(undefined, created);
 
     const alphaBid = unwrap(
       decideBid(
@@ -130,7 +128,7 @@ describe('discuss reducer', () => {
     history.push(...speech);
 
     const fullReplay = replay(undefined, history);
-    const incremental = applyEvents(makeEmptySnapshot(SESSION_ID, PROJECT_ROOT), history);
+    const incremental = applyEvents(replay(undefined, history.slice(0, 1)), history.slice(1));
     const tailReplay = replay(replay(undefined, history.slice(0, 4)), history.slice(4));
 
     expect(incremental).toEqual(fullReplay);
@@ -149,7 +147,9 @@ describe('discuss reducer', () => {
       { name: 'beta', persona: 'Beta', participation: 'required' },
     ]);
     const created = unwrap(
-      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW),
+      decideSessionCreate(input, { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: input.topic }, 1, NOW, {
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      }),
     );
     const history: DiscussDomainEvent[] = [
       ...created,

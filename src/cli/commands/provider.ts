@@ -2,14 +2,17 @@ import type { Command } from 'commander';
 
 import type { ProviderRegistry } from '../../providers/registry.js';
 import { markProviderCommand } from '../classify.js';
-import { UsageError } from '../errors.js';
+import { normalizeUsageError, UsageError } from '../errors.js';
 import { getProviderNames, makeClient, type ProviderRunOptions } from '../dispatch.js';
 import { emitError, handleLaunchResult } from '../emit.js';
 import { resolveInput } from '../flags.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
-    const provider = program.command(providerName).description(`Run a prompt via ${providerName}`);
+    const selector = providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR';
+    const provider = program
+      .command(providerName)
+      .description(`Run via ${providerName}; captures ${selector} and binds the session to that account`);
     markProviderCommand(provider);
     provider
       .argument('[agent]', 'Agent name (optional; omit for a raw prompt run)')
@@ -43,7 +46,7 @@ export function registerProviderCommands(program: Command, providerRegistry: Pro
           });
           await handleLaunchResult(result, opts.detach, client);
         } catch (error) {
-          emitError(error);
+          emitError(normalizeUsageError(error));
         }
       });
   }

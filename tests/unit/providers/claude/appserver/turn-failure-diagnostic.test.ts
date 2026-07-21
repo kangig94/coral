@@ -20,6 +20,7 @@ const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000501';
 
 type TranscriptFixture = {
   readonly transcriptPath: string;
+  readonly projectsRoot: string;
   cleanup(): void;
 };
 
@@ -48,6 +49,7 @@ function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptF
 
   return {
     transcriptPath,
+    projectsRoot: join(home, '.claude', 'projects'),
     cleanup() {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -97,6 +99,7 @@ describe('Claude turn failure diagnostics', () => {
     try {
       await controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });
@@ -146,6 +149,7 @@ describe('Claude turn failure diagnostics', () => {
     try {
       await controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });
@@ -178,6 +182,7 @@ describe('Claude turn failure diagnostics', () => {
     try {
       await controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });

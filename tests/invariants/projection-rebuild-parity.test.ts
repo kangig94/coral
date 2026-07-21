@@ -35,6 +35,7 @@ import { buildWorkflowPlan } from '#src/workflow/plan.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-29T00:00:00.000Z');
 const FIXTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'unit', 'discuss', 'fixtures');
@@ -77,6 +78,7 @@ function sessionEntry(sessionId: string, provider: 'codex' | 'claude'): SessionE
   return {
     sessionId,
     provider,
+    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
     name: sessionId,
     state: 'pending',
     retention: 'retain',
@@ -148,6 +150,19 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
       const discussInputs = loadDiscussFixtureEvents();
 
       const inputs = [
+        // Session authority must precede the provider job it owns.
+        {
+          type: 'session.opened' as const,
+          stream: { kind: 'session' as const, id: 'session-parity' },
+          refs: { sessionId: 'session-parity' },
+          bodyVersion: 1,
+          body: {
+            entry: sessionOpen,
+            controller: 'team-invariant',
+            provider: 'codex' as const,
+            scope_key: 'parity-scope',
+          },
+        },
         // Jobs
         {
           type: 'job.launch.requested' as const,
@@ -207,19 +222,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
             },
           },
         },
-        // Sessions
-        {
-          type: 'session.opened' as const,
-          stream: { kind: 'session' as const, id: 'session-parity' },
-          refs: { sessionId: 'session-parity' },
-          bodyVersion: 1,
-          body: {
-            entry: sessionOpen,
-            controller: 'team-invariant',
-            provider: 'codex' as const,
-            scope_key: 'parity-scope',
-          },
-        },
+        // Session checkpoint
         {
           type: 'session.continuity.checkpointed' as const,
           stream: { kind: 'session' as const, id: 'session-parity' },

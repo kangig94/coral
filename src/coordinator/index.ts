@@ -52,6 +52,7 @@ import {
 } from './live/kb-daemon-supervisor.js';
 import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
 import { runClaudeOneShotTurn } from '../providers/claude/one-shot.js';
+import { buildExactProviderEnv } from '../providers/execution-context.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
@@ -240,8 +241,20 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     return runClaudeOneShotTurn(
       {
         storage: runtime.storage,
-        env: runtime.env,
         ids: runtime.ids,
+        providerContext: {
+          source: activeCore.providerCredentialDefaults.claude,
+          brokerEnv: buildExactProviderEnv({
+            baseEnv: runtime.env.fullSnapshot(),
+            platform: runtime.env.platform(),
+          }),
+          controllerEnv: buildExactProviderEnv({
+            baseEnv: runtime.env.fullSnapshot(),
+            source: activeCore.providerCredentialDefaults.claude,
+            platform: runtime.env.platform(),
+          }),
+          projectsRoot: activeCore.providerCredentialDefaults.claude.projectsRoot,
+        },
         acquireServer: (spec, options) => activeCore.providerHostManager.acquireServer(spec, options),
       },
       {
@@ -249,7 +262,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         prompt: request.prompt,
         ...(request.model === undefined ? {} : { model: request.model }),
         ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
-        controllerEnv: { ...runtime.env.coralSnapshot() },
         signal,
       },
     );

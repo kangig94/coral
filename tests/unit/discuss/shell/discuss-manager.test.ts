@@ -26,6 +26,7 @@ import {
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -43,6 +44,7 @@ async function recoverSessions(harness: DiscussHarness) {
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
+      providerCredentials: snapshot.providerCredentials ?? TEST_PROVIDER_CREDENTIALS,
     }),
   );
 }

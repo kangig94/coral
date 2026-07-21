@@ -60,6 +60,7 @@ describe('Invariant #9 — continuity bodies are full snapshots', () => {
     const entry = {
       sessionId: 's-1',
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' as const },
       name: 'session-name',
       state: 'ready' as const,
       cwd: '/workspace/coral',

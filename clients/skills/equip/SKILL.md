@@ -1,7 +1,7 @@
 ---
 name: equip
 description: One-touch install of Coral companion tooling and KB runtime
-argument-hint: "[--list | [--update] <package> | uninstall <equipment-name>]"
+argument-hint: "[--list | info <package> | [--update] <package> | uninstall <equipment-name>]"
 ---
 
 # Equip
@@ -14,7 +14,7 @@ Install and configure Coral companion tooling for Claude Code.
 - `/equip --list` -> `coral-cli expansion list`
 - `/equip --update <pkg>` -> `coral-cli expansion update <pkg>`
 - `/equip uninstall <pkg>` -> `coral-cli expansion unequip <pkg>`
-- If this surface exposes it, `/equip info <pkg>` -> `coral-cli expansion info <pkg>`
+- `/equip info <pkg>` -> `coral-cli expansion info <pkg>`
 - Internal catalog-removal diagnostics map to `coral-cli expansion remove-catalog <pkg>` when that CLI surface is exposed.
 
 ## Runtime Model
@@ -113,6 +113,12 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 
 4. `update` is equivalent to `equip` when the local version differs from the catalog version; `/equip <package>` also updates implicitly. Use `/equip --update <package>` when the user is explicitly asking to bump or refresh the installed version.
 
+### `info <package>`
+
+1. Bash(`coral-cli expansion info <package>`)
+2. Parse the single-line JSON result.
+3. Show the status and, when returned, the package `tier`, `provides.capabilities`, `addonPath`, installed `command`, `userMessage`, and `remediation`. Treat an error result as terminal.
+
 ### `uninstall <equipment-name>`
 
 1. Bash(`coral-cli expansion unequip <equipment-name>`)
@@ -130,8 +136,8 @@ Bundled engines auto-equip at coordinator boot via the bundled fallback pass. Th
 ## Notes
 
 - Install-only binaries and engine artifacts both land under the engine data tree (`~/.coral/data/engines/<engine>/`, or `~/.coral/data-dev/engines/<engine>/` when `CORAL_FLAVOR=dev`); the CLI reports the exact installed path as `command`
-- Corpus indexes stay under `~/.coral/data/kb/`
-- Under a non-default `CLAUDE_CONFIG_DIR`, these data paths nest beneath `~/.coral/by-config/<slot>/` — the daemon is isolated per config dir; the default config dir keeps the paths above unchanged
+- Corpus indexes stay under `~/.coral/data/kb/` in prod or `~/.coral/data-dev/kb/` in dev
+- These data paths are account-neutral. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` select provider credentials per invocation and never change the Coral daemon or state root
 - Some installed engines may have native artifacts or model downloads; follow the `userMessage` and `remediation` returned by the CLI for missing prerequisites.
 - An install-only package (`activation: 'none'`) installs by running the package's own install script (which Coral executes via the shell, e.g. `curl … | bash`). That external script — not Coral — may register the tool with the coding agent (for example as an MCP server); when it does, the agent must be restarted before the newly installed tooling is available.
 - On Windows, `unequip` after activation may require a Coral restart when a loaded native addon remains mapped for the coordinator process lifetime.

@@ -15,6 +15,7 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
+import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -183,7 +184,9 @@ function createRuntimeStateMock() {
 
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
-    adoptRunningJob: vi.fn(() => ({ cleanup: vi.fn() })),
+    adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: vi.fn() })),
+    validateProviderRecoveryAuthority: vi.fn(() => true),
+    providerCredentialSourceForRecovery: vi.fn(() => TEST_CODEX_SOURCE),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
@@ -379,10 +382,10 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
     listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
   });
 
-  progressStore.initJob({
+  seedTestJobSession(progressStore, {
     jobId: 'running-adoption-job',
     sessionId: 'running-adoption-session',
-    provider: 'fakeprovider',
+    provider: 'codex',
     projectRoot,
     backendNamespace: namespace,
     initialPhase: 'running',
@@ -390,7 +393,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   stubLaunchRecord(progressStore, {
     jobId: 'running-adoption-job',
     sessionId: 'running-adoption-session',
-    provider: 'fakeprovider',
+    provider: 'codex',
     projectRoot,
     backendNamespace: namespace,
   });
@@ -443,7 +446,7 @@ describe('recovery coordinator shutdown', () => {
       serviceOverrides: {
         adoptRunningJob: vi.fn(() => {
           void controller.shutdown('test-mid-recovery');
-          return { cleanup: cleanupSpy };
+          return { adopted: true, cleanup: cleanupSpy };
         }),
       },
     });
@@ -504,7 +507,7 @@ describe('recovery coordinator shutdown', () => {
       pluginRoot,
       projectRoot,
       serviceOverrides: {
-        adoptRunningJob: vi.fn(() => ({ cleanup: cleanupSpy })),
+        adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: cleanupSpy })),
       },
       recoverPersistedDiscussImpl: async () => {
         expect(recoveryPollHandle).not.toBeNull();
@@ -547,3 +550,4 @@ describe('recovery coordinator shutdown', () => {
     }
   });
 });
+import { seedTestJobSession } from '#tests/helpers/session.js';

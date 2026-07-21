@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { StoragePort } from '../infra/port-types.js';
 import { readString } from '../infra/json.js';
 import {
@@ -8,31 +9,31 @@ import {
 import { buildJobDiagnostics, buildJobTerminal } from './terminal.js';
 import { claudeProvider } from './claude/provider.js';
 import { claudeAppServerLifecycle, claudePreflight, claudeRecoveryLifecycle } from './claude/provider-facets.js';
-import { claudeArtifactCapability, locateClaudeJsonlArtifact, resolveClaudeProjectsRoot } from './claude/artifacts.js';
+import { claudeArtifactCapability, locateClaudeJsonlArtifact } from './claude/artifacts.js';
 import { codexThreadProvider } from './codex/thread-provider.js';
 import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './codex/provider-facets.js';
-import { codexArtifactCapability, locateCodexRolloutArtifact, resolveCodexSessionsRoot } from './codex/artifacts.js';
+import { codexArtifactCapability, locateCodexRolloutArtifact } from './codex/artifacts.js';
 import { defineProvider } from './define.js';
 import { ProviderRegistry } from './registry.js';
 
 type ArtifactRecoveryOptions = Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0];
 
 function buildProviderRecovery(
-  lifecycle: Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'> &
-    Partial<Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'extractProgress'>>,
+  lifecycle: Pick<ProviderRecoveryContract, 'finalizeInterrupted'> &
+    Partial<Pick<ProviderRecoveryContract, 'probe' | 'buildRecoveryMeta' | 'extractProgress'>>,
   finalizeFromArtifacts: ProviderRecoveryContract['finalizeFromArtifacts'],
   providerName: string,
 ): ProviderRecoveryContract {
-  const { probe, finalizeInterrupted } = lifecycle;
-  if (!probe || !finalizeInterrupted) {
-    throw new Error(`${providerName} recovery lifecycle must define probe + finalizeInterrupted`);
+  const { finalizeInterrupted } = lifecycle;
+  if (!finalizeInterrupted) {
+    throw new Error(`${providerName} recovery lifecycle must define finalizeInterrupted`);
   }
   return {
-    probe: probe.bind(lifecycle),
     finalizeInterrupted: finalizeInterrupted.bind(lifecycle),
     finalizeFromArtifacts,
     ...(lifecycle.buildRecoveryMeta ? { buildRecoveryMeta: lifecycle.buildRecoveryMeta.bind(lifecycle) } : {}),
     ...(lifecycle.extractProgress ? { extractProgress: lifecycle.extractProgress.bind(lifecycle) } : {}),
+    ...(lifecycle.probe ? { probe: lifecycle.probe.bind(lifecycle) } : {}),
   };
 }
 
@@ -42,6 +43,7 @@ async function finalizeClaudeFromArtifacts(
   const stdout = readArtifact(options.storage, options.stdoutPath);
   const stderr = readArtifact(options.storage, options.stderrPath);
   const outcome = claudeArtifactOutcome(options);
+  const artifactHandles = locateClaudeArtifactsForRecovery(options);
 
   return {
     terminal: {
@@ -53,8 +55,8 @@ async function finalizeClaudeFromArtifacts(
       }),
       diagnostics: buildJobDiagnostics({ stdout, stderr }),
     },
-    continuity: claudeArtifactContinuity(options),
-    artifactHandles: locateClaudeArtifactsForRecovery(options),
+    continuity: claudeArtifactContinuity(options, artifactHandles),
+    artifactHandles,
   };
 }
 
@@ -75,12 +77,12 @@ function claudeArtifactOutcome(options: ArtifactRecoveryOptions): ProviderTermin
 }
 
 function claudeArtifactContinuity(
-  options: ArtifactRecoveryOptions,
+  _options: ArtifactRecoveryOptions,
+  artifactHandles: readonly ProviderArtifactHandleInput[] | undefined,
 ): Awaited<ReturnType<ProviderRecoveryContract['finalizeFromArtifacts']>>['continuity'] {
-  const conversationRef =
-    readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId') ??
-    readProviderContinuityString(options.providerMeta, 'conversationRef') ??
-    readString(options.fallbackConversationRef);
+  const conversationRef = artifactHandles
+    ?.map((artifact) => readString(artifact.identity.conversationRef))
+    .find((value) => value !== undefined);
   if (conversationRef !== undefined) {
     return {
       conversationRef,
@@ -148,9 +150,6 @@ function readArtifact(storage: Pick<StoragePort, 'readFileSync'>, path: string):
 function locateClaudeArtifactsForRecovery(
   options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0],
 ): readonly ProviderArtifactHandleInput[] | undefined {
-  if (options.knownArtifactHandles !== undefined && options.knownArtifactHandles.length > 0) {
-    return options.knownArtifactHandles;
-  }
   const conversationRef =
     readProviderMetaString(options.providerMeta, 'conversationRef', 'sessionId') ??
     readProviderContinuityString(options.providerMeta, 'conversationRef') ??
@@ -158,9 +157,16 @@ function locateClaudeArtifactsForRecovery(
   if (conversationRef === undefined) {
     return undefined;
   }
+  const knownMatches = options.knownArtifactHandles?.filter(
+    (artifact) => readString(artifact.identity.conversationRef) === conversationRef,
+  );
+  if (knownMatches !== undefined && knownMatches.length > 0) {
+    return knownMatches;
+  }
+  if (options.source.provider !== 'claude') return undefined;
   const result = locateClaudeJsonlArtifact({
     conversationRef,
-    projectsRoot: resolveClaudeProjectsRoot(options.env),
+    projectsRoot: options.source.projectsRoot,
     storage: options.storage,
   });
   return artifactHandlesFromLocator(result);
@@ -179,9 +185,10 @@ function locateCodexArtifactsForRecovery(
   if (threadId === undefined) {
     return undefined;
   }
+  if (options.source.provider !== 'codex') return undefined;
   const result = locateCodexRolloutArtifact({
     threadId,
-    sessionsRoot: resolveCodexSessionsRoot(options.env),
+    sessionsRoot: join(options.source.home, 'sessions'),
     storage: options.storage,
   });
   return artifactHandlesFromLocator(result);

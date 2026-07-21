@@ -17,6 +17,7 @@
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
+import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
 
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
@@ -83,6 +84,7 @@ function providerLaunchBody(args: {
       cwd: PROJECT_ROOT,
       bypassPermissions: false,
       coralEnv: {},
+      ...(args.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
     },
     createdAt: NOW.toISOString(),
   };

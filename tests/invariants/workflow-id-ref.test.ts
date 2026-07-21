@@ -14,6 +14,8 @@ import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 interface PersistedRefs {
   jobId?: string;
   parentJobId?: string;
@@ -70,6 +72,7 @@ function makeProviderLaunch(overrides: Partial<JobLaunch> & Pick<JobLaunch, 'job
       cwd: `/workspace/${overrides.jobId}`,
       bypassPermissions: false,
       coralEnv: {},
+      ...(overrides.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
     },
     createdAt: '2026-04-29T00:00:00.000Z',
     ...rest,
@@ -84,6 +87,18 @@ describe('refs.workflowId producer invariant', () => {
       db,
       providers: permissiveProviderLookupPort,
     });
+    seedTestSessionProjection(db, {
+      sessionId: 'session-wf-1',
+      provider: 'codex',
+      projectRoot: '/workspace/wf-1',
+      orchestration: true,
+    });
+    for (const [sessionId, projectRoot] of [
+      ['session-a-1', '/workspace/a-1'],
+      ['session-p-1', '/workspace/p-1'],
+    ] as const) {
+      seedTestSessionProjection(db, { sessionId, provider: 'codex', projectRoot });
+    }
 
     // The workflow's own job: workflowId === jobId.
     store.appendLaunchRequested(

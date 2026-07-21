@@ -1,4 +1,5 @@
 import { bindProviderRunner, type ProviderDurableSpawner } from '../../providers/cli-runner.js';
+import { buildProviderExecutionContext } from '../../providers/execution-context.js';
 import type {
   ProviderEventBody,
   ProviderRequest,
@@ -91,7 +92,7 @@ export interface LaunchOrchestratorDeps {
   };
   acquireServer: (
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal },
+    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
   ) => Promise<ProviderServerLease>;
 }
 
@@ -299,6 +300,7 @@ export class LaunchOrchestrator {
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
       retention?: RetentionPolicy;
+      protectedEnv?: Record<string, string>;
     } = {},
   ): LaunchDecision {
     const { abortRegistry, backendNamespace, bundleHash, progressStore } = this.deps;
@@ -352,7 +354,7 @@ export class LaunchOrchestrator {
       this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', { queuePosition: 0 }, { projectRoot });
     }
 
-    this.runAsync(provider, sessionId, jobId, hostedRequest, admission, pool);
+    this.runAsync(provider, sessionId, jobId, hostedRequest, admission, pool, opts.protectedEnv);
     return { status: decisionStatus, job: jobId, session: sessionId };
   }
 
@@ -363,6 +365,7 @@ export class LaunchOrchestrator {
     request: ProviderRequest,
     admission: AcceptedAdmission,
     pool: LaunchPool,
+    protectedEnv?: Record<string, string>,
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
     const signal = abortRegistry.getSignal(jobId);
@@ -391,7 +394,7 @@ export class LaunchOrchestrator {
           this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
         }
 
-        await this.executeJob(provider, request, jobId, sessionId, signal, pool);
+        await this.executeJob(provider, request, jobId, sessionId, signal, pool, protectedEnv);
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
@@ -422,6 +425,7 @@ export class LaunchOrchestrator {
     launchRecord: JobLaunch,
     admission: QueuedHandle,
     pool: LaunchPool,
+    protectedEnv: Readonly<Record<string, string>>,
   ): void {
     const { abortRegistry, launchAdmission } = this.deps;
     const jobId = launchRecord.jobId;
@@ -446,7 +450,9 @@ export class LaunchOrchestrator {
         this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
         this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
 
-        await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool);
+        await this.executeJob(provider, toProviderRequest(launchRecord), jobId, sessionId, signal, pool, {
+          ...protectedEnv,
+        });
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
@@ -527,8 +533,9 @@ export class LaunchOrchestrator {
     sessionId: string,
     signal: AbortSignal,
     pool: LaunchPool,
+    protectedEnv?: Record<string, string>,
   ): Promise<void> {
-    const runtime = this.createProviderRuntime(provider, request, sessionId, jobId, signal, pool);
+    const runtime = this.createProviderRuntime(provider, request, sessionId, jobId, signal, pool, protectedEnv);
     // Provider-agnostic inject bundle: merge into systemPrompt once for every adapter.
     const requestWithInject = applyInjectBundle(request, runtime);
     let latestContinuity: JobContinuitySnapshot | null = null;
@@ -654,7 +661,19 @@ export class LaunchOrchestrator {
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
+    protectedEnv?: Record<string, string>,
   ): ProviderRuntime {
+    const session = this.deps.sessionManager.get(provider.name, sessionId);
+    if (session?.sessionAuthority?.kind !== 'provider' || session.sessionAuthority.source.provider !== provider.name) {
+      throw new Error(`provider_credential_source_missing: ${sessionId}`);
+    }
+    const providerContext = buildProviderExecutionContext({
+      source: session.sessionAuthority.source,
+      request,
+      baseEnv: this.deps.runtime.env.fullSnapshot(),
+      protectedEnv,
+      platform: this.deps.runtime.env.platform(),
+    });
     const recoveryMeta = provider.recovery?.buildRecoveryMeta?.(request);
     const runCli = bindProviderRunner(
       this.deps.durableSpawner,
@@ -670,14 +689,13 @@ export class LaunchOrchestrator {
       },
     );
     return {
+      providerContext,
       signal,
       runCli: (cliRequest) =>
         runCli({
           ...cliRequest,
-          extraEnv:
-            request.secretEnv === undefined
-              ? cliRequest.extraEnv
-              : { ...(cliRequest.extraEnv ?? {}), ...request.secretEnv },
+          exactEnv: providerContext.provider === 'codex' ? providerContext.appServerEnv : providerContext.controllerEnv,
+          extraEnv: undefined,
         }),
       time: this.deps.runtime.time,
       storage: this.deps.runtime.storage,
@@ -685,7 +703,7 @@ export class LaunchOrchestrator {
       ids: this.deps.runtime.ids,
       acquireServer: (spec) => {
         this.appServerJobs.add(jobId);
-        return this.deps.acquireServer(spec, { jobId, signal });
+        return this.deps.acquireServer(spec, { jobId, signal, providerMeta: recoveryMeta });
       },
       persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,

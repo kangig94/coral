@@ -262,7 +262,7 @@ export class CoralStore implements StoreReadContext {
 
     const runtime = this.runtime;
     try {
-      appendTouchEvent(kbRuntimeDir(runtime.flavor, runtime.paths.configSlot), target, runtime.ids.uuid(), {
+      appendTouchEvent(kbRuntimeDir(runtime.flavor), target, runtime.ids.uuid(), {
         storage: runtime.storage,
         now: () => runtime.time.now(),
       });

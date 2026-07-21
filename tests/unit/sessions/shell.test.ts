@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { allocateTestSession } from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -107,6 +108,7 @@ describe('sessions shell store', () => {
 
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -135,6 +137,7 @@ describe('sessions shell store', () => {
     const { db, mgr, workDir } = setupWithJournal('journal-events');
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -199,6 +202,7 @@ describe('sessions shell store', () => {
 
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'beta',
       model: 'gpt-5',
       cwd: workDir,
@@ -215,6 +219,7 @@ describe('sessions shell store', () => {
     const { db, mgr, workDir } = setupWithJournal('allocate-retention');
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -256,7 +261,7 @@ describe('sessions shell store', () => {
   it('string allocation derives projectRoot from cwd', () => {
     const { mgr, workDir } = setup('alloc-no-root');
 
-    const entry = mgr.allocate('codex', 'gamma', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'gamma', 'gpt-5', workDir);
 
     expect(entry.projectRoot).toBe(workDir);
   });
@@ -266,6 +271,7 @@ describe('sessions shell store', () => {
 
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'delta',
       model: 'gpt-5',
       cwd: workDir,
@@ -300,7 +306,7 @@ describe('sessions shell store', () => {
 
   it('claimForJobSync returns false when session already has activeJobId', () => {
     const { mgr, workDir } = setup('claim-active');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     expect(mgr.claimForJobSync(entry.sessionId, 'job-1')).toBe(true);
     expect(mgr.claimForJobSync(entry.sessionId, 'job-2')).toBe(false);
@@ -308,7 +314,7 @@ describe('sessions shell store', () => {
 
   it('claimForJobAtomic allows only one concurrent claimant', async () => {
     const { mgr, workDir } = setup('claim-atomic');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     const results = await Promise.all([
       mgr.claimForJobAtomic(entry.sessionId, 'job-1'),
@@ -321,7 +327,7 @@ describe('sessions shell store', () => {
 
   it('claimForJobAtomic respects expectedVersion', async () => {
     const { mgr, workDir } = setup('claim-expected-version');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     await expect(mgr.claimForJobAtomic(entry.sessionId, 'job-1', entry.version + 1)).resolves.toBe(false);
     expect(mgr.get('codex', entry.sessionId)?.version).toBe(entry.version);
@@ -337,6 +343,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir, coordinatorCommit } = setupWithJournal('claim-retention-discard-in-flight');
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       cwd: workDir,
       projectRoot: workDir,
@@ -367,7 +374,7 @@ describe('sessions shell store', () => {
 
   it('releaseJob clears activeJobId', () => {
     const { mgr, workDir } = setup('release-job');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     mgr.releaseJob(entry.sessionId, 'job-1');
@@ -378,14 +385,14 @@ describe('sessions shell store', () => {
 
   it('get returns null for provider mismatch', () => {
     const { mgr, workDir } = setup('provider-mismatch');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     expect(mgr.get('claude', entry.sessionId)).toBeNull();
   });
 
   it('setConversationRef transitions state to ready', () => {
     const { mgr, workDir } = setup('conversation-ref');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     mgr.setConversationRef(entry.sessionId, 'thread-1');
 
@@ -398,7 +405,7 @@ describe('sessions shell store', () => {
 
   it('setNonResumable transitions state to non_resumable', () => {
     const { mgr, workDir } = setup('non-resumable');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     mgr.setNonResumable(entry.sessionId);
 
@@ -422,7 +429,7 @@ describe('sessions shell store', () => {
       undefined,
       openSessionDb(),
     );
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     const entryBeforeFailure = mgr.readById(entry.sessionId);
 
     if (!entryBeforeFailure) {
@@ -444,7 +451,7 @@ describe('sessions shell store', () => {
 
   it('finalizeJobContinuityAtomic releases the claim and stores a resumable conversationRef', async () => {
     const { mgr, workDir } = setup('finalize-resumable');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -473,7 +480,7 @@ describe('sessions shell store', () => {
 
   it('finalizeJobContinuityAtomic appends checkpoint and claim release in one commit and caches release entry', async () => {
     const { appendedBatches, mgr, workDir } = setupWithJournal('finalize-dual-event');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -526,7 +533,7 @@ describe('sessions shell store', () => {
 
   it('clearConversationRefAndMarkNonResumableAtomic clears conversationRef and releases the claim', async () => {
     const { mgr, workDir } = setup('finalize-non-resumable');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.setConversationRef(entry.sessionId, 'thread-stale');
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
@@ -549,7 +556,7 @@ describe('sessions shell store', () => {
 
   it('finalizeJobContinuityAtomic returns false when the version is stale', async () => {
     const { mgr, workDir } = setup('finalize-stale-version');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -574,7 +581,7 @@ describe('sessions shell store', () => {
 
   it('checkpointJobContinuityAtomic preserves activeJobId and returns the next version', async () => {
     const { db, mgr, workDir } = setupWithJournal('checkpoint-job-continuity');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -631,7 +638,7 @@ describe('sessions shell store', () => {
 
   it('checkpointJobContinuityAtomic returns ok:false and leaves the claim untouched for stale versions', async () => {
     const { mgr, workDir } = setup('checkpoint-job-continuity-stale');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -663,6 +670,7 @@ describe('sessions shell store', () => {
     const { db, mgr, workDir } = setupWithJournal('record-artifact-handle');
     const entry = mgr.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -750,7 +758,7 @@ describe('sessions shell store', () => {
 
   it('releaseJobClaimAtomic clears the claim only at the latest version and does not write continuity', async () => {
     const { db, mgr, workDir } = setupWithJournal('release-job-claim');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -793,7 +801,7 @@ describe('sessions shell store', () => {
 
   it('increments version on each write', () => {
     const { mgr, workDir } = setup('version-increments');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
 
     expect(entry.version).toBe(1);
     expect(mgr.get('codex', entry.sessionId)?.version).toBe(1);
@@ -840,7 +848,7 @@ describe('sessions shell store adversarial', () => {
 
   it('releaseJob is a no-op when the stored activeJobId does not match the given jobId', () => {
     const { mgr, workDir } = setup('release-mismatch');
-    const entry = mgr.allocate('codex', 'alpha', 'gpt-5', workDir);
+    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-correct');
 
     mgr.releaseJob(entry.sessionId, 'job-WRONG');
@@ -851,8 +859,8 @@ describe('sessions shell store adversarial', () => {
 
   it('list returns only sessions for the requested provider (no cross-provider leakage)', () => {
     const { mgr, workDir } = setup('list-filter');
-    mgr.allocate('codex', 'codex-session', 'gpt-5', workDir);
-    mgr.allocate('claude', 'claude-session', 'sonnet', workDir);
+    allocateTestSession(mgr, 'codex', 'codex-session', 'gpt-5', workDir);
+    allocateTestSession(mgr, 'claude', 'claude-session', 'sonnet', workDir);
 
     const codexSessions = mgr.list('codex');
     const claudeSessions = mgr.list('claude');

@@ -15,6 +15,7 @@ import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { brokerNotificationMethods } from './appserver/protocol.js';
 import {
+  claudeConversationRef,
   buildClaudeContinuity,
   buildClaudeEnvHash,
   mapInterruptParams,
@@ -89,6 +90,10 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
     const lease = requireAppServerLease(runtime, 'claude');
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
     const state = createInitialState(request, persistedContinuity, runtime);
+    if (runtime.providerContext.provider !== 'claude') {
+      throw new Error('Claude session kernel requires a Claude provider execution context.');
+    }
+    const providerContext = runtime.providerContext;
     const clearBinding = bindInterruptState(lease, state);
     const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
       applyNotification(state, message, runtime, emit);
@@ -105,8 +110,11 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
             effort: state.prepared.effort,
           },
           runtime.ids,
-          state.prepared.systemPrompt,
-          runtime.persistedContinuity,
+          {
+            derivedSystemPrompt: state.prepared.systemPrompt,
+            controllerEnv: providerContext.controllerEnv,
+            projectsRoot: providerContext.projectsRoot,
+          },
         ),
       );
       state.brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? state.brokerSessionKey;
@@ -177,11 +185,11 @@ function createInitialState(
     startedAt: runtime.time.now(),
     prepared: buildPreparedClaudeRequest(request),
     envHash: buildClaudeEnvHash(request.coralEnv, runtime.env?.fullSnapshot() ?? request.coralEnv),
-    brokerSessionKey: persistedContinuity.brokerSessionKey,
+    brokerSessionKey: undefined,
     bootstrapSignature: persistedContinuity.bootstrapSignature,
-    conversationRef: persistedContinuity.conversationRef,
+    conversationRef: claudeConversationRef(request),
     artifactHandleEmissionAttempted: false,
-    brokerTurnId: persistedContinuity.brokerTurnId,
+    brokerTurnId: undefined,
     turnRequested: false,
     completed: false,
     terminal,
@@ -207,11 +215,7 @@ function checkpointBrokerContinuity(runtime: ProviderRuntime, state: ClaudeTurnS
     conversationRef: state.conversationRef ?? null,
     resumable: true,
     providerContinuity: buildClaudeContinuity({
-      ...(state.brokerSessionKey !== undefined ? { brokerSessionKey: state.brokerSessionKey } : {}),
       bootstrapSignature: state.bootstrapSignature,
-      ...(state.envHash !== undefined ? { envHash: state.envHash } : {}),
-      ...(state.conversationRef !== undefined ? { conversationRef: state.conversationRef } : {}),
-      ...(state.brokerTurnId !== undefined ? { brokerTurnId: state.brokerTurnId } : {}),
     }),
   });
 }

@@ -7,6 +7,7 @@ import {
   type ProviderRequest,
   type ProviderRuntime,
 } from '#src/providers/contract.js';
+import { TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -35,6 +36,7 @@ const BASE_RUNTIME: ProviderRuntime = {
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
+  providerContext: TEST_CODEX_CONTEXT,
 };
 
 const COMPLETED_TERMINAL: ProviderEventBody = {

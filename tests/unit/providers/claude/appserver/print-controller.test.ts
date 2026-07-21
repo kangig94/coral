@@ -139,6 +139,7 @@ async function ensureController(
 ) {
   const ensure = controller.sessionEnsure({
     cwd: '/workspace',
+    projectsRoot: '/tmp/coral-test-home/.claude/projects',
     systemPromptHash: 'sha256:test',
     permissionMode,
     systemPrompt: 'system',
@@ -340,6 +341,7 @@ describe('PrintSessionController', () => {
 
     const ensure = controller.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
       systemPrompt: 'system',
@@ -392,6 +394,7 @@ describe('PrintSessionController', () => {
 
       const ensure = controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
         systemPrompt: 'system',
@@ -424,6 +427,7 @@ describe('PrintSessionController', () => {
 
     const ensure = controller.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
       systemPrompt: 'system',

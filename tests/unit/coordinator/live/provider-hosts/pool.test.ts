@@ -36,6 +36,9 @@ describe('provider host pool', () => {
       }),
     );
     expect(hostKeyFromSpec({ ...base, cwd: '/workspace/b' })).not.toBe(hostKeyFromSpec(base));
+    expect(hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/a' } })).not.toBe(
+      hostKeyFromSpec({ ...base, env: { CODEX_HOME: '/accounts/b' } }),
+    );
   });
 
   it('reuses one shared host and isolates incompatible exclusive hosts', async () => {

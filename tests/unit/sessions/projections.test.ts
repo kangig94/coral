@@ -12,6 +12,7 @@ import type { CoralEventInput } from '#src/store/envelope.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
+import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 import {
   listProjectionSessionEntries,
   readProjectionSession,
@@ -25,6 +26,7 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
   return {
     sessionId: overrides.sessionId,
     provider: overrides.provider ?? 'codex',
+    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
     name: overrides.name ?? overrides.sessionId,
     state: overrides.state ?? 'pending',
     retention: overrides.retention ?? 'retain',
@@ -187,6 +189,35 @@ describe('sessions projections', () => {
     }
   });
 
+  it('rejects a replay event that changes persisted provider authority', () => {
+    const h = newHarness();
+    try {
+      const opened = sessionEntry({
+        sessionId: 'session-authority-immutable',
+        sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      });
+      h.commit([openedInput(opened, 'scope-authority-immutable')]);
+      const changed = sessionEntry({
+        ...opened,
+        version: 2,
+        sessionAuthority: {
+          kind: 'provider',
+          source: { ...TEST_CODEX_SOURCE, home: '/accounts/codex-b' },
+        },
+      });
+
+      expectSetupError(
+        () => h.commit([checkpointedInput(changed, { conversationRef: null, resumable: false })]),
+        'provider_credential_source_mismatch',
+      );
+      expect(readProjectionSessionEntry(h.db, opened.sessionId)?.sessionAuthority).toEqual(
+        opened.sessionAuthority,
+      );
+    } finally {
+      h.close();
+    }
+  });
+
   it('should replace the entry while preserving projection columns for claim events', () => {
     const h = newHarness();
     try {
@@ -275,7 +306,7 @@ describe('sessions projections', () => {
       const entry = sessionEntry({ sessionId: 'session-premature' });
       expectSetupError(
         () => h.commit([checkpointedInput(entry, { conversationRef: null, resumable: false })]),
-        'projection_sessions_premature_event',
+        'provider_credential_source_missing',
       );
       expectSetupError(
         () =>
@@ -315,7 +346,7 @@ describe('sessions projections', () => {
               body: { entry, controller: 'default', provider: 'codex', scope_key: 'scope-mismatch' },
             },
           ]),
-        'projection_sessions_entry_stream_mismatch',
+        'provider_credential_source_invalid',
       );
     } finally {
       h.close();

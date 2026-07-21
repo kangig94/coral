@@ -69,7 +69,7 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
         bodyVersion: 1,
         body: {
           sessionId: 'wait-usage-session',
-          provider: 'fake-provider',
+          provider: 'codex',
           providerAction: 'exec',
           projectRoot: '/tmp/wait-usage-project',
           backendNamespace: 'wait-usage-ns',
@@ -108,12 +108,7 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
 
 function terminalEvent(events: readonly unknown[]): JobTerminalEvent {
   const event = events.find((candidate): candidate is JobTerminalEvent => {
-    return (
-      typeof candidate === 'object' &&
-      candidate !== null &&
-      'type' in candidate &&
-      candidate.type === 'terminal'
-    );
+    return typeof candidate === 'object' && candidate !== null && 'type' in candidate && candidate.type === 'terminal';
   });
   if (!event) {
     throw new Error('Expected terminal event');

@@ -11,6 +11,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
   createDiscussContextRegistry,
@@ -158,6 +159,7 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
   };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
@@ -175,7 +177,11 @@ async function appendCreatedSession(
   return harness.store.append(
     sessionId,
     null,
-    unwrap(decideSessionCreate(input, { sessionId: sessionId, projectRoot: harness.projectRoot, topic: TOPIC }, 1, ts)),
+    unwrap(
+      decideSessionCreate(input, { sessionId: sessionId, projectRoot: harness.projectRoot, topic: TOPIC }, 1, ts, {
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      }),
+    ),
   );
 }
 
@@ -360,6 +366,7 @@ describe('runtime-sealed discuss behavior', () => {
         { sessionId: 'backend-recovered-discuss', projectRoot: world.projectRoot, topic: TOPIC },
         1,
         '2035-04-15T01:02:03.000Z',
+        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
       ),
     );
     const created = commitJobInputs(
@@ -430,7 +437,7 @@ describe('runtime-sealed discuss behavior', () => {
       ),
     ];
     await harness.store.append('executor-recovery', created.lastAppliedSeq, activeEvents);
-    harness.progressStore.initJob({
+    seedTestJobSession(harness.progressStore, {
       jobId,
       sessionId: 'execution-session-1',
       provider: 'codex',
@@ -599,3 +606,4 @@ describe('discuss shell import audits', () => {
     expectNoNativeTimers(readSource('loop.ts'));
   });
 });
+import { seedTestJobSession } from '#tests/helpers/session.js';

@@ -1,4 +1,13 @@
-import type { EffortLevel, PreflightRuntime, ProviderInstruction, ProviderSpec } from '../../providers/contract.js';
+import { resolve } from 'node:path';
+
+import type {
+  EffortLevel,
+  ProviderInstruction,
+  ProviderPreflightRuntime,
+  ProviderSpec,
+} from '../../providers/contract.js';
+import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
+import { buildExactProviderEnv } from '../../providers/execution-context.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { type JobLaunchRequest, type LaunchDecision, rejectLaunch } from '../../jobs/launch.js';
@@ -188,18 +197,34 @@ export function serializeWorkflowResult(details: StepDetail[]): {
   };
 }
 
-export function toPreflightRuntime(runtime: Runtime): PreflightRuntime {
+export function toPreflightRuntime(
+  runtime: Runtime,
+  credentialSource: ProviderCredentialSourceRef,
+  cwd: string,
+  requestEnv: Readonly<Record<string, string>>,
+): ProviderPreflightRuntime {
+  const absoluteCwd = resolve(runtime.env.cwd(), cwd || '.');
+  const exactEnv = buildExactProviderEnv({
+    baseEnv: runtime.env.fullSnapshot(),
+    requestEnv,
+    source: credentialSource,
+    platform: runtime.env.platform(),
+  });
   return {
     process: runtime.process,
     storage: runtime.storage,
     env: runtime.env,
     time: runtime.time,
+    credentialSource,
+    cwd: absoluteCwd,
+    runExact: (command, args, options = {}) =>
+      runtime.process.exec(command, args, { ...options, cwd: absoluteCwd, env: { ...exactEnv } }),
   };
 }
 
 export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
 
-function runPreflightWithTimeout(provider: ProviderSpec, runtime: PreflightRuntime): Promise<void> {
+function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPreflightRuntime): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (!provider.preflight) {
       resolve();
@@ -239,7 +264,10 @@ function runPreflightWithTimeout(provider: ProviderSpec, runtime: PreflightRunti
   });
 }
 
-export async function runProviderPreflight(provider: ProviderSpec, runtime: PreflightRuntime): Promise<string | null> {
+export async function runProviderPreflight(
+  provider: ProviderSpec,
+  runtime: ProviderPreflightRuntime,
+): Promise<string | null> {
   if (!provider.preflight) return null;
   try {
     await runPreflightWithTimeout(provider, runtime);

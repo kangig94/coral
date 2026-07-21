@@ -11,6 +11,7 @@ import type { ProviderServerLease, ProviderServerSpec } from '#src/providers/con
 import type { Runtime } from '#src/runtime/ports.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import type { SessionJobContinuityCheckpointResult, SessionJobClaimPort } from '#src/sessions/contracts.js';
+import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -82,7 +83,7 @@ function fakeRuntime(): Pick<Runtime, 'time' | 'ids' | 'storage' | 'env' | 'path
       existsSync: () => false,
       readFileSync: () => '',
     } as never,
-    env: { platform: () => 'linux' } as never,
+    env: { platform: () => 'linux', fullSnapshot: () => ({}) } as never,
     paths: {
       coral: {
         exports: { jobsRoot: '/tmp/coral/exports/jobs' },
@@ -132,6 +133,7 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   const session: SessionEntry = {
     sessionId,
     provider: 'codex',
+    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
     activeJobId: jobId,
     version: 1,
   } as unknown as SessionEntry;

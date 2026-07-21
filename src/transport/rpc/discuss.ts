@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { discussBidSchema, discussSpeechSchema, discussStartSchema } from '../../discuss/command-schemas.js';
 import { coralEnvForwardSchema } from '../../infra/env-sanitize.js';
 import { networkEnvSchema } from '../../infra/network-env.js';
+import { providerCredentialSetInputSchema } from '../../runtime/provider-credentials.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
 const sessionIdSchema = z.string().min(1, 'Session ID is required');
@@ -37,6 +38,7 @@ export const discussSessionCreateRequestSchema = discussStartSchema
     claudeTransport: z.string().optional(),
     networkEnv: networkEnvSchema.optional(),
     coralEnv: coralEnvForwardSchema.optional(),
+    providerCredentials: providerCredentialSetInputSchema.optional(),
   })
   .strict();
 

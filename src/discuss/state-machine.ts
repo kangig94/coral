@@ -14,6 +14,7 @@ import type {
   TranscriptEntry,
   ResolveResult,
 } from './session-types.js';
+import type { ProviderCredentialSet } from '../runtime/provider-credentials.js';
 
 const DEFAULT_BID_THRESHOLD = 30;
 export const DEFAULT_MAX_EPOCHS = 2;
@@ -108,6 +109,7 @@ export interface SessionCreateOptions {
   maxEpochs?: number;
   quotaPerEpoch?: number;
   agentExecution?: Record<string, SessionCreatedAgentExecutionConfig>;
+  providerCredentials: ProviderCredentialSet;
 }
 
 export type DecisionContext = {
@@ -121,7 +123,7 @@ export function decideSessionCreate(
   context: DecisionContext,
   seq: number,
   ts: string,
-  opts: SessionCreateOptions = {},
+  opts: SessionCreateOptions,
 ): Result<DiscussDomainEvent[]> {
   const { sessionId, projectRoot, topic } = context;
   const {
@@ -151,6 +153,7 @@ export function decideSessionCreate(
           quotaPerEpoch,
         },
         agentExecution,
+        providerCredentials: opts.providerCredentials,
       }),
       makeEvent(sessionId, projectRoot, topic, seq + 1, 'bidding.opened', ts, {}),
     ],

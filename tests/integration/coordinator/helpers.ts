@@ -66,6 +66,15 @@ export function createPluginFixture(
   };
 }
 
+export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {
+  writeFileSync(
+    join(fixture.root, 'bridge', 'manifest.json'),
+    `${JSON.stringify({ bundleHash, flavor: fixture.flavor })}\n`,
+    'utf-8',
+  );
+  return { ...fixture, bundleHash };
+}
+
 export function coordinatorFilesForHome(home: string, flavor: BuildFlavor) {
   return coordinatorPaths(flavor, process.env, { baseDir: join(home, '.coral') });
 }

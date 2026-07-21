@@ -305,7 +305,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
       const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
       const markdownRoot = runtime.paths.coral.corpus.kbRoot;
-      const runtimeDir = kbRuntimeDir(flavor, runtime.paths.configSlot);
+      const runtimeDir = kbRuntimeDir(flavor);
       cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);

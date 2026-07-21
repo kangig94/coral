@@ -88,13 +88,13 @@ function makeTierRuntime(
   home: string,
   readFileSyncImpl: TierReadFileSync = defaultReadFileSync,
   statSyncImpl: TierStatSync = defaultStatSync,
-): Pick<ProviderRuntime, 'env' | 'storage'> {
+  codexHome = join(home, '.codex'),
+): Pick<ProviderRuntime, 'providerContext' | 'storage'> {
   return {
-    env: {
-      homedir: () => home,
-      claudeConfigDir: () => `${home}/.claude`,
-      get: () => undefined,
-      fullSnapshot: () => ({}),
+    providerContext: {
+      provider: 'codex',
+      source: { version: 1, provider: 'codex', kind: 'home', home: codexHome },
+      appServerEnv: { CODEX_HOME: codexHome },
     },
     storage: {
       readFileSync: readFileSyncImpl,
@@ -506,6 +506,19 @@ describe('mapTurnStartParams serviceTier', () => {
 });
 
 describe('TOML fallback', () => {
+  it('reads service_tier from the selected account instead of the daemon user home', () => {
+    const daemonHome = useTempCodexConfig('service_tier = "default"');
+    const selectedHome = useTempCodexConfig('service_tier = "fast"');
+    const request = makeRequest();
+
+    expect(
+      resolveCodexServiceTier(
+        request,
+        makeTierRuntime(daemonHome, defaultReadFileSync, defaultStatSync, join(selectedHome, '.codex')),
+      ),
+    ).toBe('fast');
+  });
+
   it('reads a top-level fast service_tier', () => {
     const home = useTempCodexConfig('service_tier = "fast"\n[profiles.dev]\nservice_tier = "flex"');
     const request = makeRequest();

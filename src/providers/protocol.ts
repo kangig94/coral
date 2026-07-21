@@ -4,6 +4,7 @@ type ProviderCliRequest = {
   prompt?: string;
   cwd?: string;
   extraEnv?: Record<string, string>;
+  exactEnv?: Record<string, string>;
   onEvent?: (line: string) => void;
   onRuntimeRecord?: (record: unknown) => void;
 };

@@ -8,6 +8,7 @@ import type {
 } from '#src/providers/contract.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
 
 type MockLease = ProviderServerLease & {
   close(outcome?: Error | void): void;
@@ -90,6 +91,7 @@ function makeRuntime(
         transportClosed: () => {},
       } satisfies ProviderRuntime['continuityBridge']),
     kbRoot: '/mock/kb',
+    providerContext: TEST_CODEX_CONTEXT,
   };
 }
 
@@ -158,7 +160,7 @@ describe('codexThreadProvider', () => {
 
     const events = await eventsPromise;
 
-    expect(events).toHaveLength(5);
+    expect(events).toHaveLength(6);
     expect(events[0]).toEqual({
       kind: 'continuity',
       conversationRef: 'thread-1',
@@ -187,7 +189,11 @@ describe('codexThreadProvider', () => {
       kind: 'progress',
       message: 'Turn completed.',
     });
-    expect(events[4]).toMatchObject({
+    expect(events[4]).toEqual({
+      kind: 'progress',
+      message: expect.stringContaining('No rollout JSONL found matching thread thread-1'),
+    });
+    expect(events[5]).toMatchObject({
       kind: 'terminal',
       terminal: {
         content: 'Final answer',

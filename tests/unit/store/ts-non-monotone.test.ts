@@ -35,6 +35,7 @@ function sessionEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
     provider: 'codex',
+    sessionAuthority: { kind: 'orchestration' },
     name: sessionId,
     state: 'pending',
     retention: 'retain',

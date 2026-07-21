@@ -82,7 +82,7 @@ describe('wait SSE reconnect', () => {
           bodyVersion: 1,
           body: {
             sessionId,
-            provider: 'fake-provider',
+            provider: 'codex',
             providerAction: 'exec',
             projectRoot,
             backendNamespace: 'wait-sse-ns',
@@ -274,7 +274,7 @@ describe('wait SSE reconnect', () => {
           bodyVersion: 1,
           body: {
             sessionId,
-            provider: 'fake-provider',
+            provider: 'codex',
             providerAction: 'exec',
             projectRoot,
             backendNamespace: 'wait-race-ns',

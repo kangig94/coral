@@ -376,10 +376,7 @@ function isNeverLaunchedSlot(deps: ResumeWorkflowDeps, snapshot: RecoverySnapsho
   return projection === null && detail.status === null;
 }
 
-function classifyActiveStepLaunchState(
-  deps: ResumeWorkflowDeps,
-  snapshot: RecoverySnapshot,
-): ActiveStepLaunchState {
+function classifyActiveStepLaunchState(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): ActiveStepLaunchState {
   const neverLaunchedSlots = snapshot.stepSlots.filter((slot) => isNeverLaunchedSlot(deps, snapshot, slot));
   if (neverLaunchedSlots.length === 0) {
     return { kind: 'all-launched', neverLaunchedSlots: [] };
@@ -641,7 +638,7 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
 
 export async function resumeAll(options: {
   db: Database;
-  progressStore: Pick<JobStore, 'listJobIds' | 'readStatus'> & StoreReadContext;
+  progressStore: Pick<JobStore, 'listJobIds' | 'readStatus' | 'readLaunchProjection'> & StoreReadContext;
   loadJobDetails: LoadJobDetailsFn;
   getExecutionService: (ctx: InvocationContext) => WorkflowExecutionPort;
   createInvocationContext: (projectRoot: string) => InvocationContext;
@@ -681,7 +678,27 @@ export async function resumeAll(options: {
       continue;
     }
 
-    const ctx = options.createInvocationContext(status.projectRoot);
+    const launch = options.progressStore.readLaunchProjection(jobId);
+    const persistedCredentials = launch?.jobKind === 'workflow' ? launch.request.providerCredentials : undefined;
+    if (persistedCredentials === undefined) {
+      options.finalizeWorkflow({
+        outcome: 'failed',
+        workflowJobId: jobId,
+        lifecycleFault: {
+          kind: 'recovery_failed',
+          message:
+            'Workflow recovery found no valid stored provider account bindings and stopped before launching work. Start a new workflow with the current Coral CLI after selecting and authenticating the intended provider accounts.',
+        },
+        stepDetails: [],
+      });
+      resumedWorkflowIds.push(jobId);
+      continue;
+    }
+    const baseCtx = options.createInvocationContext(status.projectRoot);
+    const ctx: InvocationContext = {
+      ...baseCtx,
+      providerCredentials: persistedCredentials,
+    };
     let recovered: RecoveredWorkflowFinalization | null;
     try {
       recovered = await resumeWorkflow({

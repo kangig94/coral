@@ -113,6 +113,7 @@ function planJobRecoveryFault(fault: JobRecoveryFault, options: RuntimeIngestOpt
     case 'ghost_launch':
     case 'wrapper_lost':
     case 'wrapper_crashed':
+    case 'provider_credential_source':
       return {
         kind: 'immediate',
         domainEvents: [],

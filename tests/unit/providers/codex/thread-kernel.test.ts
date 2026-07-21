@@ -12,6 +12,7 @@ import {
   createCodexTurnStateForTest,
   finishCodexCompletedForTest,
 } from '#src/providers/codex/thread-kernel.js';
+import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -56,6 +57,7 @@ function makeRuntime(
       transportClosed: () => {},
     },
     kbRoot: '/mock/kb',
+    providerContext: TEST_CODEX_CONTEXT,
   };
 }
 

@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
 } from 'node:fs';
+import { allocateTestSession } from '../../../helpers/session.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -36,6 +37,7 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -54,6 +56,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '#src/jobs/terminal/recording.js';
 import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
@@ -215,6 +218,8 @@ function createService(
     }
   };
   return new ExecutionService(ctx, {
+    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -583,10 +588,17 @@ function createClaimedJob(
   const { progressStore, sessionManager } =
     /* @intentional-private-access — seed or inspect execution internals with no public test seam */
     getInternals(service);
-  const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
+  const session = allocateTestSession(
+    sessionManager,
+    'codex',
+    'wait-session',
+    'test-model',
+    ctx.projectRoot,
+    ctx.projectRoot,
+  );
   const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
-  progressStore.initJob({
+  initTestJob(progressStore, {
     jobId,
     sessionId: session.sessionId,
     provider: 'codex',
@@ -613,7 +625,13 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) };
+  return {
+    projectRoot,
+    pluginRoot,
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+  };
 }
 
 function isoAt(ms: number): string {
@@ -684,6 +702,7 @@ describe('ExecutionService wait', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -1656,3 +1675,4 @@ describe('ExecutionService wait', () => {
     });
   });
 });
+import { initTestJob } from '#tests/helpers/session.js';

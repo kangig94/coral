@@ -8,7 +8,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
-import type { JobLaunch, JobStatus, JobTerminal } from '#src/jobs/records.js';
+import type { JobStatus, JobTerminal } from '#src/jobs/records.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitJobInput, commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -65,28 +65,6 @@ function createStore(db: Database = createDb()): {
   };
 }
 
-function launchRecord(jobId: string, sessionId: string, backendNamespace: string, bundleHash?: string): JobLaunch {
-  return {
-    jobId,
-    sessionId,
-    provider: 'codex',
-    projectRoot: `/workspace/${jobId}`,
-    backendNamespace,
-    jobKind: 'provider',
-    ...(bundleHash === undefined ? {} : { bundleHash }),
-    pool: 'default',
-    enqueueSequence: 1,
-    providerAction: 'exec',
-    request: {
-      prompt: `prompt for ${jobId}`,
-      cwd: `/workspace/${jobId}`,
-      bypassPermissions: false,
-      coralEnv: {},
-    },
-    createdAt: '2026-04-19T00:00:00.000Z',
-  };
-}
-
 function referenceLiveCount(statuses: Array<{ jobId: string; status: JobStatus }>, bundleHash?: string): number {
   return statuses.filter(
     ({ status }) => isLivePhase(status.phase) && (bundleHash === undefined || status.bundleHash === bundleHash),
@@ -105,7 +83,7 @@ function referenceLiveCountByNamespace(
 }
 
 function initProviderJob(store: JobStore, jobId: string, sessionId: string): void {
-  store.initJob({
+  initTestJob(store, {
     jobId,
     sessionId,
     provider: 'codex',
@@ -169,7 +147,7 @@ describe('JobStore', () => {
     const jobId = 'job-progress-tail';
     const sessionId = 'session-progress-tail';
 
-    store.initJob({
+    initTestJob(store, {
       jobId,
       sessionId,
       provider: 'codex',
@@ -177,8 +155,6 @@ describe('JobStore', () => {
       backendNamespace: 'test-ns',
       bundleHash: 'bundle-a',
     });
-    store.appendLaunchRequested(jobId, launchRecord(jobId, sessionId, 'test-ns', 'bundle-a'));
-
     preparedSql.length = 0;
 
     const tails = Array.from({ length: 5 }, (_, index) => store.appendProgress(jobId, sessionId, `step-${index + 1}`));
@@ -201,15 +177,15 @@ describe('JobStore', () => {
       outcome: { kind: 'completed' },
     };
 
-    expect(tails).toEqual([3, 4, 5, 6, 7]);
-    expect(commitJobTerminal(store, jobId, sessionId, terminalResult)).toBe(9);
+    expect(tails).toEqual([2, 3, 4, 5, 6]);
+    expect(commitJobTerminal(store, jobId, sessionId, terminalResult)).toBe(8);
     expect(preparedSql.filter((sql) => sql.includes('ROW_NUMBER() OVER'))).toEqual([]);
   });
 
   it('matches live count semantics for projections and namespace overrides', () => {
     const { store } = createStore();
 
-    store.initJob({
+    initTestJob(store, {
       jobId: 'job-alpha',
       sessionId: 'session-alpha',
       provider: 'codex',
@@ -217,9 +193,7 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    store.appendLaunchRequested('job-alpha', launchRecord('job-alpha', 'session-alpha', 'alpha', 'bundle-a'));
-
-    store.initJob({
+    initTestJob(store, {
       jobId: 'job-beta',
       sessionId: 'session-beta',
       provider: 'codex',
@@ -227,9 +201,7 @@ describe('JobStore', () => {
       backendNamespace: 'beta',
       bundleHash: 'bundle-a',
     });
-    store.appendLaunchRequested('job-beta', launchRecord('job-beta', 'session-beta', 'beta', 'bundle-a'));
-
-    store.initJob({
+    initTestJob(store, {
       jobId: 'job-override',
       sessionId: 'session-override',
       provider: 'codex',
@@ -237,10 +209,9 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    store.appendLaunchRequested('job-override', launchRecord('job-override', 'session-override', 'alpha', 'bundle-a'));
     store.rebindNamespace('job-override', 'override', 'bundle-override');
 
-    store.initJob({
+    initTestJob(store, {
       jobId: 'job-done',
       sessionId: 'session-done',
       provider: 'codex',
@@ -248,10 +219,9 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    store.appendLaunchRequested('job-done', launchRecord('job-done', 'session-done', 'alpha', 'bundle-a'));
     commitJobTerminal(store, 'job-done', 'session-done', { content: 'done', outcome: { kind: 'completed' } });
 
-    store.initJob({
+    initTestJob(store, {
       jobId: 'job-draft',
       sessionId: 'session-draft',
       provider: 'codex',
@@ -411,3 +381,4 @@ describe('JobStore', () => {
     ).toBeGreaterThan(aborted.seq);
   });
 });
+import { initTestJob } from '#tests/helpers/session.js';

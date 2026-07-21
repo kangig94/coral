@@ -85,6 +85,7 @@ describe('sessions consumer-driver notify', () => {
     try {
       const entry = manager.allocate({
         provider: 'codex',
+        sessionAuthority: { kind: 'orchestration' },
         name: 'alpha',
         model: 'gpt-5',
         cwd: workDir,

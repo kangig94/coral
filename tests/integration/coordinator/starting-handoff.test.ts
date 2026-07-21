@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { closeIpcServer, createIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts, HealthSnapshot } from '#src/transport/server-ports.js';
+import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
 const liveListeners: IpcListener[] = [];
@@ -65,6 +66,10 @@ function buildPorts(opts: {
       log: () => undefined,
     },
     coralEnvSnapshot: {},
+    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
+    ambientClaudeLocation: {
+      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
+    },
     admin: {
       isLifecycleRunning: opts.isLifecycleRunning,
       isDrainRequested: opts.isDrainRequested,

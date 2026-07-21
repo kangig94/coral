@@ -1,5 +1,6 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
 import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
@@ -131,6 +132,9 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       providerRegistry: deps.providerRegistry,
       jobPools: this.jobPools,
       launchOrchestrator: this.launchOrchestrator,
+      childPrincipalRegistry: deps.childPrincipalRegistry,
+      parentPrincipal: ctx.principal,
+      providerCredentialSourceAvailability: deps.providerCredentialSourceAvailability,
       acquireServer: (spec, options) => this.acquireServer(spec, options),
     });
     this.launchService = new JobLaunchService({
@@ -190,8 +194,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchAdmission: deps.launchCoordinator,
       jobPools: this.jobPools,
       launchOrchestrator: this.launchOrchestrator,
-      interruptAppServerJob: (launchRecord, runtimeRecord) =>
-        this.recoveryService.interruptAppServerJob(launchRecord, runtimeRecord),
     });
   }
 
@@ -260,7 +262,15 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.recoverQueuedJob(launchRecord);
   }
 
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { cleanup: () => void } {
+  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean {
+    return this.recoveryService.validateProviderRecoveryAuthority(launchRecord);
+  }
+
+  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null {
+    return this.recoveryService.providerCredentialSourceForRecovery(launchRecord);
+  }
+
+  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void } {
     return this.recoveryService.adoptRunningJob(launchRecord, runtimeRecord);
   }
 
@@ -287,7 +297,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
 
   async acquireServer(
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal },
+    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
   ): Promise<ProviderServerLease> {
     return this.recoveryService.acquireServer(spec, options);
   }

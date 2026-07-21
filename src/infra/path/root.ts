@@ -2,7 +2,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '../build-flavor.js';
-import { hashToken } from '../hash.js';
 
 /**
  * Resolves the Coral root directory (`~/.coral` by default). Tests pass an
@@ -17,6 +16,11 @@ function coralRoot(baseDir?: string): string {
   return baseDir ?? join(homedir(), '.coral');
 }
 
+/** Resolve the current OS user's home at the path-authority boundary. */
+export function resolveUserHomeDir(envHome?: string): string {
+  return envHome && envHome.length > 0 ? envHome : homedir();
+}
+
 /**
  * Resolve the Claude Code config dir from a captured `CLAUDE_CONFIG_DIR` value,
  * falling back to `<home>/.claude`. The raw env value is passed in, never read
@@ -27,28 +31,9 @@ export function resolveClaudeConfigDir(rawConfigDir: string | undefined, homeDir
   return rawConfigDir && rawConfigDir.length > 0 ? rawConfigDir : join(homeDir ?? homedir(), '.claude');
 }
 
-/**
- * Per-config-dir partition slot for Coral's daemon-owned state tree. The plugin
- * (and thus its backend daemon binary) installs *inside* the config dir, so two
- * config dirs are two independent daemons that must not share a socket, store,
- * or job tree. The default config dir (`~/.claude`) maps to no slot so existing
- * installs keep their `~/.coral` paths; any other config dir gets a stable hash
- * slot. Callers should pass `homeDir` for the default comparison (it defaults
- * to `os.homedir()` only as a convenience).
- */
-export function claudeConfigSlot(configDir: string, homeDir?: string): string | undefined {
-  if (configDir === join(homeDir ?? homedir(), '.claude')) return undefined;
-  return hashToken(configDir, 8);
-}
-
-/**
- * Coral state root partitioned by config-dir slot. Daemon-owned runtime state
- * (store, coordinator, jobs, projects, exports, engines) lives here; the shared
- * KB stays at the unpartitioned {@link coralRoot}.
- */
-export function coralStateRoot(configSlot?: string, baseDir?: string): string {
-  const root = coralRoot(baseDir);
-  return configSlot ? join(root, 'by-config', configSlot) : root;
+/** Account-neutral root for all Coral-owned state. */
+export function coralStateRoot(baseDir?: string): string {
+  return coralRoot(baseDir);
 }
 
 export interface KbVaultRootOptions {

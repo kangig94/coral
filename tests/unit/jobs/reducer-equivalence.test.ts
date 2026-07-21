@@ -7,21 +7,53 @@ import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
+import type { SessionEntry } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
+
+function sessionOpenedInput(sessionId: string, orchestration = false): CoralEventInput {
+  const entry: SessionEntry = {
+    sessionId,
+    provider: 'codex',
+    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', source: TEST_CODEX_SOURCE },
+    name: sessionId,
+    state: 'ready',
+    retention: 'retain',
+    artifactHandles: [],
+    retentionDiscard: { attempts: [] },
+    providerContinuity: null,
+    cwd: '/workspace/coral',
+    projectRoot: '/workspace/coral',
+    backendNamespace: 'namespace-1',
+    createdAt: NOW.toISOString(),
+    lastUsedAt: NOW.toISOString(),
+    version: 1,
+  };
+  return {
+    type: 'session.opened',
+    stream: { kind: 'session', id: sessionId },
+    refs: { sessionId },
+    bodyVersion: 1,
+    body: { entry, controller: 'default', provider: 'codex', scope_key: `/workspace/coral\u0000codex\u0000default` },
+  };
+}
 
 describe('jobs reducer equivalence', () => {
   it('rebuilds projection_jobs rows byte-identically from a historical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
-      const reducers = composeReducers(jobsRegistry);
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
       const appended = commitInputs(
         db,
         [
+          sessionOpenedInput('session-1'),
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-1' },
@@ -165,12 +197,13 @@ describe('jobs reducer equivalence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
-      const reducers = composeReducers(jobsRegistry);
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
       const appended = commitInputs(
         db,
         [
+          sessionOpenedInput('session-rejected', true),
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-rejected' },
@@ -190,6 +223,7 @@ describe('jobs reducer equivalence', () => {
                 cwd: '/workspace/coral',
                 bypassPermissions: false,
                 coralEnv: {},
+                providerCredentials: TEST_PROVIDER_CREDENTIALS,
               },
               createdAt: NOW.toISOString(),
             },
@@ -267,12 +301,13 @@ describe('jobs reducer equivalence', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
-      const reducers = composeReducers(jobsRegistry);
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry);
       const upcasters = createDefaultUpcasterRegistry();
 
       const appended = commitInputs(
         db,
         [
+          sessionOpenedInput('session-aborted'),
           {
             type: 'job.launch.requested',
             stream: { kind: 'job', id: 'job-aborted' },

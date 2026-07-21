@@ -9,6 +9,7 @@ import type {
 } from '#src/providers/contract.js';
 import type { ProviderTransportClose } from '#src/providers/protocol.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
+import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
 
 type TestState = {
   conversationRef: string | null;
@@ -64,6 +65,7 @@ function createRuntime(
     storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
     continuityBridge,
     kbRoot: '/mock/kb',
+    providerContext: TEST_CODEX_CONTEXT,
     ...overrides,
   };
 }

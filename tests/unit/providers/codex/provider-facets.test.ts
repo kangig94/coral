@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
@@ -181,7 +182,11 @@ describe('codexArtifactCapability', () => {
     } as unknown as ArtifactCleanupRuntime;
 
     await expect(
-      codexArtifactCapability.discardArtifacts(['/tmp/one.jsonl', '/tmp/two.jsonl'], runtime),
+      codexArtifactCapability.discardArtifacts({
+        handles: ['/tmp/one.jsonl', '/tmp/two.jsonl'],
+        source: TEST_CODEX_SOURCE,
+        runtime,
+      }),
     ).resolves.toEqual({ kind: 'discarded' });
 
     expect(unlinkSync.mock.calls).toEqual([['/tmp/one.jsonl'], ['/tmp/two.jsonl']]);
@@ -200,9 +205,15 @@ describe('codexArtifactCapability', () => {
       env: { homedir: () => '/home/user', get: () => undefined },
     } as unknown as ArtifactCleanupRuntime;
 
-    expect(codexArtifactCapability.locateArtifact?.('thread-1', runtime)).toBe(
-      `${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`,
-    );
-    expect(codexArtifactCapability.locateArtifact?.('missing-thread', runtime)).toBeNull();
+    expect(
+      codexArtifactCapability.locateArtifact?.({ conversationRef: 'thread-1', source: TEST_CODEX_SOURCE, runtime }),
+    ).toBe(`${day}/rollout-2026-05-04T00-00-00-thread-1.jsonl`);
+    expect(
+      codexArtifactCapability.locateArtifact?.({
+        conversationRef: 'missing-thread',
+        source: TEST_CODEX_SOURCE,
+        runtime,
+      }),
+    ).toBeNull();
   });
 });

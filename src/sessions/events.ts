@@ -38,6 +38,7 @@ import {
   reduceSessionRetentionDiscardFailed,
   reduceSessionRetentionDiscardRequested,
 } from './projections.js';
+import { sessionEntrySchema, type SessionEntry } from './entry.js';
 
 const RETENTION_DISCARD_DUPLICATE_ATTEMPT_CODE = 'session_retention_discard_duplicate_attempt';
 
@@ -294,6 +295,74 @@ const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs
   }
 };
 
+function authorityIdentity(entry: SessionEntry): string {
+  return JSON.stringify({ provider: entry.provider, authority: entry.sessionAuthority });
+}
+
+const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
+  const entries = inputs.flatMap((input) => {
+    if (input.stream.kind !== 'session' || typeof input.body !== 'object' || input.body === null) return [];
+    const rawEntry = (input.body as { entry?: unknown }).entry;
+    const parsed = sessionEntrySchema.safeParse(rawEntry);
+    return parsed.success ? [{ input, entry: parsed.data }] : [];
+  });
+  if (entries.length === 0) return;
+
+  const ids = [...new Set(entries.map(({ entry }) => entry.sessionId))];
+  const existing = new Map<string, SessionEntry>();
+  if (ids.length > 0) {
+    const placeholders = ids.map(() => '?').join(', ');
+    const rows = ctx.db
+      .prepare(`SELECT session_id, entry FROM projection_sessions WHERE session_id IN (${placeholders})`)
+      .all(...ids) as Array<{ session_id: string; entry: string }>;
+    for (const row of rows) existing.set(row.session_id, sessionEntrySchema.parse(JSON.parse(row.entry)));
+  }
+
+  for (const { input, entry } of entries) {
+    if (input.stream.id !== entry.sessionId) {
+      throw new CoralSetupError({
+        code: 'provider_credential_source_invalid',
+        userMessage: `Session event stream does not match entry '${entry.sessionId}'.`,
+        remediation: 'Write the session entry to its own session stream.',
+      });
+    }
+    const prior = existing.get(entry.sessionId);
+    if (prior === undefined) {
+      if (input.type !== 'session.opened') {
+        throw new CoralSetupError({
+          code: 'provider_credential_source_missing',
+          userMessage: `Session '${entry.sessionId}' must be opened before later events.`,
+          remediation: 'Append session.opened first in the same batch.',
+        });
+      }
+      if (entry.sessionAuthority.kind === 'provider' && entry.sessionAuthority.source.provider !== entry.provider) {
+        throw new CoralSetupError({
+          code: 'provider_credential_source_mismatch',
+          userMessage: `Session '${entry.sessionId}' provider does not match its credential source.`,
+          remediation: 'Use the credential source projected for the selected provider.',
+        });
+      }
+      existing.set(entry.sessionId, entry);
+      continue;
+    }
+    if (input.type === 'session.opened') {
+      throw new CoralSetupError({
+        code: 'provider_credential_source_invalid',
+        userMessage: `Session '${entry.sessionId}' is already open.`,
+        remediation: 'Do not append a second session.opened event.',
+      });
+    }
+    if (authorityIdentity(prior) !== authorityIdentity(entry)) {
+      throw new CoralSetupError({
+        code: 'provider_credential_source_mismatch',
+        userMessage: `Session '${entry.sessionId}' authority is immutable.`,
+        remediation: 'Resume with the original credential source or start a new session.',
+      });
+    }
+    existing.set(entry.sessionId, entry);
+  }
+};
+
 export const sessionsRegistry: DomainEventRegistry = {
   streamKind: 'session',
   entries: [
@@ -365,5 +434,5 @@ export const sessionsRegistry: DomainEventRegistry = {
       reducer: reduceSessionAdapterUnparseable,
     }),
   ],
-  appendValidators: [validateRetentionDiscardStateMachine],
+  appendValidators: [validateRetentionDiscardStateMachine, validateSessionAuthority],
 };

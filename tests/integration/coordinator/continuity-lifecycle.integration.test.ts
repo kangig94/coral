@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { allocateTestSession } from '../../helpers/session.js';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,11 +12,13 @@ import type { SpawnProviderServerFn } from '#src/coordinator/live/provider-serve
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import {
   type ProviderSpec,
   type Provider,
@@ -134,6 +137,7 @@ describe('coordinator continuity lifecycle integration', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     };
     mkdirSync(ctx.pluginRoot, { recursive: true });
     runtime = createRealRuntime('prod');
@@ -155,6 +159,8 @@ describe('coordinator continuity lifecycle integration', () => {
       providers: permissiveProviderLookupPort,
     });
     const service = new ExecutionService(ctx, {
+      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+      providerCredentialSourceAvailability: { isAvailable: () => true },
       runtime,
       progressStore,
       backendNamespace: TEST_BACKEND_NAMESPACE,
@@ -185,7 +191,7 @@ describe('coordinator continuity lifecycle integration', () => {
   it('persists mid-stream continuity and projects it through wait and query readers', async () => {
     const liveSnapshot = continuitySnapshot('thread-live', true, { threadId: 'thread-live' });
     const provider: ProviderSpec = {
-      name: 'midstream',
+      name: 'codex',
       run: async function* () {
         yield { kind: 'progress', message: 'booting' } as const;
         yield {
@@ -206,11 +212,11 @@ describe('coordinator continuity lifecycle integration', () => {
       },
     };
     const { service, progressStore } = createService({
-      get: (name) => (name === 'midstream' ? provider : undefined),
+      get: (name) => (name === 'codex' ? provider : undefined),
       getAll: () => [provider],
     });
 
-    const decision = await waitForRunningDecision(service, 'midstream');
+    const decision = await waitForRunningDecision(service, 'codex');
     const once = await service.waitStreamOnce(decision.job, 5_000);
     const detail = loadJobProjectionDetail(progressStore.getDb(), decision.job, progressStore);
     const terminalProgress = readJobEvents(progressStore.getDb(), decision.job, progressStore).find(
@@ -230,7 +236,7 @@ describe('coordinator continuity lifecycle integration', () => {
       type: 'terminal',
       continuity: liveSnapshot,
     });
-    expect(sessionManager.get('midstream', decision.session)).toMatchObject({
+    expect(sessionManager.get('codex', decision.session)).toMatchObject({
       conversationRef: 'thread-live',
       state: 'ready',
       providerContinuity: { threadId: 'thread-live' },
@@ -271,7 +277,7 @@ describe('coordinator continuity lifecycle integration', () => {
 
   it('checkpoints abort continuity before the terminal event and propagates transport-closed continuity via middleware', async () => {
     const abortProvider: ProviderSpec = {
-      name: 'abortable',
+      name: 'codex',
       run: wrapWithSessionContinuity(
         async function* (_request, runtime) {
           yield { kind: 'progress', message: 'running' } as const;
@@ -296,7 +302,7 @@ describe('coordinator continuity lifecycle integration', () => {
       ),
     };
     const closedProvider: ProviderSpec = {
-      name: 'transported',
+      name: 'claude',
       run: wrapWithSessionContinuity(
         async function* (_request, runtime) {
           runtime.continuityBridge.checkpoint({
@@ -333,27 +339,27 @@ describe('coordinator continuity lifecycle integration', () => {
     };
     const { service } = createService({
       get: (name) => {
-        if (name === 'abortable') return abortProvider;
-        if (name === 'transported') return closedProvider;
+        if (name === 'codex') return abortProvider;
+        if (name === 'claude') return closedProvider;
         return undefined;
       },
       getAll: () => [abortProvider, closedProvider],
     });
     const { sessionManager } = getInternals(service);
 
-    const abortDecision = await waitForRunningDecision(service, 'abortable', 'abort me');
+    const abortDecision = await waitForRunningDecision(service, 'codex', 'abort me');
     service.abort([abortDecision.job]);
     const aborted = await service.waitStreamOnce(abortDecision.job, 5_000);
     expect(aborted).toEqual({
       content: 'aborted',
       continuity: continuitySnapshot('thread-abort', true, { threadId: 'thread-abort', state: 'aborted' }),
     });
-    expect(sessionManager.get('abortable', abortDecision.session)).toMatchObject({
+    expect(sessionManager.get('codex', abortDecision.session)).toMatchObject({
       conversationRef: 'thread-abort',
       providerContinuity: { threadId: 'thread-abort', state: 'aborted' },
     });
 
-    const transportDecision = await waitForRunningDecision(service, 'transported', 'close transport');
+    const transportDecision = await waitForRunningDecision(service, 'claude', 'close transport');
     const transported = await service.waitStreamOnce(transportDecision.job, 5_000);
     expect(transported).toEqual({
       content: 'transport handled',
@@ -362,7 +368,7 @@ describe('coordinator continuity lifecycle integration', () => {
         transport: 'transport_closed',
       }),
     });
-    expect(sessionManager.get('transported', transportDecision.session)).toMatchObject({
+    expect(sessionManager.get('claude', transportDecision.session)).toMatchObject({
       conversationRef: 'thread-transport',
       providerContinuity: {
         threadId: 'thread-transport',
@@ -378,13 +384,13 @@ describe('coordinator continuity lifecycle integration', () => {
     });
     const { sessionManager } = getInternals(service);
 
-    const explicitSession = sessionManager.allocate('recovery', 'alpha', 'gpt-5', ctx.projectRoot);
+    const explicitSession = allocateTestSession(sessionManager, 'codex', 'alpha', 'gpt-5', ctx.projectRoot);
     const explicitJobId = `recovered-${randomUUID()}`;
     sessionManager.claimForJobSync(explicitSession.sessionId, explicitJobId);
     progressStore.initJob({
       jobId: explicitJobId,
       sessionId: explicitSession.sessionId,
-      provider: 'recovery',
+      provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
@@ -409,7 +415,7 @@ describe('coordinator continuity lifecycle integration', () => {
     // carry conversationRef / resumable. The session assertion below is the
     // load-bearing check that recovered continuity is projected from
     // journal-owned session state.
-    expect(sessionManager.get('recovery', explicitSession.sessionId)).toMatchObject({
+    expect(sessionManager.get('codex', explicitSession.sessionId)).toMatchObject({
       conversationRef: 'thread-recovered',
       state: 'ready',
       providerContinuity: {
@@ -418,7 +424,7 @@ describe('coordinator continuity lifecycle integration', () => {
       },
     });
 
-    const preservedSession = sessionManager.allocate('recovery', 'beta', 'gpt-5', ctx.projectRoot);
+    const preservedSession = allocateTestSession(sessionManager, 'codex', 'beta', 'gpt-5', ctx.projectRoot);
     sessionManager.checkpointProviderContinuity(preservedSession.sessionId, {
       conversationRef: 'thread-kept',
       providerContinuity: { threadId: 'thread-kept', preserved: true },
@@ -428,7 +434,7 @@ describe('coordinator continuity lifecycle integration', () => {
     progressStore.initJob({
       jobId: preserveJobId,
       sessionId: preservedSession.sessionId,
-      provider: 'recovery',
+      provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       initialPhase: 'running',
@@ -444,7 +450,7 @@ describe('coordinator continuity lifecycle integration', () => {
       'completed',
     );
 
-    expect(sessionManager.get('recovery', preservedSession.sessionId)).toMatchObject({
+    expect(sessionManager.get('codex', preservedSession.sessionId)).toMatchObject({
       conversationRef: 'thread-kept',
       state: 'ready',
       providerContinuity: { threadId: 'thread-kept', preserved: true },
@@ -455,7 +461,7 @@ describe('coordinator continuity lifecycle integration', () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 
     const provider: ProviderSpec = {
-      name: 'null-live',
+      name: 'codex',
       run: async function* () {
         yield { kind: 'progress', message: 'thinking' } as const;
         yield {
@@ -469,11 +475,11 @@ describe('coordinator continuity lifecycle integration', () => {
       },
     };
     const { service, progressStore } = createService({
-      get: (name) => (name === 'null-live' ? provider : undefined),
+      get: (name) => (name === 'codex' ? provider : undefined),
       getAll: () => [provider],
     });
 
-    const directDecision = await waitForRunningDecision(service, 'null-live', 'score this');
+    const directDecision = await waitForRunningDecision(service, 'codex', 'score this');
     await expect(service.waitStreamOnce(directDecision.job, 5_000)).resolves.toEqual({
       content: '{"score": 55, "thought": "keep the freight window narrow"}',
       continuity: null,
@@ -498,7 +504,7 @@ describe('coordinator continuity lifecycle integration', () => {
         readExit: () => null,
       },
     });
-    const agents: AgentConfig[] = [{ name: 'alpha', persona: '# Alpha', provider: 'null-live', model: 'gpt-5' }];
+    const agents: AgentConfig[] = [{ name: 'alpha', persona: '# Alpha', provider: 'codex', model: 'gpt-5' }];
 
     try {
       await startDiscussSession(

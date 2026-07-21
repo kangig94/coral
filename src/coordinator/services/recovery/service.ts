@@ -1,4 +1,13 @@
-import type { ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
+import type {
+  ProviderExecutionContext,
+  ProviderAppServerContract,
+  ProviderRecoveryContract,
+  ProviderRequest,
+  ProviderServerLease,
+  ProviderServerSpec,
+} from '../../../providers/contract.js';
+import { join } from 'node:path';
+import { buildProviderExecutionContext } from '../../../providers/execution-context.js';
 import { readContinuityRef, type ProviderContinuityBlob } from '../../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../../sessions/continuity-mutation.js';
 import { backendLog } from '../../../infra/backend-log.js';
@@ -9,12 +18,13 @@ import {
   type AppServerRuntime,
   type JobLaunch,
   type JobRuntime,
+  type JobStatus,
   type JobTerminalInput,
 } from '../../../jobs/records.js';
 import { isTerminalPhase, type JobPhase } from '../../../jobs/phase.js';
 import { writeResultArtifact } from '../../../jobs/terminal/export.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
-import type { SessionEntry } from '../../../sessions/entry.js';
+import type { SessionAuthority, SessionEntry } from '../../../sessions/entry.js';
 import { nowIsoString } from '../../../infra/time.js';
 import type { ProviderCatalog } from '../../../providers/catalog.js';
 import type { ProviderArtifactHandleInput } from '../../../providers/contract.js';
@@ -23,6 +33,10 @@ import type { JobAdmissionPort, JobLaunchRecoveryPort, LaunchPool } from '../../
 import type { JobProgressStore, TerminalWriteOptions } from '../../../jobs/contracts/job-store.js';
 import type { SessionRecoveryPort } from '../../../sessions/contracts.js';
 import type { Runtime } from '../../../runtime/ports.js';
+import type {
+  ProviderCredentialSourceAvailabilityPort,
+  ProviderCredentialSourceRef,
+} from '../../../runtime/provider-credentials.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
 import type { RecoveredJobLifecyclePort } from '../../../jobs/contracts/job-runner.js';
 import { toProviderRequest } from '../../../jobs/provider-request.js';
@@ -37,11 +51,21 @@ import type {
   InterruptedProbeOutcome,
 } from '../../../jobs/reconcile/interrupted-reason.js';
 import { recordSessionInterruptedTerminal } from '../terminal-materializer.js';
+import {
+  CHILD_PRINCIPAL_CAPABILITIES,
+  CORAL_CHILD_PRINCIPAL_HANDLE,
+  type ChildPrincipalRegistry,
+} from '../../child-principal-registry.js';
+import type { Principal } from '../../../security/principal.js';
 
 type ProviderLaunchRecord = JobLaunch & {
   sessionId: string;
   provider: string;
   jobKind: Exclude<JobLaunch['jobKind'], 'kb'>;
+};
+
+type ProviderSessionEntry = SessionEntry & {
+  sessionAuthority: Extract<SessionAuthority, { kind: 'provider' }>;
 };
 
 function requireProviderLaunchRecord(
@@ -90,9 +114,12 @@ export interface RecoveryServiceDeps {
   providerRegistry: ProviderCatalog;
   jobPools: Map<string, LaunchPool>;
   launchOrchestrator: RecoveredJobLifecyclePort;
+  childPrincipalRegistry: ChildPrincipalRegistry;
+  parentPrincipal: Principal;
+  providerCredentialSourceAvailability: ProviderCredentialSourceAvailabilityPort;
   acquireServer?: (
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal },
+    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
   ) => Promise<ProviderServerLease>;
 }
 
@@ -102,21 +129,118 @@ export class RecoveryService {
     this.deps = deps;
   }
 
+  private providerContext(session: SessionEntry, request: ProviderRequest, jobId: string): ProviderExecutionContext {
+    if (
+      session.sessionAuthority?.kind !== 'provider' ||
+      session.sessionAuthority.source.provider !== session.provider
+    ) {
+      throw new Error(`provider_credential_source_missing: ${session.sessionId}`);
+    }
+    const protectedEnv = this.recoveryChildEnv(session, jobId);
+    return buildProviderExecutionContext({
+      source: session.sessionAuthority.source,
+      request,
+      baseEnv: this.deps.runtime.env.fullSnapshot(),
+      protectedEnv,
+      platform: this.deps.runtime.env.platform(),
+    });
+  }
+
+  private recoveryChildEnv(session: SessionEntry, jobId: string): Readonly<Record<string, string>> {
+    const childCredential = this.deps.childPrincipalRegistry.register({
+      issuer: 'job-recovery',
+      parentPrincipal: this.deps.parentPrincipal,
+      namespace: this.deps.backendNamespace,
+      parentJobId: jobId,
+      parentSessionId: session.sessionId,
+      nowMs: this.deps.runtime.time.now(),
+      childCaps: CHILD_PRINCIPAL_CAPABILITIES,
+    });
+    return Object.freeze({
+      CORAL_JOB_ID: jobId,
+      CORAL_SESSION_ID: session.sessionId,
+      [CORAL_CHILD_PRINCIPAL_HANDLE]: childCredential.handle,
+    });
+  }
+
+  private readProviderSession(
+    launchRecord: JobLaunch,
+  ): { ok: true; session: ProviderSessionEntry } | { ok: false; reason: 'missing' | 'mismatch' | 'unavailable' } {
+    if (launchRecord.provider === null || launchRecord.sessionId === null) return { ok: false, reason: 'missing' };
+    let session: SessionEntry | null;
+    try {
+      session = this.deps.sessionManager.readById(launchRecord.sessionId, { forceFresh: true });
+    } catch {
+      return { ok: false, reason: 'mismatch' };
+    }
+    if (session === null) return { ok: false, reason: 'missing' };
+    if (
+      session?.sessionAuthority.kind !== 'provider' ||
+      session.provider !== launchRecord.provider ||
+      session.sessionAuthority.source.provider !== launchRecord.provider
+    ) {
+      return { ok: false, reason: 'mismatch' };
+    }
+    if (!this.deps.providerCredentialSourceAvailability.isAvailable(session.sessionAuthority.source)) {
+      return { ok: false, reason: 'unavailable' };
+    }
+    return { ok: true, session: session as ProviderSessionEntry };
+  }
+
+  private failSourceIntegrity(
+    launchRecord: JobLaunch,
+    reason: 'missing' | 'mismatch' | 'unavailable',
+    message: string,
+  ): void {
+    if (launchRecord.sessionId === null) return;
+    this.completeRecoveredJob(
+      launchRecord.jobId,
+      launchRecord.sessionId,
+      {
+        content: message,
+        outcome: {
+          kind: 'job_fault',
+          fault: { kind: 'provider_credential_source', reason, message },
+        },
+      },
+      'error',
+    );
+  }
+
+  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean {
+    return this.providerCredentialSourceForRecovery(launchRecord) !== null;
+  }
+
+  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null {
+    requireProviderLaunchRecord(launchRecord, 'validateProviderRecoveryAuthority');
+    const result = this.readProviderSession(launchRecord);
+    if (result.ok) return result.session.sessionAuthority.source;
+    this.failSourceIntegrity(
+      launchRecord,
+      result.reason,
+      `Recovered job ${launchRecord.jobId} has ${result.reason} provider account authority and cannot continue safely. Start a new session or workflow after selecting and authenticating the intended provider account.`,
+    );
+    return null;
+  }
+
   private requestServer(
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal },
+    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
   ): Promise<ProviderServerLease> {
     return this.deps.acquireServer ? this.deps.acquireServer(spec, options) : this.acquireServer(spec, options);
   }
 
   async acquireServer(
     spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal },
+    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
   ): Promise<ProviderServerLease> {
     const claudeTransport = readClaudeTransportMode(spec);
+    const rawConversationRef = options?.providerMeta?.conversationRef;
+    const conversationRef = typeof rawConversationRef === 'string' ? readContinuityRef(rawConversationRef) : undefined;
     if (options?.jobId) {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
         leaseState: 'waiting',
+        ...(conversationRef === undefined ? {} : { conversationRef }),
         ...(claudeTransport === undefined ? {} : { claudeTransport }),
       });
     }
@@ -126,6 +250,7 @@ export class RecoveryService {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
         leaseState: 'acquired',
         serverGeneration: lease.generation,
+        ...(conversationRef === undefined ? {} : { conversationRef }),
         ...(claudeTransport === undefined ? {} : { claudeTransport }),
       });
     }
@@ -136,159 +261,128 @@ export class RecoveryService {
     requireProviderLaunchRecord(launchRecord, 'interruptAppServerJob');
     const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
     const appServer = providerEntry?.appServer;
-    if (!appServer) {
+    if (!appServer?.interrupt) {
       return;
     }
-    const session = this.deps.sessionManager.get(launchRecord.provider, launchRecord.sessionId);
+    const storedSession = this.readProviderSession(launchRecord);
+    if (!storedSession.ok) {
+      this.failSourceIntegrity(
+        launchRecord,
+        storedSession.reason,
+        `Recovered job ${launchRecord.jobId} has ${storedSession.reason} provider account authority and cannot be interrupted safely. Start a new session after selecting and authenticating the intended provider account.`,
+      );
+      return;
+    }
+    const session = storedSession.session;
     const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
     if (!continuity) {
       return;
     }
 
-    const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity, {
-      storage: this.deps.runtime.storage,
+    const request = toProviderRequest(launchRecord);
+    const spec = appServer.buildServerSpec(
+      request,
+      continuity,
+      { storage: this.deps.runtime.storage },
+      this.providerContext(session, request, launchRecord.jobId),
+    );
+    const liveServer = await this.deps.providerHostManager.borrowLiveServer(spec, {
+      serverGeneration: runtimeRecord.providerMeta.serverGeneration,
     });
-    if (spec.shared !== true) {
-      const liveServer = await this.deps.providerHostManager.borrowLiveServer(spec, {
-        serverGeneration: runtimeRecord.providerMeta.serverGeneration,
-      });
-      if (liveServer) {
-        await appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
-        return;
-      }
-    }
-
-    const lease = await this.requestServer(spec);
-    try {
-      await appServer.interrupt(lease, continuity);
-    } finally {
-      lease.release();
-    }
-  }
-
-  async finalizeInterruptedAppServerJob(
-    launchRecord: JobLaunch,
-    runtimeRecord: AppServerRuntime,
-    options: { reason: InterruptedAppServerReason },
-  ): Promise<void> {
-    requireProviderLaunchRecord(launchRecord, 'finalizeInterruptedAppServerJob');
-    const status = this.deps.progressStore.readStatus(launchRecord.jobId);
-    if (!status || isTerminalPhase(status.phase)) {
-      // Cross-version partial-state preservation: a pre-PR daemon wrote a
-      // terminal record before crashing mid-finalizer. The replacement
-      // recognizes it as terminal and does not re-finalize. Warn surfaces
-      // this path for operator visibility without re-running the durable
-      // mutation sequence.
-      if (status && options.reason === 'handoff') {
-        backendLog.warn(
-          `skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery — likely cross-version partial-state from pre-PR daemon`,
-        );
-      }
+    if (liveServer) {
+      await appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
       return;
     }
+    backendLog.warn(`Cannot interrupt recovered app-server job ${launchRecord.jobId}: bound provider server is gone.`);
+  }
 
-    const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
-    const appServer = providerEntry?.appServer;
-    const recovery = providerEntry?.recovery;
-    const session =
-      this.deps.sessionManager.get(launchRecord.provider, launchRecord.sessionId) ??
-      ({
-        conversationRef: launchRecord.request.conversationRef,
-      } as Pick<SessionEntry, 'conversationRef' | 'providerContinuity'>);
-    const preservedConversationRef =
-      readContinuityRef(session.conversationRef) ?? readContinuityRef(launchRecord.request.conversationRef);
-    const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
-
-    let mutation: SessionContinuityMutation;
-    let probeOutcome: InterruptedProbeOutcome;
-
-    if (appServer && recovery && continuity) {
-      if (runtimeRecord.providerMeta.leaseState === 'waiting') {
-        probeOutcome = 'waiting';
-        mutation =
-          recovery.finalizeInterrupted?.(
+  private async recoverInterruptedContinuityFromArtifacts(options: {
+    launchRecord: ProviderLaunchRecord;
+    runtimeRecord: AppServerRuntime;
+    session: ProviderSessionEntry;
+    recovery: ProviderRecoveryContract;
+    continuity: ProviderContinuityBlob | undefined;
+    preservedConversationRef: string | undefined;
+  }): Promise<{ mutation: SessionContinuityMutation; probeOutcome: InterruptedProbeOutcome }> {
+    const { launchRecord, runtimeRecord, session, recovery, continuity, preservedConversationRef } = options;
+    const jobDir = this.deps.progressStore.jobDir(launchRecord.jobId);
+    const artifactResult = await recovery.finalizeFromArtifacts({
+      source: session.sessionAuthority.source,
+      stdoutPath: join(jobDir, 'stdout'),
+      stderrPath: join(jobDir, 'stderr'),
+      exitCode: null,
+      signal: null,
+      providerMeta: {
+        ...runtimeRecord.providerMeta,
+      },
+      fallbackConversationRef: preservedConversationRef,
+      knownArtifactHandles: session.artifactHandles
+        .filter((artifact) => artifact.provider === launchRecord.provider)
+        .map((artifact) => ({
+          handle: artifact.handle,
+          identity: artifact.identity,
+          sourceJobId: artifact.sourceJobId,
+        })),
+      storage: this.deps.runtime.storage,
+    });
+    if (artifactResult.artifactHandles && artifactResult.artifactHandles.length > 0) {
+      await this.recordRecoveredArtifactHandles(launchRecord.sessionId, {
+        jobId: launchRecord.jobId,
+        provider: launchRecord.provider,
+        handles: artifactResult.artifactHandles,
+      });
+    }
+    const recoveredConversationRef =
+      artifactResult.continuity === undefined
+        ? preservedConversationRef
+        : readContinuityRef(artifactResult.continuity.conversationRef);
+    const artifactResumable = artifactResult.continuity?.resumable ?? recoveredConversationRef !== undefined;
+    const recoveredProviderContinuity = artifactResult.continuity?.providerContinuity ?? continuity;
+    const mutation =
+      (continuity === undefined
+        ? undefined
+        : recovery.finalizeInterrupted?.(
             {
-              resumable: preservedConversationRef !== undefined || continuity !== undefined,
-              updatedContinuity: continuity,
+              resumable: artifactResumable,
+              updatedContinuity: recoveredProviderContinuity,
             },
             continuity,
-            { preservedConversationRef },
-          ) ??
-          (preservedConversationRef !== undefined
-            ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
-            : { kind: 'preserve' });
-      } else {
-        const spec = appServer.buildServerSpec(toProviderRequest(launchRecord), continuity, {
-          storage: this.deps.runtime.storage,
-        });
-
-        try {
-          const liveServer =
-            spec.shared !== true && runtimeRecord.providerMeta.leaseState === 'acquired'
-              ? await this.deps.providerHostManager.borrowLiveServer(spec, {
-                  serverGeneration: runtimeRecord.providerMeta.serverGeneration,
-                })
-              : null;
-          const lease = liveServer
-            ? this.createAttachedProviderServerLease(liveServer)
-            : await this.requestServer(spec);
-          try {
-            const probeResult = recovery.probe
-              ? await recovery.probe(lease, continuity)
-              : {
-                  resumable: preservedConversationRef !== undefined || continuity !== undefined,
-                  updatedContinuity: continuity,
-                };
-            probeOutcome = probeResult.resumable ? 'verified' : 'missing';
-            mutation =
-              recovery.finalizeInterrupted?.(probeResult, continuity, { preservedConversationRef }) ??
-              (preservedConversationRef !== undefined
-                ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
-                : { kind: 'preserve' });
-          } finally {
-            if (!liveServer) {
-              lease.release();
-            }
+            { preservedConversationRef: recoveredConversationRef },
+          )) ??
+      (recoveredConversationRef !== undefined
+        ? {
+            kind: 'set_resumable' as const,
+            conversationRef: recoveredConversationRef,
+            providerContinuity: recoveredProviderContinuity,
           }
-        } catch (error: unknown) {
-          backendLog.error(`Probe failed for ${launchRecord.jobId}: ${errorMessage(error)}`);
-          probeOutcome = 'unavailable';
-          mutation =
-            recovery.finalizeInterrupted?.(
-              {
-                resumable: false,
-                updatedContinuity: continuity,
-              },
-              continuity,
-              { preservedConversationRef },
-            ) ??
-            (preservedConversationRef !== undefined
-              ? { kind: 'set_resumable', conversationRef: preservedConversationRef }
-              : { kind: 'preserve' });
-        }
-      }
-    } else if (preservedConversationRef !== undefined) {
-      probeOutcome = 'waiting';
-      mutation = {
-        kind: 'set_resumable',
-        conversationRef: preservedConversationRef,
-      };
-    } else {
-      probeOutcome = 'waiting';
-      mutation = { kind: 'clear_non_resumable' };
-    }
+        : { kind: 'clear_non_resumable' as const, providerContinuity: recoveredProviderContinuity });
+    return {
+      mutation,
+      probeOutcome: artifactResumable ? 'verified' : 'missing',
+    };
+  }
 
+  private async materializeInterruptedAppServerRecovery(options: {
+    launchRecord: ProviderLaunchRecord;
+    status: JobStatus;
+    reason: InterruptedAppServerReason;
+    probeOutcome: InterruptedProbeOutcome;
+    mutation: SessionContinuityMutation;
+    recoveryConversationRef: string | undefined;
+  }): Promise<void> {
+    const { launchRecord, status, reason, probeOutcome, mutation, recoveryConversationRef } = options;
     const fault: SessionInterruptedFault = {
-      trigger: options.reason,
+      trigger: reason,
       continuity: interruptedContinuityState(probeOutcome, mutation),
     };
-
-    let reportConversationRef: string | undefined;
-    if (probeOutcome === 'verified') {
-      reportConversationRef = mutation.kind === 'set_resumable' ? mutation.conversationRef : preservedConversationRef;
-    }
-
+    const reportConversationRef =
+      probeOutcome === 'verified'
+        ? mutation.kind === 'set_resumable'
+          ? mutation.conversationRef
+          : recoveryConversationRef
+        : undefined;
     const interruptedReport = buildInterruptedAppServerReport(fault, reportConversationRef);
+
     recordSessionInterruptedTerminal(
       this.deps.progressStore,
       fault,
@@ -324,10 +418,210 @@ export class RecoveryService {
     );
   }
 
+  private async probeInterruptedAppServerContinuity(options: {
+    launchRecord: ProviderLaunchRecord;
+    runtimeRecord: AppServerRuntime;
+    session: ProviderSessionEntry;
+    appServer: ProviderAppServerContract;
+    recovery: ProviderRecoveryContract;
+    continuity: ProviderContinuityBlob;
+    recoveryConversationRef: string | undefined;
+  }): Promise<{ mutation: SessionContinuityMutation; probeOutcome: InterruptedProbeOutcome }> {
+    const { launchRecord, runtimeRecord, session, appServer, recovery, continuity, recoveryConversationRef } = options;
+    const probe = recovery.probe;
+    if (probe === undefined) {
+      throw new Error(`Provider '${launchRecord.provider}' has no interrupted recovery probe.`);
+    }
+    const request = toProviderRequest(launchRecord);
+    const spec = appServer.buildServerSpec(
+      request,
+      continuity,
+      { storage: this.deps.runtime.storage },
+      this.providerContext(session, request, launchRecord.jobId),
+    );
+
+    try {
+      const liveServer =
+        spec.shared !== true && runtimeRecord.providerMeta.leaseState === 'acquired'
+          ? await this.deps.providerHostManager.borrowLiveServer(spec, {
+              serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+            })
+          : null;
+      const lease = liveServer ? this.createAttachedProviderServerLease(liveServer) : await this.requestServer(spec);
+      try {
+        const probeResult = await probe(lease, continuity);
+        return {
+          probeOutcome: probeResult.resumable ? 'verified' : 'missing',
+          mutation:
+            recovery.finalizeInterrupted?.(probeResult, continuity, {
+              preservedConversationRef: recoveryConversationRef,
+            }) ??
+            (recoveryConversationRef !== undefined
+              ? { kind: 'set_resumable', conversationRef: recoveryConversationRef }
+              : { kind: 'preserve' }),
+        };
+      } finally {
+        if (!liveServer) lease.release();
+      }
+    } catch (error: unknown) {
+      backendLog.error(`Probe failed for ${launchRecord.jobId}: ${errorMessage(error)}`);
+      return {
+        probeOutcome: 'unavailable',
+        mutation:
+          recovery.finalizeInterrupted?.({ resumable: false, updatedContinuity: continuity }, continuity, {
+            preservedConversationRef: recoveryConversationRef,
+          }) ??
+          (recoveryConversationRef !== undefined
+            ? { kind: 'set_resumable', conversationRef: recoveryConversationRef }
+            : { kind: 'preserve' }),
+      };
+    }
+  }
+
+  private async decideInterruptedAppServerRecovery(options: {
+    launchRecord: ProviderLaunchRecord;
+    runtimeRecord: AppServerRuntime;
+    session: ProviderSessionEntry;
+  }): Promise<{
+    mutation: SessionContinuityMutation;
+    probeOutcome: InterruptedProbeOutcome;
+    recoveryConversationRef: string | undefined;
+  }> {
+    const { launchRecord, runtimeRecord, session } = options;
+    const providerEntry = this.deps.providerRegistry.get(launchRecord.provider);
+    const appServer = providerEntry?.appServer;
+    const recovery = providerEntry?.recovery;
+    const persistedConversationRef =
+      readContinuityRef(session.conversationRef) ?? readContinuityRef(launchRecord.request.conversationRef);
+    const recoveryConversationRef =
+      persistedConversationRef ?? readContinuityRef(runtimeRecord.providerMeta.conversationRef);
+    const continuity = this.resolveAppServerContinuity(runtimeRecord, session);
+
+    if (!appServer || !recovery) {
+      return {
+        probeOutcome: 'waiting',
+        mutation:
+          persistedConversationRef === undefined
+            ? { kind: 'clear_non_resumable' }
+            : { kind: 'set_resumable', conversationRef: persistedConversationRef },
+        recoveryConversationRef,
+      };
+    }
+    if (runtimeRecord.providerMeta.leaseState === 'waiting') {
+      const mutation =
+        (continuity === undefined
+          ? undefined
+          : recovery.finalizeInterrupted?.(
+              {
+                resumable: persistedConversationRef !== undefined || continuity !== undefined,
+                updatedContinuity: continuity,
+              },
+              continuity,
+              { preservedConversationRef: persistedConversationRef },
+            )) ??
+        (persistedConversationRef === undefined
+          ? { kind: 'clear_non_resumable' as const }
+          : { kind: 'set_resumable' as const, conversationRef: persistedConversationRef });
+      return { mutation, probeOutcome: 'waiting', recoveryConversationRef };
+    }
+    if (recovery.probe === undefined) {
+      return {
+        ...(await this.recoverInterruptedContinuityFromArtifacts({
+          launchRecord,
+          runtimeRecord,
+          session,
+          recovery,
+          continuity,
+          preservedConversationRef: recoveryConversationRef,
+        })),
+        recoveryConversationRef,
+      };
+    }
+    if (continuity !== undefined) {
+      return {
+        ...(await this.probeInterruptedAppServerContinuity({
+          launchRecord,
+          runtimeRecord,
+          session,
+          appServer,
+          recovery,
+          continuity,
+          recoveryConversationRef,
+        })),
+        recoveryConversationRef,
+      };
+    }
+    return {
+      probeOutcome: 'waiting',
+      mutation:
+        persistedConversationRef === undefined
+          ? { kind: 'clear_non_resumable' }
+          : { kind: 'set_resumable', conversationRef: persistedConversationRef },
+      recoveryConversationRef,
+    };
+  }
+
+  async finalizeInterruptedAppServerJob(
+    launchRecord: JobLaunch,
+    runtimeRecord: AppServerRuntime,
+    options: { reason: InterruptedAppServerReason },
+  ): Promise<void> {
+    requireProviderLaunchRecord(launchRecord, 'finalizeInterruptedAppServerJob');
+    const status = this.deps.progressStore.readStatus(launchRecord.jobId);
+    if (!status || isTerminalPhase(status.phase)) {
+      // Cross-version partial-state preservation: a pre-PR daemon wrote a
+      // terminal record before crashing mid-finalizer. The replacement
+      // recognizes it as terminal and does not re-finalize. Warn surfaces
+      // this path for operator visibility without re-running the durable
+      // mutation sequence.
+      if (status && options.reason === 'handoff') {
+        backendLog.warn(
+          `skipping finalize for already-terminal job ${launchRecord.jobId} during handoff recovery — likely cross-version partial-state from pre-PR daemon`,
+        );
+      }
+      return;
+    }
+
+    const storedSession = this.readProviderSession(launchRecord);
+    if (!storedSession.ok) {
+      this.failSourceIntegrity(
+        launchRecord,
+        storedSession.reason,
+        `Recovered job ${launchRecord.jobId} has ${storedSession.reason} provider account authority and cannot continue safely. Start a new session or workflow after selecting and authenticating the intended provider account.`,
+      );
+      return;
+    }
+    const session = storedSession.session;
+    const { mutation, probeOutcome, recoveryConversationRef } = await this.decideInterruptedAppServerRecovery({
+      launchRecord,
+      runtimeRecord,
+      session,
+    });
+
+    await this.materializeInterruptedAppServerRecovery({
+      launchRecord,
+      status,
+      reason: options.reason,
+      probeOutcome,
+      mutation,
+      recoveryConversationRef,
+    });
+  }
+
   recoverQueuedJob(launchRecord: JobLaunch): string {
     requireProviderLaunchRecord(launchRecord, 'recoverQueuedJob');
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
+    const sessionResult = this.readProviderSession(launchRecord);
+    if (!sessionResult.ok) {
+      this.failSourceIntegrity(
+        launchRecord,
+        sessionResult.reason,
+        `Recovered queued job ${jobId} has ${sessionResult.reason} provider account authority and cannot continue safely. Start a new session after selecting and authenticating the intended provider account.`,
+      );
+      return jobId;
+    }
+    const session = sessionResult.session;
 
     this.deps.jobPools.set(jobId, pool);
 
@@ -340,7 +634,13 @@ export class RecoveryService {
 
     const provider = this.deps.providerRegistry.get(launchRecord.provider);
     if (provider) {
-      this.deps.launchOrchestrator.runRecoveredQueuedJob(provider, launchRecord, queuedHandle, pool);
+      this.deps.launchOrchestrator.runRecoveredQueuedJob(
+        provider,
+        launchRecord,
+        queuedHandle,
+        pool,
+        this.recoveryChildEnv(session, jobId),
+      );
     }
 
     return jobId;
@@ -378,13 +678,23 @@ export class RecoveryService {
     return { ok: true, nextVersion: expectedVersion };
   }
 
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { cleanup: () => void } {
+  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void } {
     requireProviderLaunchRecord(launchRecord, 'adoptRunningJob');
     const pool = (launchRecord.pool || 'default') as LaunchPool;
     const jobId = launchRecord.jobId;
 
     if (!isDurableCliRuntime(runtimeRecord)) {
       throw new Error(`Unsupported runtime transport for adoptRunningJob(${jobId}): ${runtimeRecord.transport}`);
+    }
+    const sessionResult = this.readProviderSession(launchRecord);
+    if (!sessionResult.ok) {
+      this.deps.runtime.process.kill(runtimeRecord.pid, 'SIGTERM');
+      this.failSourceIntegrity(
+        launchRecord,
+        sessionResult.reason,
+        `Recovered running job ${jobId} has ${sessionResult.reason} provider account authority and cannot continue safely. Start a new session after selecting and authenticating the intended provider account.`,
+      );
+      return { adopted: false, cleanup: () => {} };
     }
 
     this.deps.jobPools.set(jobId, pool);
@@ -399,6 +709,7 @@ export class RecoveryService {
 
     let cleaned = false;
     return {
+      adopted: true,
       cleanup: () => {
         if (cleaned) return;
         cleaned = true;
@@ -491,6 +802,7 @@ export class RecoveryService {
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
         serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
         providerContinuity: update.providerContinuity ?? appRuntime?.providerMeta.providerContinuity,
+        conversationRef: update.conversationRef ?? appRuntime?.providerMeta.conversationRef,
         claudeTransport: update.claudeTransport ?? appRuntime?.providerMeta.claudeTransport,
       },
     };

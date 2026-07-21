@@ -15,6 +15,7 @@ import {
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 import { appServerSession } from '#src/providers/middleware/app-server-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -97,6 +98,7 @@ function makeRuntime(
     persistedContinuity: undefined,
     continuityBridge: bridge as ProviderRuntime['continuityBridge'] & MockBridge,
     kbRoot: '/mock/kb',
+    providerContext: TEST_CODEX_CONTEXT,
   };
 }
 
@@ -161,6 +163,7 @@ describe('appServerSession', () => {
       expect.objectContaining({
         storage: expect.anything(),
       }),
+      TEST_CODEX_CONTEXT,
     );
   });
 

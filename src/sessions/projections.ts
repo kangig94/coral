@@ -2,6 +2,7 @@ import { sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
+import { sameProviderCredentialSource } from '../runtime/provider-credentials.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {
@@ -161,6 +162,21 @@ function upsertProjectionSession(
     throw prematureProjectionSessionEvent(event.stream.id);
   }
   assertEventEntryMatchesStream(event, entry);
+  if (previous !== null) {
+    const sameAuthority =
+      previous.entry.sessionAuthority.kind === entry.sessionAuthority.kind &&
+      (previous.entry.sessionAuthority.kind === 'orchestration' ||
+        (entry.sessionAuthority.kind === 'provider' &&
+          sameProviderCredentialSource(previous.entry.sessionAuthority.source, entry.sessionAuthority.source)));
+    if (previous.entry.provider !== entry.provider || !sameAuthority) {
+      throw new CoralSetupError({
+        code: 'provider_credential_source_mismatch',
+        userMessage: `Session projection authority changed for ${event.stream.id}.`,
+        remediation: 'Keep provider and credential source immutable after session.opened.',
+        context: { sessionId: event.stream.id },
+      });
+    }
+  }
 
   const scopeKey = patch.scopeKey ?? previous?.scopeKey;
   if (scopeKey === undefined) {
@@ -194,6 +210,9 @@ function upsertProjectionSession(
 }
 
 export const reduceSessionOpened: Reducer<SessionOpenedBody> = (db, event) => {
+  if (readProjectionSession(db, event.stream.id) !== null) {
+    throw new Error(`Duplicate session.opened for '${event.stream.id}'.`);
+  }
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
     controller: event.body.controller,

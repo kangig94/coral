@@ -13,6 +13,7 @@ import type {
 
 export type SessionAllocateOptions = {
   provider: string;
+  sessionAuthority: SessionEntry['sessionAuthority'];
   name: string;
   model?: string;
   cwd: string;
@@ -88,6 +89,7 @@ export interface SessionWorkflowPort extends SessionClaimAtomicPort {
 
 export interface SessionRecoveryPort {
   get(provider: string, sessionId: string): SessionEntry | null;
+  readById(sessionId: string, options?: { forceFresh?: boolean }): SessionEntry | null;
   checkpointProviderContinuity(
     sessionId: string,
     update: { providerContinuity: ProviderContinuityBlob; conversationRef?: string },

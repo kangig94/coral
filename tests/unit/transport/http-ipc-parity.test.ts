@@ -10,6 +10,7 @@ import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { kbSourceCreateRequestSchema } from '#src/kb/tool-contracts.js';
 import { testPrincipal } from '../../helpers/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
 const httpServers: Server[] = [];
@@ -36,6 +37,10 @@ function createPorts(): HttpHandlerPorts {
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
+    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
+    ambientClaudeLocation: {
+      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
+    },
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,
@@ -176,6 +181,58 @@ afterEach(async () => {
 });
 
 describe('http/ipc parity', () => {
+  it('binds IPC ambient Claude to daemon-home authority instead of the daemon boot account', async () => {
+    const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
+    if (!spec) throw new Error('sessions.create spec not found');
+
+    const ports: HttpHandlerPorts = {
+      ...createPorts(),
+      providerCredentialDefaults: {
+        ...TEST_PROVIDER_CREDENTIALS,
+        claude: {
+          version: 1,
+          provider: 'claude',
+          kind: 'config-dir',
+          configDir: '/accounts/daemon-boot-claude',
+          projectsRoot: '/accounts/daemon-boot-claude/projects',
+        },
+      },
+      ambientClaudeLocation: {
+        locate: () => ({
+          configDirLocator: '/home/daemon-owner/.claude',
+          projectsRoot: '/home/daemon-owner/.claude/projects',
+        }),
+      },
+    };
+    let observedContext: Parameters<NonNullable<typeof ports.sessions.start>>[2] | undefined;
+    ports.sessions.start = vi.fn(async (_providerName, _input, ctx) => {
+      observedContext = ctx;
+      return { status: 'running' as const, job: 'job-1', session: 'session-1' };
+    });
+
+    await ipcAdapter(spec, ports).dispatch(
+      {
+        provider: 'claude',
+        prompt: 'hello',
+        projectRoot: '/project-root',
+        providerCredentials: {
+          version: 1,
+          codex: { kind: 'home', home: '/accounts/codex-a' },
+          claude: { kind: 'ambient' },
+        },
+      },
+      testPrincipal({ transport: 'ipc' }),
+    );
+
+    expect(observedContext?.providerCredentials?.claude).toEqual({
+      version: 1,
+      provider: 'claude',
+      kind: 'ambient',
+      configDirLocator: '/home/daemon-owner/.claude',
+      projectsRoot: '/home/daemon-owner/.claude/projects',
+    });
+  });
+
   it('derives invocation principal from the transport boundary', async () => {
     const spec = rpcCatalog.find((entry) => entry.name === 'sessions.create');
     if (!spec) {

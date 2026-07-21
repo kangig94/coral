@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
+import { TEST_CLAUDE_SOURCE } from '../../helpers/provider-credentials.js';
 
 const immediateTime = {
   sleep: async () => {},
@@ -38,7 +39,9 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
   it('is a no-op for an empty handle list', async () => {
     const { runtime, unlinkSync } = makeRuntime();
 
-    await expect(claudeArtifactCapability.discardArtifacts([], runtime)).resolves.toEqual({
+    await expect(
+      claudeArtifactCapability.discardArtifacts({ handles: [], source: TEST_CLAUDE_SOURCE, runtime }),
+    ).resolves.toEqual({
       kind: 'skipped_no_handles',
     });
 
@@ -49,7 +52,11 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     const { runtime, unlinkSync } = makeRuntime();
 
     await expect(
-      claudeArtifactCapability.discardArtifacts(['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'], runtime),
+      claudeArtifactCapability.discardArtifacts({
+        handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
+        source: TEST_CLAUDE_SOURCE,
+        runtime,
+      }),
     ).resolves.toEqual({ kind: 'discarded' });
 
     expect(unlinkSync.mock.calls).toEqual([['/tmp/ref-a.jsonl'], ['/tmp/ref-b.jsonl']]);
@@ -62,7 +69,11 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     });
 
     await expect(
-      claudeArtifactCapability.discardArtifacts(['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'], runtime),
+      claudeArtifactCapability.discardArtifacts({
+        handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
+        source: TEST_CLAUDE_SOURCE,
+        runtime,
+      }),
     ).resolves.toEqual({ kind: 'discarded' });
 
     expect(unlinkSync).toHaveBeenCalledTimes(2);
@@ -86,7 +97,11 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
       setTimeout(() => {
         exists = true;
       }, 250);
-      const discard = claudeArtifactCapability.discardArtifacts([handle], runtime);
+      const discard = claudeArtifactCapability.discardArtifacts({
+        handles: [handle],
+        source: TEST_CLAUDE_SOURCE,
+        runtime,
+      });
       await vi.advanceTimersByTimeAsync(500);
       await vi.advanceTimersByTimeAsync(500);
 

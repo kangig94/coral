@@ -88,7 +88,11 @@ const CONTRACT_TARGETS = new Set([
   'src/sessions/continuity.ts',
   'src/store/consumer-contract.ts',
 ]);
-const TRANSPORT_TARGETS = new Set(['src/transport/ipc/server.ts', 'src/transport/ipc/handoff.ts']);
+const TRANSPORT_TARGETS = new Set([
+  'src/transport/ipc/server.ts',
+  'src/transport/ipc/handoff.ts',
+  'src/transport/ipc/client.ts',
+]);
 const COORDINATOR_GLUE_SOURCES = new Set([
   'src/coordinator/index.ts',
   'src/coordinator/bootstrap.ts',

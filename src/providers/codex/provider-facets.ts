@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import type {
-  PreflightRuntime,
+  ProviderPreflightRuntime,
   ProviderAppServerContract,
   ProviderRecoveryContract,
   ProviderRequest,
@@ -23,7 +23,8 @@ import {
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
-const CODEX_AUTH_ERROR_MESSAGE = 'Codex CLI is not authenticated. Run "codex login" to create ~/.codex/auth.json.';
+const CODEX_AUTH_ERROR_MESSAGE =
+  'The selected Codex account is not authenticated. Run "codex login" with the same CODEX_HOME and retry.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 const CODEX_AUTH_TOKEN_KEYS = ['access_token', 'refresh_token', 'id_token'] as const;
 const SCOPED_CODEX_CONTINUITY_READ = { allowUnscopedCwd: false } as const;
@@ -34,7 +35,7 @@ type PreflightCacheEntry = {
 };
 
 let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
-let codexAuthTokensCache: PreflightCacheEntry | null = null;
+const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
 
 async function rpc<M extends AppServerMethod>(
   lease: ProviderServerLease,
@@ -68,12 +69,13 @@ function sanitizeCodexProviderContinuity(
   return hasCodexContinuity(parsed) ? parsed : undefined;
 }
 
-export async function codexPreflight(runtime: PreflightRuntime): Promise<void> {
+export async function codexPreflight(runtime: ProviderPreflightRuntime): Promise<void> {
+  if (runtime.credentialSource.provider !== 'codex') throw new Error('Codex credential source required.');
   await assertCodexAppServerAvailable(runtime);
   await assertCodexAuthTokens(runtime);
 }
 
-async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise<void> {
+async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime): Promise<void> {
   const now = runtime.time.now();
   if (
     codexAppServerAvailabilityCache &&
@@ -85,10 +87,9 @@ async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise
     return;
   }
 
-  const result = await runtime.process.exec('codex', ['app-server', '--help'], {
+  const result = await runtime.runExact('codex', ['app-server', '--help'], {
     encoding: 'utf-8',
     timeout: 10_000,
-    inheritEnv: true,
   });
   const available = !result.error && result.status === 0;
   codexAppServerAvailabilityCache = { available, checkedAt: now };
@@ -97,27 +98,30 @@ async function assertCodexAppServerAvailable(runtime: PreflightRuntime): Promise
   }
 }
 
-async function assertCodexAuthTokens(runtime: PreflightRuntime): Promise<void> {
+async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime): Promise<void> {
   const now = runtime.time.now();
-  if (codexAuthTokensCache && now - codexAuthTokensCache.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
-    if (!codexAuthTokensCache.available) {
+  if (runtime.credentialSource.provider !== 'codex') throw new Error('Codex credential source required.');
+  const cacheKey = runtime.credentialSource.home;
+  const cached = codexAuthTokensCache.get(cacheKey);
+  if (cached && now - cached.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
+    if (!cached.available) {
       throw new Error(CODEX_AUTH_ERROR_MESSAGE);
     }
     return;
   }
 
-  const authPath = join(runtime.env.homedir(), '.codex', 'auth.json');
+  const authPath = join(runtime.credentialSource.home, 'auth.json');
   let parsed: unknown;
 
   try {
     parsed = JSON.parse(runtime.storage.readFileSync(authPath, 'utf-8')) as unknown;
   } catch {
-    codexAuthTokensCache = { available: false, checkedAt: now };
+    codexAuthTokensCache.set(cacheKey, { available: false, checkedAt: now });
     throw new Error(CODEX_AUTH_ERROR_MESSAGE);
   }
 
   const available = hasCodexAuthTokens(parsed);
-  codexAuthTokensCache = { available, checkedAt: now };
+  codexAuthTokensCache.set(cacheKey, { available, checkedAt: now });
   if (!available) {
     throw new Error(CODEX_AUTH_ERROR_MESSAGE);
   }
@@ -145,8 +149,11 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
   buildServerSpec(
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
+    _ports,
+    providerContext,
   ): ProviderServerSpec {
-    return buildCodexProviderServerSpec(request, persistedContinuity);
+    if (providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
+    return { ...buildCodexProviderServerSpec(request, persistedContinuity), env: { ...providerContext.appServerEnv } };
   },
   async interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void> {
     const parsed = readCodexPersistedContinuity(continuity);

@@ -25,6 +25,7 @@ function sessionEntry(sessionId: string, retention: RetentionPolicy = DISCARD): 
   return {
     sessionId,
     provider: 'codex',
+    sessionAuthority: { kind: 'orchestration' },
     name: sessionId,
     state: 'pending',
     retention,

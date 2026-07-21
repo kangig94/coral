@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { managed, none } from '#src/providers/capability.js';
-import type { ProviderSpec } from '#src/providers/contract.js';
+import type { ProviderManagedArtifactCapability, ProviderSpec } from '#src/providers/contract.js';
 import { defineProvider } from '#src/providers/define.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 
@@ -42,7 +42,7 @@ describe('defineProvider', () => {
   });
 
   it('preserves managed artifact capabilities on the provider definition', () => {
-    const discardArtifacts = async (handles: readonly string[]) => ({
+    const discardArtifacts: ProviderManagedArtifactCapability['discardArtifacts'] = async ({ handles }) => ({
       kind: handles.length === 0 ? ('skipped_no_handles' as const) : ('discarded' as const),
     });
     const definition = defineProvider({ name: 'managed-fake', run })

@@ -211,8 +211,20 @@ export const runStartup: DiscussRunStartup = async (deps) => {
     try {
       const recovered = await recoverPersistedSessionsFromStore(
         deps.getDiscussStoreForSource(source),
-        (snapshot) => deps.getDiscussContext(deps.createInvocationContext(snapshot.projectRoot)),
-        (snapshot) => deps.createInvocationContext(snapshot.projectRoot),
+        (snapshot) => {
+          const base = deps.createInvocationContext(snapshot.projectRoot);
+          return deps.getDiscussContext({
+            ...base,
+            providerCredentials: snapshot.providerCredentials,
+          });
+        },
+        (snapshot) => {
+          const base = deps.createInvocationContext(snapshot.projectRoot);
+          return {
+            ...base,
+            providerCredentials: snapshot.providerCredentials,
+          };
+        },
       );
       for (const resume of recovered) {
         recoveredDiscussResumes.push(resume);

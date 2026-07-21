@@ -18,7 +18,7 @@ Commands:
 exports[`cli main routing > preserves help output for 'codex' via snapshot 1`] = `
 "Usage: coral-cli codex [options] [agent]
 
-Run a prompt via codex
+Run via codex; captures CODEX_HOME and binds the session to that account
 
 Arguments:
   agent                          Agent name (optional; omit for a raw prompt
@@ -47,7 +47,8 @@ Options:
 
 Commands:
   seed [options]         Generate discussion personas
-  start [options]        Start a discussion session
+  start [options]        Start a discussion; captures CODEX_HOME and
+                         CLAUDE_CONFIG_DIR for its full lifetime
   watch [options]        Fetch discussion events since cursor (returns new
                          events; increment cursor for next call)
   participate [options]  Submit bid or speech
@@ -140,7 +141,8 @@ Commands:
 exports[`cli main routing > preserves help output for 'workflow' via snapshot 1`] = `
 "Usage: coral-cli workflow [options]
 
-Execute a workflow pipeline
+Execute a workflow; captures CODEX_HOME and CLAUDE_CONFIG_DIR for its full
+lifetime
 
 Options:
   -e, --expression <expr>               Pipeline DSL expression
@@ -169,13 +171,16 @@ Options:
   -h, --help                display help for command
 
 Commands:
-  codex [options] [agent]   Run a prompt via codex
-  claude [options] [agent]  Run a prompt via claude
+  codex [options] [agent]   Run via codex; captures CODEX_HOME and binds the
+                            session to that account
+  claude [options] [agent]  Run via claude; captures CLAUDE_CONFIG_DIR and binds
+                            the session to that account
   jobs [options]            List live jobs across all projects (current project
                             first, then KB jobs, then other directories)
   wait                      Stream job progress (text output)
   abort [options]           Abort running jobs
-  workflow [options]        Execute a workflow pipeline
+  workflow [options]        Execute a workflow; captures CODEX_HOME and
+                            CLAUDE_CONFIG_DIR for its full lifetime
   backend                   Backend daemon control
   discuss                   Discussion operations
   kb                        Knowledge base operations

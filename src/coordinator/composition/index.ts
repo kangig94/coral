@@ -848,6 +848,8 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     identity,
     time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
+    providerCredentialDefaults: world.providerCredentialDefaults,
+    ambientClaudeLocation: world.ambientClaudeLocation,
     remoteAccess: world.remoteAccess,
     childPrincipals: world.childPrincipalRegistry,
     admin: {
@@ -1077,6 +1079,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
     providerHostManager: world.providerHostManager,
+    providerCredentialDefaults: world.providerCredentialDefaults,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

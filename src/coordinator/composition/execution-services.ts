@@ -49,6 +49,7 @@ export function createExecutionServices({
       eventBus: world.eventBus,
       providerRegistry: world.providerRegistry,
       childPrincipalRegistry: world.childPrincipalRegistry,
+      providerCredentialSourceAvailability: world.providerCredentialSourceAvailability,
       pluginRegistry: world.pluginRegistry,
       loadJobProjectionDetail: (jobId) => getProgressStore().loadJobProjectionDetail(jobId),
       readJobEvents: (jobId) => getProgressStore().readJobEvents(jobId),

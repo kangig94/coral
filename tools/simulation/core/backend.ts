@@ -14,6 +14,7 @@ import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../
 import { defineProvider, type ProviderDefinition } from '../../../src/providers/define.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
+import type { ProviderCredentialSet } from '../../../src/runtime/provider-credentials.js';
 import type { Principal } from '../../../src/security/principal.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
 import { providerRequestFailed } from '../../../src/providers/fault.js';
@@ -81,9 +82,20 @@ const DEFAULT_PLUGIN_ROOT = '/tmp/sim/plugin';
 const DEFAULT_PROJECT_ROOT = '/tmp/sim/project';
 const DEFAULT_VERSION = 'sim-version';
 const DEFAULT_BUNDLE_HASH = 'sim-bundle';
-const DEFAULT_FAKE_PROVIDER = 'fake-provider';
+const DEFAULT_FAKE_PROVIDER = 'codex';
 const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_LISTEN_PORT = 4_100;
+const SIMULATION_PROVIDER_CREDENTIALS = {
+  version: 1,
+  codex: { version: 1, provider: 'codex', kind: 'home', home: '/tmp/sim/accounts/codex' },
+  claude: {
+    version: 1,
+    provider: 'claude',
+    kind: 'config-dir',
+    configDir: '/tmp/sim/accounts/claude',
+    projectsRoot: '/tmp/sim/accounts/claude/projects',
+  },
+} as const satisfies ProviderCredentialSet;
 
 export type SimulationScenario = {
   epochMs?: number;
@@ -426,6 +438,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       pluginRoot,
       coralEnv: { ...coralEnv },
       principal,
+      providerCredentials: SIMULATION_PROVIDER_CREDENTIALS,
     };
   };
 

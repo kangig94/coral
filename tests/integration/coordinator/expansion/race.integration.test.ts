@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gzipSync } from 'node:zlib';
 
@@ -139,6 +140,7 @@ describe.skipIf(process.platform === 'win32')('expansion multi-process race inte
       outfile: invocationCjsPath,
       external: [],
       loader: { '.sql': 'text' },
+      define: { 'import.meta.url': JSON.stringify(pathToFileURL(invocationCjsPath).href) },
     });
   });
 

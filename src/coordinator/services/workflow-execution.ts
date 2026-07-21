@@ -1,7 +1,7 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { hasProviderCredentials, type InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -61,12 +61,19 @@ export class WorkflowExecutionService {
     if (!this.deps.providerRegistry.get(providerName)) {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
+    if (!hasProviderCredentials(ctx)) {
+      return rejectLaunch(
+        'provider_credential_source_missing',
+        'This workflow request has no provider account bindings. Re-run it with the current Coral CLI after selecting and authenticating CODEX_HOME and CLAUDE_CONFIG_DIR.',
+      );
+    }
 
     const controllerProfile = buildSessionControllerProfile(ctx.coralEnv);
     // The workflow-level session uses model='workflow' and owns no provider artifact,
     // so the SessionManager default retention='retain' is intentional here.
     const session = this.deps.sessionManager.allocate({
       provider: providerName,
+      sessionAuthority: { kind: 'orchestration' },
       name: `workflow-${this.deps.runtime.time.now()}`,
       model: 'workflow',
       cwd: ctx.projectRoot,
@@ -115,6 +122,7 @@ export class WorkflowExecutionService {
         cwd: workflowLaunchCwd,
         bypassPermissions: false,
         coralEnv: { ...ctx.coralEnv },
+        providerCredentials: ctx.providerCredentials,
       },
       createdAt: nowIsoString(this.deps.runtime.time),
     });

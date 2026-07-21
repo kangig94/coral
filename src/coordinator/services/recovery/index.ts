@@ -224,7 +224,13 @@ export function createRecoveryCoordinator({
 
         let adoptedRuntimeRecord = runtimeRecord;
         signal.throwIfAborted();
-        ({ cleanup } = service.adoptRunningJob(launchRecord, runtimeRecord));
+        const adoption = service.adoptRunningJob(launchRecord, runtimeRecord);
+        cleanup = adoption.cleanup;
+        if (!adoption.adopted) {
+          state.recoveryRegistry?.remove(jobId);
+          log(`Rejected running recovery before adoption: ${jobId}\n`);
+          continue;
+        }
         signal.throwIfAborted();
 
         let cleaned = false;
@@ -320,6 +326,12 @@ export function createRecoveryCoordinator({
       try {
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         signal.throwIfAborted();
+        if (!service.validateProviderRecoveryAuthority(launchRecord)) {
+          state.recoveryRegistry?.remove(jobId);
+          state.recoveryRegistry?.clearCancelled(jobId);
+          log(`Rejected queued recovery with invalid provider authority: ${jobId}\n`);
+          continue;
+        }
         if (state.cancelledRecoveryJobIds.has(jobId)) {
           finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, log });
           state.recoveryRegistry?.remove(jobId);
@@ -370,6 +382,7 @@ export function createRecoveryCoordinator({
             runningRecoverable,
             log,
             runtime,
+            providerRegistry,
             createInvocationContext,
             getRecoveryService,
             sessionLookup: ctx.sessionLookup,

@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('journal_version', '1'),
+  ('journal_version', '2'), -- provider credential-authority store epoch
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 

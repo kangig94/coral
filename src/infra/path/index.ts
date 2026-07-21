@@ -45,17 +45,12 @@ export type CoralPaths = {
 // test fixtures) see a single public surface for path-shape vocabulary.
 // Runtime path-construction functions stay subdir-internal.
 export type { CoordinatorPaths } from './coordinator.js';
-// Config-dir resolution is part of this subdir's public surface: the runtime
-// composes paths from the resolved dir + slot, and provider/registry callers
-// resolve `.claude` data paths from the same dir. `root.js` stays internal.
-export { claudeConfigSlot, resolveClaudeConfigDir } from './root.js';
+// Config-dir resolution remains public for plugin discovery and provider
+// credentials. It never participates in Coral daemon path composition.
+export { resolveClaudeConfigDir, resolveUserHomeDir } from './root.js';
 
 export interface FamilyPathOptions {
   readonly baseDir?: string;
-  /** Per-config-dir partition slot for daemon-owned state families. Undefined
-   *  for the default config dir (shared `~/.coral` tree). The KB/corpus family
-   *  ignores this — knowledge is shared across config dirs by design. */
-  readonly configSlot?: string;
 }
 
 export interface CorpusPathOptions extends FamilyPathOptions {
@@ -86,7 +81,7 @@ export function corpusPaths(flavor: BuildFlavor, opts?: CorpusPathOptions): Corp
 export function exportsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): ExportsPaths {
   const base = flavor === 'dev' ? 'exports-dev' : 'exports';
   return {
-    jobsRoot: join(coralStateRoot(opts?.configSlot, opts?.baseDir), base, 'jobs'),
+    jobsRoot: join(coralStateRoot(opts?.baseDir), base, 'jobs'),
   };
 }
 
@@ -99,7 +94,7 @@ function sourceToSlug(source: string): string {
 // under `projects-dev`, so a dev build never shares a project's memo tree with
 // prod. Enforced uniformly by tests/invariants/flavor-path-separation.test.ts.
 export function projectsPaths(flavor: BuildFlavor, opts?: FamilyPathOptions): ProjectsPaths {
-  const root = join(coralStateRoot(opts?.configSlot, opts?.baseDir), flavor === 'dev' ? 'projects-dev' : 'projects');
+  const root = join(coralStateRoot(opts?.baseDir), flavor === 'dev' ? 'projects-dev' : 'projects');
   return {
     root,
     dataDir: (source) => join(root, sourceToSlug(source)),
@@ -110,18 +105,12 @@ export interface ComposeCoralPathOptions {
   readonly baseDir?: string;
   /** Resolved CORAL_KB_PATH value from caller's env port. */
   readonly customKbRoot?: string;
-  /** Precomputed per-config-dir slot (see `claudeConfigSlot`). Partitions the
-   *  daemon state tree; the KB stays shared. Undefined = default config dir. */
-  readonly configSlot?: string;
 }
 
 export function composeCoralPaths(flavor: BuildFlavor, opts?: ComposeCoralPathOptions): CoralPaths {
-  // State families (store/coordinator/exports/engine/projects) partition by
-  // config-dir slot so two config dirs run fully isolated daemons. Corpus/KB
-  // deliberately omits the slot — knowledge is shared across all config dirs.
+  // Provider account selection never changes Coral-owned state paths.
   const stateOpts: FamilyPathOptions = {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
-    ...(opts?.configSlot === undefined ? {} : { configSlot: opts.configSlot }),
   };
   const corpusOpts: CorpusPathOptions = {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),

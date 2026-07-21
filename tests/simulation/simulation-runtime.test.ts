@@ -224,8 +224,8 @@ describe('simulation runtime', () => {
 
     const closePromise = waitForChildClose(child);
     const durableLaunchPromise = runtime.process.durable.launch({
-      provider: 'fake-provider',
-      command: 'fake-provider',
+      provider: 'codex',
+      command: 'codex',
       args: ['--exec'],
       jobDir: '/tmp/sim/jobs/job-1',
     });
@@ -488,13 +488,13 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.listenCalls).toEqual([{ host: '127.0.0.1', port: 4_201 }]);
     expect(worldA.hooks.kbDaemonStartCalls).toHaveLength(1);
     expect(worldA.hooks.recoverPersistedDiscussCalls).toBe(1);
-    expect(worldA.providerRegistry.get('fake-provider')).toBeDefined();
+    expect(worldA.providerRegistry.get('codex')).toBeDefined();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(true);
 
-    worldA.progressStore.initJob({
+    initTestJob(worldA.progressStore, {
       jobId: 'job-a',
       sessionId: 'session-a',
-      provider: 'fake-provider',
+      provider: 'codex',
       projectRoot: worldA.projectRoot,
       backendNamespace: worldA.namespace,
     });
@@ -506,7 +506,8 @@ describe('simulation runtime', () => {
       undefined,
       worldA.progressStore.getDb(),
     ).allocate({
-      provider: 'fake-provider',
+      provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
       name: 'world-a',
       cwd: worldA.projectRoot,
       projectRoot: worldA.projectRoot,
@@ -517,7 +518,7 @@ describe('simulation runtime', () => {
     expect(worldB.progressStore.listJobIds()).toEqual([]);
     expect(
       new SessionManager(worldB.projectRoot, worldB.runtime, undefined, undefined, worldB.progressStore.getDb()).get(
-        'fake-provider',
+        'codex',
         sessionA.sessionId,
       ),
     ).toBeNull();
@@ -530,3 +531,4 @@ describe('simulation runtime', () => {
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);
   });
 });
+import { initTestJob } from '#tests/helpers/session.js';

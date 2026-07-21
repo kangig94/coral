@@ -225,6 +225,35 @@ describe('execution discuss tools', () => {
     harness.cleanup();
   });
 
+  it('discuss_start reports actionable missing provider authority', async () => {
+    const harness = createDiscussHarness();
+    const registry = createDiscussContextRegistry();
+    const stores = new Map([[harness.projectRoot, harness]]);
+    const { providerCredentials: _providerCredentials, ...unboundContext } = harness.ctx;
+
+    const result = await callDiscussTool(
+      {
+        name: 'discuss_start',
+        args: {
+          topic: DEFAULT_TOPIC,
+          agents: [
+            { name: 'alpha', persona: '# Alpha', provider: 'codex' },
+            { name: 'beta', persona: '# Beta', provider: 'claude' },
+          ],
+        },
+        context: unboundContext,
+      },
+      createHelpers(registry, stores, harness.service),
+    );
+    const error = parseToolError(result);
+
+    expect(error).toMatchObject({ error: 'provider_credential_source_missing' });
+    expect(String(error.message)).toContain('current Coral CLI');
+    expect(String(error.message)).toContain('CODEX_HOME and CLAUDE_CONFIG_DIR');
+
+    harness.cleanup();
+  });
+
   it('discuss_start rejects observer-only sessions', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();

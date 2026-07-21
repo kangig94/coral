@@ -77,10 +77,12 @@ describe('claude appserver protocol helpers', () => {
   it('validates broker params and re-attaches the broker session key', () => {
     const ensure = requireSessionEnsureParams({
       cwd: '/workspace',
+      projectsRoot: '/home/user/.claude/projects',
       systemPromptHash: 'sha256:abc123',
       permissionMode: 'bypassPermissions',
       brokerSessionKey: 'broker-1',
       conversationRef: 'conversation-1',
+      resumeExisting: true,
       controllerEnv: {
         FOO: 'bar',
       },
@@ -91,10 +93,12 @@ describe('claude appserver protocol helpers', () => {
 
     expect(ensure).toEqual({
       cwd: '/workspace',
+      projectsRoot: '/home/user/.claude/projects',
       systemPromptHash: 'sha256:abc123',
       permissionMode: 'bypassPermissions',
       brokerSessionKey: 'broker-1',
       conversationRef: 'conversation-1',
+      resumeExisting: true,
       controllerEnv: {
         FOO: 'bar',
       },
@@ -104,9 +108,11 @@ describe('claude appserver protocol helpers', () => {
     });
     expect(stripBrokerSessionKey(ensure)).toEqual({
       cwd: '/workspace',
+      projectsRoot: '/home/user/.claude/projects',
       systemPromptHash: 'sha256:abc123',
       permissionMode: 'bypassPermissions',
       conversationRef: 'conversation-1',
+      resumeExisting: true,
       controllerEnv: {
         FOO: 'bar',
       },
@@ -122,6 +128,7 @@ describe('claude appserver protocol helpers', () => {
     expect(
       requireSessionEnsureParams({
         cwd: '/workspace',
+        projectsRoot: '/home/user/.claude/projects',
         systemPromptHash: 'sha256:abc123',
         permissionMode: 'bypassPermissions',
         conversationRef: '',

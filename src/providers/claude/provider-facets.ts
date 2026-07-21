@@ -1,32 +1,95 @@
+import { dirname, join } from 'node:path';
+
 import { detectClaudeCli } from '../cli-detection.js';
 import type {
-  PreflightRuntime,
+  ProviderPreflightRuntime,
   ProviderAppServerContract,
   ProviderRecoveryContract,
   ProviderRequest,
-  ProviderServerLease,
 } from '../contract.js';
 import { readString } from '../../infra/json.js';
-import type { SessionProbeResult } from './appserver/protocol.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
-  mapInterruptParams,
+  claudeConversationRef,
   readClaudePersistedContinuity,
-  withClaudeContinuity,
 } from './request-mapping.js';
-import { readTurnConversationRef } from './request-prep.js';
+import { providerRoutingEnv, UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../runtime/provider-credentials.js';
 
-async function brokerRpc<R = unknown>(
-  lease: ProviderServerLease,
-  method: string,
-  params: Record<string, unknown> | object,
-): Promise<R> {
-  return lease.rpc<R>(method, params as unknown as Record<string, unknown>);
+const UNSUPPORTED_CLAUDE_HELPER_SETTINGS = Object.freeze(
+  new Set(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport']),
+);
+
+function claudeConfigRoot(runtime: ProviderPreflightRuntime): string {
+  if (runtime.credentialSource.provider !== 'claude') throw new Error('Claude credential source required.');
+  return runtime.credentialSource.kind === 'config-dir'
+    ? runtime.credentialSource.configDir
+    : runtime.credentialSource.configDirLocator;
 }
 
-export async function claudePreflight(runtime: PreflightRuntime): Promise<void> {
-  const cli = await detectClaudeCli(runtime.process, runtime.env);
+function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void {
+  const settingsPaths = new Set([join(claudeConfigRoot(runtime), 'settings.json')]);
+  let directory = runtime.cwd;
+  while (true) {
+    settingsPaths.add(join(directory, '.claude', 'settings.json'));
+    settingsPaths.add(join(directory, '.claude', 'settings.local.json'));
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+
+  for (const settingsPath of settingsPaths) {
+    if (!runtime.storage.existsSync(settingsPath)) continue;
+
+    let settings: unknown;
+    try {
+      settings = JSON.parse(runtime.storage.readFileSync(settingsPath, 'utf-8')) as unknown;
+    } catch {
+      throw new Error(`Cannot validate Claude credential selectors in '${settingsPath}'. Fix the JSON and retry.`);
+    }
+    if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
+      throw new Error(`Cannot validate Claude credential selectors in '${settingsPath}': expected a JSON object.`);
+    }
+
+    const record = settings as Record<string, unknown>;
+    for (const helper of UNSUPPORTED_CLAUDE_HELPER_SETTINGS) {
+      if (
+        record[helper] !== undefined &&
+        record[helper] !== null &&
+        record[helper] !== false &&
+        record[helper] !== ''
+      ) {
+        throw new Error(
+          `Unsupported Claude credential helper '${helper}' in '${settingsPath}'. Remove it or run Claude outside Coral.`,
+        );
+      }
+    }
+
+    const configuredEnv = record.env;
+    if (configuredEnv === null || typeof configuredEnv !== 'object' || Array.isArray(configuredEnv)) continue;
+    for (const [key, value] of Object.entries(configuredEnv as Record<string, unknown>)) {
+      const selectorKey = key.toUpperCase();
+      if (
+        UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS.has(selectorKey) &&
+        ((typeof value === 'string' && value.trim().length > 0) ||
+          (typeof value !== 'string' && value !== null && value !== undefined))
+      ) {
+        throw new Error(
+          `Unsupported Claude credential selector '${key}' in '${settingsPath}'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.`,
+        );
+      }
+    }
+  }
+}
+
+export async function claudePreflight(runtime: ProviderPreflightRuntime): Promise<void> {
+  if (runtime.credentialSource.provider !== 'claude') throw new Error('Claude credential source required.');
+  assertSupportedClaudeSettings(runtime);
+  const routingEnv = providerRoutingEnv(runtime.credentialSource);
+  const cli = await detectClaudeCli(
+    { exec: (command, args, options) => runtime.runExact(command, args, options) },
+    { get: (key) => routingEnv[key] },
+  );
   if (!cli.available) {
     throw new Error(`Claude CLI not available: ${cli.error}`);
   }
@@ -38,72 +101,25 @@ export async function claudePreflight(runtime: PreflightRuntime): Promise<void> 
 export const claudeAppServerLifecycle: ProviderAppServerContract = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
-  buildServerSpec(request, _persistedContinuity, ports) {
-    return buildClaudeProviderServerSpec(request, ports.storage);
-  },
-  async interrupt(lease, continuity) {
-    const persistedContinuity = readClaudePersistedContinuity(continuity);
-    if (persistedContinuity.brokerSessionKey === undefined) {
-      throw new Error('Claude broker session key missing from continuity.');
-    }
-
-    await brokerRpc(
-      lease,
-      'turn/interrupt',
-      mapInterruptParams(persistedContinuity.brokerSessionKey, persistedContinuity.brokerTurnId),
-    );
+  buildServerSpec(request, _persistedContinuity, ports, providerContext) {
+    if (providerContext.provider !== 'claude') throw new Error('Claude provider context required.');
+    return buildClaudeProviderServerSpec(request, ports.storage, providerContext.brokerEnv);
   },
 };
 
 export const claudeRecoveryLifecycle = {
   buildRecoveryMeta(request: ProviderRequest) {
-    const conversationRef = readString(request.conversationRef);
+    const conversationRef = readString(claudeConversationRef(request));
     return conversationRef !== undefined ? { conversationRef } : {};
-  },
-  async probe(lease, continuity) {
-    const persistedContinuity = readClaudePersistedContinuity(continuity);
-    if (persistedContinuity.brokerSessionKey === undefined) {
-      throw new Error('Claude broker session key missing from continuity.');
-    }
-
-    const result = await lease.rpc<SessionProbeResult>('session/probe', {
-      brokerSessionKey: persistedContinuity.brokerSessionKey,
-      conversationRef: persistedContinuity.conversationRef,
-    });
-    if (result.status === 'unavailable') {
-      throw new Error('Claude broker session is unavailable.');
-    }
-
-    const updatedConversationRef = readTurnConversationRef(result) ?? persistedContinuity.conversationRef;
-    const resumable =
-      result.status === 'available' ||
-      (result.status === 'missing' && persistedContinuity.conversationRef !== undefined);
-
-    return {
-      resumable,
-      updatedContinuity: withClaudeContinuity(continuity, {
-        brokerSessionKey: result.brokerSessionKey ?? persistedContinuity.brokerSessionKey,
-        bootstrapSignature: result.bootstrapSignature ?? persistedContinuity.bootstrapSignature,
-        envHash: persistedContinuity.envHash,
-        conversationRef: updatedConversationRef,
-      }),
-    };
   },
   finalizeInterrupted(probeResult, continuity, context) {
     const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
     const providerContinuity = persistedContinuity.bootstrapSignature
       ? buildClaudeContinuity({
-          ...(persistedContinuity.brokerSessionKey !== undefined
-            ? { brokerSessionKey: persistedContinuity.brokerSessionKey }
-            : {}),
           bootstrapSignature: persistedContinuity.bootstrapSignature,
-          ...(persistedContinuity.envHash !== undefined ? { envHash: persistedContinuity.envHash } : {}),
-          ...(persistedContinuity.conversationRef !== undefined
-            ? { conversationRef: persistedContinuity.conversationRef }
-            : {}),
         })
       : undefined;
-    const effectiveConversationRef = persistedContinuity.conversationRef ?? context.preservedConversationRef;
+    const effectiveConversationRef = context.preservedConversationRef;
 
     if (probeResult.resumable) {
       if (effectiveConversationRef !== undefined) {
@@ -125,4 +141,4 @@ export const claudeRecoveryLifecycle = {
       ...(providerContinuity ? { providerContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'probe' | 'finalizeInterrupted'>;
+} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'finalizeInterrupted'>;

@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { errorMessage } from '../../infra/error-format.js';
 import { isRecord } from '../../infra/json.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../command-schemas.js';
 import { type DiscussContext } from './types.js';
@@ -34,6 +33,10 @@ function deriveErrorMessage(code: string, detail?: unknown): string {
 
   if (isRecord(detail) && typeof detail.message === 'string' && detail.message.length > 0) {
     return detail.message;
+  }
+
+  if (code === 'provider_credential_source_missing') {
+    return 'This discussion has no provider account binding. Re-run it with the current Coral CLI after selecting and authenticating CODEX_HOME and CLAUDE_CONFIG_DIR.';
   }
 
   return code.replaceAll('_', ' ');
@@ -93,7 +96,7 @@ async function executeDiscussStart(
     await discussOperations.startDiscussSession(ctx, sessionId, args.topic, args.agents, args.config ?? {}, context);
     return domainSuccess({ session: sessionId });
   } catch (error: unknown) {
-    return domainError('start_failed', errorMessage(error));
+    return handleDiscussOperationError(error);
   }
 }
 

@@ -222,6 +222,7 @@ function makeSession(overrides: Partial<SessionEntry> = {}): SessionEntry {
     ...overrides,
     sessionId,
     provider,
+    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
     name: overrides.name ?? `${sessionId}-name`,
     state: overrides.state ?? 'ready',
     retention: overrides.retention ?? 'retain',

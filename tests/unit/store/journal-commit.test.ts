@@ -1,6 +1,7 @@
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
+import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
@@ -15,6 +16,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 const TS_OVERRIDE = '2026-04-18T12:00:00.000Z';
@@ -80,6 +82,7 @@ function sessionEntry(sessionId: string): SessionEntry {
   return {
     sessionId,
     provider: 'codex',
+    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
     name: sessionId,
     state: 'pending',
     retention: 'retain',
@@ -118,6 +121,13 @@ describe('journal commit primitive', () => {
   it('resolves tokens before schema parse and preserves source stream for cross-stream terminals', () => {
     const db = createDb();
     try {
+      for (const sessionId of ['session-a', 'session-b']) {
+        seedTestSessionProjection(db, {
+          sessionId,
+          provider: 'codex',
+          projectRoot: `/workspace/${sessionId}`,
+        });
+      }
       const appended = commit(
         db,
         (c) => {
@@ -428,6 +438,167 @@ describe('journal commit primitive', () => {
           },
         },
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a provider launch without a previously established session authority', () => {
+    const db = createDb();
+    try {
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append(launchInput('job-missing-session'));
+          },
+          ctx(),
+        ),
+      ).toThrow(/no authoritative parent session/u);
+      expect(countEvents(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('makes session authority order explicit inside an atomic batch', () => {
+    const db = createDb();
+    const entry = sessionEntry('session-order');
+    const opened = {
+      type: 'session.opened' as const,
+      stream: { kind: 'session' as const, id: entry.sessionId },
+      refs: { sessionId: entry.sessionId },
+      bodyVersion: 1 as const,
+      body: { entry, controller: 'default', provider: 'codex', scope_key: 'tests' },
+    };
+    try {
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append(launchInput('job-before-open', entry.sessionId));
+            c.append(opened);
+          },
+          ctx(),
+        ),
+      ).toThrow(/no authoritative parent session/u);
+      expect(countEvents(db)).toBe(0);
+
+      const appended = commit(
+        db,
+        (c) => {
+          c.append(opened);
+          c.append(launchInput('job-after-open', entry.sessionId));
+        },
+        ctx(),
+      );
+      expect(appended.map((event) => event.type)).toEqual(['session.opened', 'job.launch.requested']);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects duplicate launch authority both within a batch and against the journal', () => {
+    const db = createDb();
+    try {
+      const entry = sessionEntry('session-duplicate');
+      const opened = {
+        type: 'session.opened' as const,
+        stream: { kind: 'session' as const, id: entry.sessionId },
+        refs: { sessionId: entry.sessionId },
+        bodyVersion: 1 as const,
+        body: { entry, controller: 'default', provider: 'codex', scope_key: 'tests' },
+      };
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append(opened);
+            c.append(launchInput('job-duplicate', entry.sessionId));
+            c.append(launchInput('job-duplicate', entry.sessionId));
+          },
+          ctx(),
+        ),
+      ).toThrow(/already has a launch authority/u);
+      expect(countEvents(db)).toBe(0);
+
+      commit(
+        db,
+        (c) => {
+          c.append(opened);
+          c.append(launchInput('job-duplicate', entry.sessionId));
+        },
+        ctx(),
+      );
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append(launchInput('job-duplicate', entry.sessionId));
+          },
+          ctx(),
+        ),
+      ).toThrow(/already has a launch authority/u);
+      expect(countEvents(db)).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects provider and workflow launches whose session authority kind does not match', () => {
+    const db = createDb();
+    try {
+      const providerEntry = sessionEntry('session-provider-authority');
+      const orchestrationEntry = {
+        ...sessionEntry('session-orchestration-authority'),
+        sessionAuthority: { kind: 'orchestration' as const },
+      };
+      commit(
+        db,
+        (c) => {
+          for (const entry of [providerEntry, orchestrationEntry]) {
+            c.append({
+              type: 'session.opened',
+              stream: { kind: 'session', id: entry.sessionId },
+              refs: { sessionId: entry.sessionId },
+              bodyVersion: 1,
+              body: { entry, controller: 'default', provider: 'codex', scope_key: 'tests' },
+            });
+          }
+        },
+        ctx(),
+      );
+
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append(launchInput('job-wrong-provider-authority', orchestrationEntry.sessionId));
+          },
+          ctx(),
+        ),
+      ).toThrow(/does not match its session authority/u);
+
+      expect(() =>
+        commit(
+          db,
+          (c) => {
+            c.append({
+              ...launchInput('job-wrong-workflow-authority', providerEntry.sessionId),
+              body: {
+                ...launchBody('job-wrong-workflow-authority', providerEntry.sessionId),
+                jobKind: 'workflow',
+                request: {
+                  ...launchBody('job-wrong-workflow-authority', providerEntry.sessionId).request,
+                  providerCredentials: TEST_PROVIDER_CREDENTIALS,
+                },
+              },
+            });
+          },
+          ctx(),
+        ),
+      ).toThrow(/does not match its session authority/u);
+      expect(countEvents(db)).toBe(2);
     } finally {
       db.close();
     }

@@ -89,7 +89,7 @@ const HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL: Principal = {
   attenuatedCaps: new Set<Capability>(['liveness']),
 };
 type RestrictedRemoteTransportOption = {
-  option: 'bypassPermissions' | 'networkEnv' | 'coralEnv';
+  option: 'bypassPermissions' | 'networkEnv' | 'coralEnv' | 'providerCredentials';
   message: string;
 };
 const eventStreamQuerySchema = z
@@ -736,6 +736,17 @@ async function handleCatalogUnaryRoute(
   res: ServerResponse,
   deps: HttpHandlerPorts,
 ): Promise<void> {
+  if (
+    isRecord(request) &&
+    Object.prototype.hasOwnProperty.call(request, 'providerCredentials') &&
+    request.providerCredentials !== undefined
+  ) {
+    sendJson(res, 400, {
+      code: 'invalid_request',
+      message: '`providerCredentials` is selected by the HTTP daemon and cannot be supplied by clients',
+    });
+    return;
+  }
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
     return;
   }
