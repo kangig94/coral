@@ -150,6 +150,7 @@ export class MockDurableTransport implements DurableExecutionTransport {
       ...options,
       args: [...options.args],
       ...(options.envAdditions ? { envAdditions: { ...options.envAdditions } } : {}),
+      ...(options.env ? { env: { ...options.env } } : {}),
     });
     return this.spawner.launchDurable(options);
   }
@@ -352,9 +353,13 @@ export class MockProcessSpawner {
     this.storage.mkdirSync(options.jobDir, { recursive: true });
     this.storage.writeFileSync(stdoutPath, '');
     this.storage.writeFileSync(stderrPath, '');
-    this.storage.writeAtomicSync(envPath, JSON.stringify(this.options.buildDurableEnv(options.envAdditions)), {
-      encoding: 'utf-8',
-    });
+    this.storage.writeAtomicSync(
+      envPath,
+      JSON.stringify(options.env ? { ...options.env } : this.options.buildDurableEnv(options.envAdditions)),
+      {
+        encoding: 'utf-8',
+      },
+    );
 
     const exitDeferred = createDeferred<DurableProcessExit>();
     const exitError = script.waitForExitError ? toError(script.waitForExitError) : null;

@@ -2,9 +2,10 @@ import type { StoragePort } from '../../infra/port-types.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { AbortError } from '../../runtime/abort.js';
-import type { IdPort, Runtime } from '../../runtime/ports.js';
+import type { IdPort } from '../../runtime/ports.js';
+import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
 import type { EffortLevel, ProviderServerLease, ProviderServerSpec } from '../contract.js';
-import { deleteClaudeJsonlArtifactsForConversation, resolveClaudeProjectsRoot } from './artifacts.js';
+import { deleteClaudeJsonlArtifactsForConversation } from './artifacts.js';
 import {
   brokerNotificationMethods,
   type SessionCloseResult,
@@ -21,14 +22,20 @@ export type ClaudeOneShotRequest = {
   readonly effort?: EffortLevel;
   readonly permissionMode?: Extract<PermissionMode, 'default' | 'bypassPermissions' | 'auto'>;
   readonly systemPrompt?: string;
-  readonly controllerEnv?: Record<string, string>;
   readonly signal?: AbortSignal;
+};
+
+export type ClaudeSystemExecutionContext = {
+  readonly source: Extract<ProviderCredentialSourceRef, { provider: 'claude' }>;
+  readonly brokerEnv: Readonly<Record<string, string>>;
+  readonly controllerEnv: Readonly<Record<string, string>>;
+  readonly projectsRoot: string;
 };
 
 export type ClaudeOneShotDeps = {
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
-  readonly env: Pick<Runtime['env'], 'claudeConfigDir'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
+  readonly providerContext: ClaudeSystemExecutionContext;
   readonly acquireServer: (
     spec: ProviderServerSpec,
     options?: { signal?: AbortSignal },
@@ -56,7 +63,7 @@ type ClaudeOneShotState = {
 export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
   const state = createOneShotState();
   const lease = await deps.acquireServer(
-    buildClaudeProviderServerSpec({ cwd: request.cwd, coralEnv: request.controllerEnv }, deps.storage),
+    buildClaudeProviderServerSpec({ cwd: request.cwd }, deps.storage, deps.providerContext.brokerEnv),
     {
       signal: request.signal,
     },
@@ -76,7 +83,8 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
         deps.ids,
         request.systemPrompt,
       ),
-      ...(request.controllerEnv === undefined ? {} : { controllerEnv: request.controllerEnv }),
+      controllerEnv: { ...deps.providerContext.controllerEnv },
+      projectsRoot: deps.providerContext.projectsRoot,
       ...(request.systemPrompt === undefined ? {} : { systemPrompt: request.systemPrompt }),
       ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.effort === undefined ? {} : { effort: request.effort }),
@@ -245,7 +253,7 @@ function cleanupOneShotJsonl(deps: ClaudeOneShotDeps, state: ClaudeOneShotState)
 
   const result = deleteClaudeJsonlArtifactsForConversation({
     conversationRef: state.conversationRef,
-    projectsRoot: resolveClaudeProjectsRoot(deps.env),
+    projectsRoot: deps.providerContext.projectsRoot,
     storage: deps.storage,
   });
   for (const cleanupError of result.errors) {

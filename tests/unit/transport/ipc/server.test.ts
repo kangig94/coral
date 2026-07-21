@@ -8,6 +8,7 @@ import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { Principal } from '#src/security/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
 
@@ -91,6 +92,10 @@ function createPorts(): HttpHandlerPorts {
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
+    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
+    ambientClaudeLocation: {
+      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
+    },
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,

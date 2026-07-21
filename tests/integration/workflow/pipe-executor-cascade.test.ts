@@ -9,12 +9,14 @@ import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
 import { managed } from '#src/providers/capability.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { streamProviderEvents, streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
@@ -97,7 +99,7 @@ describe('pipe executor coral cascade invariant', () => {
 
       const capturedLaunches: RecordedLaunchRequest[] = [];
       const stubProvider: Provider = {
-        name: 'stub-provider',
+        name: 'codex',
         execute: (request) => {
           capturedLaunches.push(cloneProviderRequest(request));
           return streamProviderTerminal({ content: 'stub-provider-result', outcome: { kind: 'completed' } });
@@ -114,8 +116,16 @@ describe('pipe executor coral cascade invariant', () => {
         providers: permissiveProviderLookupPort,
       });
       const executionSvc = new ExecutionService(
-        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
         {
+          projectRoot,
+          pluginRoot: coralPluginRoot,
+          coralEnv: {},
+          principal: testProjectPrincipal(projectRoot),
+          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        },
+        {
+          childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+          providerCredentialSourceAvailability: { isAvailable: () => true },
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-cascade-test',
@@ -139,12 +149,13 @@ describe('pipe executor coral cascade invariant', () => {
         pluginRoot: coralPluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
       };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',
           startPrompt: 'hi',
-          provider: 'stub-provider',
+          provider: 'codex',
         },
         providerRegistry,
       );
@@ -199,7 +210,7 @@ describe('pipe executor coral cascade invariant', () => {
 
       const providerRegistry = new ProviderRegistry();
       const stubProvider: Provider = {
-        name: 'stub-provider',
+        name: 'codex',
         execute: () =>
           streamProviderEvents((emit) => {
             emit({
@@ -214,7 +225,7 @@ describe('pipe executor coral cascade invariant', () => {
             });
           }),
         artifactCapability: managed({
-          discardArtifacts: async (handles, cleanupRuntime) => {
+          discardArtifacts: async ({ handles, runtime: cleanupRuntime }) => {
             for (const handle of handles) {
               cleanupRuntime.storage.unlinkSync(handle);
             }
@@ -251,8 +262,16 @@ describe('pipe executor coral cascade invariant', () => {
       });
       reactorRef.current = reactor;
       const executionSvc = new ExecutionService(
-        { projectRoot, pluginRoot: coralPluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) },
         {
+          projectRoot,
+          pluginRoot: coralPluginRoot,
+          coralEnv: {},
+          principal: testProjectPrincipal(projectRoot),
+          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        },
+        {
+          childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+          providerCredentialSourceAvailability: { isAvailable: () => true },
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-retention-test',
@@ -277,12 +296,13 @@ describe('pipe executor coral cascade invariant', () => {
         pluginRoot: coralPluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
       };
       const compiled = workflowCompiler.compile(
         {
           expression: 'architect',
           startPrompt: 'hi',
-          provider: 'stub-provider',
+          provider: 'codex',
         },
         providerRegistry,
       );

@@ -12,8 +12,7 @@
 // it intentionally excludes bundled artifacts the agent never calls directly
 // (e.g. the Kiwi tokenizer in `src/expansion/install-only.ts`). Hooks are
 // self-contained and must not import from `src/`, so keep it in lockstep with
-// that source the same way `coralStateRoot`/`claudeConfigSlot` mirror their
-// `src` originals.
+// the expansion catalog and account-neutral `coralStateRoot` source.
 
 import { statSync } from 'node:fs';
 import { join } from 'node:path';

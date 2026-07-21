@@ -9,6 +9,7 @@ import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = new Date('2026-04-28T00:00:00.000Z');
 
@@ -56,12 +57,49 @@ function readEvents(db: Database): Array<{ seq: number; type: string; body: unkn
 }
 
 describe('recovery effects', () => {
-  it('records synthetic launch, recovery fault, and terminal in one commit', () => {
+  it('records recovery fault and terminal on an existing projection whose launch event is missing', () => {
     const db = createDb();
     try {
       const progressStore = createProgressStore(db);
       const commitSpy = vi.spyOn(progressStore, 'commit');
       const status = recoveryStatus();
+      seedTestSessionProjection(db, {
+        sessionId: status.sessionId ?? '',
+        provider: status.provider ?? 'codex',
+        projectRoot: status.projectRoot,
+        backendNamespace: status.backendNamespace,
+      });
+      if (status.sessionId === null || status.provider === null) throw new Error('provider status required');
+      const sessionId = status.sessionId;
+      const provider = status.provider;
+      progressStore.commit((c) => {
+        c.append({
+          type: 'job.launch.requested',
+          stream: { kind: 'job', id: status.jobId },
+          namespace: status.backendNamespace,
+          project: status.projectRoot,
+          refs: { jobId: status.jobId, sessionId },
+          bodyVersion: 1,
+          body: {
+            sessionId,
+            provider,
+            projectRoot: status.projectRoot,
+            backendNamespace: status.backendNamespace,
+            jobKind: 'provider',
+            pool: 'default',
+            enqueueSequence: 0,
+            providerAction: 'exec',
+            request: { prompt: '', cwd: status.projectRoot, bypassPermissions: false, coralEnv: {} },
+            createdAt: status.updatedAt,
+          },
+        });
+        return undefined;
+      });
+      db.prepare(
+        "DELETE FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'",
+      ).run(status.jobId);
+      expect(progressStore.readLaunchProjection(status.jobId)).toBeNull();
+      commitSpy.mockClear();
 
       markJobAsError(progressStore, status, { kind: 'missing_launch_record' }, () => {});
 
@@ -69,21 +107,11 @@ describe('recovery effects', () => {
       expect(readEvents(db)).toEqual([
         expect.objectContaining({
           seq: 1,
-          type: 'job.launch.requested',
-          body: expect.objectContaining({
-            sessionId: status.sessionId,
-            provider: status.provider,
-            projectRoot: status.projectRoot,
-            backendNamespace: status.backendNamespace,
-          }),
-        }),
-        expect.objectContaining({
-          seq: 2,
           type: 'job.progress.emitted',
           body: { kind: 'missing_launch_record' },
         }),
         expect.objectContaining({
-          seq: 3,
+          seq: 2,
           type: 'job.terminal.recorded',
           body: expect.objectContaining({
             terminal: expect.objectContaining({
@@ -91,7 +119,7 @@ describe('recovery effects', () => {
                 kind: 'failed',
                 causeRef: {
                   stream: { kind: 'job', id: status.jobId },
-                  seq: 2,
+                  seq: 1,
                 },
               },
             }),
@@ -100,10 +128,7 @@ describe('recovery effects', () => {
       ]);
 
       const detail = progressStore.loadJobProjectionDetail(status.jobId);
-      expect(detail.launch).toMatchObject({
-        sessionId: status.sessionId,
-        provider: status.provider,
-      });
+      expect(detail.launch).toBeNull();
       expect(detail.status).toMatchObject({
         phase: 'error',
         result: {
@@ -111,7 +136,7 @@ describe('recovery effects', () => {
             kind: 'failed',
             causeRef: {
               stream: { kind: 'job', id: status.jobId },
-              seq: 2,
+              seq: 1,
             },
           },
         },

@@ -4,6 +4,7 @@ import { decideBid, decideSessionCreate } from '#src/discuss/state-machine.js';
 import type { DiscussCreateInput, Result } from '#src/discuss/session-types.js';
 import { DiscussSessionStore, DiscussStaleWriteError } from '#src/discuss/shell/session-store.js';
 import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
 
 const SESSION_ID = 'session-1';
 const SECOND_SESSION_ID = 'session-2';
@@ -43,6 +44,7 @@ async function appendRoundTripHistory(store: DiscussSessionStore, sessionId = SE
         { sessionId, projectRoot: PROJECT_ROOT, topic: TOPIC },
         1,
         '2026-03-11T00:00:00.000Z',
+        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
       ),
     ),
   );
@@ -115,6 +117,7 @@ describe('DiscussSessionStore', () => {
           { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
           1,
           '2026-03-11T00:00:00.000Z',
+          { providerCredentials: TEST_PROVIDER_CREDENTIALS },
         ),
       ),
     );

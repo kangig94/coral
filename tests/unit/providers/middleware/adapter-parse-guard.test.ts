@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
 import { adapterParseGuard, type ParseErrorDetail } from '#src/providers/middleware/adapter-parse-guard.js';
+import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -30,6 +31,7 @@ const BASE_RUNTIME: ProviderRuntime = {
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
+  providerContext: TEST_CODEX_CONTEXT,
 };
 
 async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<ProviderEventBody[]> {

@@ -4,6 +4,7 @@ import { coralEnvForwardSchema } from '../infra/env-sanitize.js';
 import { AGENT_IDENT_RE, identPattern, providerIdentPattern } from '../infra/identifiers.js';
 import { networkEnvSchema } from '../infra/network-env.js';
 import { retentionPolicySchema } from './entry.js';
+import { providerCredentialSetInputSchema } from '../runtime/provider-credentials.js';
 
 const modelNameSchema = z
   .string()
@@ -43,5 +44,6 @@ export const sessionCreateSchema = z
     retention: retentionPolicySchema.optional(),
     networkEnv: networkEnvSchema.optional(),
     coralEnv: coralEnvForwardSchema.optional(),
+    providerCredentials: providerCredentialSetInputSchema.optional(),
   })
   .strict();

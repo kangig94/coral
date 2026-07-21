@@ -11,6 +11,7 @@ import { collectProviderEvents } from '#src/providers/stream.js';
 import { brokerNotificationMethods, type TurnFailureDiagnostic } from '#src/providers/claude/appserver/protocol.js';
 import { claudeSessionKernel } from '#src/providers/claude/session-kernel.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { TEST_CLAUDE_CONTEXT } from '../../../helpers/provider-credentials.js';
 
 type MockLease = ProviderServerLease & {
   readonly rpcMock: ReturnType<typeof vi.fn>;
@@ -99,6 +100,7 @@ function makeRuntime(controller = new AbortController()): ProviderRuntime {
       transportClosed: vi.fn(),
     },
     kbRoot: '/mock/kb',
+    providerContext: TEST_CLAUDE_CONTEXT,
   };
 }
 

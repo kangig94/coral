@@ -8,6 +8,21 @@ import type { ProviderServerLease } from '#src/providers/contract.js';
 
 type BrokerNotificationHandler = (msg: { method: string; params?: Record<string, unknown> }) => void;
 
+function systemContext(configDir: string) {
+  return {
+    source: {
+      version: 1 as const,
+      provider: 'claude' as const,
+      kind: 'config-dir' as const,
+      configDir,
+      projectsRoot: join(configDir, 'projects'),
+    },
+    brokerEnv: {},
+    controllerEnv: { CLAUDE_CONFIG_DIR: configDir },
+    projectsRoot: join(configDir, 'projects'),
+  };
+}
+
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   return {
     name,
@@ -99,7 +114,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        env: { claudeConfigDir: () => `${home}/.claude` },
+        providerContext: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -218,7 +233,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        env: { claudeConfigDir: () => `${home}/.claude` },
+        providerContext: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -339,7 +354,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        env: { claudeConfigDir: () => `${home}/.claude` },
+        providerContext: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -456,7 +471,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        env: { claudeConfigDir: () => `${home}/.claude` },
+        providerContext: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -525,7 +540,7 @@ describe('runClaudeOneShotTurn', () => {
       runClaudeOneShotTurn(
         {
           storage,
-          env: { claudeConfigDir: () => '/home/user/.claude' },
+          providerContext: systemContext('/home/user/.claude'),
           ids: {
             uuid: () => 'turn-1',
             sha256: (value) => `hash:${value}`,

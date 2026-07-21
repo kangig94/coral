@@ -133,7 +133,7 @@ const bootStepSchema = z.object({
 
 const launchStepSchema = z.object({
   type: z.literal('launch'),
-  provider: z.string().default('fake-provider'),
+  provider: z.string().default('codex'),
   prompt: z.string().min(1),
   agent: z.string().optional(),
   projectRoot: z.string().optional(),

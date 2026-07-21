@@ -1,5 +1,4 @@
 import { execSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -55,9 +54,11 @@ export function exitIfWrongFlavor() {
 }
 
 export function readStdin() {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     let data = '';
-    process.stdin.on('data', chunk => { data += chunk; });
+    process.stdin.on('data', (chunk) => {
+      data += chunk;
+    });
     process.stdin.on('end', () => resolve(data));
     process.stdin.on('error', () => resolve('{}'));
   });
@@ -101,9 +102,16 @@ function computeProjectSource(projectDir) {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 2000,
-    }).trim().replace(/\.git$/, '');
+    })
+      .trim()
+      .replace(/\.git$/, '');
     const sshPath = remote.match(/^[^@]+@[^:]+:(.+)$/)?.[1];
-    const rawPath = sshPath ?? remote.replace(/^[^:]+:\/\//, '').replace(/^[^@/]+@/, '').replace(/^[^/]+\/+/, '');
+    const rawPath =
+      sshPath ??
+      remote
+        .replace(/^[^:]+:\/\//, '')
+        .replace(/^[^@/]+@/, '')
+        .replace(/^[^/]+\/+/, '');
     const segments = rawPath.split('/').filter(Boolean);
     if (segments.length >= 2) return `${segments.at(-2)}/${segments.at(-1)}`;
   } catch {
@@ -122,25 +130,10 @@ export function claudeConfigDir() {
   return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
 }
 
-// Per-config-dir state slot. MUST stay in lockstep with src `claudeConfigSlot`
-// (src/infra/path/root.ts): the default config dir (~/.claude) maps to no slot
-// (shared ~/.coral tree, backward compatible); any other config dir maps to
-// sha256(configDir).slice(0,8). The daemon partitions its run/store/jobs/
-// projects/exports by this slot, so every hook touching that state must resolve
-// the same root via coralStateRoot().
-function claudeConfigSlot() {
-  const configDir = claudeConfigDir();
-  if (configDir === join(homedir(), '.claude')) return undefined;
-  return createHash('sha256').update(configDir).digest('hex').slice(0, 8);
-}
-
-// Root of Coral's daemon-owned state tree, partitioned by config-dir slot.
-// Mirrors src `coralStateRoot`. The shared KB stays at ~/.coral (see
-// resolveKbRoot) and must NOT route through here.
+// Coral daemon state is account-neutral. Provider credentials travel with each
+// request and never select a different daemon or state tree.
 export function coralStateRoot() {
-  const slot = claudeConfigSlot();
-  const root = join(homedir(), '.coral');
-  return slot ? join(root, 'by-config', slot) : root;
+  return join(homedir(), '.coral');
 }
 
 export function resolveKbRoot() {
@@ -171,7 +164,10 @@ export function sweepStale(dir, prefix, ttlMs) {
     for (const f of readdirSync(dir)) {
       if (!f.startsWith(prefix)) continue;
       const p = join(dir, f);
-      if (now - statSync(p).mtimeMs > ttlMs) try { unlinkSync(p); } catch {}
+      if (now - statSync(p).mtimeMs > ttlMs)
+        try {
+          unlinkSync(p);
+        } catch {}
     }
   } catch {}
 }

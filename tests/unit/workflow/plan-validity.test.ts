@@ -12,6 +12,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { PlanSlot, WorkflowPlan } from '#src/workflow/plan.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = new Date('2026-04-30T00:00:00.000Z');
 
@@ -207,6 +208,11 @@ describe('workflow plan validity append validator', () => {
         },
         ctx(),
       );
+      seedTestSessionProjection(db, {
+        sessionId: 'wf-ref:0:1:job:session',
+        provider: 'codex',
+        projectRoot: '/workspace/coral',
+      });
 
       expectWorkflowPlanInvalid(
         () =>
@@ -268,6 +274,11 @@ describe('workflow plan validity append validator', () => {
         },
         ctx(),
       );
+      seedTestSessionProjection(db, {
+        sessionId: `${slotId}:job:session`,
+        provider: 'codex',
+        projectRoot: '/workspace/coral',
+      });
 
       const appended = commit(
         db,

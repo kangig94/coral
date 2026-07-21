@@ -1,4 +1,10 @@
-import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from './contract.js';
+import type {
+  ProviderExecutionContext,
+  ProviderRequest,
+  ProviderRuntime,
+  ProviderServerLease,
+  ProviderServerSpec,
+} from './contract.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './protocol.js';
@@ -10,6 +16,7 @@ export interface AppServerContract {
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
     ports: { storage: Pick<StoragePort, 'existsSync'> },
+    providerContext: ProviderExecutionContext,
   ): ProviderServerSpec;
   interrupt(lease: ProviderServerLease): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;

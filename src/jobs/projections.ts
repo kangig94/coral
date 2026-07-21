@@ -210,6 +210,13 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
   if (!previous && event.type !== 'job.launch.requested') {
     throw prematureProjectionJobEvent(event);
   }
+  if (previous && event.type === 'job.launch.requested') {
+    throw new CoralSetupError({
+      code: 'job_launch_duplicate',
+      userMessage: `Job '${event.stream.id}' already has a launch authority.`,
+      remediation: 'A job stream must contain exactly one job.launch.requested event.',
+    });
+  }
 
   const base = previous ?? createInitialProjectionJobState(event, patch);
   const next: ProjectedJobState = {

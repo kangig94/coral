@@ -1,6 +1,3 @@
-import { backendLog } from '../../infra/backend-log.js';
-import { errorMessage } from '../../infra/error-format.js';
-import { isAppServerRuntime, type AppServerRuntime, type JobLaunch } from '../../jobs/records.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import type { JobAbortRegistryPort, AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
@@ -13,7 +10,6 @@ export interface JobAbortServiceDeps {
   launchAdmission: JobAdmissionPort;
   jobPools: Map<string, LaunchPool>;
   launchOrchestrator: QueuedJobAbortPort;
-  interruptAppServerJob: (launchRecord: JobLaunch, runtimeRecord: AppServerRuntime) => Promise<void>;
 }
 
 export class JobAbortService {
@@ -44,14 +40,9 @@ export class JobAbortService {
         continue;
       }
 
-      const runtimeRecord = this.deps.progressStore.readRuntimeProjection(jobId);
-      const launchRecord = this.deps.progressStore.readLaunchProjection(jobId);
-      if (launchRecord && isAppServerRuntime(runtimeRecord)) {
-        void this.deps.interruptAppServerJob(launchRecord, runtimeRecord).catch((error: unknown) => {
-          backendLog.error(`Failed to interrupt app-server job ${jobId}: ${errorMessage(error)}`);
-        });
-      }
-
+      // The bound provider runtime observes this signal and interrupts with its
+      // live lease/key. Durable recovery intentionally has no access to those
+      // epoch-local credentials.
       this.deps.abortRegistry.abort([jobId]);
       aborted.push(jobId);
     }

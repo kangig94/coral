@@ -40,13 +40,7 @@ describe('Claude continuity refs', () => {
         conversationRef: '',
         brokerTurnId: '',
       }),
-    ).toEqual({
-      brokerSessionKey: undefined,
-      bootstrapSignature: undefined,
-      envHash: undefined,
-      conversationRef: undefined,
-      brokerTurnId: undefined,
-    });
+    ).toEqual({});
   });
 
   it('drops persisted bootstrap signatures with unknown permission modes', () => {
@@ -58,13 +52,7 @@ describe('Claude continuity refs', () => {
           permissionMode: 'unknown',
         },
       }),
-    ).toEqual({
-      brokerSessionKey: undefined,
-      bootstrapSignature: undefined,
-      envHash: undefined,
-      conversationRef: undefined,
-      brokerTurnId: undefined,
-    });
+    ).toEqual({});
   });
 
   it('preserves persisted bootstrap signatures with auto permission mode', () => {
@@ -86,11 +74,7 @@ describe('Claude continuity refs', () => {
   it('builds continuity from non-empty refs only', () => {
     expect(
       buildClaudeContinuity({
-        brokerSessionKey: '',
         bootstrapSignature: BOOTSTRAP_SIGNATURE,
-        envHash: '',
-        conversationRef: '',
-        brokerTurnId: '',
       }),
     ).toEqual({
       bootstrapSignature: BOOTSTRAP_SIGNATURE,
@@ -107,19 +91,10 @@ describe('Claude continuity refs', () => {
           conversationRef: 'conversation-1',
           brokerTurnId: 'turn-1',
         },
-        {
-          brokerSessionKey: '',
-          envHash: '',
-          conversationRef: '',
-          brokerTurnId: '',
-        },
+        {},
       ),
     ).toEqual({
-      brokerSessionKey: 'broker-1',
       bootstrapSignature: BOOTSTRAP_SIGNATURE,
-      envHash: 'env-1',
-      conversationRef: 'conversation-1',
-      brokerTurnId: 'turn-1',
     });
   });
 });
@@ -160,6 +135,8 @@ describe('Claude appserver request mapping', () => {
   it('carries model and effort in session bootstrap while turn/start only sends the prompt', () => {
     const ensure = mapSessionEnsureParams(
       {
+        action: 'exec',
+        sessionId: 'fresh-session',
         cwd: '/workspace',
         bypassPermissions: false,
         coralEnv: {},
@@ -167,7 +144,7 @@ describe('Claude appserver request mapping', () => {
         effort: 'high',
       },
       { sha256: () => 'system-hash' },
-      'system prompt',
+      { derivedSystemPrompt: 'system prompt', controllerEnv: {}, projectsRoot: '/home/user/.claude/projects' },
     );
 
     expect(ensure).toMatchObject({
@@ -177,6 +154,8 @@ describe('Claude appserver request mapping', () => {
       systemPrompt: 'system prompt',
       model: 'claude-sonnet-4-6',
       effort: 'high',
+      conversationRef: 'fresh-session',
+      resumeExisting: false,
     });
 
     expect(mapTurnStartParams('hello', 'broker-1', { uuid: () => 'turn-1' })).toEqual({
@@ -184,5 +163,37 @@ describe('Claude appserver request mapping', () => {
       brokerTurnId: 'turn-1',
       prompt: 'hello',
     });
+  });
+
+  it('keeps one account-neutral broker while binding each controller to its Claude account', () => {
+    const brokerA = withPluginRoot(() =>
+      buildClaudeProviderServerSpec({ cwd: '/workspace', coralEnv: {} }, { existsSync: () => true }, { PATH: '/bin' }),
+    );
+    const brokerB = withPluginRoot(() =>
+      buildClaudeProviderServerSpec({ cwd: '/workspace', coralEnv: {} }, { existsSync: () => true }, { PATH: '/bin' }),
+    );
+    const ensureA = mapSessionEnsureParams(
+      { action: 'exec', sessionId: 'session-a', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
+      { sha256: () => 'system-hash' },
+      {
+        controllerEnv: { CLAUDE_CONFIG_DIR: '/accounts/a' },
+        projectsRoot: '/accounts/a/projects',
+      },
+    );
+    const ensureB = mapSessionEnsureParams(
+      { action: 'exec', sessionId: 'session-b', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
+      { sha256: () => 'system-hash' },
+      {
+        controllerEnv: { CLAUDE_CONFIG_DIR: '/accounts/b' },
+        projectsRoot: '/accounts/b/projects',
+      },
+    );
+
+    expect(brokerA).toEqual(brokerB);
+    expect(brokerA.env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    expect(ensureA.controllerEnv).toMatchObject({ CLAUDE_CONFIG_DIR: '/accounts/a' });
+    expect(ensureA.projectsRoot).toBe('/accounts/a/projects');
+    expect(ensureB.controllerEnv).toMatchObject({ CLAUDE_CONFIG_DIR: '/accounts/b' });
+    expect(ensureB.projectsRoot).toBe('/accounts/b/projects');
   });
 });

@@ -14,6 +14,7 @@ import type {
 } from '#src/providers/contract.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { createDeferred } from '#tools/testing/deferred.js';
+import { TEST_CLAUDE_CONTEXT, TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
 
 const REGISTERED_PROVIDER_NAMES = ['claude', 'codex'] as const;
 type RegisteredProviderName = (typeof REGISTERED_PROVIDER_NAMES)[number];
@@ -69,16 +70,15 @@ function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) =>
   };
 }
 
-function makeRuntime(
-  options: {
-    controller?: AbortController;
-    persistedContinuity?: ProviderRuntime['persistedContinuity'];
-    runCliImpl?: ProviderCliRunner;
-    acquireServerImpl?: () => Promise<ProviderServerLease>;
-    env?: ProviderRuntime['env'];
-    storage?: ProviderRuntime['storage'];
-  } = {},
-): SmokeRuntime {
+function makeRuntime(options: {
+  providerContext: ProviderRuntime['providerContext'];
+  controller?: AbortController;
+  persistedContinuity?: ProviderRuntime['persistedContinuity'];
+  runCliImpl?: ProviderCliRunner;
+  acquireServerImpl?: () => Promise<ProviderServerLease>;
+  env?: ProviderRuntime['env'];
+  storage?: ProviderRuntime['storage'];
+}): SmokeRuntime {
   const controller = options.controller ?? new AbortController();
   const runCli = vi.fn<ProviderCliRunner>(
     options.runCliImpl ??
@@ -114,6 +114,7 @@ function makeRuntime(
       transportClosed: vi.fn(),
     },
     kbRoot: '/mock/kb',
+    providerContext: options.providerContext,
   };
 }
 
@@ -206,6 +207,7 @@ describe('provider runtime smoke', () => {
           throw new Error(`Unexpected Claude smoke RPC: ${method}`);
         });
         const runtime = makeRuntime({
+          providerContext: TEST_CLAUDE_CONTEXT,
           acquireServerImpl: async () => lease,
         });
 
@@ -264,6 +266,7 @@ describe('provider runtime smoke', () => {
         throw new Error(`Unexpected Codex smoke RPC: ${method}`);
       });
       const runtime = makeRuntime({
+        providerContext: TEST_CODEX_CONTEXT,
         acquireServerImpl: async () => lease,
       });
 
@@ -331,6 +334,7 @@ describe('provider runtime smoke', () => {
       throw new Error(`Unexpected Claude abort RPC: ${method}`);
     });
     const runtime = makeRuntime({
+      providerContext: TEST_CLAUDE_CONTEXT,
       controller,
       acquireServerImpl: async () => lease,
     });
@@ -390,6 +394,16 @@ describe('provider runtime smoke', () => {
       throw new Error(`Unexpected Claude artifact RPC: ${method}`);
     });
     const runtime = makeRuntime({
+      providerContext: {
+        ...TEST_CLAUDE_CONTEXT,
+        source: {
+          ...TEST_CLAUDE_CONTEXT.source,
+          configDir: '/home/tester/.claude',
+          projectsRoot: '/home/tester/.claude/projects',
+        },
+        controllerEnv: { CLAUDE_CONFIG_DIR: '/home/tester/.claude' },
+        projectsRoot: '/home/tester/.claude/projects',
+      },
       acquireServerImpl: async () => lease,
       env: {
         homedir: () => '/home/tester',
@@ -469,6 +483,7 @@ describe('provider runtime smoke', () => {
       throw new Error(`Unexpected Codex abort RPC: ${method}`);
     });
     const runtime = makeRuntime({
+      providerContext: TEST_CODEX_CONTEXT,
       controller,
       acquireServerImpl: async () => lease,
     });

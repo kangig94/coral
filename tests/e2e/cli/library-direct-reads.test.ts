@@ -23,12 +23,7 @@ import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
-import {
-  formatKbMemoList,
-  formatKbPrinciples,
-  formatKbRead,
-  formatKbSourceList,
-} from '#src/cli/format/kb.js';
+import { formatKbMemoList, formatKbPrinciples, formatKbRead, formatKbSourceList } from '#src/cli/format/kb.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
@@ -269,11 +264,8 @@ function runCliSubprocess(
       ...process.env,
       HOME: fixture.home,
       TMPDIR: fixture.home,
-      // Pin the config dir to the fixture's default `<home>/.claude` so the
-      // store resolves to the flat state root the test seeds. Without this the
-      // subprocess inherits the runner's ambient CLAUDE_CONFIG_DIR, which
-      // hashes into a `by-config/<slot>` path (see claudeConfigSlot) and the
-      // seeded store is never found.
+      // Keep plugin discovery inside the fixture instead of inheriting the
+      // runner's Claude installation.
       CLAUDE_CONFIG_DIR: join(fixture.home, '.claude'),
       CORAL_KB_PATH: fixture.kbRoot,
       CLAUDE_PLUGIN_ROOT: fixture.root,

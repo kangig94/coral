@@ -101,9 +101,13 @@ function createControllerHarness(): ControllerHarness {
   };
 }
 
-async function ensureController(harness: ControllerHarness): Promise<void> {
+async function ensureController(
+  harness: ControllerHarness,
+  projectsRoot = '/home/user/.claude/projects',
+): Promise<void> {
   await harness.controller.sessionEnsure({
     cwd: '/workspace',
+    projectsRoot,
     systemPromptHash: 'sha256:test',
     permissionMode: 'default',
   });
@@ -151,6 +155,7 @@ function queueOperationLine(content: string): string {
 
 type TranscriptFixture = {
   transcriptPath: string;
+  projectsRoot: string;
   cleanup: () => void;
 };
 
@@ -167,6 +172,7 @@ function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptF
 
   return {
     transcriptPath,
+    projectsRoot: join(home, '.claude', 'projects'),
     cleanup: (): void => {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -341,7 +347,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
     const fixture = createTranscriptFixture();
     try {
       const harness = createControllerHarness();
-      await ensureController(harness);
+      await ensureController(harness, fixture.projectsRoot);
 
       await harness.controller.turnStart({ brokerTurnId: 'turn-1', prompt });
       vi.useFakeTimers();
@@ -573,6 +579,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
 
     const ensured = await pool.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
     });
@@ -631,6 +638,7 @@ describe('Claude phase-specific turn-stall recovery', () => {
 
     const ensured = await pool.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
     });

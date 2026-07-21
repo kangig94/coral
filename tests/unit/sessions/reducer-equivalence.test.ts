@@ -20,6 +20,7 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
   return {
     sessionId: overrides.sessionId,
     provider: overrides.provider,
+    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
     name: overrides.name ?? overrides.sessionId,
     state: overrides.state ?? 'pending',
     retention: overrides.retention ?? 'retain',
@@ -222,6 +223,7 @@ describe('sessions reducer equivalence', () => {
       const retiredEntry = {
         sessionId: 'session-retired-row',
         provider: 'codex',
+        sessionAuthority: { kind: 'orchestration' as const },
         name: 'retired',
         state: 'pending',
         cwd: '/tmp/project',
@@ -257,6 +259,7 @@ describe('sessions reducer equivalence', () => {
       const projectedEntry = {
         sessionId: 'session-reducer-written-row',
         provider: 'codex',
+        sessionAuthority: { kind: 'orchestration' as const },
         name: 'reducer written',
         state: 'pending',
         retention: 'discard_provider_artifacts_on_terminal',
@@ -312,6 +315,7 @@ describe('sessions reducer equivalence', () => {
       const retiredEntry = {
         sessionId: 'session-retired-opened',
         provider: 'claude',
+        sessionAuthority: { kind: 'orchestration' as const },
         name: 'retired opened',
         state: 'pending',
         cwd: '/tmp/project',

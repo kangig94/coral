@@ -10,6 +10,7 @@ import {
   readDiscoveryRecordForHome,
   spawnCoordinator,
   stopCoordinator,
+  updatePluginFixtureBundleHash,
   waitForCondition,
   waitForDiscoveryRecord,
   waitForProcessExit,
@@ -46,7 +47,6 @@ describe('coordinator warm-start integration', () => {
     tempRoots.push(home);
 
     const firstFixture = createPluginFixture(tempRoots, { flavor: 'prod', bundleHash: 'bundle-a' });
-    const secondFixture = createPluginFixture(tempRoots, { flavor: 'prod', bundleHash: 'bundle-b' });
 
     const first = spawnCoordinator({
       fixture: firstFixture,
@@ -62,6 +62,7 @@ describe('coordinator warm-start integration', () => {
     expect(initial.bundleHash).toBe('bundle-a');
     expect(isProcessAlive(initial.pid)).toBe(true);
 
+    const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bundle-b');
     const handoffStartedAt = Date.now();
     const second = spawnCoordinator({
       fixture: secondFixture,
@@ -73,10 +74,20 @@ describe('coordinator warm-start integration', () => {
     });
     coordinators.push(second);
 
-    await waitForCondition(() => {
-      const record = readDiscoveryRecordForHome(home, 'prod');
-      return record !== null && record.bundleHash === secondFixture.bundleHash && record.pid !== initial.pid;
-    }, HANDOFF_OBSERVATION_BUDGET_MS);
+    try {
+      await waitForCondition(() => {
+        if (second.child.exitCode !== null) {
+          throw new Error(`replacement exited with code ${second.child.exitCode}:\n${second.output()}`);
+        }
+        const record = readDiscoveryRecordForHome(home, 'prod');
+        return record !== null && record.bundleHash === secondFixture.bundleHash && record.pid !== initial.pid;
+      }, HANDOFF_OBSERVATION_BUDGET_MS);
+    } catch (error: unknown) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\nincumbent output:\n${first.output()}\nreplacement output:\n${second.output()}`,
+        { cause: error },
+      );
+    }
 
     const replacement = await waitForDiscoveryRecord(home, 'prod', 5_000);
     const elapsedMs = Date.now() - handoffStartedAt;

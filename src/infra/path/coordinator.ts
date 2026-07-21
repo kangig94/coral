@@ -15,7 +15,6 @@ export interface CoordinatorPaths {
 
 export interface CoordinatorPathOptions {
   readonly baseDir?: string;
-  readonly configSlot?: string;
 }
 
 const SOCKET_LIMIT_DARWIN = 104;
@@ -31,7 +30,7 @@ export function coordinatorPaths(
   opts?: CoordinatorPathOptions,
 ): CoordinatorPaths {
   const base = flavor === 'dev' ? 'run-dev' : 'run';
-  const runDir = join(coralStateRoot(opts?.configSlot, opts?.baseDir), base);
+  const runDir = join(coralStateRoot(opts?.baseDir), base);
   const candidateSocket = join(runDir, 'coordinator.sock');
   const limit = socketPathLimit();
   let socketPath = candidateSocket;

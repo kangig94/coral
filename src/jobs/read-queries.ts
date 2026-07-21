@@ -388,6 +388,7 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       instruction: body.request.instruction,
       retention: body.request.retention,
       coralEnv: { ...body.request.coralEnv },
+      ...(body.jobKind === 'workflow' ? { providerCredentials: body.request.providerCredentials } : {}),
     },
     ...refs,
     createdAt: body.createdAt,
@@ -403,6 +404,8 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
     const serverGeneration =
       typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined;
     const providerContinuity = providerMeta?.providerContinuity;
+    const conversationRef =
+      typeof providerMeta?.conversationRef === 'string' ? providerMeta.conversationRef : undefined;
     const claudeTransport =
       typeof providerMeta?.claudeTransport === 'string' ? providerMeta.claudeTransport : undefined;
     return {
@@ -416,6 +419,7 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
           providerContinuity && typeof providerContinuity === 'object'
             ? (providerContinuity as Record<string, unknown>)
             : undefined,
+        ...(conversationRef === undefined ? {} : { conversationRef }),
         ...(claudeTransport === undefined ? {} : { claudeTransport }),
       },
     };

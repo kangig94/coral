@@ -57,13 +57,9 @@ export function communitiesDir(root: string): string {
   return join(root, 'communities');
 }
 
-// KB runtime artifacts (FTS index, touch journal, source-import staging) are
-// daemon-owned mutable state, not shared knowledge — so they partition by
-// config-dir slot like the other state families, while the KB markdown vault
-// (kbVaultRoot) stays shared. Two config-dir daemons against the shared vault
-// would otherwise race on the touch journal and index.json.
-export function kbRuntimeDir(flavor: BuildFlavor, configSlot?: string): string {
-  return join(coralStateRoot(configSlot), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
+// KB runtime artifacts belong to the one account-neutral daemon state tree.
+export function kbRuntimeDir(flavor: BuildFlavor): string {
+  return join(coralStateRoot(), flavor === 'dev' ? 'data-dev' : 'data', 'kb');
 }
 
 export function sourcesDir(root: string): string {

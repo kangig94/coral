@@ -12,12 +12,11 @@ export interface StorePaths {
 
 export interface StorePathOptions {
   readonly baseDir?: string;
-  readonly configSlot?: string;
 }
 
 export function storePaths(flavor: BuildFlavor, opts?: StorePathOptions): StorePaths {
   const base = flavor === 'dev' ? 'data-dev/store' : 'data/store';
-  const dbDir = join(coralStateRoot(opts?.configSlot, opts?.baseDir), base);
+  const dbDir = join(coralStateRoot(opts?.baseDir), base);
   const dbFile = join(dbDir, 'store.db');
   const walFile = join(dbDir, 'store.db-wal');
   const shmFile = join(dbDir, 'store.db-shm');

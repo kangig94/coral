@@ -76,6 +76,7 @@ export type SpawnProviderServerOptions = {
   args: string[];
   cwd?: string;
   extraEnv?: Record<string, string>;
+  exactEnv?: Record<string, string>;
   signal?: AbortSignal;
   initializeRequest?: {
     method: string;
@@ -108,7 +109,7 @@ export async function spawnProviderServerTransport(params: {
     args: options.args,
     cwd: options.cwd === '' ? undefined : options.cwd,
     shell: shouldUseWindowsCommandShell(command, runtime.env.platform()),
-    envAdditions: options.extraEnv,
+    ...(options.exactEnv ? { env: options.exactEnv } : { envAdditions: options.extraEnv }),
   });
   const { stdin, stdout: childStdout, stderr: childStderr } = requirePipedHandles(child, options.command);
 

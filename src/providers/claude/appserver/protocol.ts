@@ -35,7 +35,9 @@ export type JsonRpcInboundMessage<TParams = Record<string, unknown>> =
 export interface SessionEnsureParams extends ClaudeBootstrapSignature {
   brokerSessionKey?: string;
   conversationRef?: string;
+  resumeExisting?: boolean;
   controllerEnv?: Record<string, string>;
+  projectsRoot: string;
   systemPrompt?: string;
   model?: string;
   effort?: EffortLevel;
@@ -259,6 +261,8 @@ export function requireSessionEnsureParams(params: unknown): SessionEnsureParams
     !isRecord(params) ||
     !isNonEmptyString(params.cwd) ||
     !isNonEmptyString(params.systemPromptHash) ||
+    !isNonEmptyString(params.projectsRoot) ||
+    (params.resumeExisting !== undefined && typeof params.resumeExisting !== 'boolean') ||
     !permissionMode?.success
   ) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for session/ensure.');
@@ -275,7 +279,9 @@ export function requireSessionEnsureParams(params: unknown): SessionEnsureParams
     permissionMode: permissionMode.data,
     ...(brokerSessionKey !== undefined ? { brokerSessionKey } : {}),
     ...(conversationRef !== undefined ? { conversationRef } : {}),
+    resumeExisting: params.resumeExisting ?? conversationRef !== undefined,
     controllerEnv: readControllerEnv(params.controllerEnv),
+    projectsRoot: params.projectsRoot,
     ...(systemPrompt !== undefined ? { systemPrompt } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),

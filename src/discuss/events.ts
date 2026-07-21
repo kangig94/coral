@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { providerCredentialSetSchema, type ProviderCredentialSet } from '../runtime/provider-credentials.js';
 
 import { participationTypes, resolveReasons, type DiscussCreateInput, type DiscussState } from './session-types.js';
 
@@ -88,6 +89,7 @@ const sessionCreatedPayloadSchema = z
     input: discussCreateInputSchema,
     config: sessionCreatedConfigSchema,
     agentExecution: z.record(sessionCreatedAgentExecutionConfigSchema),
+    providerCredentials: providerCredentialSetSchema,
   })
   .strict();
 
@@ -169,7 +171,7 @@ const mustAnswerCarryForwardSetPayloadSchema = z
   })
   .strict();
 
-const followUpQueueItemSchema = z
+export const followUpQueueItemSchema = z
   .object({
     agent: z.string(),
     question: z.string(),
@@ -457,8 +459,30 @@ export interface PersistedDiscussRuntime {
   agentRuns: Record<string, PersistedDiscussAgentRun>;
 }
 
+const persistedDiscussAgentRunSchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+    executionSessionId: z.string().optional(),
+    currentJobId: z.string().optional(),
+    currentJobPurpose: z.enum(discussAgentJobPurposes).optional(),
+    currentAttempt: z.number().int().positive().optional(),
+    lastAttemptOutcome: z.enum(discussAgentJobOutcomes).optional(),
+  })
+  .strict();
+
+export const persistedDiscussRuntimeSchema: z.ZodType<PersistedDiscussRuntime> = z
+  .object({
+    controlPhase: z.enum(controlPhases),
+    carryForwardMustAnswer: z.array(z.string()),
+    followUpQueue: z.array(followUpQueueItemSchema),
+    agentRuns: z.record(persistedDiscussAgentRunSchema),
+  })
+  .strict();
+
 export interface PersistedDiscussSnapshot {
-  schemaVersion: 2;
+  schemaVersion: 3;
+  providerCredentials: ProviderCredentialSet;
   sessionId: string;
   projectRoot: string;
   updatedAt: string;

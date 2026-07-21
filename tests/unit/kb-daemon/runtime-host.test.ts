@@ -115,7 +115,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const stagedDir = join(runtimeDir, 'source-import-staging');
     const pdfDir = join(runtimeDir, 'source-import-pdf');
     runtime.storage.mkdirSync(stagedDir, { recursive: true });
@@ -150,7 +150,7 @@ describe('KB daemon runtime host', () => {
     vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
     const runtime = createRealRuntime('prod', { baseDir: root });
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const host = createKbDaemonWriteRuntimeHost({
       pluginRoot,
       backendNamespace: 'test-namespace',
@@ -216,7 +216,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const releaseExpansionShutdown = deferred();
     let getLifecyclePhase!: () => 'starting' | 'running' | 'draining' | 'stopped';
 
@@ -231,9 +231,11 @@ describe('KB daemon runtime host', () => {
     try {
       await host.withKb(async ({ consumerDriver, expansionLifecycleService }) => {
         await consumerDriver.drainAll();
-        const options = (expansionLifecycleService as unknown as {
-          options: { getLifecyclePhase?: () => 'starting' | 'running' | 'draining' | 'stopped' };
-        }).options;
+        const options = (
+          expansionLifecycleService as unknown as {
+            options: { getLifecyclePhase?: () => 'starting' | 'running' | 'draining' | 'stopped' };
+          }
+        ).options;
         if (options.getLifecyclePhase === undefined) {
           throw new Error('expansion lifecycle phase fence is not wired');
         }
@@ -271,7 +273,7 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const host = createKbDaemonWriteRuntimeHost({
       pluginRoot,
       backendNamespace: 'test-namespace',
@@ -316,16 +318,14 @@ describe('KB daemon runtime host', () => {
     const runtime = createRealRuntime('prod', { baseDir: root });
     const db = openTestStoreDb(runtime, ':memory:');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const delayedIndex: KbIndex = { entries: {}, principles: {}, entityMeta: {}, relationships: [] };
-    const ensureFreshness = vi
-      .spyOn(CorpusFreshnessService.prototype, 'ensureCorpusFreshness')
-      .mockImplementation(
-        () =>
-          new Promise<KbIndex>((resolve) => {
-            setTimeout(() => resolve(delayedIndex), 50);
-          }),
-      );
+    const ensureFreshness = vi.spyOn(CorpusFreshnessService.prototype, 'ensureCorpusFreshness').mockImplementation(
+      () =>
+        new Promise<KbIndex>((resolve) => {
+          setTimeout(() => resolve(delayedIndex), 50);
+        }),
+    );
     const drainAll = vi
       .spyOn(ConsumerDriver.prototype, 'drainAll')
       .mockRejectedValue(new Error('unexpected boot consumer drain'));
@@ -369,7 +369,7 @@ describe('KB daemon runtime host', () => {
     const db = openTestStoreDb(runtime, ':memory:');
     const projectRoot = join(root, 'project-a');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const sourcePath = join(projectRoot, 'paper.md');
     writeImportSource(runtime, sourcePath);
     const host = createKbDaemonWriteRuntimeHost({
@@ -467,7 +467,7 @@ describe('KB daemon runtime host', () => {
     const db = openTestStoreDb(runtime, ':memory:');
     const projectRoot = join(root, 'project-a');
     const pluginRoot = join(root, 'plugin');
-    const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+    const runtimeDir = kbRuntimeDir(runtime.flavor);
     const sourcePath = join(projectRoot, 'repair.md');
     writeImportSource(runtime, sourcePath);
     const firstHost = createKbDaemonWriteRuntimeHost({

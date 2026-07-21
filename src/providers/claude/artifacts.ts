@@ -3,12 +3,10 @@ import { join } from 'node:path';
 import { discardRecordedArtifacts, managed } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
-import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
 
 type ClaudeArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
 type ClaudeArtifactCleanupStorage = ClaudeArtifactLocatorStorage & Pick<StoragePort, 'unlinkSync'>;
-type ClaudeArtifactLocatorEnv = Pick<Runtime['env'], 'claudeConfigDir'>;
 
 type ClaudeArtifactIndex = {
   readonly matchesByConversationRef: ReadonlyMap<string, readonly string[]>;
@@ -29,10 +27,6 @@ const claudeArtifactIndexes = new WeakMap<object, Map<string, ClaudeArtifactInde
 
 function claudeJsonlArtifactIdentity(conversationRef: string): ProviderArtifactIdentity {
   return { kind: 'claude-jsonl', conversationRef };
-}
-
-export function resolveClaudeProjectsRoot(env: ClaudeArtifactLocatorEnv): string {
-  return join(env.claudeConfigDir(), 'projects');
 }
 
 export function locateClaudeJsonlArtifact(options: {
@@ -72,14 +66,14 @@ export function locateClaudeJsonlArtifact(options: {
 
 export function locateClaudeJsonlArtifactFromRuntime(
   conversationRef: string,
-  runtime: Pick<ProviderRuntime, 'env' | 'storage'>,
+  runtime: Pick<ProviderRuntime, 'providerContext' | 'storage'>,
 ): ClaudeArtifactLocatorResult | null {
-  if (!runtime.env) {
+  if (runtime.providerContext.provider !== 'claude') {
     return null;
   }
   return locateClaudeJsonlArtifact({
     conversationRef,
-    projectsRoot: resolveClaudeProjectsRoot(runtime.env),
+    projectsRoot: runtime.providerContext.projectsRoot,
     storage: runtime.storage,
   });
 }
@@ -187,9 +181,14 @@ function safeReadDir(storage: ClaudeArtifactLocatorStorage, path: string) {
 }
 
 export const claudeArtifactCapability = managed({
-  discardArtifacts: discardRecordedArtifacts,
-  locateArtifact: (conversationRef, runtime) => {
-    const result = locateClaudeJsonlArtifactFromRuntime(conversationRef, runtime);
-    return result?.kind === 'match' ? result.artifact.handle : null;
+  discardArtifacts: ({ handles, runtime }) => discardRecordedArtifacts(handles, runtime),
+  locateArtifact: ({ conversationRef, source, runtime }) => {
+    if (source.provider !== 'claude') return null;
+    const result = locateClaudeJsonlArtifact({
+      conversationRef,
+      projectsRoot: source.projectsRoot,
+      storage: runtime.storage,
+    });
+    return result.kind === 'match' ? result.artifact.handle : null;
   },
 });

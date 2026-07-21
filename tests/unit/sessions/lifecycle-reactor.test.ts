@@ -12,12 +12,14 @@ import type { TerminalWriteOptions } from '#src/jobs/contracts/job-store.js';
 import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
 import { applyRecoveryAction } from '#src/coordinator/services/recovery/actions.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { defineProvider } from '#src/providers/define.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
+import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import {
@@ -94,7 +96,7 @@ function createHarness(
       .artifacts(
         artifactMode === 'managed'
           ? managed({
-              discardArtifacts: async (handles, cleanupRuntime) => {
+              discardArtifacts: async ({ handles, runtime: cleanupRuntime }) => {
                 discardCalls.push([...handles]);
                 if (options.discardArtifacts) {
                   return options.discardArtifacts(handles, cleanupRuntime);
@@ -102,7 +104,7 @@ function createHarness(
                 return { kind: 'discarded' };
               },
               ...(options.locateArtifact !== undefined
-                ? { locateArtifact: (conversationRef: string) => options.locateArtifact!(conversationRef) }
+                ? { locateArtifact: ({ conversationRef }) => options.locateArtifact!(conversationRef) }
                 : {}),
             })
           : none('test provider has no artifacts'),
@@ -165,9 +167,11 @@ async function openClaimedSession(
   harness: Harness,
   jobId: string,
   retention: 'retain' | 'discard_provider_artifacts_on_terminal' = 'discard_provider_artifacts_on_terminal',
+  orchestration = false,
 ): Promise<string> {
   const entry = harness.sessionManager.allocate({
     provider: 'codex',
+    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', source: TEST_CODEX_SOURCE },
     name: `session-${jobId}`,
     cwd: harness.projectRoot,
     projectRoot: harness.projectRoot,
@@ -250,15 +254,20 @@ function initRunningJob(
   sessionId: string,
   jobKind: 'provider' | 'workflow' = 'provider',
 ) {
-  harness.progressStore.initJob({
+  const base = {
     jobId,
     sessionId,
     provider: 'codex',
     projectRoot: harness.projectRoot,
     backendNamespace: harness.namespace,
-    jobKind,
     initialPhase: 'running',
-  });
+  } as const;
+  initTestJob(
+    harness.progressStore,
+    jobKind === 'workflow'
+      ? { ...base, jobKind, providerCredentials: TEST_PROVIDER_CREDENTIALS }
+      : { ...base, jobKind },
+  );
 }
 
 function completeJob(harness: Harness, jobId: string, sessionId: string): number {
@@ -592,6 +601,7 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
       name: 'session-retention-validator',
       cwd: harness.projectRoot,
       projectRoot: harness.projectRoot,
@@ -630,6 +640,7 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({
       provider: 'codex',
+      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
       name: 'session-retention-duplicate',
       cwd: harness.projectRoot,
       projectRoot: harness.projectRoot,
@@ -1047,15 +1058,17 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
+        providerRegistry: harness.providerRegistry,
         createInvocationContext: (projectRoot) => ({
           projectRoot,
           pluginRoot: projectRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
         }),
-        getRecoveryService: () => {
-          throw new Error('unexpected recovery service lookup');
-        },
+        getRecoveryService: () =>
+          ({
+            validateProviderRecoveryAuthority: () => true,
+          }) as never,
         sessionLookup: createProjectionSessionLookup(harness.db),
         emitSessionReleased: () => {},
         coordinatorCommit: harness.coordinatorCommit,
@@ -1089,6 +1102,7 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
+        providerRegistry: harness.providerRegistry,
         createInvocationContext: (projectRoot) => ({
           projectRoot,
           pluginRoot: projectRoot,
@@ -1151,6 +1165,9 @@ describe('LifecycleReactor retention enforcement', () => {
     };
     const recoveryService = new RecoveryService({
       runtime: harness.runtime,
+      childPrincipalRegistry: new ChildPrincipalRegistry(harness.runtime.ids),
+      parentPrincipal: testProjectPrincipal(harness.projectRoot),
+      providerCredentialSourceAvailability: { isAvailable: () => true },
       sessionManager: harness.sessionManager,
       abortRegistry: {
         register: () => 'abort-key',
@@ -1221,7 +1238,7 @@ describe('LifecycleReactor retention enforcement', () => {
   it('observes workflow recovery finalization session releases', async () => {
     const harness = createHarness();
     const workflowJobId = 'workflow-finalized';
-    const sessionId = await openClaimedSession(harness, workflowJobId);
+    const sessionId = await openClaimedSession(harness, workflowJobId, 'discard_provider_artifacts_on_terminal', true);
     initRunningJob(harness, workflowJobId, sessionId, 'workflow');
 
     const finalizer = createWorkflowRecoveryFinalizer({
@@ -1239,14 +1256,7 @@ describe('LifecycleReactor retention enforcement', () => {
       stepDetails: [],
     });
 
-    await expectRetentionEvents(harness, sessionId, [
-      { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
-      {
-        type: 'session.retention.discard.completed',
-        attempt: 1,
-        handles: [],
-        outcome: 'skipped_no_handles',
-      },
-    ]);
+    await expectRetentionEvents(harness, sessionId, []);
   });
 });
+import { initTestJob } from '#tests/helpers/session.js';

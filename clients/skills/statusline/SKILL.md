@@ -11,7 +11,7 @@ Manage the coral HUD statusline for Claude Code.
 
 ## Commands
 
-> **Config directory**: `CONFIG_DIR` = the **Claude config dir** reported in the SessionStart context (already resolved, absolute — it honors `CLAUDE_CONFIG_DIR`). Use it for every `CONFIG_DIR/...` path below, consistently across all steps. `~/.codex/auth.json` is Codex's own directory and is NOT affected.
+> **Config directories**: `CONFIG_DIR` = the **Claude config dir** reported in the SessionStart context. `CODEX_DIR` = absolute `CODEX_HOME` when set, otherwise `~/.codex`. Use each directory consistently for its provider.
 
 ### install
 
@@ -32,7 +32,7 @@ Manage the coral HUD statusline for Claude Code.
    }
    ```
    Expand `CONFIG_DIR` to its absolute path (and `~` to the real home directory).
-6. Check if `~/.codex/auth.json` exists (Codex's own dir — the literal `~/.codex`, NOT under `CONFIG_DIR`):
+6. Check if `CODEX_DIR/auth.json` exists:
    - If yes, ask the user: "Codex login detected. Display Codex usage in statusline?"
      - **yes** → create `CONFIG_DIR/hud/.coral-codex-enabled` (empty file — the **same** `CONFIG_DIR/hud` as step 2; do not write this to `~/.claude` when `CONFIG_DIR` differs)
      - **no** → delete `CONFIG_DIR/hud/.coral-codex-enabled` if it exists
@@ -47,6 +47,9 @@ Manage the coral HUD statusline for Claude Code.
    - `CONFIG_DIR/hud/coral-hud.mjs`
    - `CONFIG_DIR/hud/.coral-cache.json`
    - `CONFIG_DIR/hud/.coral-codex-enabled`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-codex-[0-9a-f]{12}-cache\.json$`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-codex-[0-9a-f]{12}\.lock$`
+   Do not follow symlinks or delete any broader `.coral-*` pattern.
 4. Confirm removal to the user
 
 ---
@@ -62,9 +65,9 @@ The install command reads this file and writes it to `CONFIG_DIR/hud/coral-hud.m
 - If re-running install, overwrite the existing script (this updates the HUD to the latest version)
 - Claude rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
 - Enterprise/extra-usage plans have no 5h/weekly windows; instead the usage API returns `extra_usage` (a monthly dollar cap), shown in the limits slot as `mo: <pct> ($used/$limit)`
-- Codex rate limits and spark limits are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`~/.codex/auth.json`)
-- Two-line layout: Line 1 (Claude) shows model, limits, ctx, session, and last active skill; Line 2 (Codex) shows codex model, codex limits, and spark limits
-- Skill detection reads last 500KB of `transcript_path` JSONL (tail-read for performance), finds last `Skill` or `proxy_Skill` tool_use block
+- Codex limits, credits, and spend controls are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`CODEX_DIR/auth.json`)
+- Layout: Line 1 shows Claude model/limits/context/session/activity; Line 2 conditionally shows Codex model/limits/credits; Line 3 conditionally shows Coral backend state
+- Skill detection reads the last 500KB of `transcript_path` JSONL and recognizes `Skill`/`proxy_Skill` tool-use blocks plus slash-command messages
 - Both fetches run in parallel
 - Claude API results are cached for 180 seconds on success, 30 seconds on error. HTTP 429 responses trigger exponential backoff from 2 minutes up to 10 minutes.
 - On error, the HUD preserves last-known-good rate-limit data until the error cache expires. The error indicator is shown only when no stale data exists.

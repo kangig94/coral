@@ -12,6 +12,7 @@ import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 async function* noopProvider() {}
@@ -80,7 +81,7 @@ function createHarness(): {
     defineProvider({ name: 'claude', run: noopProvider })
       .artifacts(
         managed({
-          discardArtifacts: async (handles) => {
+          discardArtifacts: async ({ handles }) => {
             discardCalls.push([...handles]);
             return { kind: 'discarded' };
           },
@@ -125,6 +126,7 @@ async function openClaimedSession(
 ): Promise<{ readonly sessionId: string; readonly version: number }> {
   const session = sessionManager.allocate({
     provider: 'claude',
+    sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
     name: 'claude-session',
     cwd: '/tmp/project',
     projectRoot: '/tmp/project',

@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { allocateTestSession } from '../../../helpers/session.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +33,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -46,6 +48,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -143,6 +146,8 @@ function createService(
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
   const progressStore = options.progressStore ?? createProgressStore();
   return new ExecutionService(ctx, {
+    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -506,10 +511,17 @@ function _createClaimedJob(
   const { progressStore, sessionManager } =
     /* @intentional-private-access — seed or inspect execution internals with no public test seam */
     getInternals(service);
-  const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
+  const session = allocateTestSession(
+    sessionManager,
+    'codex',
+    'wait-session',
+    'test-model',
+    ctx.projectRoot,
+    ctx.projectRoot,
+  );
   const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
-  progressStore.initJob({
+  initTestJob(progressStore, {
     jobId,
     sessionId: session.sessionId,
     provider: 'codex',
@@ -536,7 +548,13 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) };
+  return {
+    projectRoot,
+    pluginRoot,
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+  };
 }
 
 function _isoAt(ms: number): string {
@@ -605,6 +623,7 @@ describe('ExecutionService abort', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -695,3 +714,4 @@ describe('ExecutionService abort', () => {
     });
   });
 });
+import { initTestJob } from '#tests/helpers/session.js';

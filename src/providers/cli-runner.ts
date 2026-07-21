@@ -14,6 +14,7 @@ export interface ProviderDurableSpawner {
     permitGranted?: boolean;
     pool?: LaunchPool;
     extraEnv?: Record<string, string>;
+    exactEnv?: Record<string, string>;
     jobDir: string;
     onRuntimeRecord?: (record: DurableCliRuntimeRecord) => void;
   }): Promise<{
@@ -44,6 +45,7 @@ export function bindProviderRunner(
       prompt: request.prompt,
       cwd: request.cwd,
       extraEnv: request.extraEnv,
+      exactEnv: request.exactEnv,
       onEvent: request.onEvent,
       onRuntimeRecord: (record) => {
         if (isDurableCliRuntime(record)) {

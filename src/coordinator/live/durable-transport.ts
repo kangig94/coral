@@ -31,6 +31,7 @@ type SpawnCliOptions = {
   permitGranted?: boolean;
   pool?: LaunchPool;
   extraEnv?: Record<string, string>;
+  exactEnv?: Record<string, string>;
 };
 
 export type SpawnDurableJobOptions = SpawnCliOptions & {
@@ -65,6 +66,7 @@ export async function spawnDurableJobTransport(params: {
       cwd: options.cwd,
       jobDir: options.jobDir,
       envAdditions: options.extraEnv,
+      env: options.exactEnv,
     });
     cleanupKey = Symbol();
     const cleanup = (): void => {

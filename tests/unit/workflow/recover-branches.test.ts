@@ -1,4 +1,5 @@
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { JobStore } from '#src/jobs/store.js';
@@ -107,13 +108,14 @@ function createHarness(options: {
     permissiveProviderLookupPort,
   );
 
-  progressStore.initJob({
+  initTestJob(progressStore, {
     jobId: 'workflow-1',
     sessionId: 'workflow-session-1',
     provider: 'codex',
     projectRoot: PROJECT_ROOT,
     backendNamespace: BACKEND_NAMESPACE,
     jobKind: 'workflow',
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
     initialPhase: 'running',
   });
 
@@ -126,7 +128,7 @@ function createHarness(options: {
     const terminalForSlot = slotState?.terminal ?? options.atomTerminals?.[slotIndex];
     const sessionId = `session-atom-${slotIndex + 1}`;
     if (atomPhase !== null || terminalForSlot !== undefined) {
-      progressStore.initJob({
+      initTestJob(progressStore, {
         jobId: slot.slotId,
         sessionId,
         provider: slot.provider,
@@ -264,15 +266,24 @@ describe('workflow recovery branch rules', () => {
     }
   });
 
-  it('relaunches the step when the projection_jobs row is absent', async () => {
+  it('relaunches an absent step with persisted source A instead of replacement-daemon source B', async () => {
     const harness = createHarness({ atomPhase: null, projectionPhase: null });
+    const replacementCredentials = {
+      ...TEST_PROVIDER_CREDENTIALS,
+      codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/replacement/.codex-b' },
+    };
+    const createReplacementContext = (projectRoot: string): InvocationContext => ({
+      ...harness.createInvocationContext(projectRoot),
+      providerCredentials: replacementCredentials,
+    });
+    const getExecutionService = vi.fn(() => harness.executionSvc);
     try {
       const resumed = await resumeAll({
         db: harness.db,
         progressStore: harness.progressStore,
         loadJobDetails: loadJobProjectionDetails,
-        getExecutionService: () => harness.executionSvc,
-        createInvocationContext: harness.createInvocationContext,
+        getExecutionService,
+        createInvocationContext: createReplacementContext,
         finalizeWorkflow: vi.fn(),
         time: fixedTime,
       });
@@ -286,7 +297,13 @@ describe('workflow recovery branch rules', () => {
           jobId: harness.plan.slots[0].slotId,
           workflowSlotId: harness.plan.slots[0].slotId,
         }),
-        harness.createInvocationContext(PROJECT_ROOT),
+        expect.objectContaining({
+          ...harness.createInvocationContext(PROJECT_ROOT),
+          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        }),
+      );
+      expect(getExecutionService).toHaveBeenCalledWith(
+        expect.objectContaining({ providerCredentials: TEST_PROVIDER_CREDENTIALS }),
       );
       expect(harness.executionSvc.awaitLaunch).toHaveBeenCalledWith(harness.plan.slots[0].slotId, expect.any(Number));
       expect(harness.executionSvc.waitStream).toHaveBeenCalledTimes(1);
@@ -336,9 +353,7 @@ describe('workflow recovery branch rules', () => {
         ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
       });
       return emit(
-        req.jobIds.map((jobId) =>
-          terminal(jobId, jobId === pendingSlot.slotId ? 'CRIT_DONE' : 'VERIFY_DONE'),
-        ),
+        req.jobIds.map((jobId) => terminal(jobId, jobId === pendingSlot.slotId ? 'CRIT_DONE' : 'VERIFY_DONE')),
       );
     });
 
@@ -362,7 +377,10 @@ describe('workflow recovery branch rules', () => {
           jobId: missingSlot.slotId,
           workflowSlotId: missingSlot.slotId,
         }),
-        harness.createInvocationContext(PROJECT_ROOT),
+        expect.objectContaining({
+          ...harness.createInvocationContext(PROJECT_ROOT),
+          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        }),
       );
       expect(harness.executionSvc.coralDispatch).not.toHaveBeenCalledWith(
         expect.anything(),
@@ -447,7 +465,10 @@ describe('workflow recovery branch rules', () => {
           jobId: missingSlot.slotId,
           workflowSlotId: missingSlot.slotId,
         }),
-        harness.createInvocationContext(PROJECT_ROOT),
+        expect.objectContaining({
+          ...harness.createInvocationContext(PROJECT_ROOT),
+          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        }),
       );
       expect(harness.executionSvc.abort).toHaveBeenCalledWith([pendingSlot.slotId]);
       expect(harness.waitRequests).toHaveLength(1);
@@ -634,3 +655,4 @@ describe('workflow recovery branch rules', () => {
     }
   });
 });
+import { initTestJob } from '#tests/helpers/session.js';

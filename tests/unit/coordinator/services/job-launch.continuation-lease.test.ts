@@ -5,20 +5,24 @@ import { defineProvider } from '#src/providers/define.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { SessionEntry } from '#src/sessions/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-project',
   pluginRoot: '/tmp/coral-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-project'),
+  providerCredentials: TEST_PROVIDER_CREDENTIALS,
 };
 
 function sessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
     sessionId: 'session-retention-lock',
     provider: 'codex',
+    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
     name: 'session-retention-lock',
     state: 'ready',
     retention: 'discard_provider_artifacts_on_terminal',
@@ -56,6 +60,7 @@ describe('JobLaunchService continuation lease admission', () => {
       .build();
     const service = new JobLaunchService({
       runtime,
+      childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
       sessionManager: {
         allocate: vi.fn(),
         get: vi.fn(() => sessionEntry()),

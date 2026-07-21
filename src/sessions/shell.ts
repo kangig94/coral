@@ -437,6 +437,7 @@ export class SessionManager {
     const entry: SessionEntry = {
       sessionId: this.ids.uuid(),
       provider: options.provider,
+      sessionAuthority: options.sessionAuthority,
       name: options.name,
       state: 'pending',
       retention: options.retention ?? 'retain',
@@ -462,30 +463,7 @@ export class SessionManager {
 
   /** Allocate a new sessionId and persist as 'pending'. Returns the new entry. */
   allocate(options: SessionAllocateOptions): SessionEntry;
-  allocate(provider: string, name: string, model: string | undefined, cwd: string, projectRoot?: string): SessionEntry;
-  allocate(
-    optionsOrProvider: SessionAllocateOptions | string,
-    name?: string,
-    model?: string,
-    cwd?: string,
-    projectRoot?: string,
-  ): SessionEntry {
-    const options =
-      typeof optionsOrProvider === 'string'
-        ? (() => {
-            const resolvedCwd = cwd ?? '';
-            const resolvedProjectRoot = projectRoot ?? resolvedCwd;
-            return {
-              provider: optionsOrProvider,
-              name: name ?? `session-${this.time.now()}`,
-              model,
-              cwd: resolvedCwd,
-              projectRoot: resolvedProjectRoot,
-              backendNamespace: pluginRootNamespace(resolvedProjectRoot),
-            };
-          })()
-        : optionsOrProvider;
-
+  allocate(options: SessionAllocateOptions): SessionEntry {
     return this.open(options);
   }
 

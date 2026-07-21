@@ -5,17 +5,23 @@ import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import type { JobEventBus } from '../event-bus.js';
 import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus } from '../records.js';
+import type { ProviderCredentialSet } from '../../runtime/provider-credentials.js';
 
-export type InitJobOptions = {
+type InitJobBase = {
   jobId: string;
   sessionId: string;
   provider: string;
   projectRoot: string;
   backendNamespace: string;
   bundleHash?: string;
-  jobKind?: JobStatus['jobKind'];
   initialPhase?: JobStatus['phase'];
 };
+
+export type InitJobOptions = InitJobBase &
+  (
+    | { jobKind?: Exclude<JobStatus['jobKind'], 'workflow'> }
+    | { jobKind: 'workflow'; providerCredentials: ProviderCredentialSet }
+  );
 
 export type TerminalWriteOptions = {
   continuity?: JobContinuitySnapshot | null;

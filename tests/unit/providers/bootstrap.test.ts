@@ -5,7 +5,8 @@ import { none } from '#src/providers/capability.js';
 import type { ProviderSpec } from '#src/providers/contract.js';
 import { defineProvider } from '#src/providers/define.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
+import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
+import { TEST_CLAUDE_SOURCE, TEST_CODEX_SOURCE } from '../../helpers/provider-credentials.js';
 
 function providerNames(providers: ProviderSpec[]): string[] {
   return providers.map((provider) => provider.name);
@@ -38,15 +39,6 @@ function recoveryStorage(options: {
   };
 }
 
-function recoveryEnv(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'claudeConfigDir' | 'get' | 'fullSnapshot'> {
-  return {
-    homedir: () => homedir,
-    claudeConfigDir: () => `${homedir}/.claude`,
-    get: () => undefined,
-    fullSnapshot: () => ({}),
-  };
-}
-
 type RecoveryLocatorCase = {
   readonly label: string;
   readonly tree: Record<string, DirentLike[]>;
@@ -74,8 +66,8 @@ describe('registerBuiltInProviders', () => {
       subscriptionPhase: 'beforeInitialize',
     });
     expect(typeof claude?.appServer?.buildServerSpec).toBe('function');
-    expect(typeof claude?.appServer?.interrupt).toBe('function');
-    expect(typeof claude?.recovery?.probe).toBe('function');
+    expect(claude?.appServer?.interrupt).toBeUndefined();
+    expect(claude?.recovery?.probe).toBeUndefined();
     expect(typeof claude?.recovery?.finalizeInterrupted).toBe('function');
     expect(typeof claude?.recovery?.finalizeFromArtifacts).toBe('function');
     expect(claude?.artifacts.kind).toBe('managed');
@@ -141,13 +133,13 @@ describe('registerBuiltInProviders', () => {
       const codex = createBuiltInProviderRegistry().get('codex');
 
       const result = await codex?.recovery?.finalizeFromArtifacts({
+        source: TEST_CODEX_SOURCE,
         stdoutPath: '/tmp/stdout',
         stderrPath: '/tmp/stderr',
         exitCode: 0,
         signal: null,
         providerMeta: { threadId: 'thread-from-meta' },
         fallbackConversationRef: 'fallback-thread',
-        env: recoveryEnv(),
         storage: recoveryStorage({ tree }),
       });
 
@@ -159,6 +151,7 @@ describe('registerBuiltInProviders', () => {
     const codex = createBuiltInProviderRegistry().get('codex');
 
     const result = await codex?.recovery?.finalizeFromArtifacts({
+      source: TEST_CODEX_SOURCE,
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',
       exitCode: 0,
@@ -168,7 +161,6 @@ describe('registerBuiltInProviders', () => {
         providerContinuity: { threadId: '' },
       },
       fallbackConversationRef: 'fallback-thread',
-      env: recoveryEnv(),
       storage: recoveryStorage({
         tree: {
           '/home/user/.codex/sessions': [dirent('2026', 'dir')],
@@ -226,13 +218,13 @@ describe('registerBuiltInProviders', () => {
       const claude = createBuiltInProviderRegistry().get('claude');
 
       const result = await claude?.recovery?.finalizeFromArtifacts({
+        source: TEST_CLAUDE_SOURCE,
         stdoutPath: '/tmp/stdout',
         stderrPath: '/tmp/stderr',
         exitCode: 0,
         signal: null,
         providerMeta: { conversationRef: 'conversation-from-meta' },
         fallbackConversationRef: 'fallback-conversation',
-        env: recoveryEnv(),
         storage: recoveryStorage({
           files: {
             '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok' }),
@@ -246,17 +238,103 @@ describe('registerBuiltInProviders', () => {
     },
   );
 
+  it('uses persisted Claude source A and never hostile ambient source B for artifact recovery', async () => {
+    const claude = createBuiltInProviderRegistry().get('claude');
+    const result = await claude?.recovery?.finalizeFromArtifacts({
+      source: {
+        version: 1,
+        provider: 'claude',
+        kind: 'config-dir',
+        configDir: '/accounts/claude-a',
+        projectsRoot: '/accounts/claude-a/projects',
+      },
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: 0,
+      signal: null,
+      providerMeta: { conversationRef: 'same-conversation' },
+      storage: recoveryStorage({
+        files: { '/tmp/stdout': '', '/tmp/stderr': '' },
+        tree: {
+          '/accounts/claude-a/projects': [dirent('-workspace', 'dir')],
+          '/accounts/claude-a/projects/-workspace': [dirent('same-conversation.jsonl', 'file')],
+          '/accounts/claude-b/.claude/projects': [dirent('-workspace', 'dir')],
+          '/accounts/claude-b/.claude/projects/-workspace': [dirent('same-conversation.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result?.artifactHandles).toEqual([
+      {
+        handle: '/accounts/claude-a/projects/-workspace/same-conversation.jsonl',
+        identity: { kind: 'claude-jsonl', conversationRef: 'same-conversation' },
+      },
+    ]);
+  });
+
+  it('recovers a fresh Claude session from its durable preassigned conversation reference', async () => {
+    const claude = createBuiltInProviderRegistry().get('claude');
+    const handle = '/home/user/.claude/projects/-workspace/fresh-conversation.jsonl';
+    const result = await claude?.recovery?.finalizeFromArtifacts({
+      source: TEST_CLAUDE_SOURCE,
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: null,
+      signal: null,
+      providerMeta: { conversationRef: 'fresh-conversation' },
+      storage: recoveryStorage({
+        files: { '/tmp/stdout': '', '/tmp/stderr': '' },
+        tree: {
+          '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
+          '/home/user/.claude/projects/-workspace': [dirent('fresh-conversation.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result).toMatchObject({
+      continuity: { conversationRef: 'fresh-conversation', resumable: true },
+      artifactHandles: [
+        {
+          handle,
+          identity: { kind: 'claude-jsonl', conversationRef: 'fresh-conversation' },
+        },
+      ],
+    });
+  });
+
+  it('does not treat a planned Claude conversation reference as resumable without its exact JSONL', async () => {
+    const claude = createBuiltInProviderRegistry().get('claude');
+    const result = await claude?.recovery?.finalizeFromArtifacts({
+      source: TEST_CLAUDE_SOURCE,
+      stdoutPath: '/tmp/stdout',
+      stderrPath: '/tmp/stderr',
+      exitCode: null,
+      signal: null,
+      providerMeta: { conversationRef: 'planned-only' },
+      storage: recoveryStorage({
+        files: { '/tmp/stdout': '', '/tmp/stderr': '' },
+        tree: {
+          '/home/user/.claude/projects': [dirent('-workspace', 'dir')],
+          '/home/user/.claude/projects/-workspace': [dirent('unrelated.jsonl', 'file')],
+        },
+      }),
+    });
+
+    expect(result?.artifactHandles).toBeUndefined();
+    expect(result?.continuity).toEqual({ conversationRef: null, resumable: false });
+  });
+
   it('uses Claude recovery metadata for continuity and artifact lookup without parsing retired stdout', async () => {
     const claude = createBuiltInProviderRegistry().get('claude');
 
     const result = await claude?.recovery?.finalizeFromArtifacts({
+      source: TEST_CLAUDE_SOURCE,
       stdoutPath: '/tmp/stdout',
       stderrPath: '/tmp/stderr',
       exitCode: 0,
       signal: null,
       providerMeta: { conversationRef: 'conversation-from-meta' },
       fallbackConversationRef: 'fallback-conversation',
-      env: recoveryEnv(),
       storage: recoveryStorage({
         files: {
           '/tmp/stdout': JSON.stringify({ type: 'result', result: 'ok', session_id: '' }),

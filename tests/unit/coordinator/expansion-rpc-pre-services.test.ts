@@ -33,6 +33,8 @@ function makeRuntime(): Runtime {
     },
     env: {
       get: () => undefined,
+      homedir: () => '/home/user',
+      fullSnapshot: () => ({}),
       cwd: () => process.cwd(),
       pid: () => process.pid,
       platform: () => process.platform,

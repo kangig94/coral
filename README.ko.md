@@ -2,7 +2,7 @@
 
 Claude Code는 이미 코딩할 줄 압니다. Coral은 _당신의 방식대로_ 일하도록 가르칩니다.
 
-Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, 지식 베이스 워크플로우는 지속형 HTTP 데몬을 통해 처리됩니다.
+Coral은 CLI 중심 플러그인이며, 오케스트레이션, 세션, 토론, 지식 베이스 워크플로우는 지속형 로컬 coordinator/backend 데몬을 통해 처리됩니다.
 
 ## 설치
 
@@ -220,10 +220,10 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_KB_PATH`            | `~/.coral/kb`     | KB 저장 경로                                                                                                                                                                                                                                     |
 | `CORAL_CODEX_MODEL`        | `gpt-5.6-sol`     | Codex CLI 기본 모델. GPT-5.6 baseline에서는 abstract tier를 `opus`→`sol`, `sonnet`→`terra`, `haiku`→`luna`로 매핑; 그 외(예: `gpt-5.5`)는 size 구분 없이 해당 baseline 하나로 통일                                                               |
 | `CORAL_CODEX_EFFORT`       | `high`            | Codex 추론 노력도 (`low`…`ultra`). 상한: Sol/Terra `ultra`, Luna `max`, gpt-5.5 `xhigh`; Terra/Luna 하한 `xhigh`                                                                                                                                 |
-| `CORAL_CODEX_FAST`         | _(없음)_          | Codex fast 모드 토글 (`1` = fast, `0` = default/off). 미설정 시 `~/.codex/config.toml` 최상위 `service_tier`(`default`, `fast`, `flex`)로 폴백                                                                                                   |
-| `CORAL_CLAUDE_MODEL`       | _(없음)_          | Coral이 띄우는 Claude 세션의 기본 모델 — 예: `opus[1m]`(1M 컨텍스트 Opus), `opus`/`sonnet`/`haiku`, 또는 `claude-opus-4-8` 같은 전체 id. 미설정 시 Claude 자체 기본값. 요청별 모델이 우선하며, tier alias는 `CORAL_CLAUDE_MODEL_CAP`로 상한 적용 |
+| `CORAL_CODEX_FAST`         | _(없음)_          | Codex fast 모드 토글 (`1` = fast, `0` = default/off). 미설정 시 선택된 `$CODEX_HOME/config.toml`의 최상위 `service_tier`(`default`, `fast`, `flex`)로 폴백                                                                                      |
+| `CORAL_CLAUDE_MODEL`       | _(없음)_          | Coral이 띄우는 Claude 세션의 기본 모델 — `fable`/`opus`/`sonnet`/`haiku`, `opus[1m]` 같은 컨텍스트 variant, 또는 `claude-opus-4-8` 같은 전체 id. 미설정 시 Claude 자체 기본값. 요청별 모델이 우선하며, tier alias는 `CORAL_CLAUDE_MODEL_CAP`로 상한 적용 |
 | `CORAL_CLAUDE_EFFORT`      | `xhigh`           | Claude 추론 노력도 (`low`, `medium`, `high`, `xhigh`, `max`). Sonnet/Haiku에는 `xhigh`가 없어 어댑터가 `max`로 clamp                                                                                                                             |
-| `CORAL_CLAUDE_MODEL_CAP`   | `opus`            | Claude 최대 모델 티어 (`opus`, `sonnet`, `haiku`)                                                                                                                                                                                                |
+| `CORAL_CLAUDE_MODEL_CAP`   | `opus`            | Claude 최대 모델 티어 (`fable` > `opus` > `sonnet` > `haiku`)                                                                                                                                                                                     |
 | `CORAL_EFFORT`             | _(없음)_          | 공통 effort 폴백. 각 `CORAL_{CLAUDE,CODEX}_EFFORT`가 미설정일 때만 적용                                                                                                                                                                          |
 | `CORAL_DEV_ASSERTIONS`     | _(없음)_          | 기여자 전용 개발 어서션. 로컬 개발이나 `npm test` 실행 시 `1`로 두면 이미 비활성화된 continuity bridge 호출과 dispatcher 손상 상태를 조용히 넘기지 않고 예외로 드러냅니다. 미설정이 기본 프로덕션 동작이며, 배포 환경에서는 절대 켜지 마세요     |
 | `CORAL_MAX_WORKERS`        | `10`              | 최대 동시 워커 수 (1–20)                                                                                                                                                                                                                         |
@@ -231,7 +231,8 @@ Coral은 매 세션에서 배웁니다. 근본 원인, 주의사항, 패턴 — 
 | `CORAL_KB_GIT_SYNC`        | `0`               | KB git 동기화 — remote와 자동 push/pull (`1` = 활성화)                                                                                                                                                                                           |
 | `CORAL_KB_ENABLE`          | _(미설정 → 활성)_ | `0`이면 KB 서브시스템 없이 데몬을 부팅 — 인덱싱·curate·KB 컨텍스트 주입이 모두 없습니다. 다시 `1`로 바꾸고 `kb …` 명령을 실행하면 데몬이 자동 재시작되어 재활성화됩니다 ([상세](docs/configuration.md))                                          |
 | `CORAL_KB_EXTRA_LANGS`     | _(없음)_          | 상시 활성 `Intl.Segmenter` 기본값 위에 추가하는 KB 언어 분석기. `ko` 같은 소문자 쉼표 구분 코드. `ko`는 Kiwi 형태소 분석기를 켭니다 (로드 시 약 1 GB 메모리)                                                                                     |
-| `CLAUDE_CONFIG_DIR`        | `~/.claude`       | Claude Code 설정 디렉터리 — Coral은 config dir별로 백엔드 데몬과 상태를 분리해, 여러 Claude 설정이 독립적으로 동작합니다 ([상세](docs/configuration.md))                                                                                         |
+| `CODEX_HOME`               | `~/.codex`        | 이 호출에서 사용할 Codex 계정. Coral은 해석된 home을 세션에 결합하고 resume/recovery에서도 같은 계정을 사용합니다 ([상세](docs/configuration.md))                                                                                             |
+| `CLAUDE_CONFIG_DIR`        | _(미설정 → ambient)_ | 이 호출에서 사용할 Claude 계정. 계정 격리에는 명시적인 절대 경로를 사용해야 하며, ambient 모드는 OS 사용자의 기본 Claude/Keychain 컨텍스트를 사용합니다 ([상세](docs/configuration.md))                                                        |
 
 > **팁:** `CORAL_CLAUDE_MODEL_CAP=sonnet`으로 설정하면 모든 서브에이전트 호출을 Sonnet 티어로 제한합니다. Pro 구독이거나 사용량을 절약하고 싶을 때.
 >

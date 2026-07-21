@@ -173,7 +173,7 @@ export class SimulationWorld {
         ? ({
             type: 'launch',
             prompt: promptOrStep,
-            provider: opts.provider ?? 'fake-provider',
+            provider: opts.provider ?? 'codex',
             agent: opts.agent,
             projectRoot: opts.projectRoot,
             coralEnv: opts.coralEnv,
@@ -184,7 +184,7 @@ export class SimulationWorld {
     const service = this.current.backend.createService(projectRoot);
     const ctx = this.current.backend.createInvocationContext(projectRoot, step.coralEnv);
     return service.start(
-      step.provider ?? 'fake-provider',
+      step.provider ?? 'codex',
       {
         prompt: step.prompt,
         ...(step.agent !== undefined ? { agent: step.agent } : {}),

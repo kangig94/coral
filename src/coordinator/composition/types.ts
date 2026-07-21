@@ -28,6 +28,7 @@ import type { Database } from '../../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './store-services-ref.js';
 import type { HealthSnapshot } from '../../transport/server-ports.js';
 import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
+import type { ProviderCredentialSet } from '../../runtime/provider-credentials.js';
 
 type CoordinatorBootSnapshot = {
   version?: string;
@@ -107,6 +108,7 @@ export type CoordinatorCoreResult = {
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
   providerHostManager: ProviderHostManager;
+  providerCredentialDefaults: ProviderCredentialSet;
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   listExecutionServices: () => ProjectRequestPort[];

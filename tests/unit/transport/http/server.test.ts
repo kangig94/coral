@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { allocateTestSession } from '../../../helpers/session.js';
+import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import {
   createServer,
@@ -26,7 +28,6 @@ import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
@@ -436,6 +437,7 @@ function stubLaunchRecord(
       cwd: '/tmp/test',
       bypassPermissions: false,
       coralEnv: {},
+      ...(overrides.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
     },
     createdAt: new Date().toISOString(),
   };
@@ -458,56 +460,6 @@ function stubRuntimeRecord(
     stderrPath: overrides.stderrPath ?? join(JOBS_DIR, overrides.jobId, 'stderr.log'),
     startTime: overrides.startTime ?? new Date().toISOString(),
   });
-}
-
-function stubSessionProjection(
-  progressStore: JobStore,
-  overrides: {
-    sessionId: string;
-    provider: string;
-    projectRoot: string;
-    backendNamespace: string;
-  },
-): void {
-  const scopeKey = pluginRootNamespace(overrides.projectRoot);
-
-  commitInputs(
-    progressStore.getDb(),
-    [
-      {
-        type: 'session.opened',
-        stream: { kind: 'session', id: overrides.sessionId },
-        namespace: overrides.backendNamespace,
-        project: overrides.projectRoot,
-        refs: { sessionId: overrides.sessionId },
-        bodyVersion: 1,
-        body: {
-          entry: {
-            sessionId: overrides.sessionId,
-            provider: overrides.provider,
-            name: 'alpha',
-            state: 'pending',
-            cwd: overrides.projectRoot,
-            projectRoot: overrides.projectRoot,
-            backendNamespace: overrides.backendNamespace,
-            providerContinuity: null,
-            createdAt: new Date(runtime.time.now()).toISOString(),
-            lastUsedAt: new Date(runtime.time.now()).toISOString(),
-            version: 1,
-          },
-          controller: 'default',
-          provider: overrides.provider,
-          scope_key: scopeKey,
-        },
-      },
-    ],
-    {
-      now: () => new Date(runtime.time.now()),
-      reducers: composeReducers(sessionsRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
-      providers: permissiveProviderLookupPort,
-    },
-  );
 }
 
 function parseToolData(result: ToolDomainResult): unknown {
@@ -1706,7 +1658,7 @@ describe('execution backend server', () => {
     createdJobIds.add(jobIdA);
     createdJobIds.add(jobIdB);
 
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: jobIdA,
       sessionId: 'session-a',
       provider: 'codex',
@@ -1729,7 +1681,7 @@ describe('execution backend server', () => {
       'completed',
     );
 
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: jobIdB,
       sessionId: 'session-b',
       provider: 'codex',
@@ -1860,7 +1812,7 @@ describe('execution backend server', () => {
 
     createdJobIds.add('job-local-health');
     createdJobIds.add('job-foreign-health');
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: 'job-local-health',
       sessionId: 'session-local-health',
       provider: 'codex',
@@ -1877,7 +1829,7 @@ describe('execution backend server', () => {
       backendNamespace: testBackendNamespace,
     });
     stubRuntimeRecord(progressStore, { jobId: 'job-local-health' });
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: 'job-foreign-health',
       sessionId: 'session-foreign-health',
       provider: 'codex',
@@ -1927,6 +1879,7 @@ describe('execution backend server', () => {
       },
       1,
       '2026-03-11T00:00:00.000Z',
+      { providerCredentials: TEST_PROVIDER_CREDENTIALS },
     );
     if (!created.ok) {
       throw new Error(created.error);
@@ -1958,7 +1911,7 @@ describe('execution backend server', () => {
   it('does not recover discuss project roots discovered only from the session index', async () => {
     const fakeIdleTimer = createFakeIdleTimer();
     const projectRoot = createProjectRoot('session-index-only-project');
-    createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
+    allocateTestSession(createSessionManager(projectRoot), 'codex', 'alpha', 'gpt-5', projectRoot, projectRoot);
 
     const discussRegistry = createDiscussContextRegistry();
     const setSpy = vi.spyOn(discussRegistry.contexts, 'set');
@@ -4503,7 +4456,7 @@ describe('execution backend server', () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('job-1');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -4556,7 +4509,7 @@ describe('execution backend server', () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('job-1');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -4605,14 +4558,14 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     createdJobIds.add('job-1');
     createdJobIds.add('job-2');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
     });
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-2',
       sessionId: 'session-2',
       provider: 'codex',
@@ -4670,7 +4623,7 @@ describe('execution backend server', () => {
     const eventBus = new TypedEventBus();
     const progressStore = createProgressStore();
     createdJobIds.add('job-no-project-root-stream');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-no-project-root-stream',
       sessionId: 'session-no-project-root-stream',
       provider: 'codex',
@@ -4707,14 +4660,14 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     createdJobIds.add('job-owned');
     createdJobIds.add('job-foreign');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-owned',
       sessionId: 'session-owned',
       provider: 'codex',
       projectRoot: '/tmp/project',
       backendNamespace: testBackendNamespace,
     });
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-foreign',
       sessionId: 'session-foreign',
       provider: 'codex',
@@ -4810,7 +4763,7 @@ describe('execution backend server', () => {
 
     createdJobIds.add('job-1');
     createdJobIds.add('job-2');
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: 'job-1',
       sessionId: 'session-1',
       provider: 'codex',
@@ -4832,7 +4785,7 @@ describe('execution backend server', () => {
       { content: 'done', outcome: { kind: 'completed' } },
       'completed',
     );
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: 'job-2',
       sessionId: 'session-2',
       provider: 'claude',
@@ -4927,7 +4880,7 @@ describe('execution backend server', () => {
     const backend = await startBackendServer();
 
     createdJobIds.add('job-foreign-project');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-foreign-project',
       sessionId: 'session-foreign-project',
       provider: 'codex',
@@ -4955,12 +4908,12 @@ describe('execution backend server', () => {
     const projectA = createProjectRoot('job-detail-project-a');
     const projectB = createProjectRoot('job-detail-project-b');
     const sessionManager = createSessionManager(projectA);
-    const session = sessionManager.allocate('codex', 'detail-session', 'gpt-5', projectA);
+    const session = allocateTestSession(sessionManager, 'codex', 'detail-session', 'gpt-5', projectA);
     const jobId = 'job-detail-project-a';
     const backend = await startBackendServer();
 
     createdJobIds.add(jobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
@@ -5001,7 +4954,7 @@ describe('execution backend server', () => {
       createdJobIds.add('job-completed');
       createdJobIds.add('job-foreign-project');
 
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId: 'job-running',
         sessionId: 'session-running',
         provider: 'codex',
@@ -5017,7 +4970,7 @@ describe('execution backend server', () => {
         backendNamespace: testBackendNamespace,
       });
       stubRuntimeRecord(progressStore, { jobId: 'job-running' });
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId: 'job-queued',
         sessionId: 'session-queued',
         provider: 'claude',
@@ -5032,7 +4985,7 @@ describe('execution backend server', () => {
         projectRoot: '/tmp/project',
         backendNamespace: testBackendNamespace,
       });
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId: 'job-completed',
         sessionId: 'session-completed',
         provider: 'claude',
@@ -5053,7 +5006,7 @@ describe('execution backend server', () => {
         { content: 'done', outcome: { kind: 'completed' } },
         'completed',
       );
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId: 'job-foreign-project',
         sessionId: 'session-foreign-project',
         provider: 'codex',
@@ -5245,7 +5198,7 @@ describe('execution backend server', () => {
     const fakeService = createFakeExecutionService();
     const progressStore = createProgressStore();
     createdJobIds.add('job-foreign');
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId: 'job-foreign',
       sessionId: 'session-foreign',
       provider: 'codex',
@@ -5308,24 +5261,10 @@ describe('execution backend server', () => {
   });
 
   it('clears orphaned session claims across shards when the job dir is missing', async () => {
-    const progressStore = createProgressStore();
     const projectA = createProjectRoot('project-a');
     const projectB = createProjectRoot('project-b');
-    const sessionA = createSessionManager(projectA).allocate('codex', 'alpha', 'gpt-5', projectA);
-    const sessionB = createSessionManager(projectB).allocate('codex', 'beta', 'gpt-5', projectB);
-    stubSessionProjection(progressStore, {
-      sessionId: sessionA.sessionId,
-      provider: 'codex',
-      projectRoot: projectA,
-      backendNamespace: testBackendNamespace,
-    });
-    stubSessionProjection(progressStore, {
-      sessionId: sessionB.sessionId,
-      provider: 'codex',
-      projectRoot: projectB,
-      backendNamespace: testBackendNamespace,
-    });
-
+    const sessionA = allocateTestSession(createSessionManager(projectA), 'codex', 'alpha', 'gpt-5', projectA);
+    const sessionB = allocateTestSession(createSessionManager(projectB), 'codex', 'beta', 'gpt-5', projectB);
     createSessionManager(projectA).claimForJobSync(sessionA.sessionId, 'missing-job-a');
     createSessionManager(projectB).claimForJobSync(sessionB.sessionId, 'missing-job-b');
 
@@ -5345,17 +5284,10 @@ describe('execution backend server', () => {
   it('releases terminal session claims even when the referenced job dir exists', async () => {
     const progressStore = createProgressStore();
     const projectRoot = createProjectRoot('project-existing-job');
-    const session = createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+    const session = allocateTestSession(createSessionManager(projectRoot), 'codex', 'alpha', 'gpt-5', projectRoot);
     const jobId = 'completed-job';
-    stubSessionProjection(progressStore, {
-      sessionId: session.sessionId,
-      provider: 'codex',
-      projectRoot,
-      backendNamespace: testBackendNamespace,
-    });
-
     createdJobIds.add(jobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
@@ -5389,16 +5321,25 @@ describe('execution backend server', () => {
     const progressStore = createProgressStore();
     const jobId = 'workflow-orphan-job';
     const projectRoot = createProjectRoot('workflow-project');
-    const session = createSessionManager(projectRoot).allocate('codex', 'workflow-session', 'gpt-5', projectRoot);
+    const session = createSessionManager(projectRoot).allocate({
+      provider: 'codex',
+      sessionAuthority: { kind: 'orchestration' },
+      name: 'workflow-session',
+      model: 'workflow',
+      cwd: projectRoot,
+      projectRoot,
+      backendNamespace: testBackendNamespace,
+    });
 
     createdJobIds.add(jobId);
-    progressStore.initJob({
+    initTestJob(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot,
       backendNamespace: testBackendNamespace,
       jobKind: 'workflow',
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     });
     createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
 
@@ -5678,7 +5619,7 @@ describe('execution backend server', () => {
     const localNamespace = pluginRootNamespace(pluginRoot);
     const foreignJobId = 'job-foreign-drain';
     createdJobIds.add(foreignJobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: foreignJobId,
       sessionId: 'session-foreign-drain',
       provider: 'codex',
@@ -5871,7 +5812,7 @@ describe('execution backend server', () => {
       const jobId = 'handoff-app-server-job';
       createdJobIds.add(jobId);
 
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId,
         sessionId: 'handoff-session',
         provider: 'codex',
@@ -6037,6 +5978,7 @@ describe('execution backend server', () => {
         { sessionId: 'startup-candidate', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:00:00.000Z',
+        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
       );
       if (!startupCandidateCreated.ok) {
         throw new Error(startupCandidateCreated.error);
@@ -6058,6 +6000,7 @@ describe('execution backend server', () => {
         { sessionId: 'terminal-history', projectRoot: projectRoot, topic: topic },
         1,
         '2026-03-11T00:05:00.000Z',
+        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
       );
       if (!terminalHistoryCreated.ok) {
         throw new Error(terminalHistoryCreated.error);
@@ -6356,14 +6299,63 @@ describe('execution backend server', () => {
   });
 
   describe('recovery scan', () => {
+    it('terminalizes a missing-launch provider job with unavailable account authority', async () => {
+      const progressStore = createProgressStore();
+      const jobId = 'missing-launch-unavailable-authority';
+      const projectRoot = createProjectRoot('missing-launch-unavailable-authority-project');
+      const session = allocateTestSession(createSessionManager(projectRoot), 'codex', 'alpha', 'gpt-5', projectRoot);
+
+      createdJobIds.add(jobId);
+      initTestJob(progressStore, {
+        jobId,
+        sessionId: session.sessionId,
+        provider: 'codex',
+        projectRoot,
+        backendNamespace: testBackendNamespace,
+        initialPhase: 'running',
+      });
+      createSessionManager(projectRoot).claimForJobSync(session.sessionId, jobId);
+      progressStore
+        .getDb()
+        .prepare("DELETE FROM events WHERE stream_kind = 'job' AND stream_id = ? AND type = 'job.launch.requested'")
+        .run(jobId);
+      expect(progressStore.readLaunchProjection(jobId)).toBeNull();
+
+      const backend = await startBackendServer();
+
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase: 'error',
+        result: {
+          outcome: {
+            kind: 'job_fault',
+            fault: { kind: 'provider_credential_source', reason: 'unavailable' },
+          },
+        },
+      });
+      expect(createSessionManager(projectRoot).get('codex', session.sessionId)?.activeJobId).toBeUndefined();
+      await backend.controller.shutdown('test');
+      await backend.controller.waitForShutdown();
+    });
+
     it('treats clean initialized live jobs as ghost launches, not missing launch records', async () => {
       const progressStore = createProgressStore();
       const jobId = 'clean-live-job';
       const projectRoot = createProjectRoot('clean-live-project');
-      const session = createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+      const session = createSessionManager(projectRoot).allocate({
+        provider: 'codex',
+        sessionAuthority: {
+          kind: 'provider',
+          source: { ...TEST_CODEX_SOURCE, home: projectRoot },
+        },
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: projectRoot,
+        projectRoot,
+        backendNamespace: testBackendNamespace,
+      });
 
       createdJobIds.add(jobId);
-      progressStore.initJob({
+      initTestJob(progressStore, {
         jobId,
         sessionId: session.sessionId,
         provider: 'codex',
@@ -6394,10 +6386,21 @@ describe('execution backend server', () => {
       const progressStore = createProgressStore();
       const jobId = 'ghost-launch-job';
       const projectRoot = createProjectRoot('ghost-launch-project');
-      const session = createSessionManager(projectRoot).allocate('codex', 'alpha', 'gpt-5', projectRoot);
+      const session = createSessionManager(projectRoot).allocate({
+        provider: 'codex',
+        sessionAuthority: {
+          kind: 'provider',
+          source: { ...TEST_CODEX_SOURCE, home: projectRoot },
+        },
+        name: 'alpha',
+        model: 'gpt-5',
+        cwd: projectRoot,
+        projectRoot,
+        backendNamespace: testBackendNamespace,
+      });
 
       createdJobIds.add(jobId);
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId,
         sessionId: session.sessionId,
         provider: 'codex',
@@ -6432,3 +6435,4 @@ describe('execution backend server', () => {
     });
   });
 });
+import { initTestJob, seedTestJobSession } from '#tests/helpers/session.js';

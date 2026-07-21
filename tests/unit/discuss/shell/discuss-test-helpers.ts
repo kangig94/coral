@@ -36,6 +36,7 @@ import { discussRegistry as discussStoreRegistry, toJournalInput } from '#src/di
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 
 function resolveBackendNamespace(runtime: Runtime, pluginRoot: string): string {
   const paths = runtime.paths as { pluginRootNamespace?: (root: string) => string };
@@ -234,6 +235,7 @@ export function createDiscussHarness(
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
   };
   let cleaned = false;
 
@@ -325,6 +327,7 @@ export async function persistSession(
     createdAt,
     {
       agentExecution: options.agentExecution ?? defaultAgentExecution(agents),
+      providerCredentials: harness.ctx.providerCredentials ?? TEST_PROVIDER_CREDENTIALS,
     },
   );
   if (!created.ok) {

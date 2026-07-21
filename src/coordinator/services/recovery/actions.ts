@@ -1,9 +1,10 @@
 import { formatError } from '../../../infra/error-format.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
-import { isAppServerRuntime, type JobLaunch, type JobRuntime } from '../../../jobs/records.js';
+import { isAppServerRuntime, type JobLaunch, type JobRuntime, type JobStatus } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import type { ProviderArtifactHandleInput, ProviderRecoveryContract } from '../../../providers/contract.js';
+import type { ProviderCatalog } from '../../../providers/catalog.js';
 import { phaseForOutcome, type TerminalOutcome } from '../../../jobs/outcome.js';
 import type { JobStore } from '../../../jobs/store.js';
 import type { RecoveryAction } from '../../../jobs/reconcile/plan.js';
@@ -31,12 +32,36 @@ type RecoveryActionContext = {
   runningRecoverable: RunningRecoverableJob[];
   log: (message: string) => void;
   runtime: Runtime;
+  providerRegistry: ProviderCatalog;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   sessionLookup: Pick<SessionLookup, 'readSessionEntry'>;
   emitSessionReleased: (payload: { sessionId: string; jobId: string }) => void;
   coordinatorCommit: CommitEventsFn;
 };
+
+function recoveryAuthorityLaunch(status: JobStatus): JobLaunch | null {
+  if (status.jobKind !== 'provider' || status.sessionId === null || status.provider === null) return null;
+  return {
+    jobId: status.jobId,
+    sessionId: status.sessionId,
+    provider: status.provider,
+    projectRoot: status.projectRoot,
+    backendNamespace: status.backendNamespace,
+    ...(status.bundleHash === undefined ? {} : { bundleHash: status.bundleHash }),
+    jobKind: 'provider',
+    pool: 'default',
+    enqueueSequence: 0,
+    providerAction: 'exec',
+    request: {
+      prompt: '',
+      cwd: status.projectRoot,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: status.updatedAt,
+  };
+}
 
 export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionContext): void {
   const {
@@ -46,6 +71,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
     runningRecoverable,
     log,
     runtime,
+    providerRegistry,
     createInvocationContext,
     getRecoveryService,
     sessionLookup,
@@ -59,6 +85,19 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       log(`Discarded incomplete admission: ${action.jobId}\n`);
       return;
     case 'markError': {
+      const launchRecord = progressStore.readLaunchProjection(action.jobId);
+      if (action.status.jobKind === 'provider') {
+        const authorityLaunch = launchRecord ?? recoveryAuthorityLaunch(action.status);
+        if (authorityLaunch === null) {
+          log(`Rejected stale provider job without recoverable authority: ${action.jobId}\n`);
+          return;
+        }
+        const service = getRecoveryService(createInvocationContext(action.status.projectRoot));
+        if (!service.validateProviderRecoveryAuthority(authorityLaunch)) {
+          log(`Rejected stale-job recovery with invalid provider authority: ${action.jobId}\n`);
+          return;
+        }
+      }
       markJobAsError(progressStore, action.status, action.fault, log);
       if (action.status.jobKind === 'workflow') {
         try {
@@ -95,15 +134,31 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
       recoveryRegistry.register(action.jobId, action.launchRecord);
       queuedRecoverable.push({ jobId: action.jobId, launchRecord: action.launchRecord });
       return;
-    case 'registerRunning':
+    case 'registerRunning': {
       if (isAppServerRuntime(action.runtimeRecord)) {
+        const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
+        if (!service.validateProviderRecoveryAuthority(action.launchRecord)) {
+          log(`Rejected running recovery with invalid provider authority: ${action.jobId}\n`);
+          return;
+        }
         const runtimeRecord = action.runtimeRecord;
-        recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord, () => {
-          const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
-          void service.interruptAppServerJob(action.launchRecord, runtimeRecord).catch((error: unknown) => {
-            log(`Failed to interrupt recovered app-server job ${action.jobId}: ${formatError(error)}\n`);
-          });
-        });
+        const interrupt =
+          action.launchRecord.provider === null
+            ? undefined
+            : providerRegistry.get(action.launchRecord.provider)?.appServer?.interrupt;
+        recoveryRegistry.register(
+          action.jobId,
+          action.launchRecord,
+          action.runtimeRecord,
+          interrupt === undefined
+            ? undefined
+            : () => {
+                const service = getRecoveryService(createInvocationContext(action.launchRecord.projectRoot));
+                void service.interruptAppServerJob(action.launchRecord, runtimeRecord).catch((error: unknown) => {
+                  log(`Failed to interrupt recovered app-server job ${action.jobId}: ${formatError(error)}\n`);
+                });
+              },
+        );
       } else {
         recoveryRegistry.register(action.jobId, action.launchRecord, action.runtimeRecord);
       }
@@ -113,6 +168,7 @@ export function applyRecoveryAction(action: RecoveryAction, ctx: RecoveryActionC
         runtimeRecord: action.runtimeRecord,
       });
       return;
+    }
     case 'releaseSessionClaim': {
       const session = sessionLookup.readSessionEntry(action.sessionId);
       if (!session) {
@@ -227,18 +283,23 @@ export function finalizeDeadAdoptedJob({
     log(`Skipped provider recovery for job ${jobId}: launch record is not a provider session launch\n`);
     return;
   }
+  const credentialSource = service.providerCredentialSourceForRecovery(launchRecord);
+  if (credentialSource === null) {
+    log(`Provider recovery skipped for job ${jobId}: provider credential source is no longer valid\n`);
+    return;
+  }
 
   const exitRecord = progressStore.readExitProjection(jobId);
   if (exitRecord) {
     if (provider) {
       void provider
         .finalizeFromArtifacts({
+          source: credentialSource,
           stdoutPath: runtimeRecord.stdoutPath,
           stderrPath: runtimeRecord.stderrPath,
           exitCode: exitRecord.exitCode,
           signal: exitRecord.signal,
           providerMeta: runtimeRecord.providerMeta,
-          env: runtime.env,
           fallbackConversationRef: launchRecord.request.conversationRef,
           knownArtifactHandles: readKnownArtifactHandles(sessionLookup, sessionId, providerName, jobId),
           storage: runtime.storage,

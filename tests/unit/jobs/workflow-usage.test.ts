@@ -13,6 +13,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { loadJobProjectionDetail, loadJobProjectionDetails, readJobEvents } from '#src/jobs/read-queries.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
@@ -112,6 +113,7 @@ function launchJob(
         cwd: projectRoot,
         bypassPermissions: false,
         coralEnv: {},
+        ...(options.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
       },
       createdAt,
     },
@@ -235,9 +237,9 @@ describe('workflow usage aggregation', () => {
       expect(loadJobProjectionDetail(db, workflowJobId, readCtx).exit?.diagnostics.usage).toEqual(expectedUsage);
       expect(terminalEvent(readJobEvents(db, workflowJobId, readCtx)).usage).toEqual(expectedUsage);
 
-      const stored = db
-        .prepare('SELECT diagnostics FROM projection_jobs WHERE job_id = ?')
-        .get(workflowJobId) as { diagnostics: string | null };
+      const stored = db.prepare('SELECT diagnostics FROM projection_jobs WHERE job_id = ?').get(workflowJobId) as {
+        diagnostics: string | null;
+      };
       expect(stored.diagnostics === null ? {} : JSON.parse(stored.diagnostics)).not.toHaveProperty('usage');
     } finally {
       db.close();
@@ -251,16 +253,16 @@ describe('workflow usage aggregation', () => {
       seedWorkflowWithChildren(db, workflowJobId);
       commit(db, [terminalRecorded(workflowJobId)]);
 
-      expect(loadJobProjectionDetails(db, [workflowJobId], readCtx).get(workflowJobId)?.exit?.diagnostics.usage).toEqual(
-        {
-          inputTokens: 107,
-          cacheReadTokens: 53,
-          cacheWriteTokens: 10,
-          outputTokens: 25,
-          costUsd: 0.25,
-          jobsWithoutCostData: 1,
-        },
-      );
+      expect(
+        loadJobProjectionDetails(db, [workflowJobId], readCtx).get(workflowJobId)?.exit?.diagnostics.usage,
+      ).toEqual({
+        inputTokens: 107,
+        cacheReadTokens: 53,
+        cacheWriteTokens: 10,
+        outputTokens: 25,
+        costUsd: 0.25,
+        jobsWithoutCostData: 1,
+      });
     } finally {
       db.close();
     }

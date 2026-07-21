@@ -26,34 +26,6 @@ function parseDisplayName(persona: string, agentName: string): string {
   return match?.[1]?.trim() || agentName;
 }
 
-function makeEmptyState(sessionId: string): DiscussState {
-  return {
-    session_id: sessionId,
-    topic: '',
-    status: 'setup',
-    step: 1,
-    epoch: 1,
-    max_epochs: 1,
-    quota_per_epoch: 0,
-    cold_start: true,
-    agents: {},
-    current_bids: {},
-    current_thoughts: {},
-    pending_bidders: [],
-    current_speaker: null,
-    speaker_type: null,
-    epoch_summary_written: 0,
-    created_at: '',
-    last_activity_at: '',
-    last_speech_step: 0,
-    bid_release_step: 0,
-    end_reason_content: null,
-    transcript: [],
-    bid_threshold: 0,
-    min_bid_delay_ms: 0,
-  };
-}
-
 function makeEmptyRuntime(): PersistedDiscussRuntime {
   return {
     controlPhase: 'idle',
@@ -385,15 +357,22 @@ function reduceAgentJobFinished(
   }));
 }
 
-export function makeEmptySnapshot(sessionId: string, projectRoot: string): PersistedDiscussSnapshot {
+export function createDiscussSnapshot(event: DiscussDomainEvent): PersistedDiscussSnapshot {
+  if (event.kind !== 'session.created') {
+    throw new Error(`Discuss session '${event.sessionId}' must begin with session.created.`);
+  }
   return {
-    schemaVersion: 2,
-    sessionId,
-    projectRoot,
-    updatedAt: '',
-    lastAppliedSeq: 0,
-    state: makeEmptyState(sessionId),
-    runtime: makeEmptyRuntime(),
+    schemaVersion: 3,
+    providerCredentials: event.payload.providerCredentials,
+    sessionId: event.sessionId,
+    projectRoot: event.projectRoot,
+    updatedAt: event.ts,
+    lastAppliedSeq: event.seq,
+    state: buildSessionState(event),
+    runtime: {
+      ...makeEmptyRuntime(),
+      agentRuns: buildRuntimeAgentRuns(event.payload.agentExecution),
+    },
   };
 }
 
@@ -403,18 +382,7 @@ export function reduceDiscussEvent(
 ): PersistedDiscussSnapshot {
   switch (event.kind) {
     case 'session.created':
-      return {
-        schemaVersion: 2,
-        sessionId: event.sessionId,
-        projectRoot: event.projectRoot,
-        updatedAt: event.ts,
-        lastAppliedSeq: event.seq,
-        state: buildSessionState(event),
-        runtime: {
-          ...makeEmptyRuntime(),
-          agentRuns: buildRuntimeAgentRuns(event.payload.agentExecution),
-        },
-      };
+      throw new Error(`Discuss session '${event.sessionId}' is already created.`);
 
     case 'bidding.opened': {
       const nextState: DiscussState = {
@@ -695,7 +663,8 @@ export function replayDiscussEvents(
   events: DiscussDomainEvent[],
   seed?: PersistedDiscussSnapshot,
 ): PersistedDiscussSnapshot {
-  const baseSnapshot = seed ?? makeEmptySnapshot(events[0]?.sessionId ?? '', events[0]?.projectRoot ?? '');
-
-  return events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), baseSnapshot);
+  if (seed !== undefined) return events.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), seed);
+  const [first, ...rest] = events;
+  if (first === undefined) throw new Error('Cannot replay an empty discuss event stream.');
+  return rest.reduce((snapshot, event) => reduceDiscussEvent(snapshot, event), createDiscussSnapshot(first));
 }

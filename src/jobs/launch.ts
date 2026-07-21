@@ -4,6 +4,7 @@ import { providerInstructionSchema, type ProviderInstruction } from '../provider
 import { continuityRefSchema } from '../sessions/continuity.js';
 import { retentionPolicySchema, type RetentionPolicy } from '../sessions/entry.js';
 import type { LaunchPool } from './contracts/admission.js';
+import { providerCredentialSetSchema } from '../runtime/provider-credentials.js';
 
 export const sourceImportReadinessValues = ['commit', 'base-search', 'active-vector', 'all-equipped'] as const;
 const sourceImportReadinessSchema = z.enum(sourceImportReadinessValues);
@@ -62,7 +63,23 @@ export interface JobResumeRequest extends Omit<JobLaunchRequest, 'retention'> {
   provider?: string;
 }
 
-const providerJobLaunchRequestBodySchema = z
+const providerLaunchRequestSchema = z
+  .object({
+    prompt: z.string(),
+    name: z.string().optional(),
+    model: z.string().optional(),
+    cwd: z.string(),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+    bypassPermissions: z.boolean(),
+    systemPrompt: z.string().optional(),
+    conversationRef: continuityRefSchema.optional(),
+    instruction: providerInstructionSchema.optional(),
+    retention: retentionPolicySchema.optional(),
+    coralEnv: z.record(z.string()),
+  })
+  .strict();
+
+const providerOrWorkflowLaunchBaseSchema = z
   .object({
     sessionId: z.string().min(1),
     provider: z.string().min(1),
@@ -70,27 +87,21 @@ const providerJobLaunchRequestBodySchema = z
     projectRoot: z.string(),
     backendNamespace: z.string(),
     bundleHash: z.string().optional(),
-    jobKind: z.enum(['provider', 'workflow']),
     pool: z.string(),
     enqueueSequence: z.number().int().nonnegative(),
-    request: z
-      .object({
-        prompt: z.string(),
-        name: z.string().optional(),
-        model: z.string().optional(),
-        cwd: z.string(),
-        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
-        bypassPermissions: z.boolean(),
-        systemPrompt: z.string().optional(),
-        conversationRef: continuityRefSchema.optional(),
-        instruction: providerInstructionSchema.optional(),
-        retention: retentionPolicySchema.optional(),
-        coralEnv: z.record(z.string()),
-      })
-      .strict(),
     createdAt: z.string(),
   })
   .strict();
+
+const providerJobLaunchRequestBodySchema = providerOrWorkflowLaunchBaseSchema.extend({
+  jobKind: z.literal('provider'),
+  request: providerLaunchRequestSchema,
+});
+
+const workflowJobLaunchRequestBodySchema = providerOrWorkflowLaunchBaseSchema.extend({
+  jobKind: z.literal('workflow'),
+  request: providerLaunchRequestSchema.extend({ providerCredentials: providerCredentialSetSchema }),
+});
 
 const kbJobLaunchBaseSchema = z.object({
   projectRoot: z.string(),
@@ -133,6 +144,7 @@ const kbCommunitySummaryJobLaunchRequestBodySchema = kbJobLaunchBaseSchema
 
 export const jobLaunchRequestBodySchema = z.union([
   providerJobLaunchRequestBodySchema,
+  workflowJobLaunchRequestBodySchema,
   kbSourceImportJobLaunchRequestBodySchema,
   kbReindexJobLaunchRequestBodySchema,
   kbCommunitySummaryJobLaunchRequestBodySchema,

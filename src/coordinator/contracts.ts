@@ -16,6 +16,7 @@ import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { ChildPrincipalRegistry } from './child-principal-registry.js';
+import type { ProviderCredentialSourceAvailabilityPort } from '../runtime/provider-credentials.js';
 
 interface CoordinatorSessionOps {
   start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision>;
@@ -71,7 +72,8 @@ export type ExecutionServiceDeps = {
   launchCoordinator: CoordinatorLaunchCoordinator;
   eventBus: TypedEventBus;
   providerRegistry: ProviderCatalog;
-  childPrincipalRegistry?: ChildPrincipalRegistry;
+  childPrincipalRegistry: ChildPrincipalRegistry;
+  providerCredentialSourceAvailability: ProviderCredentialSourceAvailabilityPort;
   pluginRegistry: {
     discoverPluginRoot: (namespace: string) => string | null;
   };

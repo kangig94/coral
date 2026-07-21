@@ -298,8 +298,8 @@ describe('incumbent handoff reset authority', () => {
 
     try {
       const httpInfo = await listenHttp(core.server);
-      const healthResponse = await fetch(`http://${httpInfo.host}:${httpInfo.port}/health`, {
-        headers: { 'x-coral-backend-token': token },
+      const healthResponse = await fetch(`http://${httpInfo.host}:${httpInfo.port}/health?detailed`, {
+        headers: { 'x-coral-boot-token': 'replacement-boot-token' },
       });
       const health = (await healthResponse.json()) as Record<string, unknown>;
       expect(healthResponse.status).toBe(200);

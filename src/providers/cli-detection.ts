@@ -143,7 +143,7 @@ export const CODEX_DETECTOR_CONFIG: CliDetectorConfig = Object.freeze({
 // ── Claude ─────────────────────────────────────
 
 const CLAUDE_AUTH_ERROR_MESSAGE =
-  'Claude CLI is not authenticated. Run "claude auth login" or set the ANTHROPIC_API_KEY environment variable.';
+  'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.';
 
 function parseClaudeAuthStatus(stdout: string): AuthProbeResult | null {
   try {

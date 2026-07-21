@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { allocateTestSession, initTestJob, seedTestJobSession } from '../../../helpers/session.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +32,7 @@ import {
   type AgentRef,
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
@@ -41,7 +43,6 @@ import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import type { PreflightRuntime } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -52,6 +53,12 @@ import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import {
+  TEST_CLAUDE_SOURCE,
+  TEST_CODEX_SOURCE,
+  TEST_PROVIDER_CREDENTIAL_INPUT,
+  TEST_PROVIDER_CREDENTIALS,
+} from '#tests/helpers/provider-credentials.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -191,6 +198,8 @@ function createService(
     }
   };
   return new ExecutionService(ctx, {
+    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
@@ -451,12 +460,17 @@ function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderS
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
-  expect(preflight).toHaveBeenCalledWith({
-    process: runtime.process,
-    storage: runtime.storage,
-    env: runtime.env,
-    time: runtime.time,
-  } satisfies PreflightRuntime);
+  expect(preflight).toHaveBeenCalledWith(
+    expect.objectContaining({
+      process: runtime.process,
+      storage: runtime.storage,
+      env: runtime.env,
+      time: runtime.time,
+      credentialSource: TEST_CODEX_SOURCE,
+      cwd: expect.any(String),
+      runExact: expect.any(Function),
+    }),
+  );
 }
 
 function makeSharedClaudeAppServerProvider(spec: {
@@ -559,10 +573,17 @@ function _createClaimedJob(
   const { progressStore, sessionManager } =
     /* @intentional-private-access — seed or inspect execution internals with no public test seam */
     getInternals(service);
-  const session = sessionManager.allocate('codex', 'wait-session', 'test-model', ctx.projectRoot, ctx.projectRoot);
+  const session = allocateTestSession(
+    sessionManager,
+    'codex',
+    'wait-session',
+    'test-model',
+    ctx.projectRoot,
+    ctx.projectRoot,
+  );
   const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
-  progressStore.initJob({
+  initTestJob(progressStore, {
     jobId,
     sessionId: session.sessionId,
     provider: 'codex',
@@ -589,7 +610,13 @@ function _createScopedContext(name: string): InvocationContext {
   mkdirSync(projectRoot, { recursive: true });
   const pluginRoot = join(projectRoot, 'plugin');
   mkdirSync(pluginRoot, { recursive: true });
-  return { projectRoot, pluginRoot, coralEnv: {}, principal: testProjectPrincipal(projectRoot) };
+  return {
+    projectRoot,
+    pluginRoot,
+    coralEnv: {},
+    principal: testProjectPrincipal(projectRoot),
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+  };
 }
 
 function _isoAt(ms: number): string {
@@ -626,6 +653,7 @@ function createSessionTransportPorts(service: ExecutionService, pluginRoot: stri
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
+    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,
@@ -696,6 +724,7 @@ describe('ExecutionService launch', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -742,6 +771,41 @@ describe('ExecutionService launch', () => {
     }
   });
 
+  it('one execution service keeps consecutive account contexts isolated', async () => {
+    const seenHomes: string[] = [];
+    const { provider } = makeProvider({
+      execute: async (_request, providerRuntime) => {
+        if (providerRuntime.providerContext.provider !== 'codex') throw new Error('expected Codex context');
+        seenHomes.push(providerRuntime.providerContext.source.home);
+        return { content: 'ok' };
+      },
+    });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const contextA = {
+      ...ctx,
+      providerCredentials: {
+        ...TEST_PROVIDER_CREDENTIALS,
+        codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/accounts/codex-a' },
+      },
+    };
+    const contextB = {
+      ...ctx,
+      providerCredentials: {
+        ...TEST_PROVIDER_CREDENTIALS,
+        codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/accounts/codex-b' },
+      },
+    };
+
+    const first = await service.start('codex', { prompt: 'account A' }, contextA);
+    const second = await service.start('codex', { prompt: 'account B' }, contextB);
+    if (first.status !== 'running' || second.status !== 'running') throw new Error('expected both launches to run');
+    trackJob(first.job);
+    trackJob(second.job);
+
+    await vi.waitFor(() => expect(seenHomes).toEqual(['/accounts/codex-a', '/accounts/codex-b']));
+  });
+
   it('start persists explicit discard retention into session.opened and launch request audit', async () => {
     const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });
@@ -779,6 +843,7 @@ describe('ExecutionService launch', () => {
       provider: 'codex',
       prompt: 'hello',
       projectRoot: ctx.projectRoot,
+      providerCredentials: TEST_PROVIDER_CREDENTIAL_INPUT,
       retention: 'discard_provider_artifacts_on_terminal',
     });
 
@@ -961,7 +1026,7 @@ describe('ExecutionService launch', () => {
     trackJob(jobId1);
     trackJob(jobId2);
 
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: jobId1,
       sessionId: 'session-1',
       provider: 'codex',
@@ -987,7 +1052,7 @@ describe('ExecutionService launch', () => {
       },
       createdAt: new Date().toISOString(),
     });
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: jobId2,
       sessionId: 'session-2',
       provider: 'codex',
@@ -1014,7 +1079,10 @@ describe('ExecutionService launch', () => {
       createdAt: new Date().toISOString(),
     });
 
-    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+    const firstLease = await service.acquireServer(spec, {
+      jobId: jobId1,
+      providerMeta: { conversationRef: 'preassigned-session-ref' },
+    });
     const firstRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
     expect(firstRuntime).toMatchObject({
       transport: 'app-server',
@@ -1022,6 +1090,7 @@ describe('ExecutionService launch', () => {
         provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
+        conversationRef: 'preassigned-session-ref',
       },
     });
     expect(firstRuntime.startTime).toEqual(expect.any(String));
@@ -1098,7 +1167,7 @@ describe('ExecutionService launch', () => {
     trackJob(jobId1);
     trackJob(jobId2);
 
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: jobId1,
       sessionId: 'session-1',
       provider: 'claude',
@@ -1124,7 +1193,7 @@ describe('ExecutionService launch', () => {
       },
       createdAt: new Date().toISOString(),
     });
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId: jobId2,
       sessionId: 'session-2',
       provider: 'claude',
@@ -1187,7 +1256,7 @@ describe('ExecutionService launch', () => {
     expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
   });
 
-  it('abort sends turn/interrupt for checkpointed app-server jobs', async () => {
+  it('abort does not reacquire a provider server from durable metadata', async () => {
     const jobId = `app-server-abort-${randomUUID()}`;
     const server = createFakeProviderServerHandle({
       request: async (method, params) => {
@@ -1202,15 +1271,23 @@ describe('ExecutionService launch', () => {
     });
     setSpawnProviderServerMock(server.handle);
     const service = createService(ctx);
-    const { progressStore, abortRegistry } =
+    const { progressStore, abortRegistry, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
+    const session = sessionManager.allocate({
+      provider: 'codex',
+      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      name: 'abort-session',
+      cwd: ctx.projectRoot,
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+    });
     trackJob(jobId);
     mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
-      sessionId: 'session-1',
+      sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
@@ -1218,7 +1295,7 @@ describe('ExecutionService launch', () => {
     });
     progressStore.appendLaunchRequested(jobId, {
       jobId,
-      sessionId: 'session-1',
+      sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
@@ -1254,15 +1331,10 @@ describe('ExecutionService launch', () => {
       notFound: [],
     });
 
-    await vi.waitFor(() => {
-      expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-      });
-    });
+    expect(server.requestMock).not.toHaveBeenCalledWith('turn/interrupt', expect.anything());
   });
 
-  it('routes shared app-server interrupts through acquireServer while a live lease is active', async () => {
+  it('routes shared app-server interrupts through the bound live server without reacquiring', async () => {
     const spec = {
       provider: 'claude',
       command: process.execPath,
@@ -1273,6 +1345,17 @@ describe('ExecutionService launch', () => {
     const server = createFakeProviderServerHandle();
     const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
     const service = createService(ctx);
+    const { sessionManager } =
+      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+      getInternals(service);
+    const session = sessionManager.allocate({
+      provider: 'claude',
+      sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+      name: 'shared-interrupt-session',
+      cwd: ctx.projectRoot,
+      projectRoot: ctx.projectRoot,
+      backendNamespace: TEST_BACKEND_NAMESPACE,
+    });
     mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
 
     const firstLease = await service.acquireServer(spec);
@@ -1280,7 +1363,7 @@ describe('ExecutionService launch', () => {
 
     const launchRecord: JobLaunch = {
       jobId: `shared-interrupt-${randomUUID()}`,
-      sessionId: 'session-1',
+      sessionId: session.sessionId,
       provider: 'claude',
       projectRoot: ctx.projectRoot,
       backendNamespace: TEST_BACKEND_NAMESPACE,
@@ -1318,7 +1401,7 @@ describe('ExecutionService launch', () => {
 
     await service.interruptAppServerJob(launchRecord, runtimeRecord);
 
-    expect(acquireServerSpy).toHaveBeenCalledTimes(1);
+    expect(acquireServerSpy).not.toHaveBeenCalled();
     expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
       brokerSessionKey: 'broker-session-1',
       brokerTurnId: 'broker-turn-1',
@@ -1359,7 +1442,7 @@ describe('ExecutionService launch', () => {
     expect(decision).toEqual({
       status: 'rejected',
       phase: 'preflight',
-      code: 'preflight_failed',
+      code: 'provider_credential_source_unavailable',
       message: 'not ready',
     });
   });

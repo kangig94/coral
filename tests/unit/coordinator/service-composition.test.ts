@@ -43,7 +43,6 @@ import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
 import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import type { PreflightRuntime } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
@@ -51,6 +50,12 @@ import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import {
+  TEST_CLAUDE_SOURCE,
+  TEST_CODEX_SOURCE,
+  TEST_PROVIDER_CREDENTIALS,
+} from '#tests/helpers/provider-credentials.js';
+import { ChildPrincipalRegistry, CORAL_CHILD_PRINCIPAL_HANDLE } from '#src/coordinator/child-principal-registry.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -112,6 +117,35 @@ function createSessionManager(projectRoot: string): SessionManager {
   return new SessionManager(projectRoot, runtime, undefined, undefined, openTestStoreDb(runtime));
 }
 
+function allocateCodexSession(
+  manager: SessionManager,
+  name: string,
+  model: string,
+  cwd: string,
+): ReturnType<SessionManager['allocate']> {
+  return manager.allocate({
+    provider: 'codex',
+    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    name,
+    model,
+    cwd,
+    projectRoot: cwd,
+    backendNamespace: pluginRootNamespace(cwd),
+  });
+}
+
+function allocateWorkflowSession(manager: SessionManager, name: string, cwd: string) {
+  return manager.allocate({
+    provider: 'codex',
+    sessionAuthority: { kind: 'orchestration' },
+    name,
+    model: 'workflow',
+    cwd,
+    projectRoot: cwd,
+    backendNamespace: pluginRootNamespace(cwd),
+  });
+}
+
 function jobResultPath(jobId: string): string {
   return join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md');
 }
@@ -148,6 +182,8 @@ function createService(
     backendNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
+    childPrincipalRegistry?: ChildPrincipalRegistry;
+    providerCredentialSourceAvailable?: boolean;
   } = {},
 ): ExecutionService {
   const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
@@ -207,6 +243,10 @@ function createService(
       getAll: () => [],
     } as never,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
+    childPrincipalRegistry: options.childPrincipalRegistry ?? new ChildPrincipalRegistry(runtime.ids),
+    providerCredentialSourceAvailability: {
+      isAvailable: () => options.providerCredentialSourceAvailable ?? true,
+    },
     coordinatorCommit: (cb) => progressStore.commit(cb),
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
@@ -268,7 +308,7 @@ function trackAllJobDirs(): void {
 }
 
 function makeLaunchRecord(overrides: Partial<JobLaunch> & { jobId: string; sessionId: string }): JobLaunch {
-  return {
+  const record: JobLaunch = {
     provider: 'codex',
     projectRoot: '/tmp/project',
     backendNamespace: 'old-backend-ns',
@@ -285,6 +325,10 @@ function makeLaunchRecord(overrides: Partial<JobLaunch> & { jobId: string; sessi
     createdAt: new Date().toISOString(),
     ...overrides,
   };
+  if (record.jobKind === 'workflow') {
+    record.request.providerCredentials = TEST_PROVIDER_CREDENTIALS;
+  }
+  return record;
 }
 
 function createFakeProviderServerHandle(options?: {
@@ -468,12 +512,16 @@ function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderS
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
-  expect(preflight).toHaveBeenCalledWith({
-    process: runtime.process,
-    storage: runtime.storage,
-    env: runtime.env,
-    time: runtime.time,
-  } satisfies PreflightRuntime);
+  expect(preflight).toHaveBeenCalledWith(
+    expect.objectContaining({
+      process: runtime.process,
+      storage: runtime.storage,
+      time: runtime.time,
+      credentialSource: TEST_CODEX_SOURCE,
+      cwd: expect.any(String),
+      runExact: expect.any(Function),
+    }),
+  );
 }
 
 function _makeSharedClaudeAppServerProvider(spec: {
@@ -582,6 +630,7 @@ describe('ExecutionService', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -630,6 +679,44 @@ describe('ExecutionService', () => {
       }
     });
 
+    it.each([
+      ['unbound session', 'provider_credential_source_missing'] as const,
+      ['missing caller authority', 'provider_credential_source_missing'] as const,
+      ['different caller account', 'provider_credential_source_mismatch'] as const,
+    ])('resume rejects %s before preflight, admission, claim, or spawn', async (scenario, code) => {
+      const preflight = vi.fn(async () => {});
+      const { provider, execute } = makeProvider({ preflight });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const mgr = createSessionManager(ctx.projectRoot);
+      const entry =
+        scenario === 'unbound session'
+          ? allocateWorkflowSession(mgr, 'unbound', ctx.projectRoot)
+          : allocateCodexSession(mgr, 'bound', 'gpt-5', ctx.projectRoot);
+      const requestCtx: InvocationContext =
+        scenario === 'missing caller authority'
+          ? { ...ctx, providerCredentials: undefined }
+          : scenario === 'different caller account'
+            ? {
+                ...ctx,
+                providerCredentials: {
+                  ...TEST_PROVIDER_CREDENTIALS,
+                  codex: { ...TEST_CODEX_SOURCE, home: '/home/user/.codex-other' },
+                },
+              }
+            : ctx;
+      const service = createService(requestCtx);
+      const dirsBefore = listJobDirs();
+
+      const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, requestCtx);
+
+      expect(decision).toMatchObject({ status: 'rejected', phase: 'preflight', code });
+      expect(preflight).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(queueDepth()).toBe(0);
+      expect(listJobDirs()).toEqual(dirsBefore);
+      expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBeUndefined();
+    });
+
     it('resume inherits stored continuation profile fields when the input omits them', async () => {
       realizePluginRoot(ctx);
       const never = new Promise<ProviderTurnResult>(() => {});
@@ -642,6 +729,7 @@ describe('ExecutionService', () => {
       const mgr = createSessionManager(ctx.projectRoot);
       const entry = mgr.allocate({
         provider: 'codex',
+        sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
         name: 'alpha',
         model: 'gpt-5.1',
         cwd: ctx.projectRoot,
@@ -690,7 +778,7 @@ describe('ExecutionService', () => {
       const { provider } = makeProvider();
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.claimForJobSync(entry.sessionId, 'job-1');
       const service = createService(ctx);
 
@@ -722,7 +810,7 @@ describe('ExecutionService', () => {
       mockState.getNewProvider.mockReturnValue(racingProvider.provider);
 
       const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
 
       const decisionPromise = service.resume('codex', { sessionId: entry.sessionId, prompt: 'hello' }, ctx);
@@ -760,7 +848,7 @@ describe('ExecutionService', () => {
       });
       mockState.getNewProvider.mockReturnValue(provider);
       const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setConversationRef(entry.sessionId, 'thread-stale');
       const service = createService(ctx);
 
@@ -1158,10 +1246,10 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const session = sessionManager.allocate('codex', 'queued-abort', 'gpt-5', ctx.projectRoot);
+    const session = allocateCodexSession(sessionManager, 'queued-abort', 'gpt-5', ctx.projectRoot);
     const jobId = `queued-abort-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
@@ -1195,10 +1283,10 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const session = sessionManager.allocate('codex', 'fail-job', 'gpt-5', ctx.projectRoot);
+    const session = allocateCodexSession(sessionManager, 'fail-job', 'gpt-5', ctx.projectRoot);
     const jobId = `fail-job-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
@@ -1257,15 +1345,17 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const session = sessionManager.allocate('codex', 'workflow-terminal', 'workflow', ctx.projectRoot);
+    const session = allocateWorkflowSession(sessionManager, 'workflow-terminal', ctx.projectRoot);
     const jobId = `workflow-terminal-${randomUUID()}`;
     trackJob(jobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
+      jobKind: 'workflow',
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     });
     progressStore.appendLaunchRequested(
       jobId,
@@ -1341,16 +1431,17 @@ describe('ExecutionService', () => {
       const { progressStore, sessionManager } =
         /* @intentional-private-access — seed or inspect execution internals with no public test seam */
         getInternals(service);
-      const session = sessionManager.allocate('codex', `workflow-${phase}`, 'workflow', ctx.projectRoot);
+      const session = allocateWorkflowSession(sessionManager, `workflow-${phase}`, ctx.projectRoot);
       const jobId = `workflow-order-${phase}-${randomUUID()}`;
       trackJob(jobId);
-      progressStore.initJob({
+      seedTestJobSession(progressStore, {
         jobId,
         sessionId: session.sessionId,
         provider: 'codex',
         projectRoot: ctx.projectRoot,
         backendNamespace: 'test-ns',
         jobKind: 'workflow',
+        providerCredentials: TEST_PROVIDER_CREDENTIALS,
       });
       progressStore.appendLaunchRequested(
         jobId,
@@ -1426,7 +1517,7 @@ describe('ExecutionService', () => {
     const { progressStore, sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const session = sessionManager.allocate('codex', 'workflow-terminal-failure', 'workflow', ctx.projectRoot);
+    const session = allocateWorkflowSession(sessionManager, 'workflow-terminal-failure', ctx.projectRoot);
     const jobId = `workflow-terminal-failure-order-${randomUUID()}`;
     const phase = 'error' as const;
     const result = {
@@ -1436,13 +1527,14 @@ describe('ExecutionService', () => {
     const diagnostics = {};
     const markdown = '# fallback\n';
     trackJob(jobId);
-    progressStore.initJob({
+    seedTestJobSession(progressStore, {
       jobId,
       sessionId: session.sessionId,
       provider: 'codex',
       projectRoot: ctx.projectRoot,
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     });
     progressStore.appendLaunchRequested(
       jobId,
@@ -1514,7 +1606,7 @@ describe('ExecutionService', () => {
 
     function buildExpectedInterruptedReport(
       reason: 'restart' | 'handoff',
-      continuity: 'verified' | 'missing' | 'unavailable' | 'pre_checkpoint_preserved',
+      continuity: 'verified' | 'missing' | 'unavailable' | 'pre_checkpoint_preserved' | 'pre_checkpoint_empty',
       ...detailLines: string[]
     ): string {
       const triggerText =
@@ -1526,12 +1618,88 @@ describe('ExecutionService', () => {
             ? 'continuity missing'
             : continuity === 'unavailable'
               ? 'continuity unavailable'
-              : 'existing conversation reference was preserved';
+              : continuity === 'pre_checkpoint_preserved'
+                ? 'existing conversation reference was preserved'
+                : 'no resumable conversation was available';
       const baseNotice = `${triggerText}; ${continuityText}.`;
       return [baseNotice, '', ...detailLines].join('\n');
     }
 
     describe('recoverQueuedJob', () => {
+      it.each([['missing', 'delete'] as const, ['mismatch', 'replace'] as const])(
+        'fails with typed credential-source %s before restoring queue admission',
+        (reason, corruption) => {
+          const { provider } = makeProvider();
+          mockState.getNewProvider.mockReturnValue(provider);
+          const service = createService(ctx);
+          const { progressStore, sessionManager } =
+            /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+            getInternals(service);
+          const jobId = `recover-source-${reason}-${randomUUID()}`;
+          const sessionId = `session-source-${reason}-${randomUUID()}`;
+          trackJob(jobId);
+          seedTestJobSession(progressStore, {
+            jobId,
+            sessionId,
+            provider: 'codex',
+            projectRoot: ctx.projectRoot,
+            backendNamespace: 'old-backend-ns',
+            initialPhase: 'queued',
+          });
+          const launchRecord = makeLaunchRecord({ jobId, sessionId });
+          progressStore.appendLaunchRequested(jobId, launchRecord);
+
+          if (corruption === 'delete') {
+            progressStore.getDb().prepare('DELETE FROM projection_sessions WHERE session_id = ?').run(sessionId);
+          } else {
+            const current = sessionManager.get('codex', sessionId);
+            if (!current) throw new Error('expected seeded session');
+            vi.spyOn(sessionManager, 'readById').mockReturnValue({
+              ...current,
+              provider: 'claude',
+              sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+            });
+          }
+
+          const priorQueueDepth = queueDepth();
+          expect(service.recoverQueuedJob(launchRecord)).toBe(jobId);
+          expect(queueDepth()).toBe(priorQueueDepth);
+          expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
+            kind: 'job_fault',
+            fault: expect.objectContaining({ kind: 'provider_credential_source', reason }),
+          });
+        },
+      );
+
+      it('fails with typed credential-source unavailable before restoring queue admission', () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = createService(ctx, { providerCredentialSourceAvailable: false });
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `recover-source-unavailable-${randomUUID()}`;
+        const sessionId = `session-source-unavailable-${randomUUID()}`;
+        trackJob(jobId);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+        progressStore.appendLaunchRequested(jobId, makeLaunchRecord({ jobId, sessionId }));
+
+        const priorQueueDepth = queueDepth();
+        expect(service.recoverQueuedJob(makeLaunchRecord({ jobId, sessionId }))).toBe(jobId);
+        expect(queueDepth()).toBe(priorQueueDepth);
+        expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
+          kind: 'job_fault',
+          fault: expect.objectContaining({ kind: 'provider_credential_source', reason: 'unavailable' }),
+        });
+      });
+
       it('recovers a queued job from a persisted launch record and preserves the original jobId', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
@@ -1544,7 +1712,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-recover-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1562,6 +1730,55 @@ describe('ExecutionService', () => {
         expect(queueDepth()).toBeGreaterThanOrEqual(1);
       });
 
+      it('restores the complete protected child tuple before a queued provider can launch', () => {
+        const { provider } = makeProvider();
+        mockState.getNewProvider.mockReturnValue(provider);
+        const service = createService(ctx, { childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids) });
+        const { progressStore } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const launchOrchestrator = (
+          service as unknown as {
+            launchOrchestrator: {
+              runRecoveredQueuedJob: (
+                provider: unknown,
+                launchRecord: unknown,
+                queuedHandle: { waitForPermit: () => Promise<void>; cancel: () => void },
+                pool: unknown,
+                protectedEnv: unknown,
+              ) => void;
+            };
+          }
+        ).launchOrchestrator;
+        const runRecoveredQueuedJob = vi
+          .spyOn(launchOrchestrator, 'runRecoveredQueuedJob')
+          .mockImplementation((_provider, _launchRecord, queuedHandle) => {
+            void queuedHandle.waitForPermit().catch(() => {});
+            queuedHandle.cancel();
+          });
+        const jobId = `recover-protected-env-${randomUUID()}`;
+        const sessionId = `session-protected-env-${randomUUID()}`;
+        trackJob(jobId);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: 'old-backend-ns',
+          initialPhase: 'queued',
+        });
+        const launchRecord = makeLaunchRecord({ jobId, sessionId });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+
+        service.recoverQueuedJob(launchRecord);
+
+        expect(runRecoveredQueuedJob).toHaveBeenCalledWith(provider, launchRecord, expect.anything(), 'default', {
+          CORAL_JOB_ID: jobId,
+          CORAL_SESSION_ID: sessionId,
+          [CORAL_CHILD_PRINCIPAL_HANDLE]: expect.any(String),
+        });
+      });
+
       it('rebinds namespace to current backend', async () => {
         const { provider } = makeProvider();
         mockState.getNewProvider.mockReturnValue(provider);
@@ -1574,7 +1791,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-rebind-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1604,7 +1821,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-hydrate-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1639,10 +1856,10 @@ describe('ExecutionService', () => {
 
         const jobId = `recover-exec-${randomUUID()}`;
         const mgr = createSessionManager(ctx.projectRoot);
-        const session = mgr.allocate('codex', 'recover', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(mgr, 'recover', 'gpt-5', ctx.projectRoot);
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -1681,7 +1898,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-adopt-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1716,7 +1933,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-pool-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1750,7 +1967,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-rebind-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1783,7 +2000,7 @@ describe('ExecutionService', () => {
         const sessionId = `session-adopt-abort-${randomUUID()}`;
         trackJob(jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId,
           provider: 'codex',
@@ -1819,8 +2036,8 @@ describe('ExecutionService', () => {
         const jobId = `complete-recovered-${randomUUID()}`;
         trackJob(jobId);
 
-        const session = sessionManager.allocate('codex', 'recover-complete', 'gpt-5', ctx.projectRoot);
-        progressStore.initJob({
+        const session = allocateCodexSession(sessionManager, 'recover-complete', 'gpt-5', ctx.projectRoot);
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -1867,7 +2084,7 @@ describe('ExecutionService', () => {
           getInternals(service);
         const jobId = `app-server-waiting-${randomUUID()}`;
         trackJob(jobId);
-        const session = sessionManager.allocate('codex', 'recover-waiting', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(sessionManager, 'recover-waiting', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
             threadId: 'thread-existing',
@@ -1877,7 +2094,7 @@ describe('ExecutionService', () => {
         sessionManager.claimForJobSync(session.sessionId, jobId);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -1938,6 +2155,42 @@ describe('ExecutionService', () => {
         expect(Object.hasOwn(updatedSession ?? {}, 'activeJobId')).toBe(false);
       });
 
+      it('marks a fresh lease-waiting session non-resumable without treating its planned ref as evidence', async () => {
+        const service = createService(ctx);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `app-server-waiting-fresh-${randomUUID()}`;
+        trackJob(jobId);
+        const session = allocateCodexSession(sessionManager, 'recover-waiting-fresh', 'gpt-5', ctx.projectRoot);
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+        mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'codex',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+        const launchRecord = makeLaunchRecord({ jobId, sessionId: session.sessionId, projectRoot: ctx.projectRoot });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({ leaseState: 'waiting', conversationRef: session.sessionId }),
+          { reason: 'restart' },
+        );
+
+        const expectedReport = buildExpectedInterruptedReport(
+          'restart',
+          'pre_checkpoint_empty',
+          'Session was interrupted before completion. No resumable conversation was available.',
+        );
+        expect(progressStore.readStatus(jobId)?.result?.content).toBe(expectedReport);
+        expect(sessionManager.get('codex', session.sessionId)).toMatchObject({ state: 'non_resumable' });
+      });
+
       it('stores the recovered threadId when continuity is verified', async () => {
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
         setSpawnProviderServerMock(
@@ -1956,10 +2209,10 @@ describe('ExecutionService', () => {
           getInternals(service);
         const jobId = `app-server-verified-${randomUUID()}`;
         trackJob(jobId);
-        const session = sessionManager.allocate('codex', 'recover-verified', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(sessionManager, 'recover-verified', 'gpt-5', ctx.projectRoot);
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -2036,7 +2289,7 @@ describe('ExecutionService', () => {
           getInternals(service);
         const jobId = `app-server-missing-${randomUUID()}`;
         trackJob(jobId);
-        const session = sessionManager.allocate('codex', 'recover-missing', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(sessionManager, 'recover-missing', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
             threadId: 'thread-stale',
@@ -2045,7 +2298,7 @@ describe('ExecutionService', () => {
         });
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -2109,6 +2362,93 @@ describe('ExecutionService', () => {
         expect(updatedSession?.conversationRef).toBeUndefined();
       });
 
+      it('honors Claude artifact non-resumable evidence instead of falling back to the planned ref', async () => {
+        const finalizeFromArtifacts = vi.fn(async () => ({
+          terminal: {
+            kind: 'terminal' as const,
+            terminal: { content: 'artifact result', outcome: { kind: 'completed' as const } },
+            diagnostics: {},
+          },
+          continuity: {
+            conversationRef: null,
+            resumable: false,
+          },
+        }));
+        mockState.getNewProvider.mockReturnValue(
+          toProviderSpec({
+            name: 'claude',
+            execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' } })),
+            appServerLifecycle: {
+              buildServerSpec: () => ({
+                provider: 'claude',
+                command: 'claude',
+                args: [],
+                cwd: ctx.projectRoot,
+                env: {},
+              }),
+              interrupt: async () => {},
+            },
+            artifactRecovery: { finalizeFromArtifacts },
+          }),
+        );
+        const spawnProviderServerMock = vi.fn();
+        spawnProviderServer = spawnProviderServerMock as unknown as SpawnProviderServerFn;
+        const service = createService(ctx);
+        const { progressStore, sessionManager } =
+          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+          getInternals(service);
+        const jobId = `claude-artifact-recovery-${randomUUID()}`;
+        trackJob(jobId);
+        const session = sessionManager.allocate({
+          provider: 'claude',
+          sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+          name: 'recover-claude-artifact',
+          model: 'sonnet',
+          cwd: ctx.projectRoot,
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+        });
+        sessionManager.claimForJobSync(session.sessionId, jobId);
+        seedTestJobSession(progressStore, {
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'claude',
+          projectRoot: ctx.projectRoot,
+          backendNamespace: TEST_BACKEND_NAMESPACE,
+          initialPhase: 'running',
+        });
+        const launchRecord = makeLaunchRecord({
+          jobId,
+          sessionId: session.sessionId,
+          provider: 'claude',
+          projectRoot: ctx.projectRoot,
+        });
+        progressStore.appendLaunchRequested(jobId, launchRecord);
+
+        await service.finalizeInterruptedAppServerJob(
+          launchRecord,
+          makeAppServerRuntimeRecord({
+            provider: 'claude',
+            conversationRef: session.sessionId,
+          }),
+          { reason: 'restart' },
+        );
+
+        expect(spawnProviderServerMock).not.toHaveBeenCalled();
+        expect(finalizeFromArtifacts).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: TEST_CLAUDE_SOURCE,
+            stdoutPath: join(progressStore.jobDir(jobId), 'stdout'),
+            stderrPath: join(progressStore.jobDir(jobId), 'stderr'),
+          }),
+        );
+        expect(sessionManager.get('claude', session.sessionId)).toMatchObject({
+          state: 'non_resumable',
+          artifactHandles: [],
+        });
+        expect(sessionManager.get('claude', session.sessionId)?.conversationRef).toBeUndefined();
+      });
+
       it('marks the session non_resumable and writes an explicit report when the probe is unavailable', async () => {
         const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
         mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
@@ -2128,7 +2468,7 @@ describe('ExecutionService', () => {
           getInternals(service);
         const jobId = `app-server-unavailable-${randomUUID()}`;
         trackJob(jobId);
-        const session = sessionManager.allocate('codex', 'recover-unavailable', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(sessionManager, 'recover-unavailable', 'gpt-5', ctx.projectRoot);
         sessionManager.checkpointProviderContinuity(session.sessionId, {
           providerContinuity: {
             threadId: 'thread-unverified',
@@ -2137,7 +2477,7 @@ describe('ExecutionService', () => {
         });
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -2211,10 +2551,10 @@ describe('ExecutionService', () => {
           getInternals(service);
         const jobId = `app-server-cross-version-${randomUUID()}`;
         trackJob(jobId);
-        const session = sessionManager.allocate('codex', 'recover-cross-version', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(sessionManager, 'recover-cross-version', 'gpt-5', ctx.projectRoot);
         sessionManager.claimForJobSync(session.sessionId, jobId);
 
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -2266,9 +2606,9 @@ describe('ExecutionService', () => {
           getInternals(service);
         const jobId = `app-server-restart-terminal-${randomUUID()}`;
         trackJob(jobId);
-        const session = sessionManager.allocate('codex', 'recover-restart-terminal', 'gpt-5', ctx.projectRoot);
+        const session = allocateCodexSession(sessionManager, 'recover-restart-terminal', 'gpt-5', ctx.projectRoot);
         sessionManager.claimForJobSync(session.sessionId, jobId);
-        progressStore.initJob({
+        seedTestJobSession(progressStore, {
           jobId,
           sessionId: session.sessionId,
           provider: 'codex',
@@ -2325,6 +2665,7 @@ describe('ExecutionService adversarial', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
@@ -2361,7 +2702,7 @@ describe('ExecutionService adversarial', () => {
       mockState.getNewProvider.mockReturnValue(provider);
 
       const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
       mgr.setNonResumable(entry.sessionId);
 
       const service = createService(ctx);
@@ -2395,7 +2736,7 @@ describe('ExecutionService adversarial', () => {
     it('rejects with unknown_provider without setting activeJobId on the session', async () => {
       mockState.getNewProvider.mockReturnValue(undefined);
       const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
 
       const service = createService(ctx);
       const decision = await service.resume('codex', { sessionId: entry.sessionId, prompt: 'hi' }, ctx);
@@ -2418,7 +2759,7 @@ describe('ExecutionService adversarial', () => {
       mockState.getNewProvider.mockReturnValue(provider);
 
       const mgr = createSessionManager(ctx.projectRoot);
-      const entry = mgr.allocate('codex', 'alpha', 'gpt-5', ctx.projectRoot);
+      const entry = allocateCodexSession(mgr, 'alpha', 'gpt-5', ctx.projectRoot);
       const jobDirsBefore = listJobDirs();
       const service = createService(ctx);
 
@@ -2472,3 +2813,4 @@ describe('ExecutionService adversarial', () => {
     });
   });
 });
+import { seedTestJobSession } from '#tests/helpers/session.js';

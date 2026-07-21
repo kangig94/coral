@@ -102,7 +102,7 @@ export type CodexTurnState = {
   signal: AbortSignal;
   lease: ProviderServerLease | null;
   artifactHandleEmissionAttempted: boolean;
-  artifactLocatorRuntime: Pick<ProviderRuntime, 'env' | 'storage'>;
+  artifactLocatorRuntime: Pick<ProviderRuntime, 'providerContext' | 'storage'>;
   preTurnMailbox: {
     status(): PreTurnMailboxStatus;
   };
@@ -190,7 +190,7 @@ function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexT
     lease: null,
     artifactHandleEmissionAttempted: false,
     artifactLocatorRuntime: {
-      env: runtime.env,
+      providerContext: runtime.providerContext,
       storage: runtime.storage,
     },
     preTurnMailbox: {

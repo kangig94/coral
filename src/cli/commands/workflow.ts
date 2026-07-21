@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 
-import { UsageError } from '../errors.js';
+import { normalizeUsageError, UsageError } from '../errors.js';
 import { makeClient, type WorkflowOptions } from '../dispatch.js';
 import { emitError, handleLaunchResult } from '../emit.js';
 import { resolveInput } from '../flags.js';
@@ -8,7 +8,7 @@ import { resolveInput } from '../flags.js';
 export function registerWorkflowCommands(program: Command): void {
   const workflowCommand = program.command('workflow');
   workflowCommand
-    .description('Execute a workflow pipeline')
+    .description('Execute a workflow; captures CODEX_HOME and CLAUDE_CONFIG_DIR for its full lifetime')
     .option('-e, --expression <expr>', 'Pipeline DSL expression')
     .option(
       '-s, --start-prompt <text-or-file...>',
@@ -45,7 +45,7 @@ export function registerWorkflowCommands(program: Command): void {
         const result = await client.workflow(expression, payload);
         await handleLaunchResult(result, opts.detach, client);
       } catch (error) {
-        emitError(error);
+        emitError(normalizeUsageError(error));
       }
     });
 }

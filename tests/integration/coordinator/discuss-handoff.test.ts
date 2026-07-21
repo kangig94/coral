@@ -14,13 +14,14 @@
 // adds end-to-end coverage of the lifecycle wiring + recovery composition,
 // closing the cross-domain integration gap left open by Phase A2.
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { attachSession, getSession } from '#src/discuss/shell/registry.js';
 import type { DiscussCreateInput } from '#src/discuss/session-types.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 
 import { createHandoffCoresHarness, type HandoffCoresHarness } from './handoff-cores-harness.js';
 
@@ -71,7 +72,7 @@ describe('discuss handoff (cross-domain integration)', () => {
       { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
       1,
       SEED_TS,
-      { agentExecution: defaultAgentExecution(agents) },
+      { agentExecution: defaultAgentExecution(agents), providerCredentials: TEST_PROVIDER_CREDENTIALS },
     );
     if (!created.ok) {
       throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
@@ -110,7 +111,7 @@ describe('discuss handoff (cross-domain integration)', () => {
         { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
         1,
         SEED_TS,
-        { agentExecution: defaultAgentExecution(agents) },
+        { agentExecution: defaultAgentExecution(agents), providerCredentials: TEST_PROVIDER_CREDENTIALS },
       );
       if (!created.ok) {
         throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
@@ -130,5 +131,52 @@ describe('discuss handoff (cross-domain integration)', () => {
     expect(rehydrated.controller.signal.aborted).toBe(false);
     expect(rehydrated.snapshot.sessionId).toBe(SESSION_ID);
     expect(rehydrated.abortEnded).toBe(false);
+  });
+
+  it('binds recovered discuss dispatch to persisted account A rather than replacement defaults', async () => {
+    const harness = createHandoffCoresHarness();
+    harnesses.push(harness);
+
+    const incumbent = await harness.bootCore({ instanceId: 'incumbent' });
+    {
+      const ctx = makeInvocationContext(incumbent.core.identity.pluginRoot);
+      const source = incumbent.core.resolveProjectSource(PROJECT_ROOT);
+      const store = incumbent.core.getDiscussStoreForSource(source);
+      const context = incumbent.core.getDiscussContext(ctx);
+      const agents = defaultAgents();
+      const created = decideSessionCreate(
+        { topic: TOPIC, agents, min_bid_delay_ms: 0 },
+        { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: TOPIC },
+        1,
+        SEED_TS,
+        { agentExecution: defaultAgentExecution(agents), providerCredentials: TEST_PROVIDER_CREDENTIALS },
+      );
+      if (!created.ok) throw new Error(`seed: decideSessionCreate failed: ${created.error}`);
+      attachSession(context, await store.append(SESSION_ID, null, created.value));
+    }
+    await incumbent.shutdown('replaced');
+
+    const serviceContexts: InvocationContext[] = [];
+    const start = vi.fn(async () => ({ status: 'running' as const, job: 'recovered-job', session: 'recovered-agent' }));
+    const replacement = await harness.bootCore({
+      instanceId: 'replacement',
+      createExecutionService: (ctx) => {
+        serviceContexts.push(ctx);
+        return {
+          start,
+          resume: start,
+          waitStreamOnce: async () => ({ content: '', continuity: null }),
+        } as never;
+      },
+    });
+    const replacementContext = replacement.core.getDiscussContext(
+      makeInvocationContext(replacement.core.identity.pluginRoot),
+    );
+
+    await replacementContext.service.start('codex', { prompt: 'recovered bid' });
+
+    expect(start).toHaveBeenCalledWith('codex', { prompt: 'recovered bid' });
+    expect(serviceContexts).toContainEqual(expect.objectContaining({ providerCredentials: TEST_PROVIDER_CREDENTIALS }));
+    expect(replacement.core.providerCredentialDefaults).not.toEqual(TEST_PROVIDER_CREDENTIALS);
   });
 });

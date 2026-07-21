@@ -173,11 +173,16 @@ export class LifecycleReactor {
       );
       return;
     }
+    if (entry.sessionAuthority.kind !== 'provider') return;
     const handles = collectArtifactHandles(entry, provider, this.options.runtime);
     if (handles.length === 0) return;
     await this.archiveArtifactsBeforeDiscard(entry, handles);
     try {
-      await provider.artifacts.discardArtifacts(handles, this.options.runtime);
+      await provider.artifacts.discardArtifacts({
+        handles,
+        source: entry.sessionAuthority.source,
+        runtime: this.options.runtime,
+      });
     } catch (error: unknown) {
       this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
     }
@@ -195,6 +200,11 @@ export class LifecycleReactor {
     }
 
     if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
+      return;
+    }
+    // Orchestration sessions own no provider-native artifact. Their child
+    // provider sessions enforce their own retention independently.
+    if (entry.sessionAuthority.kind !== 'provider') {
       return;
     }
 
@@ -231,7 +241,11 @@ export class LifecycleReactor {
     }
 
     const preDeleteEntry = this.readFreshSessionEntry(sessionId);
-    if (preDeleteEntry === null || this.hasRetentionProtection(preDeleteEntry)) {
+    if (
+      preDeleteEntry === null ||
+      preDeleteEntry.sessionAuthority.kind !== 'provider' ||
+      this.hasRetentionProtection(preDeleteEntry)
+    ) {
       this.appendCompleted(sessionId, attempt, recordedHandles, 'skipped_protected');
       return;
     }
@@ -248,7 +262,11 @@ export class LifecycleReactor {
 
     try {
       await this.archiveArtifactsBeforeDiscard(preDeleteEntry, recordedHandles, jobId);
-      const outcome = await provider.artifacts.discardArtifacts(recordedHandles, this.options.runtime);
+      const outcome = await provider.artifacts.discardArtifacts({
+        handles: recordedHandles,
+        source: preDeleteEntry.sessionAuthority.source,
+        runtime: this.options.runtime,
+      });
       this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);
     } catch (error: unknown) {
       this.appendFailed(

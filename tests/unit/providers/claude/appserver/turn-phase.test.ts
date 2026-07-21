@@ -39,7 +39,10 @@ afterEach(async () => {
   }
 });
 
-async function startController(prompt = 'hello'): Promise<StartedController> {
+async function startController(
+  prompt = 'hello',
+  projectsRoot = '/home/user/.claude/projects',
+): Promise<StartedController> {
   const controller = new SingleSessionController({
     spawnChild: () => new FakeClaudeChild(),
     ids: { uuid: () => TEST_SESSION_ID },
@@ -50,6 +53,7 @@ async function startController(prompt = 'hello'): Promise<StartedController> {
 
   await controller.sessionEnsure({
     cwd: '/workspace',
+    projectsRoot,
     systemPromptHash: 'sha256:test',
     permissionMode: 'default',
   });
@@ -138,6 +142,7 @@ function systemLine(options: { sessionId?: string } = {}): string {
 
 type TranscriptFixture = {
   transcriptPath: string;
+  projectsRoot: string;
   pathFor: (conversationRef: string, projectName?: string) => string;
   cleanup: () => void;
 };
@@ -162,6 +167,7 @@ function createTranscriptFixture(
 
   return {
     transcriptPath,
+    projectsRoot: join(home, '.claude', 'projects'),
     pathFor,
     cleanup: (): void => {
       if (previousHome === undefined) {
@@ -232,7 +238,7 @@ describe('Claude turn phase state machine', () => {
   it('does not register raw transcript bytes or system rows', async () => {
     const fixture = createTranscriptFixture();
     try {
-      const { internals } = await startController();
+      const { internals } = await startController('hello', fixture.projectsRoot);
       const turn = activeTurn(internals);
 
       appendFileSync(fixture.transcriptPath, 'raw transcript bytes\n');
@@ -250,7 +256,7 @@ describe('Claude turn phase state machine', () => {
     const nextSessionId = '00000000-0000-4000-8000-000000000002';
     const fixture = createTranscriptFixture(TEST_SESSION_ID, [nextSessionId]);
     try {
-      const { internals } = await startController();
+      const { internals } = await startController('hello', fixture.projectsRoot);
       const turn = activeTurn(internals);
 
       expect(internals.resolveTranscriptPath()).toBe(fixture.transcriptPath);
@@ -270,7 +276,7 @@ describe('Claude turn phase state machine', () => {
     mkdirSync(join(duplicatePath, '..'), { recursive: true });
     writeFileSync(duplicatePath, '');
     try {
-      const { internals } = await startController();
+      const { internals } = await startController('hello', fixture.projectsRoot);
 
       expect(internals.resolveTranscriptPath()).toBeNull();
     } finally {

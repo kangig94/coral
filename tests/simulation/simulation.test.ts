@@ -37,7 +37,7 @@ const COMPLETE_SCENARIO: SimulationDocument = {
   },
   steps: [
     { type: 'boot' },
-    { type: 'launch', provider: 'fake-provider', prompt: 'simulate complete lifecycle' },
+    { type: 'launch', provider: 'codex', prompt: 'simulate complete lifecycle' },
     { type: 'wait', until: { phase: 'running' }, stepMs: 5, maxSteps: 5 },
     { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
     { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
@@ -70,7 +70,7 @@ const ABORT_SCENARIO: SimulationDocument = {
   },
   steps: [
     { type: 'boot' },
-    { type: 'launch', provider: 'fake-provider', prompt: 'simulate abort lifecycle' },
+    { type: 'launch', provider: 'codex', prompt: 'simulate abort lifecycle' },
     { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
     { type: 'abort' },
   ],
@@ -93,7 +93,7 @@ const HANDOFF_SHUTDOWN_SCENARIO: SimulationDocument = {
   },
   steps: [
     { type: 'boot' },
-    { type: 'launch', provider: 'fake-provider', prompt: 'simulate handoff shutdown preserves running job' },
+    { type: 'launch', provider: 'codex', prompt: 'simulate handoff shutdown preserves running job' },
     { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
     { type: 'wait', until: { progressContains: 'provider-progress-pre-handoff' }, stepMs: 5, maxSteps: 5 },
     { type: 'shutdown', reason: 'replaced' },
@@ -118,7 +118,7 @@ const HARD_SHUTDOWN_SCENARIO: SimulationDocument = {
   },
   steps: [
     { type: 'boot' },
-    { type: 'launch', provider: 'fake-provider', prompt: 'simulate hard shutdown marks running job as error' },
+    { type: 'launch', provider: 'codex', prompt: 'simulate hard shutdown marks running job as error' },
     { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
     { type: 'wait', until: { progressContains: 'provider-progress-pre-hard' }, stepMs: 5, maxSteps: 5 },
     { type: 'shutdown', reason: 'crash' },
@@ -142,14 +142,14 @@ const RESET_SCENARIO: SimulationDocument = {
   },
   steps: [
     { type: 'boot' },
-    { type: 'launch', provider: 'fake-provider', prompt: 'simulate clean reset world' },
+    { type: 'launch', provider: 'codex', prompt: 'simulate clean reset world' },
     { type: 'cycle' },
     {
       type: 'expect',
       jobCount: 0,
-      sessionCount: { provider: 'fake-provider', count: 0 },
+      sessionCount: { provider: 'codex', count: 0 },
     },
-    { type: 'launch', provider: 'fake-provider', prompt: 'simulate clean reset world' },
+    { type: 'launch', provider: 'codex', prompt: 'simulate clean reset world' },
     { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
     {
       type: 'expect',
@@ -264,7 +264,7 @@ describe('deterministic simulation lifecycle replay', () => {
     expect(world.getJobStatus(launch.jobId)).toMatchObject({
       jobId: launch.jobId,
       sessionId: launch.sessionId,
-      provider: 'fake-provider',
+      provider: 'codex',
       phase: 'completed',
       result: {
         content: 'final simulation result',
@@ -384,7 +384,7 @@ describe('deterministic simulation lifecycle replay', () => {
     });
 
     expect(world.listJobIds()).toEqual([secondLaunch.jobId]);
-    expect(world.listSessions('fake-provider')).toHaveLength(1);
+    expect(world.listSessions('codex')).toHaveLength(1);
     expect(world.getJobStatus(secondLaunch.jobId)).toMatchObject({
       jobId: secondLaunch.jobId,
       sessionId: secondLaunch.sessionId,
@@ -506,11 +506,12 @@ describe('deterministic simulation lifecycle replay', () => {
     const env = JSON.parse(generation.backend.runtime.storage.readFileSync(envPath, 'utf-8')) as Record<string, string>;
 
     expect(env).toMatchObject({
-      KEEP_BASE: 'base-value',
-      EXTRA_ENV: 'extra-value',
       CORAL_OWNER: 'session-123',
       CORAL_CHILD: '1',
+      CODEX_HOME: '/tmp/sim/accounts/codex',
     });
+    expect(env).not.toHaveProperty('KEEP_BASE');
+    expect(env).not.toHaveProperty('EXTRA_ENV');
     expect(env).not.toHaveProperty('CORAL_BACKEND_IDLE_MS');
     expect(runtime).toMatchObject({
       pid: 30_404,

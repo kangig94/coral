@@ -52,6 +52,7 @@ export interface HandoffCoresHarness {
 export interface BootCoreOptions {
   instanceId: string;
   bundleHash?: string;
+  createExecutionService?: CoordinatorCoreOptions['createExecutionService'];
   /**
    * Override the post-discuss-recovery startup phase. Called with the same
    * deps the production `runStartupRecoveryFn` receives; defaults to discuss
@@ -137,6 +138,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
       markJobsAsErrorFn: () => {},
       terminateAllFn: () => {},
       registerBuiltInProvidersFn: () => {},
+      ...(opts.createExecutionService === undefined ? {} : { createExecutionService: opts.createExecutionService }),
       // Production default `discussRecovery.runStartup` runs because we don't override
       // `recoverPersistedDiscussFn`. The startup recovery shim below forwards into it.
       runStartupRecoveryFn:

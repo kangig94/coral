@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
-import type { IdPort, Runtime } from '../runtime/ports.js';
+import type { ExecResult, IdPort, Runtime } from '../runtime/ports.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
@@ -19,6 +19,7 @@ import type {
   ProviderCliRunner,
   ProviderTransportClose,
 } from './protocol.js';
+import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';
@@ -69,7 +70,6 @@ export interface ProviderRequest {
   bypassPermissions: boolean;
   systemPrompt?: string;
   coralEnv: Record<string, string>;
-  secretEnv?: Record<string, string>;
   instruction?: ProviderInstruction;
 }
 
@@ -332,7 +332,22 @@ export interface ProviderRuntime {
   projectSource?: string;
   /** Installed /equip tools that should be advertised in provider system prompts. */
   equippedTools?: readonly ProviderEquippedToolSummary[];
+  providerContext: ProviderExecutionContext;
 }
+
+export type ProviderExecutionContext =
+  | {
+      provider: 'codex';
+      source: Extract<ProviderCredentialSourceRef, { provider: 'codex' }>;
+      appServerEnv: Readonly<Record<string, string>>;
+    }
+  | {
+      provider: 'claude';
+      source: Extract<ProviderCredentialSourceRef, { provider: 'claude' }>;
+      brokerEnv: Readonly<Record<string, string>>;
+      controllerEnv: Readonly<Record<string, string>>;
+      projectsRoot: string;
+    };
 
 export type Provider = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
 export type ProviderMiddleware = (next: Provider) => Provider;
@@ -344,8 +359,9 @@ export interface ProviderAppServerContract {
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
     ports: { storage: Pick<StoragePort, 'existsSync'> },
+    providerContext: ProviderExecutionContext,
   ): ProviderServerSpec;
-  interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
+  interrupt?(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
@@ -360,12 +376,12 @@ export interface ProviderRecoveryContract {
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
   finalizeFromArtifacts(options: {
+    source: ProviderCredentialSourceRef;
     stdoutPath: string;
     stderrPath: string;
     exitCode: number | null;
     signal: string | null;
     providerMeta?: Record<string, unknown>;
-    env: Pick<Runtime['env'], 'homedir' | 'claudeConfigDir' | 'get' | 'fullSnapshot'>;
     fallbackConversationRef?: string;
     knownArtifactHandles?: readonly ProviderArtifactHandleInput[];
     storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
@@ -386,6 +402,11 @@ export interface ProviderRecoveryContract {
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
+export type ProviderPreflightRuntime = PreflightRuntime & {
+  credentialSource: ProviderCredentialSourceRef;
+  cwd: string;
+  runExact(command: string, args: string[], options?: { timeout?: number; encoding?: 'utf-8' }): Promise<ExecResult>;
+};
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time'>;
 
 export type ProviderArtifactHandle = string;
@@ -403,10 +424,11 @@ export type DiscardOutcome =
 
 export interface ProviderManagedArtifactCapability {
   readonly kind: 'managed';
-  discardArtifacts(
-    handles: readonly ProviderArtifactHandle[],
-    runtime: ArtifactCleanupRuntime,
-  ): Promise<DiscardOutcome>;
+  discardArtifacts(options: {
+    handles: readonly ProviderArtifactHandle[];
+    source: ProviderCredentialSourceRef;
+    runtime: ArtifactCleanupRuntime;
+  }): Promise<DiscardOutcome>;
   /**
    * Best-effort terminal-time fallback. In-run handle emission can miss the
    * native artifact when the provider has not yet flushed it to disk. At
@@ -414,7 +436,11 @@ export interface ProviderManagedArtifactCapability {
    * retention reactor re-locates it from the session's persisted
    * conversationRef so cleanup does not silently skip.
    */
-  locateArtifact?(conversationRef: string, runtime: ArtifactCleanupRuntime): ProviderArtifactHandle | null;
+  locateArtifact?(options: {
+    conversationRef: string;
+    source: ProviderCredentialSourceRef;
+    runtime: ArtifactCleanupRuntime;
+  }): ProviderArtifactHandle | null;
 }
 
 export interface ProviderNoArtifactCapability {
@@ -427,7 +453,7 @@ export type ProviderArtifactCapability = ProviderManagedArtifactCapability | Pro
 export interface ProviderSpec {
   readonly name: string;
   readonly run: Provider;
-  readonly preflight?: (runtime: PreflightRuntime) => Promise<void>;
+  readonly preflight?: (runtime: ProviderPreflightRuntime) => Promise<void>;
   readonly appServer?: ProviderAppServerContract;
   readonly recovery?: ProviderRecoveryContract;
 }

@@ -208,6 +208,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
 
   it('user_abort during readiness wait records terminal aborted/user_abort', async () => {
     const readinessGate = createDeferred<void>();
+    const readinessEntered = createDeferred<void>();
 
     const reindexService = new KbReindexService({
       runtime: world.runtime,
@@ -218,6 +219,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
       waitForReadiness: async ({ signal }) => {
         // Hold execution at the named `readiness` checkpoint while the test
         // fires abort through the real registry path.
+        readinessEntered.resolve();
         await readinessGate.promise;
         // Re-throw an AbortError post-release if the signal aborted while we
         // waited — the service's catch arm maps `reason === 'user_abort'`
@@ -231,6 +233,7 @@ describe('KB pipeline checkpoint honor (AC9) — reindex', () => {
     const runPromise = reindexService.run({ async: false }, { projectRoot: world.markdownRoot }, world.kbRuntime);
 
     const jobId = await awaitJobId(world);
+    await readinessEntered.promise;
 
     // Real jobs.abort path: AbortRegistry.abort → callback → controller.abort('user_abort').
     expect(world.abortRegistry.abort([jobId])).toEqual({ aborted: [jobId], notFound: [] });

@@ -32,6 +32,7 @@ async function recoverSessions(harness: DiscussHarness) {
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
+      providerCredentials: snapshot.providerCredentials ?? harness.ctx.providerCredentials,
     }),
   );
 }

@@ -18,12 +18,11 @@ export interface EnginePaths {
 
 export interface EnginePathOptions {
   readonly baseDir?: string;
-  readonly configSlot?: string;
 }
 
 export function enginePaths(flavor: BuildFlavor, opts?: EnginePathOptions): EnginePaths {
   const base = flavor === 'dev' ? 'data-dev/engines' : 'data/engines';
-  const engineRoot = join(coralStateRoot(opts?.configSlot, opts?.baseDir), base);
+  const engineRoot = join(coralStateRoot(opts?.baseDir), base);
   const dataDir = (name: string): string => join(engineRoot, name);
   return {
     engineRoot,

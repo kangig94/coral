@@ -5,6 +5,7 @@ import type { JobTerminal } from '../jobs/records.js';
 import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
+import type { AmbientClaudeLocationPort, ProviderCredentialSet } from '../runtime/provider-credentials.js';
 
 interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -227,6 +228,8 @@ export interface HttpHandlerPorts extends RpcPorts {
   readonly identity: HandlerIdentity;
   readonly time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
+  readonly providerCredentialDefaults: ProviderCredentialSet;
+  readonly ambientClaudeLocation: AmbientClaudeLocationPort;
   readonly remoteAccess?: RemoteHttpAccessPolicy;
   readonly admin: AdminControlPort;
   readonly health: HealthSnapshotPort;

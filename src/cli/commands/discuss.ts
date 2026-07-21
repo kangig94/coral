@@ -60,7 +60,7 @@ export function registerDiscussCommands(program: Command): void {
 
   const discussStartCommand = discuss.command('start');
   discussStartCommand
-    .description('Start a discussion session')
+    .description('Start a discussion; captures CODEX_HOME and CLAUDE_CONFIG_DIR for its full lifetime')
     .option('--input-json <source>', 'JSON payload from stdin (use -)')
     .option('--agent <spec>', 'Agent spec (repeatable)', (value: string, previous: string[] | undefined) => [
       ...(previous ?? []),

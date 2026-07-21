@@ -44,7 +44,7 @@ describe('scenario runner', () => {
   it('records a launch-before-boot exception as a failed step', async () => {
     const run = await runScenario({
       world: {},
-      steps: [{ type: 'launch', provider: 'fake-provider', prompt: 'launch before boot' }],
+      steps: [{ type: 'launch', provider: 'codex', prompt: 'launch before boot' }],
     });
     worlds.push(run.world);
 
@@ -123,7 +123,7 @@ describe('scenario runner', () => {
           preflightError: 'simulated preflight failure',
         },
       },
-      steps: [{ type: 'boot' }, { type: 'launch', provider: 'fake-provider', prompt: 'reject this launch' }],
+      steps: [{ type: 'boot' }, { type: 'launch', provider: 'codex', prompt: 'reject this launch' }],
     });
     worlds.push(rejectedRun.world);
 
@@ -135,7 +135,7 @@ describe('scenario runner', () => {
         message: 'simulated preflight failure',
         decision: {
           status: 'rejected',
-          code: 'preflight_failed',
+          code: 'provider_credential_source_unavailable',
         },
       },
     });
@@ -152,8 +152,8 @@ describe('scenario runner', () => {
       steps: [
         { type: 'boot' },
         { type: 'hang' },
-        { type: 'launch', provider: 'fake-provider', prompt: 'occupy the only worker' },
-        { type: 'launch', provider: 'fake-provider', prompt: 'become queued behind the current worker' },
+        { type: 'launch', provider: 'codex', prompt: 'occupy the only worker' },
+        { type: 'launch', provider: 'codex', prompt: 'become queued behind the current worker' },
         { type: 'expect', phase: 'queued', progress: 'queued (position 1)' },
         { type: 'wait', until: { terminal: true }, stepMs: 5, maxSteps: 2 },
       ],
@@ -208,7 +208,7 @@ describe('scenario runner', () => {
       steps: [
         { type: 'boot' },
         { type: 'crash', exitCode: 9, delayMs: 15 },
-        { type: 'launch', provider: 'fake-provider', prompt: 'crash after launch' },
+        { type: 'launch', provider: 'codex', prompt: 'crash after launch' },
         { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
         { type: 'wait', until: { terminal: true }, stepMs: 500, maxSteps: 4 },
         { type: 'expect', runtimeRecorded: true },
@@ -317,7 +317,7 @@ describe('scenario runner', () => {
       world: {},
       steps: [
         { type: 'boot' },
-        { type: 'launch', provider: 'fake-provider', prompt: 'launch then kill' },
+        { type: 'launch', provider: 'codex', prompt: 'launch then kill' },
         { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 10 },
         { type: 'kill', jobId: FIRST_BOOTED_JOB_ID },
         { type: 'wait', until: { terminal: true }, stepMs: 100, maxSteps: 20 },

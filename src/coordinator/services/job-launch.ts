@@ -1,7 +1,12 @@
 import type { ProviderSpec, ProviderRequest } from '../../providers/contract.js';
 import { hasUnterminalRetentionDiscardRequest, type SessionEntry } from '../../sessions/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { hasProviderCredentials, type InvocationContext } from '../../runtime/invocation-context.js';
+import {
+  projectProviderCredentialSource,
+  sameProviderCredentialSource,
+  type ProviderCredentialSourceRef,
+} from '../../runtime/provider-credentials.js';
 import type { ProviderCatalog } from '../../providers/catalog.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SessionExecutionPort } from '../../sessions/contracts.js';
@@ -38,7 +43,7 @@ export interface JobLaunchServiceDeps {
   };
   progressStore: JobProgressStore;
   launchOrchestrator: ProviderJobLaunchPort;
-  childPrincipalRegistry?: ChildPrincipalRegistry;
+  childPrincipalRegistry: ChildPrincipalRegistry;
 }
 
 export class JobLaunchService {
@@ -51,8 +56,23 @@ export class JobLaunchService {
     const spec = this.deps.providerRegistry.get(providerName);
     if (!spec) return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
 
-    const preflightError = await runProviderPreflight(spec, toPreflightRuntime(this.deps.runtime));
-    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+    if (!hasProviderCredentials(ctx)) {
+      return rejectLaunch(
+        'provider_credential_source_missing',
+        `This request has no ${providerName} account binding. Re-run it with the current Coral CLI after selecting and authenticating ${
+          providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'
+        }.`,
+      );
+    }
+    let credentialSource;
+    try {
+      credentialSource = projectProviderCredentialSource(ctx.providerCredentials, providerName);
+    } catch {
+      return rejectLaunch(
+        'unsupported_provider_credential_binding',
+        `Provider '${providerName}' has no credential-source binding.`,
+      );
+    }
 
     let resolvedAgent: ReturnType<typeof resolveAgentLaunchProfile> | null = null;
     if (input.agent) {
@@ -80,8 +100,18 @@ export class JobLaunchService {
     const bypassPermissions = input.bypassPermissions ?? resolvedAgent !== null;
     const retention = input.retention ?? 'retain';
 
+    let preflightRuntime;
+    try {
+      preflightRuntime = toPreflightRuntime(this.deps.runtime, credentialSource, cwd, effectiveCoralEnv);
+    } catch (error: unknown) {
+      return rejectLaunch('provider_credential_source_invalid', error instanceof Error ? error.message : String(error));
+    }
+    const preflightError = await runProviderPreflight(spec, preflightRuntime);
+    if (preflightError) return rejectLaunch('provider_credential_source_unavailable', preflightError);
+
     const session = this.deps.sessionManager.allocate({
       provider: providerName,
+      sessionAuthority: { kind: 'provider', source: credentialSource },
       name,
       model,
       cwd,
@@ -117,7 +147,6 @@ export class JobLaunchService {
       systemPrompt: input.systemPrompt,
       instruction,
       coralEnv: effectiveCoralEnv,
-      secretEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:start'),
     };
 
     return this.launchProviderJob(spec, session.sessionId, admitted.jobId, request, admitted.admission, {
@@ -126,6 +155,7 @@ export class JobLaunchService {
       parentWorkflowJobId: input.parentWorkflowJobId,
       workflowSlotId: input.workflowSlotId,
       retention,
+      protectedEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:start'),
     });
   }
 
@@ -138,6 +168,38 @@ export class JobLaunchService {
       return rejectLaunch(
         'session_not_found',
         `Session not found: ${input.sessionId}. Use exec to start a new session.`,
+      );
+    }
+
+    if (session.sessionAuthority?.kind !== 'provider') {
+      return rejectLaunch(
+        'provider_credential_source_missing',
+        `Session ${input.sessionId} has no stored account binding and cannot resume. Start a new session.`,
+      );
+    }
+    if (!hasProviderCredentials(ctx)) {
+      return rejectLaunch(
+        'provider_credential_source_missing',
+        `This request has no ${providerName} account binding. Re-run it with the current Coral CLI and the same ${
+          providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'
+        } used to create the session, or start a new session.`,
+      );
+    }
+    let callerSource;
+    try {
+      callerSource = projectProviderCredentialSource(ctx.providerCredentials, providerName);
+    } catch {
+      return rejectLaunch(
+        'unsupported_provider_credential_binding',
+        `Provider '${providerName}' has no credential-source binding.`,
+      );
+    }
+    if (!sameProviderCredentialSource(session.sessionAuthority.source, callerSource)) {
+      return rejectLaunch(
+        'provider_credential_source_mismatch',
+        `Session ${input.sessionId} belongs to a different ${providerName} account. Select the same ${
+          providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR'
+        } used to create it, or start a new session.`,
       );
     }
 
@@ -164,7 +226,7 @@ export class JobLaunchService {
       };
     }
 
-    return this.resumeResolved(providerName, spec, session, effectiveInput, ctx);
+    return this.resumeResolved(providerName, spec, session, effectiveInput, ctx, callerSource);
   }
 
   async coralDispatch(
@@ -246,6 +308,7 @@ export class JobLaunchService {
     session: SessionEntry,
     input: JobResumeRequest,
     ctx: InvocationContext,
+    credentialSource: ProviderCredentialSourceRef,
   ): Promise<LaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     if (session.state === 'non_resumable') {
@@ -266,8 +329,20 @@ export class JobLaunchService {
     const expectedVersion = session.version;
     const pool = input.pool ?? 'default';
 
-    const preflightError = await runProviderPreflight(provider, toPreflightRuntime(this.deps.runtime));
-    if (preflightError) return rejectLaunch('preflight_failed', preflightError);
+    const continuation = this.buildContinuationProfile(input, session, ctx);
+    let preflightRuntime;
+    try {
+      preflightRuntime = toPreflightRuntime(
+        this.deps.runtime,
+        credentialSource,
+        continuation.cwd,
+        continuation.coralEnv,
+      );
+    } catch (error: unknown) {
+      return rejectLaunch('provider_credential_source_invalid', error instanceof Error ? error.message : String(error));
+    }
+    const preflightError = await runProviderPreflight(provider, preflightRuntime);
+    if (preflightError) return rejectLaunch('provider_credential_source_unavailable', preflightError);
 
     const admitted = await this.claimAndAdmitJob(
       session,
@@ -280,7 +355,6 @@ export class JobLaunchService {
     );
     if ('status' in admitted) return admitted;
 
-    const continuation = this.buildContinuationProfile(input, session, ctx);
     const request: ProviderRequest = {
       action: 'resume',
       sessionId: session.sessionId,
@@ -293,7 +367,6 @@ export class JobLaunchService {
       systemPrompt: continuation.systemPrompt,
       instruction: continuation.instruction,
       coralEnv: continuation.coralEnv,
-      secretEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:resume'),
     };
 
     return this.launchProviderJob(provider, session.sessionId, admitted.jobId, request, admitted.admission, {
@@ -301,6 +374,7 @@ export class JobLaunchService {
       projectRoot: ctx.projectRoot,
       parentWorkflowJobId: input.parentWorkflowJobId,
       workflowSlotId: input.workflowSlotId,
+      protectedEnv: this.mintChildPrincipalSecretEnv(ctx, session.sessionId, admitted.jobId, 'job-launch:resume'),
     });
   }
 
@@ -347,6 +421,7 @@ export class JobLaunchService {
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
       retention?: SessionEntry['retention'];
+      protectedEnv?: Record<string, string>;
     },
   ): LaunchDecision {
     return this.deps.launchOrchestrator.launchProviderJob(provider, sessionId, jobId, request, admission, opts);
@@ -357,13 +432,8 @@ export class JobLaunchService {
     sessionId: string,
     jobId: string,
     issuer: string,
-  ): Record<string, string> | undefined {
-    const registry = this.deps.childPrincipalRegistry;
-    if (registry === undefined) {
-      return undefined;
-    }
-
-    const credential = registry.register({
+  ): Record<string, string> {
+    const credential = this.deps.childPrincipalRegistry.register({
       issuer,
       parentPrincipal: ctx.principal,
       namespace: this.deps.backendNamespace,
@@ -372,6 +442,10 @@ export class JobLaunchService {
       nowMs: this.deps.runtime.time.now(),
       childCaps: CHILD_PRINCIPAL_CAPABILITIES,
     });
-    return { [CORAL_CHILD_PRINCIPAL_HANDLE]: credential.handle };
+    return {
+      CORAL_JOB_ID: jobId,
+      CORAL_SESSION_ID: sessionId,
+      [CORAL_CHILD_PRINCIPAL_HANDLE]: credential.handle,
+    };
   }
 }

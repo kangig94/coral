@@ -26,7 +26,7 @@ import {
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { claudeConfigSlot, composeCoralPaths, resolveClaudeConfigDir } from '../infra/path/index.js';
+import { composeCoralPaths, resolveClaudeConfigDir } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { ChildProcessLike, EnvPort, StorageData, StoragePort, TimePort } from '../infra/port-types.js';
@@ -206,22 +206,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   };
 
   const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
-  // The plugin (and its backend daemon) install inside the Claude config dir, so
-  // a non-default CLAUDE_CONFIG_DIR is a distinct daemon: partition the state
-  // tree by its slot. CLAUDE_CONFIG_DIR survives the daemon's env shed for
-  // exactly this (see `shedInheritedClaudeCodeEnv`).
   const claudeConfigDir = resolveClaudeConfigDir(capturedEnv.fullEnv.CLAUDE_CONFIG_DIR, osHomedir());
-  const configSlot = claudeConfigSlot(claudeConfigDir, osHomedir());
   const coral = composeCoralPaths(flavor, {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
     ...(customKbRoot ? { customKbRoot } : {}),
-    ...(configSlot === undefined ? {} : { configSlot }),
   });
   const paths: RuntimePaths = {
     projectSource: resolveProjectSource,
     projectData: (projectRoot) => coral.projects.dataDir(resolveProjectSource(projectRoot)),
     coral,
-    ...(configSlot === undefined ? {} : { configSlot }),
   };
 
   const buildSpawnEnv = (envAdditions?: Record<string, string>): Record<string, string> => {
@@ -235,14 +228,14 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         ...(options.env ?? {}),
       };
     }
-    return buildSpawnEnv(options.env);
+    return options.env ?? buildSpawnEnv();
   };
 
   const durableExitPromises = new Map<number, Promise<DurableProcessExit>>();
   const durable: DurableExecutionTransport = {
     launch: async (options) => {
       const envPath = `${options.jobDir}/${ENV_RECORD_FILE}`;
-      writeAtomicJson(storage, envPath, buildSpawnEnv(options.envAdditions));
+      writeAtomicJson(storage, envPath, options.env ?? buildSpawnEnv(options.envAdditions));
 
       const wrapper = spawnChild(
         process.execPath,
@@ -308,12 +301,10 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
 
   const runtimeProcess = {
     spawn: (options) => {
-      const spawnEnv =
-        options.inheritEnv || options.env
-          ? resolveExecEnv({
-              env: options.env ?? options.envAdditions,
-              inheritEnv: options.inheritEnv,
-            })
+      const spawnEnv = options.env
+        ? { ...options.env }
+        : options.inheritEnv
+          ? resolveExecEnv({ env: options.envAdditions, inheritEnv: true })
           : buildSpawnEnv(options.envAdditions);
       const child = spawnChild(options.command, options.args, {
         stdio: ['pipe', 'pipe', 'pipe'],

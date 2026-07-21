@@ -24,6 +24,13 @@ const jobLifecycleFaultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ghost_launch') }).strict(),
   z.object({ kind: z.literal('wrapper_lost') }).strict(),
   z.object({ kind: z.literal('wrapper_crashed'), cause: externalErrorSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('provider_credential_source'),
+      reason: z.enum(['missing', 'mismatch', 'unavailable']),
+      message: z.string(),
+    })
+    .strict(),
 ]);
 export type JobLifecycleFault = z.infer<typeof jobLifecycleFaultSchema>;
 
@@ -143,6 +150,8 @@ export function describeTerminalOutcome(
             `Provider wrapper crashed: ${outcome.fault.cause.message}.`,
             outcome.fault.cause.stack,
           );
+        case 'provider_credential_source':
+          return `Provider credential source ${outcome.fault.reason}: ${ensureSentence(outcome.fault.message)}`;
         default:
           return assertNever(outcome.fault);
       }

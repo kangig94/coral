@@ -13,6 +13,10 @@ import type { HttpHandlerPorts } from './server-ports.js';
 import type { RequestBindingRule, RpcMethodSpec } from './rpc/catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
+import {
+  canonicalizeProviderCredentialSet,
+  providerCredentialSetInputSchema,
+} from '../runtime/provider-credentials.js';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
@@ -52,7 +56,22 @@ function buildBodyInvocationContext(
   rpcPorts: HttpHandlerPorts,
   principal: Principal,
 ): InvocationContext | null {
-  return buildInvocationContext(request, rpcPorts.identity.pluginRoot, rpcPorts.coralEnvSnapshot, principal);
+  const providerCredentials =
+    principal.transport === 'http'
+      ? rpcPorts.providerCredentialDefaults
+      : request.providerCredentials === undefined
+        ? undefined
+        : canonicalizeProviderCredentialSet(
+            providerCredentialSetInputSchema.parse(request.providerCredentials),
+            rpcPorts.ambientClaudeLocation,
+          );
+  return buildInvocationContext(
+    request,
+    rpcPorts.identity.pluginRoot,
+    rpcPorts.coralEnvSnapshot,
+    principal,
+    providerCredentials,
+  );
 }
 
 function buildQueryContext(
@@ -81,6 +100,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
   | 'sessionId'
   | 'networkEnv'
   | 'coralEnv'
+  | 'providerCredentials'
 > {
   const {
     projectRoot: _projectRoot,
@@ -92,6 +112,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     sessionId: _sessionId,
     networkEnv: _networkEnv,
     coralEnv: _coralEnv,
+    providerCredentials: _providerCredentials,
     ...args
   } = parsed as T & {
     projectRoot?: unknown;
@@ -103,6 +124,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     sessionId?: unknown;
     networkEnv?: unknown;
     coralEnv?: unknown;
+    providerCredentials?: unknown;
   };
   return args;
 }
@@ -270,6 +292,7 @@ export async function executeCatalogRequest(
         claudeTransport: _claudeTransport,
         networkEnv: _networkEnv,
         coralEnv: _coralEnv,
+        providerCredentials: _providerCredentials,
         ...workflowCommand
       } = parsed;
       const result = await rpcPorts.workflows.execute(workflowCommand as WorkflowPortInput, ctx);

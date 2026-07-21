@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 
 import { createHttpHandler } from '#src/transport/http/handler.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
 
 // S8: HTTP token comparison must be constant-time. Direct `===` leaks
 // information about the token prefix through completion-time variance for any
@@ -26,6 +27,10 @@ function createPorts(): HttpHandlerPorts {
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
+    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
+    ambientClaudeLocation: {
+      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
+    },
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,

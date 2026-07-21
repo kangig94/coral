@@ -21,6 +21,7 @@ import {
   usageSummarySchema,
 } from '#src/providers/contract.js';
 import type { ProviderFailureCause } from '#src/providers/fault.js';
+import { TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
 
 type IsEqual<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -70,6 +71,7 @@ const BASE_RUNTIME: ProviderRuntime = {
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
+  providerContext: TEST_CODEX_CONTEXT,
 };
 
 function terminal(content: string): ProviderEventBody {

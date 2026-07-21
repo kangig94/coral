@@ -58,6 +58,7 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
   let statusCode = 500;
   switch (result.code) {
     case 'invalid_request':
+    case 'provider_credential_source_missing':
       statusCode = 400;
       break;
     case 'not_found':

@@ -30,7 +30,12 @@ export function collectArtifactHandles(
     provider.artifacts.kind === 'managed' &&
     provider.artifacts.locateArtifact !== undefined
   ) {
-    const located = provider.artifacts.locateArtifact(entry.conversationRef, runtime);
+    if (entry.sessionAuthority?.kind !== 'provider') return handles;
+    const located = provider.artifacts.locateArtifact({
+      conversationRef: entry.conversationRef,
+      source: entry.sessionAuthority.source,
+      runtime,
+    });
     if (located !== null) {
       return [located];
     }

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { resolveEquippedTools } from '../../../clients/hooks/lib/equip-tools.mjs';
-// @ts-expect-error — reuse the real path logic so a flavor/slot drift fails the test.
+// @ts-expect-error — reuse the real path logic so a flavor drift fails the test.
 import { buildFlavor, coralStateRoot } from '../../../clients/hooks/lib/hook-utils.mjs';
 
 const createdRoots: string[] = [];
@@ -16,7 +16,7 @@ let savedConfigDir: string | undefined;
 beforeEach(() => {
   savedHome = process.env.HOME;
   savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  // Default config dir → no by-config slot, so coralStateRoot() == <HOME>/.coral.
+  // Provider account selectors never alter the Coral-owned state root.
   delete process.env.CLAUDE_CONFIG_DIR;
 });
 
@@ -38,7 +38,7 @@ function tmpHome(): string {
 }
 
 // Resolve the codebase-memory engine dir the SAME way the hook does, so this
-// test tracks coralStateRoot()/buildFlavor() (config slot + flavor) instead of
+// test tracks coralStateRoot()/buildFlavor() (account-neutral root + flavor) instead of
 // hardcoding a path that could silently drift from the code under test.
 function codebaseMemoryBinDir(): string {
   const dataDir = buildFlavor() === 'dev' ? 'data-dev' : 'data';
@@ -86,13 +86,13 @@ describe('resolveEquippedTools', () => {
     expect(resolveEquippedTools()).toEqual([]);
   });
 
-  it('honors the per-config-dir slot (CLAUDE_CONFIG_DIR partitions the engine tree)', () => {
+  it('keeps the engine tree account-neutral when CLAUDE_CONFIG_DIR changes', () => {
     const home = tmpHome();
-    process.env.CLAUDE_CONFIG_DIR = join(home, 'alt-config'); // non-default → slotted stateRoot
-    const slottedDir = codebaseMemoryBinDir();
-    expect(slottedDir).toContain(join('.coral', 'by-config'));
-    mkdirSync(slottedDir, { recursive: true });
-    writeFileSync(join(slottedDir, 'codebase-memory-mcp'), 'binary');
+    const canonicalDir = codebaseMemoryBinDir();
+    process.env.CLAUDE_CONFIG_DIR = join(home, 'alt-config');
+    expect(codebaseMemoryBinDir()).toBe(canonicalDir);
+    mkdirSync(canonicalDir, { recursive: true });
+    writeFileSync(join(canonicalDir, 'codebase-memory-mcp'), 'binary');
 
     expect(resolveEquippedTools().map((t: { id: string }) => t.id)).toEqual(['codebase-memory']);
   });

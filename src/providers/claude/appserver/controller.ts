@@ -1,5 +1,4 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,7 +6,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { raceTimeout } from '../../../infra/async.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import { isRecord, readString } from '../../../infra/json.js';
-import { resolveClaudeConfigDir } from '../../../infra/path/index.js';
 import { MAX_BUFFER } from '../../../infra/process-constants.js';
 import { formatToolProgress } from '../progress.js';
 import { hashSortedEnv, sameBootstrapSignature, type ClaudeBootstrapSignature } from '../request-prep.js';
@@ -407,7 +405,7 @@ export class SingleSessionController {
       this.latestSessionId = conversationRef;
       this.bootstrapSignature = signature;
       this.controllerEnvHash = controllerEnvHash;
-      this.resumeExistingConversation = params.conversationRef !== undefined;
+      this.resumeExistingConversation = params.resumeExisting === true;
       this.bootstrapConfig = {
         ...params,
         conversationRef,
@@ -1276,9 +1274,8 @@ export class SingleSessionController {
     }
     this.transcriptPath = null;
 
-    // The daemon preserves CLAUDE_CONFIG_DIR and forwards it to spawned `claude`
-    // children, so their session logs land under the same config dir we read here.
-    const projectsRoot = join(resolveClaudeConfigDir(process.env.CLAUDE_CONFIG_DIR, homedir()), 'projects');
+    const projectsRoot = this.bootstrapConfig?.projectsRoot;
+    if (!projectsRoot) return null;
     try {
       let match: string | null = null;
       const projectEntries = readdirSync(projectsRoot, { withFileTypes: true });

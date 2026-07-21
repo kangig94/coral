@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
@@ -247,6 +248,7 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
       projectRoot: '/workspace/orphan',
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
+      providerCredentials: TEST_PROVIDER_CREDENTIALS,
       pool: 'default',
       enqueueSequence: 1,
       providerAction: 'exec',
@@ -318,13 +320,14 @@ function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobSto
 }
 
 function initWorkflowJob(progressStore: JobStore, jobId: string): void {
-  progressStore.initJob({
+  initTestJob(progressStore, {
     jobId,
     sessionId: `${jobId}-session`,
     provider: 'codex',
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
     jobKind: 'workflow',
+    providerCredentials: TEST_PROVIDER_CREDENTIALS,
     initialPhase: 'running',
   });
 }
@@ -436,6 +439,12 @@ function slotSessionId(slot: PlanSlot): string {
 }
 
 function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): void {
+  seedTestSessionProjection(harness.db, {
+    sessionId: slotSessionId(slot),
+    provider: slot.provider,
+    projectRoot: PROJECT_ROOT,
+    backendNamespace: TEST_NAMESPACE,
+  });
   harness.progressStore.appendLaunchRequested(slot.slotId, {
     jobId: slot.slotId,
     sessionId: slotSessionId(slot),
@@ -974,3 +983,4 @@ describe('journal commit atomicity invariant', () => {
     );
   });
 });
+import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.js';

@@ -29,6 +29,7 @@ async function sleep(ms: number): Promise<void> {
 
 type TranscriptFixture = {
   transcriptPath: string;
+  projectsRoot: string;
   cleanup: () => void;
 };
 
@@ -45,6 +46,7 @@ function createTranscriptFixture(conversationRef = TEST_SESSION_ID): TranscriptF
 
   return {
     transcriptPath,
+    projectsRoot: join(home, '.claude', 'projects'),
     cleanup: (): void => {
       if (previousHome === undefined) {
         delete process.env.HOME;
@@ -123,6 +125,7 @@ async function startUsageController(): Promise<UsageControllerHarness> {
 
   await controller.sessionEnsure({
     cwd: '/workspace',
+    projectsRoot: '/tmp/coral-test-home/.claude/projects',
     systemPromptHash: 'sha256:test',
     permissionMode: 'default',
   });
@@ -185,6 +188,7 @@ describe('SingleSessionController PTY lifecycle', () => {
 
     const ensurePromise = controller.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
     });
@@ -221,6 +225,7 @@ describe('SingleSessionController PTY lifecycle', () => {
 
       const ensure = controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });
@@ -263,6 +268,7 @@ describe('SingleSessionController PTY lifecycle', () => {
 
     await controller.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
     });
@@ -307,6 +313,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     try {
       await controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: '/home/user/.claude/projects',
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });
@@ -340,6 +347,7 @@ describe('SingleSessionController PTY lifecycle', () => {
 
     await controller.sessionEnsure({
       cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
       permissionMode: 'default',
     });
@@ -386,6 +394,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     try {
       await controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });
@@ -434,6 +443,7 @@ describe('SingleSessionController PTY lifecycle', () => {
     try {
       await controller.sessionEnsure({
         cwd: '/workspace',
+        projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
         permissionMode: 'default',
       });

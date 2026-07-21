@@ -8,7 +8,7 @@ import {
 } from '../state-machine.js';
 import type { BidResult, DiscussCreateInput, SpeechResult } from '../session-types.js';
 import { nowIsoString } from '../../infra/time.js';
-import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { hasProviderCredentials, type InvocationContext } from '../../runtime/invocation-context.js';
 import { buildAgentExecutionConfig } from './runtime-build.js';
 import * as discussLoop from './loop.js';
 import { type AgentConfig, type DiscussConfig, type DiscussContext, type LiveDiscussSession } from './types.js';
@@ -44,6 +44,13 @@ function requireLiveSession(ctx: DiscussContext, sessionId: string): LiveDiscuss
   return session;
 }
 
+function withPersistedProviderCredentials(
+  invocationCtx: InvocationContext,
+  session: LiveDiscussSession,
+): InvocationContext {
+  return { ...invocationCtx, providerCredentials: session.snapshot.providerCredentials };
+}
+
 export async function startDiscussSession(
   ctx: DiscussContext,
   sessionId: string,
@@ -52,6 +59,9 @@ export async function startDiscussSession(
   config: DiscussConfig,
   invocationCtx: InvocationContext,
 ): Promise<LiveDiscussSession> {
+  if (!hasProviderCredentials(invocationCtx)) {
+    throw new DiscussManagerError('provider_credential_source_missing');
+  }
   const input: DiscussCreateInput = {
     topic,
     agents: agents.map((agent) => ({
@@ -67,15 +77,17 @@ export async function startDiscussSession(
       maxEpochs: readDiscussMaxEpochs(ctx),
       quotaPerEpoch: readDiscussQuotaPerEpoch(config),
       agentExecution: buildAgentExecutionConfig(agents),
+      providerCredentials: invocationCtx.providerCredentials,
     }),
   );
 
   const snapshot = await ctx.store.append(sessionId, null, created);
   const session = attachSession(ctx, snapshot);
   afterCommit(ctx, sessionId, snapshot, created);
+  const persistedCtx = withPersistedProviderCredentials(invocationCtx, session);
 
-  await collectBids(ctx, sessionId, invocationCtx);
-  discussLoop.resumeLoop(ctx, sessionId, invocationCtx);
+  await collectBids(ctx, sessionId, persistedCtx);
+  discussLoop.resumeLoop(ctx, sessionId, persistedCtx);
   return session;
 }
 
@@ -89,6 +101,7 @@ export async function submitManualBid(
 ): Promise<BidResult> {
   const session = requireLiveSession(ctx, sessionId);
   const snapshot = session.snapshot;
+  const persistedCtx = withPersistedProviderCredentials(invocationCtx, session);
 
   if (snapshot.state.status === 'ended') {
     return {
@@ -113,7 +126,7 @@ export async function submitManualBid(
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 
-  discussLoop.resumeLoop(ctx, sessionId, invocationCtx);
+  discussLoop.resumeLoop(ctx, sessionId, persistedCtx);
   return {
     action: 'listen',
     speaker: null,
@@ -130,6 +143,7 @@ export async function submitManualSpeech(
 ): Promise<SpeechResult> {
   const session = requireLiveSession(ctx, sessionId);
   const snapshot = session.snapshot;
+  const persistedCtx = withPersistedProviderCredentials(invocationCtx, session);
 
   if (snapshot.state.status === 'ended') {
     return {
@@ -161,7 +175,7 @@ export async function submitManualSpeech(
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 
-  discussLoop.resumeLoop(ctx, sessionId, invocationCtx);
+  discussLoop.resumeLoop(ctx, sessionId, persistedCtx);
   return { action: 'speech_recorded' };
 }
 

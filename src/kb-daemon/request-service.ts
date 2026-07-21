@@ -342,7 +342,7 @@ function createCommunitySummaryRuntime(
 ): CommunitySummaryReadRuntime {
   const paths = createDefaultKbReadPaths(queryContext);
   const indexStorage = runtime.storage;
-  const runtimeDir = kbRuntimeDir(runtime.flavor, runtime.paths.configSlot);
+  const runtimeDir = kbRuntimeDir(runtime.flavor);
   const indexStore = new KbIndexStore({
     runtimeDir,
     storage: {

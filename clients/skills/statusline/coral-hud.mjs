@@ -18,7 +18,7 @@ import {
   renameSync,
   unlinkSync,
 } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join, normalize } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -26,7 +26,37 @@ import { pathToFileURL } from 'url';
 
 // Claude's config dir, honoring CLAUDE_CONFIG_DIR (set when launching `claude`,
 // inherited by this statusLine subprocess). Falls back to ~/.claude.
-const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+export function codexCacheKey(codexDir) {
+  return `codex-${createHash('sha256').update(normalize(codexDir)).digest('hex').slice(0, 12)}`;
+}
+
+export function hudCacheFile(cacheDir, key) {
+  return key.startsWith('codex-')
+    ? join(cacheDir, `.coral-${key}-cache.json`)
+    : join(cacheDir, '.coral-cache.json');
+}
+
+export function hudFetchLockPath(cacheDir, key) {
+  return join(cacheDir, `.coral-${key}.lock`);
+}
+
+export function coralBackendInfoPath(homeDir) {
+  return join(homeDir, '.coral', 'run', 'coordinator.json');
+}
+
+export function shouldUseClaudeKeychain(explicitConfigDir, platform) {
+  return !explicitConfigDir && platform === 'darwin';
+}
+
+const EXPLICIT_CLAUDE_CONFIG_DIR =
+  typeof process.env.CLAUDE_CONFIG_DIR === 'string' && process.env.CLAUDE_CONFIG_DIR.length > 0;
+const CLAUDE_DIR = EXPLICIT_CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
+const CODEX_DIR =
+  typeof process.env.CODEX_HOME === 'string' && isAbsolute(process.env.CODEX_HOME)
+    ? normalize(process.env.CODEX_HOME)
+    : join(homedir(), '.codex');
+
+const CODEX_CACHE_SLOT = codexCacheKey(CODEX_DIR);
 
 const SEP = ' \u2502 ';
 const GREEN = '\x1b[32m';
@@ -387,18 +417,18 @@ function writeSession(sessionId, data) {
   } catch {}
 }
 
-function readFullCache() {
+function readFullCache(key) {
   try {
-    return JSON.parse(readFileSync(CACHE_FILE, 'utf-8'));
+    return JSON.parse(readFileSync(key === undefined ? CACHE_FILE : hudCacheFile(CACHE_DIR, key), 'utf-8'));
   } catch {
     return {};
   }
 }
 
-function writeFullCache(all) {
+function writeFullCache(all, key) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(CACHE_FILE, JSON.stringify(all), { mode: 0o600 });
+    writeFileSync(key === undefined ? CACHE_FILE : hudCacheFile(CACHE_DIR, key), JSON.stringify(all), { mode: 0o600 });
   } catch {}
 }
 
@@ -433,27 +463,27 @@ function isFreshCacheEntry(cache, now = Date.now()) {
 }
 
 function readCacheSlot(key) {
-  const entry = readFullCache()[key];
+  const entry = readFullCache(key)[key];
   if (!entry) return null;
   const cache = normalizeCacheEntry(entry);
   return isFreshCacheEntry(cache) ? cache : null;
 }
 
 function writeCacheSlot(key, data, error = false, rateLimit = 0, errorKind = null) {
-  const all = readFullCache();
+  const all = readFullCache(key);
   let nextData = data;
   if (error && nextData == null) {
     const existing = normalizeCacheEntry(all[key]);
     if (existing.data != null) nextData = existing.data;
   }
   all[key] = { ts: Date.now(), data: nextData, error, rateLimit, errorKind };
-  writeFullCache(all);
+  writeFullCache(all, key);
 }
 
 function readBackoffState(key) {
   try {
     const now = Date.now();
-    const cache = normalizeCacheEntry(readFullCache()[key]);
+    const cache = normalizeCacheEntry(readFullCache(key)[key]);
     if (!cache.error || cache.rateLimit <= 0) return 0;
     if (cache.ts <= 0 || cache.ts > now) return 0;
     if (now - cache.ts > RATE_LIMIT_MAX_MS) return 0;
@@ -465,7 +495,7 @@ function readBackoffState(key) {
 
 function readStaleCacheData(key) {
   try {
-    const cache = normalizeCacheEntry(readFullCache()[key]);
+    const cache = normalizeCacheEntry(readFullCache(key)[key]);
     if (cache.data) return formatLimits(cache.data);
     return null;
   } catch {
@@ -474,7 +504,7 @@ function readStaleCacheData(key) {
 }
 
 function acquireFetchLock(key) {
-  const lockPath = join(CACHE_DIR, `.coral-${key}.lock`);
+  const lockPath = hudFetchLockPath(CACHE_DIR, key);
   try {
     const raw = readFileSync(lockPath, 'utf-8');
     let isStale = true;
@@ -540,8 +570,10 @@ function writeBackendSlot(slot, online) {
 // --- Claude rate limits ---
 
 function getClaudeAccessToken() {
-  // macOS Keychain
-  if (process.platform === 'darwin') {
+  // An explicit config directory is an explicit account selection. The shared
+  // macOS Keychain item cannot prove it belongs to that directory, so only
+  // ambient Claude may use it.
+  if (shouldUseClaudeKeychain(EXPLICIT_CLAUDE_CONFIG_DIR, process.platform)) {
     try {
       const raw = execSync('/usr/bin/security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null', {
         encoding: 'utf-8',
@@ -776,7 +808,7 @@ async function renderLimits() {
 
 function readCodexCredentials() {
   try {
-    const authPath = join(homedir(), '.codex', 'auth.json');
+    const authPath = join(CODEX_DIR, 'auth.json');
     const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
     const { id_token, access_token, refresh_token, account_id } = parsed.tokens || {};
     if (!account_id) return null;
@@ -790,7 +822,7 @@ function readCodexCredentials() {
 
 function writeBackCodexCredentials(creds, refreshed) {
   try {
-    const authPath = join(homedir(), '.codex', 'auth.json');
+    const authPath = join(CODEX_DIR, 'auth.json');
     const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
     parsed.tokens.access_token = refreshed.accessToken;
     parsed.tokens.refresh_token = refreshed.refreshToken;
@@ -880,7 +912,7 @@ async function fetchCodexUsage(accessToken, accountId, signal) {
 async function renderCodexData() {
   if (!existsSync(CODEX_FLAG_FILE)) return { kind: 'none' };
 
-  const cached = readCacheSlot('codex');
+  const cached = readCacheSlot(CODEX_CACHE_SLOT);
   if (cached) {
     if (cached.error) {
       if (cached.data) return { kind: 'data', ...cached.data };
@@ -889,10 +921,10 @@ async function renderCodexData() {
     return { kind: 'data', ...cached.data };
   }
 
-  const lock = acquireFetchLock('codex');
+  const lock = acquireFetchLock(CODEX_CACHE_SLOT);
   if (!lock) {
     try {
-      const prev = normalizeCacheEntry(readFullCache().codex);
+      const prev = normalizeCacheEntry(readFullCache(CODEX_CACHE_SLOT)[CODEX_CACHE_SLOT]);
       if (prev.data) return { kind: 'data', ...prev.data };
     } catch {}
     return { kind: 'none' };
@@ -910,24 +942,27 @@ async function renderCodexData() {
 
     if (result?.unauthorized) {
       const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
-      if (!refreshed) return { kind: 'error', message: cacheError('codex', 'generic') };
+      if (!refreshed) return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
       token = refreshed.accessToken;
       if (refreshed.refreshToken) writeBackCodexCredentials(creds, refreshed);
       result = await fetchCodexUsage(token, creds.accountId, controller.signal);
     }
 
-    if (result?.unauthorized) return { kind: 'error', message: cacheError('codex', 'auth') };
+    if (result?.unauthorized) return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'auth') };
     if (result?.rateLimited)
-      return { kind: 'error', message: cacheError('codex', 'rateLimit', readBackoffState('codex') + 1) };
+      return {
+        kind: 'error',
+        message: cacheError(CODEX_CACHE_SLOT, 'rateLimit', readBackoffState(CODEX_CACHE_SLOT) + 1),
+      };
 
     if (result) {
-      writeCacheSlot('codex', result);
+      writeCacheSlot(CODEX_CACHE_SLOT, result);
       return { kind: 'data', ...result };
     }
 
-    return { kind: 'error', message: cacheError('codex', 'generic') };
+    return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
   } catch {
-    return { kind: 'error', message: cacheError('codex', 'generic') };
+    return { kind: 'error', message: cacheError(CODEX_CACHE_SLOT, 'generic') };
   } finally {
     clearTimeout(timer);
     releaseFetchLock(lock);
@@ -936,22 +971,16 @@ async function renderCodexData() {
 
 // --- coral backend ---
 
-// Coordinator state is partitioned per Claude config dir: a non-default
-// CLAUDE_CONFIG_DIR is a distinct daemon registered under
-// `~/.coral/by-config/<slot>/run/`, while the default `~/.claude` keeps the
-// unpartitioned `~/.coral/run/`. Mirrors `claudeConfigSlot`/`coralStateRoot`
-// in `src/infra/path/root.ts` so the HUD reads the same backend the CLI does.
+// Coral daemon state is account-neutral; Claude credentials only select the
+// provider context for an individual request.
 function coralStateRoot() {
-  const home = homedir();
-  if (CLAUDE_DIR === join(home, '.claude')) return join(home, '.coral');
-  const slot = createHash('sha256').update(CLAUDE_DIR).digest('hex').slice(0, 8);
-  return join(home, '.coral', 'by-config', slot);
+  return join(homedir(), '.coral');
 }
 
 // The statusline is gated to the prod flavor by `hud-auto-update.mjs`, so we
 // read prod's runDir directly.
 function resolveBackendInfoPath() {
-  const infoPath = join(coralStateRoot(), 'run', 'coordinator.json');
+  const infoPath = coralBackendInfoPath(homedir());
   try {
     const info = JSON.parse(readFileSync(infoPath, 'utf-8'));
     if (!info?.pid) return null;

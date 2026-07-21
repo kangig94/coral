@@ -3,6 +3,8 @@ import type { Command } from 'commander';
 import { resolvePluginRoot } from './plugin-root.js';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
+import { captureProviderCredentialSetInput } from '../runtime/provider-credentials.js';
+import { resolveUserHomeDir } from '../infra/path/index.js';
 import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
 import type { WatchState } from '../discuss/watch.js';
@@ -352,7 +354,11 @@ function createDefaultInvocationContext(projectRoot: string): InvocationContext 
   };
 }
 
-function buildTransportContextBody(args: Record<string, unknown>, context: InvocationContext): Record<string, unknown> {
+function buildTransportContextBody(
+  args: Record<string, unknown>,
+  context: InvocationContext,
+  options: { providerCredentials?: boolean } = {},
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     ...args,
     projectRoot: context.projectRoot,
@@ -387,6 +393,13 @@ function buildTransportContextBody(args: Record<string, unknown>, context: Invoc
   // the daemon would keep serving its stale boot value after the caller unset
   // their last CORAL_* var.
   body.coralEnv = filterForwardableCoralEnv(context.coralEnv);
+
+  if (options.providerCredentials) {
+    body.providerCredentials = captureProviderCredentialSetInput(
+      process.env,
+      resolveUserHomeDir(process.env.HOME ?? process.env.USERPROFILE),
+    );
+  }
 
   return body;
 }
@@ -513,13 +526,13 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     createSession: async (provider, prompt, options = {}) => {
       return request<AcceptedLaunchResponse>(
         'sessions.create',
-        buildTransportContextBody({ provider, prompt, ...options }, defaultContext),
+        buildTransportContextBody({ provider, prompt, ...options }, defaultContext, { providerCredentials: true }),
       );
     },
     workflow: async (expression, options) => {
       return request<AcceptedLaunchResponse>(
         'workflow.run',
-        buildTransportContextBody({ expression, ...options }, defaultContext),
+        buildTransportContextBody({ expression, ...options }, defaultContext, { providerCredentials: true }),
       );
     },
     listJobs: async (options = {}) => {
@@ -540,7 +553,10 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
       request<AbortResult>('jobs.abort', buildProjectScopedQuery({ jobs: jobIds }, defaultContext)),
     discussSeed: async (args) => request<PersonaSeedOutput>('discuss.persona.generate', args),
     discussStart: async (args) =>
-      request<DiscussStartResponse>('discuss.session.create', buildTransportContextBody(args, defaultContext)),
+      request<DiscussStartResponse>(
+        'discuss.session.create',
+        buildTransportContextBody(args, defaultContext, { providerCredentials: true }),
+      ),
     discussWatch: async (session, cursor) => {
       if (commandClass === 'directRead') {
         return readStore().discuss.watch(session, cursor);

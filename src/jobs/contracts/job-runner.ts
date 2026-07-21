@@ -38,6 +38,7 @@ export interface ProviderJobLaunchPort {
       parentWorkflowJobId?: string;
       workflowSlotId?: string;
       retention?: RetentionPolicy;
+      protectedEnv?: Record<string, string>;
     },
   ): LaunchDecision;
 }
@@ -63,6 +64,7 @@ export interface RecoveredJobLifecyclePort {
     launchRecord: JobLaunch,
     queuedHandle: QueuedHandle,
     pool: LaunchPool,
+    protectedEnv: Readonly<Record<string, string>>,
   ): void;
   writeJobTerminal(
     jobId: string,

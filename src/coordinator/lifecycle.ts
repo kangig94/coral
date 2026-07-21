@@ -705,7 +705,6 @@ async function runLifecycleStartup({
     idleTimer.stopWatching();
     state.ownershipCheckerTeardown?.();
     state.ownershipCheckerTeardown = null;
-
     try {
       await closeServerFn(server);
     } catch {

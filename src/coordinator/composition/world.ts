@@ -3,6 +3,17 @@ declare const __VERSION__: string;
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
+import {
+  ambientClaudeLocation,
+  canonicalizeProviderCredentialSet,
+  captureProviderCredentialSetInput,
+  filesystemProviderCredentialSourceAvailability,
+} from '../../runtime/provider-credentials.js';
+import type {
+  ProviderCredentialSet,
+  ProviderCredentialSourceAvailabilityPort,
+} from '../../runtime/provider-credentials.js';
+import type { AmbientClaudeLocationPort } from '../../runtime/provider-credentials.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
@@ -127,6 +138,8 @@ export interface CoordinatorWorld {
   readonly remoteAccess: RemoteHttpAccessPolicy;
   readonly backendPid: number;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
+  readonly providerCredentialDefaults: ProviderCredentialSet;
+  readonly ambientClaudeLocation: AmbientClaudeLocationPort;
   readonly resolveProjectSource: (projectRoot: string) => string;
   readonly idleTimer: IdleTimer;
   readonly launchCoordinator: LaunchCoordinator;
@@ -134,6 +147,7 @@ export interface CoordinatorWorld {
   readonly providerRegistry: ProviderRegistry;
   readonly pluginRegistry: PluginRegistry;
   readonly childPrincipalRegistry: ChildPrincipalRegistry;
+  readonly providerCredentialSourceAvailability: ProviderCredentialSourceAvailabilityPort;
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
@@ -183,6 +197,11 @@ export function createCoordinatorWorld(
   }
   const backendPid = bootSnapshot.pid ?? runtime.env.pid();
   const coralEnvSnapshot = runtime.env.coralSnapshot();
+  const ambientClaudeLocationPort = ambientClaudeLocation(runtime.env.homedir());
+  const providerCredentialDefaults = canonicalizeProviderCredentialSet(
+    captureProviderCredentialSetInput(runtime.env.fullSnapshot(), runtime.env.homedir()),
+    ambientClaudeLocationPort,
+  );
   const now = bootSnapshot.now ?? (() => runtime.time.now());
   const log =
     bootSnapshot.log ??
@@ -196,6 +215,7 @@ export function createCoordinatorWorld(
   const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
+  const providerCredentialSourceAvailability = filesystemProviderCredentialSourceAvailability(runtime.storage);
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
     env: runtime.env,
@@ -232,12 +252,15 @@ export function createCoordinatorWorld(
     remoteAccess,
     backendPid,
     coralEnvSnapshot,
+    providerCredentialDefaults,
+    ambientClaudeLocation: ambientClaudeLocationPort,
     resolveProjectSource,
     idleTimer,
     launchCoordinator,
     eventBus,
     providerRegistry,
     childPrincipalRegistry,
+    providerCredentialSourceAvailability,
     pluginRegistry,
     discussRegistry,
     storeServicesRef,

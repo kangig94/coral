@@ -3,13 +3,11 @@ import { join } from 'node:path';
 import { discardRecordedArtifacts, managed } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
-import type { Runtime } from '../../runtime/ports.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
 
 const CODEX_ROLLOUT_SCAN_DEPTH = 4;
 
 type CodexArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
-type CodexArtifactLocatorEnv = Pick<Runtime['env'], 'homedir' | 'get'>;
 
 type CodexArtifactIndex = {
   readonly rolloutFiles: readonly { readonly name: string; readonly path: string }[];
@@ -24,11 +22,6 @@ const codexArtifactIndexes = new WeakMap<object, Map<string, CodexArtifactIndex>
 
 function codexRolloutArtifactIdentity(threadId: string): ProviderArtifactIdentity {
   return { kind: 'codex-rollout', threadId };
-}
-
-export function resolveCodexSessionsRoot(env: CodexArtifactLocatorEnv): string {
-  const codexHome = env.get('CODEX_HOME')?.trim();
-  return join(codexHome && codexHome.length > 0 ? codexHome : join(env.homedir(), '.codex'), 'sessions');
 }
 
 export function locateCodexRolloutArtifact(options: {
@@ -68,14 +61,14 @@ export function locateCodexRolloutArtifact(options: {
 
 export function locateCodexRolloutArtifactFromRuntime(
   threadId: string,
-  runtime: Pick<ProviderRuntime, 'env' | 'storage'>,
+  runtime: Pick<ProviderRuntime, 'providerContext' | 'storage'>,
 ): ProviderArtifactLocatorResult | null {
-  if (!runtime.env) {
+  if (runtime.providerContext.provider !== 'codex') {
     return null;
   }
   return locateCodexRolloutArtifact({
     threadId,
-    sessionsRoot: resolveCodexSessionsRoot(runtime.env),
+    sessionsRoot: join(runtime.providerContext.source.home, 'sessions'),
     storage: runtime.storage,
   });
 }
@@ -157,9 +150,14 @@ function safeReadDir(storage: CodexArtifactLocatorStorage, path: string) {
 }
 
 export const codexArtifactCapability = managed({
-  discardArtifacts: discardRecordedArtifacts,
-  locateArtifact: (conversationRef, runtime) => {
-    const result = locateCodexRolloutArtifactFromRuntime(conversationRef, runtime);
-    return result?.kind === 'match' ? result.artifact.handle : null;
+  discardArtifacts: ({ handles, runtime }) => discardRecordedArtifacts(handles, runtime),
+  locateArtifact: ({ conversationRef, source, runtime }) => {
+    if (source.provider !== 'codex') return null;
+    const result = locateCodexRolloutArtifact({
+      threadId: conversationRef,
+      sessionsRoot: join(source.home, 'sessions'),
+      storage: runtime.storage,
+    });
+    return result.kind === 'match' ? result.artifact.handle : null;
   },
 });
