@@ -35,7 +35,7 @@ import type { JobAbortRegistryPort } from '#src/jobs/contracts/abort-registry.js
 import { asReadonlyDatabase } from '#src/store/read-port.js';
 import type { TerminalOutcome } from '#src/jobs/outcome.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { createTestKbRuntime } from '#tests/fixtures/test-runtime.js';
@@ -103,7 +103,7 @@ function makeWorld(): ServiceWorld {
   // produces below. Source-import goes through the storage port now.
   runtime.storage.mkdirSync(runtimeDir, { recursive: true });
   runtime.storage.mkdirSync(markdownRoot, { recursive: true });
-  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
     db: jobsDb,
     providers: permissiveProviderLookupPort,
   });

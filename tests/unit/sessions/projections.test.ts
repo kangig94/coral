@@ -6,7 +6,7 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
@@ -55,11 +55,11 @@ function newHarness(): Harness {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
   const reducers = composeReducers(sessionsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
   return {
     db,
     commit: (inputs) =>
-      commitInputs(db, inputs, { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort }),
+      commitInputs(db, inputs, { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort }),
     close: () => db.close(),
   };
 }
@@ -210,9 +210,7 @@ describe('sessions projections', () => {
         () => h.commit([checkpointedInput(changed, { conversationRef: null, resumable: false })]),
         'provider_credential_source_mismatch',
       );
-      expect(readProjectionSessionEntry(h.db, opened.sessionId)?.sessionAuthority).toEqual(
-        opened.sessionAuthority,
-      );
+      expect(readProjectionSessionEntry(h.db, opened.sessionId)?.sessionAuthority).toEqual(opened.sessionAuthority);
     } finally {
       h.close();
     }

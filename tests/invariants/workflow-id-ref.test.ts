@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobLaunch } from '#src/jobs/records.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -83,7 +83,7 @@ describe('refs.workflowId producer invariant', () => {
   it('emits refs.workflowId on every launch.requested event whose lifetime belongs to a workflow', () => {
     const db = createDb();
     const runtime = new SimulationRuntime();
-    const store = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    const store = new JobStore('test-ns', runtime, createEventBodyCodec(), {
       db,
       providers: permissiveProviderLookupPort,
     });
@@ -146,7 +146,7 @@ describe('refs.workflowId producer invariant', () => {
   it('rejects empty launch refs before they reach the Journal', () => {
     const db = createDb();
     const runtime = new SimulationRuntime();
-    const store = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    const store = new JobStore('test-ns', runtime, createEventBodyCodec(), {
       db,
       providers: permissiveProviderLookupPort,
     });

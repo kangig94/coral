@@ -20,7 +20,7 @@ import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.j
 import { streamProviderEvents, streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -110,7 +110,7 @@ describe('pipe executor coral cascade invariant', () => {
       providerRegistry.register(toProviderSpec(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
         db: openTestStoreDb(runtime),
         eventBus,
         providers: permissiveProviderLookupPort,
@@ -237,10 +237,10 @@ describe('pipe executor coral cascade invariant', () => {
 
       const eventBus = new TypedEventBus();
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const db = openTestStoreDb(runtime);
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
-      const progressStore = new JobStore('test-ns', runtime, upcasters, {
+      const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
         eventBus,
         reducers,
@@ -255,6 +255,7 @@ describe('pipe executor coral cascade invariant', () => {
       const coordinatorCommit: CommitEventsFn = (cb) => progressStore.commit(cb);
       const reactor = createLifecycleReactor({
         db: () => db,
+        readCtx: { schemas: reducers.schemas, bodyCodec },
         providers: providerRegistry,
         runtime,
         time: runtime.time,

@@ -25,6 +25,9 @@ import {
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { composeReducers } from '#src/store/reducers.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -47,7 +50,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { PreflightRuntime, UsageSummary } from '#src/providers/contract.js';
 import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
@@ -87,7 +90,7 @@ type ProviderTurnResult = ProviderTerminalInput & {
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-wait-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-wait-test-tmp-${process.pid}`,
   getNewProvider: vi.fn(),
   resolveAgent: vi.fn(),
 }));
@@ -123,10 +126,11 @@ let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  return new JobStore(namespace, runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime),
     eventBus,
     providers: permissiveProviderLookupPort,
+    reducers: composeReducers(jobsRegistry, workflowRegistry),
   });
 }
 

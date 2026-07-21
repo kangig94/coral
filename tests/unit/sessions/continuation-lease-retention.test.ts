@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { managed } from '#src/providers/capability.js';
 import { defineProvider } from '#src/providers/define.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
@@ -8,14 +9,19 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { commit, type CommitEventsFn } from '#src/store/append.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 async function* noopProvider() {}
+
+const terminalCodecRegistry: DomainEventRegistry = {
+  streamKind: 'job',
+  entries: [defineDomainEvent({ type: 'job.terminal.recorded', schema: jobTerminalRecordedBodySchema })],
+};
 
 function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
   db.exec(`
@@ -89,14 +95,14 @@ function createHarness(): {
       )
       .build(),
   );
-  const reducers = composeReducers(sessionsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const reducers = composeReducers(terminalCodecRegistry, sessionsRegistry);
+  const bodyCodec = createEventBodyCodec();
   const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const appended = commit(db, cb, {
       now: () => new Date(runtime.time.now()),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     reactorRef.current?.observe(appended);
@@ -104,6 +110,7 @@ function createHarness(): {
   };
   const reactor = createLifecycleReactor({
     db: () => db,
+    readCtx: { schemas: reducers.schemas, bodyCodec },
     providers: providerRegistry,
     runtime,
     time: runtime.time,

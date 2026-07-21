@@ -9,9 +9,10 @@ import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
+import { ddlWithoutPersistedCodecAnnotations } from './format-fingerprint.js';
 import schemaSource from './schema.sql';
 
-// Signed 32-bit djb2-style hash of the bundled schema, stored as
+// Signed 32-bit djb2-style hash of the bundled executable DDL, stored as
 // `PRAGMA user_version` after schema application. Any meaningful edit to
 // `schema.sql` is overwhelmingly likely to produce a different marker on
 // disk (32-bit collisions are theoretically possible but irrelevant at
@@ -19,7 +20,9 @@ import schemaSource from './schema.sql';
 // single integer compare; the value itself has no meaning beyond "this DB
 // matches this build's schema". SQLite's `user_version` is a signed 32-bit
 // field — the hash is kept signed (no `>>> 0`) so the value round-trips
-// through the PRAGMA without truncation.
+// through the PRAGMA without truncation. B01's @persisted-codec annotations
+// are shadow metadata and are excluded until B09 replaces this marker with
+// the complete StoreFormatFingerprint.
 function schemaMarkerHash(input: string): number {
   let h = 5381;
   for (let i = 0; i < input.length; i++) {
@@ -27,7 +30,7 @@ function schemaMarkerHash(input: string): number {
   }
   return h;
 }
-const EXPECTED_SCHEMA_MARKER = schemaMarkerHash(schemaSource);
+const EXPECTED_SCHEMA_MARKER = schemaMarkerHash(ddlWithoutPersistedCodecAnnotations(schemaSource));
 
 /**
  * Result of a `Statement.run(...)` invocation.

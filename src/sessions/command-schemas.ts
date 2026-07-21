@@ -20,12 +20,14 @@ const providerNameSchema = z
   .string()
   .regex(providerIdentPattern, 'Provider name must be lowercase letters, digits, or hyphens');
 
-export const agentIdentSchema = z.preprocess(
-  (value) => (typeof value === 'string' && value.endsWith('.md') ? value.slice(0, -3) : value),
-  z
-    .string()
-    .regex(AGENT_IDENT_RE, 'Agent must be "<name>" or "<namespace>:<name>" (lowercase letters, digits, hyphens)'),
-);
+export const agentIdentSchema = z
+  .preprocess(
+    (value) => (typeof value === 'string' && value.endsWith('.md') ? value.slice(0, -3) : value),
+    z
+      .string()
+      .regex(AGENT_IDENT_RE, 'Agent must be "<name>" or "<namespace>:<name>" (lowercase letters, digits, hyphens)'),
+  )
+  .describe('strip-agent-markdown-extension');
 
 export const sessionCreateSchema = z
   .object({

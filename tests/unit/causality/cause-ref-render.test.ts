@@ -2,9 +2,8 @@ import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import type { SessionContinuityState, SessionProviderFailureReason } from '#src/sessions/fault.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
@@ -13,10 +12,6 @@ import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const NOW = new Date('2026-04-22T00:00:00.000Z');
-const RAW_EVENT_READ_CTX: StoreReadContext = {
-  schemas: new Map(),
-  upcasters: createDefaultUpcasterRegistry(),
-};
 const CONTINUITY_CASES = [
   ['verified', 'continuity verified'],
   ['missing', 'continuity missing'],
@@ -37,7 +32,7 @@ const PROVIDER_FAILURE_CASES = [
 function createStore(): { db: Database; store: CoralStore } {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
-  return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
+  return { db, store: new CoralStore(db, createDefaultStoreReadContext()) };
 }
 
 function insertEvent(
@@ -112,8 +107,8 @@ describe('cause-ref session rendering', () => {
     ).toBe(expected);
   });
 
-  it('falls back to continuity unavailable for unknown runtime continuity values', () => {
-    expect(
+  it('rejects continuity values outside the current persisted contract', () => {
+    expect(() =>
       renderRootEventDescription({
         type: 'session.interrupted',
         stream: { kind: 'session', id: 'session-unknown-continuity' },
@@ -122,7 +117,7 @@ describe('cause-ref session rendering', () => {
           continuity: 'mystery_state' as SessionContinuityState,
         },
       }),
-    ).toBe('App-server restarted during the turn; continuity unavailable.');
+    ).toThrow();
   });
 });
 

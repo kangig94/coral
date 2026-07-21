@@ -21,16 +21,24 @@ import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
-import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
+import { assertCurrentStoreFormat } from '../store/current-format.js';
+import { journalEventRefsSchema } from '../store/envelope.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
+import { jobDiagnosticsSchema, jobTerminalSchema } from '../jobs/terminal/result.js';
 import { sessionsRegistry } from '../sessions/events.js';
+import { sessionEntrySchema } from '../sessions/entry.js';
 import { discussRegistry } from '../discuss/event-registry.js';
+import { persistedDiscussSnapshotSchema } from '../discuss/projections.js';
 import { workflowRegistry } from '../workflow/events.js';
+import { workflowPlanSchema } from '../workflow/plan.js';
+import { declarativeEngineManifestSchema } from '../expansion/manifest/schema.js';
+import { corpusAuthorityBaselineDdl } from '../kb/corpus/rescan/authority-baseline.js';
 import { workflowRecover } from '../workflow/recover.js';
 import { resolveDrainDeadlineMs } from '../workflow/execution-constants.js';
 import { resolveStaleAbortTimeoutMs } from '../workflow/stale-recovery.js';
@@ -219,14 +227,27 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   }
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+  assertCurrentStoreFormat(
+    reducers,
+    {
+      eventRefs: journalEventRefsSchema,
+      jobTerminal: jobTerminalSchema,
+      jobDiagnostics: jobDiagnosticsSchema,
+      sessionEntry: sessionEntrySchema,
+      discussState: persistedDiscussSnapshotSchema,
+      workflowPlan: workflowPlanSchema,
+      expansionManifest: declarativeEngineManifestSchema,
+    },
+    [corpusAuthorityBaselineDdl],
+  );
   const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
   const eventBus = coreOptions.eventBus ?? new TypedEventBus();
   // Spec §7.1: every Journal event type can be a causeRef target. Verify
   // describer coverage at boot so missing describers fail loudly instead of
   // rendering causeRef chains as bare type names.
   assertDescriberCoverage(reducers.describerKeys);
-  const upcasters = createDefaultUpcasterRegistry();
-  const readCtx = { schemas: reducers.schemas, upcasters };
+  const bodyCodec = createEventBodyCodec();
+  const readCtx = { schemas: reducers.schemas, bodyCodec };
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const textProjectionHealth = createTextProjectionHealthTracker();
@@ -316,7 +337,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     if (core === null) {
       throw documentedCoralSetupError('startup_not_ready');
     }
-    const progressStore = new JobStore(core.identity.namespace, runtime, upcasters, {
+    const progressStore = new JobStore(core.identity.namespace, runtime, bodyCodec, {
       db: storeDb,
       eventBus,
       reducers,
@@ -346,7 +367,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     const appended = commitJournalEvents(db, cb, {
       now: () => nowDate(runtime.time),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: providerLookupPortFromCatalog(providerRegistry),
     });
     if (appended.length === 0) {
@@ -360,6 +381,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
   const lifecycleReactor = createLifecycleReactor({
     db: getQueryDb,
+    readCtx,
     providers: providerRegistry,
     runtime,
     time: runtime.time,

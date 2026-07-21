@@ -4,11 +4,13 @@ import { type z } from 'zod';
 import type { CoralEvent, CoralEventInput, StreamKind } from './envelope.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
+import type { StoreReadContext } from './body-codec.js';
 
 export type Reducer<T = unknown> = (db: Database, event: CoralEvent<T>) => void;
 export interface DomainAppendValidationContext {
   readonly db: Database;
   readonly providers: ProviderLookupPort;
+  readonly readCtx: StoreReadContext;
 }
 
 export type DomainAppendValidator = (ctx: DomainAppendValidationContext, inputs: readonly CoralEventInput[]) => void;

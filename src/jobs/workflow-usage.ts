@@ -44,19 +44,7 @@ export function aggregateWorkflowUsage(db: Database, workflowJobId: string): Usa
       continue;
     }
 
-    let decodedDiagnostics: unknown;
-    try {
-      decodedDiagnostics = JSON.parse(row.diagnostics);
-    } catch {
-      continue;
-    }
-
-    const parsedDiagnostics = jobDiagnosticsSchema.safeParse(decodedDiagnostics);
-    if (!parsedDiagnostics.success) {
-      continue;
-    }
-
-    const usage = parsedDiagnostics.data.usage;
+    const usage = jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)).usage;
     if (usage === undefined || !hasUsageValue(usage)) {
       continue;
     }

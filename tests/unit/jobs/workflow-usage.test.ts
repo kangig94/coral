@@ -10,7 +10,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
@@ -67,7 +67,7 @@ function commit(db: Database, inputs: readonly CoralEventInput[]) {
   return commitInputs(db, inputs, {
     now: () => new Date(createdAt),
     reducers: composeReducers(jobsRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   });
 }
@@ -268,20 +268,14 @@ describe('workflow usage aggregation', () => {
     }
   });
 
-  it('skips corrupt child diagnostics when aggregating workflow usage', () => {
+  it('rejects corrupt persisted child diagnostics instead of treating them as absent usage', () => {
     const db = createDb();
     try {
       const workflowJobId = 'workflow-usage-corrupt-child';
       seedWorkflowWithChildren(db, workflowJobId);
       db.prepare('UPDATE projection_jobs SET diagnostics = ? WHERE job_id = ?').run('{not-json', 'codex-child');
 
-      expect(aggregateWorkflowUsage(db, workflowJobId)).toEqual({
-        inputTokens: 100,
-        cacheReadTokens: 50,
-        cacheWriteTokens: 10,
-        outputTokens: 20,
-        costUsd: 0.25,
-      });
+      expect(() => aggregateWorkflowUsage(db, workflowJobId)).toThrow();
     } finally {
       db.close();
     }

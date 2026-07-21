@@ -12,11 +12,12 @@ import * as discussRecovery from './recovery.js';
 import type { RecoveredDiscussResume } from './recovery.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
-import { toJournalInput } from '../event-registry.js';
+import { discussRegistry, toJournalInput } from '../event-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../../store/event-body-codec.js';
+import { composeReducers } from '../../store/reducers.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
 
 type CreateDiscussRuntimeDeps = {
@@ -67,8 +68,8 @@ export function createDiscussRuntime({
 } {
   const discussStores = new Map<string, DiscussSessionStore>();
   const readCtx: StoreReadContext = {
-    schemas: new Map(),
-    upcasters: createDefaultUpcasterRegistry(),
+    schemas: composeReducers(discussRegistry).schemas,
+    bodyCodec: createEventBodyCodec(),
   };
 
   function snapshotBelongsToSource(snapshot: { projectRoot: string }, source: string): boolean {

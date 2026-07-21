@@ -4,7 +4,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
@@ -50,7 +50,7 @@ describe('sessions reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
         sessionId: 'session-artifact',
         provider: 'codex',
@@ -102,7 +102,7 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const row = db
@@ -141,7 +141,7 @@ describe('sessions reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
         sessionId: 'session-retention-discard',
         provider: 'codex',
@@ -188,7 +188,7 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const before = readProjectionSessionEntry(db, openedEntry.sessionId);
@@ -207,7 +207,7 @@ describe('sessions reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       expect(readProjectionSessionEntry(db, openedEntry.sessionId)?.retentionDiscard).toEqual(before?.retentionDiscard);
@@ -311,7 +311,7 @@ describe('sessions reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const retiredEntry = {
         sessionId: 'session-retired-opened',
         provider: 'claude',
@@ -343,14 +343,14 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       rebuildProjections({
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       expect(readProjectionSessionEntry(db, 'session-retired-opened')).toMatchObject({
@@ -369,7 +369,7 @@ describe('sessions reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const scopeKey = createHash('sha1').update('session-1').digest('hex').slice(0, 12);
       const openedEntry = sessionEntry({
         sessionId: 'session-1',
@@ -469,7 +469,7 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const v1OpenEvent = db
@@ -508,7 +508,7 @@ describe('sessions reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
@@ -531,7 +531,7 @@ describe('sessions reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const scopeKey = 'canonical-scope';
       const openedEntry = sessionEntry({
         sessionId: 'session-2',
@@ -576,7 +576,7 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const openedEvent = db
@@ -615,7 +615,7 @@ describe('sessions reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db

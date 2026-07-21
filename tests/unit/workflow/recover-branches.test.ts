@@ -8,7 +8,7 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { parseExpression } from '#src/workflow/parser.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import { buildWorkflowPlan, type WorkflowPlan } from '#src/workflow/plan.js';
@@ -93,7 +93,7 @@ function createHarness(options: {
   applyBundledStoreSchema(db);
 
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new JobStore(BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
   });

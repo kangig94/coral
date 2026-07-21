@@ -13,7 +13,7 @@ import {
   type PostCommitObserver,
 } from '../store/append.js';
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
-import type { UpcasterRegistry } from '../store/upcaster-registry.js';
+import type { EventBodyCodec } from '../store/event-body-codec.js';
 import { composeReducers, type ComposedReducers } from '../store/reducers.js';
 import { listJobProjections, loadJobProjectionDetail, readJobEvents } from './read-queries.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -98,14 +98,14 @@ export class JobStore implements JobProgressStore {
   private enqueueSequence = 0;
 
   public readonly schemas: ComposedReducers['schemas'];
-  public readonly upcasters: UpcasterRegistry;
+  public readonly bodyCodec: EventBodyCodec;
 
   private readonly namespace: string;
   private readonly runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>;
   constructor(
     namespace: string,
     runtime: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'>,
-    upcasters: UpcasterRegistry,
+    bodyCodec: EventBodyCodec,
     options: JobStoreOptions,
   ) {
     this.namespace = namespace;
@@ -115,13 +115,13 @@ export class JobStore implements JobProgressStore {
     this.eventBus = eventBus;
     this.observer = options.observer;
     this.schemas = reducers.schemas;
-    this.upcasters = upcasters;
+    this.bodyCodec = bodyCodec;
     this.db = db;
     this.commitEvents = (cb) =>
       commitJournalEvents(this.db, cb, {
         now: () => nowDate(this.runtime.time),
         reducers,
-        upcasters: this.upcasters,
+        bodyCodec: this.bodyCodec,
         providers: options.providers,
       });
   }

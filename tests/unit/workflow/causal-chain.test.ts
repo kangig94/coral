@@ -22,6 +22,7 @@ import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
@@ -34,7 +35,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
@@ -142,10 +143,7 @@ function setup(): {
   // Cursor-only base consumers; commit-time reducer writes projections.
   driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   driver.register({ id: 'workflow', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
-  const readCtx: StoreReadContext = {
-    schemas: new Map(),
-    upcasters: createDefaultUpcasterRegistry(),
-  };
+  const readCtx: StoreReadContext = createDefaultStoreReadContext();
   const store = new CoralStore(db, readCtx);
   return { db, driver, store };
 }
@@ -155,7 +153,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
     const result = commitInputs(db, events, {
       now: () => NOW,
       reducers: composeReducers(jobsRegistry, workflowRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
+      bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     });
     return result.at(-1)?.seq ?? 0;
@@ -259,7 +257,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
@@ -282,7 +280,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
@@ -310,7 +308,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;

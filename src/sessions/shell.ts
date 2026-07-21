@@ -11,7 +11,7 @@ import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime, IdPort } from '../runtime/ports.js';
 import { composeReducers } from '../store/reducers.js';
-import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { providerArtifactIdentityKey } from '../providers/artifact-identity.js';
 import {
   claimContinuationLeaseInputSchema,
@@ -267,13 +267,13 @@ function clearLease(
  */
 function createLocalSessionCommit(db: Database, time: TimePort): CommitEventsFn {
   const reducers = composeReducers(sessionsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
 
   return (cb) =>
     commitJournalEvents(db, cb, {
       now: () => nowDate(time),
       reducers,
-      upcasters,
+      bodyCodec,
       // Sessions domain has no append-time provider validators today
       // (validateWorkflowPlanValidity is workflow-only). Fail-closed baseline:
       // any future session validator that consults providers will reject

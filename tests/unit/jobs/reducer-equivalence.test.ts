@@ -5,7 +5,7 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
@@ -48,7 +48,7 @@ describe('jobs reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry, sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const appended = commitInputs(
         db,
@@ -132,7 +132,7 @@ describe('jobs reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -173,7 +173,7 @@ describe('jobs reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
@@ -198,7 +198,7 @@ describe('jobs reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry, sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const appended = commitInputs(
         db,
@@ -242,7 +242,7 @@ describe('jobs reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -277,7 +277,7 @@ describe('jobs reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
@@ -302,7 +302,7 @@ describe('jobs reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry, sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const appended = commitInputs(
         db,
@@ -350,7 +350,7 @@ describe('jobs reducer equivalence', () => {
             body: { reason: 'user_abort' },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -385,7 +385,7 @@ describe('jobs reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db

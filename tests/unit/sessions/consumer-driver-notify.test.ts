@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -59,12 +59,12 @@ describe('sessions consumer-driver notify', () => {
     });
 
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const upcasters = createDefaultUpcasterRegistry();
+    const bodyCodec = createEventBodyCodec();
     const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
       const appended = commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
       if (appended.length > 0) {

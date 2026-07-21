@@ -31,7 +31,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -72,7 +72,7 @@ export interface BootedCore {
 function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: string): CoordinatorStoreServices {
   return {
     storeDb: db,
-    progressStore: new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    progressStore: new JobStore(namespace, runtime, createEventBodyCodec(), {
       db,
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,

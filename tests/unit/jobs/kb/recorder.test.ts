@@ -5,7 +5,7 @@ import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 function createRecorder(): {
@@ -16,7 +16,7 @@ function createRecorder(): {
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db);
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
   });
@@ -95,7 +95,7 @@ describe('KbJobRecorder.startInternalJob', () => {
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db);
     const runtime = new SimulationRuntime();
-    const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
       db,
       providers: permissiveProviderLookupPort,
     });

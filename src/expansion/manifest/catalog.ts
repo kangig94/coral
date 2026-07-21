@@ -1,9 +1,8 @@
 import type { Database, Statement } from '../../store/db.js';
 import type { ReadonlyDatabase } from '../../store/read-port.js';
-import { serializeCoralSetupError } from '../../runtime/errors.js';
 import { BUNDLED_ENGINES } from '../bundled.js';
 import type { EngineManifest } from '../contract.js';
-import { parseEngineManifest } from './schema.js';
+import { parseDeclarativeEngineManifest } from './schema.js';
 
 type ManifestCatalogReadDb = Pick<ReadonlyDatabase, 'prepare'>;
 type ManifestCatalogWriteDb = Pick<Database, 'prepare'>;
@@ -31,7 +30,7 @@ function optionalArray<T>(values: readonly T[] | undefined): readonly T[] | unde
 }
 
 function toDeclarativeManifest(manifest: EngineManifest): EngineManifest {
-  return parseEngineManifest({
+  return parseDeclarativeEngineManifest({
     id: manifest.id,
     version: manifest.version,
     specifier: manifest.specifier,
@@ -45,33 +44,16 @@ function toDeclarativeManifest(manifest: EngineManifest): EngineManifest {
 
 function parsePersistedManifest(row: ManifestCatalogRow): EngineManifest {
   try {
-    return parseEngineManifest(JSON.parse(row.manifest_json) as unknown);
+    return parseDeclarativeEngineManifest(JSON.parse(row.manifest_json) as unknown);
   } catch (error) {
     throw new Error(`Invalid expansion manifest catalog row '${row.id}'`, { cause: error });
   }
 }
 
-function isCatalogTableUnavailable(error: unknown): boolean {
-  return error instanceof Error && /no such table:\s*expansion_manifest_catalog/i.test(error.message);
-}
-
 function readRows(db: ManifestCatalogReadDb): ManifestCatalogRow[] {
-  try {
-    return db
-      .prepare<
-        [],
-        ManifestCatalogRow
-      >('SELECT id, manifest_json, updated_at FROM expansion_manifest_catalog ORDER BY id')
-      .all();
-  } catch (error) {
-    if (serializeCoralSetupError(error) !== null) {
-      throw error;
-    }
-    if (isCatalogTableUnavailable(error)) {
-      return [];
-    }
-    throw error;
-  }
+  return db
+    .prepare<[], ManifestCatalogRow>('SELECT id, manifest_json, updated_at FROM expansion_manifest_catalog ORDER BY id')
+    .all();
 }
 
 export class ExpansionManifestCatalog {

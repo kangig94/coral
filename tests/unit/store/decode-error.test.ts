@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { StoreDecodeError } from '#src/store/body-codec.js';
+import { decodeEventBody, StoreDecodeError } from '#src/store/body-codec.js';
 import { rowToCoralEvent } from '#src/store/envelope.js';
 import type { EventsRow } from '#src/store/schema.js';
 
@@ -34,7 +34,16 @@ function thrownBy(run: () => unknown): unknown {
 
 describe('store decode errors', () => {
   it('wraps corrupt body JSON with the offending seq and raw body', () => {
-    const error = thrownBy(() => rowToCoralEvent(eventRow({ body: Buffer.from('{"truncated"', 'utf-8') })));
+    const row = eventRow({ body: Buffer.from('{"truncated"', 'utf-8') });
+    const error = thrownBy(() =>
+      decodeEventBody(row.body, {
+        seq: row.seq,
+        type: row.type,
+        streamKind: row.stream_kind,
+        streamId: row.stream_id,
+        bodyVersion: row.body_version,
+      }),
+    );
 
     expect(error).toBeInstanceOf(StoreDecodeError);
     expect(error).toMatchObject({

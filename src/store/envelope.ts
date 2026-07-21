@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 import { CoralSetupError } from '../runtime/errors.js';
-import { decodeEventBody, decodeEventJson } from './body-codec.js';
+import { decodeEventJson } from './body-codec.js';
 import type { EventsRow } from './schema.js';
 import type { CauseRefToken } from '../causality/cause-ref.js';
 
 declare const RESOLVABLE_INPUT_SCOPE: unique symbol;
 
-const journalEventRefsSchema = z
+export const journalEventRefsSchema = z
   .object({
     jobId: z.string().optional(),
     sessionId: z.string().optional(),
@@ -34,7 +34,7 @@ export const journalEventEnvelopeSchema = z
     correlationId: z.string().optional(),
     causationSeq: z.number().optional(),
     refs: journalEventRefsSchema.optional(),
-    bodyVersion: z.number().int().positive(),
+    bodyVersion: z.number().int().min(1).max(1),
     body: z.unknown(),
   })
   .strict();
@@ -96,24 +96,15 @@ function assertStreamKind(value: string): StreamKind {
   return value as StreamKind;
 }
 
-function decodeEventRefs(row: Pick<EventsRow, 'seq' | 'refs'>): CoralEvent['refs'] {
+export function decodeEventRefs(row: Pick<EventsRow, 'seq' | 'refs'>): CoralEvent['refs'] {
   if (!row.refs) {
     return undefined;
   }
 
-  return decodeEventJson(row.refs, { seq: row.seq, column: 'refs' }) as CoralEvent['refs'];
+  return journalEventRefsSchema.parse(decodeEventJson(row.refs, { seq: row.seq, column: 'refs' }));
 }
 
-export function rowToCoralEvent<T = unknown>(
-  row: EventsRow,
-  body: T = decodeEventBody(row.body, {
-    seq: row.seq,
-    type: row.type,
-    streamKind: row.stream_kind,
-    streamId: row.stream_id,
-    bodyVersion: row.body_version,
-  }) as T,
-): CoralEvent<T> {
+export function rowToCoralEvent<T = unknown>(row: EventsRow, body: T): CoralEvent<T> {
   return {
     seq: row.seq,
     ts: row.ts,

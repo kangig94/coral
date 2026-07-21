@@ -6,7 +6,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { JobLaunchRequestBody } from '#src/jobs/launch.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -23,7 +23,7 @@ function appendJobEvents(db: Database, inputs: readonly CoralEventInput[]) {
   return commitInputs(db, inputs, {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   });
 }

@@ -16,7 +16,7 @@ export type ExpansionArgs = z.infer<typeof expansionArgsSchema>;
 
 const INVALID_USAGE_REMEDIATION = "Retry with valid expansion command arguments or run 'coral-cli expansion --help'.";
 const UNKNOWN_ERROR_REMEDIATION = 'Retry with --verbose or check the coordinator logs.';
-const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
+const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file/i;
 
 function nextCause(error: unknown): unknown {
   if (error instanceof Error) {

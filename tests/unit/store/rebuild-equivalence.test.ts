@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';
@@ -18,7 +18,7 @@ describe('rebuildProjections replay identity', () => {
       applyBundledStoreSchema(db);
       applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const ids = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
       const inputs = Array.from({ length: 1000 }, (_, i) => ({
@@ -31,7 +31,7 @@ describe('rebuildProjections replay identity', () => {
       commitInputs(db, inputs, {
         now: () => new Date(0),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
 
@@ -42,7 +42,7 @@ describe('rebuildProjections replay identity', () => {
         db,
         cutoffSeq: 1000,
         reducers,
-        upcasters,
+        bodyCodec,
         extraProjectionTables: ['projection_test_counter'],
       });
 
@@ -65,8 +65,11 @@ describe('rebuildProjections replay identity', () => {
     const db = newRawDatabase(':memory:');
     try {
       applyBundledStoreSchema(db);
-      const reducers = composeReducers();
-      const upcasters = createDefaultUpcasterRegistry();
+      const reducers = composeReducers({
+        streamKind: 'job',
+        entries: [defineDomainEvent({ type: 'test.invalid-stream-kind', schema: z.object({}).strict() })],
+      });
+      const bodyCodec = createEventBodyCodec();
 
       db.prepare(
         `UPDATE kb_corpus_state
@@ -77,7 +80,7 @@ describe('rebuildProjections replay identity', () => {
                 metadata_manifest_hash = ?`,
       ).run('snapshot-before-rebuild', 5, 6, 'content-hash-before', 'metadata-hash-before');
 
-      rebuildProjections({ db, cutoffSeq: 0, reducers, upcasters });
+      rebuildProjections({ db, cutoffSeq: 0, reducers, bodyCodec });
 
       const corpusState = db
         .prepare(
@@ -141,8 +144,11 @@ describe('rebuildProjections replay identity', () => {
          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', 1, Buffer.from('{}'));
 
-      const reducers = composeReducers();
-      const upcasters = createDefaultUpcasterRegistry();
+      const reducers = composeReducers({
+        streamKind: 'job',
+        entries: [defineDomainEvent({ type: 'test.invalid-stream-kind', schema: z.object({}).strict() })],
+      });
+      const bodyCodec = createEventBodyCodec();
 
       let thrown: unknown;
       try {
@@ -150,7 +156,7 @@ describe('rebuildProjections replay identity', () => {
           db,
           cutoffSeq: 1,
           reducers,
-          upcasters,
+          bodyCodec,
         });
       } catch (error) {
         thrown = error;
@@ -158,6 +164,90 @@ describe('rebuildProjections replay identity', () => {
 
       expect(thrown).toBeInstanceOf(CoralSetupError);
       expect((thrown as CoralSetupError).code).toBe('event_stream_kind_invalid');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects a stored event body version outside the current codec during rebuild', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      applyTestCounterSchema(db);
+      const reducers = composeReducers(testCounterRegistry);
+      const bodyCodec = createEventBodyCodec();
+      commitInputs(
+        db,
+        [
+          {
+            type: 'test.counter.ticked',
+            stream: { kind: 'job', id: 'job-version' },
+            bodyVersion: 1,
+            body: { id: 'version', delta: 1 },
+          },
+        ],
+        {
+          now: () => new Date(0),
+          reducers,
+          bodyCodec,
+          providers: permissiveProviderLookupPort,
+        },
+      );
+      db.prepare('UPDATE events SET body_version = 2 WHERE seq = 1').run();
+
+      expect(() =>
+        rebuildProjections({
+          db,
+          cutoffSeq: 1,
+          reducers,
+          bodyCodec,
+          extraProjectionTables: ['projection_test_counter'],
+        }),
+      ).toThrow("Stored event type 'test.counter.ticked' has body_version 2; the current codec accepts only 1");
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rolls back projection rebuild when a registered stored body violates the current codec', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db);
+      applyTestCounterSchema(db);
+      const reducers = composeReducers(testCounterRegistry);
+      const bodyCodec = createEventBodyCodec();
+      commitInputs(
+        db,
+        [
+          {
+            type: 'test.counter.ticked',
+            stream: { kind: 'job', id: 'job-invalid-body' },
+            bodyVersion: 1,
+            body: { id: 'preserved', delta: 3 },
+          },
+        ],
+        {
+          now: () => new Date(0),
+          reducers,
+          bodyCodec,
+          providers: permissiveProviderLookupPort,
+        },
+      );
+      const before = db.prepare('SELECT * FROM projection_test_counter').all();
+      db.prepare('UPDATE events SET body = ? WHERE seq = 1').run(
+        Buffer.from(JSON.stringify({ id: 'preserved', delta: 'bad' })),
+      );
+
+      expect(() =>
+        rebuildProjections({
+          db,
+          cutoffSeq: 1,
+          reducers,
+          bodyCodec,
+          extraProjectionTables: ['projection_test_counter'],
+        }),
+      ).toThrow("Current codec rejected stored event type 'test.counter.ticked'");
+      expect(db.prepare('SELECT * FROM projection_test_counter').all()).toEqual(before);
     } finally {
       db.close();
     }

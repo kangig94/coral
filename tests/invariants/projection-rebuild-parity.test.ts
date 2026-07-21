@@ -21,7 +21,7 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { discussRegistry, toJournalInput } from '#src/discuss/event-registry.js';
@@ -127,7 +127,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       // Workflow plan + drain + completion (3 events).
       const plan = buildWorkflowPlan('workflow-parity', parseExpression('architect -> resolver'), {
@@ -255,7 +255,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
       const appended = commitInputs(db, inputs, {
         now: () => NOW,
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
       expect(appended.length).toBe(inputs.length);
@@ -270,7 +270,7 @@ describe('Phase 7: rebuildProjections parity for all 4 base journal consumers', 
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = snapshotProjections(db);

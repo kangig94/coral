@@ -6,6 +6,7 @@ import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderDefinition } from '../providers/define.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { StoreReadContext } from '../store/body-codec.js';
 import { collectArtifactHandles } from './artifact-discard.js';
 import { sessionContinuationLeaseExpiredEvent } from './continuation-lease-events.js';
 import { archiveProviderArtifactsForJob } from './provider-artifact-archive.js';
@@ -36,6 +37,7 @@ import {
 
 export type LifecycleReactorOptions = {
   readonly db: () => ReadonlyDatabase;
+  readonly readCtx: StoreReadContext;
   readonly providers: {
     get(name: string): ProviderDefinition | undefined;
   };
@@ -120,7 +122,7 @@ export class LifecycleReactor {
       this.rescheduleContinuationLeaseTimer();
     }
     this.enqueueWork(
-      readSessionRetentionWorkForSessionIds(this.options.db(), [...sessionIds], {
+      readSessionRetentionWorkForSessionIds(this.options.db(), this.options.readCtx, [...sessionIds], {
         nowMs: this.options.time.now(),
       }),
     );
@@ -132,12 +134,12 @@ export class LifecycleReactor {
     const expiredSessionIds = this.expireOverdueContinuationLeases();
     this.rescheduleContinuationLeaseTimer();
     this.enqueueWork(
-      readSessionRetentionWorkForSessionIds(db, expiredSessionIds, {
+      readSessionRetentionWorkForSessionIds(db, this.options.readCtx, expiredSessionIds, {
         nowMs: this.options.time.now(),
       }),
     );
     this.enqueueWork(
-      readSessionRetentionWorkForEntries(db, listProjectionSessionEntries(db), {
+      readSessionRetentionWorkForEntries(db, this.options.readCtx, listProjectionSessionEntries(db), {
         nowMs: this.options.time.now(),
       }),
     );
@@ -190,7 +192,7 @@ export class LifecycleReactor {
 
   async enforceRetention(work: SessionRetentionWork): Promise<void> {
     const { jobId, sessionId } = work;
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
+    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
       return;
     }
 
@@ -216,7 +218,7 @@ export class LifecycleReactor {
 
     const recordedHandles = collectArtifactHandles(entry, provider, this.options.runtime, { jobId });
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
-    const attempt = readNextRetentionDiscardAttempt(this.options.db(), sessionId, attemptFloor);
+    const attempt = readNextRetentionDiscardAttempt(this.options.db(), this.options.readCtx, sessionId, attemptFloor);
 
     try {
       const requested = appendRetentionDiscardRequested(this.options.commitEvents, {
@@ -236,7 +238,7 @@ export class LifecycleReactor {
       return;
     }
 
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
+    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
       return;
     }
 
@@ -433,7 +435,7 @@ export class LifecycleReactor {
       if (pairs.length === 0) {
         return;
       }
-      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), pairs, {
+      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), this.options.readCtx, pairs, {
         nowMs: this.options.time.now(),
       });
 
@@ -550,7 +552,7 @@ export class LifecycleReactor {
         this.rescheduleContinuationLeaseTimer();
         if (expiredSessionIds.length > 0) {
           this.enqueueWork(
-            readSessionRetentionWorkForSessionIds(this.options.db(), expiredSessionIds, {
+            readSessionRetentionWorkForSessionIds(this.options.db(), this.options.readCtx, expiredSessionIds, {
               nowMs: this.options.time.now(),
             }),
           );

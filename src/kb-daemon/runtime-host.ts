@@ -22,7 +22,7 @@ import type { KbDaemonKbReadHealth } from './protocol.js';
 import type { AppendedEvent } from '../store/append.js';
 import { JobStore } from '../jobs/store.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
-import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import {
   KbSourceImportService,
@@ -309,7 +309,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
-      const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
+      const progressStore = new JobStore(backendNamespace, runtime, createEventBodyCodec(), {
         db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
         providers: noProviderLookupPort,
         observer: (appended) => options.onJournalEvents?.(appended),

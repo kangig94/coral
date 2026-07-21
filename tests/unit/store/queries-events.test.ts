@@ -4,13 +4,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
-import type { StoreReadContext } from '#src/store/body-codec.js';
+import { decodeBody, type StoreReadContext } from '#src/store/body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { z } from 'zod';
+import type { EventsRow } from '#src/store/schema.js';
 describe('events queries', () => {
   let db: Database;
   let appended: ReturnType<typeof commitInputs>;
@@ -81,12 +83,12 @@ describe('events queries', () => {
     appended = commitInputs(db, inputs, {
       now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
       reducers: composeReducers(testCounterRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
+      bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     });
     readCtx = {
       schemas: composeReducers(testCounterRegistry).schemas,
-      upcasters: createDefaultUpcasterRegistry(),
+      bodyCodec: createEventBodyCodec(),
     };
   });
 
@@ -155,5 +157,42 @@ describe('events queries', () => {
   it('looks up a single event by stream and seq or returns undefined', () => {
     expect(getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toEqual(appended[0]);
     expect(getEvent(db, { kind: 'session', id: 'session-1' }, 99, readCtx)).toBeUndefined();
+  });
+
+  it('rejects a stored event type outside the current codec registry', () => {
+    db.prepare(
+      `INSERT INTO events (
+         seq, ts, type, stream_kind, stream_id, body_version, body
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(7, '2026-04-18T00:00:01.000Z', 'test.unknown', 'job', 'job-unknown', 1, Buffer.from('{}'));
+
+    expect(() => getEvent(db, { kind: 'job', id: 'job-unknown' }, 7, readCtx)).toThrow(
+      "No registered event body codec for stored type 'test.unknown'",
+    );
+  });
+
+  it('rejects a stored event body version outside the current codec', () => {
+    db.prepare('UPDATE events SET body_version = 2 WHERE seq = 1').run();
+
+    expect(() => getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toThrow(
+      "Stored event type 'test.counter.ticked' has body_version 2; the current codec accepts only 1",
+    );
+  });
+
+  it('rejects a registered stored event body that violates the current codec', () => {
+    db.prepare('UPDATE events SET body = ? WHERE seq = 1').run(Buffer.from(JSON.stringify({ id: 'x', delta: 'bad' })));
+
+    expect(() => getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toThrow(
+      "Current codec rejected stored event type 'test.counter.ticked'",
+    );
+  });
+
+  it('rejects a read schema that differs from the registered current codec', () => {
+    const row = db.prepare<[], EventsRow>('SELECT * FROM events WHERE seq = 1').get();
+    if (row === undefined) throw new Error('Expected seeded event row.');
+
+    expect(() => decodeBody(row, z.object({}).passthrough(), readCtx)).toThrow(
+      "Read schema for stored event type 'test.counter.ticked' is not its registered current codec",
+    );
   });
 });

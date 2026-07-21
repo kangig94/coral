@@ -7,7 +7,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { ProviderLookupPort } from '#src/providers/catalog.js';
 import { CoralAppendError } from '#src/store/append-error.js';
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
@@ -33,7 +33,7 @@ function ctx(knownProviders: readonly string[] = ['codex']): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry, workflowRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: providers(knownProviders),
   };
 }

@@ -7,7 +7,7 @@ import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defa
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 const NOW = new Date('2026-04-19T00:00:00.000Z');
@@ -117,7 +117,7 @@ describe('jobs projection rebuild (live ConsumerDriver, cursor-only base consume
         {
           now: () => NOW,
           reducers: composeReducers(jobsRegistry),
-          upcasters: createDefaultUpcasterRegistry(),
+          bodyCodec: createEventBodyCodec(),
           providers: permissiveProviderLookupPort,
         },
       );

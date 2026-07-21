@@ -1,5 +1,8 @@
 import { CoralSetupError } from '../runtime/errors.js';
 import type { CoralEventInput } from '../store/envelope.js';
+import { rowToCoralEvent } from '../store/envelope.js';
+import { decodeStoredBody } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
 import {
   sessionAdapterUnparseableBodySchema,
@@ -72,29 +75,8 @@ type RetentionDiscardAttemptState = {
   terminal: RetentionDiscardKind | null;
 };
 
-type ExistingRetentionDiscardRow = {
-  readonly seq: number;
-  readonly type: string;
-  readonly stream_id: string;
-  readonly session_id: string | null;
-  readonly attempt: number | null;
-};
-
 function retentionDiscardKey(sessionId: string, attempt: number): string {
   return `${sessionId}\u0000${attempt}`;
-}
-
-function retentionDiscardKindForType(type: string): RetentionDiscardKind | null {
-  switch (type) {
-    case 'session.retention.discard.requested':
-      return 'requested';
-    case 'session.retention.discard.completed':
-      return 'completed';
-    case 'session.retention.discard.failed':
-      return 'failed';
-    default:
-      return null;
-  }
 }
 
 function retentionDiscardAttemptState(
@@ -208,12 +190,8 @@ function readExistingRetentionDiscardState(
 
   const placeholders = sessionIds.map(() => '?').join(', ');
   const rows = ctx.db
-    .prepare(
-      `SELECT seq,
-              type,
-              stream_id,
-              json_extract(CAST(body AS TEXT), '$.sessionId') AS session_id,
-              json_extract(CAST(body AS TEXT), '$.attempt') AS attempt
+    .prepare<unknown[], EventsRow>(
+      `SELECT *
          FROM events
         WHERE stream_kind = 'session'
           AND type IN (
@@ -224,21 +202,18 @@ function readExistingRetentionDiscardState(
           AND stream_id IN (${placeholders})
         ORDER BY seq ASC`,
     )
-    .all(...sessionIds) as ExistingRetentionDiscardRow[];
+    .all(...sessionIds);
 
   for (const row of rows) {
-    const kind = retentionDiscardKindForType(row.type);
-    const sessionId = row.session_id ?? row.stream_id;
-    if (kind === null || row.attempt === null || !Number.isInteger(row.attempt)) {
-      continue;
-    }
+    const event = parseRetentionDiscardInput(rowToCoralEvent(row, decodeStoredBody(row, ctx.readCtx)));
+    if (event === null) throw new Error(`Unexpected retention discard event type '${row.type}'.`);
 
-    const key = retentionDiscardKey(sessionId, row.attempt);
+    const key = retentionDiscardKey(event.sessionId, event.attempt);
     const current = retentionDiscardAttemptState(state, key);
-    if (kind === 'requested') {
+    if (event.kind === 'requested') {
       current.requested = true;
     } else {
-      current.terminal = kind;
+      current.terminal = event.kind;
     }
     state.set(key, current);
   }

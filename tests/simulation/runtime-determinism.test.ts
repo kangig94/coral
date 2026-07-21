@@ -6,7 +6,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openStoreDatabase, type Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
@@ -109,7 +109,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
   const db = openMemoryDatabase(runtime);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
   const streamIds = Array.from({ length: 3 }, () => runtime.ids.uuid());
   const counterIds = Array.from({ length: 5 }, () => runtime.ids.uuid());
 
@@ -124,7 +124,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
       const appended = commitInputs(db, [input], {
         now: () => new Date(runtime.time.now()),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
 
@@ -166,7 +166,7 @@ async function runPlannedSequence(runtime: Pick<Runtime, 'storage'>, plan: Seque
   const db = openMemoryDatabase(runtime);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
 
   try {
     applyTestCounterSchema(db);
@@ -179,7 +179,7 @@ async function runPlannedSequence(runtime: Pick<Runtime, 'storage'>, plan: Seque
       const appended = commitInputs(db, [{ ...input, tsOverride: ts }], {
         now: () => new Date(0),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
 

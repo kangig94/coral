@@ -18,7 +18,7 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { workflowRegistry, workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { parseExpression } from '#src/workflow/parser.js';
@@ -312,7 +312,7 @@ function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
 }
 
 function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobStore {
-  return new JobStore(TEST_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
+  return new JobStore(TEST_NAMESPACE, runtime, createEventBodyCodec(), {
     db,
     reducers: composeReducers(jobsRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
@@ -575,7 +575,7 @@ describe('journal commit atomicity invariant', () => {
     const db = createDb();
     try {
       const runtime = new SimulationRuntime();
-      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
         db,
         providers: permissiveProviderLookupPort,
       });

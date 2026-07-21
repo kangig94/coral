@@ -11,7 +11,7 @@ import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -266,7 +266,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const { modules, runtime, pluginRoot, projectRoot } = options;
   const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
   const eventBus = new modules.eventBusModule.TypedEventBus();
-  const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime, ':memory:'),
     eventBus,
     providers: permissiveProviderLookupPort,

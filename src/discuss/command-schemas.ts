@@ -34,7 +34,8 @@ const DiscussAgentsSchema = z
   .min(2)
   .refine((agents) => agents.some((agent) => (agent.participation ?? 'required') === 'required'), {
     message: 'At least one required agent is needed to run a discussion.',
-  });
+  })
+  .describe('require-discussion-participating-agent');
 
 export const discussStartSchema = z.object({
   topic: z.string().min(1),

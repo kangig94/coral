@@ -114,7 +114,7 @@ Runtime middleware and recovery declare related app-server behavior independentl
 
 Interrupted recovery validates binding, issues callback authority, builds execution context, probes or falls back to artifacts, performs effects, and durably finalizes inside one service. It is a second partial implementation of provider preparation.
 
-### Store compatibility has several incomplete authorities
+### Store format identity has several incomplete authorities
 
 DDL hashing cannot see incompatible TypeScript/Zod persistence changes. Local `version: 1` fields do not select decoders. Event and projection versions coexist with an empty migration story. `meta.journal_version` is not read. None alone describes the actual reset boundary.
 
@@ -295,10 +295,7 @@ The provider registry exposes one type-erased closure boundary:
 interface ProviderDefinition<Selection, Profile, Subject, Prepared> {
   capture(input: unknown): Selection;
   canonicalize(selection: Selection): Promise<Profile>;
-  bind(profile: Profile): Promise<
-    | ProviderBinding<Profile, Subject>
-    | ProfileBinding<Profile>
-  >;
+  bind(profile: Profile): Promise<ProviderBinding<Profile, Subject> | ProfileBinding<Profile>>;
   rehydrate(envelope: ProviderBindingEnvelope): BoundProvider;
 }
 ```
@@ -461,7 +458,7 @@ The final target adds a secure per-thread or per-turn capability channel to the 
 Until that channel is implemented and verified, Codex app-server declares:
 
 ```ts
-leaseMode: 'job-exclusive'
+leaseMode: 'job-exclusive';
 ```
 
 It must not claim shared reuse while a per-job credential participates in `hostKeyFromSpec`. This intermediate state is semantically honest and preserves isolation.
@@ -478,10 +475,7 @@ interface AppServerCapability {
 
   acquire(plan: AppServerHostPlan): Promise<AppServerSession>;
 
-  attach(
-    host: HostRef,
-    session: RecoveredSessionPlan,
-  ): Promise<AppServerSession>;
+  attach(host: HostRef, session: RecoveredSessionPlan): Promise<AppServerSession>;
 }
 
 interface AppServerSession {
@@ -639,7 +633,7 @@ Normal launch and recovery both begin with `BoundProvider`; recovery does not ma
 
 ## Complete store-format fingerprint
 
-### Compatibility authority
+### Store-format authority
 
 Build one canonical manifest from every serialization contract stored in the Coral database:
 
@@ -657,9 +651,9 @@ StoreFormatFingerprint = SHA-256(canonical({
 }))
 ```
 
-Persisted codecs register declaratively with stable names and canonical schema representations. A build step emits or verifies the canonical manifest. Registration order must not affect the fingerprint.
+Persisted codecs register declaratively with stable names and canonical schema representations. Coordinator composition verifies that the canonical manifest can be assembled. Registration order must not affect the fingerprint.
 
-Startup compares the build fingerprint with the stored marker. A mismatch follows Coral's existing destructive policy: quarantine/remove the incompatible SQL store and create it from current codecs. No legacy layout migration is introduced.
+Startup compares the build fingerprint with the stored marker. A missing or different marker follows Coral's existing destructive policy: quarantine/remove the incompatible SQL store and create it from current codecs. It is never adopted in place, and no old layout is read or translated.
 
 ### Version removal rule
 
@@ -669,7 +663,6 @@ After the complete fingerprint is active and tested, remove database-local marke
 - unused provider-source key and its crypto dependency;
 - event `bodyVersion` fields used only as inert guards;
 - projection `schemaVersion` fields used only as inert guards;
-- an empty upcaster registry;
 - unread `meta.journal_version`.
 
 Retain a version or digest only when the payload is independently serialized outside the fingerprint and the value has operational meaning. Examples may include archive/quarantine manifests, native provider artifacts, or payloads consumed independently by another process/version.
@@ -702,20 +695,20 @@ Execution and app-server lifecycle
 
 Recovery and adoption
   B07 -> B08 bound-provider recovery pipeline
-      -> B09 compatibility cleanup and destructive adoption
+      -> B09 superseded-surface cleanup and destructive adoption
 ```
 
-| Order | Batch job | Depends on | Primary output | Semantic change |
-|---:|---|---|---|---|
-| 1 | B01 — complete store-fingerprint foundation | current main | canonical persisted-codec registry and fingerprint | no |
-| 2 | B02 — provider contracts and registry | B01 | provider-owned codecs and one type-erasure boundary | no |
-| 3 | B03 — explicit scope and verified binding | B02 | caller/system scope and durable verified binding | yes |
-| 4 | B04 — aggregate correction | B03 | real provider sessions and independent execution ownership | yes |
-| 5 | B05 — `BoundProvider` execution cutover | B04 | one bound execution surface | internal behavior-preserving cutover |
-| 6 | B06 — lifetime-scoped execution plans | B05 | host/session/turn plans and lifetime-safe environments | internal behavior correction |
-| 7 | B07 — unified app-server and Codex turn capability | B06 | explicit app-server sessions, host references, real Codex sharing | yes |
-| 8 | B08 — bound-provider recovery pipeline | B07 | `plan -> perform -> finalize` recovery | behavior-preserving except corrected failure handling |
-| 9 | B09 — compatibility cleanup and destructive adoption | B08 | one compatibility authority and no superseded surfaces | one intentional store reset |
+| Order | Batch job                                           | Depends on   | Primary output                                                    | Semantic change                                       |
+| ----: | --------------------------------------------------- | ------------ | ----------------------------------------------------------------- | ----------------------------------------------------- |
+|     1 | B01 — complete store-fingerprint foundation         | current main | canonical persisted-codec registry and fingerprint                | fail-closed current-codec correction                  |
+|     2 | B02 — provider contracts and registry               | B01          | provider-owned codecs and one type-erasure boundary               | no                                                    |
+|     3 | B03 — explicit scope and verified binding           | B02          | caller/system scope and durable verified binding                  | yes                                                   |
+|     4 | B04 — aggregate correction                          | B03          | real provider sessions and independent execution ownership        | yes                                                   |
+|     5 | B05 — `BoundProvider` execution cutover             | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
+|     6 | B06 — lifetime-scoped execution plans               | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
+|     7 | B07 — unified app-server and Codex turn capability  | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
+|     8 | B08 — bound-provider recovery pipeline              | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
+|     9 | B09 — superseded-surface cleanup and adoption reset | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
 
 ### Batch execution contract
 
@@ -728,13 +721,22 @@ Every batch job must produce:
 - no disabled tests, placeholder branches, or TODO compatibility behavior needed by the following batch;
 - a clean typecheck, lint, and relevant test suite at its exit gate.
 
-Temporary dual-read persistence, legacy-layout migration, and feature flags for the old model are prohibited. Intermediate development and test stores may be recreated as persisted shapes change; B09 activates the final fingerprint and performs the single adoption reset for the finished implementation.
+Temporary dual-read persistence, legacy-layout migration, fallback decoders, compatibility adapters, aliases for the old model, and feature flags for the old model are prohibited. There is no backward-compatible execution path in any batch, and no batch may preserve an old representation by reading, translating, or rewriting it. Intermediate development and test stores are destroyed and recreated whenever persisted shapes change; B09 activates the final fingerprint and performs the single adoption reset for the finished implementation.
+
+### Agent review verdict rule
+
+Fresh-context agent review separates structural approval from implementation detail:
+
+- `REVISE` is reserved for a structural defect: wrong ownership, violated domain invariant, unsafe lifetime, incomplete persistence boundary, an impossible dependency order, or any legacy/backward-compatibility path.
+- Naming, local extraction, test ergonomics, diagnostics wording, small API shape improvements, and similar implementation details are recorded and improved but do not block architectural approval.
+- A detail finding becomes blocking only when the reviewer demonstrates that it violates one of the structural conditions above.
+- Review output must state one architecture verdict (`APPROVE` or `REVISE`) separately from its non-blocking detail findings.
 
 ### B01 — Complete store-fingerprint foundation
 
 **Purpose**
 
-Create the compatibility authority before changing persisted account, session, workflow, or recovery shapes.
+Create the complete store-format identity before changing persisted account, session, workflow, or recovery shapes.
 
 **Work package**
 
@@ -743,14 +745,19 @@ Create the compatibility authority before changing persisted account, session, w
 - Generate `StoreFormatFingerprint` from the canonical manifest.
 - Make registration order irrelevant and reject duplicate stable names.
 - Add a shadow startup assertion that the canonical fingerprint can be produced, but do not replace the active DDL-only reset marker until B09 knows the final persisted shape.
-- Keep existing event/projection/local markers until B09; they remain compatibility guards during construction, not the selected final authority.
+- Existing event/projection/local markers and the unused `kb_corpus_authority_baseline` table are construction-only debris scheduled for unconditional removal in B09. They never select an old decoder, migration, translation, or fallback path.
+- Remove the executable upcaster surface now. Journal append, read, and projection rebuild fail closed when an event type has no registered current body schema; there is no raw-body route.
+- Require a stable semantic identity for every persisted `ZodEffects` and `ZodCatch`, so transforms and catches participate in the fingerprint instead of disappearing behind their input schema.
+- Make every SQL JSON boundary declare its codec annotation on the column definition; an unannotated JSON declaration or an annotation on a non-JSON declaration fails format assembly.
 
 **Verification**
 
 - Changing a registered JSON codec changes the fingerprint without editing SQL.
 - Reordering codec registration does not change it.
 - An unregistered persisted codec fails an architecture or manifest-coverage test.
-- A pure reset-decision/integration fixture proves that a fingerprint mismatch can drive the existing quarantine/recreate behavior when activated.
+- A pure reset-decision unit test covers missing/current/mismatch classification in B01.
+- B09 adds the quarantine/recreate integration fixture when it activates the fingerprint marker.
+- Automated annotation/registry parity is paired with an audited source inventory of SQL JSON serialization call sites.
 
 **Exit gate**
 
@@ -954,19 +961,19 @@ Make interrupted recovery re-enter the same durable binding and preparation stor
 
 Normal and recovered execution both start from `BoundProvider`, and only the coordinator finalizer mutates Coral durable state.
 
-### B09 — Compatibility cleanup and destructive adoption
+### B09 — Superseded-surface cleanup and destructive adoption
 
 **Purpose**
 
-Remove every superseded compatibility and execution surface after the final persisted contract is known.
+Remove every superseded old-model and execution surface after the final persisted contract is known.
 
 **Work package**
 
 - Register and verify all final provider-binding, session, workflow, discussion, execution-owner, app-server-runtime, and recovery codecs.
 - Freeze the final canonical manifest and fingerprint coverage tests.
 - Atomically replace the startup DDL-only marker with `StoreFormatFingerprint` and route mismatch through the existing quarantine/recreate path.
-- Remove provider bundle/source `version: 1`, unused provider-source key machinery, unread journal epoch, inert event/projection versions, and empty upcasters.
-- Remove remaining credential/source terminology, compatibility aliases, dead central unions, duplicate runtime helpers, and recovery-only preparation code.
+- Remove provider bundle/source `version: 1`, unused provider-source key machinery, unread journal epoch, inert event/projection versions, and the unused `kb_corpus_authority_baseline` table.
+- Remove remaining credential/source terminology, obsolete aliases, dead central unions, duplicate runtime helpers, and recovery-only preparation code.
 - Verify that every retained version selects a real decoder outside the database fingerprint boundary.
 - Trigger and document the one expected destructive store reset for adoption.
 - Remove these temporary design/review documents before the final product commit, as required by the implementation workflow.
@@ -980,7 +987,7 @@ Remove every superseded compatibility and execution surface after the final pers
 
 **Exit gate**
 
-One compatibility authority, one provider binding vocabulary, one provider execution path, and one app-server/recovery lifecycle remain.
+One store-format authority, one provider binding vocabulary, one provider execution path, and one app-server/recovery lifecycle remain.
 
 ## Required invariants and tests
 
@@ -1075,18 +1082,18 @@ The completed architecture has one domain sentence:
 
 The resulting ownership is:
 
-| Concern | Owner |
-|---|---|
-| Permission to invoke Coral | `Principal` and Coral security |
-| Origin of provider choices | transport/configured `ProviderScope` |
-| Credential routing and provider identity | provider module and `ProviderBinding` |
-| Provider preparation, execution, recovery interpretation, artifacts | `BoundProvider` |
-| Process/session/turn placement | provider `ProviderExecutionPlan` |
-| Live and recovered app-server lifecycle | provider `AppServerCapability` and `AppServerSession` |
-| Workflow/discussion lifecycle and future provider choices | workflow/discussion aggregate |
-| Provider conversation continuity | `ProviderSession` |
-| Generic work ownership | `ExecutionOwner` |
-| Journal, CAS, admission, terminal, durable finalization | coordinator |
-| Store readability | complete `StoreFormatFingerprint` |
+| Concern                                                             | Owner                                                 |
+| ------------------------------------------------------------------- | ----------------------------------------------------- |
+| Permission to invoke Coral                                          | `Principal` and Coral security                        |
+| Origin of provider choices                                          | transport/configured `ProviderScope`                  |
+| Credential routing and provider identity                            | provider module and `ProviderBinding`                 |
+| Provider preparation, execution, recovery interpretation, artifacts | `BoundProvider`                                       |
+| Process/session/turn placement                                      | provider `ProviderExecutionPlan`                      |
+| Live and recovered app-server lifecycle                             | provider `AppServerCapability` and `AppServerSession` |
+| Workflow/discussion lifecycle and future provider choices           | workflow/discussion aggregate                         |
+| Provider conversation continuity                                    | `ProviderSession`                                     |
+| Generic work ownership                                              | `ExecutionOwner`                                      |
+| Journal, CAS, admission, terminal, durable finalization             | coordinator                                           |
+| Store readability                                                   | complete `StoreFormatFingerprint`                     |
 
 This preserves Coral's elegant core while giving provider multi-account execution the domain model it did not previously have.

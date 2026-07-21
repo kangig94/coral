@@ -3,7 +3,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
@@ -36,7 +36,7 @@ describe('commitInputs bulk', () => {
         {
           now: () => new Date(0),
           reducers: composeReducers(testCounterRegistry),
-          upcasters: createDefaultUpcasterRegistry(),
+          bodyCodec: createEventBodyCodec(),
           providers: permissiveProviderLookupPort,
         },
       );
@@ -95,7 +95,7 @@ describe('commitInputs bulk', () => {
           {
             now: () => new Date(0),
             reducers: composeReducers(throwingRegistry),
-            upcasters: createDefaultUpcasterRegistry(),
+            bodyCodec: createEventBodyCodec(),
             providers: permissiveProviderLookupPort,
           },
         ),

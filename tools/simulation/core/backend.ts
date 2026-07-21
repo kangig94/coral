@@ -43,7 +43,7 @@ import { ExecutionService } from '../../../src/coordinator/execution-service.js'
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openWritableStoreDbNoReset } from '../../../src/store/db.js';
-import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
@@ -390,7 +390,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
   const storeDb = openWritableStoreDbNoReset(runtime, { path: ':memory:' });
-  const progressStore = new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),

@@ -17,7 +17,7 @@ import type { TranscriptEntry } from './session-types.js';
 import { discussStateSchema } from './session-types.js';
 import { providerCredentialSetSchema } from '../runtime/provider-credentials.js';
 
-const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot> = z
+export const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot> = z
   .object({
     schemaVersion: z.literal(3),
     providerCredentials: providerCredentialSetSchema,

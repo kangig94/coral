@@ -35,7 +35,7 @@ import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/appe
 import { decodeEventBody } from '#src/store/body-codec.js';
 import type { Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { ArtifactCleanupRuntime, DiscardOutcome } from '#src/providers/contract.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -113,14 +113,14 @@ function createHarness(
   );
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
   const logs: string[] = [];
   const appendedBatches: AppendedEvent[][] = [];
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const appended = commit(db, cb, {
       now: () => new Date(runtime.time.now()),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     appendedBatches.push(appended);
@@ -132,13 +132,14 @@ function createHarness(
   };
   const reactor = createLifecycleReactor({
     db: () => db,
+    readCtx: { schemas: reducers.schemas, bodyCodec },
     providers: providerRegistry,
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
     log: (message) => logs.push(message),
   });
-  const progressStore = new JobStore(namespace, runtime, upcasters, {
+  const progressStore = new JobStore(namespace, runtime, bodyCodec, {
     db,
     eventBus: new TypedEventBus(),
     reducers,

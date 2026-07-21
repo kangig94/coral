@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { describeTerminalOutcome, type TerminalOutcome } from '#src/jobs/outcome.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
@@ -14,7 +14,7 @@ const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const RAW_EVENT_READ_CTX: StoreReadContext = {
   schemas: new Map(),
-  upcasters: createDefaultUpcasterRegistry(),
+  bodyCodec: createEventBodyCodec(),
 };
 
 function createStore(): { db: Database; store: CoralStore } {

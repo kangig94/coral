@@ -19,7 +19,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -81,13 +81,13 @@ describe('sessions shell store', () => {
 
     const db = openSessionDb();
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const upcasters = createDefaultUpcasterRegistry();
+    const bodyCodec = createEventBodyCodec();
     const appendedBatches: AppendedEvent[][] = [];
     const coordinatorCommit: CommitEventsFn = (cb) => {
       const appended = commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
       appendedBatches.push(appended);

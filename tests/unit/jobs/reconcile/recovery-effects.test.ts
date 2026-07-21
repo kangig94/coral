@@ -7,7 +7,7 @@ import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
@@ -25,7 +25,7 @@ function createProgressStore(db: Database): JobStore {
     {
       time: { now: () => NOW.getTime() },
     } as never,
-    createDefaultUpcasterRegistry(),
+    createEventBodyCodec(),
     { db, providers: permissiveProviderLookupPort },
   );
 }

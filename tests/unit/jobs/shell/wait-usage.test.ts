@@ -7,7 +7,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { readJobEvents } from '#src/jobs/read-queries.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
@@ -100,7 +100,7 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
     {
       now: () => new Date('2026-04-19T00:00:00.000Z'),
       reducers: composeReducers(jobsRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
+      bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     },
   );

@@ -17,9 +17,9 @@ CREATE TABLE IF NOT EXISTS events (
   project        TEXT,
   correlation_id TEXT,
   causation_seq  INTEGER,                            -- FK to events(seq), loose
-  refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... }
+  refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... } @persisted-codec store.events.refs
   body_version   INTEGER NOT NULL DEFAULT 1,         -- per-type schema version
-  body           BLOB    NOT NULL                    -- JSON payload
+  body           BLOB    NOT NULL                    -- JSON payload @persisted-codec store.events.body
 );
 CREATE INDEX IF NOT EXISTS events_stream ON events(stream_kind, stream_id, seq);
 CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
@@ -33,8 +33,8 @@ CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.pa
 CREATE TABLE IF NOT EXISTS projection_jobs (
   job_id                  TEXT PRIMARY KEY,
   phase                   TEXT NOT NULL,
-  terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
-  diagnostics             TEXT,
+  terminal                TEXT,            -- JSON { outcome, durationMs } or NULL @persisted-codec store.projection_jobs.terminal
+  diagnostics             TEXT,            -- JSON @persisted-codec store.projection_jobs.diagnostics
   session_id              TEXT,
   provider                TEXT,
   project_root            TEXT NOT NULL,
@@ -57,19 +57,19 @@ CREATE TABLE IF NOT EXISTS projection_sessions (
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
   scope_key        TEXT NOT NULL,
-  entry            TEXT NOT NULL,
+  entry            TEXT NOT NULL,          -- JSON @persisted-codec store.projection_sessions.entry
   last_seq         INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS projection_discuss (
   discuss_id TEXT PRIMARY KEY,
-  state      TEXT NOT NULL,        -- JSON (reducer output)
+  state      TEXT NOT NULL,        -- JSON (reducer output) @persisted-codec store.projection_discuss.state
   last_seq   INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
-  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] }
+  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] } @persisted-codec store.projection_workflows.plan
                                    -- labels are derived at render time from `slot.agent`;
                                    -- workflowId is event.stream.id, not stored in body.
   last_seq    INTEGER NOT NULL
@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (
   observed_content_hash      TEXT,
   locus                      TEXT,
   canonical_incident         TEXT,
-  signals_json               TEXT,
+  signals_json               TEXT,            -- JSON @persisted-codec store.kb_curate_retry_queue.signals
   repair_hint                TEXT,
   retry_not_before           TEXT NOT NULL,
   retry_count                INTEGER NOT NULL DEFAULT 0
@@ -250,6 +250,6 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
 
 CREATE TABLE IF NOT EXISTS expansion_manifest_catalog (
   id            TEXT PRIMARY KEY,
-  manifest_json TEXT NOT NULL,
+  manifest_json TEXT NOT NULL, -- JSON @persisted-codec store.expansion_manifest_catalog.manifest
   updated_at    TEXT NOT NULL
 );

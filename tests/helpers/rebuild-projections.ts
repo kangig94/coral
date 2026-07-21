@@ -1,16 +1,16 @@
 import { withImmediate, type Database } from '../../src/store/db.js';
 
-import { decodeEventBody } from '#src/store/body-codec.js';
+import { decodeStoredBody } from '#src/store/body-codec.js';
 import { type ComposedReducers, applyReducer } from '#src/store/reducers.js';
 import { rowToCoralEvent } from '#src/store/envelope.js';
-import type { UpcasterRegistry } from '#src/store/upcaster-registry.js';
+import type { EventBodyCodec } from '#src/store/event-body-codec.js';
 import type { EventsRow } from '#src/store/schema.js';
 
 export interface RebuildOptions {
   readonly db: Database;
   readonly cutoffSeq: number;
   readonly reducers: ComposedReducers;
-  readonly upcasters: UpcasterRegistry;
+  readonly bodyCodec: EventBodyCodec;
   readonly extraProjectionTables?: readonly string[];
   readonly batchSize?: number; // default 1000
 }
@@ -25,6 +25,7 @@ const JOURNAL_PROJECTION_TABLES = [
 export function rebuildProjections(opts: RebuildOptions): void {
   const tables = [...JOURNAL_PROJECTION_TABLES, ...(opts.extraProjectionTables ?? [])];
   const batchSize = opts.batchSize ?? 1000;
+  const readCtx = { schemas: opts.reducers.schemas, bodyCodec: opts.bodyCodec };
 
   withImmediate(opts.db, () => {
     for (const table of tables) {
@@ -41,10 +42,7 @@ export function rebuildProjections(opts: RebuildOptions): void {
       if (rows.length === 0) break;
 
       for (const row of rows) {
-        const rawBody = decodeEventBody(row.body);
-        const schema = opts.reducers.schemas.get(row.type);
-        const parsedBody = schema ? opts.upcasters.parseBody(row.type, row.body_version, rawBody, schema) : rawBody;
-
+        const parsedBody = decodeStoredBody(row, readCtx);
         applyReducer(opts.db, rowToCoralEvent(row, parsedBody), opts.reducers);
       }
 

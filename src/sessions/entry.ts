@@ -38,7 +38,8 @@ const providerArtifactHandleSchema = z
       identity,
       identityKey: artifact.identityKey ?? providerArtifactIdentityKey(artifact.provider, identity),
     };
-  });
+  })
+  .describe('derive-provider-artifact-identity-key');
 
 export type ProviderArtifactHandle = z.infer<typeof providerArtifactHandleSchema>;
 
@@ -179,7 +180,8 @@ const sessionControllerProfileSchema = z
     ...(profile.owner !== undefined ? { owner: profile.owner } : {}),
     ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
     ...(profile.claudeModelCap !== undefined ? { claudeModelCap: profile.claudeModelCap } : {}),
-  }));
+  }))
+  .describe('select-session-controller-profile-fields');
 
 export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
 

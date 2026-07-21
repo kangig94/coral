@@ -9,8 +9,11 @@ const absolutePathSchema = z
   .string()
   .min(1)
   .refine((value) => !value.includes('\0'), 'Path must not contain NUL')
+  .describe('reject-nul-in-provider-credential-path')
   .refine((value) => isAbsolute(value), 'Path must be absolute')
-  .transform((value) => normalize(value));
+  .describe('require-absolute-provider-credential-path')
+  .transform((value) => normalize(value))
+  .describe('normalize-provider-credential-path');
 
 const codexHomeInputSchema = z.object({ kind: z.literal('home'), home: absolutePathSchema }).strict();
 const claudeConfigDirInputSchema = z.object({ kind: z.literal('config-dir'), configDir: absolutePathSchema }).strict();
@@ -62,7 +65,8 @@ export const providerCredentialSourceRefSchema = z
   .union([codexCredentialSourceSchema, claudeConfigDirCredentialSourceSchema, claudeAmbientCredentialSourceSchema])
   .superRefine((source, ctx) => {
     if (source.provider === 'claude') validateClaudeProjectsRoot(source, ctx);
-  });
+  })
+  .describe('require-derived-claude-projects-root-for-source');
 export type ProviderCredentialSourceRef = z.infer<typeof providerCredentialSourceRefSchema>;
 
 export const providerCredentialSetSchema = z
@@ -72,7 +76,8 @@ export const providerCredentialSetSchema = z
     claude: z.discriminatedUnion('kind', [claudeConfigDirCredentialSourceSchema, claudeAmbientCredentialSourceSchema]),
   })
   .strict()
-  .superRefine((credentials, ctx) => validateClaudeProjectsRoot(credentials.claude, ctx));
+  .superRefine((credentials, ctx) => validateClaudeProjectsRoot(credentials.claude, ctx))
+  .describe('require-derived-claude-projects-root-for-set');
 export type ProviderCredentialSet = z.infer<typeof providerCredentialSetSchema>;
 
 export interface AmbientClaudeLocationPort {

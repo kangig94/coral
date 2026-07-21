@@ -5,7 +5,7 @@ import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '../../helpers/prov
 
 import { decodeEventBody } from '#src/store/body-codec.js';
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -31,7 +31,7 @@ function ctx(): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   };
 }

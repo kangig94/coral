@@ -7,7 +7,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../../store/read-port.js';
 
-const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
+const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file/i;
 
 function isCatalogUnavailableError(error: unknown): boolean {
   if (serializeCoralSetupError(error) !== null) {

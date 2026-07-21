@@ -79,7 +79,7 @@ export type CoralStoreOptions = {
 
 export class CoralStore implements StoreReadContext {
   public readonly schemas: StoreReadContext['schemas'];
-  public readonly upcasters: StoreReadContext['upcasters'];
+  public readonly bodyCodec: StoreReadContext['bodyCodec'];
   private readonly runtime?: CoralStoreRuntime;
   private readonly namespace?: string;
   private readonly projectRoot?: string;
@@ -120,7 +120,7 @@ export class CoralStore implements StoreReadContext {
   constructor(db: Database, readCtx: StoreReadContext, options: CoralStoreOptions = {}) {
     this.db = db;
     this.schemas = readCtx.schemas;
-    this.upcasters = readCtx.upcasters;
+    this.bodyCodec = readCtx.bodyCodec;
     this.runtime = options.runtime;
     this.namespace = options.namespace;
     this.projectRoot = options.projectRoot;

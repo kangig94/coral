@@ -27,7 +27,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { JobStore } from '#src/jobs/store.js';
 import { commitJobInputs } from '#tests/helpers/job-commits.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -205,16 +205,11 @@ export function createDiscussHarness(
   const runtime = resolvedOptions.runtime ?? new SimulationRuntime();
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
-  const progressStore = new JobStore(
-    resolveBackendNamespace(runtime, pluginRoot),
-    runtime,
-    createDefaultUpcasterRegistry(),
-    {
-      db: openTestStoreDb(runtime, ':memory:'),
-      reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
-      providers: permissiveProviderLookupPort,
-    },
-  );
+  const progressStore = new JobStore(resolveBackendNamespace(runtime, pluginRoot), runtime, createEventBodyCodec(), {
+    db: openTestStoreDb(runtime, ':memory:'),
+    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
+    providers: permissiveProviderLookupPort,
+  });
   const source = resolvedOptions.source ?? runtime.paths.projectSource(projectRoot);
   const resolveProjectSource = resolvedOptions.source
     ? () => resolvedOptions.source as string

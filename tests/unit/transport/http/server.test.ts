@@ -30,7 +30,7 @@ import { JobStore } from '#src/jobs/store.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -139,7 +139,7 @@ function createProgressStore(
   namespace = 'test-ns',
   runtimeArg: Pick<Runtime, 'storage' | 'paths' | 'time' | 'env'> = runtime,
 ): JobStore {
-  return new JobStore(namespace, runtimeArg, createDefaultUpcasterRegistry(), {
+  return new JobStore(namespace, runtimeArg, createEventBodyCodec(), {
     db: openTestStoreDb(runtimeArg),
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,

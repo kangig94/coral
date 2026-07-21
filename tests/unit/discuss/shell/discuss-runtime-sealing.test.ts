@@ -9,7 +9,7 @@ import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discus
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
 import { nowIsoString } from '#src/infra/time.js';
@@ -129,12 +129,10 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   const source = runtime.paths.projectSource(projectRoot);
-  const progressStore = new JobStore(
-    resolveBackendNamespace(runtime, pluginRoot),
-    runtime,
-    createDefaultUpcasterRegistry(),
-    { db: openTestStoreDb(runtime, ':memory:'), providers: permissiveProviderLookupPort },
-  );
+  const progressStore = new JobStore(resolveBackendNamespace(runtime, pluginRoot), runtime, createEventBodyCodec(), {
+    db: openTestStoreDb(runtime, ':memory:'),
+    providers: permissiveProviderLookupPort,
+  });
   const store = new DiscussSessionStore(source, {
     journal: createInMemoryDiscussJournal(),
   });

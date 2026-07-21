@@ -3,7 +3,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -26,7 +26,7 @@ function ctx(): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(sessionsRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   };
 }

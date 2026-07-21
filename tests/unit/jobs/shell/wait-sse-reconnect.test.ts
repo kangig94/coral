@@ -11,7 +11,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { readJobEvents, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
@@ -39,13 +39,13 @@ function createDb(): Database {
 
 function createJournalAppender(db: Database) {
   const reducers = composeReducers(jobsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
 
   return (inputs: Parameters<typeof commitInputs>[1]) => {
     const appended = commitInputs(db, inputs, {
       now: () => new Date('2026-04-19T00:00:00.000Z'),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     publishJobEvents(appended);
@@ -59,7 +59,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore('wait-sse-ns', runtime, createEventBodyCodec(), {
       db,
       eventBus,
       providers: permissiveProviderLookupPort,
@@ -251,7 +251,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore('wait-race-ns', runtime, createEventBodyCodec(), {
       db,
       eventBus,
       providers: permissiveProviderLookupPort,

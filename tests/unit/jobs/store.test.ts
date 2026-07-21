@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus, JobTerminal } from '#src/jobs/records.js';
@@ -57,7 +57,7 @@ function createStore(db: Database = createDb()): {
   const runtime = new SimulationRuntime();
   return {
     runtime,
-    store: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    store: new JobStore('test-ns', runtime, createEventBodyCodec(), {
       eventBus: new TypedEventBus(),
       db,
       providers: permissiveProviderLookupPort,

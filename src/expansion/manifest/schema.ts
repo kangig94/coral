@@ -42,23 +42,31 @@ const manifestProvidesSchema = z
         message: 'capability_namespace_reserved',
       });
     }
-  });
+  })
+  .describe('reject-reserved-kb-capability-namespace');
 
-export const engineManifestSchema = z
+export const declarativeEngineManifestSchema = z
   .object({
     id: z.string().min(1),
     version: z.string().min(1),
     specifier: z.string().min(1),
     tier: z.enum(['bundled', 'installed']),
     description: z.string().min(1),
-    // EngineInstaller carries runtime functions and host-specific state, so
-    // manifest validation only verifies the declarative catalog fields.
-    installer: z.any().optional(),
     onboarding: z.array(onboardingStepSchema).optional(),
     fills: z.array(kbCapabilityNameSchema).optional(),
     provides: manifestProvidesSchema.optional(),
   })
   .strict();
+
+export const engineManifestSchema = declarativeEngineManifestSchema.extend({
+  // EngineInstaller carries runtime functions and host-specific state and is
+  // deliberately absent from the persisted catalog codec above.
+  installer: z.any().optional(),
+});
+
+export function parseDeclarativeEngineManifest(input: unknown): EngineManifest {
+  return declarativeEngineManifestSchema.parse(input);
+}
 
 export function parseEngineManifest(input: unknown): EngineManifest {
   return engineManifestSchema.parse(input);

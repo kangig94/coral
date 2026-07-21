@@ -24,7 +24,7 @@ describe('journalEventEnvelopeSchema', () => {
         workflowSlotId: 'slot-7',
         discussSessionId: 'discuss-1',
       },
-      bodyVersion: 2,
+      bodyVersion: 1,
       body: {
         status: 'ok',
       },
@@ -50,7 +50,7 @@ describe('journalEventEnvelopeSchema', () => {
         workflowSlotId: 'slot-7',
         discussSessionId: 'discuss-1',
       },
-      bodyVersion: 2,
+      bodyVersion: 1,
       body: {
         status: 'ok',
       },
@@ -89,6 +89,19 @@ describe('journalEventEnvelopeSchema', () => {
       type: 'job.created',
       stream: { kind: 'job', id: 'job-1' },
       bodyVersion: -1,
+      body: {},
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects bodyVersion values other than the current representation', () => {
+    const parsed = journalEventEnvelopeSchema.safeParse({
+      seq: 1,
+      ts: '2026-04-18T00:00:00.000Z',
+      type: 'job.created',
+      stream: { kind: 'job', id: 'job-1' },
+      bodyVersion: 2,
       body: {},
     });
 

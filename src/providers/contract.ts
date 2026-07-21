@@ -289,7 +289,8 @@ export const providerTerminalEventBodySchema = z
         message: 'non-failed provider terminals must not carry failureCause',
       });
     }
-  });
+  })
+  .describe('couple-provider-terminal-failure-cause');
 
 export type ProviderContinuityUpdate = {
   conversationRef?: string | null;

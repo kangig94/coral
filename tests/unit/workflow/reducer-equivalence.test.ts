@@ -2,7 +2,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -26,7 +26,7 @@ describe('workflow reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
@@ -48,7 +48,7 @@ describe('workflow reducer equivalence', () => {
             stepDetails: [],
           }),
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -70,7 +70,7 @@ describe('workflow reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
@@ -93,7 +93,7 @@ describe('workflow reducer equivalence', () => {
     try {
       applyBundledStoreSchema(db);
       const reducers = composeReducers(jobsRegistry, workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
       });
@@ -160,10 +160,10 @@ describe('workflow reducer equivalence', () => {
           },
           workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] }),
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
-      expect(readWorkflowView(db, 'workflow-1', { schemas: reducers.schemas, upcasters })).toMatchObject({
+      expect(readWorkflowView(db, 'workflow-1', { schemas: reducers.schemas, bodyCodec })).toMatchObject({
         workflowId: 'workflow-1',
         outcome: 'failed',
         causeRef,

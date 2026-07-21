@@ -8,7 +8,7 @@ import type { StoreReadContext } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { listJobs, loadJobProjectionDetail, loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
@@ -21,10 +21,10 @@ describe('jobs queries', () => {
     applyBundledStoreSchema(db);
 
     const reducers = composeReducers(jobsRegistry);
-    const upcasters = createDefaultUpcasterRegistry();
+    const bodyCodec = createEventBodyCodec();
     readCtx = {
       schemas: reducers.schemas,
-      upcasters,
+      bodyCodec,
     };
 
     const inputs: CoralEventInput[] = [
@@ -218,7 +218,7 @@ describe('jobs queries', () => {
     commitInputs(db, inputs, {
       now: () => new Date('2026-04-20T00:03:00.000Z'),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
   });
