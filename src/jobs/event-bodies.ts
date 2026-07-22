@@ -45,7 +45,7 @@ const appServerRuntimeStartedBodySchema = z
         provider: z.string().min(1),
         leaseState: z.enum(['waiting', 'acquired']),
         serverGeneration: z.number().int().nonnegative().optional(),
-        claudeTransport: z.string().min(1).optional(),
+        transportMode: z.string().min(1).optional(),
       })
       .strict(),
   })

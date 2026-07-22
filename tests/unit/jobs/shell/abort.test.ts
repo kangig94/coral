@@ -43,7 +43,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { PreflightRuntime } from '#src/providers/contract.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -141,7 +141,7 @@ function createService(
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
   const providerRegistry = new ProviderRegistry();
   const provider = resolveProvider('codex');
   if (provider !== undefined) providerRegistry.register(provider);
@@ -318,7 +318,7 @@ function makeProvider(options?: {
   ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
+  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
@@ -331,7 +331,7 @@ function makeProvider(options?: {
     execute: execute as unknown as Provider['execute'],
     ...(preflight ? { preflight } : {}),
   };
-  return { provider: toProviderSpec(provider)!, execute, preflight };
+  return { provider: toProviderDefinition(provider)!, execute, preflight };
 }
 
 function _makeCodexAppServerProvider(): Provider {

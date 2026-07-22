@@ -78,6 +78,7 @@ export type RuntimeExecOptions = {
   env?: Record<string, string>;
   maxBuffer?: number;
   inheritEnv?: boolean;
+  shell?: boolean;
 };
 
 export type ExecResult = {

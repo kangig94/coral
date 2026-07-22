@@ -1,6 +1,5 @@
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { ProviderDefinition } from '../providers/registry.js';
-import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
+import type { BoundProvider } from '../providers/bound-provider-contract.js';
 import type { ProviderSession } from './entry.js';
 
 /**
@@ -13,8 +12,7 @@ import type { ProviderSession } from './entry.js';
  */
 export function collectArtifactHandles(
   entry: ProviderSession,
-  provider: ProviderDefinition,
-  source: ProviderCredentialSourceRef,
+  bound: BoundProvider,
   runtime: ArtifactCleanupRuntime,
   opts: { jobId?: string } = {},
 ): string[] {
@@ -24,12 +22,11 @@ export function collectArtifactHandles(
   if (
     handles.length === 0 &&
     entry.conversationRef !== undefined &&
-    provider.artifacts.kind === 'managed' &&
-    provider.artifacts.locateArtifact !== undefined
+    bound.artifacts.kind === 'managed' &&
+    bound.artifacts.locateArtifact !== undefined
   ) {
-    const located = provider.artifacts.locateArtifact({
+    const located = bound.artifacts.locateArtifact({
       conversationRef: entry.conversationRef,
-      source,
       runtime,
     });
     if (located !== null) {

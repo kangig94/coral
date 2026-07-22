@@ -16,6 +16,7 @@ import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { providerRequestFailed } from '../fault.js';
 import { errorMessage } from '../../infra/error-format.js';
 import type { ProviderTerminalEventBody } from '../contract.js';
+import type { ClaudeExecutionContext } from './execution-context.js';
 
 type ClaudeContinuityState = ClaudePersistedContinuity & {
   resumable: boolean;
@@ -26,11 +27,10 @@ const claudeAppServerContract = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
   buildServerSpec(request, _persistedContinuity, ports, providerContext) {
-    if (providerContext.provider !== 'claude') throw new Error('Claude provider context required.');
     return buildClaudeProviderServerSpec(request, ports.storage, providerContext.brokerEnv);
   },
   interrupt: mapClaudeInterrupt,
-} satisfies AppServerContract;
+} satisfies AppServerContract<ClaudeExecutionContext>;
 
 const claudeBrokerContinuity = createClaudeContinuityContract(inferBrokerResumable, isClaudeBrokerSessionUnavailable);
 
@@ -40,7 +40,7 @@ const claudeSessionProvider = compose(
   claudeSessionKernel,
 );
 
-const claude: Provider = (request, runtime) => {
+const claude: Provider<ClaudeExecutionContext> = (request, runtime) => {
   const startedAt = runtime.time.now();
   const prepared = buildPreparedClaudeRequest(request);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);

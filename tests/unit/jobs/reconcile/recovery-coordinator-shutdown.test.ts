@@ -16,7 +16,6 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -186,8 +185,11 @@ function createRuntimeStateMock() {
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: vi.fn() })),
-    validateProviderRecoveryAuthority: vi.fn(() => true),
-    providerCredentialSourceForRecovery: vi.fn(() => TEST_CODEX_SOURCE),
+    captureProviderRecoveryAuthority: vi.fn((launchRecord: JobLaunch) => ({
+      launchRecord,
+      session: { sessionId: launchRecord.sessionId },
+      boundProvider: { name: launchRecord.provider },
+    })),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
@@ -348,7 +350,6 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       identity,
       runtime,
       progressStore,
-      providerRegistry,
       getRecoveryService,
       createInvocationContext,
       recoveryCoordinator,
@@ -360,7 +361,6 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         bundleHash: identity.bundleHash,
         runtime,
         progressStore,
-        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         signal,

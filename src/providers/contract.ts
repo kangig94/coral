@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ExecResult, IdPort, Runtime } from '../runtime/ports.js';
+import type { JsonValue } from '../infra/json-value.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
@@ -16,13 +17,15 @@ import { sessionProviderFailureDiagnosticSchema } from '../sessions/fault.js';
 import type {
   AppServerNotificationMessage,
   AppServerSubscriptionPhase,
+  ProviderCliRequest,
   ProviderCliRunner,
   ProviderTransportClose,
 } from './protocol.js';
-import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';
+/** Provider-private account authority represented as canonical snapshot-safe data. */
+export type ProviderSource = JsonValue;
 
 export const providerInstructionSchema = z
   .object({
@@ -89,6 +92,10 @@ export interface ProviderServerSpec {
     method: string;
     timeoutMs: number;
   };
+  /** Safe provider-produced observations persisted with the generic host runtime record. */
+  runtimeMetadata?: {
+    transportMode?: string;
+  };
 }
 
 export interface ProviderServerLease {
@@ -97,6 +104,39 @@ export interface ProviderServerLease {
   release(): void;
   closed: Promise<Error | void>;
   generation?: number;
+}
+
+export type ProviderCurationRequest = {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly model?: string;
+  readonly permissionMode?: 'default' | 'auto' | 'bypassPermissions';
+  readonly signal?: AbortSignal;
+};
+
+export type ProviderCurationCompleteRuntime = {
+  readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
+  readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
+  readonly baseEnv: Readonly<Record<string, string>>;
+  readonly platform: string;
+  readonly acquireServer: (
+    spec: ProviderServerSpec,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ProviderServerLease>;
+};
+
+export type ProviderCurationUsageRuntime = {
+  readonly storage: Pick<StoragePort, 'readFileSync'>;
+  readonly now: () => number;
+};
+
+/** Provider-owned daemon-internal assistant work exposed only through a bound provider. */
+export interface ProviderCurationCapability<Source extends ProviderSource = ProviderSource> {
+  complete(
+    request: ProviderCurationRequest,
+    runtime: ProviderCurationCompleteRuntime & { readonly source: Source },
+  ): Promise<string>;
+  isUsageBudgetExhausted(runtime: ProviderCurationUsageRuntime & { readonly source: Source }): boolean;
 }
 
 // Provider-side terminal outcome: the slice of `TerminalOutcome` that the
@@ -306,12 +346,12 @@ export interface ProviderEquippedToolSummary {
   readonly guidance?: readonly string[];
 }
 
-export interface ProviderRuntime {
+export interface ProviderRuntime<Context = never> {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
   storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync' | 'readdirSync'>;
-  env?: Pick<Runtime['env'], 'homedir' | 'claudeConfigDir' | 'fullSnapshot' | 'get'>;
+  env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
   acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
@@ -329,40 +369,30 @@ export interface ProviderRuntime {
   projectSource?: string;
   /** Installed /equip tools that should be advertised in provider system prompts. */
   equippedTools?: readonly ProviderEquippedToolSummary[];
-  providerContext: ProviderExecutionContext;
+  /** Provider-private prepared state. Generic execution code never constructs or inspects this value. */
+  providerContext: Context;
 }
 
-export type ProviderExecutionContext =
-  | {
-      provider: 'codex';
-      source: Extract<ProviderCredentialSourceRef, { provider: 'codex' }>;
-      appServerEnv: Readonly<Record<string, string>>;
-    }
-  | {
-      provider: 'claude';
-      source: Extract<ProviderCredentialSourceRef, { provider: 'claude' }>;
-      brokerEnv: Readonly<Record<string, string>>;
-      controllerEnv: Readonly<Record<string, string>>;
-      projectsRoot: string;
-    };
+export type Provider<Context = never> = (
+  request: ProviderRequest,
+  runtime: ProviderRuntime<Context>,
+) => AsyncIterable<ProviderEventBody>;
+export type ProviderMiddleware<Context = never> = (next: Provider<Context>) => Provider<Context>;
 
-export type Provider = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
-export type ProviderMiddleware = (next: Provider) => Provider;
-
-export interface ProviderAppServerContract {
+export interface ProviderAppServerContract<Context = never> {
   readonly name: string;
   readonly subscriptionPhase: AppServerSubscriptionPhase;
   buildServerSpec(
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
     ports: { storage: Pick<StoragePort, 'existsSync'> },
-    providerContext: ProviderExecutionContext,
+    providerContext: Context,
   ): ProviderServerSpec;
   interrupt?(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
-export interface ProviderRecoveryContract {
+export interface ProviderRecoveryContract<Source extends ProviderSource = ProviderSource> {
   probe?(
     lease: ProviderServerLease,
     continuity: ProviderContinuityBlob,
@@ -380,7 +410,7 @@ export interface ProviderRecoveryContract {
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
   finalizeFromArtifacts(options: {
-    source: ProviderCredentialSourceRef;
+    source: Source;
     stdoutPath: string;
     stderrPath: string;
     exitCode: number | null;
@@ -405,10 +435,17 @@ export interface ProviderRecoveryContract {
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
-export type ProviderPreflightRuntime = PreflightRuntime & {
-  credentialSource: ProviderCredentialSourceRef;
+export type ProviderPreflightRuntime<Source extends ProviderSource = ProviderSource> = PreflightRuntime & {
+  credentialSource: Source;
   cwd: string;
   runExact(command: string, args: string[], options?: { timeout?: number; encoding?: 'utf-8' }): Promise<ExecResult>;
+};
+export type ProviderPreflightInput<Source extends ProviderSource = ProviderSource> = PreflightRuntime & {
+  credentialSource: Source;
+  cwd: string;
+  baseEnv: Readonly<Record<string, string>>;
+  requestEnv: Readonly<Record<string, string>>;
+  platform: string;
 };
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time'>;
 
@@ -425,11 +462,11 @@ export type DiscardOutcome =
   | { readonly kind: 'skipped_no_handles'; readonly details?: Record<string, unknown> }
   | { readonly kind: 'provider_declares_none'; readonly details?: Record<string, unknown> };
 
-export interface ProviderManagedArtifactCapability {
+export interface ProviderManagedArtifactCapability<Source extends ProviderSource = ProviderSource> {
   readonly kind: 'managed';
   discardArtifacts(options: {
     handles: readonly ProviderArtifactHandle[];
-    source: ProviderCredentialSourceRef;
+    source: Source;
     runtime: ArtifactCleanupRuntime;
   }): Promise<DiscardOutcome>;
   /**
@@ -441,7 +478,7 @@ export interface ProviderManagedArtifactCapability {
    */
   locateArtifact?(options: {
     conversationRef: string;
-    source: ProviderCredentialSourceRef;
+    source: Source;
     runtime: ArtifactCleanupRuntime;
   }): ProviderArtifactHandle | null;
 }
@@ -451,25 +488,45 @@ export interface ProviderNoArtifactCapability {
   readonly reason: string;
 }
 
-export type ProviderArtifactCapability = ProviderManagedArtifactCapability | ProviderNoArtifactCapability;
+export type ProviderArtifactCapability<Source extends ProviderSource = ProviderSource> =
+  | ProviderManagedArtifactCapability<Source>
+  | ProviderNoArtifactCapability;
 
-export interface ProviderSpec {
+export interface ProviderImplementation<Context, Source extends ProviderSource = ProviderSource> {
   readonly name: string;
-  readonly run: Provider;
-  readonly preflight?: (runtime: ProviderPreflightRuntime) => Promise<void>;
-  readonly appServer?: ProviderAppServerContract;
-  readonly recovery?: ProviderRecoveryContract;
+  readonly run: Provider<Context>;
+  readonly prepareExecutionContext: (input: {
+    source: Source;
+    request: ProviderRequest;
+    baseEnv: Readonly<Record<string, string>>;
+    protectedEnv?: Readonly<Record<string, string>>;
+    platform: string;
+  }) => {
+    readonly context: Context;
+    prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+  };
+  readonly preflight?: (input: ProviderPreflightInput<Source>) => Promise<void>;
+  readonly appServer?: ProviderAppServerContract<Context>;
+  readonly recovery?: ProviderRecoveryContract<Source>;
+  readonly curation?: ProviderCurationCapability<Source>;
 }
 
-export function compose(middleware: readonly ProviderMiddleware[], provider: Provider): Provider;
-export function compose(...parts: readonly [...ProviderMiddleware[], Provider]): Provider;
-export function compose(
-  ...parts: readonly [readonly ProviderMiddleware[], Provider] | readonly [...ProviderMiddleware[], Provider]
-): Provider {
+export function compose<Context>(
+  middleware: readonly ProviderMiddleware<Context>[],
+  provider: Provider<Context>,
+): Provider<Context>;
+export function compose<Context>(
+  ...parts: readonly [...ProviderMiddleware<Context>[], Provider<Context>]
+): Provider<Context>;
+export function compose<Context>(
+  ...parts:
+    | readonly [readonly ProviderMiddleware<Context>[], Provider<Context>]
+    | readonly [...ProviderMiddleware<Context>[], Provider<Context>]
+): Provider<Context> {
   const [middleware, provider] =
     parts.length === 2 && Array.isArray(parts[0])
       ? [parts[0], parts[1]]
-      : [parts.slice(0, -1) as readonly ProviderMiddleware[], parts[parts.length - 1] as Provider];
+      : [parts.slice(0, -1) as readonly ProviderMiddleware<Context>[], parts[parts.length - 1] as Provider<Context>];
 
   const composed = middleware.reduceRight((next, layer) => layer(next), provider);
 

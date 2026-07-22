@@ -1,6 +1,6 @@
 # Provider multi-account execution: most-elegant target design
 
-Status: implementation complete through B04; B05 is next
+Status: implementation complete through B05; B06 is next
 
 Scope: provider multi-account execution merged by PR #275 and the provider/session/app-server/recovery boundaries it exposes
 
@@ -84,7 +84,7 @@ The refactoring changes adjacent domains only where the new provider/account mod
 
 ## Baseline structural contradictions before this refactoring
 
-This section records the pre-B01 baseline that motivated the plan. In the historical implementation sequence, B01-B03 corrected the store-manifest foundation, explicit scope origin, canonical profile capture, and verified/profile-only binding distinctions, while leaving the synthetic orchestration-session variant in place only for the next atomic cutover. B04 has now removed that variant and established real provider sessions plus independent execution ownership. Any remaining baseline descriptions below are historical motivation or post-B04 target-state gaps, not supported alternate behavior or compatibility promises.
+This section records the pre-B01 baseline that motivated the plan. B01-B05 have corrected the store-manifest foundation, explicit scope origin, canonical profile capture, verified/profile-only binding distinctions, aggregate ownership, and bound-provider execution. Any remaining baseline descriptions below are historical motivation or post-B05 target-state gaps, not supported alternate behavior or compatibility promises.
 
 ### A locator is described as account authority
 
@@ -247,26 +247,27 @@ Each provider owns:
 
 The stable ownership boundary matters more than a proposed per-file catalog:
 
-| Role                                                             | Owner                                         | Stable navigation point                         |
-| ---------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------- |
-| Provider selection, profile, binding, readiness, and safe errors | Each provider vertical                        | `src/providers/{provider}/`                     |
-| Type erasure and registered provider lookup                      | Provider registry                             | `src/providers/registry.ts`                     |
-| Generic provider contracts                                       | Provider contracts                            | `src/providers/contracts/`                      |
-| Caller/system scope transport and validation                     | Transport plus provider registry              | `src/transport/`, `src/infra/provider-scope.ts` |
-| Provider conversation continuity                                 | Provider-session domain                       | `src/sessions/`                                 |
-| Workflow/discussion aggregate lifecycle and future child scope   | Owning aggregate                              | `src/workflow/`, `src/discuss/`                 |
-| Generic execution-owner vocabulary                               | Runtime contract used by jobs and coordinator | `src/runtime/execution-owner.ts`                |
-| Admission, job persistence, and durable finalization             | Coordinator/jobs                              | `src/coordinator/`, `src/jobs/`                 |
-| Store readability and persisted-codec manifest                   | Store boundary                                | `src/store/`                                    |
+| Role                                                                  | Owner                                         | Stable navigation point                                      |
+| --------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------ |
+| Provider selection, profile, binding, readiness, and safe errors      | Each provider vertical                        | `src/providers/{provider}/`                                  |
+| Registered provider orchestration and lookup                          | Provider registry                             | `src/providers/registry.ts`                                  |
+| Private type erasure, parser, runtime, lease, and snapshot boundaries | Provider registry internals                   | `src/providers/internal/`, `src/providers/binding-parser.ts` |
+| Generic provider contracts                                            | Provider contracts                            | `src/providers/contracts/`                                   |
+| Caller/system scope transport and validation                          | Transport plus provider registry              | `src/transport/`, `src/infra/provider-scope.ts`              |
+| Provider conversation continuity                                      | Provider-session domain                       | `src/sessions/`                                              |
+| Workflow/discussion aggregate lifecycle and future child scope        | Owning aggregate                              | `src/workflow/`, `src/discuss/`                              |
+| Generic execution-owner vocabulary                                    | Runtime contract used by jobs and coordinator | `src/runtime/execution-owner.ts`                             |
+| Admission, job persistence, and durable finalization                  | Coordinator/jobs                              | `src/coordinator/`, `src/jobs/`                              |
+| Store readability and persisted-codec manifest                        | Store boundary                                | `src/store/`                                                 |
 
 Files may move as later batches collapse superseded surfaces. The invariant is that provider interpretation stays inside its provider vertical, while transport and coordinator retain only boundary policy and Coral durability.
 
 ### Binding transition
 
-The provider registry exposes one type-erased closure boundary:
+Each provider registers one private type-erased closure boundary. The public `ProviderDefinition` remains an inert, branded name token; it exposes none of these operations:
 
 ```ts
-interface ProviderDefinition<Selection, Profile, Subject, Prepared> {
+interface ProviderRegistrationBoundary<Selection, Profile, Subject, Prepared> {
   capture(input: unknown): ProviderBindingResult<Selection>;
   canonicalize(selection: Selection): Promise<ProviderBindingResult<Profile>>;
   bind(profile: Profile): Promise<ProviderBindingResult<ProviderBinding<Profile, Subject> | ProfileBinding<Profile>>>;
@@ -692,8 +693,8 @@ Recovery and adoption
 |     2 | B02 — provider contracts and registry               | complete | B01          | provider-owned codecs and one type-erasure boundary               | no                                                    |
 |     3 | B03 — explicit scope and verified binding           | complete | B02          | caller/system scope and durable verified binding                  | yes                                                   |
 |     4 | B04 — aggregate correction                          | complete | B03          | real provider sessions and independent execution ownership        | yes                                                   |
-|     5 | B05 — `BoundProvider` execution cutover             | next     | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
-|     6 | B06 — lifetime-scoped execution plans               | pending  | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
+|     5 | B05 — `BoundProvider` execution cutover             | complete | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
+|     6 | B06 — lifetime-scoped execution plans               | next     | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
 |     7 | B07 — unified app-server and Codex turn capability  | pending  | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
 |     8 | B08 — bound-provider recovery pipeline              | pending  | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
 |     9 | B09 — superseded-surface cleanup and adoption reset | pending  | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
@@ -885,6 +886,21 @@ Make a provider executable only after its durable binding has been decoded and c
 **Exit gate**
 
 The system has one provider execution story: rehydrate or create a binding, obtain `BoundProvider`, then invoke its operations.
+
+**Implemented evidence**
+
+- `ProviderDefinition` is inert; its private registry registration is the sole owner of binding codecs and executable capabilities.
+- New binding and persisted-envelope rehydration both produce the same opaque `BoundProvider` surface used by launch, resume, recovery, artifacts, and curation.
+- Provider-specific credential policy, exact CLI preparation, recovery interpretation, artifacts, and usage policy live in provider verticals; Windows launch and preflight share the same provider-owned command compiler and shell semantics.
+- Provider codec factories capture immutable selection/profile parsers and the canonical persisted contract together. Registration executes no refinements, transforms, or lazy schemas, and retained schema/codec mutation cannot change later decoding.
+- Public registry code owns orchestration and lookup; private internal modules own binding erasure, runtime, lease, and snapshot boundaries. Those boundaries validate receiver provenance before property access and snapshot both inbound and outbound values, including lazy events, app-server leases/RPC, continuity, recovery, artifacts, and curation.
+- Recovery authority captures only the required launch and session facts (`sessionId`, `projectRoot`, `conversationRef`, `providerContinuity`, `artifactHandles`, and `version`) as a deep immutable snapshot; extra session/artifact data is excluded and later source mutation cannot alter the capture.
+- Generic app-server persistence uses provider-neutral `transportMode`; the removed Claude-specific field is rejected by the strict current codec with no compatibility decoder.
+- A fixture provider traverses `JobLaunchService -> LaunchOrchestrator -> BoundProvider -> durable dispatch` without a generic provider branch.
+- Missing-launch recovery records a terminal cause without fabricating a launch record or provider authority.
+- Architecture invariants derive provider verticals from registered `*/definition.ts` modules and reject cross-vertical imports and provider-specific generic execution surfaces.
+- Concrete verification lives in [`tests/unit/providers/registry.test.ts`](../tests/unit/providers/registry.test.ts) (parser mutation and boundary rejection), [`tests/unit/providers/execution-context.test.ts`](../tests/unit/providers/execution-context.test.ts) (Windows launch/preflight parity), and [`tests/unit/coordinator/service-composition.test.ts`](../tests/unit/coordinator/service-composition.test.ts) (minimal recovery authority).
+- Fixture runtime evidence is covered by [`tests/unit/jobs/event-bodies.test.ts`](../tests/unit/jobs/event-bodies.test.ts) (neutral `transportMode` acceptance and removed-field rejection), [`tests/unit/jobs/shell/launch.test.ts`](../tests/unit/jobs/shell/launch.test.ts) (waiting/acquired metadata persistence), and [`tests/unit/coordinator/recovery-provider-contract.test.ts`](../tests/unit/coordinator/recovery-provider-contract.test.ts) (fixture recovery metadata). [`tests/invariants/bound-provider-execution.test.ts`](../tests/invariants/bound-provider-execution.test.ts) covers the fixture launch path plus architecture and no-legacy invariants.
 
 ### B06 — Lifetime-scoped execution plans
 

@@ -6,76 +6,85 @@ import {
   type ProviderBindingCodec,
   type ProviderBindingFailure,
 } from '#src/providers/contracts/binding.js';
-import type { ProviderCredentialSourceRef } from '#src/infra/provider-credential-sources.js';
+import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
 
-const selectionSchema = z.object({ key: z.string() }).strict();
-const profileSchema = z
-  .object({
-    canonicalLocation: z.string(),
-    routing: z.union([
-      z.object({ kind: z.literal('home') }).strict(),
-      z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
-      z.object({}).strict(),
-    ]),
-  })
-  .strict();
-const bindingSchema = z.object({ profile: profileSchema, guarantee: z.literal('profile-only') }).strict();
-const accountBindingSchema = z
-  .object({
-    profile: profileSchema,
-    subject: z.object({ issuer: z.string(), subject: z.string() }).strict(),
-  })
-  .strict();
+export type FixtureProviderSource = {
+  readonly root: string;
+  readonly routingEnv: Readonly<Record<string, string>>;
+};
+
+function createSelectionSchema() {
+  return z.object({ key: z.string() }).strict();
+}
+
+function createProfileSchema() {
+  return z
+    .object({
+      canonicalLocation: z.string(),
+      routing: z.union([
+        z.object({ kind: z.literal('home') }).strict(),
+        z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
+        z.object({}).strict(),
+      ]),
+    })
+    .strict();
+}
+
+function createBindingSchema() {
+  return z.object({ profile: createProfileSchema(), guarantee: z.literal('profile-only') }).strict();
+}
+
+function createAccountBindingSchema() {
+  return z
+    .object({
+      profile: createProfileSchema(),
+      subject: z.object({ issuer: z.string(), subject: z.string() }).strict(),
+    })
+    .strict();
+}
+
+type FixtureSelection = z.infer<ReturnType<typeof createSelectionSchema>>;
+type FixtureProfile = z.infer<ReturnType<typeof createProfileSchema>>;
+type FixtureAccountSubject = z.infer<ReturnType<typeof createAccountBindingSchema>>['subject'];
 
 export function fixtureProviderBindingCodec(
   provider: string,
   options: {
     readinessFailure?: ProviderBindingFailure;
-    accountSubject?: (profile: z.infer<typeof profileSchema>) => {
+    accountSubject?: (profile: FixtureProfile) => {
       readonly issuer: string;
       readonly subject: string;
     };
   } = {},
-): ProviderBindingCodec<z.infer<typeof selectionSchema>, z.infer<typeof profileSchema>> {
+): ProviderBindingCodec<FixtureSelection, FixtureProfile, FixtureAccountSubject, FixtureProviderSource> {
   const base = {
-    selectionSchema,
-    profileSchema,
+    parseSelection: zodValueParser(createSelectionSchema),
+    parseProfile: zodValueParser(createProfileSchema),
     captureSelection: () => bindingSuccess({ key: provider }),
-    async canonicalizeProfile(selection: z.infer<typeof selectionSchema>) {
+    async canonicalizeProfile(selection: FixtureSelection) {
       return bindingSuccess({ canonicalLocation: `/${selection.key}`, routing: {} });
     },
     selectorLabel: () => `${provider} fixture selector`,
     renderFailure: (failure: ProviderBindingFailure) => `${provider} fixture binding failed: ${failure.reason}`,
   };
-  const credentialSource = (binding: { profile: z.infer<typeof profileSchema> }): ProviderCredentialSourceRef => {
-    return provider === 'claude'
-      ? {
-          version: 1,
-          provider: 'claude',
-          kind: 'config-dir',
-          configDir: binding.profile.canonicalLocation,
-          projectsRoot: `${binding.profile.canonicalLocation}/projects`,
-          emitConfigDir:
-            'kind' in binding.profile.routing && binding.profile.routing.kind === 'config-dir'
-              ? binding.profile.routing.emitConfigDir
-              : true,
-        }
-      : {
-          version: 1,
-          provider: 'codex',
-          kind: 'home',
-          home: binding.profile.canonicalLocation,
-        };
+  const credentialSource = (binding: { profile: FixtureProfile }): FixtureProviderSource => {
+    const routingEnv: Record<string, string> =
+      provider === 'claude'
+        ? { CLAUDE_CONFIG_DIR: binding.profile.canonicalLocation }
+        : provider === 'codex'
+          ? { CODEX_HOME: binding.profile.canonicalLocation }
+          : { FIXTURE_PROFILE_ROOT: binding.profile.canonicalLocation };
+    return Object.freeze({ root: binding.profile.canonicalLocation, routingEnv: Object.freeze(routingEnv) });
   };
   if (provider === 'codex') {
-    const currentSubject = (profile: z.infer<typeof profileSchema>) =>
+    const currentSubject = (profile: FixtureProfile) =>
       options.accountSubject?.(profile) ?? {
         issuer: 'https://api.openai.com/chatgpt-account',
         subject: 'test-account',
       };
     return {
       ...base,
-      bindingSchema: accountBindingSchema,
+      persistedBinding: zodPersistedParser(createAccountBindingSchema),
       bindingKind: 'account',
       async bindProfile(profile) {
         return bindingSuccess({
@@ -104,7 +113,7 @@ export function fixtureProviderBindingCodec(
   }
   return {
     ...base,
-    bindingSchema,
+    persistedBinding: zodPersistedParser(createBindingSchema),
     bindingKind: 'profile',
     async bindProfile(profile) {
       return bindingSuccess({ profile, guarantee: 'profile-only' });

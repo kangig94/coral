@@ -325,6 +325,11 @@ describe('scenario runner', () => {
     });
     worlds.push(run.world);
 
+    expect(run.result.steps[2]).toMatchObject({
+      ok: true,
+      type: 'wait',
+      detail: { steps: 0, elapsedMs: 0 },
+    });
     expect(run.result.steps[3]).toMatchObject({
       ok: true,
       type: 'kill',

@@ -2,7 +2,6 @@ import { formatError } from '../../../infra/error-format.js';
 import { isAppServerRuntime } from '../../../jobs/records.js';
 import { isDurableCliRuntime } from '../../../runtime/durable-runtime.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
-import type { ProviderBindingCatalog } from '../../../providers/catalog.js';
 import type { JobStore } from '../../../jobs/store.js';
 import { planRecovery } from '../../../jobs/reconcile/plan.js';
 import { RecoveryRegistry } from '../../../jobs/reconcile/registry.js';
@@ -49,7 +48,6 @@ type RecoveryCoordinatorContext = {
   runtime: Runtime;
   runtimeState: { setLaunchFenceActive(active: boolean): void };
   eventBus: JobEventBus;
-  providerRegistry: ProviderBindingCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   log: (message: string) => void;
@@ -60,7 +58,6 @@ type StartupRecoveryContext = {
   bundleHash: string;
   runtime: Runtime;
   progressStore: JobStore;
-  providerRegistry: ProviderBindingCatalog;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   signal: AbortSignal;
@@ -74,7 +71,6 @@ type StartupRecoveryContext = {
 type RecoveryAdoptionContext = {
   queuedJobs: QueuedRecoverableJob[];
   runningJobs: RunningRecoverableJob[];
-  sessionLookup: Pick<SessionLookup, 'readProviderSession'>;
   signal: AbortSignal;
   interruptedAppServerReason: InterruptedAppServerReason;
 };
@@ -84,7 +80,6 @@ export function createRecoveryCoordinator({
   runtime,
   runtimeState,
   eventBus,
-  providerRegistry,
   getRecoveryService,
   createInvocationContext,
   log,
@@ -164,30 +159,30 @@ export function createRecoveryCoordinator({
   async function runRecoveryAdoption({
     queuedJobs,
     runningJobs,
-    sessionLookup,
     signal,
     interruptedAppServerReason,
   }: RecoveryAdoptionContext): Promise<void> {
-    queuedJobs.sort((a, b) => a.launchRecord.enqueueSequence - b.launchRecord.enqueueSequence);
+    queuedJobs.sort((a, b) => a.authority.launchRecord.enqueueSequence - b.authority.launchRecord.enqueueSequence);
 
     let maxRecoverableSeq: number | null = null;
     for (const job of queuedJobs) {
       maxRecoverableSeq =
         maxRecoverableSeq === null
-          ? job.launchRecord.enqueueSequence
-          : Math.max(maxRecoverableSeq, job.launchRecord.enqueueSequence);
+          ? job.authority.launchRecord.enqueueSequence
+          : Math.max(maxRecoverableSeq, job.authority.launchRecord.enqueueSequence);
     }
     for (const job of runningJobs) {
       maxRecoverableSeq =
         maxRecoverableSeq === null
-          ? job.launchRecord.enqueueSequence
-          : Math.max(maxRecoverableSeq, job.launchRecord.enqueueSequence);
+          ? job.authority.launchRecord.enqueueSequence
+          : Math.max(maxRecoverableSeq, job.authority.launchRecord.enqueueSequence);
     }
     if (maxRecoverableSeq !== null) {
       progressStore.seedEnqueueSequence(maxRecoverableSeq);
     }
 
-    for (const { jobId, launchRecord, runtimeRecord } of runningJobs) {
+    for (const { jobId, authority, runtimeRecord } of runningJobs) {
+      const { launchRecord, boundProvider } = authority;
       let cleanup: (() => void) | null = null;
       try {
         if (launchRecord.provider === null || launchRecord.sessionId === null) {
@@ -201,10 +196,9 @@ export function createRecoveryCoordinator({
         }
 
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
-        const recovery = providerRegistry.get(launchRecord.provider)?.recovery;
         if (isAppServerRuntime(runtimeRecord)) {
           signal.throwIfAborted();
-          await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, {
+          await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
             reason: interruptedAppServerReason,
           });
           signal.throwIfAborted();
@@ -221,10 +215,11 @@ export function createRecoveryCoordinator({
           log(`Skipped adopting unsupported runtime for job: ${jobId}\n`);
           continue;
         }
+        const recovery = boundProvider.recovery;
 
         let adoptedRuntimeRecord = runtimeRecord;
         signal.throwIfAborted();
-        const adoption = await service.adoptRunningJob(launchRecord, runtimeRecord);
+        const adoption = await service.adoptRunningJob(authority, runtimeRecord);
         cleanup = adoption.cleanup;
         if (!adoption.adopted) {
           state.recoveryRegistry?.remove(jobId);
@@ -292,13 +287,11 @@ export function createRecoveryCoordinator({
           drainRecoveredProgress();
           void finalizeDeadAdoptedJob({
             jobId,
-            launchRecord,
             runtimeRecord: adoptedRuntimeRecord,
             service,
-            provider: recovery,
+            authority,
             progressStore,
             runtime,
-            sessionLookup,
             cancelledJobIds: state.cancelledRecoveryJobIds,
             log,
           })
@@ -326,24 +319,19 @@ export function createRecoveryCoordinator({
       }
     }
 
-    for (const { jobId, launchRecord } of queuedJobs) {
+    for (const { jobId, authority } of queuedJobs) {
+      const { launchRecord } = authority;
       try {
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         signal.throwIfAborted();
-        if (!(await service.validateProviderRecoveryAuthority(launchRecord))) {
-          state.recoveryRegistry?.remove(jobId);
-          state.recoveryRegistry?.clearCancelled(jobId);
-          log(`Rejected queued recovery with invalid provider authority: ${jobId}\n`);
-          continue;
-        }
         if (state.cancelledRecoveryJobIds.has(jobId)) {
-          finalizeAbortedRecoveredJob({ jobId, launchRecord, service, progressStore, runtime, log });
+          finalizeAbortedRecoveredJob({ jobId, authority, service, runtime });
           state.recoveryRegistry?.remove(jobId);
           state.recoveryRegistry?.clearCancelled(jobId);
           log(`Aborted queued recovery job: ${jobId}\n`);
           continue;
         }
-        await service.recoverQueuedJob(launchRecord);
+        await service.recoverQueuedJob(authority);
         state.recoveryRegistry?.remove(jobId);
         log(`Recovered queued job: ${jobId}\n`);
       } catch (error: unknown) {
@@ -386,7 +374,6 @@ export function createRecoveryCoordinator({
             runningRecoverable,
             log,
             runtime,
-            providerRegistry,
             createInvocationContext,
             getRecoveryService,
             sessionLookup: ctx.sessionLookup,
@@ -418,7 +405,6 @@ export function createRecoveryCoordinator({
         await runRecoveryAdoption({
           queuedJobs: queuedRecoverable,
           runningJobs: runningRecoverable,
-          sessionLookup: ctx.sessionLookup,
           signal,
           interruptedAppServerReason,
         });

@@ -1004,13 +1004,18 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const codex = program.commands.find((command) => command.name() === 'codex');
     const workflow = program.commands.find((command) => command.name() === 'workflow');
+    const codexHelp = codex?.helpInformation().replace(/\s+/g, ' ');
+    const claudeHelp = findCommand(program, 'claude').helpInformation().replace(/\s+/g, ' ');
 
     expect(codex?.commands).toHaveLength(0);
     expect(codex?.helpInformation()).toContain('-i, --input');
     expect(codex?.helpInformation()).toContain('-b, --bypass-permissions');
     expect(codex?.helpInformation()).toContain('-d, --detach');
-    expect(codex?.helpInformation()).toContain('CODEX_HOME (default: ~/.codex)');
-    expect(findCommand(program, 'claude').helpInformation()).toContain('CLAUDE_CONFIG_DIR (default: ~/.claude)');
+    expect(codexHelp).toContain('provider profile selected in the invoking shell');
+    expect(codexHelp).toContain('CODEX_HOME, default ~/.codex');
+    expect(codexHelp).toContain('CLAUDE_CONFIG_DIR, default ~/.claude');
+    expect(claudeHelp).toContain('CODEX_HOME, default ~/.codex');
+    expect(claudeHelp).toContain('CLAUDE_CONFIG_DIR, default ~/.claude');
     expect(workflow?.helpInformation()).toContain('--detach');
     expect(workflow?.helpInformation()).toContain('-s, --start-prompt');
     expect(workflow?.helpInformation()).toContain('binds every provider profile referenced by the workflow');

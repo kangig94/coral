@@ -12,6 +12,7 @@ import {
   bindAppServerNotificationHandler,
   requireAppServerLease,
 } from '#src/providers/app-server.js';
+import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 import { appServerSession } from '#src/providers/middleware/app-server-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
@@ -80,7 +81,7 @@ function makeRuntime(
   lease: ProviderServerLease,
   controller = new AbortController(),
   bridge = makeBridge(),
-): ProviderRuntime & {
+): ProviderRuntime<CodexExecutionContext> & {
   acquireServer: ReturnType<typeof vi.fn>;
   continuityBridge: MockBridge;
 } {
@@ -91,18 +92,20 @@ function makeRuntime(
       now: () => 0,
       setTimeout: () => ({ unref: () => {} }),
       clearTimeout: () => {},
-    } as ProviderRuntime['time'],
+    } as ProviderRuntime<CodexExecutionContext>['time'],
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+    storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionContext>['storage'],
     acquireServer: vi.fn(async () => lease),
     persistedContinuity: undefined,
-    continuityBridge: bridge as ProviderRuntime['continuityBridge'] & MockBridge,
+    continuityBridge: bridge as ProviderRuntime<CodexExecutionContext>['continuityBridge'] & MockBridge,
     kbRoot: '/mock/kb',
     providerContext: TEST_CODEX_CONTEXT,
   };
 }
 
-function makeContract(overrides: Partial<AppServerContract> = {}): AppServerContract {
+function makeContract(
+  overrides: Partial<AppServerContract<CodexExecutionContext>> = {},
+): AppServerContract<CodexExecutionContext> {
   return {
     name: 'app-server-test',
     buildServerSpec: vi.fn(() => ({
@@ -145,7 +148,7 @@ describe('appServerSession', () => {
     const runtime = makeRuntime(lease);
     const contract = makeContract({ subscriptionPhase: 'beforeInitialize' });
     const terminal = terminalEvent({ kind: 'completed' }, 'before-initialize');
-    const provider: Provider = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
       order.push('kernel:start');
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       yield terminal;
@@ -176,7 +179,7 @@ describe('appServerSession', () => {
     const started = createDeferred<void>();
     const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent({ kind: 'completed' }, 'bound-handler');
-    const provider: Provider = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
       const clearNotificationBinding = bindAppServerNotificationHandler(nextRuntime, dynamicHandler);
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();
@@ -214,7 +217,7 @@ describe('appServerSession', () => {
     const started = createDeferred<void>();
     const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent({ kind: 'aborted', reason: 'signal_abort' });
-    const provider: Provider = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();
       yield await nextTerminal.promise;
@@ -261,7 +264,7 @@ describe('appServerSession', () => {
         message: 'leaf-authored close handling',
       },
     });
-    const provider: Provider = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();
       yield await nextTerminal.promise;

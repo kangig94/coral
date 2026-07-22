@@ -1,4 +1,4 @@
-type ProviderCliRequest = {
+export type ProviderCliRequest = {
   command: string;
   args: string[];
   prompt?: string;

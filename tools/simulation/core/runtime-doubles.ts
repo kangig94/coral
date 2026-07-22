@@ -9,7 +9,7 @@ import type {
   SpawnListener,
 } from '../../../src/runtime/ports.js';
 import { cloneSpawnEvent } from '../../../src/runtime/ports.js';
-import { composeCoralPaths, resolveClaudeConfigDir, type CoralPaths } from '../../../src/infra/path/index.js';
+import { composeCoralPaths, type CoralPaths } from '../../../src/infra/path/index.js';
 import type { BuildFlavor } from '../../../src/infra/build-flavor.js';
 import { hashToken } from '../../../src/infra/hash.js';
 import { normalizePathForStorage, type InMemoryRoots } from './memory-storage.js';
@@ -158,10 +158,6 @@ export class SealedEnv implements EnvPort {
 
   homedir(): string {
     return this.fullEnv.HOME ?? this.fullEnv.USERPROFILE ?? DEFAULT_HOME;
-  }
-
-  claudeConfigDir(): string {
-    return resolveClaudeConfigDir(this.fullEnv.CLAUDE_CONFIG_DIR, this.homedir());
   }
 
   tmpdir(): string {

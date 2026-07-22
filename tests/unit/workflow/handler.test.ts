@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { WorkflowCommand } from '#src/workflow/input.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
@@ -28,7 +28,7 @@ function createProviderRegistry(): ProviderRegistry {
   const registry = new ProviderRegistry();
   for (const name of ['claude', 'codex']) {
     registry.register(
-      toProviderSpec({
+      toProviderDefinition({
         name,
         execute: () =>
           streamProviderTerminal({

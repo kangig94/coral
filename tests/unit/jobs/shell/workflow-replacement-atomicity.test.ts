@@ -23,6 +23,7 @@ import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 
 const PROJECT_ROOT = '/tmp/coral-workflow-replacement-atomicity';
 const WORKFLOW_ID = 'workflow-replacement-atomicity';
@@ -112,11 +113,18 @@ describe('workflow replacement launch atomicity', () => {
     };
     const jobPools = new Map();
     const providerRegistry = new ProviderRegistry();
-    const provider = defineProvider({ name: 'codex', run: async function* noop() {} })
+    const provider = defineProvider({
+      name: 'codex',
+      run: async function* noop() {},
+      prepareExecutionContext: prepareFixtureExecutionContext,
+    })
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('atomicity fixture has no artifacts'))
       .build();
     providerRegistry.register(provider);
+    const boundProviderResult = providerRegistry.rehydrateBinding(TEST_CODEX_BINDING);
+    if (!boundProviderResult.ok) throw new Error('expected fixture provider binding');
+    const boundProvider = boundProviderResult.value;
     const orchestrator = new LaunchOrchestrator({
       abortRegistry: abortRegistry as never,
       progressStore,
@@ -159,7 +167,7 @@ describe('workflow replacement launch atomicity', () => {
         SELECT RAISE(ABORT, 'forced replacement admission failure');
       END`);
     try {
-      expect(() => orchestrator.launchWorkflowReplacement(provider, pending, request, replacementOptions)).toThrow(
+      expect(() => orchestrator.launchWorkflowReplacement(boundProvider, pending, request, replacementOptions)).toThrow(
         'forced replacement admission failure',
       );
 
@@ -180,7 +188,12 @@ describe('workflow replacement launch atomicity', () => {
       db.exec('DROP TRIGGER fail_replacement_admission');
       const retrySession = sessionManager.get('codex', session.sessionId);
       if (retrySession === null) throw new Error('expected retryable provider session');
-      const recovered = orchestrator.launchWorkflowReplacement(provider, retrySession, request, replacementOptions);
+      const recovered = orchestrator.launchWorkflowReplacement(
+        boundProvider,
+        retrySession,
+        request,
+        replacementOptions,
+      );
       expect(recovered).toMatchObject({ kind: 'provider-session', status: 'running', sessionId: session.sessionId });
       if (recovered.status !== 'running') throw new Error('expected recovered replacement launch');
       expect(progressStore.readLaunchProjection(recovered.jobId)).toMatchObject({

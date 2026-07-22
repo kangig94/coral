@@ -2,16 +2,17 @@ import type { SystemProviderScope } from '../../infra/provider-scope.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
-import { buildExactProviderEnv } from '../../providers/execution-context.js';
-import { runClaudeOneShotTurn } from '../../providers/claude/one-shot.js';
+import type { ProviderServerLease, ProviderServerSpec } from '../../providers/contract.js';
 import type { KbDaemonCurateAssistantHandler } from '../live/kb-daemon-supervisor.js';
 import type { KbDaemonCurateUsageBudgetHandler } from '../live/kb-daemon-supervisor.js';
-import { isUsageBudgetExhausted } from '../../kb/curate/usage-budget.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
 
 type ActiveSystemProviderRuntime = {
   readonly systemProviderScope?: SystemProviderScope;
-  readonly acquireServer: Parameters<typeof runClaudeOneShotTurn>[0]['acquireServer'];
+  readonly acquireServer: (
+    spec: ProviderServerSpec,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ProviderServerLease>;
 };
 
 function bindingSetupError(
@@ -40,13 +41,20 @@ async function resolveClaudeSystemBinding(options: {
   return bound.value;
 }
 
+function requireCurationCapability(bound: Awaited<ReturnType<typeof resolveClaudeSystemBinding>>) {
+  if (bound.curation !== undefined) return bound.curation;
+  throw new CoralSetupError({
+    code: 'provider_curation_unsupported',
+    userMessage: `Provider '${bound.name}' does not support daemon-internal assistant curation.`,
+    remediation: 'Configure a system provider whose bound implementation owns a curation capability.',
+  });
+}
+
 export function createKbCurateAssistantHandler(options: {
   readonly runtime: Runtime;
   readonly providerRegistry: ProviderBindingCatalog;
   readonly readActiveRuntime: () => ActiveSystemProviderRuntime | null;
-  readonly runTurn?: typeof runClaudeOneShotTurn;
 }): KbDaemonCurateAssistantHandler {
-  const runTurn = options.runTurn ?? runClaudeOneShotTurn;
   return async (request, { signal }) => {
     const active = options.readActiveRuntime();
     if (active === null) throw documentedCoralSetupError('startup_not_ready');
@@ -63,34 +71,21 @@ export function createKbCurateAssistantHandler(options: {
       providerRegistry: options.providerRegistry,
       runtime: options.runtime,
     });
-    const source = bound.credentialSource();
-    if (source.provider !== 'claude') throw new Error('Claude binding produced a foreign execution source.');
-
-    return runTurn(
-      {
-        storage: options.runtime.storage,
-        ids: options.runtime.ids,
-        providerContext: {
-          source,
-          brokerEnv: buildExactProviderEnv({
-            baseEnv: options.runtime.env.fullSnapshot(),
-            platform: options.runtime.env.platform(),
-          }),
-          controllerEnv: buildExactProviderEnv({
-            baseEnv: options.runtime.env.fullSnapshot(),
-            source,
-            platform: options.runtime.env.platform(),
-          }),
-          projectsRoot: source.projectsRoot,
-        },
-        acquireServer: active.acquireServer,
-      },
+    const curation = requireCurationCapability(bound);
+    return curation.complete(
       {
         cwd: options.runtime.env.cwd(),
         prompt: request.prompt,
         ...(request.model === undefined ? {} : { model: request.model }),
         ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
         signal,
+      },
+      {
+        storage: options.runtime.storage,
+        ids: options.runtime.ids,
+        baseEnv: options.runtime.env.fullSnapshot(),
+        platform: options.runtime.env.platform(),
+        acquireServer: active.acquireServer,
       },
     );
   };
@@ -119,11 +114,8 @@ export function createKbCurateUsageBudgetHandler(options: {
       runtime: options.runtime,
     });
     signal.throwIfAborted();
-    const source = bound.credentialSource();
-    if (source.provider !== 'claude') throw new Error('Claude binding produced a foreign execution source.');
-    return isUsageBudgetExhausted({
+    return requireCurationCapability(bound).isUsageBudgetExhausted({
       storage: options.runtime.storage,
-      claudeConfigDir: source.configDir,
       now: options.runtime.time.now,
     });
   };

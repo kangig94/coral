@@ -7,20 +7,48 @@ import {
   createKbCurateAssistantHandler,
   createKbCurateUsageBudgetHandler,
 } from '#src/coordinator/services/kb-curate-assistant.js';
-import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import type { ProviderBindingFailure } from '#src/providers/contracts/binding.js';
 import type { SystemProviderScope } from '#src/infra/provider-scope.js';
+import type { ProviderCurationCapability } from '#src/providers/contract.js';
+import { isClaudeCurationUsageBudgetExhausted } from '#src/providers/claude/usage-budget.js';
 
 function claudeSystemScope(scope: SystemProviderScope = TEST_SYSTEM_PROVIDER_SCOPE): SystemProviderScope {
   return { ...scope, profiles: scope.profiles.filter((profile) => profile.provider === 'claude') };
 }
 
-function createClaudeRegistry(readinessFailure?: ProviderBindingFailure): ProviderRegistry {
+function createClaudeRegistry(
+  options: {
+    readonly readinessFailure?: ProviderBindingFailure;
+    readonly complete?: ProviderCurationCapability<FixtureProviderSource>['complete'];
+    readonly includeCuration?: boolean;
+  } = {},
+): ProviderRegistry {
   const registry = new ProviderRegistry();
+  const curation: ProviderCurationCapability<FixtureProviderSource> = {
+    complete: options.complete ?? (async () => 'curated'),
+    isUsageBudgetExhausted(runtime) {
+      return isClaudeCurationUsageBudgetExhausted({
+        configDir: runtime.source.root,
+        runtime,
+      });
+    },
+  };
   registry.register(
-    defineProvider({ name: 'claude', run: async function* () {} })
-      .binding(fixtureProviderBindingCodec('claude', readinessFailure === undefined ? {} : { readinessFailure }))
+    defineProvider({
+      name: 'claude',
+      run: async function* () {},
+      prepareExecutionContext: prepareFixtureExecutionContext,
+      ...(options.includeCuration === false ? {} : { curation }),
+    })
+      .binding(
+        fixtureProviderBindingCodec(
+          'claude',
+          options.readinessFailure === undefined ? {} : { readinessFailure: options.readinessFailure },
+        ),
+      )
       .artifacts(none('test'))
       .build(),
   );
@@ -45,13 +73,12 @@ describe('KB curate assistant provider scope', () => {
     const runTurn = vi.fn(async () => 'unused');
     const handler = createKbCurateAssistantHandler({
       runtime: createRealRuntime('prod'),
-      providerRegistry: createClaudeRegistry(),
+      providerRegistry: createClaudeRegistry({ complete: runTurn }),
       readActiveRuntime: () => ({
         acquireServer: async () => {
           throw new Error('must not acquire');
         },
       }),
-      runTurn,
     });
 
     await expect(handler(request(), { signal: new AbortController().signal })).rejects.toMatchObject({
@@ -72,26 +99,24 @@ describe('KB curate assistant provider scope', () => {
     );
     const handler = createKbCurateAssistantHandler({
       runtime: createRealRuntime('prod'),
-      providerRegistry: createClaudeRegistry(),
+      providerRegistry: createClaudeRegistry({ complete: runTurn }),
       readActiveRuntime: () => ({
         systemProviderScope: systemScope,
         acquireServer: async () => {
           throw new Error('stubbed runner must not acquire');
         },
       }),
-      runTurn,
     });
 
     await expect(handler(request(), { signal: new AbortController().signal })).resolves.toBe('curated');
     expect(runTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        providerContext: expect.objectContaining({
-          source: expect.objectContaining({ provider: 'claude', configDir: '/system/claude' }),
-          controllerEnv: expect.objectContaining({ CLAUDE_CONFIG_DIR: '/system/claude' }),
-          projectsRoot: '/system/claude/projects',
-        }),
-      }),
       expect.objectContaining({ prompt: 'curate this', model: 'claude-test' }),
+      expect.objectContaining({
+        source: {
+          root: '/system/claude',
+          routingEnv: { CLAUDE_CONFIG_DIR: '/system/claude' },
+        },
+      }),
     );
   });
 
@@ -100,9 +125,12 @@ describe('KB curate assistant provider scope', () => {
     const handler = createKbCurateAssistantHandler({
       runtime: createRealRuntime('prod'),
       providerRegistry: createClaudeRegistry({
-        reason: 'profile-unavailable',
-        provider: 'claude',
-        selector: 'configured fixture',
+        complete: runTurn,
+        readinessFailure: {
+          reason: 'profile-unavailable',
+          provider: 'claude',
+          selector: 'configured fixture',
+        },
       }),
       readActiveRuntime: () => ({
         systemProviderScope: claudeSystemScope(),
@@ -110,7 +138,6 @@ describe('KB curate assistant provider scope', () => {
           throw new Error('must not acquire');
         },
       }),
-      runTurn,
     });
 
     await expect(handler(request(), { signal: new AbortController().signal })).rejects.toMatchObject({
@@ -118,6 +145,23 @@ describe('KB curate assistant provider scope', () => {
       userMessage: 'claude fixture binding failed: profile-unavailable',
     });
     expect(runTurn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a bound provider that does not own curation execution', async () => {
+    const handler = createKbCurateAssistantHandler({
+      runtime: createRealRuntime('prod'),
+      providerRegistry: createClaudeRegistry({ includeCuration: false }),
+      readActiveRuntime: () => ({
+        systemProviderScope: claudeSystemScope(),
+        acquireServer: async () => {
+          throw new Error('must not acquire');
+        },
+      }),
+    });
+
+    await expect(handler(request(), { signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'provider_curation_unsupported',
+    });
   });
 
   it('reads usage only from the verified named system Claude profile', async () => {
@@ -165,15 +209,32 @@ describe('KB curate assistant provider scope', () => {
     const handler = createKbCurateUsageBudgetHandler({
       runtime,
       providerRegistry: createClaudeRegistry({
-        reason: 'profile-unavailable',
-        provider: 'claude',
-        selector: 'configured fixture',
+        readinessFailure: {
+          reason: 'profile-unavailable',
+          provider: 'claude',
+          selector: 'configured fixture',
+        },
       }),
       readActiveRuntime: () => ({ systemProviderScope: claudeSystemScope() }),
     });
 
     await expect(handler({ signal: new AbortController().signal })).rejects.toMatchObject({
       code: 'provider_binding_profile_unavailable',
+    });
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('never falls back to a generic quota reader when the bound provider has no curation capability', async () => {
+    const runtime = createRealRuntime('prod');
+    const readFile = vi.spyOn(runtime.storage, 'readFileSync');
+    const handler = createKbCurateUsageBudgetHandler({
+      runtime,
+      providerRegistry: createClaudeRegistry({ includeCuration: false }),
+      readActiveRuntime: () => ({ systemProviderScope: claudeSystemScope() }),
+    });
+
+    await expect(handler({ signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'provider_curation_unsupported',
     });
     expect(readFile).not.toHaveBeenCalled();
   });

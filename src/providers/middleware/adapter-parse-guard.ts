@@ -16,10 +16,10 @@ function buildParseGuardFailureCause(provider: string, detail: ParseErrorDetail)
   });
 }
 
-export function adapterParseGuard(
+export function adapterParseGuard<Context>(
   provider: string,
   classify: (err: unknown) => ParseErrorDetail | null,
-): ProviderMiddleware {
+): ProviderMiddleware<Context> {
   return (next) =>
     async function* adapterParseGuardProvider(request, runtime) {
       const startedAt = runtime.time.now();

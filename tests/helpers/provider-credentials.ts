@@ -1,23 +1,17 @@
-import type { ProviderCredentialSourceRef } from '#src/infra/provider-credential-sources.js';
 import type { ProviderScope } from '#src/infra/provider-scope.js';
-import type { ProviderExecutionContext } from '#src/providers/contract.js';
+import type { ClaudeCredentialSource, ClaudeExecutionContext } from '#src/providers/claude/execution-context.js';
+import type { CodexCredentialSource, CodexExecutionContext } from '#src/providers/codex/execution-context.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 
 export const TEST_CODEX_SOURCE = {
-  version: 1,
-  provider: 'codex',
-  kind: 'home',
   home: '/home/user/.codex',
-} as const satisfies ProviderCredentialSourceRef;
+} as const satisfies CodexCredentialSource;
 
 export const TEST_CLAUDE_SOURCE = {
-  version: 1,
-  provider: 'claude',
-  kind: 'config-dir',
   configDir: '/home/user/.claude',
   projectsRoot: '/home/user/.claude/projects',
-  emitConfigDir: true,
-} as const satisfies ProviderCredentialSourceRef;
+  routing: { kind: 'config-dir' },
+} as const satisfies ClaudeCredentialSource;
 
 export const TEST_CODEX_BINDING = {
   provider: 'codex',
@@ -103,15 +97,14 @@ export function withTestBindingLocation(
 }
 
 export const TEST_CODEX_CONTEXT = {
-  provider: 'codex',
   source: TEST_CODEX_SOURCE,
   appServerEnv: { CODEX_HOME: TEST_CODEX_SOURCE.home },
-} as const satisfies ProviderExecutionContext;
+  platform: 'linux',
+} as const satisfies CodexExecutionContext;
 
 export const TEST_CLAUDE_CONTEXT = {
-  provider: 'claude',
   source: TEST_CLAUDE_SOURCE,
   brokerEnv: {},
   controllerEnv: { CLAUDE_CONFIG_DIR: TEST_CLAUDE_SOURCE.configDir },
   projectsRoot: TEST_CLAUDE_SOURCE.projectsRoot,
-} as const satisfies ProviderExecutionContext;
+} as const satisfies ClaudeExecutionContext;

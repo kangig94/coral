@@ -1,13 +1,7 @@
 import { resolve } from 'node:path';
 
-import type {
-  EffortLevel,
-  ProviderInstruction,
-  ProviderPreflightRuntime,
-  ProviderSpec,
-} from '../../providers/contract.js';
-import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
-import { buildExactProviderEnv } from '../../providers/execution-context.js';
+import type { EffortLevel, ProviderInstruction, ProviderPreflightInput } from '../../providers/contract.js';
+import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { type JobLaunchRequest, type RejectedLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
@@ -198,38 +192,29 @@ export function serializeWorkflowResult(details: StepDetail[]): {
 
 export function toPreflightRuntime(
   runtime: Runtime,
-  credentialSource: ProviderCredentialSourceRef,
   cwd: string,
   requestEnv: Readonly<Record<string, string>>,
-): ProviderPreflightRuntime {
+): Omit<ProviderPreflightInput, 'credentialSource'> {
   const absoluteCwd = resolve(runtime.env.cwd(), cwd || '.');
-  const exactEnv = buildExactProviderEnv({
-    baseEnv: runtime.env.fullSnapshot(),
-    requestEnv,
-    source: credentialSource,
-    platform: runtime.env.platform(),
-  });
   return {
     process: runtime.process,
     storage: runtime.storage,
     env: runtime.env,
     time: runtime.time,
-    credentialSource,
     cwd: absoluteCwd,
-    runExact: (command, args, options = {}) =>
-      runtime.process.exec(command, args, { ...options, cwd: absoluteCwd, env: { ...exactEnv } }),
+    baseEnv: runtime.env.fullSnapshot(),
+    requestEnv: Object.freeze({ ...requestEnv }),
+    platform: runtime.env.platform(),
   };
 }
 
 export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
 
-function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPreflightRuntime): Promise<void> {
+function runPreflightWithTimeout(
+  provider: BoundProvider,
+  runtime: Omit<ProviderPreflightInput, 'credentialSource'>,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    if (!provider.preflight) {
-      resolve();
-      return;
-    }
-
     let settled = false;
     const timeout = runtime.time.setTimeout(() => {
       if (settled) {
@@ -241,7 +226,7 @@ function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPrefli
     timeout.unref?.();
 
     Promise.resolve()
-      .then(() => provider.preflight?.(runtime))
+      .then(() => provider.preflight(runtime))
       .then(
         () => {
           if (settled) {
@@ -264,10 +249,9 @@ function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPrefli
 }
 
 export async function runProviderPreflight(
-  provider: ProviderSpec,
-  runtime: ProviderPreflightRuntime,
+  provider: BoundProvider,
+  runtime: Omit<ProviderPreflightInput, 'credentialSource'>,
 ): Promise<string | null> {
-  if (!provider.preflight) return null;
   try {
     await runPreflightWithTimeout(provider, runtime);
     return null;

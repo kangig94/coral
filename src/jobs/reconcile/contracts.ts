@@ -2,24 +2,51 @@ import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput } from '
 import type { JobPhase } from '../phase.js';
 import type { TerminalWriteOptions } from '../contracts/job-store.js';
 import type { ProviderArtifactHandleInput } from '../../providers/contract.js';
-import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
+import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { LaunchPool } from '../contracts/admission.js';
+import type { BoundProvider } from '../../providers/bound-provider-contract.js';
+
+export type ProviderRecoveryLaunch = JobLaunch & {
+  readonly sessionId: string;
+  readonly provider: string;
+  readonly jobKind: 'provider';
+};
+
+/** The minimal captured session facts required after recovery authority validation. */
+export type ProviderRecoverySession = Readonly<{
+  sessionId: string;
+  projectRoot: string;
+  conversationRef?: string;
+  providerContinuity: ProviderContinuityBlob | null;
+  artifactHandles: readonly Readonly<{
+    handle: string;
+    identity: ProviderArtifactIdentity;
+    sourceJobId: string;
+  }>[];
+  version: number;
+}>;
+
+export type ProviderRecoveryAuthority = Readonly<{
+  launchRecord: ProviderRecoveryLaunch;
+  session: ProviderRecoverySession;
+  boundProvider: BoundProvider;
+}>;
 
 export interface RecoveryCapableService {
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<boolean>;
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): Promise<ProviderCredentialSourceRef | null>;
+  captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthority | null>;
   finalizeInterruptedAppServerJob(
-    launchRecord: JobLaunch,
+    authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void>;
   adoptRunningJob(
-    launchRecord: JobLaunch,
+    authority: ProviderRecoveryAuthority,
     runtimeRecord: JobRuntime,
   ): Promise<{ adopted: boolean; cleanup: () => void }>;
-  recoverQueuedJob(launchRecord: JobLaunch): Promise<string>;
-  interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void>;
+  recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string>;
+  interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void>;
   recordRecoveredArtifactHandles(
     sessionId: string,
     input: {

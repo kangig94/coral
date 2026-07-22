@@ -6,7 +6,6 @@ import type { LaunchPool } from '../../jobs/contracts/admission.js';
 import type { DurableProcessExit } from '../../runtime/durable-runtime.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { windowsCommandName } from '../../infra/windows-shell.js';
 import { gracefulKillByPid } from './process-supervision.js';
 
 const IDLE_TIMEOUT = 10 * 60 * 1000;
@@ -60,7 +59,7 @@ export async function spawnDurableJobTransport(params: {
 
     const durable = await runtime.process.durable.launch({
       provider: options.provider,
-      command: windowsCommandName(options.command, runtime.env.platform()),
+      command: options.command,
       args: options.args,
       prompt: options.prompt,
       cwd: options.cwd,

@@ -41,6 +41,7 @@ import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 import type { CauseRef } from '#src/causality/cause-ref.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
@@ -96,6 +97,7 @@ function createHarness(
     defineProvider({
       name: 'codex',
       run: noopProvider,
+      prepareExecutionContext: prepareFixtureExecutionContext,
       ...(options.interruptedRecovery
         ? {
             appServer: {
@@ -1091,17 +1093,15 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
-        providerRegistry: harness.providerRegistry,
         createInvocationContext: (projectRoot) => ({
           projectRoot,
           pluginRoot: projectRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
         }),
-        getRecoveryService: () =>
-          ({
-            validateProviderRecoveryAuthority: () => true,
-          }) as never,
+        getRecoveryService: () => {
+          throw new Error('markError must not fabricate or capture provider recovery authority');
+        },
         sessionLookup: createProjectionSessionLookup(harness.db),
         emitSessionReleased: () => {},
         coordinatorCommit: harness.coordinatorCommit,
@@ -1135,7 +1135,6 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
-        providerRegistry: harness.providerRegistry,
         createInvocationContext: (projectRoot) => ({
           projectRoot,
           pluginRoot: projectRoot,
@@ -1253,7 +1252,9 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     });
 
-    await recoveryService.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
+    const recoveryAuthority = await recoveryService.captureProviderRecoveryAuthority(launchRecord);
+    if (recoveryAuthority === null) throw new Error('Expected provider recovery authority.');
+    await recoveryService.finalizeInterruptedAppServerJob(recoveryAuthority, runtimeRecord, { reason: 'restart' });
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },

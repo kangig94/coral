@@ -1,13 +1,12 @@
 import { bindProviderRunner, type ProviderDurableSpawner } from '../../providers/cli-runner.js';
-import { buildProviderExecutionContext } from '../../providers/execution-context.js';
 import type {
   ProviderEventBody,
   ProviderRequest,
   ProviderRuntime,
-  ProviderSpec,
   ProviderServerLease,
   ProviderServerSpec,
 } from '../../providers/contract.js';
+import type { BoundProvider, BoundProviderPreparedExecution } from '../../providers/bound-provider-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -43,7 +42,6 @@ import { TerminalWriteError } from '../terminal/write-error.js';
 import { buildJobEventRefs } from '../refs.js';
 import { resolveEquippedTools } from '../../expansion/equipped-tools.js';
 import { applyInjectBundle } from '../../providers/inject.js';
-import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
 import { ProviderBindingRuntimeError } from '../../providers/contracts/binding.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import { jobLaunchRequestedEvent } from '../store.js';
@@ -248,7 +246,7 @@ export class LaunchOrchestrator {
   }
 
   launchInitialProviderJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     preparedSession: ProviderSession,
     request: ProviderRequest,
     opts: Omit<ProviderLaunchOptions, 'protectedEnv'> & {
@@ -343,7 +341,7 @@ export class LaunchOrchestrator {
   }
 
   private buildProviderLaunch(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -398,7 +396,7 @@ export class LaunchOrchestrator {
   }
 
   launchResumedProviderJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     session: ProviderSession,
     request: ProviderRequest,
     opts: ProviderLaunchOptions & {
@@ -483,7 +481,7 @@ export class LaunchOrchestrator {
   }
 
   launchWorkflowReplacement(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     session: ProviderSession,
     request: ProviderRequest,
     opts: {
@@ -572,7 +570,7 @@ export class LaunchOrchestrator {
   }
 
   private activateCommittedProviderLaunch(input: {
-    provider: ProviderSpec;
+    provider: BoundProvider;
     sessionId: string;
     jobId: string;
     request: ProviderRequest;
@@ -639,7 +637,7 @@ export class LaunchOrchestrator {
   }
 
   runAsync(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     sessionId: string,
     jobId: string,
     request: ProviderRequest,
@@ -701,7 +699,7 @@ export class LaunchOrchestrator {
   }
 
   runRecoveredQueuedJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     launchRecord: JobLaunch,
     admission: QueuedHandle,
     pool: LaunchPool,
@@ -830,7 +828,7 @@ export class LaunchOrchestrator {
   }
 
   private async executeJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     request: ProviderRequest,
     jobId: string,
     sessionId: string,
@@ -845,38 +843,52 @@ export class LaunchOrchestrator {
         `Provider session ${sessionId} has no binding.`,
       );
     }
-    const binding = this.deps.providerRegistry.rehydrateBinding(session.binding);
-    if (!binding.ok || binding.value.provider !== provider.name) {
-      const failure = binding.ok
-        ? { reason: 'invalid-persisted-binding' as const, provider: provider.name }
-        : binding.failure;
+    const identity = provider.compareIdentity(session.binding);
+    if (!identity.ok) {
+      const failure = identity.failure;
       throw new ProviderBindingRuntimeError(failure, this.deps.providerRegistry.renderBindingFailure(failure));
     }
-    const readiness = await binding.value.readiness('launch', this.deps.runtime.storage);
+    const readiness = await provider.readiness('launch', this.deps.runtime.storage);
     if (!readiness.ok) {
       throw new ProviderBindingRuntimeError(
         readiness.failure,
         this.deps.providerRegistry.renderBindingFailure(readiness.failure),
       );
     }
+    const equippedTools = resolveEquippedTools(this.deps.runtime);
+    const requestWithInject = applyInjectBundle(request, {
+      storage: this.deps.runtime.storage,
+      kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
+      equippedTools,
+      ...(request.cwd
+        ? {
+            coralProjects: this.deps.runtime.paths.projectData(request.cwd),
+            projectSource: this.deps.runtime.paths.projectSource(request.cwd),
+          }
+        : {}),
+    });
+    const prepared = provider.prepareExecution({
+      request: requestWithInject,
+      baseEnv: this.deps.runtime.env.fullSnapshot(),
+      protectedEnv,
+      platform: this.deps.runtime.env.platform(),
+    });
     const runtime = this.createProviderRuntime(
       provider,
-      binding.value.credentialSource(),
-      request,
+      prepared,
+      requestWithInject,
       sessionId,
       jobId,
       signal,
       pool,
-      protectedEnv,
+      equippedTools,
     );
-    // Provider-agnostic inject bundle: merge into systemPrompt once for every adapter.
-    const requestWithInject = applyInjectBundle(request, runtime);
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
     const consumed = await consumeJobStream({
       jobId,
       sessionId,
       initialVersion,
-      stream: provider.run(requestWithInject, runtime),
+      stream: prepared.execute(runtime),
       sessionApi: {
         checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
           if (this.quiescedAppServerJobs.has(jobId)) {
@@ -995,22 +1007,15 @@ export class LaunchOrchestrator {
   }
 
   private createProviderRuntime(
-    provider: ProviderSpec,
-    credentialSource: ProviderCredentialSourceRef,
+    provider: BoundProvider,
+    prepared: BoundProviderPreparedExecution,
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
     signal: AbortSignal,
     pool: LaunchPool,
-    protectedEnv?: Record<string, string>,
-  ): ProviderRuntime {
-    const providerContext = buildProviderExecutionContext({
-      source: credentialSource,
-      request,
-      baseEnv: this.deps.runtime.env.fullSnapshot(),
-      protectedEnv,
-      platform: this.deps.runtime.env.platform(),
-    });
+    equippedTools: ReturnType<typeof resolveEquippedTools>,
+  ): Omit<ProviderRuntime<never>, 'providerContext'> {
     const runCli = bindProviderRunner(
       this.deps.durableSpawner,
       provider.name,
@@ -1022,14 +1027,8 @@ export class LaunchOrchestrator {
       },
     );
     return {
-      providerContext,
       signal,
-      runCli: (cliRequest) =>
-        runCli({
-          ...cliRequest,
-          exactEnv: providerContext.provider === 'codex' ? providerContext.appServerEnv : providerContext.controllerEnv,
-          extraEnv: undefined,
-        }),
+      runCli: (cliRequest) => runCli(prepared.prepareCliRequest(cliRequest)),
       time: this.deps.runtime.time,
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,
@@ -1041,7 +1040,7 @@ export class LaunchOrchestrator {
       persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
-      equippedTools: resolveEquippedTools(this.deps.runtime),
+      equippedTools,
       // Empty cwd is not a project root: treat it as absent so inject fragment
       // placeholders stay unsubstituted rather than resolving `local/` from ''.
       ...(request.cwd

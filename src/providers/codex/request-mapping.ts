@@ -15,6 +15,7 @@ import { isRecord, readString } from '../../infra/json.js';
 import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 import type { RecoverableTurnFailure } from './turn-recovery.js';
+import type { CodexExecutionContext } from './execution-context.js';
 
 type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
 
@@ -402,13 +403,11 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
  * the scan halts at the first section header.
  */
 function readCodexConfigServiceTier(
-  runtime: Pick<ProviderRuntime, 'providerContext' | 'storage'>,
+  runtime: Pick<ProviderRuntime<CodexExecutionContext>, 'providerContext' | 'storage'>,
 ): CodexServiceTier | undefined {
   if (!runtime.storage) {
     return undefined;
   }
-  if (runtime.providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
-
   const configPath = join(runtime.providerContext.source.home, 'config.toml');
   // Set only when statSync succeeds; stays undefined when stat throws a
   // non-ENOENT/EACCES error but readFileSync still works, so both cache-write
@@ -461,7 +460,7 @@ function readCodexConfigServiceTier(
 
 export function resolveCodexServiceTier(
   request: ProviderRequest,
-  runtime?: Pick<ProviderRuntime, 'providerContext' | 'storage'>,
+  runtime?: Pick<ProviderRuntime<CodexExecutionContext>, 'providerContext' | 'storage'>,
 ): CodexServiceTier | undefined {
   const rawEnvTier = request.coralEnv['CORAL_CODEX_FAST'];
   // Blank env = unset; fall through to config.toml. Non-blank but unrecognized = explicit rejection (no fallback).

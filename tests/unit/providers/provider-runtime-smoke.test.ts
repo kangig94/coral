@@ -10,11 +10,16 @@ import type {
   ProviderRequest,
   ProviderRuntime,
   ProviderServerLease,
-  ProviderSpec,
 } from '#src/providers/contract.js';
+import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
+import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { TEST_CLAUDE_CONTEXT, TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
+import {
+  TEST_CLAUDE_BINDING,
+  TEST_CODEX_BINDING,
+  withTestBindingLocation,
+} from '../../helpers/provider-credentials.js';
 
 const REGISTERED_PROVIDER_NAMES = ['claude', 'codex'] as const;
 type RegisteredProviderName = (typeof REGISTERED_PROVIDER_NAMES)[number];
@@ -33,7 +38,9 @@ type MockLease = ProviderServerLease & {
   subscribeMock: ReturnType<typeof vi.fn>;
 };
 
-type SmokeRuntime = ProviderRuntime & {
+type PreparedRuntime = Omit<ProviderRuntime<never>, 'providerContext'>;
+
+type SmokeRuntime = PreparedRuntime & {
   controller: AbortController;
   acquireServer: ReturnType<typeof vi.fn>;
   runCli: ReturnType<typeof vi.fn>;
@@ -73,13 +80,12 @@ function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) =>
 }
 
 function makeRuntime(options: {
-  providerContext: ProviderRuntime['providerContext'];
   controller?: AbortController;
-  persistedContinuity?: ProviderRuntime['persistedContinuity'];
+  persistedContinuity?: PreparedRuntime['persistedContinuity'];
   runCliImpl?: ProviderCliRunner;
   acquireServerImpl?: () => Promise<ProviderServerLease>;
-  env?: ProviderRuntime['env'];
-  storage?: ProviderRuntime['storage'];
+  env?: PreparedRuntime['env'];
+  storage?: PreparedRuntime['storage'];
 }): SmokeRuntime {
   const controller = options.controller ?? new AbortController();
   const runCli = vi.fn<ProviderCliRunner>(
@@ -107,7 +113,7 @@ function makeRuntime(options: {
     },
     runCli,
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: options.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    storage: options.storage ?? ({ existsSync: () => true } as unknown as PreparedRuntime['storage']),
     env: options.env,
     acquireServer,
     persistedContinuity: options.persistedContinuity,
@@ -116,7 +122,6 @@ function makeRuntime(options: {
       transportClosed: vi.fn(),
     },
     kbRoot: '/mock/kb',
-    providerContext: options.providerContext,
   };
 }
 
@@ -133,13 +138,22 @@ function makeRequest(provider: RegisteredProviderName, overrides: Partial<Provid
   };
 }
 
-function getProductionProvider(name: RegisteredProviderName): ProviderSpec {
-  const provider = createBuiltInProviderRegistry().get(name);
-  if (!provider) {
-    throw new Error(`Expected built-in provider ${name} to be registered.`);
-  }
+function getProductionProvider(
+  name: RegisteredProviderName,
+  binding: ProviderBindingEnvelope = name === 'claude' ? TEST_CLAUDE_BINDING : TEST_CODEX_BINDING,
+): BoundProvider {
+  const provider = createBuiltInProviderRegistry().rehydrateBinding(binding);
+  if (!provider.ok || provider.value.name !== name) throw new Error(`Expected built-in provider ${name} to bind.`);
+  return provider.value;
+}
 
-  return provider;
+function executeProvider(provider: BoundProvider, request: ProviderRequest, runtime: PreparedRuntime) {
+  const prepared = provider.prepareExecution({
+    request,
+    baseEnv: {},
+    platform: process.platform,
+  });
+  return prepared.execute(runtime);
 }
 
 function isTerminalEvent(event: ProviderEventBody): event is Extract<ProviderEventBody, { kind: 'terminal' }> {
@@ -208,12 +222,9 @@ describe('provider runtime smoke', () => {
           }
           throw new Error(`Unexpected Claude smoke RPC: ${method}`);
         });
-        const runtime = makeRuntime({
-          providerContext: TEST_CLAUDE_CONTEXT,
-          acquireServerImpl: async () => lease,
-        });
+        const runtime = makeRuntime({ acquireServerImpl: async () => lease });
 
-        const eventsPromise = collectProviderEvents(provider.run(makeRequest('claude'), runtime));
+        const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
         await vi.waitFor(() => {
           expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -267,12 +278,9 @@ describe('provider runtime smoke', () => {
         }
         throw new Error(`Unexpected Codex smoke RPC: ${method}`);
       });
-      const runtime = makeRuntime({
-        providerContext: TEST_CODEX_CONTEXT,
-        acquireServerImpl: async () => lease,
-      });
+      const runtime = makeRuntime({ acquireServerImpl: async () => lease });
 
-      const eventsPromise = collectProviderEvents(provider.run(makeRequest('codex'), runtime));
+      const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('codex'), runtime));
 
       await vi.waitFor(() => {
         expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -335,13 +343,9 @@ describe('provider runtime smoke', () => {
       }
       throw new Error(`Unexpected Claude abort RPC: ${method}`);
     });
-    const runtime = makeRuntime({
-      providerContext: TEST_CLAUDE_CONTEXT,
-      controller,
-      acquireServerImpl: async () => lease,
-    });
+    const runtime = makeRuntime({ controller, acquireServerImpl: async () => lease });
 
-    const eventsPromise = collectProviderEvents(provider.run(makeRequest('claude'), runtime));
+    const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -375,7 +379,10 @@ describe('provider runtime smoke', () => {
   });
 
   it('retries Claude JSONL artifact discovery after the transcript appears', async () => {
-    const provider = getProductionProvider('claude');
+    const provider = getProductionProvider(
+      'claude',
+      withTestBindingLocation(TEST_CLAUDE_BINDING, '/home/tester/.claude'),
+    );
     let artifactVisible = false;
     const lease = makeLease(async (method) => {
       if (method === 'session/ensure') {
@@ -396,26 +403,15 @@ describe('provider runtime smoke', () => {
       throw new Error(`Unexpected Claude artifact RPC: ${method}`);
     });
     const runtime = makeRuntime({
-      providerContext: {
-        ...TEST_CLAUDE_CONTEXT,
-        source: {
-          ...TEST_CLAUDE_CONTEXT.source,
-          configDir: '/home/tester/.claude',
-          projectsRoot: '/home/tester/.claude/projects',
-        },
-        controllerEnv: { CLAUDE_CONFIG_DIR: '/home/tester/.claude' },
-        projectsRoot: '/home/tester/.claude/projects',
-      },
       acquireServerImpl: async () => lease,
       env: {
         homedir: () => '/home/tester',
-        claudeConfigDir: () => '/home/tester/.claude',
         fullSnapshot: () => ({}),
         get: () => undefined,
       },
       storage: {
         readFileSync: () => '',
-        statSync: () => ({}) as ReturnType<ProviderRuntime['storage']['statSync']>,
+        statSync: () => ({}) as ReturnType<PreparedRuntime['storage']['statSync']>,
         existsSync: (path: string) => path === '/home/tester/.claude/projects',
         readdirSync: (path: string) => {
           if (path === '/home/tester/.claude/projects') {
@@ -426,10 +422,10 @@ describe('provider runtime smoke', () => {
           }
           return [];
         },
-      } as unknown as ProviderRuntime['storage'],
+      } as unknown as PreparedRuntime['storage'],
     });
 
-    const eventsPromise = collectProviderEvents(provider.run(makeRequest('claude'), runtime));
+    const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));
@@ -484,13 +480,9 @@ describe('provider runtime smoke', () => {
       }
       throw new Error(`Unexpected Codex abort RPC: ${method}`);
     });
-    const runtime = makeRuntime({
-      providerContext: TEST_CODEX_CONTEXT,
-      controller,
-      acquireServerImpl: async () => lease,
-    });
+    const runtime = makeRuntime({ controller, acquireServerImpl: async () => lease });
 
-    const eventsPromise = collectProviderEvents(provider.run(makeRequest('codex'), runtime));
+    const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('codex'), runtime));
 
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object));

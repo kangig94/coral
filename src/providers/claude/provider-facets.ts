@@ -1,24 +1,24 @@
 import { dirname, join } from 'node:path';
 
-import { detectClaudeCli } from '../cli-detection.js';
+import { detectClaudeCli } from './cli-detection.js';
 import type { ProviderPreflightRuntime, ProviderAppServerContract, ProviderRecoveryContract } from '../contract.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
-import { providerRoutingEnv, UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../infra/provider-credential-sources.js';
+import { claudeRoutingEnv, type ClaudeCredentialSource, type ClaudeExecutionContext } from './execution-context.js';
+import { CLAUDE_CREDENTIAL_ENV_KEYS } from './credential-policy.js';
 
 const UNSUPPORTED_CLAUDE_HELPER_SETTINGS = Object.freeze(
   new Set(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport']),
 );
 
-function claudeConfigRoot(runtime: ProviderPreflightRuntime): string {
-  if (runtime.credentialSource.provider !== 'claude') throw new Error('Claude credential source required.');
+function claudeConfigRoot(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): string {
   return runtime.credentialSource.configDir;
 }
 
-function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void {
+function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): void {
   const settingsPaths = new Map<string, 'selected-profile' | 'project'>([
     [join(claudeConfigRoot(runtime), 'settings.json'), 'selected-profile'],
   ]);
@@ -67,7 +67,7 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void 
     for (const [key, value] of Object.entries(configuredEnv as Record<string, unknown>)) {
       const selectorKey = key.toUpperCase();
       if (
-        UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS.has(selectorKey) &&
+        CLAUDE_CREDENTIAL_ENV_KEYS.has(selectorKey) &&
         ((typeof value === 'string' && value.trim().length > 0) ||
           (typeof value !== 'string' && value !== null && value !== undefined))
       ) {
@@ -79,10 +79,9 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void 
   }
 }
 
-export async function claudePreflight(runtime: ProviderPreflightRuntime): Promise<void> {
-  if (runtime.credentialSource.provider !== 'claude') throw new Error('Claude credential source required.');
+export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): Promise<void> {
   assertSupportedClaudeSettings(runtime);
-  const routingEnv = providerRoutingEnv(runtime.credentialSource);
+  const routingEnv = claudeRoutingEnv(runtime.credentialSource);
   const cli = await detectClaudeCli(
     { exec: (command, args, options) => runtime.runExact(command, args, options) },
     { get: (key) => routingEnv[key] },
@@ -91,15 +90,14 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime): Promis
     throw new Error(`Claude CLI not available: ${cli.error}`);
   }
   if (cli.authState === 'unauthenticated') {
-    throw new Error(`Claude CLI unauthenticated: ${cli.authError}`);
+    throw new Error(cli.authError);
   }
 }
 
-export const claudeAppServerLifecycle: ProviderAppServerContract = {
+export const claudeAppServerLifecycle: ProviderAppServerContract<ClaudeExecutionContext> = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
   buildServerSpec(request, _persistedContinuity, ports, providerContext) {
-    if (providerContext.provider !== 'claude') throw new Error('Claude provider context required.');
     return buildClaudeProviderServerSpec(request, ports.storage, providerContext.brokerEnv);
   },
 };

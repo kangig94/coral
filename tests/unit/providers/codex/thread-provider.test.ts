@@ -7,6 +7,7 @@ import type {
   ProviderServerLease,
 } from '#src/providers/contract.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
+import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
 
@@ -66,14 +67,16 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
+type CodexRuntime = ProviderRuntime<CodexExecutionContext>;
+
 function makeRuntime(
   lease: ProviderServerLease,
-  persistedContinuity: ProviderRuntime['persistedContinuity'] = {
+  persistedContinuity: CodexRuntime['persistedContinuity'] = {
     cwd: '/workspace/persisted',
     threadId: 'thread-1',
   },
-  overrides: Partial<Pick<ProviderRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge'>> = {},
-): ProviderRuntime & { acquireServer: ReturnType<typeof vi.fn> } {
+  overrides: Partial<Pick<CodexRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge'>> = {},
+): CodexRuntime & { acquireServer: ReturnType<typeof vi.fn> } {
   return {
     signal: overrides.signal ?? new AbortController().signal,
     time: {
@@ -84,7 +87,7 @@ function makeRuntime(
       },
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
     ...(overrides.env ? { env: overrides.env } : {}),
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
     acquireServer: vi.fn(async () => lease),
@@ -94,7 +97,7 @@ function makeRuntime(
       ({
         checkpoint: () => {},
         transportClosed: () => {},
-      } satisfies ProviderRuntime['continuityBridge']),
+      } satisfies CodexRuntime['continuityBridge']),
     kbRoot: '/mock/kb',
     providerContext: TEST_CODEX_CONTEXT,
   };
@@ -1136,20 +1139,19 @@ describe('codexThreadProvider', () => {
       {
         env: {
           homedir: () => '/home/test',
-          claudeConfigDir: () => '/home/test/.claude',
           fullSnapshot: () => ({}),
           get: () => undefined,
         },
         storage: {
           existsSync,
-          readdirSync: (() => []) as ProviderRuntime['storage']['readdirSync'],
-          readFileSync: (() => '') as ProviderRuntime['storage']['readFileSync'],
+          readdirSync: (() => []) as CodexRuntime['storage']['readdirSync'],
+          readFileSync: (() => '') as CodexRuntime['storage']['readFileSync'],
           statSync: (() => ({
             size: 0,
             mtimeMs: 0,
             isDirectory: () => false,
             isFile: () => false,
-          })) as unknown as ProviderRuntime['storage']['statSync'],
+          })) as unknown as CodexRuntime['storage']['statSync'],
         },
       },
     );

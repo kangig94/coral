@@ -1,4 +1,5 @@
-import type { ProviderRequest, ProviderSpec } from '../../providers/contract.js';
+import type { ProviderRequest } from '../../providers/contract.js';
+import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import type { RetentionPolicy, ProviderSession } from '../../sessions/entry.js';
 import type { TerminalWriteOptions } from './job-store.js';
 import type { JobPhase } from '../phase.js';
@@ -11,7 +12,7 @@ import type { DiscussionRunDescriptor } from '../discussion-run.js';
 
 export interface ProviderJobLaunchPort {
   launchInitialProviderJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     preparedSession: ProviderSession,
     request: ProviderRequest,
     opts: {
@@ -30,7 +31,7 @@ export interface ProviderJobLaunchPort {
   ): ProviderSessionLaunchDecision;
 
   launchResumedProviderJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     session: ProviderSession,
     request: ProviderRequest,
     opts: {
@@ -51,7 +52,7 @@ export interface ProviderJobLaunchPort {
   ): ProviderSessionLaunchDecision;
 
   launchWorkflowReplacement(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     session: ProviderSession,
     request: ProviderRequest,
     opts: {
@@ -84,7 +85,7 @@ export interface WorkflowJobLifecyclePort {
 
 export interface RecoveredJobLifecyclePort {
   runRecoveredQueuedJob(
-    provider: ProviderSpec,
+    provider: BoundProvider,
     launchRecord: JobLaunch,
     queuedHandle: QueuedHandle,
     pool: LaunchPool,

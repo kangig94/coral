@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
+import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
 
 import { none } from '#src/providers/capability.js';
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
@@ -10,7 +11,7 @@ import {
   type ProviderBindingResult,
 } from '#src/providers/contracts/binding.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
-import type { RehydratedProviderBinding } from '#src/providers/registry.js';
+import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
@@ -26,7 +27,7 @@ const CLAUDE_BINDING_ENVELOPE = {
   },
 } as const;
 
-function successfulBinding(result: ProviderBindingResult<RehydratedProviderBinding>): RehydratedProviderBinding {
+function successfulBinding(result: ProviderBindingResult<BoundProvider>): BoundProvider {
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(`Unexpected binding failure: ${result.failure.reason}`);
   return result.value;
@@ -38,17 +39,31 @@ describe('provider binding registry boundary', () => {
 
     const binding = successfulBinding(registry.rehydrateBinding(CLAUDE_BINDING_ENVELOPE));
 
-    expect(binding.provider).toBe('claude');
+    expect(binding.name).toBe('claude');
     expect(binding.present()).toBe('Claude credential profile');
     expect(binding.present()).not.toContain('/accounts/claude-a');
     expect(Object.isFrozen(binding)).toBe(true);
-    expect(binding.credentialSource()).toMatchObject({
-      provider: 'claude',
-      configDir: '/accounts/claude-a',
-    });
+    expect(binding).not.toHaveProperty('credentialSource');
+    expect(
+      binding
+        .prepareExecution({
+          request: {
+            action: 'exec',
+            sessionId: 'session-a',
+            prompt: 'test',
+            cwd: '/workspace',
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          baseEnv: {},
+          platform: 'linux',
+        })
+        .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
+    ).toMatchObject({ CLAUDE_CONFIG_DIR: '/accounts/claude-a' });
     expect(binding.compareIdentity(binding.envelope)).toEqual({ ok: true, value: true });
     expectTypeOf(binding).not.toHaveProperty('profile');
     expectTypeOf(binding).not.toHaveProperty('subject');
+    expectTypeOf(binding).not.toHaveProperty('credentialSource');
   });
 
   it('rejects unknown providers, foreign payloads, and mismatched binding kinds', () => {
@@ -73,7 +88,7 @@ describe('provider binding registry boundary', () => {
     });
   });
 
-  it('renders an unregistered provider with the registered choices and routing help', () => {
+  it('renders an unregistered provider with the registered choices and configuration docs', () => {
     const registry = createBuiltInProviderRegistry();
 
     expect(
@@ -177,20 +192,21 @@ describe('provider binding registry boundary', () => {
   });
 
   it('rehydrates account bindings while keeping profile and subject private', () => {
-    const selectionSchema = z.object({ account: z.string().min(1) }).strict();
-    const profileSchema = z
-      .object({ canonicalLocation: z.string().min(1), routing: z.object({ kind: z.literal('fixture') }).strict() })
-      .strict();
-    const subjectSchema = z.object({ issuer: z.string().min(1), subject: z.string().min(1) }).strict();
-    const bindingSchema = z.object({ profile: profileSchema, subject: subjectSchema }).strict();
-    const codec: ProviderBindingCodec<
-      z.infer<typeof selectionSchema>,
-      z.infer<typeof profileSchema>,
-      z.infer<typeof subjectSchema>
-    > = {
-      selectionSchema,
-      profileSchema,
-      bindingSchema,
+    const createSelectionSchema = () => z.object({ account: z.string().min(1) }).strict();
+    const createProfileSchema = () =>
+      z
+        .object({ canonicalLocation: z.string().min(1), routing: z.object({ kind: z.literal('fixture') }).strict() })
+        .strict();
+    const createSubjectSchema = () => z.object({ issuer: z.string().min(1), subject: z.string().min(1) }).strict();
+    const createBindingSchema = () =>
+      z.object({ profile: createProfileSchema(), subject: createSubjectSchema() }).strict();
+    type Selection = z.infer<ReturnType<typeof createSelectionSchema>>;
+    type Profile = z.infer<ReturnType<typeof createProfileSchema>>;
+    type Subject = z.infer<ReturnType<typeof createSubjectSchema>>;
+    const codec: ProviderBindingCodec<Selection, Profile, Subject> = {
+      parseSelection: zodValueParser(createSelectionSchema),
+      parseProfile: zodValueParser(createProfileSchema),
+      persistedBinding: zodPersistedParser(createBindingSchema),
       bindingKind: 'account',
       captureSelection: () => bindingSuccess({ account: 'fixture' }),
       async canonicalizeProfile() {
@@ -223,7 +239,11 @@ describe('provider binding registry boundary', () => {
     };
     const registry = new ProviderRegistry();
     registry.register(
-      defineProvider({ name: 'account-fixture', run: async function* () {} })
+      defineProvider({
+        name: 'account-fixture',
+        run: async function* () {},
+        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+      })
         .binding(codec)
         .artifacts(none('fixture'))
         .build(),
@@ -288,7 +308,11 @@ describe('provider binding registry boundary', () => {
     };
     const registry = new ProviderRegistry();
     registry.register(
-      defineProvider({ name: 'receiver', run: async function* () {} })
+      defineProvider({
+        name: 'receiver',
+        run: async function* () {},
+        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+      })
         .binding(codec)
         .artifacts(none('receiver'))
         .build(),

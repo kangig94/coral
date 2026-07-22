@@ -9,6 +9,10 @@ import {
 } from '#src/providers/contract.js';
 import { TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
 
+type TestProviderContext = typeof TEST_CODEX_CONTEXT;
+type TestProvider = Provider<TestProviderContext>;
+type TestRuntime = ProviderRuntime<TestProviderContext>;
+
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
   sessionId: 'compose-terminal-once',
@@ -18,19 +22,19 @@ const BASE_REQUEST: ProviderRequest = {
   coralEnv: {},
 };
 
-const BASE_RUNTIME: ProviderRuntime = {
+const BASE_RUNTIME: TestRuntime = {
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
     now: () => 0,
     setTimeout: () => ({ unref: () => {} }),
     clearTimeout: () => {},
-  } as ProviderRuntime['time'],
+  } as TestRuntime['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
   acquireServer: async () => {
     throw new Error('not used in compose tests');
   },
-  storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+  storage: { existsSync: () => true } as unknown as TestRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
@@ -67,7 +71,7 @@ const WRAPPER_LOST_TERMINAL: ProviderEventBody = {
   diagnostics: {},
 };
 
-function fromEvents(events: readonly ProviderEventBody[]): Provider {
+function fromEvents(events: readonly ProviderEventBody[]): TestProvider {
   return async function* eventsProvider() {
     for (const event of events) {
       yield event;
@@ -131,7 +135,7 @@ describe('compose() terminalOnce guard', () => {
 
   it('does not synthesize wrapper_lost when the consumer returns early', async () => {
     let yieldedAfterReturn = false;
-    const provider: Provider = async function* slowProvider() {
+    const provider: TestProvider = async function* slowProvider() {
       yield PROGRESS;
       // Inner provider continues — but consumer will .return() before this runs.
       yield PROGRESS;
@@ -151,7 +155,7 @@ describe('compose() terminalOnce guard', () => {
 
   it('does not synthesize wrapper_lost when the inner stream throws', async () => {
     const failure = new Error('inner blew up');
-    const provider: Provider = async function* throwingProvider() {
+    const provider: TestProvider = async function* throwingProvider() {
       yield PROGRESS;
       throw failure;
     };

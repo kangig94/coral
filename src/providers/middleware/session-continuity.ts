@@ -68,15 +68,17 @@ function buildSessionUnavailableFailureCause(provider: string, reason: string) {
   return providerSessionUnavailable({ provider, reason });
 }
 
-export function sessionContinuity<TState>(contract: SessionContinuityContract<TState>): ProviderMiddleware;
-export function sessionContinuity<TState>(
+export function sessionContinuity<TState, Context>(
+  contract: SessionContinuityContract<TState>,
+): ProviderMiddleware<Context>;
+export function sessionContinuity<TState, Context>(
   providerName: string,
   contract: SessionContinuityContract<TState>,
-): ProviderMiddleware;
-export function sessionContinuity<TState>(
+): ProviderMiddleware<Context>;
+export function sessionContinuity<TState, Context>(
   providerNameOrContract: string | SessionContinuityContract<TState>,
   maybeContract?: SessionContinuityContract<TState>,
-): ProviderMiddleware {
+): ProviderMiddleware<Context> {
   const providerName = typeof providerNameOrContract === 'string' ? providerNameOrContract : undefined;
   const contract = typeof providerNameOrContract === 'string' ? maybeContract : providerNameOrContract;
   if (!contract) {
@@ -98,7 +100,7 @@ export function sessionContinuity<TState>(
       const bridgeLifecycle = createBridgeLifecycle(devAssertions);
       const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue, devAssertions);
 
-      const wrappedRuntime: ProviderRuntime = {
+      const wrappedRuntime: ProviderRuntime<Context> = {
         ...runtime,
         signal: createAbortAwareSignal(runtime.signal),
         continuityBridge,

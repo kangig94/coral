@@ -11,7 +11,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition } from '#tests/helpers/scripted-provider.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 
 const terminalResult: JobTerminal = { content: '', durationMs: 100, outcome: { kind: 'completed' } };
@@ -88,13 +88,13 @@ describe('backend isolation', () => {
     const regB = new ProviderRegistry();
 
     regA.register(
-      toProviderSpec({
+      toProviderDefinition({
         name: 'provider-a',
         execute: () => streamProviderTerminal({ content: '', durationMs: 0, outcome: { kind: 'completed' } }),
       })!,
     );
     regB.register(
-      toProviderSpec({
+      toProviderDefinition({
         name: 'provider-b',
         execute: () => streamProviderTerminal({ content: '', durationMs: 0, outcome: { kind: 'completed' } }),
       })!,

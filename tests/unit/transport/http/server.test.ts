@@ -67,7 +67,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { KB_DISABLED_REASON } from '#src/infra/kb-toggle.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition } from '#tests/helpers/scripted-provider.js';
 import { isWorkflowInputFailure, workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
 import {
@@ -2268,7 +2268,7 @@ describe('execution backend server', () => {
       const { runtimeState, setKbOnline } = createRuntimeStateMock();
       const providerRegistry = new ProviderRegistry();
       providerRegistry.register(
-        toProviderSpec({
+        toProviderDefinition({
           name: 'codex',
           execute: vi.fn(() =>
             streamProviderTerminal({ content: 'ok', durationMs: 1_000, outcome: { kind: 'completed' as const } }),
@@ -4407,7 +4407,7 @@ describe('execution backend server', () => {
         });
         const { deps } = createHttpHandlerDeps({ executionService: fakeService });
         deps.providerRegistry.register(
-          toProviderSpec({
+          toProviderDefinition({
             name: 'claude',
             execute: vi.fn(() =>
               streamProviderTerminal({ content: 'ok', durationMs: 1_000, outcome: { kind: 'completed' as const } }),
@@ -6540,7 +6540,7 @@ describe('execution backend server', () => {
   });
 
   describe('recovery scan', () => {
-    it('terminalizes a missing-launch provider job with unavailable account authority', async () => {
+    it('terminalizes a missing-launch provider job without fabricating account authority', async () => {
       const progressStore = createProgressStore();
       const jobId = 'missing-launch-unavailable-authority';
       const projectRoot = createProjectRoot('missing-launch-unavailable-authority-project');
@@ -6577,14 +6577,7 @@ describe('execution backend server', () => {
         phase: 'error',
         result: {
           outcome: {
-            kind: 'job_fault',
-            fault: {
-              kind: 'provider_binding',
-              provider: 'codex',
-              reason: 'profile-unavailable',
-              message:
-                'The selected Codex credential profile is unavailable. Select an existing authenticated Codex profile and retry.',
-            },
+            kind: 'failed',
           },
         },
       });

@@ -27,7 +27,6 @@ function createRuntime(env: Readonly<Record<string, string | undefined>>): Runti
     env: {
       get: (key: string) => env[key],
       homedir: () => '/tmp',
-      claudeConfigDir: () => '/tmp/.claude',
       tmpdir: () => '/tmp',
       pid: () => 4242,
       platform: () => 'linux',

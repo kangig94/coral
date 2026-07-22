@@ -20,12 +20,12 @@ import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import {
-  type ProviderSpec,
   type Provider,
   type ProviderContinuityUpdate,
   providerTerminalEventBodySchema,
   providerJobTerminalSchema,
 } from '#src/providers/contract.js';
+import { buildExactProviderEnv } from '#src/providers/execution-context.js';
 import type { ProviderTransportClose } from '#src/providers/protocol.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { jobRuntimeStartedBodySchema } from '#src/jobs/event-bodies.js';
@@ -47,7 +47,7 @@ import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
-import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -114,7 +114,15 @@ function continuityContract(
   };
 }
 
-function wrapWithSessionContinuity(provider: Provider, contract: SessionContinuityContract<ContinuityState>): Provider {
+type TestProvider = {
+  readonly name: string;
+  readonly run: Provider<unknown>;
+};
+
+function wrapWithSessionContinuity(
+  provider: Provider<unknown>,
+  contract: SessionContinuityContract<ContinuityState>,
+): Provider<unknown> {
   return sessionContinuity(contract)(provider);
 }
 
@@ -163,17 +171,26 @@ describe('coordinator continuity lifecycle integration', () => {
     vi.restoreAllMocks();
   });
 
-  function createService(providerCatalog: { get(name: string): ProviderSpec | undefined; getAll(): ProviderSpec[] }) {
+  function createService(providers: readonly TestProvider[]) {
     const providerRegistry = new ProviderRegistry();
-    const providers = providerCatalog.getAll();
     for (const provider of providers) {
       providerRegistry.register(
-        defineProvider({
+        defineProvider<FixtureProviderSource, FixtureProviderSource>({
           name: provider.name,
           run: provider.run,
-          ...(provider.preflight === undefined ? {} : { preflight: provider.preflight }),
-          ...(provider.appServer === undefined ? {} : { appServer: provider.appServer }),
-          ...(provider.recovery === undefined ? {} : { recovery: provider.recovery }),
+          prepareExecutionContext: ({ source, request, baseEnv, protectedEnv, platform }) => {
+            const exactEnv = buildExactProviderEnv({
+              baseEnv,
+              requestEnv: request.coralEnv,
+              protectedEnv,
+              routingEnv: source.routingEnv,
+              platform,
+            });
+            return {
+              context: source,
+              prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...exactEnv }, extraEnv: undefined }),
+            };
+          },
         })
           .binding(fixtureProviderBindingCodec(provider.name))
           .artifacts(none('continuity fixture has no provider artifacts'))
@@ -228,7 +245,7 @@ describe('coordinator continuity lifecycle integration', () => {
 
   it('persists mid-stream continuity and projects it through wait and query readers', async () => {
     const liveSnapshot = continuitySnapshot('thread-live', true, { threadId: 'thread-live' });
-    const provider: ProviderSpec = {
+    const provider: TestProvider = {
       name: 'codex',
       run: async function* () {
         yield { kind: 'progress', message: 'booting' } as const;
@@ -250,10 +267,7 @@ describe('coordinator continuity lifecycle integration', () => {
         } as const;
       },
     };
-    const { service, progressStore } = createService({
-      get: (name) => (name === 'codex' ? provider : undefined),
-      getAll: () => [provider],
-    });
+    const { service, progressStore } = createService([provider]);
 
     const decision = await waitForRunningDecision(service, 'codex');
     const once = await service.waitStreamOnce(decision.jobId, 5_000);
@@ -357,7 +371,7 @@ describe('coordinator continuity lifecycle integration', () => {
   });
 
   it('checkpoints abort continuity before the terminal event and propagates transport-closed continuity via middleware', async () => {
-    const abortProvider: ProviderSpec = {
+    const abortProvider: TestProvider = {
       name: 'codex',
       run: wrapWithSessionContinuity(
         async function* (_request, runtime) {
@@ -383,7 +397,7 @@ describe('coordinator continuity lifecycle integration', () => {
         continuityContract({ conversationRef: null, resumable: true, providerContinuity: null }),
       ),
     };
-    const closedProvider: ProviderSpec = {
+    const closedProvider: TestProvider = {
       name: 'claude',
       run: wrapWithSessionContinuity(
         async function* (_request, runtime) {
@@ -420,14 +434,7 @@ describe('coordinator continuity lifecycle integration', () => {
         ),
       ),
     };
-    const { service } = createService({
-      get: (name) => {
-        if (name === 'codex') return abortProvider;
-        if (name === 'claude') return closedProvider;
-        return undefined;
-      },
-      getAll: () => [abortProvider, closedProvider],
-    });
+    const { service } = createService([abortProvider, closedProvider]);
     const { sessionManager } = getInternals(service);
 
     const abortDecision = await waitForRunningDecision(service, 'codex', 'abort me');
@@ -461,10 +468,7 @@ describe('coordinator continuity lifecycle integration', () => {
   });
 
   it('uses recovered continuity separately from terminal content and preserves persisted continuity when omitted', async () => {
-    const { service, progressStore } = createService({
-      get: () => undefined,
-      getAll: () => [],
-    });
+    const { service, progressStore } = createService([]);
     const { sessionManager } = getInternals(service);
 
     const explicitSession = allocateTestSession(
@@ -562,7 +566,7 @@ describe('coordinator continuity lifecycle integration', () => {
   it('defaults live null continuity to resumable for wait and discuss consumers', async () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
 
-    const provider: ProviderSpec = {
+    const provider: TestProvider = {
       name: 'codex',
       run: async function* () {
         yield { kind: 'progress', message: 'thinking' } as const;
@@ -577,10 +581,7 @@ describe('coordinator continuity lifecycle integration', () => {
         } as const;
       },
     };
-    const { service, progressStore } = createService({
-      get: (name) => (name === 'codex' ? provider : undefined),
-      getAll: () => [provider],
-    });
+    const { service, progressStore } = createService([provider]);
 
     const directDecision = await waitForRunningDecision(service, 'codex', 'score this');
     await expect(service.waitStreamOnce(directDecision.jobId, 5_000)).resolves.toEqual({

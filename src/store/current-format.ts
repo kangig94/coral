@@ -4,6 +4,7 @@ import {
   describeStoreFormat,
   PersistedCodecRegistry,
   zodPersistedContract,
+  type CanonicalContractValue,
   type PersistedDdlFragment,
   type StoreFormatDescription,
 } from './format-fingerprint.js';
@@ -23,7 +24,7 @@ export type CurrentStoreCodecSchemas = Readonly<{
   expansionManifest: z.ZodTypeAny;
 }>;
 
-export type CurrentStoreCodecComponent = Readonly<{ name: string; schema: z.ZodTypeAny }>;
+export type CurrentStoreCodecComponent = Readonly<{ name: string; contract: CanonicalContractValue }>;
 
 const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
   z.union([
@@ -67,7 +68,7 @@ export function createCurrentStoreFormat(
   codecs.registerZodComponent('workflow.lifecycle', schemas.workflowLifecycle);
   codecs.registerZod('store.kb_curate_retry_queue.signals', jsonValueSchema);
   codecs.registerZod('store.expansion_manifest_catalog.manifest', schemas.expansionManifest);
-  for (const component of components) codecs.registerZodComponent(component.name, component.schema);
+  for (const component of components) codecs.register(component.name, component.contract, 'component');
   return describeStoreFormat(schemaSource, codecs, ddlFragments);
 }
 

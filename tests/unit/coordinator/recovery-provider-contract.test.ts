@@ -3,8 +3,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { RecoveryService, type RecoveryServiceDeps } from '#src/coordinator/services/recovery/service.js';
 import type { AppServerRuntime, JobLaunch } from '#src/jobs/records.js';
 import type { ProviderRecoveryContract } from '#src/providers/contract.js';
-import type { ProviderDefinition } from '#src/providers/registry.js';
+import type { BoundProvider, BoundProviderPreparedExecution } from '#src/providers/bound-provider-contract.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
+import type { ProviderCliRequest } from '#src/providers/protocol.js';
+import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 type InterruptedRecoveryDecision = {
   mutation: { kind: string };
@@ -21,13 +25,44 @@ type InterruptedRecoveryDecisionService = {
   }): Promise<InterruptedRecoveryDecision>;
 };
 
-function serviceWithProvider(provider: Partial<ProviderDefinition>): InterruptedRecoveryDecisionService {
+type TestBoundCapabilities = {
+  readonly appServer?: BoundProviderPreparedExecution['appServer'];
+  readonly recovery?: ProviderRecoveryContract;
+};
+
+function serviceWithProvider(provider: TestBoundCapabilities): InterruptedRecoveryDecisionService {
+  const runtime = new SimulationRuntime();
+  const bound = {
+    name: 'fixture',
+    prepareExecution: () => ({
+      prepareCliRequest: (request: ProviderCliRequest) => request,
+      execute: async function* () {},
+      ...(provider.appServer === undefined ? {} : { appServer: provider.appServer }),
+    }),
+    ...(provider.recovery === undefined ? {} : { recovery: provider.recovery }),
+  } as unknown as BoundProvider;
   const service = new RecoveryService({
-    providerRegistry: {
-      get: () => provider as ProviderDefinition,
-    },
-  } as unknown as RecoveryServiceDeps);
-  return service as unknown as InterruptedRecoveryDecisionService;
+    runtime,
+    backendNamespace: 'test-namespace',
+    childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
+    parentPrincipal: testProjectPrincipal('/project'),
+  } as unknown as RecoveryServiceDeps) as unknown as {
+    decideInterruptedAppServerRecovery(options: {
+      launchRecord: JobLaunch & { sessionId: string; provider: string };
+      runtimeRecord: AppServerRuntime;
+      session: ProviderSession;
+      bound: BoundProvider;
+    }): Promise<InterruptedRecoveryDecision>;
+  };
+  return {
+    decideInterruptedAppServerRecovery: (options) =>
+      service.decideInterruptedAppServerRecovery({
+        launchRecord: options.launchRecord,
+        runtimeRecord: options.runtimeRecord,
+        session: options.session,
+        bound,
+      }),
+  };
 }
 
 const launchRecord = {
@@ -48,7 +83,7 @@ const launchRecord = {
 const runtimeRecord = {
   transport: 'app-server',
   startTime: '2026-07-22T00:00:00.000Z',
-  providerMeta: { provider: 'fixture', leaseState: 'waiting' },
+  providerMeta: { provider: 'fixture', leaseState: 'waiting', transportMode: 'fixture-wire' },
 } as const satisfies AppServerRuntime;
 
 const session = {
@@ -85,11 +120,9 @@ describe('interrupted provider recovery contract', () => {
       probeOutcome: 'waiting',
       recoveryConversationRef: undefined,
     });
-    expect(finalizeInterrupted).toHaveBeenCalledWith(
-      { resumable: false },
-      undefined,
-      { preservedConversationRef: undefined },
-    );
+    expect(finalizeInterrupted).toHaveBeenCalledWith({ resumable: false }, undefined, {
+      preservedConversationRef: undefined,
+    });
   });
 
   it('fails closed when persisted app-server work has no recovery capability', async () => {

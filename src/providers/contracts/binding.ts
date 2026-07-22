@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { nonEmptyStringSchema } from '../../infra/identifiers.js';
 import { jsonValueSchema, type JsonValue } from '../../infra/json-value.js';
 import type { StoragePort } from '../../infra/port-types.js';
-import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
+import type { ProviderPersistedParser, ProviderValueParser } from '../binding-parser-contract.js';
 
 export type ProviderSelection = JsonValue;
 
@@ -69,11 +69,11 @@ export type ProviderReadiness = {
 };
 
 export function bindingSuccess<Value>(value: Value): ProviderBindingResult<Value> {
-  return { ok: true, value };
+  return Object.freeze({ ok: true, value });
 }
 
 export function bindingFailure<Value = never>(failure: ProviderBindingFailure): ProviderBindingResult<Value> {
-  return { ok: false, failure };
+  return Object.freeze({ ok: false, failure: Object.freeze(failure) });
 }
 
 /** Stable public error code for a typed provider-binding failure. */
@@ -92,8 +92,8 @@ export class ProviderBindingRuntimeError extends Error {
 }
 
 type ProviderBindingCodecBase<Selection extends JsonValue, Profile extends CredentialProfile & JsonValue> = {
-  readonly selectionSchema: z.ZodType<Selection>;
-  readonly profileSchema: z.ZodType<Profile>;
+  readonly parseSelection: ProviderValueParser<Selection>;
+  readonly parseProfile: ProviderValueParser<Profile>;
   captureSelection(context: ProviderSelectionCaptureContext): ProviderBindingResult<Selection>;
   canonicalizeProfile(selection: Selection, runtime: ProviderBindingRuntime): Promise<ProviderBindingResult<Profile>>;
   selectorLabel(selection: Selection): string;
@@ -104,11 +104,12 @@ export type ProviderBindingCodec<
   Selection extends JsonValue,
   Profile extends CredentialProfile & JsonValue,
   Subject extends AccountSubject & JsonValue = AccountSubject & JsonValue,
+  Source extends JsonValue = JsonValue,
 > = ProviderBindingCodecBase<Selection, Profile> &
   (
     | {
         readonly bindingKind: 'account';
-        readonly bindingSchema: z.ZodType<ProviderBinding<Profile, Subject>>;
+        readonly persistedBinding: ProviderPersistedParser<ProviderBinding<Profile, Subject>>;
         bindProfile(
           profile: Profile,
           runtime: ProviderBindingRuntime,
@@ -118,7 +119,7 @@ export type ProviderBindingCodec<
           use: ProviderBindingUse,
           runtime: ProviderBindingRuntime,
         ): Promise<ProviderBindingResult<ProviderReadiness>>;
-        credentialSource(binding: ProviderBinding<Profile, Subject>): ProviderCredentialSourceRef;
+        credentialSource(binding: ProviderBinding<Profile, Subject>): Source;
         compareBinding(
           left: ProviderBinding<Profile, Subject>,
           right: ProviderBinding<Profile, Subject>,
@@ -127,7 +128,7 @@ export type ProviderBindingCodec<
       }
     | {
         readonly bindingKind: 'profile';
-        readonly bindingSchema: z.ZodType<ProfileBinding<Profile>>;
+        readonly persistedBinding: ProviderPersistedParser<ProfileBinding<Profile>>;
         bindProfile(
           profile: Profile,
           runtime: ProviderBindingRuntime,
@@ -137,7 +138,7 @@ export type ProviderBindingCodec<
           use: ProviderBindingUse,
           runtime: ProviderBindingRuntime,
         ): Promise<ProviderBindingResult<ProviderReadiness>>;
-        credentialSource(binding: ProfileBinding<Profile>): ProviderCredentialSourceRef;
+        credentialSource(binding: ProfileBinding<Profile>): Source;
         compareBinding(left: ProfileBinding<Profile>, right: ProfileBinding<Profile>): ProviderBindingResult<true>;
         presentBinding(binding: ProfileBinding<Profile>): string;
       }

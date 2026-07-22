@@ -14,6 +14,7 @@ import {
   type CodexPersistedContinuity,
 } from './request-mapping.js';
 import { codexTurnKernel, mapCodexInterrupt } from './thread-kernel.js';
+import type { CodexExecutionContext } from './execution-context.js';
 
 function readOpeningContinuity(
   persistedContinuity: CodexPersistedContinuity | undefined,
@@ -48,12 +49,11 @@ const codexThreadContinuity: SessionContinuityContract<CodexPersistedContinuity>
 const codexAppServerContract = {
   name: 'codex',
   buildServerSpec(request, persistedContinuity, _ports, providerContext) {
-    if (providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
     return { ...buildCodexProviderServerSpec(request, persistedContinuity), env: { ...providerContext.appServerEnv } };
   },
   interrupt: mapCodexInterrupt,
   subscriptionPhase: 'afterInitialize',
-} satisfies AppServerContract;
+} satisfies AppServerContract<CodexExecutionContext>;
 
 export const codexThreadProvider = compose(
   sessionContinuity('codex', codexThreadContinuity),

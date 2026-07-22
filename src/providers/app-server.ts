@@ -1,31 +1,25 @@
-import type {
-  ProviderExecutionContext,
-  ProviderRequest,
-  ProviderRuntime,
-  ProviderServerLease,
-  ProviderServerSpec,
-} from './contract.js';
+import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from './contract.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './protocol.js';
 
-export interface AppServerContract {
+export interface AppServerContract<Context> {
   readonly name: string;
   readonly subscriptionPhase: AppServerSubscriptionPhase;
   buildServerSpec(
     request: ProviderRequest,
     persistedContinuity: ProviderContinuityBlob | undefined,
     ports: { storage: Pick<StoragePort, 'existsSync'> },
-    providerContext: ProviderExecutionContext,
+    providerContext: Context,
   ): ProviderServerSpec;
   interrupt(lease: ProviderServerLease): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
-const appServerLeaseBindings = new WeakMap<ProviderRuntime, ProviderServerLease>();
-const appServerNotificationBindings = new WeakMap<ProviderRuntime, (message: AppServerNotificationMessage) => void>();
+const appServerLeaseBindings = new WeakMap<object, ProviderServerLease>();
+const appServerNotificationBindings = new WeakMap<object, (message: AppServerNotificationMessage) => void>();
 
-export function bindAppServerLease(runtime: ProviderRuntime, lease: ProviderServerLease): () => void {
+export function bindAppServerLease<Context>(runtime: ProviderRuntime<Context>, lease: ProviderServerLease): () => void {
   appServerLeaseBindings.set(runtime, lease);
   return () => {
     if (appServerLeaseBindings.get(runtime) === lease) {
@@ -34,12 +28,12 @@ export function bindAppServerLease(runtime: ProviderRuntime, lease: ProviderServ
   };
 }
 
-function getAppServerLease(runtime: ProviderRuntime): ProviderServerLease | undefined {
+function getAppServerLease<Context>(runtime: ProviderRuntime<Context>): ProviderServerLease | undefined {
   return appServerLeaseBindings.get(runtime);
 }
 
-export function bindAppServerNotificationHandler(
-  runtime: ProviderRuntime,
+export function bindAppServerNotificationHandler<Context>(
+  runtime: ProviderRuntime<Context>,
   handler: (message: AppServerNotificationMessage) => void,
 ): () => void {
   appServerNotificationBindings.set(runtime, handler);
@@ -50,13 +44,16 @@ export function bindAppServerNotificationHandler(
   };
 }
 
-export function getAppServerNotificationHandler(
-  runtime: ProviderRuntime,
+export function getAppServerNotificationHandler<Context>(
+  runtime: ProviderRuntime<Context>,
 ): ((message: AppServerNotificationMessage) => void) | undefined {
   return appServerNotificationBindings.get(runtime);
 }
 
-export function requireAppServerLease(runtime: ProviderRuntime, providerName: string): ProviderServerLease {
+export function requireAppServerLease<Context>(
+  runtime: ProviderRuntime<Context>,
+  providerName: string,
+): ProviderServerLease {
   const lease = getAppServerLease(runtime);
   if (!lease) {
     throw new Error(`${providerName} provider requires app-server session middleware to bind a ProviderServerLease.`);

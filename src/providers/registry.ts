@@ -1,5 +1,5 @@
 import type { ProviderCatalog } from './catalog.js';
-import type { ProviderArtifactCapability, ProviderSpec } from './contract.js';
+import type { ProviderArtifactCapability, ProviderImplementation } from './contract.js';
 import {
   bindingFailure,
   bindingSuccess,
@@ -11,12 +11,11 @@ import {
   type ProviderBindingResult,
   type ProviderBindingRuntime,
   type ProviderBindingUse,
-  type ProviderReadiness,
   type ProviderSelectionCaptureContext,
   type ProviderSelectionEnvelope,
 } from './contracts/binding.js';
 import { providerBindingEnvelopeSchema, type ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
-import { jsonValueSchema, type JsonValue } from '../infra/json-value.js';
+import type { JsonValue } from '../infra/json-value.js';
 import {
   providerProfileEnvelopeSchema,
   providerScopeSchema,
@@ -24,62 +23,33 @@ import {
   type ProviderProfileSet,
   type ProviderScope,
 } from '../infra/provider-scope.js';
-import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
-import type { z } from 'zod';
+import { zodPersistedContract, type CanonicalContractValue } from '../store/format-fingerprint.js';
+import { snapshotBoundaryData } from './internal/snapshot.js';
+import { snapshotArtifacts, snapshotImplementation } from './internal/definition-boundary.js';
+import { eraseBindingCodec, type ErasedProviderBindingBoundary } from './internal/binding-boundary.js';
+import type { BoundProvider } from './bound-provider-contract.js';
 
 declare const providerDefinitionBrand: unique symbol;
 
-export type ProviderDefinition = ProviderSpec & {
-  readonly artifacts: ProviderArtifactCapability;
+export type ProviderDefinition = {
+  readonly name: string;
   readonly [providerDefinitionBrand]: true;
 };
 
-export type ProviderDefinitionInput = Pick<ProviderSpec, 'name' | 'run'> &
-  Partial<Pick<ProviderSpec, 'preflight' | 'appServer' | 'recovery'>>;
+export type ProviderDefinitionInput<Context, Source extends JsonValue> = ProviderImplementation<Context, Source>;
 
-export interface ProviderBindingBuilder {
+export interface ProviderBindingBuilder<Source extends JsonValue> {
   binding<
     Selection extends JsonValue,
     Profile extends CredentialProfile & JsonValue,
     Subject extends AccountSubject & JsonValue = AccountSubject & JsonValue,
   >(
-    codec: ProviderBindingCodec<Selection, Profile, Subject>,
-  ): ProviderArtifactBuilder;
+    codec: ProviderBindingCodec<Selection, Profile, Subject, Source>,
+  ): ProviderArtifactBuilder<Source>;
 }
 
-export interface RehydratedProviderBinding {
-  readonly provider: string;
-  readonly envelope: ProviderBindingEnvelope;
-  present(): string;
-  readiness(
-    use: ProviderBindingUse,
-    runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<ProviderReadiness>>;
-  credentialSource(): ProviderCredentialSourceRef;
-  compareIdentity(otherEnvelope: unknown): ProviderBindingResult<true>;
-}
-
-interface ErasedProviderBindingBoundary {
-  readonly selectionSchema: z.ZodTypeAny;
-  readonly profileSchema: z.ZodTypeAny;
-  readonly bindingSchema: z.ZodTypeAny;
-  readonly bindingKind: 'account' | 'profile';
-  captureSelection(context: ProviderSelectionCaptureContext): ProviderBindingResult<ProviderSelectionEnvelope>;
-  canonicalizeProfile(
-    envelope: ProviderSelectionEnvelope,
-    runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<ProviderProfileEnvelope>>;
-  bindProfile(
-    envelope: ProviderProfileEnvelope,
-    runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<RehydratedProviderBinding>>;
-  selectorLabel(rawSelection: unknown): string;
-  decode(envelope: ProviderBindingEnvelope): ProviderBindingResult<RehydratedProviderBinding>;
-  renderFailure(failure: ProviderBindingFailure): string;
-}
-
-export interface ProviderArtifactBuilder {
-  artifacts(capability: ProviderArtifactCapability): ProviderBuildBuilder;
+export interface ProviderArtifactBuilder<Source extends JsonValue> {
+  artifacts(capability: ProviderArtifactCapability<Source>): ProviderBuildBuilder;
 }
 
 interface ProviderBuildBuilder {
@@ -88,116 +58,16 @@ interface ProviderBuildBuilder {
 
 const registeredBindingBoundaries = new WeakMap<ProviderDefinition, ErasedProviderBindingBoundary>();
 
-function freezeAuthority<T extends object>(value: T): T {
-  return Object.freeze(value);
-}
-
 function registeredBindingBoundary(definition: ProviderDefinition): ErasedProviderBindingBoundary {
   const boundary = registeredBindingBoundaries.get(definition);
-  if (boundary === undefined) throw new Error(`Provider '${definition.name}' has no registered binding boundary.`);
+  if (boundary === undefined) throw new Error('Provider definition has no registered binding provenance.');
   return boundary;
 }
 
-function rehydrateCodecBinding<
-  Selection extends JsonValue,
-  Profile extends CredentialProfile & JsonValue,
-  Subject extends AccountSubject & JsonValue,
->(
-  provider: string,
-  codec: ProviderBindingCodec<Selection, Profile, Subject>,
-  binding: unknown,
-): RehydratedProviderBinding {
-  const canonicalEnvelope = Object.freeze({
-    provider,
-    kind: codec.bindingKind,
-    binding: jsonValueSchema.parse(binding),
-  });
-  const presentation = codec.presentBinding(binding as never);
-  return Object.freeze({
-    provider,
-    envelope: canonicalEnvelope,
-    present: () => presentation,
-    readiness: (use: ProviderBindingUse, runtime: ProviderBindingRuntime) =>
-      codec.readiness(binding as never, use, runtime),
-    credentialSource: () => codec.credentialSource(binding as never),
-    compareIdentity(otherEnvelope: unknown) {
-      const envelope = providerBindingEnvelopeSchema.safeParse(otherEnvelope);
-      if (!envelope.success || envelope.data.provider !== provider || envelope.data.kind !== codec.bindingKind) {
-        return bindingFailure({ reason: 'invalid-persisted-binding', provider });
-      }
-      const otherBinding = codec.bindingSchema.safeParse(envelope.data.binding);
-      return otherBinding.success
-        ? codec.compareBinding(binding as never, otherBinding.data as never)
-        : bindingFailure({ reason: 'invalid-persisted-binding', provider });
-    },
-  });
-}
-
-function eraseBindingCodec<
-  Selection extends JsonValue,
-  Profile extends CredentialProfile & JsonValue,
-  Subject extends AccountSubject & JsonValue,
->(provider: string, codec: ProviderBindingCodec<Selection, Profile, Subject>): ErasedProviderBindingBoundary {
-  const codecSnapshot = freezeAuthority(codec);
-  const { selectionSchema, profileSchema, bindingSchema, bindingKind } = codecSnapshot;
-
-  return Object.freeze({
-    selectionSchema,
-    profileSchema,
-    bindingSchema,
-    bindingKind,
-    captureSelection(context: ProviderSelectionCaptureContext) {
-      const captured = codecSnapshot.captureSelection(context);
-      return captured.ok ? bindingSuccess({ provider, selection: jsonValueSchema.parse(captured.value) }) : captured;
-    },
-    async canonicalizeProfile(rawEnvelope: ProviderSelectionEnvelope, runtime: ProviderBindingRuntime) {
-      const envelope = providerSelectionEnvelopeSchema.safeParse(rawEnvelope);
-      if (!envelope.success || envelope.data.provider !== provider) {
-        return bindingFailure({ reason: 'unsupported-selection', provider, selector: `${provider} selection` });
-      }
-      const selection = selectionSchema.safeParse(envelope.data.selection);
-      if (!selection.success) {
-        return bindingFailure({ reason: 'unsupported-selection', provider, selector: `${provider} selection` });
-      }
-      const profile = await codecSnapshot.canonicalizeProfile(selection.data, runtime);
-      return profile.ok ? bindingSuccess({ provider, profile: jsonValueSchema.parse(profile.value) }) : profile;
-    },
-    async bindProfile(rawEnvelope: ProviderProfileEnvelope, runtime: ProviderBindingRuntime) {
-      const envelope = providerProfileEnvelopeSchema.safeParse(rawEnvelope);
-      if (!envelope.success || envelope.data.provider !== provider) {
-        return bindingFailure({ reason: 'missing-profile', provider });
-      }
-      const profile = profileSchema.safeParse(envelope.data.profile);
-      if (!profile.success) {
-        return bindingFailure({
-          reason: 'profile-unavailable',
-          provider,
-          selector: `${provider} credential profile`,
-        });
-      }
-      const binding = await codecSnapshot.bindProfile(profile.data, runtime);
-      return binding.ok ? bindingSuccess(rehydrateCodecBinding(provider, codecSnapshot, binding.value)) : binding;
-    },
-    selectorLabel: (rawSelection: unknown) => codecSnapshot.selectorLabel(selectionSchema.parse(rawSelection)),
-    decode(rawEnvelope: ProviderBindingEnvelope) {
-      const envelope = providerBindingEnvelopeSchema.safeParse(rawEnvelope);
-      if (!envelope.success) return bindingFailure({ reason: 'invalid-persisted-binding', provider });
-      if (envelope.data.provider !== provider || envelope.data.kind !== bindingKind) {
-        return bindingFailure({ reason: 'invalid-persisted-binding', provider });
-      }
-      const binding = bindingSchema.safeParse(envelope.data.binding);
-      return binding.success
-        ? bindingSuccess(rehydrateCodecBinding(provider, codecSnapshot, binding.data))
-        : bindingFailure({ reason: 'invalid-persisted-binding', provider });
-    },
-    renderFailure(failure: ProviderBindingFailure) {
-      return codecSnapshot.renderFailure(failure);
-    },
-  });
-}
-
-export function defineProvider(spec: ProviderDefinitionInput): ProviderBindingBuilder {
-  const definitionInput = freezeAuthority(spec);
+export function defineProvider<Context, Source extends JsonValue>(
+  spec: ProviderDefinitionInput<Context, Source>,
+): ProviderBindingBuilder<Source> {
+  const definitionInput = snapshotImplementation(spec);
   if (
     definitionInput.appServer !== undefined &&
     (definitionInput.recovery === undefined || typeof definitionInput.recovery.finalizeInterrupted !== 'function')
@@ -206,21 +76,14 @@ export function defineProvider(spec: ProviderDefinitionInput): ProviderBindingBu
   }
   return {
     binding(codec) {
-      const binding = eraseBindingCodec(definitionInput.name, codec);
       return {
         artifacts(capability) {
-          const artifacts = freezeAuthority(capability);
+          const artifacts = snapshotArtifacts(capability);
+          const binding = eraseBindingCodec(definitionInput.name, codec, definitionInput, artifacts);
           return {
             build() {
               const definition = Object.freeze({
-                ...definitionInput,
-                ...(definitionInput.appServer === undefined
-                  ? {}
-                  : { appServer: freezeAuthority(definitionInput.appServer) }),
-                ...(definitionInput.recovery === undefined
-                  ? {}
-                  : { recovery: freezeAuthority(definitionInput.recovery) }),
-                artifacts,
+                name: definitionInput.name,
               }) as ProviderDefinition;
               registeredBindingBoundaries.set(definition, binding);
               return definition;
@@ -232,7 +95,7 @@ export function defineProvider(spec: ProviderDefinitionInput): ProviderBindingBu
   };
 }
 
-export type ProviderPersistedCodecComponent = Readonly<{ name: string; schema: z.ZodTypeAny }>;
+export type ProviderPersistedCodecComponent = Readonly<{ name: string; contract: CanonicalContractValue }>;
 
 const RESERVED_TOOL_NAMES = new Set([
   'wait',
@@ -269,17 +132,19 @@ export class ProviderRegistry implements ProviderCatalog {
   >();
 
   register(spec: ProviderDefinition): void {
-    if (this.sealed) throw new Error(`Provider registry is sealed; cannot register '${spec.name}'.`);
-    if (RESERVED_TOOL_NAMES.has(spec.name)) {
-      throw new Error(`Provider name "${spec.name}" is reserved`);
+    const binding = registeredBindingBoundary(spec);
+    const name = binding.provider;
+    if (this.sealed) throw new Error(`Provider registry is sealed; cannot register '${name}'.`);
+    if (RESERVED_TOOL_NAMES.has(name)) {
+      throw new Error(`Provider name "${name}" is reserved`);
     }
-    if (!PERSISTED_PROVIDER_NAME.test(spec.name)) {
-      throw new TypeError(`Provider name "${spec.name}" cannot form a stable persisted codec name.`);
+    if (!PERSISTED_PROVIDER_NAME.test(name)) {
+      throw new TypeError(`Provider name "${name}" cannot form a stable persisted codec name.`);
     }
-    if (this.providers.has(spec.name)) {
-      throw new Error(`New provider "${spec.name}" is already registered`);
+    if (this.providers.has(name)) {
+      throw new Error(`New provider "${name}" is already registered`);
     }
-    this.providers.set(spec.name, { definition: spec, binding: registeredBindingBoundary(spec) });
+    this.providers.set(name, { definition: spec, binding });
   }
 
   get(name: string): ProviderDefinition | undefined {
@@ -333,7 +198,7 @@ export class ProviderRegistry implements ProviderCatalog {
       if (!profile.ok) return profile;
       profiles.push(profile.value);
     }
-    return bindingSuccess(Object.freeze(profiles));
+    return bindingSuccess(snapshotBoundaryData(profiles, 'Captured provider profiles'));
   }
 
   async captureScope(
@@ -344,7 +209,13 @@ export class ProviderRegistry implements ProviderCatalog {
   ): Promise<ProviderBindingResult<ProviderScope>> {
     const profiles = await this.captureProfiles(providerNames, context, runtime);
     if (!profiles.ok) return profiles;
-    return bindingSuccess(providerScopeSchema.parse({ ...origin, profiles: profiles.value }));
+    const canonicalOrigin = snapshotBoundaryData(origin, 'Provider scope origin');
+    return bindingSuccess(
+      snapshotBoundaryData(
+        providerScopeSchema.parse({ ...canonicalOrigin, profiles: profiles.value }),
+        'Captured provider scope',
+      ),
+    );
   }
 
   decodeScope(rawScope: unknown): ProviderBindingResult<ProviderScope> {
@@ -373,22 +244,25 @@ export class ProviderRegistry implements ProviderCatalog {
           selector: envelope.provider,
         });
       }
-      const profile = registration.binding.profileSchema.safeParse(envelope.profile);
-      if (!profile.success) {
+      const profile = registration.binding.parseProfile(envelope.profile);
+      if (!profile.ok) {
         return bindingFailure({
           reason: 'profile-unavailable',
           provider: envelope.provider,
           selector: `${envelope.provider} credential profile`,
         });
       }
-      profiles.push({ provider: envelope.provider, profile: jsonValueSchema.parse(profile.data) });
+      profiles.push(profile.value);
     }
 
     return bindingSuccess(
-      providerScopeSchema.parse({
-        ...scope.data,
-        profiles,
-      }),
+      snapshotBoundaryData(
+        providerScopeSchema.parse({
+          ...scope.data,
+          profiles,
+        }),
+        'Decoded provider scope',
+      ),
     );
   }
 
@@ -407,7 +281,7 @@ export class ProviderRegistry implements ProviderCatalog {
     providerName: string,
     use: ProviderBindingUse,
     runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<RehydratedProviderBinding>> {
+  ): Promise<ProviderBindingResult<BoundProvider>> {
     const scope = this.decodeCompleteScope(rawScope, [providerName]);
     if (!scope.ok) return scope;
     const profile = scope.value.profiles.find((candidate) => candidate.provider === providerName);
@@ -421,7 +295,7 @@ export class ProviderRegistry implements ProviderCatalog {
     providerName: string,
     rawProfileEnvelope: unknown,
     runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<RehydratedProviderBinding>> {
+  ): Promise<ProviderBindingResult<BoundProvider>> {
     if (rawProfileEnvelope === undefined) return bindingFailure({ reason: 'missing-profile', provider: providerName });
     const registration = this.providers.get(providerName);
     if (registration === undefined) {
@@ -438,7 +312,7 @@ export class ProviderRegistry implements ProviderCatalog {
     return registration.binding.bindProfile(envelope.data, runtime);
   }
 
-  rehydrateBinding(rawEnvelope: unknown): ProviderBindingResult<RehydratedProviderBinding> {
+  rehydrateBinding(rawEnvelope: unknown): ProviderBindingResult<BoundProvider> {
     const parsed = providerBindingEnvelopeSchema.safeParse(rawEnvelope);
     if (!parsed.success) {
       return bindingFailure({ reason: 'invalid-persisted-binding', provider: 'unknown' });
@@ -473,11 +347,17 @@ export class ProviderRegistry implements ProviderCatalog {
     if (this.sealedComponents !== undefined) return this.sealedComponents;
     this.sealed = true;
     this.sealedComponents = Object.freeze([
-      Object.freeze({ name: 'provider.binding-envelope', schema: providerBindingEnvelopeSchema }),
+      Object.freeze({
+        name: 'provider.binding-envelope',
+        contract: snapshotBoundaryData(
+          zodPersistedContract(providerBindingEnvelopeSchema),
+          'Provider binding envelope persisted contract',
+        ),
+      }),
       ...[...this.providers.entries()].map(([providerName, { binding }]) =>
         Object.freeze({
           name: `provider.${providerName}.binding`,
-          schema: binding.bindingSchema,
+          contract: binding.bindingContract,
         }),
       ),
     ]);

@@ -5,7 +5,7 @@ import type {
   ProviderBindingRuntime,
   ProviderBindingUse,
 } from './contracts/binding.js';
-import type { RehydratedProviderBinding } from './registry.js';
+import type { BoundProvider } from './bound-provider-contract.js';
 import type { ProviderScope } from '../infra/provider-scope.js';
 
 /** Read-only view of the provider registry. */
@@ -23,13 +23,13 @@ export interface ProviderBindingCatalog extends ProviderCatalog {
     providerName: string,
     use: ProviderBindingUse,
     runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<RehydratedProviderBinding>>;
+  ): Promise<ProviderBindingResult<BoundProvider>>;
   bindProfile(
     providerName: string,
     rawProfileEnvelope: unknown,
     runtime: ProviderBindingRuntime,
-  ): Promise<ProviderBindingResult<RehydratedProviderBinding>>;
-  rehydrateBinding(rawEnvelope: unknown): ProviderBindingResult<RehydratedProviderBinding>;
+  ): Promise<ProviderBindingResult<BoundProvider>>;
+  rehydrateBinding(rawEnvelope: unknown): ProviderBindingResult<BoundProvider>;
   renderBindingFailure(failure: ProviderBindingFailure): string;
 }
 

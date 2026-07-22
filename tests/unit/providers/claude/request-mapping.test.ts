@@ -119,6 +119,7 @@ describe('Claude appserver request mapping', () => {
     );
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'print' });
+    expect(spec.runtimeMetadata).toEqual({ transportMode: 'print' });
   });
 
   it('carries explicit TUI transport into provider server identity', () => {
@@ -130,6 +131,7 @@ describe('Claude appserver request mapping', () => {
     );
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' });
+    expect(spec.runtimeMetadata).toEqual({ transportMode: 'tui' });
   });
 
   it('carries model and effort in session bootstrap while turn/start only sends the prompt', () => {

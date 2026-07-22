@@ -18,11 +18,13 @@ import {
   snapshotCodexPersistedContinuity,
 } from '#src/providers/codex/request-mapping.js';
 import type { ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
 const tempHomes: string[] = [];
-type TierReadFileSync = NonNullable<NonNullable<ProviderRuntime['storage']>['readFileSync']>;
-type TierStatSync = NonNullable<NonNullable<ProviderRuntime['storage']>['statSync']>;
+type CodexRuntime = ProviderRuntime<CodexExecutionContext>;
+type TierReadFileSync = NonNullable<NonNullable<CodexRuntime['storage']>['readFileSync']>;
+type TierStatSync = NonNullable<NonNullable<CodexRuntime['storage']>['statSync']>;
 const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
 const defaultStatSync: TierStatSync = statSync as TierStatSync;
 
@@ -89,18 +91,18 @@ function makeTierRuntime(
   readFileSyncImpl: TierReadFileSync = defaultReadFileSync,
   statSyncImpl: TierStatSync = defaultStatSync,
   codexHome = join(home, '.codex'),
-): Pick<ProviderRuntime, 'providerContext' | 'storage'> {
+): Pick<CodexRuntime, 'providerContext' | 'storage'> {
   return {
     providerContext: {
-      provider: 'codex',
-      source: { version: 1, provider: 'codex', kind: 'home', home: codexHome },
+      source: { home: codexHome },
       appServerEnv: { CODEX_HOME: codexHome },
+      platform: 'linux',
     },
     storage: {
       readFileSync: readFileSyncImpl,
       statSync: statSyncImpl,
       existsSync: () => true,
-      readdirSync: (() => []) as ProviderRuntime['storage']['readdirSync'],
+      readdirSync: (() => []) as CodexRuntime['storage']['readdirSync'],
     },
   };
 }

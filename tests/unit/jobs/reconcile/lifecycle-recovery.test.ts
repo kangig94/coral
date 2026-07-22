@@ -14,7 +14,7 @@ import { reduceSessionOpened } from '#src/sessions/projections.js';
 import type { CoralEvent } from '#src/store/envelope.js';
 import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import type { ProviderRecoveryContract } from '#src/providers/contract.js';
+import type { BoundProvider, BoundProviderRecovery } from '#src/providers/bound-provider-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
@@ -26,10 +26,11 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { TEST_CODEX_BINDING, TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -112,7 +113,11 @@ function createRecoveryProviderRegistry(modules: LoadedModules) {
   const registry = new modules.providerRegistryModule.ProviderRegistry();
   registry.register(
     modules.providerRegistryModule
-      .defineProvider({ name: 'codex', run: async function* noopProvider() {} })
+      .defineProvider({
+        name: 'codex',
+        run: async function* noopProvider() {},
+        prepareExecutionContext: prepareFixtureExecutionContext,
+      })
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('recovery fixture owns no provider artifacts'))
       .build(),
@@ -235,8 +240,14 @@ function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown
     waitStream: vi.fn(async function* () {}),
     waitStreamOnce: vi.fn(async () => ({ type: 'waiting', waitingJobIds: [] })),
     adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
-    validateProviderRecoveryAuthority: vi.fn(async () => true),
-    providerCredentialSourceForRecovery: vi.fn(async () => TEST_CODEX_SOURCE),
+    captureProviderRecoveryAuthority: vi.fn(
+      async (launchRecord: JobLaunch) =>
+        ({
+          launchRecord,
+          session: { sessionId: launchRecord.sessionId },
+          boundProvider: { name: launchRecord.provider },
+        }) as never,
+    ),
     recoverQueuedJob: vi.fn(async () => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
@@ -575,7 +586,6 @@ function createLifecycleHarness(
         identity,
         runtime,
         progressStore,
-        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         recoveryCoordinator,
@@ -587,7 +597,6 @@ function createLifecycleHarness(
           bundleHash: identity.bundleHash,
           runtime,
           progressStore,
-          providerRegistry,
           getRecoveryService,
           createInvocationContext,
           signal,
@@ -812,7 +821,7 @@ describe('lifecycle recovery', () => {
       stderrPath: '/tmp/recovered-stderr',
       startTime: '2026-04-12T00:00:00.000Z',
     };
-    const finalizeFromArtifacts = vi.fn<ProviderRecoveryContract['finalizeFromArtifacts']>(async () => ({
+    const finalizeFromArtifacts = vi.fn<BoundProviderRecovery['finalizeFromArtifacts']>(async () => ({
       terminal: {
         kind: 'terminal',
         terminal: {
@@ -833,9 +842,10 @@ describe('lifecycle recovery', () => {
         resumable: true,
       },
     }));
-    const provider = {
+    const recovery = {
       finalizeFromArtifacts,
-    } as unknown as ProviderRecoveryContract;
+    } as unknown as BoundProviderRecovery;
+    const boundProvider = { recovery } as unknown as BoundProvider;
     const service = createFakeExecutionAndRecoveryService({
       recordRecoveredArtifactHandles: vi.fn(async () => {
         expect(progressStore.readTerminalProjection(jobId)).toBeNull();
@@ -849,7 +859,27 @@ describe('lifecycle recovery', () => {
         });
         callOrder.push('complete');
       }),
-      validateProviderRecoveryAuthority: vi.fn(async () => true),
+      captureProviderRecoveryAuthority: vi.fn(async () => ({
+        launchRecord,
+        session: {
+          sessionId,
+          binding: TEST_CODEX_BINDING,
+          name: 'alpha',
+          state: 'ready',
+          retention: 'retain',
+          artifactHandles: [],
+          retentionDiscard: { attempts: [] },
+          conversationRef: 'fallback-thread',
+          providerContinuity: null,
+          cwd: projectRoot,
+          projectRoot,
+          backendNamespace: namespace,
+          createdAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString(),
+          version: 1,
+        },
+        boundProvider,
+      })),
     });
 
     ensureTestSession(progressStore, {
@@ -875,14 +905,11 @@ describe('lifecycle recovery', () => {
 
     await modules.recoveryActionsModule.finalizeDeadAdoptedJob({
       jobId,
-      launchRecord,
       runtimeRecord,
       service,
-      provider,
-      progressStore,
-      runtime,
-      sessionLookup: {
-        readProviderSession: () => ({
+      authority: {
+        launchRecord: launchRecord as never,
+        session: {
           sessionId,
           binding: TEST_CODEX_BINDING,
           name: 'alpha',
@@ -898,8 +925,11 @@ describe('lifecycle recovery', () => {
           createdAt: new Date().toISOString(),
           lastUsedAt: new Date().toISOString(),
           version: 1,
-        }),
-      },
+        },
+        boundProvider,
+      } as never,
+      progressStore,
+      runtime,
       cancelledJobIds: new Set([jobId]),
       log: () => {},
     });
@@ -912,10 +942,10 @@ describe('lifecycle recovery', () => {
         stdoutPath: '/tmp/recovered-stdout',
         stderrPath: '/tmp/recovered-stderr',
         fallbackConversationRef: 'fallback-thread',
-        source: TEST_CODEX_SOURCE,
         storage: runtime.storage,
       }),
     );
+    expect(finalizeFromArtifacts.mock.calls[0]?.[0]).not.toHaveProperty('source');
     expect(service.recordRecoveredArtifactHandles).toHaveBeenCalledWith(sessionId, {
       jobId,
       handles: [
@@ -982,7 +1012,10 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(recoverQueuedSpy.mock.calls.map(([record]) => record.jobId)).toEqual(['queued-low', 'queued-high']);
+      expect(recoverQueuedSpy.mock.calls.map(([authority]) => authority.launchRecord.jobId)).toEqual([
+        'queued-low',
+        'queued-high',
+      ]);
       expect(recoveredCoordinator.queuePosition('queued-low')).toBe(1);
       expect(recoveredCoordinator.queuePosition('queued-high')).toBe(2);
     } finally {
@@ -1036,7 +1069,6 @@ describe('lifecycle recovery', () => {
         identity,
         runtime,
         progressStore,
-        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         recoveryCoordinator,
@@ -1047,7 +1079,6 @@ describe('lifecycle recovery', () => {
           bundleHash: identity.bundleHash,
           runtime,
           progressStore,
-          providerRegistry,
           getRecoveryService,
           createInvocationContext,
           signal,
@@ -1123,7 +1154,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(adoptSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: 'running-live' }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'running-live' }) }),
         expect.objectContaining({ pid: process.pid }),
       );
       expect(launchCoordinator.getActiveJobIds()).toContain('running-live');
@@ -1418,7 +1449,9 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(progressStore.readStatus('local-queued')).toMatchObject({ backendNamespace: namespace, phase: 'queued' });
-      expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'local-queued' }));
+      expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'local-queued' }) }),
+      );
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1631,7 +1664,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: 'app-server-job' }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'app-server-job' }) }),
         expect.objectContaining({
           transport: 'app-server',
           providerMeta: expect.not.objectContaining({ providerContinuity: expect.anything() }),
@@ -1684,7 +1717,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: 'app-server-handoff-job' }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'app-server-handoff-job' }) }),
         expect.objectContaining({
           transport: 'app-server',
           providerMeta: expect.not.objectContaining({ providerContinuity: expect.anything() }),

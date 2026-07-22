@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
 import type { AppServerNotificationMessage } from '#src/providers/protocol.js';
 import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 import {
@@ -28,13 +29,15 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
+type CodexRuntime = ProviderRuntime<CodexExecutionContext>;
+
 function makeRuntime(
-  persistedContinuity: ProviderRuntime['persistedContinuity'] = {
+  persistedContinuity: CodexRuntime['persistedContinuity'] = {
     cwd: '/workspace/persisted',
     threadId: 'persisted-thread',
   },
-  overrides: Partial<Pick<ProviderRuntime, 'env' | 'storage'>> = {},
-): ProviderRuntime {
+  overrides: Partial<Pick<CodexRuntime, 'env' | 'storage'>> = {},
+): CodexRuntime {
   return {
     signal: new AbortController().signal,
     time: {
@@ -49,7 +52,7 @@ function makeRuntime(
     acquireServer: vi.fn(async () => {
       throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');
     }),
-    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
     ...(overrides.env ? { env: overrides.env } : {}),
     persistedContinuity,
     continuityBridge: {
@@ -69,7 +72,7 @@ function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   };
 }
 
-function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[] = []): ProviderRuntime['storage'] {
+function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[] = []): CodexRuntime['storage'] {
   return {
     existsSync: (path) => {
       operations.push(`exists:${path}`);
@@ -89,10 +92,9 @@ function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[
   };
 }
 
-function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'claudeConfigDir' | 'get' | 'fullSnapshot'> {
+function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
   return {
     homedir: () => homedir,
-    claudeConfigDir: () => `${homedir}/.claude`,
     get: () => undefined,
     fullSnapshot: () => ({}),
   };

@@ -1,11 +1,3 @@
-import type { ProviderExecutionContext, ProviderRequest } from './contract.js';
-import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
-import {
-  PROVIDER_CREDENTIAL_OVERRIDE_ENV_KEYS,
-  PROVIDER_ROUTING_ENV_KEYS,
-  providerRoutingEnv,
-} from '../infra/provider-credential-sources.js';
-
 const EXECUTION_ENV_ALLOWLIST = new Set([
   'PATH',
   'HOME',
@@ -33,15 +25,7 @@ const EXECUTION_ENV_ALLOWLIST = new Set([
   'no_proxy',
 ]);
 
-const PROVIDER_CORAL_ENV_ALLOWLIST = new Set([
-  'CORAL_OWNER',
-  'CORAL_EFFORT',
-  'CORAL_CODEX_EFFORT',
-  'CORAL_CLAUDE_MODEL_CAP',
-  'CORAL_CLAUDE_TRANSPORT',
-  'CORAL_KB_PATH',
-  'CORAL_KB_ENABLE',
-]);
+const SHARED_CORAL_REQUEST_ENV_KEYS = new Set(['CORAL_OWNER', 'CORAL_EFFORT', 'CORAL_KB_PATH', 'CORAL_KB_ENABLE']);
 
 function foldedKey(key: string, windows: boolean): string {
   return windows ? key.toLowerCase() : key;
@@ -60,7 +44,9 @@ export function buildExactProviderEnv(options: {
   baseEnv: Readonly<Record<string, string>>;
   requestEnv?: Readonly<Record<string, string>>;
   protectedEnv?: Readonly<Record<string, string>>;
-  source?: ProviderCredentialSourceRef;
+  routingEnv?: Readonly<Record<string, string>>;
+  protectedRequestKeys?: ReadonlySet<string>;
+  allowedRequestKeys?: ReadonlySet<string>;
   platform: string;
 }): Readonly<Record<string, string>> {
   const windows = options.platform === 'win32';
@@ -79,63 +65,20 @@ export function buildExactProviderEnv(options: {
     if (setHasKey(EXECUTION_ENV_ALLOWLIST, key, windows)) assign(key, value);
   }
   for (const [key, value] of Object.entries(options.requestEnv ?? {})) {
-    if (
-      setHasKey(PROVIDER_ROUTING_ENV_KEYS, key, windows) ||
-      setHasKey(PROVIDER_CREDENTIAL_OVERRIDE_ENV_KEYS, key, windows)
-    ) {
+    if (setHasKey(options.protectedRequestKeys ?? new Set(), key, windows)) {
       throw new Error(`provider_execution_environment_invalid: protected environment override '${key}'`);
     }
-    if (setHasKey(EXECUTION_ENV_ALLOWLIST, key, windows) || setHasKey(PROVIDER_CORAL_ENV_ALLOWLIST, key, windows)) {
+    if (
+      setHasKey(EXECUTION_ENV_ALLOWLIST, key, windows) ||
+      setHasKey(SHARED_CORAL_REQUEST_ENV_KEYS, key, windows) ||
+      setHasKey(options.allowedRequestKeys ?? new Set(), key, windows)
+    ) {
       assign(key, value);
     }
   }
-  for (const [key, value] of Object.entries(options.source ? providerRoutingEnv(options.source) : {})) {
+  for (const [key, value] of Object.entries(options.routingEnv ?? {})) {
     assign(key, value);
   }
   for (const [key, value] of Object.entries(options.protectedEnv ?? {})) assign(key, value);
   return Object.freeze(output);
-}
-
-export function buildProviderExecutionContext(options: {
-  source: ProviderCredentialSourceRef;
-  request: ProviderRequest;
-  baseEnv: Readonly<Record<string, string>>;
-  protectedEnv?: Readonly<Record<string, string>>;
-  platform: string;
-}): ProviderExecutionContext {
-  const childAuthority = {
-    CORAL_CHILD: '1',
-    CORAL_SESSION_ID: options.request.sessionId,
-    ...(options.protectedEnv ?? {}),
-  };
-  if (options.source.provider === 'codex') {
-    return {
-      provider: 'codex',
-      source: options.source,
-      appServerEnv: buildExactProviderEnv({
-        baseEnv: options.baseEnv,
-        requestEnv: options.request.coralEnv,
-        protectedEnv: childAuthority,
-        source: options.source,
-        platform: options.platform,
-      }),
-    };
-  }
-  return {
-    provider: 'claude',
-    source: options.source,
-    brokerEnv: buildExactProviderEnv({
-      baseEnv: options.baseEnv,
-      requestEnv: options.request.coralEnv,
-      platform: options.platform,
-    }),
-    controllerEnv: buildExactProviderEnv({
-      baseEnv: options.baseEnv,
-      requestEnv: options.request.coralEnv,
-      protectedEnv: childAuthority,
-      source: options.source,
-      platform: options.platform,
-    }),
-    projectsRoot: options.source.projectsRoot,
-  };
 }

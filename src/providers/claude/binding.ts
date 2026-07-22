@@ -4,48 +4,55 @@ import { z } from 'zod';
 import {
   bindingFailure,
   bindingSuccess,
+  type AccountSubject,
   type ProfileBinding,
   type ProviderBindingCodec,
   type ProviderBindingFailure,
   type ProviderBindingResult,
 } from '../contracts/binding.js';
+import type { JsonValue } from '../../infra/json-value.js';
+import type { ClaudeCredentialSource } from './execution-context.js';
 import { absoluteProfilePathSchema, canonicalProfileDirectory } from '../contracts/profile.js';
-import { UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../infra/provider-credential-sources.js';
+import { CLAUDE_CREDENTIAL_ENV_KEYS } from './credential-policy.js';
+import { zodPersistedParser, zodValueParser } from '../binding-parser.js';
 
-const explicitClaudeRoutingSchema = z
-  .object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) })
-  .strict();
-const defaultClaudeRoutingSchema = z
-  .object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(false), homeDir: absoluteProfilePathSchema })
-  .strict();
-const claudeRoutingSchema = z.union([explicitClaudeRoutingSchema, defaultClaudeRoutingSchema]);
+function createClaudeSelectionSchema() {
+  return z.union([
+    z
+      .object({ kind: z.literal('config-dir'), configDir: absoluteProfilePathSchema, emitConfigDir: z.literal(true) })
+      .strict(),
+    z
+      .object({
+        kind: z.literal('config-dir'),
+        configDir: absoluteProfilePathSchema,
+        emitConfigDir: z.literal(false),
+        homeDir: absoluteProfilePathSchema,
+      })
+      .strict(),
+  ]);
+}
 
-export const claudeSelectionSchema = z.union([
-  z
-    .object({ kind: z.literal('config-dir'), configDir: absoluteProfilePathSchema, emitConfigDir: z.literal(true) })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('config-dir'),
-      configDir: absoluteProfilePathSchema,
-      emitConfigDir: z.literal(false),
-      homeDir: absoluteProfilePathSchema,
-    })
-    .strict(),
-]);
+function createClaudeCredentialProfileSchema() {
+  const routing = z.union([
+    z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
+    z
+      .object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(false), homeDir: absoluteProfilePathSchema })
+      .strict(),
+  ]);
+  return z.object({ canonicalLocation: absoluteProfilePathSchema, routing }).strict();
+}
+
+function createClaudeBindingSchema() {
+  return z.object({ profile: createClaudeCredentialProfileSchema(), guarantee: z.literal('profile-only') }).strict();
+}
+
+export const claudeSelectionSchema = createClaudeSelectionSchema();
 export type ClaudeSelection = z.infer<typeof claudeSelectionSchema>;
 
-export const claudeCredentialProfileSchema = z
-  .object({
-    canonicalLocation: absoluteProfilePathSchema,
-    routing: claudeRoutingSchema,
-  })
-  .strict();
+export const claudeCredentialProfileSchema = createClaudeCredentialProfileSchema();
 export type ClaudeCredentialProfile = z.infer<typeof claudeCredentialProfileSchema>;
 
-export const claudeBindingSchema = z
-  .object({ profile: claudeCredentialProfileSchema, guarantee: z.literal('profile-only') })
-  .strict();
+export const claudeBindingSchema = createClaudeBindingSchema();
 export type ClaudeBinding = ProfileBinding<ClaudeCredentialProfile>;
 
 /** Capture one invocation's explicit or caller-local default Claude profile selector. */
@@ -54,7 +61,7 @@ export function captureClaudeSelection(
   homeDir: string,
 ): ProviderBindingResult<ClaudeSelection> {
   for (const [key, value] of Object.entries(env)) {
-    if (value?.trim() && UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS.has(key.toUpperCase())) {
+    if (value?.trim() && CLAUDE_CREDENTIAL_ENV_KEYS.has(key.toUpperCase())) {
       return bindingFailure<ClaudeSelection>({
         reason: 'unsupported-selection',
         provider: 'claude',
@@ -86,11 +93,11 @@ export function renderClaudeBindingFailure(failure: ProviderBindingFailure): str
     case 'profile-unavailable':
       return `The selected ${failure.selector} is unavailable. Select an existing authenticated Claude profile and retry.`;
     case 'identity-unavailable':
-      return 'Claude cannot verify account identity; this provider supports profile-level binding only.';
+      return 'Claude cannot verify account identity because this provider supports profile-level binding only. Resume with the original Claude credential profile or start a new session.';
     case 'profile-mismatch':
       return 'The selected Claude credential profile differs from this session. Resume with the original profile or start a new session.';
     case 'subject-mismatch':
-      return 'The selected Claude credential profile no longer resolves to the bound account.';
+      return 'The selected Claude credential profile no longer resolves to the bound account. Restore the original Claude credential profile or start a new session.';
     case 'unsupported-selection':
       return `The ${failure.selector} is not supported. Remove it and select an absolute CLAUDE_CONFIG_DIR.`;
     case 'invalid-persisted-binding':
@@ -98,10 +105,15 @@ export function renderClaudeBindingFailure(failure: ProviderBindingFailure): str
   }
 }
 
-export const claudeBindingCodec: ProviderBindingCodec<ClaudeSelection, ClaudeCredentialProfile> = {
-  selectionSchema: claudeSelectionSchema,
-  profileSchema: claudeCredentialProfileSchema,
-  bindingSchema: claudeBindingSchema,
+export const claudeBindingCodec: ProviderBindingCodec<
+  ClaudeSelection,
+  ClaudeCredentialProfile,
+  AccountSubject & JsonValue,
+  ClaudeCredentialSource
+> = {
+  parseSelection: zodValueParser(createClaudeSelectionSchema),
+  parseProfile: zodValueParser(createClaudeCredentialProfileSchema),
+  persistedBinding: zodPersistedParser(createClaudeBindingSchema),
   bindingKind: 'profile',
   captureSelection: ({ env, homeDir }) => captureClaudeSelection(env, homeDir),
   async canonicalizeProfile(selection, runtime) {
@@ -152,22 +164,15 @@ export const claudeBindingCodec: ProviderBindingCodec<ClaudeSelection, ClaudeCre
   credentialSource(binding) {
     if (!binding.profile.routing.emitConfigDir) {
       return {
-        version: 1,
-        provider: 'claude',
-        kind: 'config-dir',
         configDir: binding.profile.canonicalLocation,
         projectsRoot: join(binding.profile.canonicalLocation, 'projects'),
-        emitConfigDir: false,
-        homeDir: binding.profile.routing.homeDir,
+        routing: { kind: 'default-home', homeDir: binding.profile.routing.homeDir },
       };
     }
     return {
-      version: 1,
-      provider: 'claude',
-      kind: 'config-dir',
       configDir: binding.profile.canonicalLocation,
       projectsRoot: join(binding.profile.canonicalLocation, 'projects'),
-      emitConfigDir: true,
+      routing: { kind: 'config-dir' },
     };
   },
   compareBinding: (left, right) =>

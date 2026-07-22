@@ -69,9 +69,6 @@ export interface StoragePort {
 export interface EnvPort {
   get(key: string): string | undefined;
   homedir(): string;
-  /** Resolved Claude Code config dir: `CLAUDE_CONFIG_DIR` or `~/.claude`. The
-   *  home of Claude's plugins, settings, credentials, and session logs. */
-  claudeConfigDir(): string;
   tmpdir(): string;
   pid(): number;
   platform(): string;

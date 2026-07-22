@@ -17,10 +17,9 @@ import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 import { SessionManager } from '#src/sessions/shell.js';
-import {
-  UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS,
-  UNSUPPORTED_CODEX_SELECTOR_ENV_KEYS,
-} from '#src/infra/provider-credential-sources.js';
+import { CLAUDE_CREDENTIAL_ENV_KEYS } from '#src/providers/claude/credential-policy.js';
+import { renderClaudeBindingFailure } from '#src/providers/claude/binding.js';
+import { CODEX_CREDENTIAL_ENV_KEYS } from '#src/providers/codex/credential-policy.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -46,6 +45,15 @@ afterEach(() => {
 });
 
 describe('provider binding lifecycle', () => {
+  it('renders recovery-complete Claude identity failures', () => {
+    expect(renderClaudeBindingFailure({ reason: 'identity-unavailable', provider: 'claude' })).toBe(
+      'Claude cannot verify account identity because this provider supports profile-level binding only. Resume with the original Claude credential profile or start a new session.',
+    );
+    expect(renderClaudeBindingFailure({ reason: 'subject-mismatch', provider: 'claude' })).toBe(
+      'The selected Claude credential profile no longer resolves to the bound account. Restore the original Claude credential profile or start a new session.',
+    );
+  });
+
   it('captures caller defaults as physically canonical profiles before transport', async () => {
     const root = fixtureRoot();
     const physicalCodex = join(root, 'physical-codex');
@@ -111,7 +119,7 @@ describe('provider binding lifecycle', () => {
     });
   });
 
-  it.each([...UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS])(
+  it.each([...CLAUDE_CREDENTIAL_ENV_KEYS])(
     'rejects caller Claude selector %s as a typed binding failure',
     async (selector) => {
       const registry = createBuiltInProviderRegistry();
@@ -129,7 +137,7 @@ describe('provider binding lifecycle', () => {
     },
   );
 
-  it.each([...UNSUPPORTED_CODEX_SELECTOR_ENV_KEYS])(
+  it.each([...CODEX_CREDENTIAL_ENV_KEYS])(
     'rejects caller Codex selector %s as a typed binding failure',
     async (selector) => {
       const registry = createBuiltInProviderRegistry();
@@ -305,14 +313,26 @@ describe('provider binding lifecycle', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.envelope.kind).toBe('profile');
-    expect(result.value.credentialSource()).toEqual({
-      version: 1,
-      provider: 'claude',
-      kind: 'config-dir',
-      configDir,
-      projectsRoot: join(configDir, 'projects'),
-      emitConfigDir: false,
-      homeDir: root,
+    expect(
+      result.value
+        .prepareExecution({
+          request: {
+            action: 'exec',
+            sessionId: 'claude-session',
+            prompt: 'test',
+            cwd: root,
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          baseEnv: { PATH: '/bin' },
+          platform: 'linux',
+        })
+        .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
+    ).toMatchObject({
+      PATH: '/bin',
+      HOME: root,
+      CORAL_CHILD: '1',
+      CORAL_SESSION_ID: 'claude-session',
     });
     expect(
       result.value.compareIdentity({
@@ -376,12 +396,22 @@ describe('provider binding lifecycle', () => {
         },
       }),
     ).toEqual({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
-    expect(result.value.credentialSource()).toEqual({
-      version: 1,
-      provider: 'codex',
-      kind: 'home',
-      home: codexHome,
-    });
+    expect(
+      result.value
+        .prepareExecution({
+          request: {
+            action: 'exec',
+            sessionId: 'codex-session',
+            prompt: 'test',
+            cwd: root,
+            bypassPermissions: false,
+            coralEnv: {},
+          },
+          baseEnv: { PATH: '/bin' },
+          platform: 'linux',
+        })
+        .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
+    ).toMatchObject({ PATH: '/bin', CODEX_HOME: codexHome, CORAL_SESSION_ID: 'codex-session' });
 
     writeCodexAuth(codexHome, { account_id: 'acct-two' });
     await expect(result.value.readiness('recovery', runtime)).resolves.toEqual({

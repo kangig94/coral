@@ -64,6 +64,7 @@ export function buildClaudeProviderServerSpec(
     cwd: request.cwd,
     env: { ...brokerEnv, ...claudeTransportEnv(transportMode) },
     shared: true,
+    runtimeMetadata: { transportMode },
     shutdownCapability: {
       method: 'broker/shutdown',
       timeoutMs: 3_000,

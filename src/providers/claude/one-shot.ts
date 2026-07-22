@@ -3,8 +3,14 @@ import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { AbortError } from '../../runtime/abort.js';
 import type { IdPort } from '../../runtime/ports.js';
-import type { ProviderCredentialSourceRef } from '../../infra/provider-credential-sources.js';
-import type { EffortLevel, ProviderServerLease, ProviderServerSpec } from '../contract.js';
+import type {
+  EffortLevel,
+  ProviderCurationCapability,
+  ProviderCurationRequest,
+  ProviderServerLease,
+  ProviderServerSpec,
+} from '../contract.js';
+import { buildExactProviderEnv } from '../execution-context.js';
 import { deleteClaudeJsonlArtifactsForConversation } from './artifacts.js';
 import {
   brokerNotificationMethods,
@@ -14,8 +20,10 @@ import {
 } from './appserver/protocol.js';
 import { buildClaudeBootstrapSignature, buildClaudeProviderServerSpec } from './request-mapping.js';
 import type { PermissionMode } from './request-prep.js';
+import { isClaudeCurationUsageBudgetExhausted } from './usage-budget.js';
+import { claudeRoutingEnv, type ClaudeCredentialSource } from './execution-context.js';
 
-export type ClaudeOneShotRequest = {
+type ClaudeOneShotRequest = {
   readonly cwd: string;
   readonly prompt: string;
   readonly model?: string;
@@ -25,14 +33,14 @@ export type ClaudeOneShotRequest = {
   readonly signal?: AbortSignal;
 };
 
-export type ClaudeSystemExecutionContext = {
-  readonly source: Extract<ProviderCredentialSourceRef, { provider: 'claude' }>;
+type ClaudeSystemExecutionContext = {
+  readonly source: ClaudeCredentialSource;
   readonly brokerEnv: Readonly<Record<string, string>>;
   readonly controllerEnv: Readonly<Record<string, string>>;
   readonly projectsRoot: string;
 };
 
-export type ClaudeOneShotDeps = {
+type ClaudeOneShotDeps = {
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
   readonly providerContext: ClaudeSystemExecutionContext;
@@ -60,7 +68,7 @@ type ClaudeOneShotState = {
   resolveTerminal: (outcome: ClaudeOneShotOutcome) => void;
 };
 
-export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
+async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
   const state = createOneShotState();
   const lease = await deps.acquireServer(
     buildClaudeProviderServerSpec({ cwd: request.cwd }, deps.storage, deps.providerContext.brokerEnv),
@@ -127,6 +135,43 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
     lease.release();
   }
 }
+
+export const claudeCurationCapability = Object.freeze({
+  complete(
+    request: ProviderCurationRequest,
+    runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['complete']>[1],
+  ) {
+    return runClaudeOneShotTurn(
+      {
+        storage: runtime.storage,
+        ids: runtime.ids,
+        providerContext: {
+          source: runtime.source,
+          brokerEnv: buildExactProviderEnv({
+            baseEnv: runtime.baseEnv,
+            platform: runtime.platform,
+          }),
+          controllerEnv: buildExactProviderEnv({
+            baseEnv: runtime.baseEnv,
+            routingEnv: claudeRoutingEnv(runtime.source),
+            platform: runtime.platform,
+          }),
+          projectsRoot: runtime.source.projectsRoot,
+        },
+        acquireServer: runtime.acquireServer,
+      },
+      request,
+    );
+  },
+  isUsageBudgetExhausted(
+    runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['isUsageBudgetExhausted']>[0],
+  ) {
+    return isClaudeCurationUsageBudgetExhausted({
+      configDir: runtime.source.configDir,
+      runtime,
+    });
+  },
+}) satisfies ProviderCurationCapability<ClaudeCredentialSource>;
 
 function createOneShotState(): ClaudeOneShotState {
   let resolveTerminal!: (outcome: ClaudeOneShotOutcome) => void;

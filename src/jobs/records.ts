@@ -194,7 +194,7 @@ export interface AppServerRuntime {
     provider: string;
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
-    claudeTransport?: string;
+    transportMode?: string;
   };
 }
 

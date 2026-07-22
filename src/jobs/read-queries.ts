@@ -52,7 +52,7 @@ type JobAppServerRuntimeProjection = {
     provider: string;
     leaseState: 'waiting' | 'acquired';
     serverGeneration?: number;
-    claudeTransport?: string;
+    transportMode?: string;
   };
 };
 
@@ -402,9 +402,9 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
         ...(parsed.providerMeta.serverGeneration === undefined
           ? {}
           : { serverGeneration: parsed.providerMeta.serverGeneration }),
-        ...(parsed.providerMeta.claudeTransport === undefined
+        ...(parsed.providerMeta.transportMode === undefined
           ? {}
-          : { claudeTransport: parsed.providerMeta.claudeTransport }),
+          : { transportMode: parsed.providerMeta.transportMode }),
       },
     };
   }

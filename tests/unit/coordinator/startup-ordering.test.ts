@@ -17,6 +17,7 @@ import { providerSessionSchema } from '#src/sessions/entry.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { none } from '#src/providers/capability.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import type { Database } from '#src/store/db.js';
 
@@ -238,7 +239,11 @@ describe('coordinator startup ordering', () => {
     const order: string[] = [];
     let startupDb: Database | null = null;
     let recoveryObservedPending = false;
-    const provider = defineProvider({ name: 'codex', run: async function* noop() {} })
+    const provider = defineProvider({
+      name: 'codex',
+      run: async function* noop() {},
+      prepareExecutionContext: prepareFixtureExecutionContext,
+    })
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('startup ordering fixture has no artifacts'))
       .build();

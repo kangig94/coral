@@ -14,7 +14,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
 import { managed } from '#src/providers/capability.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { streamProviderEvents, streamProviderTerminal } from '#src/providers/stream.js';
@@ -111,7 +111,7 @@ describe('pipe executor coral cascade invariant', () => {
       };
 
       const providerRegistry = new ProviderRegistry();
-      providerRegistry.register(toProviderSpec(stubProvider)!);
+      providerRegistry.register(toProviderDefinition(stubProvider)!);
 
       const eventBus = new TypedEventBus();
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
@@ -257,7 +257,7 @@ describe('pipe executor coral cascade invariant', () => {
           },
         }),
       };
-      providerRegistry.register(toProviderSpec(stubProvider)!);
+      providerRegistry.register(toProviderDefinition(stubProvider)!);
 
       const eventBus = new TypedEventBus();
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);

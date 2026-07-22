@@ -19,6 +19,7 @@ import type {
   SessionJobClaimPort,
 } from '#src/sessions/contracts.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -253,11 +254,15 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
       void providerRuntime.acquireServer({ provider: 'codex', shared: false } as ProviderServerSpec).catch(() => {});
       return providerStream.iterable;
     }) as never,
+    prepareExecutionContext: prepareFixtureExecutionContext,
   })
     .binding(fixtureProviderBindingCodec('codex'))
     .artifacts(none('quiesce fixture owns no provider artifacts'))
     .build();
   providerRegistry.register(provider);
+  const boundProviderResult = providerRegistry.rehydrateBinding(TEST_CODEX_BINDING);
+  if (!boundProviderResult.ok) throw new Error('expected fixture provider binding');
+  const boundProvider = boundProviderResult.value;
 
   const request: ProviderRequest = {
     action: 'start',
@@ -266,7 +271,7 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   } as unknown as ProviderRequest;
 
   // Drive `executeJob` through `runAsync`:
-  orchestrator.runAsync(provider, sessionId, jobId, request, { type: 'immediate' }, 'default');
+  orchestrator.runAsync(boundProvider, sessionId, jobId, request, { type: 'immediate' }, 'default');
 
   // Allow `runAsync` IIFE plus the stream's first `next()` to settle.
   await Promise.resolve();
@@ -326,7 +331,9 @@ describe('LaunchOrchestrator handoff quiesce', () => {
       resumable: true,
       providerContinuity: { provider: 'codex', threadId: 'thread-1' },
     });
-    expect(harness.checkpointSpy).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(harness.checkpointSpy).toHaveBeenCalledTimes(1);
+    });
 
     // Quiesce flips the flag synchronously.
     await harness.orchestrator.quiesceAppServerJobsForHandoff(new AbortController().signal);

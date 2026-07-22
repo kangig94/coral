@@ -7,57 +7,51 @@ import {
   runProviderPreflight,
   toPreflightRuntime,
 } from '#src/coordinator/services/execution-policies.js';
-import type { ProviderSpec } from '#src/providers/contract.js';
+import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { TEST_CODEX_SOURCE } from '../../helpers/provider-credentials.js';
 
 describe('execution policies', () => {
   it('bounds provider preflight before a launch can wait forever without a job id', async () => {
     const runtime = new SimulationRuntime();
-    const provider: ProviderSpec = {
+    const preflight = vi.fn(
+      () =>
+        new Promise<void>(() => {
+          // Deliberately unresolved to exercise the preflight timeout.
+        }),
+    );
+    const provider = {
       name: 'codex',
-      run: {} as ProviderSpec['run'],
-      preflight: vi.fn(
-        () =>
-          new Promise<void>(() => {
-            // Deliberately unresolved to exercise the preflight timeout.
-          }),
-      ),
-    };
+      preflight,
+    } as Pick<BoundProvider, 'name' | 'preflight'>;
 
-    const result = runProviderPreflight(provider, toPreflightRuntime(runtime, TEST_CODEX_SOURCE, '/workspace', {}));
+    const result = runProviderPreflight(provider as BoundProvider, toPreflightRuntime(runtime, '/workspace', {}));
     await Promise.resolve();
     runtime.time.tick(PROVIDER_PREFLIGHT_TIMEOUT_MS);
 
     await expect(result).resolves.toContain('codex preflight timed out after 30000ms');
-    expect(provider.preflight).toHaveBeenCalledOnce();
+    expect(preflight).toHaveBeenCalledOnce();
   });
 
-  it('runs preflight with the selected source and no daemon credential overrides', async () => {
+  it('passes only provider-opaque environment inputs to the bound preflight', async () => {
     const runtime = new SimulationRuntime({
       env: { PATH: '/bin', OPENAI_API_KEY: 'daemon-secret', CODEX_HOME: '/daemon/codex' },
     });
-    const exec = vi.spyOn(runtime.process, 'exec').mockResolvedValue({
-      stdout: '',
-      stderr: '',
-      status: 0,
-    });
-    const source = { ...TEST_CODEX_SOURCE, home: '/accounts/codex-a' };
-    const preflight = toPreflightRuntime(runtime, source, '/workspace/project', {});
+    const preflight = toPreflightRuntime(runtime, '/workspace/project', { CORAL_OWNER: 'reviewer' });
 
-    await preflight.runExact('codex', ['app-server', '--help'], { timeout: 10_000 });
-
-    expect(exec).toHaveBeenCalledWith('codex', ['app-server', '--help'], {
-      timeout: 10_000,
+    expect(preflight).toMatchObject({
       cwd: '/workspace/project',
-      env: { PATH: '/bin', HOME: expect.any(String), CODEX_HOME: '/accounts/codex-a' },
+      baseEnv: { PATH: '/bin', OPENAI_API_KEY: 'daemon-secret', CODEX_HOME: '/daemon/codex' },
+      requestEnv: { CORAL_OWNER: 'reviewer' },
+      platform: runtime.env.platform(),
     });
+    expect(preflight).not.toHaveProperty('credentialSource');
+    expect(preflight).not.toHaveProperty('runExact');
   });
 
   it('resolves relative preflight working directories against the daemon cwd', async () => {
     const runtime = new SimulationRuntime();
-    const preflight = toPreflightRuntime(runtime, TEST_CODEX_SOURCE, 'nested/project', {});
+    const preflight = toPreflightRuntime(runtime, 'nested/project', {});
 
     expect(preflight.cwd).toBe(`${runtime.env.cwd()}/nested/project`);
   });

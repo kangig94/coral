@@ -4,8 +4,7 @@ import { errorMessage } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
 import type { ProviderBindingCatalog } from '../providers/catalog.js';
-import type { ProviderDefinition } from '../providers/registry.js';
-import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
+import type { BoundProvider } from '../providers/bound-provider-contract.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import type { StoreReadContext } from '../store/body-codec.js';
@@ -106,19 +105,17 @@ export class LifecycleReactor {
     this.options = options;
   }
 
-  private async readyArtifactSource(
-    entry: ProviderSession,
-    operation: string,
-  ): Promise<{ provider: ProviderDefinition; source: ProviderCredentialSourceRef } | null> {
+  private async readyBoundProvider(entry: ProviderSession, operation: string): Promise<BoundProvider | null> {
     const providerName = providerSessionProvider(entry);
-    const provider = this.options.providers.get(providerName);
-    if (provider === undefined) {
-      this.log(`${operation} skipped for session ${entry.sessionId}: unknown provider '${providerName}'.`);
-      return null;
-    }
     const binding = this.options.providers.rehydrateBinding(entry.binding);
-    if (!binding.ok || binding.value.provider !== providerName) {
-      this.log(`${operation} skipped for session ${entry.sessionId}: invalid provider binding.`);
+    if (!binding.ok || binding.value.name !== providerName) {
+      this.log(
+        `${operation} skipped for session ${entry.sessionId}: ${
+          binding.ok
+            ? `binding provider '${binding.value.name}' does not match session provider '${providerName}'`
+            : this.options.providers.renderBindingFailure(binding.failure)
+        }.`,
+      );
       return null;
     }
     const readiness = await binding.value.readiness('recovery', this.options.runtime.storage);
@@ -128,7 +125,7 @@ export class LifecycleReactor {
       );
       return null;
     }
-    return { provider, source: binding.value.credentialSource() };
+    return binding.value;
   }
 
   readonly observe: PostCommitObserver = (appended) => {
@@ -193,22 +190,20 @@ export class LifecycleReactor {
   async discardSessionArtifacts(sessionId: string): Promise<void> {
     const entry = readProjectionSessionEntriesById(this.options.db(), [sessionId]).get(sessionId);
     if (!entry) return;
-    const ready = await this.readyArtifactSource(entry, 'On-demand artifact discard');
-    if (ready === null) return;
-    const { provider, source } = ready;
-    if (provider.artifacts.kind !== 'managed') {
+    const bound = await this.readyBoundProvider(entry, 'On-demand artifact discard');
+    if (bound === null) return;
+    if (bound.artifacts.kind !== 'managed') {
       this.log(
         `On-demand artifact discard skipped for session ${sessionId}: provider '${providerSessionProvider(entry)}' declares no artifacts.`,
       );
       return;
     }
-    const handles = collectArtifactHandles(entry, provider, source, this.options.runtime);
+    const handles = collectArtifactHandles(entry, bound, this.options.runtime);
     if (handles.length === 0) return;
     await this.archiveArtifactsBeforeDiscard(entry, handles);
     try {
-      await provider.artifacts.discardArtifacts({
+      await bound.artifacts.discardArtifacts({
         handles,
-        source,
         runtime: this.options.runtime,
       });
     } catch (error: unknown) {
@@ -230,10 +225,9 @@ export class LifecycleReactor {
     if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
       return;
     }
-    const ready = await this.readyArtifactSource(entry, 'Retention discard');
-    if (ready === null) return;
-    const { provider, source } = ready;
-    const recordedHandles = collectArtifactHandles(entry, provider, source, this.options.runtime, { jobId });
+    const bound = await this.readyBoundProvider(entry, 'Retention discard');
+    if (bound === null) return;
+    const recordedHandles = collectArtifactHandles(entry, bound, this.options.runtime, { jobId });
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
     const attempt = readNextRetentionDiscardAttempt(this.options.db(), this.options.readCtx, sessionId, attemptFloor);
 
@@ -265,7 +259,7 @@ export class LifecycleReactor {
       return;
     }
 
-    if (provider.artifacts.kind === 'none') {
+    if (bound.artifacts.kind === 'none') {
       this.appendCompleted(sessionId, attempt, recordedHandles, 'provider_declares_none');
       return;
     }
@@ -277,9 +271,8 @@ export class LifecycleReactor {
 
     try {
       await this.archiveArtifactsBeforeDiscard(preDeleteEntry, recordedHandles, jobId);
-      const outcome = await provider.artifacts.discardArtifacts({
+      const outcome = await bound.artifacts.discardArtifacts({
         handles: recordedHandles,
-        source,
         runtime: this.options.runtime,
       });
       this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);

@@ -10,6 +10,7 @@ import type {
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { brokerNotificationMethods, type TurnFailureDiagnostic } from '#src/providers/claude/appserver/protocol.js';
 import { claudeSessionKernel } from '#src/providers/claude/session-kernel.js';
+import type { ClaudeExecutionContext } from '#src/providers/claude/execution-context.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { TEST_CLAUDE_CONTEXT } from '../../../helpers/provider-credentials.js';
 
@@ -74,7 +75,9 @@ function makeLease(): MockLease {
   };
 }
 
-function makeRuntime(controller = new AbortController()): ProviderRuntime {
+type ClaudeRuntime = ProviderRuntime<ClaudeExecutionContext>;
+
+function makeRuntime(controller = new AbortController()): ClaudeRuntime {
   return {
     signal: controller.signal,
     runCli: async () => {
@@ -84,13 +87,13 @@ function makeRuntime(controller = new AbortController()): ProviderRuntime {
       now: () => 1_000,
       setTimeout: () => ({ unref: () => {} }),
       clearTimeout: () => {},
-    } as ProviderRuntime['time'],
+    } as ClaudeRuntime['time'],
     storage: {
       existsSync: () => false,
       readFileSync: () => '',
-      statSync: () => ({}) as ReturnType<ProviderRuntime['storage']['statSync']>,
+      statSync: () => ({}) as ReturnType<ClaudeRuntime['storage']['statSync']>,
       readdirSync: () => [],
-    } as unknown as ProviderRuntime['storage'],
+    } as unknown as ClaudeRuntime['storage'],
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:test' },
     acquireServer: async () => {
       throw new Error('acquireServer should already be bound by app-server middleware.');

@@ -10,8 +10,9 @@ import {
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import { none } from '../../../src/providers/capability.js';
-import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../src/providers/contract.js';
+import type { Provider, ProviderRecoveryContract, ProviderTerminal } from '../../../src/providers/contract.js';
 import { defineProvider, type ProviderDefinition } from '../../../src/providers/registry.js';
+import { buildExactProviderEnv } from '../../../src/providers/execution-context.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import type { ProviderScope } from '../../../src/infra/provider-scope.js';
@@ -52,32 +53,56 @@ import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js'
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
 import { z } from 'zod';
-import { bindingFailure, bindingSuccess, type ProviderBindingCodec } from '../../../src/providers/contracts/binding.js';
+import {
+  bindingFailure,
+  bindingSuccess,
+  type AccountSubject,
+  type ProviderBindingCodec,
+} from '../../../src/providers/contracts/binding.js';
+import type { JsonValue } from '../../../src/infra/json-value.js';
+import { zodPersistedParser, zodValueParser } from '../../../src/providers/binding-parser.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
 type SimulationTerminalOutcome = ProviderTerminal['outcome'];
 
-const simulationSelectionSchema = z.object({ key: z.string() }).strict();
-const simulationProfileSchema = z
-  .object({
-    canonicalLocation: z.string(),
-    routing: z.union([
-      z.object({ kind: z.literal('home') }).strict(),
-      z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
-    ]),
-  })
-  .strict();
-const simulationBindingSchema = z
-  .object({ profile: simulationProfileSchema, guarantee: z.literal('profile-only') })
-  .strict();
+function createSimulationSelectionSchema() {
+  return z.object({ key: z.string() }).strict();
+}
 
-function simulationBindingCodec(
-  provider: string,
-): ProviderBindingCodec<z.infer<typeof simulationSelectionSchema>, z.infer<typeof simulationProfileSchema>> {
+function createSimulationProfileSchema() {
+  return z
+    .object({
+      canonicalLocation: z.string(),
+      routing: z.union([
+        z.object({ kind: z.literal('home') }).strict(),
+        z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
+      ]),
+    })
+    .strict();
+}
+
+function createSimulationBindingSchema() {
+  return z.object({ profile: createSimulationProfileSchema(), guarantee: z.literal('profile-only') }).strict();
+}
+
+type SimulationSelection = z.infer<ReturnType<typeof createSimulationSelectionSchema>>;
+type SimulationProfile = z.infer<ReturnType<typeof createSimulationProfileSchema>>;
+
+type SimulationProviderSource = {
+  readonly profileRoot: string;
+  readonly routingEnv: Readonly<Record<string, string>>;
+};
+
+type SimulationBindingCodec = Extract<
+  ProviderBindingCodec<SimulationSelection, SimulationProfile, AccountSubject & JsonValue, SimulationProviderSource>,
+  { readonly bindingKind: 'profile' }
+>;
+
+function simulationBindingCodec(provider: string): SimulationBindingCodec {
   return {
-    selectionSchema: simulationSelectionSchema,
-    profileSchema: simulationProfileSchema,
-    bindingSchema: simulationBindingSchema,
+    parseSelection: zodValueParser(createSimulationSelectionSchema),
+    parseProfile: zodValueParser(createSimulationProfileSchema),
+    persistedBinding: zodPersistedParser(createSimulationBindingSchema),
     bindingKind: 'profile',
     captureSelection: () => bindingSuccess({ key: provider }),
     async canonicalizeProfile(selection) {
@@ -98,21 +123,14 @@ function simulationBindingCodec(
       return bindingSuccess({ ready: true, use });
     },
     credentialSource(binding) {
-      return provider === 'claude'
-        ? {
-            version: 1,
-            provider: 'claude',
-            kind: 'config-dir',
-            configDir: binding.profile.canonicalLocation,
-            projectsRoot: join(binding.profile.canonicalLocation, 'projects'),
-            emitConfigDir: true,
-          }
-        : {
-            version: 1,
-            provider: 'codex',
-            kind: 'home',
-            home: binding.profile.canonicalLocation,
-          };
+      const routingEnv: Record<string, string> =
+        provider === 'claude'
+          ? { CLAUDE_CONFIG_DIR: binding.profile.canonicalLocation }
+          : { CODEX_HOME: binding.profile.canonicalLocation };
+      return {
+        profileRoot: binding.profile.canonicalLocation,
+        routingEnv,
+      };
     },
     compareBinding: (left, right) =>
       left.profile.canonicalLocation === right.profile.canonicalLocation
@@ -291,65 +309,82 @@ export function createFakeProvider(
 ): ProviderDefinition {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
-  return defineProvider({
+  const run: Provider<unknown> = (request, providerRuntime) =>
+    streamProviderEvents(async (emit) => {
+      const startedAt = runtime.time.now();
+
+      for (const progress of scenario?.progress ?? []) {
+        if ((progress.delayMs ?? 0) > 0) {
+          await runtime.time.sleep(progress.delayMs ?? 0);
+        }
+        emit(providerProgressEvent(progress.message, nowIsoString(runtime.time)));
+      }
+
+      const cli = await providerRuntime.runCli({
+        command: scenario?.cli?.command ?? providerName,
+        args: scenario?.cli?.args ?? [`--${request.action}`],
+        prompt: request.prompt,
+        cwd: request.cwd,
+      });
+
+      const exitCode = scenario?.result?.exitCode ?? cli.code;
+      const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(scenario, cli.aborted, exitCode);
+      const failureCause = failureCauseForSimulationOutcome(
+        scenario,
+        outcome,
+        typeof exitCode === 'number' && exitCode !== 0
+          ? `Fake provider exited with code ${exitCode}.`
+          : 'Fake provider failed.',
+      );
+      if (scenario?.result?.conversationRef !== undefined || scenario?.result?.resumable !== undefined) {
+        emit({
+          kind: 'continuity',
+          conversationRef: scenario.result?.conversationRef ?? null,
+          resumable: scenario.result?.resumable ?? true,
+          providerContinuity: null,
+        });
+      }
+      emit(
+        providerTerminalEvent({
+          ...scenario?.result,
+          content: scenario?.result?.content ?? cli.stdout.trimEnd(),
+          exitCode,
+          durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
+          outcome,
+          failureCause,
+        }),
+      );
+    });
+  return defineProvider<SimulationProviderSource, SimulationProviderSource>({
     name: providerName,
+    run,
+    prepareExecutionContext: ({ source, request, baseEnv, protectedEnv, platform }) => {
+      const exactEnv = Object.freeze({
+        ...buildExactProviderEnv({
+          baseEnv,
+          requestEnv: request.coralEnv,
+          protectedEnv: {
+            CORAL_CHILD: '1',
+            CORAL_SESSION_ID: request.sessionId,
+            ...(protectedEnv ?? {}),
+          },
+          routingEnv: source.routingEnv,
+          platform,
+        }),
+        ...(scenario?.cli?.extraEnv ?? {}),
+      });
+      return {
+        context: source,
+        prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...exactEnv }, extraEnv: undefined }),
+      };
+    },
     ...(preflightError
       ? {
-          preflight: async (_runtime: PreflightRuntime) => {
+          preflight: async () => {
             throw toError(preflightError);
           },
         }
       : {}),
-    run: (request: Parameters<ProviderSpec['run']>[0], providerRuntime: Parameters<ProviderSpec['run']>[1]) =>
-      streamProviderEvents(async (emit) => {
-        const startedAt = runtime.time.now();
-
-        for (const progress of scenario?.progress ?? []) {
-          if ((progress.delayMs ?? 0) > 0) {
-            await runtime.time.sleep(progress.delayMs ?? 0);
-          }
-          emit(providerProgressEvent(progress.message, nowIsoString(runtime.time)));
-        }
-
-        const cli = await providerRuntime.runCli({
-          command: scenario?.cli?.command ?? providerName,
-          args: scenario?.cli?.args ?? [`--${request.action}`],
-          prompt: request.prompt,
-          cwd: request.cwd,
-          extraEnv: {
-            ...request.coralEnv,
-            ...(scenario?.cli?.extraEnv ?? {}),
-          },
-        });
-
-        const exitCode = scenario?.result?.exitCode ?? cli.code;
-        const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(scenario, cli.aborted, exitCode);
-        const failureCause = failureCauseForSimulationOutcome(
-          scenario,
-          outcome,
-          typeof exitCode === 'number' && exitCode !== 0
-            ? `Fake provider exited with code ${exitCode}.`
-            : 'Fake provider failed.',
-        );
-        if (scenario?.result?.conversationRef !== undefined || scenario?.result?.resumable !== undefined) {
-          emit({
-            kind: 'continuity',
-            conversationRef: scenario.result?.conversationRef ?? null,
-            resumable: scenario.result?.resumable ?? true,
-            providerContinuity: null,
-          });
-        }
-        emit(
-          providerTerminalEvent({
-            ...scenario?.result,
-            content: scenario?.result?.content ?? cli.stdout.trimEnd(),
-            exitCode,
-            durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
-            outcome,
-            failureCause,
-          }),
-        );
-      }),
     recovery: {
       finalizeInterrupted: () => {
         throw new Error(`Simulation provider '${providerName}' does not support app-server recovery.`);
@@ -360,7 +395,7 @@ export function createFakeProvider(
         exitCode,
         signal,
         durationMs,
-      }: Parameters<NonNullable<ProviderSpec['recovery']>['finalizeFromArtifacts']>[0]) => {
+      }: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0]) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();
         const stderr = readFileIfPresent(runtime.storage, stderrPath).trimEnd();
         const recoveredArtifactFailed = scenario?.result?.outcome === undefined && stderr.length > 0;
@@ -399,7 +434,7 @@ export function createFakeProvider(
       extractProgress: ({
         stdoutPath,
         fromOffset,
-      }: Parameters<NonNullable<NonNullable<ProviderSpec['recovery']>['extractProgress']>>[0]) => {
+      }: Parameters<NonNullable<ProviderRecoveryContract['extractProgress']>>[0]) => {
         const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset, runtime.storage);
         return {
           messages: lines,

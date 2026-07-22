@@ -36,6 +36,9 @@ import {
   type ErrorNotificationEvidence,
   type RecoverableTurnFailure,
 } from './turn-recovery.js';
+import type { CodexExecutionContext } from './execution-context.js';
+
+type CodexProviderRuntime = ProviderRuntime<CodexExecutionContext>;
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -99,11 +102,11 @@ export type CodexTurnState = {
   subagentTurnIds: Map<string, string>;
   retiredControllerTurnIds: Set<string>;
   activeAttempt: TurnAttempt;
-  continuityBridge: ProviderRuntime['continuityBridge'];
+  continuityBridge: CodexProviderRuntime['continuityBridge'];
   signal: AbortSignal;
   lease: ProviderServerLease | null;
   artifactHandleEmissionAttempted: boolean;
-  artifactLocatorRuntime: Pick<ProviderRuntime, 'providerContext' | 'storage'>;
+  artifactLocatorRuntime: Pick<CodexProviderRuntime, 'providerContext' | 'storage'>;
   preTurnMailbox: {
     status(): PreTurnMailboxStatus;
   };
@@ -161,7 +164,7 @@ function createAttempt(sequence: number): TurnAttempt {
   };
 }
 
-function createState(request: ProviderRequest, runtime: ProviderRuntime): CodexTurnState {
+function createState(request: ProviderRequest, runtime: CodexProviderRuntime): CodexTurnState {
   const persistedContinuity = readCodexPersistedContinuity(runtime.persistedContinuity);
   const mailboxThreadCandidates = new Set<string>();
   const persistedThreadId = persistedContinuity.threadId ?? null;
@@ -793,7 +796,7 @@ function ensureInterrupt(
 
 async function initializeThread(
   request: ProviderRequest,
-  runtime: ProviderRuntime,
+  runtime: CodexProviderRuntime,
   lease: ProviderServerLease,
   state: CodexTurnState,
   emit: (event: ProviderEventBody) => void,
@@ -840,7 +843,7 @@ function requireRpcThreadId(response: { thread?: { id?: unknown } }, method: 'th
 }
 
 async function startTurn(
-  runtime: ProviderRuntime,
+  runtime: CodexProviderRuntime,
   lease: ProviderServerLease,
   state: CodexTurnState,
   attempt: TurnAttempt,
@@ -974,7 +977,7 @@ function applyNotification(
 
 function abortResultPromise(
   lease: ProviderServerLease,
-  runtime: ProviderRuntime,
+  runtime: CodexProviderRuntime,
   state: CodexTurnState,
   attempt: TurnAttempt,
 ): { promise: Promise<CodexKernelResult>; cleanup(): void } {
@@ -1003,7 +1006,7 @@ function abortResultPromise(
 }
 
 function transportClosedResult(
-  runtime: ProviderRuntime,
+  runtime: CodexProviderRuntime,
   attempt: TurnAttempt,
   closed: Error | void,
 ): CodexKernelResult {
@@ -1025,7 +1028,7 @@ function transportClosedResult(
 
 async function finishAbortedStart(
   lease: ProviderServerLease,
-  runtime: ProviderRuntime,
+  runtime: CodexProviderRuntime,
   state: CodexTurnState,
   attempt: TurnAttempt,
 ): Promise<CodexKernelResult> {
@@ -1046,7 +1049,7 @@ async function finishAbortedStart(
 
 async function waitForTurnResult(
   lease: ProviderServerLease,
-  runtime: ProviderRuntime,
+  runtime: CodexProviderRuntime,
   state: CodexTurnState,
 ): Promise<CodexKernelResult> {
   const attempt = state.activeAttempt;
@@ -1062,7 +1065,7 @@ async function waitForTurnResult(
   }
 }
 
-export function createCodexTurnStateForTest(request: ProviderRequest, runtime: ProviderRuntime): CodexTurnState {
+export function createCodexTurnStateForTest(request: ProviderRequest, runtime: CodexProviderRuntime): CodexTurnState {
   return createState(request, runtime);
 }
 
@@ -1239,7 +1242,7 @@ function emitFinalTurnProgress(result: CodexKernelResult, emit: (event: Provider
   emitProgress(emit, `Turn ${result.turn.status ?? 'finished'}.`);
 }
 
-export const codexTurnKernel: Provider = (request, runtime) =>
+export const codexTurnKernel: Provider<CodexExecutionContext> = (request, runtime) =>
   streamProviderEvents<ProviderEventBody>(async (emit) => {
     const lease = requireAppServerLease(runtime, 'codex');
     const state = createState(request, runtime);

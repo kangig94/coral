@@ -554,7 +554,6 @@ async function runLifecycleStartup({
       runtime,
       runtimeState,
       eventBus: deps.eventBus,
-      providerRegistry,
       getRecoveryService,
       createInvocationContext,
       log: identity.log,

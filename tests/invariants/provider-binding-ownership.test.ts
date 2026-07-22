@@ -49,7 +49,9 @@ describe('provider binding ownership', () => {
       'outside its owner',
     );
     expect(bindingImportViolation('src/providers/fixture/execution.ts', 'src/providers/fixture/binding.ts')).toBeNull();
-    expect(bindingImportViolation('src/providers/bootstrap.ts', 'src/providers/future/binding.ts')).toBeNull();
+    expect(bindingImportViolation('src/providers/bootstrap.ts', 'src/providers/future/binding.ts')).toContain(
+      'outside its owner',
+    );
     expect(bindingImportViolation('src/providers/registry.ts', 'src/providers/contracts/binding.ts')).toBeNull();
   });
 });
@@ -59,7 +61,7 @@ function bindingImportViolation(source: string, target: string): string | null {
   if (match === null) return null;
   const provider = match[1];
   if (provider === 'contracts') return null;
-  if (source === 'src/providers/bootstrap.ts' || source.startsWith(`src/providers/${provider}/`)) return null;
+  if (source.startsWith(`src/providers/${provider}/`)) return null;
   if (/^src\/providers\/[^/]+\//u.test(source)) {
     return `${source}: cross-provider import of ${target}`;
   }

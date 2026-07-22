@@ -9,8 +9,11 @@ import {
   locateClaudeJsonlArtifact,
 } from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
+import type { ClaudeCredentialSource } from '#src/providers/claude/execution-context.js';
 
-function claudePreflightRuntime(files: Readonly<Record<string, string>>): ProviderPreflightRuntime {
+function claudePreflightRuntime(
+  files: Readonly<Record<string, string>>,
+): ProviderPreflightRuntime<ClaudeCredentialSource> {
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
       ? { stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null }
@@ -24,7 +27,7 @@ function claudePreflightRuntime(files: Readonly<Record<string, string>>): Provid
       readFileSync: (path: string) => files[path] ?? '',
     },
     runExact,
-  } as unknown as ProviderPreflightRuntime;
+  } as unknown as ProviderPreflightRuntime<ClaudeCredentialSource>;
 }
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -116,6 +119,23 @@ describe('claudePreflight', () => {
 
     await expect(claudePreflight(runtime)).resolves.toBeUndefined();
     expect(runtime.runExact).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces the detector authentication recovery message without a redundant prefix', async () => {
+    const runtime = claudePreflightRuntime({});
+    runtime.runExact = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ authenticated: false }),
+        stderr: '',
+        status: 0,
+        signal: null,
+      });
+
+    await expect(claudePreflight(runtime)).rejects.toThrow(
+      'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.',
+    );
   });
 });
 
@@ -213,7 +233,7 @@ describe('claudeArtifactCapability', () => {
         [root]: [dirent('-workspace-a', 'dir')],
         [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
       }),
-      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      env: { homedir: () => '/home/user' },
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
@@ -236,7 +256,7 @@ describe('claudeArtifactCapability', () => {
         [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
         [`${root}/-workspace-b`]: [dirent('session-1.jsonl', 'file')],
       }),
-      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      env: { homedir: () => '/home/user' },
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
@@ -282,7 +302,7 @@ describe('claudeArtifactCapability', () => {
     const unlinkSync = vi.fn();
     const runtime = {
       storage: { unlinkSync, existsSync: () => false },
-      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      env: { homedir: () => '/home/user' },
       time: { sleep: async () => {} },
     } as unknown as ArtifactCleanupRuntime;
 

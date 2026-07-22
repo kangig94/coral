@@ -2,7 +2,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
 import { MAX_BUFFER } from '../../infra/process-constants.js';
-import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
+import { shouldUseWindowsCommandShell } from '../../infra/windows-shell.js';
 import type { ChildProcessLike } from '../../infra/port-types.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { AbortError } from '../../runtime/abort.js';
@@ -103,7 +103,7 @@ export async function spawnProviderServerTransport(params: {
     throw createProviderServerSpawnAbortError(options.provider, options.signal);
   }
 
-  const command = windowsCommandName(options.command, runtime.env.platform());
+  const command = options.command;
   const child = runtime.process.spawn({
     command,
     args: options.args,

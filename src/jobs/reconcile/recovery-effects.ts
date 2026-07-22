@@ -36,10 +36,10 @@ export function markJobAsError(
   _log: (message: string) => void,
 ): void {
   const launch = progressStore.readLaunchProjection(status.jobId);
-  if (launch === null) {
+  if (launch === null && fault.kind !== 'missing_launch_record') {
     throw new Error(`Cannot record recovery terminal for ${status.jobId} without its launch record.`);
   }
-  const durationMs = elapsedDurationMs(launch.createdAt, endTimeMs, `job ${status.jobId}`);
+  const durationMs = launch === null ? 0 : elapsedDurationMs(launch.createdAt, endTimeMs, `job ${status.jobId}`);
   progressStore.commit((c) => {
     const outcome = recoveryFaultOutcome(c, status, fault);
     appendJobTerminalRecorded(c, {

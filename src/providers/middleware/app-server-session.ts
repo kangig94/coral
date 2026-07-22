@@ -28,8 +28,8 @@ function toTransportClose(closed: Error | void): ProviderTransportClose {
   };
 }
 
-function installAbortRelay(
-  runtime: ProviderRuntime,
+function installAbortRelay<Context>(
+  runtime: ProviderRuntime<Context>,
   lease: ProviderServerLease,
   interrupt: (lease: ProviderServerLease) => Promise<void>,
 ): () => void {
@@ -134,7 +134,7 @@ async function teardownSession(options: {
   }
 }
 
-export function appServerSession(contract: AppServerContract): ProviderMiddleware {
+export function appServerSession<Context>(contract: AppServerContract<Context>): ProviderMiddleware<Context> {
   return (next) =>
     async function* appServerSessionProvider(request, runtime) {
       if (!runtime.storage) {

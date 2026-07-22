@@ -60,7 +60,7 @@ function readEvents(db: Database): Array<{ seq: number; type: string; body: unkn
 }
 
 describe('recovery effects', () => {
-  it('rejects recording a recovery terminal when the launch event is missing', () => {
+  it('records a recovery terminal without fabricating launch authority when the launch event is missing', () => {
     const db = createDb();
     try {
       const progressStore = createProgressStore(db);
@@ -117,9 +117,9 @@ describe('recovery effects', () => {
 
       expect(() =>
         markJobAsError(progressStore, status, { kind: 'missing_launch_record' }, NOW.getTime(), () => {}),
-      ).toThrow(`Cannot record recovery terminal for ${status.jobId} without its launch record.`);
+      ).not.toThrow();
 
-      expect(commitSpy).not.toHaveBeenCalled();
+      expect(commitSpy).toHaveBeenCalledOnce();
       expect(readEvents(db)).toEqual([
         expect.objectContaining({
           seq: 1,
@@ -129,11 +129,21 @@ describe('recovery effects', () => {
             entry: expect.objectContaining({ activeJobId: status.jobId }),
           }),
         }),
+        expect.objectContaining({
+          type: 'job.progress.emitted',
+          body: { kind: 'missing_launch_record' },
+        }),
+        expect.objectContaining({
+          type: 'job.terminal.recorded',
+          body: expect.objectContaining({
+            terminal: expect.objectContaining({ durationMs: 0, outcome: expect.objectContaining({ kind: 'failed' }) }),
+          }),
+        }),
       ]);
 
       const detail = progressStore.loadJobProjectionDetail(status.jobId);
       expect(detail.launch).toBeNull();
-      expect(detail.status).toMatchObject({ phase: 'launching' });
+      expect(detail.status).toMatchObject({ phase: 'error', result: { outcome: { kind: 'failed' } } });
     } finally {
       db.close();
     }

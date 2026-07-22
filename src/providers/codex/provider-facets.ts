@@ -20,6 +20,8 @@ import {
   readCodexPersistedContinuity,
 } from './request-mapping.js';
 import { verifyCodexEffectiveTransport } from './transport-policy.js';
+import type { CodexCredentialSource, CodexExecutionContext } from './execution-context.js';
+import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
   'Codex CLI does not support app-server. Update with: npm update -g @openai/codex';
@@ -65,13 +67,12 @@ function sanitizeCodexProviderContinuity(
   return hasCodexContinuity(parsed) ? parsed : undefined;
 }
 
-export async function codexPreflight(runtime: ProviderPreflightRuntime): Promise<void> {
-  if (runtime.credentialSource.provider !== 'codex') throw new Error('Codex credential source required.');
+export async function codexPreflight(runtime: ProviderPreflightRuntime<CodexCredentialSource>): Promise<void> {
   await assertCodexAppServerAvailable(runtime);
   await assertCodexAuthTokens(runtime);
 }
 
-async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime): Promise<void> {
+async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime<CodexCredentialSource>): Promise<void> {
   const now = runtime.time.now();
   if (
     codexAppServerAvailabilityCache &&
@@ -94,9 +95,8 @@ async function assertCodexAppServerAvailable(runtime: ProviderPreflightRuntime):
   }
 }
 
-async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime): Promise<void> {
+async function assertCodexAuthTokens(runtime: ProviderPreflightRuntime<CodexCredentialSource>): Promise<void> {
   const now = runtime.time.now();
-  if (runtime.credentialSource.provider !== 'codex') throw new Error('Codex credential source required.');
   const cacheKey = runtime.credentialSource.home;
   const cached = codexAuthTokensCache.get(cacheKey);
   if (cached && now - cached.checkedAt < CODEX_PREFLIGHT_CACHE_TTL_MS) {
@@ -139,7 +139,7 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-export const codexAppServerLifecycle: ProviderAppServerContract = {
+export const codexAppServerLifecycle: ProviderAppServerContract<CodexExecutionContext> = {
   name: 'codex',
   subscriptionPhase: 'afterInitialize',
   buildServerSpec(
@@ -148,8 +148,12 @@ export const codexAppServerLifecycle: ProviderAppServerContract = {
     _ports,
     providerContext,
   ): ProviderServerSpec {
-    if (providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
-    return { ...buildCodexProviderServerSpec(request, persistedContinuity), env: { ...providerContext.appServerEnv } };
+    const spec = buildCodexProviderServerSpec(request, persistedContinuity);
+    return {
+      ...spec,
+      command: windowsCommandName(spec.command, providerContext.platform),
+      env: { ...providerContext.appServerEnv },
+    };
   },
   async interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void> {
     const parsed = readCodexPersistedContinuity(continuity);

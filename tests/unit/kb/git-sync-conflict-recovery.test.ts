@@ -135,7 +135,6 @@ describe('git sync conflict recovery', () => {
       storagePort: runtime.storage,
       envPort: {
         get: () => undefined,
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
 
@@ -169,7 +168,6 @@ describe('git sync conflict recovery', () => {
       storagePort: runtime.storage,
       envPort: {
         get: () => undefined,
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
 
@@ -282,7 +280,6 @@ describe('git sync conflict recovery', () => {
           }
           return undefined;
         },
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
 
@@ -422,7 +419,6 @@ describe('git sync conflict recovery', () => {
       storagePort,
       envPort: {
         get: (key: string) => (key === 'CORAL_KB_GIT_SYNC' ? '1' : undefined),
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
 
@@ -500,7 +496,6 @@ describe('git sync conflict recovery', () => {
           }
           return undefined;
         },
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
 
@@ -602,7 +597,6 @@ describe('git sync conflict recovery', () => {
       storagePort: runtime.storage,
       envPort: {
         get: () => undefined,
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
     const headBefore = git(root, ['rev-parse', 'HEAD']).trim();
@@ -650,7 +644,6 @@ describe('git sync conflict recovery', () => {
       storagePort: runtime.storage,
       envPort: {
         get: () => undefined,
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
     const headBefore = git(root, ['rev-parse', 'HEAD']).trim();
@@ -687,7 +680,6 @@ describe('git sync conflict recovery', () => {
       storagePort: runtime.storage,
       envPort: {
         get: () => undefined,
-        claudeConfigDir: () => join(root, '.claude'),
       },
     });
 

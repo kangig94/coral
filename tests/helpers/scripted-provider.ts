@@ -13,11 +13,19 @@ import type {
   ProviderServerSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
+import { buildExactProviderEnv } from '#src/providers/execution-context.js';
 import { defineProvider, type ProviderDefinition } from '#src/providers/registry.js';
 import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
+import type { ProviderCliRequest } from '#src/providers/protocol.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import type { FixtureProviderSource } from '#tests/helpers/provider-binding.js';
 
-type TestProviderInvocation = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
+const FIXTURE_ALLOWED_REQUEST_ENV_KEYS = Object.freeze(new Set(['FIXTURE_TUNING']));
+
+type TestProviderInvocation = (
+  request: ProviderRequest,
+  runtime: ProviderRuntime<FixtureProviderSource>,
+) => AsyncIterable<ProviderEventBody>;
 
 type TestAppServerLifecycle = {
   buildServerSpec(
@@ -64,7 +72,35 @@ export type Provider = {
   artifactCapability?: ProviderArtifactCapability;
 };
 
-function inferSubscriptionPhase(name: string): ProviderAppServerContract['subscriptionPhase'] {
+export function prepareFixtureExecutionContext(input: {
+  source: FixtureProviderSource;
+  request: ProviderRequest;
+  baseEnv: Readonly<Record<string, string>>;
+  protectedEnv?: Readonly<Record<string, string>>;
+  platform: string;
+}): {
+  readonly context: FixtureProviderSource;
+  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+} {
+  const exactEnv = buildExactProviderEnv({
+    baseEnv: input.baseEnv,
+    requestEnv: input.request.coralEnv,
+    protectedEnv: {
+      CORAL_CHILD: '1',
+      CORAL_SESSION_ID: input.request.sessionId,
+      ...(input.protectedEnv ?? {}),
+    },
+    routingEnv: input.source.routingEnv,
+    allowedRequestKeys: FIXTURE_ALLOWED_REQUEST_ENV_KEYS,
+    platform: input.platform,
+  });
+  return {
+    context: input.source,
+    prepareCliRequest: (request) => ({ ...request, exactEnv: { ...exactEnv }, extraEnv: undefined }),
+  };
+}
+
+function inferSubscriptionPhase(name: string): ProviderAppServerContract<unknown>['subscriptionPhase'] {
   return name === 'claude' ? 'beforeInitialize' : 'afterInitialize';
 }
 
@@ -80,12 +116,13 @@ function normalizeRecoveryResult(
 
 export function defineFakeProvider(
   provider: Provider | ProviderDefinition | undefined,
+  options: { binding?: Parameters<typeof fixtureProviderBindingCodec>[1] } = {},
 ): ProviderDefinition | undefined {
   if (!provider) {
     return undefined;
   }
 
-  if ('run' in provider) {
+  if (!('execute' in provider)) {
     return provider;
   }
 
@@ -130,17 +167,20 @@ export function defineFakeProvider(
   const definition = defineProvider({
     name: provider.name,
     run: provider.execute,
+    prepareExecutionContext: prepareFixtureExecutionContext,
     ...(provider.preflight ? { preflight: provider.preflight } : {}),
     ...(appServer ? { appServer } : {}),
     ...(recovery ? { recovery } : {}),
   })
-    .binding(fixtureProviderBindingCodec(provider.name))
+    .binding(fixtureProviderBindingCodec(provider.name, options.binding))
     .artifacts(artifactCapability)
     .build();
 
   return definition;
 }
 
-export function toProviderSpec(provider: Provider | ProviderDefinition | undefined): ProviderDefinition | undefined {
+export function toProviderDefinition(
+  provider: Provider | ProviderDefinition | undefined,
+): ProviderDefinition | undefined {
   return defineFakeProvider(provider);
 }

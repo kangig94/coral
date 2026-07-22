@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import { runClaudeOneShotTurn } from '#src/providers/claude/one-shot.js';
+import { claudeCurationCapability } from '#src/providers/claude/one-shot.js';
 import type { ProviderServerLease } from '#src/providers/contract.js';
 
 type BrokerNotificationHandler = (msg: { method: string; params?: Record<string, unknown> }) => void;
@@ -11,17 +11,33 @@ type BrokerNotificationHandler = (msg: { method: string; params?: Record<string,
 function systemContext(configDir: string) {
   return {
     source: {
-      version: 1 as const,
-      provider: 'claude' as const,
-      kind: 'config-dir' as const,
       configDir,
       projectsRoot: join(configDir, 'projects'),
-      emitConfigDir: true as const,
+      routing: { kind: 'config-dir' as const },
     },
     brokerEnv: {},
     controllerEnv: { CLAUDE_CONFIG_DIR: configDir },
     projectsRoot: join(configDir, 'projects'),
   };
+}
+
+function runClaudeOneShotTurn(
+  deps: {
+    readonly storage: Parameters<typeof claudeCurationCapability.complete>[1]['storage'];
+    readonly ids: Parameters<typeof claudeCurationCapability.complete>[1]['ids'];
+    readonly providerContext: ReturnType<typeof systemContext>;
+    readonly acquireServer: Parameters<typeof claudeCurationCapability.complete>[1]['acquireServer'];
+  },
+  request: Parameters<typeof claudeCurationCapability.complete>[0],
+) {
+  return claudeCurationCapability.complete(request, {
+    storage: deps.storage,
+    ids: deps.ids,
+    source: deps.providerContext.source,
+    baseEnv: deps.providerContext.brokerEnv,
+    platform: 'linux',
+    acquireServer: deps.acquireServer,
+  });
 }
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {

@@ -416,7 +416,7 @@ async function buildProviderTransportContextBody(
     { origin: 'caller' },
     providerNames,
     {
-      env: process.env,
+      env: { ...process.env },
       homeDir: resolveUserHomeDir(process.env.HOME ?? process.env.USERPROFILE),
     },
     { readFileSync, readdirSync, realpathSync, statSync },

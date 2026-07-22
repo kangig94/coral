@@ -20,7 +20,7 @@ function parseEffortLevel(value: string | undefined, label: string): EffortLevel
 
 /**
  * Validate an effort string read from forwarded CORAL_* env. Unlike the
- * request-body path, a typo here (e.g. a bad CORAL_CODEX_EFFORT in a caller's
+ * request-body path, a typo in a provider-specific effort override in a caller's
  * settings) must not fail the provider turn — the value now travels per request,
  * so a mistake would otherwise kill every job. Warn once and ignore it so the
  * fallback chain reaches the provider default.

@@ -1,9 +1,8 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { ProviderCredentialSourceRef } from '../infra/provider-credential-sources.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
-import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
+import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type {
   JobLaunchRequest,
   JobResumeRequest,
@@ -263,23 +262,19 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.waitService.waitForJobTerminal(jobId, timeoutMs);
   }
 
-  recoverQueuedJob(launchRecord: JobLaunch): Promise<string> {
-    return this.recoveryService.recoverQueuedJob(launchRecord);
+  recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string> {
+    return this.recoveryService.recoverQueuedJob(authority);
   }
 
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<boolean> {
-    return this.recoveryService.validateProviderRecoveryAuthority(launchRecord);
-  }
-
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): Promise<ProviderCredentialSourceRef | null> {
-    return this.recoveryService.providerCredentialSourceForRecovery(launchRecord);
+  captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthority | null> {
+    return this.recoveryService.captureProviderRecoveryAuthority(launchRecord);
   }
 
   adoptRunningJob(
-    launchRecord: JobLaunch,
+    authority: ProviderRecoveryAuthority,
     runtimeRecord: JobRuntime,
   ): Promise<{ adopted: boolean; cleanup: () => void }> {
-    return this.recoveryService.adoptRunningJob(launchRecord, runtimeRecord);
+    return this.recoveryService.adoptRunningJob(authority, runtimeRecord);
   }
 
   completeRecoveredJob(
@@ -299,8 +294,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.recordRecoveredArtifactHandles(sessionId, input);
   }
 
-  async interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void> {
-    return this.recoveryService.interruptAppServerJob(launchRecord, runtimeRecord);
+  async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
+    return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
   }
 
   async acquireServer(
@@ -315,11 +310,11 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   }
 
   async finalizeInterruptedAppServerJob(
-    launchRecord: JobLaunch,
+    authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
     context: { reason: 'restart' | 'handoff' },
   ): Promise<void> {
-    return this.recoveryService.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, context);
+    return this.recoveryService.finalizeInterruptedAppServerJob(authority, runtimeRecord, context);
   }
 
   quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void> {

@@ -23,6 +23,18 @@ describe('job event body schemas', () => {
         startedAt: '2026-06-12T00:00:00.000Z',
       }).success,
     ).toBe(true);
+    expect(
+      jobRuntimeStartedBodySchema.safeParse({
+        transport: 'app-server',
+        startedAt: '2026-06-12T00:00:00.000Z',
+        providerMeta: {
+          provider: 'fixture',
+          leaseState: 'acquired',
+          serverGeneration: 7,
+          transportMode: 'fixture-wire',
+        },
+      }).success,
+    ).toBe(true);
 
     expect(
       jobRuntimeStartedBodySchema.safeParse({
@@ -70,6 +82,11 @@ describe('job event body schemas', () => {
         transport: 'app-server',
         startedAt: '2026-06-12T00:00:00.000Z',
         providerMeta: { provider: 'codex', leaseState: 'waiting', privateThreadId: 'thread-1' },
+      },
+      {
+        transport: 'app-server',
+        startedAt: '2026-06-12T00:00:00.000Z',
+        providerMeta: { provider: 'claude', leaseState: 'waiting', claudeTransport: 'print' },
       },
     ]) {
       expect(jobRuntimeStartedBodySchema.safeParse(invalid).success).toBe(false);

@@ -8,6 +8,7 @@ export interface BuildExecPromiseOptions {
   cwd?: string;
   env?: Record<string, string>;
   inheritEnv?: boolean;
+  shell?: boolean;
   timeoutMs?: number;
   maxBuffer: number;
   encoding: 'utf-8';
@@ -65,6 +66,7 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
     encoding,
     env,
     inheritEnv,
+    shell,
     kill,
     killProcessGroup = false,
     maxBuffer,
@@ -89,6 +91,7 @@ export function buildExecPromise(options: BuildExecPromiseOptions): Promise<Exec
       cwd,
       env,
       inheritEnv,
+      ...(shell === undefined ? {} : { shell }),
       ...(killProcessGroup ? { detached: true } : {}),
     });
 

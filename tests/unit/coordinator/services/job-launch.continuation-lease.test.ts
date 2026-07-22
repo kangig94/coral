@@ -10,6 +10,7 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { TEST_CODEX_BINDING, TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-project',
@@ -54,7 +55,11 @@ describe('JobLaunchService continuation lease admission', () => {
     const launchOrchestrator = {
       launchResumedProviderJob: vi.fn(),
     };
-    const provider = defineProvider({ name: 'codex', run: async function* noopProvider() {} })
+    const provider = defineProvider({
+      name: 'codex',
+      run: async function* noopProvider() {},
+      prepareExecutionContext: prepareFixtureExecutionContext,
+    })
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('test provider has no artifacts'))
       .build();

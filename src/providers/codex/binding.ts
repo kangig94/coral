@@ -13,24 +13,37 @@ import {
   type ProviderBindingRuntime,
   type ProviderBindingResult,
 } from '../contracts/binding.js';
+import type { CodexCredentialSource } from './execution-context.js';
+import type { JsonValue } from '../../infra/json-value.js';
 import { absoluteProfilePathSchema, canonicalProfileDirectory } from '../contracts/profile.js';
-import { UNSUPPORTED_CODEX_SELECTOR_ENV_KEYS } from '../../infra/provider-credential-sources.js';
+import { CODEX_CREDENTIAL_ENV_KEYS } from './credential-policy.js';
 import { unsupportedCodexTransportSetting } from './transport-policy.js';
+import { zodPersistedParser, zodValueParser } from '../binding-parser.js';
 
-export const codexSelectionSchema = z.object({ kind: z.literal('home'), home: absoluteProfilePathSchema }).strict();
+function createCodexSelectionSchema() {
+  return z.object({ kind: z.literal('home'), home: absoluteProfilePathSchema }).strict();
+}
+
+function createCodexCredentialProfileSchema() {
+  return z
+    .object({
+      canonicalLocation: absoluteProfilePathSchema,
+      routing: z.object({ kind: z.literal('home') }).strict(),
+    })
+    .strict();
+}
+
+function createCodexBindingSchema() {
+  return z.object({ profile: createCodexCredentialProfileSchema(), subject: accountSubjectSchema }).strict();
+}
+
+export const codexSelectionSchema = createCodexSelectionSchema();
 export type CodexSelection = z.infer<typeof codexSelectionSchema>;
 
-export const codexCredentialProfileSchema = z
-  .object({
-    canonicalLocation: absoluteProfilePathSchema,
-    routing: z.object({ kind: z.literal('home') }).strict(),
-  })
-  .strict();
+export const codexCredentialProfileSchema = createCodexCredentialProfileSchema();
 export type CodexCredentialProfile = z.infer<typeof codexCredentialProfileSchema>;
 
-export const codexBindingSchema = z
-  .object({ profile: codexCredentialProfileSchema, subject: accountSubjectSchema })
-  .strict();
+export const codexBindingSchema = createCodexBindingSchema();
 export type CodexBinding = ProviderBinding<CodexCredentialProfile, AccountSubject>;
 
 /** Capture one invocation's explicit or caller-local default Codex profile selector. */
@@ -39,7 +52,7 @@ export function captureCodexSelection(
   homeDir: string,
 ): ProviderBindingResult<CodexSelection> {
   for (const [key, value] of Object.entries(env)) {
-    if (value?.trim() && UNSUPPORTED_CODEX_SELECTOR_ENV_KEYS.has(key.toUpperCase())) {
+    if (value?.trim() && CODEX_CREDENTIAL_ENV_KEYS.has(key.toUpperCase())) {
       return bindingFailure({ reason: 'unsupported-selection', provider: 'codex', selector: key });
     }
   }
@@ -178,10 +191,15 @@ export function renderCodexBindingFailure(failure: ProviderBindingFailure): stri
   }
 }
 
-export const codexBindingCodec: ProviderBindingCodec<CodexSelection, CodexCredentialProfile> = {
-  selectionSchema: codexSelectionSchema,
-  profileSchema: codexCredentialProfileSchema,
-  bindingSchema: codexBindingSchema,
+export const codexBindingCodec: ProviderBindingCodec<
+  CodexSelection,
+  CodexCredentialProfile,
+  AccountSubject & JsonValue,
+  CodexCredentialSource
+> = {
+  parseSelection: zodValueParser(createCodexSelectionSchema),
+  parseProfile: zodValueParser(createCodexCredentialProfileSchema),
+  persistedBinding: zodPersistedParser(createCodexBindingSchema),
   bindingKind: 'account',
   captureSelection: ({ env, homeDir }) => captureCodexSelection(env, homeDir),
   async canonicalizeProfile(selection, runtime) {
@@ -223,9 +241,6 @@ export const codexBindingCodec: ProviderBindingCodec<CodexSelection, CodexCreden
   },
   credentialSource(binding) {
     return {
-      version: 1,
-      provider: 'codex',
-      kind: 'home',
       home: binding.profile.canonicalLocation,
     };
   },

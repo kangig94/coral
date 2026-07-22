@@ -26,7 +26,7 @@ import {
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { composeCoralPaths, resolveClaudeConfigDir } from '../infra/path/index.js';
+import { composeCoralPaths } from '../infra/path/index.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { ChildProcessLike, EnvPort, StorageData, StoragePort, TimePort } from '../infra/port-types.js';
@@ -67,30 +67,17 @@ const stderrPath = join(jobDir, 'stderr');
 const stdoutFd = openSync(stdoutPath, 'w');
 const stderrFd = openSync(stderrPath, 'w');
 
-function isBareCommandName(value) {
-  return !/[\\\\/]/.test(value);
-}
-
-function windowsCommandName(value) {
-  const trimmed = value.trim();
-  if (process.platform !== 'win32' || !isBareCommandName(trimmed)) return value;
-  const normalized = trimmed.toLowerCase();
-  if (normalized === 'codex' || normalized === 'claude') return trimmed + '.cmd';
-  return trimmed;
-}
-
 function shouldUseWindowsCommandShell(value) {
   if (process.platform !== 'win32') return false;
   const normalized = value.trim().toLowerCase();
   return normalized.endsWith('.cmd') || normalized.endsWith('.bat');
 }
 
-const spawnCommand = windowsCommandName(command);
-const child = spawn(spawnCommand, args, {
+const child = spawn(command, args, {
   stdio: ['pipe', stdoutFd, stderrFd],
   cwd,
   env,
-  shell: shouldUseWindowsCommandShell(spawnCommand),
+  shell: shouldUseWindowsCommandShell(command),
 });
 
 const runtimeRecord = {
@@ -207,7 +194,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   };
 
   const customKbRoot = capturedEnv.coralEnv.CORAL_KB_PATH;
-  const claudeConfigDir = resolveClaudeConfigDir(capturedEnv.fullEnv.CLAUDE_CONFIG_DIR, osHomedir());
   const coral = composeCoralPaths(flavor, {
     ...(opts?.baseDir === undefined ? {} : { baseDir: opts.baseDir }),
     ...(customKbRoot ? { customKbRoot } : {}),
@@ -338,6 +324,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       cwd: execOptions.cwd,
       env: execOptions.env,
       inheritEnv: execOptions.inheritEnv,
+      shell: execOptions.shell,
       timeoutMs: execOptions.timeout,
       maxBuffer: execOptions.maxBuffer,
       encoding: execOptions.encoding ?? 'utf-8',
@@ -360,7 +347,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       timeout: execOptions.timeout,
       encoding,
       maxBuffer,
-      shell: false,
+      shell: execOptions.shell ?? false,
       stdio: 'pipe' as const,
     };
 
@@ -434,7 +421,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
   const env: EnvPort = {
     get: (key) => capturedEnv.fullEnv[key],
     homedir: () => osHomedir(),
-    claudeConfigDir: () => claudeConfigDir,
     tmpdir: () => osTmpdir(),
     pid: () => capturedEnv.pid,
     platform: () => capturedEnv.platform,

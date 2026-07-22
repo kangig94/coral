@@ -117,7 +117,7 @@ export function resolveInjectBundle(opts: ResolveInjectBundleOptions): string {
  * Prepends rendered guidelines onto `request.systemPrompt` (append-merge when a
  * caller systemPrompt already exists — never overwrite). Empty inject is a no-op.
  * Applied once at the job shell boundary before any provider adapter runs so
- * Claude and Codex (and future providers) share the same injection policy.
+ * Built-in and future providers share the same injection policy.
  */
 export function applyInjectBundle(
   request: ProviderRequest,

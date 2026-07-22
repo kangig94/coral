@@ -32,6 +32,7 @@ import {
 } from './request-prep.js';
 import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 import { normalizeClaudeUsage } from './usage.js';
+import type { ClaudeExecutionContext } from './execution-context.js';
 
 function buildClaudeSessionFailureCause(
   message: string,
@@ -85,14 +86,11 @@ export async function mapClaudeInterrupt(lease: ProviderServerLease): Promise<vo
   await brokerRpc<void>(lease, 'turn/interrupt', mapInterruptParams(state.brokerSessionKey, state.brokerTurnId));
 }
 
-export const claudeSessionKernel: Provider = (request, runtime) =>
+export const claudeSessionKernel: Provider<ClaudeExecutionContext> = (request, runtime) =>
   streamProviderEvents(async (emit) => {
     const lease = requireAppServerLease(runtime, 'claude');
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
     const state = createInitialState(request, persistedContinuity, runtime);
-    if (runtime.providerContext.provider !== 'claude') {
-      throw new Error('Claude session kernel requires a Claude provider execution context.');
-    }
     const providerContext = runtime.providerContext;
     const clearBinding = bindInterruptState(lease, state);
     const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
@@ -174,7 +172,7 @@ export const claudeSessionKernel: Provider = (request, runtime) =>
 function createInitialState(
   request: Parameters<Provider>[0],
   persistedContinuity: ReturnType<typeof readClaudePersistedContinuity>,
-  runtime: ProviderRuntime,
+  runtime: ProviderRuntime<ClaudeExecutionContext>,
 ): ClaudeTurnState {
   let resolveTerminal!: (outcome: ClaudeTurnOutcome) => void;
   const terminal = new Promise<ClaudeTurnOutcome>((resolve) => {
@@ -206,7 +204,7 @@ function bindInterruptState(lease: ProviderServerLease, state: ClaudeTurnState):
   };
 }
 
-function checkpointBrokerContinuity(runtime: ProviderRuntime, state: ClaudeTurnState): void {
+function checkpointBrokerContinuity(runtime: ProviderRuntime<ClaudeExecutionContext>, state: ClaudeTurnState): void {
   if (state.bootstrapSignature === undefined) {
     return;
   }
@@ -222,7 +220,7 @@ function checkpointBrokerContinuity(runtime: ProviderRuntime, state: ClaudeTurnS
 
 function emitClaudeArtifactHandleOnce(
   state: ClaudeTurnState,
-  runtime: ProviderRuntime,
+  runtime: ProviderRuntime<ClaudeExecutionContext>,
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (state.artifactHandleEmissionAttempted || state.conversationRef === undefined) {
@@ -262,7 +260,7 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: ClaudeTurnOutcome)
 function applyNotification(
   state: ClaudeTurnState,
   message: { method: string; params?: Record<string, unknown> },
-  runtime: ProviderRuntime,
+  runtime: ProviderRuntime<ClaudeExecutionContext>,
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (!isRecord(message)) {

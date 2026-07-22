@@ -45,7 +45,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { CommitEventsFn } from '#src/store/append.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -60,7 +60,6 @@ import {
   TEST_CODEX_BINDING,
   TEST_CODEX_SCOPE,
   TEST_CODEX_SCOPE_INPUT,
-  TEST_CODEX_SOURCE,
   TEST_SYSTEM_PROVIDER_SCOPE,
   withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
@@ -156,7 +155,7 @@ function createService(
     coordinatorCommit?: CommitEventsFn;
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
   const providerRegistry = new ProviderRegistry();
   const provider = resolveProvider('codex');
   if (provider !== undefined) providerRegistry.register(provider);
@@ -380,7 +379,7 @@ function makeProvider(options?: {
   ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
+  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
@@ -393,11 +392,11 @@ function makeProvider(options?: {
     execute: execute as unknown as Provider['execute'],
     ...(preflight ? { preflight } : {}),
   };
-  return { provider: toProviderSpec(provider)!, execute, preflight };
+  return { provider: toProviderDefinition(provider)!, execute, preflight };
 }
 
-function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderSpec>> {
-  return toProviderSpec({
+function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderDefinition>> {
+  return toProviderDefinition({
     name: 'codex',
     execute: vi.fn(() =>
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
@@ -472,9 +471,10 @@ function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
       storage: runtime.storage,
       env: runtime.env,
       time: runtime.time,
-      credentialSource: TEST_CODEX_SOURCE,
       cwd: expect.any(String),
-      runExact: expect.any(Function),
+      baseEnv: expect.any(Object),
+      requestEnv: expect.any(Object),
+      platform: expect.any(String),
     }),
   );
 }
@@ -485,8 +485,8 @@ function makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   shared: true;
-}): NonNullable<ReturnType<typeof toProviderSpec>> {
-  return toProviderSpec({
+}): NonNullable<ReturnType<typeof toProviderDefinition>> {
+  return toProviderDefinition({
     name: 'claude',
     execute: vi.fn(() =>
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
@@ -779,6 +779,24 @@ describe('ExecutionService launch', () => {
     }
   });
 
+  it('prepares and executes the same provider request after generic inject is applied', async () => {
+    const { provider, execute } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    await waitForTerminalEvent(service, decision.jobId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    const executedRequest = execute.mock.calls[0]?.[0] as ProviderRequest | undefined;
+    expect(executedRequest?.systemPrompt).toContain('# Coral Guidelines');
+    expect(Object.isFrozen(executedRequest)).toBe(true);
+    expect(Object.isFrozen(executedRequest?.coralEnv)).toBe(true);
+  });
+
   it('terminalizes and releases a committed initial launch when synchronous runtime setup fails', async () => {
     const never = new Promise<ProviderTurnResult>(() => {});
     const { provider, execute } = makeProvider({ execute: () => never });
@@ -839,8 +857,7 @@ describe('ExecutionService launch', () => {
     const seenHomes: string[] = [];
     const { provider } = makeProvider({
       execute: async (_request, providerRuntime) => {
-        if (providerRuntime.providerContext.provider !== 'codex') throw new Error('expected Codex context');
-        seenHomes.push(providerRuntime.providerContext.source.home);
+        seenHomes.push(providerRuntime.providerContext.root);
         return { content: 'ok', durationMs: 0 };
       },
     });
@@ -1045,7 +1062,7 @@ describe('ExecutionService launch', () => {
       }),
     );
     mockState.getNewProvider.mockReturnValue(
-      toProviderSpec({
+      toProviderDefinition({
         name: 'codex',
         execute,
       })!,
@@ -1076,7 +1093,10 @@ describe('ExecutionService launch', () => {
   });
 
   it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
-    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
+    const spec = {
+      ...buildCodexProviderServerSpec(ctx.projectRoot),
+      runtimeMetadata: { transportMode: 'fixture-wire' },
+    };
     const server = createFakeProviderServerHandle({ generation: 41 });
     const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
     const service = createService(ctx);
@@ -1151,6 +1171,7 @@ describe('ExecutionService launch', () => {
         provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
+        transportMode: 'fixture-wire',
       },
     });
     expect(firstRuntime.startTime).toEqual(expect.any(String));
@@ -1170,6 +1191,7 @@ describe('ExecutionService launch', () => {
       transport: 'app-server',
       providerMeta: {
         leaseState: 'waiting',
+        transportMode: 'fixture-wire',
       },
     });
     expect(waitingRuntime.startTime).toEqual(expect.any(String));
@@ -1188,6 +1210,7 @@ describe('ExecutionService launch', () => {
         provider: 'codex',
         leaseState: 'acquired',
         serverGeneration: 41,
+        transportMode: 'fixture-wire',
       },
     });
     expect(acquiredRuntime.startTime).toEqual(expect.any(String));
@@ -1302,7 +1325,6 @@ describe('ExecutionService launch', () => {
         provider: 'claude',
         leaseState: 'acquired',
         serverGeneration: 41,
-        claudeTransport: 'print',
       },
     });
 
@@ -1459,7 +1481,9 @@ describe('ExecutionService launch', () => {
       },
     };
 
-    await service.interruptAppServerJob(launchRecord, runtimeRecord);
+    const recoveryAuthority = await service.captureProviderRecoveryAuthority(launchRecord);
+    if (recoveryAuthority === null) throw new Error('Expected provider recovery authority.');
+    await service.interruptAppServerJob(recoveryAuthority, runtimeRecord);
 
     expect(acquireServerSpy).not.toHaveBeenCalled();
     expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {

@@ -39,6 +39,33 @@ class FakeChildProcess extends EventEmitter implements ChildProcessLike {
 }
 
 describe('buildExecPromise', () => {
+  it('propagates explicit shell execution to the process spawn boundary', async () => {
+    const time = new VirtualTime();
+    const child = new FakeChildProcess(1234);
+    const spawnCalls: RuntimeSpawnOptions[] = [];
+    const execPromise = buildExecPromise({
+      command: 'provider.cmd',
+      args: ['--version'],
+      shell: true,
+      maxBuffer: 1024,
+      encoding: 'utf-8',
+      spawn: (options) => {
+        spawnCalls.push(options);
+        return child;
+      },
+      kill: () => true,
+      setTimeout: (fn, ms) => time.setTimeout(fn, ms),
+      clearTimeout: (handle) => time.clearTimeout(handle),
+    });
+
+    child.emitClose(0, null);
+
+    await expect(execPromise).resolves.toMatchObject({ status: 0 });
+    expect(spawnCalls).toEqual([
+      expect.objectContaining({ command: 'provider.cmd', args: ['--version'], shell: true }),
+    ]);
+  });
+
   it('falls back to direct child signaling when process-group signaling fails', async () => {
     const time = new VirtualTime();
     const child = new FakeChildProcess(1234);

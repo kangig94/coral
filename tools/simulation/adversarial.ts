@@ -210,6 +210,13 @@ export class SimulationWorld {
     const startedAt = this.getVirtualElapsedMs();
     const cursor = createProgressCursor();
     const accumulatedProgress: string[] = [];
+
+    // A launch can hand control back while its detached execution is still
+    // crossing promise boundaries at the current virtual instant.  Settle
+    // that work before the first observation: advancing the clock first can
+    // fire a newly spawned process's exit timer before exposing its runtime
+    // record, making an already-satisfied runtimeRecorded wait look stale.
+    await this.current.backend.advance(0);
     let steps = 0;
     let actual = this.observeJobIncremental(jobId, cursor, accumulatedProgress);
 
