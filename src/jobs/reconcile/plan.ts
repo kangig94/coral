@@ -36,11 +36,9 @@ export interface RecoveryProjectionSnapshot {
   listSessionRefs(): Array<{ sessionId: string; provider: string }>;
   readSession(sessionId: string): RecoverySessionFacts | null;
   /**
-   * Probes whether the given pid is still live. Mirrors the cross-namespace
-   * adoption probe (§12.1): a same-namespace `running` / `launching` job whose
-   * pid is gone is wrapper_lost, not a recoverable runtime. Returning `true`
-   * for non-pid runtimes (app-server, internal kb) is safe — the planner
-   * only consults this for durable-cli runtimes that carry a pid.
+   * Probes whether a durable pid is live. Dead provider runtimes still register
+   * for BoundProvider recovery; dead non-provider runtimes use wrapper_lost.
+   * Non-pid runtimes (app-server, internal kb) are never probed.
    */
   isPidAlive(pid: number): boolean;
 }
@@ -203,12 +201,12 @@ function planJobRecovery(
       return null;
     }
 
-    // Spec §12.1: a projected `running` / `launching` job whose pid is gone
-    // is wrapper_lost, not recoverable runtime. Cross-namespace adoption
-    // already enforces this for foreign jobs; same-namespace probes here so
-    // a dead pid does not silently re-register and stick the job forever.
+    // Provider durable runtimes must still pass through captured BoundProvider
+    // recovery after the process dies: the provider owns artifact parsing and
+    // the terminal/continuity decision. Non-provider runtimes have no such
+    // recovery authority and retain the generic wrapper_lost fallback.
     const pid = readDurableRuntimePid(facts.runtimeRecord);
-    if (pid !== null && !isPidAlive(pid)) {
+    if (pid !== null && !isPidAlive(pid) && status.jobKind !== 'provider') {
       return {
         bucket: 'staleRunning',
         action: {

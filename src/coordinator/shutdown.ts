@@ -39,7 +39,7 @@ interface ShutdownRuntimeState {
 type RunShutdownSequenceContext = {
   reason: string;
   state: LifecycleWiringState;
-  teardownRecoveryCoordinator: () => void;
+  teardownRecoveryCoordinator: () => Promise<void>;
   runtimeState: ShutdownRuntimeState;
   idleTimer: IdleTimer;
   closeServerFn: (server: Server) => Promise<void>;
@@ -160,7 +160,7 @@ export async function runShutdownSequence({
     stream.end();
   }
   await Promise.race([serverClosed, runtime.time.sleep(remainingDrain())]);
-  teardownRecoveryCoordinator();
+  await teardownRecoveryCoordinator();
   state.ownershipCheckerTeardown?.();
   state.ownershipCheckerTeardown = null;
 

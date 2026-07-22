@@ -1,12 +1,13 @@
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput } from '../records.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../records.js';
 import type { JobPhase } from '../phase.js';
 import type { TerminalWriteOptions } from '../contracts/job-store.js';
-import type { ProviderArtifactHandleInput } from '../../providers/contract.js';
 import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
 import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { LaunchPool } from '../contracts/admission.js';
 import type { BoundProvider } from '../../providers/bound-provider-contract.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
+import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
 
 export type ProviderRecoveryLaunch = JobLaunch & {
   readonly sessionId: string;
@@ -34,12 +35,32 @@ export type ProviderRecoveryAuthority = Readonly<{
   boundProvider: BoundProvider;
 }>;
 
+export type RecoveryCommitFence = Readonly<{
+  signal: AbortSignal;
+  onCommitStart(): void;
+}>;
+
+export type ProviderRecoveryAuthorityCapture =
+  | Readonly<{ ok: true; authority: ProviderRecoveryAuthority }>
+  | Readonly<{ ok: false; failure: ProviderBindingFailure }>;
+
 export interface RecoveryCapableService {
-  captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthority | null>;
+  captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;
+  finalizeProviderRecoveryBindingFailure(launchRecord: JobLaunch, failure: ProviderBindingFailure): void;
   finalizeInterruptedAppServerJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
-    context: { reason: 'restart' | 'handoff' },
+    context: { reason: 'restart' | 'handoff' } & RecoveryCommitFence,
+  ): Promise<void>;
+  finalizeInterruptedDurableJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: DurableCliRuntimeRecord,
+    observation: Readonly<{
+      exit: DurableProcessExit | null;
+      terminal: JobTerminal | null;
+      cancelled: boolean;
+    }>,
+    fence: RecoveryCommitFence,
   ): Promise<void>;
   adoptRunningJob(
     authority: ProviderRecoveryAuthority,
@@ -47,13 +68,6 @@ export interface RecoveryCapableService {
   ): Promise<{ adopted: boolean; cleanup: () => void }>;
   recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string>;
   interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void>;
-  recordRecoveredArtifactHandles(
-    sessionId: string,
-    input: {
-      readonly jobId: string;
-      readonly handles: readonly ProviderArtifactHandleInput[];
-    },
-  ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }>;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,

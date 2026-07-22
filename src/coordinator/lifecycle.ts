@@ -810,7 +810,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       await runShutdownSequence({
         reason,
         state,
-        teardownRecoveryCoordinator: () => state.recoveryCoordinator?.teardown(),
+        teardownRecoveryCoordinator: async () => {
+          await state.recoveryCoordinator?.teardown();
+        },
         runtimeState,
         idleTimer,
         closeServerFn,

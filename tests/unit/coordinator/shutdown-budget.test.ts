@@ -59,7 +59,7 @@ function buildHarness(opts: {
   const ctx: Parameters<typeof runShutdownSequence>[0] = {
     reason: 'replaced', // → mode='handoff' → drain=HANDOFF_DRAIN_TIMEOUT_MS
     state: { ownershipCheckerTeardown: null },
-    teardownRecoveryCoordinator: () => {
+    teardownRecoveryCoordinator: async () => {
       callLog.push('teardownRecoveryCoordinator');
     },
     runtimeState: {

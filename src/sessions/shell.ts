@@ -662,9 +662,10 @@ export class SessionManager {
       expectedActiveJobId: string;
       expectedVersion: number;
       mutation: SessionContinuityMutation;
+      appendBeforeRelease?: <Scope>(commit: CommitContext<Scope>) => void;
     },
   ): Promise<boolean> {
-    const { expectedActiveJobId, expectedVersion, mutation } = options;
+    const { expectedActiveJobId, expectedVersion, mutation, appendBeforeRelease } = options;
     const currentEntry = this.readEntry(sessionId, { forceFresh: true });
     if (!currentEntry) return false;
     if (currentEntry.activeJobId !== expectedActiveJobId) return false;
@@ -714,6 +715,7 @@ export class SessionManager {
     const claimReleasedEvent = sessionClaimReleasedEvent(releaseEntry, expectedActiveJobId);
 
     this.commitEvents((c) => {
+      appendBeforeRelease?.(c);
       c.append(checkpointEvent);
       c.append(claimReleasedEvent);
       if (clearedLease !== null) {

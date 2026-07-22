@@ -477,7 +477,7 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([]);
   });
 
-  it('marks same-namespace running jobs with dead pids as wrapper_lost', () => {
+  it('routes same-namespace provider jobs with dead pids through provider recovery', () => {
     const status = makeStatus('dead-pid-job', 'running');
     const launchRecord = makeLaunch('dead-pid-job');
     const runtimeRecord = makeRuntime('dead-pid-job', { pid: 9001 });
@@ -493,18 +493,18 @@ describe('planRecovery', () => {
       .markPidDead(9001);
 
     const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
+    expect(plan.register).toEqual([
       {
-        type: 'markError',
+        type: 'registerRunning',
         jobId: 'dead-pid-job',
-        fault: { kind: 'wrapper_lost' },
-        status,
+        launchRecord,
+        runtimeRecord,
       },
     ]);
+    expect(plan.cleanup).toEqual([]);
   });
 
-  it('marks same-namespace launching jobs with dead pids as wrapper_lost', () => {
+  it('routes same-namespace launching provider jobs with dead pids through provider recovery', () => {
     const status = makeStatus('dead-pid-launching', 'launching');
     const launchRecord = makeLaunch('dead-pid-launching');
     const runtimeRecord = makeRuntime('dead-pid-launching', { pid: 9002 });
@@ -520,15 +520,15 @@ describe('planRecovery', () => {
       .markPidDead(9002);
 
     const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
+    expect(plan.register).toEqual([
       {
-        type: 'markError',
+        type: 'registerRunning',
         jobId: 'dead-pid-launching',
-        fault: { kind: 'wrapper_lost' },
-        status,
+        launchRecord,
+        runtimeRecord,
       },
     ]);
+    expect(plan.cleanup).toEqual([]);
   });
 
   it('still registers app-server runtimes (no pid) without probing liveness', () => {

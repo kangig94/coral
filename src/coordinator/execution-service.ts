@@ -14,6 +14,7 @@ import type { JobPhase } from '../jobs/phase.js';
 import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
 import type { ContinuitySnapshot } from '../sessions/continuity.js';
+import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
@@ -262,8 +263,17 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.recoverQueuedJob(authority);
   }
 
-  captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthority | null> {
+  captureProviderRecoveryAuthority(
+    launchRecord: JobLaunch,
+  ): ReturnType<RecoveryService['captureProviderRecoveryAuthority']> {
     return this.recoveryService.captureProviderRecoveryAuthority(launchRecord);
+  }
+
+  finalizeProviderRecoveryBindingFailure(
+    launchRecord: JobLaunch,
+    failure: Parameters<RecoveryService['finalizeProviderRecoveryBindingFailure']>[1],
+  ): void {
+    this.recoveryService.finalizeProviderRecoveryBindingFailure(launchRecord, failure);
   }
 
   adoptRunningJob(
@@ -283,11 +293,13 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }
 
-  async recordRecoveredArtifactHandles(
-    sessionId: string,
-    input: Parameters<RecoveryCapableService['recordRecoveredArtifactHandles']>[1],
-  ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }> {
-    return this.recoveryService.recordRecoveredArtifactHandles(sessionId, input);
+  async finalizeInterruptedDurableJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: DurableCliRuntimeRecord,
+    observation: Parameters<RecoveryCapableService['finalizeInterruptedDurableJob']>[2],
+    fence: Parameters<RecoveryCapableService['finalizeInterruptedDurableJob']>[3],
+  ): Promise<void> {
+    return this.recoveryService.finalizeInterruptedDurableJob(authority, runtimeRecord, observation, fence);
   }
 
   async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
@@ -301,7 +313,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   async finalizeInterruptedAppServerJob(
     authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
-    context: { reason: 'restart' | 'handoff' },
+    context: Parameters<RecoveryCapableService['finalizeInterruptedAppServerJob']>[2],
   ): Promise<void> {
     return this.recoveryService.finalizeInterruptedAppServerJob(authority, runtimeRecord, context);
   }

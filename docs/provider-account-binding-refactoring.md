@@ -1,6 +1,6 @@
 # Provider multi-account execution: most-elegant target design
 
-Status: implementation complete through B07; B08 is next
+Status: implementation complete through B08; B09 is next
 
 Scope: provider multi-account execution merged by PR #275 and the provider/session/app-server/recovery boundaries it exposes
 
@@ -704,8 +704,8 @@ Recovery and adoption
 |     5 | B05 — `BoundProvider` execution cutover             | complete | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
 |     6 | B06 — lifetime-scoped execution plans               | complete | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
 |     7 | B07 — unified app-server and Codex turn capability  | complete | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
-|     8 | B08 — bound-provider recovery pipeline              | next     | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
-|     9 | B09 — superseded-surface cleanup and adoption reset | pending  | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
+|     8 | B08 — bound-provider recovery pipeline              | complete | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
+|     9 | B09 — superseded-surface cleanup and adoption reset | next     | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
 
 ### Batch execution contract
 
@@ -1018,9 +1018,9 @@ Make interrupted recovery re-enter the same durable binding and preparation stor
 
 - Rehydrate `BoundProvider` from the persisted session binding.
 - Extract a pure `InterruptedRecoveryPlan` from durable snapshot and typed provider evidence.
-- Isolate host/provider/filesystem effects in `interrupted-performer`.
-- Isolate Journal, CAS, admission, registry, session, aggregate, and terminal mutations in `interrupted-finalizer`.
-- Keep `RecoveryService` as a narrow facade for polling, cancellation, composition, and launch fencing.
+- Isolate host/provider/read-only-filesystem effects in `interrupted-performer`; result-artifact export remains a post-commit finalizer effect.
+- Isolate Journal, exact session/artifact CAS, terminal materialization, and admitted ownership release in `interrupted-finalizer`.
+- Keep `RecoveryService` as the narrow composition facade; keep polling, cancellation, recovery-registry state, and launch fencing in `RecoveryCoordinator`.
 - Remove recovery-only binding validation, execution-context building, server-spec construction, and artifact-root switching.
 - Rebuild crash-window, stale-CAS, host-loss, artifact fallback, and subject-mismatch fixtures around the three seams.
 
@@ -1034,7 +1034,17 @@ Make interrupted recovery re-enter the same durable binding and preparation stor
 
 **Exit gate**
 
-Normal and recovered execution both start from `BoundProvider`, and only the coordinator finalizer mutates Coral durable state.
+Normal and recovered execution both start from `BoundProvider`; within the interrupted app-server/durable pipeline, only the coordinator finalizer mutates Coral durable state.
+
+**Implemented result**
+
+- Persisted session bindings are rehydrated and reverified into `BoundProvider` before queued, durable CLI, or app-server recovery is admitted. Authority capture is side-effect free. A queued or already-dead durable job may then finalize a typed binding failure; a live durable job receives a stop request first and retains the recovery fence, while an app-server job whose binding cannot be restored remains fenced because Coral cannot safely stop provider work without that authority.
+- App-server and durable CLI interruption use pure snapshot-derived plans in `interrupted-plan.ts`, provider/host/read-only-filesystem effects in `interrupted-performer.ts`, and exact-version artifact/session CAS plus terminal and ownership effects in `interrupted-finalizer.ts`.
+- Terminal materialization, continuity checkpointing, and exact claim release are appended in one Journal commit after the final session CAS precondition succeeds. A stale CAS therefore writes no partial terminal, and a restart cannot release the claim while discarding provider-derived continuity.
+- Durable artifact recovery no longer fire-and-forgets provider finalization, continues after stale artifact evidence, or releases a claim through non-CAS session mutations. A failed finalizer re-registers the dead adopted job, reactivates the launch fence, and preserves abort/admission/pool ownership for shutdown or restart recovery. A provider job whose durable PID is already dead at startup still traverses the captured `BoundProvider` pipeline rather than generic `wrapper_lost` cleanup.
+- App-server recovery distinguishes waiting, artifact fallback, exact-host probing, one stale-host replacement, unsupported recovery, and unavailable probes without rebuilding provider execution context or switching artifact roots. Durable recovery distinguishes persisted terminal, artifact interpretation, abort, unsupported recovery, and wrapper loss through typed plans.
+- Pre-commit recovery can be abandoned during shutdown, and an aborted operation is barred from starting a later durable commit even if provider work ignores cancellation. Once the commit fence is crossed, recovery teardown awaits the local atomic commit before daemon authority can be released.
+- Focused verification covers deterministic routing, HostRef loss/replacement, artifact fallback, exact CAS version carry, stale artifact/session CAS with no partial terminal, atomic terminal/continuity/claim persistence, subject/binding failure fence retention, dead-PID BoundProvider routing, pre-commit cancellation, post-fence draining, and dynamic re-fencing. Production/test TypeScript, ESLint, formatting, and the broad recovery/service-composition suite pass.
 
 ### B09 — Superseded-surface cleanup and destructive adoption
 

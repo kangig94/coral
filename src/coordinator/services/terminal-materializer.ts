@@ -287,7 +287,8 @@ function terminalRecordOptions<Scope>(
   };
 }
 
-function recordProviderTerminalInCommit<Scope>(
+/** Materializes provider terminal evidence inside an existing atomic Journal commit. */
+export function appendProviderTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
@@ -307,13 +308,13 @@ export function recordProviderTerminal(
   options: RuntimeIngestOptions,
 ): void {
   progressStore.commit((c) => {
-    recordProviderTerminalInCommit(c, terminal, options);
+    appendProviderTerminalInCommit(c, terminal, options);
     return undefined;
   });
 }
 
-function recordTerminalWithOutcomePlan(
-  progressStore: RuntimeCommitStore,
+function appendTerminalWithOutcomePlan<Scope>(
+  c: CommitContext<Scope>,
   plan: RuntimeIngestPlan,
   options: RuntimeIngestOptions,
   record: {
@@ -322,24 +323,49 @@ function recordTerminalWithOutcomePlan(
     readonly diagnostics?: JobTerminalDiagnostics;
   },
 ): void {
-  progressStore.commit((c) => {
-    const outcome = materializePlannedOutcomeInCommit(c, plan);
-    appendJobTerminalRecorded(
-      c,
-      terminalRecordOptions(
-        options,
-        {
-          content: record.content,
-          durationMs: record.durationMs,
-          outcome,
-        },
-        {
-          diagnostics: record.diagnostics,
-        },
-      ),
-    );
-    return undefined;
-  });
+  const outcome = materializePlannedOutcomeInCommit(c, plan);
+  appendJobTerminalRecorded(
+    c,
+    terminalRecordOptions(
+      options,
+      {
+        content: record.content,
+        durationMs: record.durationMs,
+        outcome,
+      },
+      {
+        diagnostics: record.diagnostics,
+      },
+    ),
+  );
+}
+
+/** Appends interruption cause and terminal records to an existing atomic Journal commit. */
+export function appendSessionInterruptedTerminalInCommit<Scope>(
+  c: CommitContext<Scope>,
+  fault: SessionInterruptedFault,
+  options: RuntimeIngestOptions,
+  record: {
+    readonly content: string;
+    readonly durationMs: number;
+    readonly diagnostics?: JobTerminalDiagnostics;
+  },
+): void {
+  appendTerminalWithOutcomePlan(c, planSessionInterrupted(fault, options), options, record);
+}
+
+/** Appends a recovery fault and its terminal record to an existing atomic Journal commit. */
+export function appendJobRecoveryFaultTerminalInCommit<Scope>(
+  c: CommitContext<Scope>,
+  fault: JobRecoveryFault,
+  options: RuntimeIngestOptions,
+  record: {
+    readonly content: string;
+    readonly durationMs: number;
+    readonly diagnostics?: JobTerminalDiagnostics;
+  },
+): void {
+  appendTerminalWithOutcomePlan(c, planJobRecoveryFault(fault, options), options, record);
 }
 
 export function recordSessionInterruptedTerminal(
@@ -352,7 +378,10 @@ export function recordSessionInterruptedTerminal(
     readonly diagnostics?: JobTerminalDiagnostics;
   },
 ): void {
-  recordTerminalWithOutcomePlan(progressStore, planSessionInterrupted(fault, options), options, record);
+  progressStore.commit((c) => {
+    appendSessionInterruptedTerminalInCommit(c, fault, options, record);
+    return undefined;
+  });
 }
 
 export function recordJobRecoveryFaultTerminal(
@@ -365,5 +394,8 @@ export function recordJobRecoveryFaultTerminal(
     readonly diagnostics?: JobTerminalDiagnostics;
   },
 ): void {
-  recordTerminalWithOutcomePlan(progressStore, planJobRecoveryFault(fault, options), options, record);
+  progressStore.commit((c) => {
+    appendJobRecoveryFaultTerminalInCommit(c, fault, options, record);
+    return undefined;
+  });
 }

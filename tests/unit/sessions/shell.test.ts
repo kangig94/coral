@@ -475,7 +475,7 @@ describe('sessions shell store', () => {
     expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
   });
 
-  it('finalizeJobContinuityAtomic appends checkpoint and claim release in one commit and caches release entry', async () => {
+  it('finalizeJobContinuityAtomic appends caller state, checkpoint, and claim release in one commit', async () => {
     const { appendedBatches, mgr, workDir } = setupWithJournal('finalize-dual-event');
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
@@ -494,22 +494,32 @@ describe('sessions shell store', () => {
           kind: 'set_resumable',
           conversationRef: 'thread-1',
         },
+        appendBeforeRelease: (commit) => {
+          commit.append({
+            type: 'session.retention.discard.requested',
+            stream: { kind: 'session', id: entry.sessionId },
+            refs: { sessionId: entry.sessionId },
+            bodyVersion: 1,
+            body: { sessionId: entry.sessionId, attempt: 1, handles: [] },
+          });
+        },
       }),
     ).resolves.toBe(true);
 
     expect(appendedBatches).toHaveLength(1);
     expect(appendedBatches[0].map((event) => event.type)).toEqual([
+      'session.retention.discard.requested',
       'session.continuity.checkpointed',
       'session.claim.released',
     ]);
-    expect(appendedBatches[0][0].body).toMatchObject({
+    expect(appendedBatches[0][1].body).toMatchObject({
       entry: {
         sessionId: entry.sessionId,
         activeJobId: 'job-1',
         version: claimed.version + 1,
       },
     });
-    const releaseBody = appendedBatches[0][1].body as { entry: Record<string, unknown>; jobId: string };
+    const releaseBody = appendedBatches[0][2].body as { entry: Record<string, unknown>; jobId: string };
     expect(releaseBody).toMatchObject({
       entry: {
         sessionId: entry.sessionId,
@@ -561,6 +571,7 @@ describe('sessions shell store', () => {
       throw new Error('Expected claimed session');
     }
 
+    const appendBeforeRelease = vi.fn();
     await expect(
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
@@ -569,11 +580,13 @@ describe('sessions shell store', () => {
           kind: 'set_resumable',
           conversationRef: 'thread-1',
         },
+        appendBeforeRelease,
       }),
     ).resolves.toBe(false);
 
     expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('pending');
+    expect(appendBeforeRelease).not.toHaveBeenCalled();
   });
 
   it('checkpointJobContinuityAtomic preserves activeJobId and returns the next version', async () => {

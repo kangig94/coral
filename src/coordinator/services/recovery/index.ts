@@ -27,12 +27,29 @@ import type { SessionLookup } from '../../../sessions/lookup.js';
 
 const RECOVERY_POLL_MS = 500;
 
+class InterruptedRecoveryBlockedError extends Error {
+  readonly jobId: string;
+  constructor(jobId: string, message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'InterruptedRecoveryBlockedError';
+    this.jobId = jobId;
+  }
+}
+
 type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
   cancelledRecoveryJobIds: Set<string>;
   adoptedRunningPids: Map<string, { pid: number; pool: string }>;
   recoveryPollIntervals: Map<string, TimerHandle>;
   adoptedRunningJobCleanups: Map<string, () => void>;
+  inflightFinalizations: Map<
+    string,
+    Readonly<{
+      promise: Promise<void>;
+      abort(): void;
+      commitStarted(): boolean;
+    }>
+  >;
   teardownRequested: boolean;
 };
 
@@ -40,7 +57,7 @@ export interface RecoveryCoordinator {
   runStartupRecovery(ctx: StartupRecoveryContext): Promise<void>;
   getRecoveryRegistry(): RecoveryRegistry | null;
   isIdleBlocked(): boolean;
-  teardown(): void;
+  teardown(): Promise<void>;
 }
 
 type RecoveryCoordinatorContext = {
@@ -90,6 +107,7 @@ export function createRecoveryCoordinator({
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
     recoveryPollIntervals: new Map<string, TimerHandle>(),
     adoptedRunningJobCleanups: new Map<string, () => void>(),
+    inflightFinalizations: new Map(),
     teardownRequested: false,
   };
 
@@ -100,6 +118,39 @@ export function createRecoveryCoordinator({
     }
     runtime.time.clearInterval(pollInterval);
     state.recoveryPollIntervals.delete(jobId);
+  };
+
+  const startTrackedFinalization = (
+    jobId: string,
+    parentSignal: AbortSignal,
+    run: (fence: { signal: AbortSignal; onCommitStart(): void }) => Promise<void>,
+  ): Promise<void> => {
+    const controller = new AbortController();
+    let commitStarted = false;
+    const forwardAbort = (): void => controller.abort();
+    if (parentSignal.aborted) {
+      controller.abort();
+    } else {
+      parentSignal.addEventListener('abort', forwardAbort, { once: true });
+    }
+    const promise = run({
+      signal: controller.signal,
+      onCommitStart: () => {
+        commitStarted = true;
+      },
+    }).finally(() => {
+      parentSignal.removeEventListener('abort', forwardAbort);
+      if (state.inflightFinalizations.get(jobId)?.promise === promise) {
+        state.inflightFinalizations.delete(jobId);
+      }
+    });
+    const tracked = Object.freeze({
+      promise,
+      abort: () => controller.abort(),
+      commitStarted: () => commitStarted,
+    });
+    state.inflightFinalizations.set(jobId, tracked);
+    return promise;
   };
 
   const takeAdoptedJobCleanup = (jobId: string): (() => void) | null => {
@@ -130,7 +181,7 @@ export function createRecoveryCoordinator({
     runtimeState.setLaunchFenceActive(false);
   };
 
-  const teardown = (): void => {
+  const teardown = async (): Promise<void> => {
     state.teardownRequested = true;
 
     for (const pollInterval of state.recoveryPollIntervals.values()) {
@@ -141,6 +192,14 @@ export function createRecoveryCoordinator({
     for (const jobId of [...state.adoptedRunningPids.keys()]) {
       releaseAdoptedJob(jobId);
     }
+    for (const finalization of state.inflightFinalizations.values()) {
+      finalization.abort();
+    }
+    await Promise.allSettled(
+      [...state.inflightFinalizations.values()]
+        .filter((finalization) => finalization.commitStarted())
+        .map((finalization) => finalization.promise),
+    );
     // Safety net: drain any cleanups whose PID entry was removed by the poller
     // (poller-detected-death) before teardown ran. Normally empty — cleanups are
     // idempotent, so double-invoking is safe if this ever overlaps.
@@ -198,9 +257,22 @@ export function createRecoveryCoordinator({
         const service = getRecoveryService(createInvocationContext(launchRecord.projectRoot));
         if (isAppServerRuntime(runtimeRecord)) {
           signal.throwIfAborted();
-          await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
-            reason: interruptedAppServerReason,
-          });
+          const finalization = startTrackedFinalization(jobId, signal, (fence) =>
+            service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+              reason: interruptedAppServerReason,
+              ...fence,
+            }),
+          );
+          try {
+            await finalization;
+          } catch (error: unknown) {
+            if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
+            throw new InterruptedRecoveryBlockedError(
+              jobId,
+              `Interrupted app-server recovery remains incomplete for ${jobId}.`,
+              error,
+            );
+          }
           signal.throwIfAborted();
           state.recoveryRegistry?.remove(jobId);
           log(`Recovered interrupted app-server job: ${jobId}\n`);
@@ -218,6 +290,58 @@ export function createRecoveryCoordinator({
         const recovery = boundProvider.recovery;
 
         let adoptedRuntimeRecord = runtimeRecord;
+        const drainRecoveredProgress = (): void => {
+          if (!recovery?.extractProgress) {
+            return;
+          }
+
+          try {
+            const { messages, newOffset } = recovery.extractProgress({
+              stdoutPath: adoptedRuntimeRecord.stdoutPath,
+              fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
+            });
+
+            if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
+              adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
+              progressStore.appendRuntimeStarted(jobId, adoptedRuntimeRecord);
+            }
+
+            for (const message of messages) {
+              progressStore.appendProgress(jobId, launchRecord.sessionId, message);
+            }
+          } catch (error: unknown) {
+            log(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
+          }
+        };
+
+        if (!runtime.process.isAlive(runtimeRecord.pid)) {
+          drainRecoveredProgress();
+          try {
+            await startTrackedFinalization(jobId, signal, (fence) =>
+              finalizeDeadAdoptedJob({
+                jobId,
+                runtimeRecord: adoptedRuntimeRecord,
+                service,
+                authority,
+                progressStore,
+                cancelledJobIds: state.cancelledRecoveryJobIds,
+                fence,
+              }),
+            );
+          } catch (error: unknown) {
+            if ((error as { name?: string } | null)?.name === 'AbortError') throw error;
+            throw new InterruptedRecoveryBlockedError(
+              jobId,
+              `Interrupted durable recovery remains incomplete for ${jobId}.`,
+              error,
+            );
+          }
+          state.recoveryRegistry?.remove(jobId);
+          state.recoveryRegistry?.clearCancelled(jobId);
+          log(`Finalized dead durable recovery job: ${jobId}\n`);
+          continue;
+        }
+
         signal.throwIfAborted();
         const adoption = await service.adoptRunningJob(authority, runtimeRecord);
         cleanup = adoption.cleanup;
@@ -240,34 +364,6 @@ export function createRecoveryCoordinator({
         state.adoptedRunningPids.set(jobId, { pid: runtimeRecord.pid, pool: launchRecord.pool });
         state.adoptedRunningJobCleanups.set(jobId, cleanupOnce);
 
-        const drainRecoveredProgress = (): void => {
-          if (!recovery?.extractProgress) {
-            return;
-          }
-
-          try {
-            const { messages, newOffset } = recovery.extractProgress({
-              stdoutPath: adoptedRuntimeRecord.stdoutPath,
-              fromOffset: adoptedRuntimeRecord.tailWatermark ?? 0,
-            });
-
-            if (newOffset !== (adoptedRuntimeRecord.tailWatermark ?? 0)) {
-              adoptedRuntimeRecord = { ...adoptedRuntimeRecord, tailWatermark: newOffset };
-              progressStore.appendRuntimeStarted(jobId, adoptedRuntimeRecord);
-            }
-
-            if (messages.length === 0) {
-              return;
-            }
-
-            for (const message of messages) {
-              progressStore.appendProgress(jobId, launchRecord.sessionId, message);
-            }
-          } catch (error: unknown) {
-            log(`Failed to tail recovered progress for job ${jobId}: ${formatError(error)}\n`);
-          }
-        };
-
         const pollInterval = runtime.time.setInterval(() => {
           drainRecoveredProgress();
 
@@ -285,24 +381,33 @@ export function createRecoveryCoordinator({
           }
 
           drainRecoveredProgress();
-          void finalizeDeadAdoptedJob({
-            jobId,
-            runtimeRecord: adoptedRuntimeRecord,
-            service,
-            authority,
-            progressStore,
-            runtime,
-            cancelledJobIds: state.cancelledRecoveryJobIds,
-            log,
-          })
-            .catch((error: unknown) => {
-              log(`Failed to finalize adopted job ${jobId}: ${formatError(error)}\n`);
-            })
-            .finally(() => {
+          const finalization = startTrackedFinalization(jobId, signal, (fence) =>
+            finalizeDeadAdoptedJob({
+              jobId,
+              runtimeRecord: adoptedRuntimeRecord,
+              service,
+              authority,
+              progressStore,
+              cancelledJobIds: state.cancelledRecoveryJobIds,
+              fence,
+            }),
+          )
+            .then(() => {
               state.recoveryRegistry?.clearCancelled(jobId);
               retainedCleanup?.();
               maybeReleaseRecoveryRegistry();
+            })
+            .catch((error: unknown) => {
+              if (retainedCleanup !== null) {
+                state.adoptedRunningJobCleanups.set(jobId, retainedCleanup);
+              }
+              state.recoveryRegistry?.register(jobId, launchRecord, adoptedRuntimeRecord);
+              runtimeState.setLaunchFenceActive(true);
+              log(`Failed to finalize adopted job ${jobId}: ${formatError(error)}\n`);
             });
+          void finalization.catch((error: unknown) => {
+            log(`Durable finalization cleanup failed for ${jobId}: ${formatError(error)}\n`);
+          });
         }, RECOVERY_POLL_MS);
         pollInterval.unref?.();
         state.recoveryPollIntervals.set(jobId, pollInterval);
@@ -311,6 +416,10 @@ export function createRecoveryCoordinator({
         log(`Adopted running job: ${jobId} (pid=${runtimeRecord.pid})\n`);
       } catch (error: unknown) {
         if ((error as { name?: string } | null)?.name === 'AbortError') {
+          cleanup?.();
+          throw error;
+        }
+        if (error instanceof InterruptedRecoveryBlockedError) {
           cleanup?.();
           throw error;
         }
@@ -381,9 +490,13 @@ export function createRecoveryCoordinator({
               eventBus.emit('session:released', payload);
             },
             coordinatorCommit: ctx.coordinatorCommit,
+            signal,
           });
         } catch (error: unknown) {
           logRecoveryActionFailure(action, error, log);
+          if (action.type === 'registerQueued' || action.type === 'registerRunning') {
+            throw error;
+          }
         }
       };
 
@@ -410,6 +523,10 @@ export function createRecoveryCoordinator({
         });
       } catch (error: unknown) {
         if ((error as { name?: string } | null)?.name === 'AbortError') {
+          throw error;
+        }
+        if (error instanceof InterruptedRecoveryBlockedError) {
+          log(`Recovery launch fence retained: ${formatError(error)}\n`);
           throw error;
         }
         log(`Recovery adoption failed: ${formatError(error)}\n`);

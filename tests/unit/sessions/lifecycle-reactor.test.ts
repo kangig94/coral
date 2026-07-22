@@ -1123,6 +1123,7 @@ describe('LifecycleReactor retention enforcement', () => {
         sessionLookup: createProjectionSessionLookup(harness.db),
         emitSessionReleased: () => {},
         coordinatorCommit: harness.coordinatorCommit,
+        signal: new AbortController().signal,
       },
     );
 
@@ -1165,6 +1166,7 @@ describe('LifecycleReactor retention enforcement', () => {
         sessionLookup: createProjectionSessionLookup(harness.db),
         emitSessionReleased: () => {},
         coordinatorCommit: harness.coordinatorCommit,
+        signal: new AbortController().signal,
       },
     );
 
@@ -1264,9 +1266,13 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     });
 
-    const recoveryAuthority = await recoveryService.captureProviderRecoveryAuthority(launchRecord);
-    if (recoveryAuthority === null) throw new Error('Expected provider recovery authority.');
-    await recoveryService.finalizeInterruptedAppServerJob(recoveryAuthority, runtimeRecord, { reason: 'restart' });
+    const captured = await recoveryService.captureProviderRecoveryAuthority(launchRecord);
+    if (!captured.ok) throw new Error('Expected provider recovery authority.');
+    await recoveryService.finalizeInterruptedAppServerJob(captured.authority, runtimeRecord, {
+      reason: 'restart',
+      signal: new AbortController().signal,
+      onCommitStart: vi.fn(),
+    });
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },

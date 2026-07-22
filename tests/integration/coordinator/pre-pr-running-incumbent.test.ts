@@ -300,7 +300,11 @@ describe('pre-PR running incumbent (R6)', () => {
         providerMeta: { leaseState: 'acquired' },
       } as unknown as Parameters<typeof service.finalizeInterruptedAppServerJob>[1];
 
-      await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, { reason: 'handoff' });
+      await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+        reason: 'handoff',
+        signal: new AbortController().signal,
+        onCommitStart: vi.fn(),
+      });
 
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const warnArg = warnSpy.mock.calls[0][0];
@@ -337,7 +341,11 @@ describe('pre-PR running incumbent (R6)', () => {
         providerMeta: { leaseState: 'acquired' },
       } as unknown as Parameters<typeof service.finalizeInterruptedAppServerJob>[1];
 
-      await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, { reason: 'restart' });
+      await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+        reason: 'restart',
+        signal: new AbortController().signal,
+        onCommitStart: vi.fn(),
+      });
       expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();

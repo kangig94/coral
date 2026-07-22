@@ -1,9 +1,9 @@
 import type { ProviderContinuityBlob, ContinuitySnapshot } from './continuity.js';
 import type { SessionContinuityMutation } from './continuity-mutation.js';
+import type { CommitContext } from '../store/append.js';
 import type { ProviderInstruction } from '../providers/contract.js';
 import type { ProviderArtifactIdentity } from '../providers/artifact-identity.js';
 import type { ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
-import type { CommitContext } from '../store/append.js';
 import type {
   ClearContinuationLeaseInput,
   RecordContinuationLeaseInput,
@@ -112,6 +112,7 @@ export interface SessionRecoveryPort {
       expectedActiveJobId: string;
       expectedVersion: number;
       mutation: SessionContinuityMutation;
+      appendBeforeRelease?: <Scope>(commit: CommitContext<Scope>) => void;
     },
   ): Promise<boolean>;
   recordArtifactHandleAtomic(

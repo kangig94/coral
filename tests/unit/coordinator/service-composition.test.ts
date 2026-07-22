@@ -392,11 +392,15 @@ async function captureRecoveryAuthority(
   service: Pick<RecoveryCapableService, 'captureProviderRecoveryAuthority'>,
   launchRecord: JobLaunch,
 ): Promise<ProviderRecoveryAuthority> {
-  const authority = await service.captureProviderRecoveryAuthority(launchRecord);
-  if (authority === null) {
+  const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+  if (!captured.ok) {
     throw new Error(`Expected recovery authority for ${launchRecord.jobId}.`);
   }
-  return authority;
+  return captured.authority;
+}
+
+function recoveryFence(reason: 'restart' | 'handoff') {
+  return { reason, signal: new AbortController().signal, onCommitStart: vi.fn() };
 }
 
 function createFakeProviderServerHandle(options?: {
@@ -1827,7 +1831,13 @@ describe('ExecutionService', () => {
           }
 
           const priorQueueDepth = queueDepth();
-          expect(await service.captureProviderRecoveryAuthority(launchRecord)).toBeNull();
+          const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+          expect(captured).toMatchObject({
+            ok: false,
+            failure: { reason: 'invalid-persisted-binding' },
+          });
+          if (captured.ok) throw new Error('Expected invalid recovery binding.');
+          service.finalizeProviderRecoveryBindingFailure(launchRecord, captured.failure);
           expect(queueDepth()).toBe(priorQueueDepth);
           expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
             kind: 'job_fault',
@@ -1863,7 +1873,10 @@ describe('ExecutionService', () => {
         progressStore.appendLaunchRequested(jobId, launchRecord);
 
         const priorQueueDepth = queueDepth();
-        expect(await service.captureProviderRecoveryAuthority(launchRecord)).toBeNull();
+        const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+        expect(captured).toMatchObject({ ok: false, failure: { reason: 'profile-unavailable' } });
+        if (captured.ok) throw new Error('Expected unavailable recovery binding.');
+        service.finalizeProviderRecoveryBindingFailure(launchRecord, captured.failure);
         expect(queueDepth()).toBe(priorQueueDepth);
         expect(progressStore.readStatus(jobId)?.result?.outcome).toEqual({
           kind: 'job_fault',
@@ -1909,7 +1922,10 @@ describe('ExecutionService', () => {
           subject = nextSubject;
 
           const priorQueueDepth = queueDepth();
-          expect(await service.captureProviderRecoveryAuthority(launchRecord)).toBeNull();
+          const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+          expect(captured).toMatchObject({ ok: false, failure: { reason: 'subject-mismatch' } });
+          if (captured.ok) throw new Error('Expected mismatched recovery subject.');
+          service.finalizeProviderRecoveryBindingFailure(launchRecord, captured.failure);
 
           expect(queueDepth()).toBe(priorQueueDepth);
           expect(execute).not.toHaveBeenCalled();
@@ -2195,49 +2211,43 @@ describe('ExecutionService', () => {
             throw new Error('process table unavailable');
           },
         ] as const,
-      ])('terminalizes a running job whose binding is no longer ready even when kill %s', async (_mode, kill) => {
-        const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(kill);
-        const service = createService(ctx, { providerBindingReady: false });
-        const { progressStore, sessionManager } =
-          /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-          getInternals(service);
-        const jobId = `adopt-binding-unavailable-${randomUUID()}`;
-        const sessionId = `session-binding-unavailable-${randomUUID()}`;
-        trackJob(jobId);
-        seedTestJobSession(progressStore, {
-          jobId,
-          sessionId,
-          provider: 'codex',
-          projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
-          initialPhase: 'running',
-        });
-        const launchRecord = makeLaunchRecord({
-          jobId,
-          sessionId,
-          projectRoot: ctx.projectRoot,
-          backendNamespace: 'old-backend-ns',
-        });
-        const runtimeRecord = makeRuntimeRecord({ pid: 54322 });
-        progressStore.appendLaunchRequested(jobId, launchRecord);
-        progressStore.appendRuntimeStarted(jobId, runtimeRecord);
+      ])(
+        'captures a running binding failure without process or terminal side effects when kill %s',
+        async (_mode, kill) => {
+          const killSpy = vi.spyOn(runtime.process, 'kill').mockImplementation(kill);
+          const service = createService(ctx, { providerBindingReady: false });
+          const { progressStore, sessionManager } =
+            /* @intentional-private-access — seed or inspect execution internals with no public test seam */
+            getInternals(service);
+          const jobId = `adopt-binding-unavailable-${randomUUID()}`;
+          const sessionId = `session-binding-unavailable-${randomUUID()}`;
+          trackJob(jobId);
+          seedTestJobSession(progressStore, {
+            jobId,
+            sessionId,
+            provider: 'codex',
+            projectRoot: ctx.projectRoot,
+            backendNamespace: 'old-backend-ns',
+            initialPhase: 'running',
+          });
+          const launchRecord = makeLaunchRecord({
+            jobId,
+            sessionId,
+            projectRoot: ctx.projectRoot,
+            backendNamespace: 'old-backend-ns',
+          });
+          const runtimeRecord = makeRuntimeRecord({ pid: 54322 });
+          progressStore.appendLaunchRequested(jobId, launchRecord);
+          progressStore.appendRuntimeStarted(jobId, runtimeRecord);
 
-        const authority = await service.captureProviderRecoveryAuthority(launchRecord);
+          const captured = await service.captureProviderRecoveryAuthority(launchRecord);
 
-        expect(authority).toBeNull();
-        expect(killSpy).not.toHaveBeenCalled();
-        expect(getActiveJobIds()).not.toContain(jobId);
-        expect(sessionManager.readById(sessionId, { forceFresh: true })?.activeJobId).toBeUndefined();
-        expect(progressStore.readStatus(jobId)).toMatchObject({
-          phase: 'error',
-          result: {
-            outcome: {
-              kind: 'job_fault',
-              fault: { kind: 'provider_binding', provider: 'codex', reason: 'profile-unavailable' },
-            },
-          },
-        });
-      });
+          expect(captured).toMatchObject({ ok: false, failure: { reason: 'profile-unavailable' } });
+          expect(killSpy).not.toHaveBeenCalled();
+          expect(sessionManager.readById(sessionId, { forceFresh: true })?.activeJobId).toBe(jobId);
+          expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+        },
+      );
 
       it('releases admission but preserves the session claim when rejected-recovery terminal commit fails', async () => {
         vi.spyOn(runtime.process, 'kill').mockReturnValue(false);
@@ -2281,7 +2291,9 @@ describe('ExecutionService', () => {
           }),
         );
 
-        await expect(service.captureProviderRecoveryAuthority(launchRecord)).rejects.toThrow(
+        const captured = await service.captureProviderRecoveryAuthority(launchRecord);
+        if (captured.ok) throw new Error('Expected unavailable recovery binding.');
+        expect(() => service.finalizeProviderRecoveryBindingFailure(launchRecord, captured.failure)).toThrow(
           'Failed to append terminal event',
         );
         expect(getActiveJobIds()).not.toContain(jobId);
@@ -2515,7 +2527,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
-          { reason: 'restart' },
+          recoveryFence('restart'),
         );
 
         const expectedReport = buildExpectedInterruptedReport(
@@ -2579,7 +2591,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
-          { reason: 'restart' },
+          recoveryFence('restart'),
         );
 
         const expectedReport = buildExpectedInterruptedReport(
@@ -2639,7 +2651,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
-          { reason: 'restart' },
+          recoveryFence('restart'),
         );
 
         expect(finalizeInterrupted).toHaveBeenCalledWith({ resumable: false }, undefined, {
@@ -2702,7 +2714,7 @@ describe('ExecutionService', () => {
             }),
           ),
           makeAppServerRuntimeRecord(),
-          { reason: 'restart' },
+          recoveryFence('restart'),
         );
 
         const expectedReport = buildExpectedInterruptedReport(
@@ -2790,9 +2802,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord(),
-          {
-            reason: 'restart',
-          },
+          recoveryFence('restart'),
         );
 
         const expectedReport = buildExpectedInterruptedReport(
@@ -2902,7 +2912,7 @@ describe('ExecutionService', () => {
           makeAppServerRuntimeRecord({
             provider: 'claude',
           }),
-          { reason: 'restart' },
+          recoveryFence('restart'),
         );
 
         expect(spawnProviderServerMock).not.toHaveBeenCalled();
@@ -2973,9 +2983,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord(),
-          {
-            reason: 'handoff',
-          },
+          recoveryFence('handoff'),
         );
 
         const expectedReport = buildExpectedInterruptedReport(
@@ -3054,7 +3062,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
-          { reason: 'handoff' },
+          recoveryFence('handoff'),
         );
 
         const warnHits = stderrSpy.mock.calls.some(([chunk]) => {
@@ -3106,7 +3114,7 @@ describe('ExecutionService', () => {
         await service.finalizeInterruptedAppServerJob(
           await captureRecoveryAuthority(service, launchRecord),
           makeAppServerRuntimeRecord({ leaseState: 'waiting' }),
-          { reason: 'restart' },
+          recoveryFence('restart'),
         );
 
         const warnHits = stderrSpy.mock.calls.some(([chunk]) => {
