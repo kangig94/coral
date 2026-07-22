@@ -1,9 +1,9 @@
 import type {
   ArtifactCleanupRuntime,
   DiscardOutcome,
-  ProviderAppServerContract,
+  ProviderAppServerCapability,
   ProviderArtifactHandle,
-  ProviderCurationCompleteRuntime,
+  ProviderCurationPreparationRuntime,
   ProviderCurationRequest,
   ProviderCurationUsageRuntime,
   ProviderEventBody,
@@ -11,6 +11,8 @@ import type {
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
+  ProviderServerLaunch,
+  ProviderServerLease,
   ProviderServerSpec,
 } from './contract.js';
 import type { ProviderCliRequest } from './protocol.js';
@@ -21,17 +23,6 @@ import type {
   ProviderReadiness,
 } from './contracts/binding.js';
 import type { ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
-
-export interface BoundProviderPreparedExecution {
-  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
-  execute(runtime: Omit<ProviderRuntime<never>, 'providerContext'>): AsyncIterable<ProviderEventBody>;
-  readonly appServer?: Omit<ProviderAppServerContract<never>, 'buildServerSpec'> & {
-    buildServerSpec(
-      persistedContinuity: Parameters<ProviderAppServerContract<never>['buildServerSpec']>[1],
-      ports: Parameters<ProviderAppServerContract<never>['buildServerSpec']>[2],
-    ): ProviderServerSpec;
-  };
-}
 
 export type BoundProviderRecovery = Omit<ProviderRecoveryContract, 'finalizeFromArtifacts'> & {
   finalizeFromArtifacts(
@@ -54,8 +45,41 @@ export type BoundProviderArtifacts =
   | { readonly kind: 'none'; readonly reason: string };
 
 export interface BoundProviderCuration {
-  complete(request: ProviderCurationRequest, runtime: ProviderCurationCompleteRuntime): Promise<string>;
+  prepare(request: ProviderCurationRequest, runtime: ProviderCurationPreparationRuntime): BoundProviderPreparedCuration;
   isUsageBudgetExhausted(runtime: ProviderCurationUsageRuntime): boolean;
+}
+
+export type BoundProviderPreparedCuration = Readonly<{
+  launch: ProviderServerLaunch;
+  complete(runtime: { readonly acquirePreparedServer: () => Promise<ProviderServerLease> }): Promise<string>;
+}>;
+
+export type BoundProviderExecutionPreparationInput = {
+  request: ProviderRequest;
+  persistedContinuity?: ProviderRuntime['persistedContinuity'];
+  baseEnv: Readonly<Record<string, string>>;
+  protectedEnv?: Readonly<Record<string, string>>;
+  platform: string;
+  storage: Pick<ProviderRuntime['storage'], 'existsSync'>;
+};
+
+export type BoundProviderPreparedStableHost = Readonly<{ host: ProviderServerSpec }>;
+
+export interface BoundProviderAppServerCapability extends Omit<
+  ProviderAppServerCapability<never>,
+  'compileStableHost'
+> {
+  prepareStableHost(
+    input: Omit<BoundProviderExecutionPreparationInput, 'protectedEnv'>,
+  ): BoundProviderPreparedStableHost;
+}
+
+export interface BoundProviderPreparedExecution {
+  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+  execute(runtime: Omit<ProviderRuntime<never>, 'executionPlan'>): AsyncIterable<ProviderEventBody>;
+  readonly appServer?: Omit<BoundProviderAppServerCapability, 'prepareStableHost'> & {
+    readonly launch: ProviderServerLaunch;
+  };
 }
 
 export interface BoundProvider {
@@ -68,12 +92,8 @@ export interface BoundProvider {
   ): Promise<ProviderBindingResult<ProviderReadiness>>;
   compareIdentity(otherEnvelope: unknown): ProviderBindingResult<true>;
   preflight(input: Omit<ProviderPreflightInput, 'credentialSource'>): Promise<void>;
-  prepareExecution(input: {
-    request: ProviderRequest;
-    baseEnv: Readonly<Record<string, string>>;
-    protectedEnv?: Readonly<Record<string, string>>;
-    platform: string;
-  }): BoundProviderPreparedExecution;
+  prepareExecution(input: BoundProviderExecutionPreparationInput): BoundProviderPreparedExecution;
+  readonly appServer?: BoundProviderAppServerCapability;
   readonly recovery?: BoundProviderRecovery;
   readonly artifacts: BoundProviderArtifacts;
   readonly curation?: BoundProviderCuration;

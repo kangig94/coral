@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
+import { prepareTestCodexAppServer, TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
-import { buildCodexContinuity, buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
+import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
 import type { ArtifactCleanupRuntime, ProviderServerLease } from '#src/providers/contract.js';
 
@@ -88,7 +88,7 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
 describe('codexRecoveryLifecycle.probe', () => {
   it('rejects hostile effective config before the recovery thread/resume RPC', async () => {
     const continuity = { cwd: '/workspace/project', threadId: 'thread-1' };
-    buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
     await expect(
@@ -104,7 +104,7 @@ describe('codexRecoveryLifecycle.probe', () => {
       turnId: 'turn-1',
       attacker: 'drop-me',
     };
-    buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
     await expect(codexRecoveryLifecycle.probe(leaseWithRpc(rpc), continuity)).resolves.toEqual({
@@ -129,7 +129,7 @@ describe('codexRecoveryLifecycle.probe', () => {
       threadId: 'thread-1',
       turnId: 'turn-1',
     };
-    buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
     await expect(codexRecoveryLifecycle.probe(leaseWithRpc(rpc), continuity)).resolves.toEqual({

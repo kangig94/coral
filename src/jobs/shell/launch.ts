@@ -3,8 +3,8 @@ import type {
   ProviderEventBody,
   ProviderRequest,
   ProviderRuntime,
+  ProviderServerLaunch,
   ProviderServerLease,
-  ProviderServerSpec,
 } from '../../providers/contract.js';
 import type { BoundProvider, BoundProviderPreparedExecution } from '../../providers/bound-provider-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
@@ -87,7 +87,7 @@ export interface LaunchOrchestratorDeps {
     ): void;
   };
   acquireServer: (
-    spec: ProviderServerSpec,
+    launch: ProviderServerLaunch,
     options?: { jobId?: string; signal?: AbortSignal },
   ) => Promise<ProviderServerLease>;
 }
@@ -869,9 +869,11 @@ export class LaunchOrchestrator {
     });
     const prepared = provider.prepareExecution({
       request: requestWithInject,
+      persistedContinuity: session.providerContinuity ?? undefined,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
       protectedEnv,
       platform: this.deps.runtime.env.platform(),
+      storage: this.deps.runtime.storage,
     });
     const runtime = this.createProviderRuntime(
       provider,
@@ -1015,7 +1017,7 @@ export class LaunchOrchestrator {
     signal: AbortSignal,
     pool: LaunchPool,
     equippedTools: ReturnType<typeof resolveEquippedTools>,
-  ): Omit<ProviderRuntime<never>, 'providerContext'> {
+  ): Omit<ProviderRuntime<never>, 'executionPlan'> {
     const runCli = bindProviderRunner(
       this.deps.durableSpawner,
       provider.name,
@@ -1033,9 +1035,13 @@ export class LaunchOrchestrator {
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,
       ids: this.deps.runtime.ids,
-      acquireServer: (spec) => {
+      acquirePreparedServer: () => {
+        const launch = prepared.appServer?.launch;
+        if (launch === undefined) {
+          throw new Error(`Provider '${provider.name}' has no prepared app-server launch.`);
+        }
         this.appServerJobs.add(jobId);
-        return this.deps.acquireServer(spec, { jobId, signal });
+        return this.deps.acquireServer(launch, { jobId, signal });
       },
       persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,

@@ -9,7 +9,7 @@ import {
   locateClaudeJsonlArtifact,
 } from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
-import type { ClaudeCredentialSource } from '#src/providers/claude/execution-context.js';
+import type { ClaudeCredentialSource } from '#src/providers/claude/execution-plan.js';
 
 function claudePreflightRuntime(
   files: Readonly<Record<string, string>>,

@@ -8,9 +8,9 @@ import type {
   ProviderRuntime,
 } from '#src/providers/contract.js';
 import type { ProviderTransportClose } from '#src/providers/protocol.js';
-import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import { sessionContinuity, type SessionContinuityContract } from '#src/providers/middleware/session-continuity.js';
-import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
 
 type TestState = {
   conversationRef: string | null;
@@ -43,12 +43,12 @@ afterEach(() => {
 });
 
 function createRuntime(
-  continuityBridge: ProviderRuntime<CodexExecutionContext>['continuityBridge'] = {
+  continuityBridge: ProviderRuntime<CodexExecutionPlan>['continuityBridge'] = {
     checkpoint: () => {},
     transportClosed: () => {},
   },
-  overrides: Partial<ProviderRuntime<CodexExecutionContext>> = {},
-): ProviderRuntime<CodexExecutionContext> {
+  overrides: Partial<ProviderRuntime<CodexExecutionPlan>> = {},
+): ProviderRuntime<CodexExecutionPlan> {
   return {
     signal: new AbortController().signal,
     time: {
@@ -60,13 +60,13 @@ function createRuntime(
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
-    acquireServer: async () => {
+    acquirePreparedServer: async () => {
       throw new Error('not used in session-continuity tests');
     },
-    storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionContext>['storage'],
+    storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionPlan>['storage'],
     continuityBridge,
     kbRoot: '/mock/kb',
-    providerContext: TEST_CODEX_CONTEXT,
+    executionPlan: TEST_CODEX_PLAN,
     ...overrides,
   };
 }
@@ -154,12 +154,12 @@ function captureThrownError(invoke: () => void): Error {
 describe('sessionContinuity', () => {
   it('does not emit an opening continuity snapshot when no live delta occurs', async () => {
     const downstreamTerminal = terminalEvent('resumable');
-    const provider: Provider<CodexExecutionContext> = async function* openingResumableProvider() {
+    const provider: Provider<CodexExecutionPlan> = async function* openingResumableProvider() {
       yield downstreamTerminal;
     };
 
     const events = await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -176,12 +176,12 @@ describe('sessionContinuity', () => {
   });
 
   it('does not emit opening continuity for non-resumable persisted state without a live delta', async () => {
-    const provider: Provider<CodexExecutionContext> = async function* openingNonResumableProvider() {
+    const provider: Provider<CodexExecutionPlan> = async function* openingNonResumableProvider() {
       yield terminalEvent('non-resumable');
     };
 
     const events = await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -200,7 +200,7 @@ describe('sessionContinuity', () => {
     const unavailable = new Error('session missing');
     let invocations = 0;
     const downstreamReachedTerminal = false;
-    const provider: Provider<CodexExecutionContext> = async function* unavailableProvider() {
+    const provider: Provider<CodexExecutionPlan> = async function* unavailableProvider() {
       invocations += 1;
       if (downstreamReachedTerminal) {
         yield terminalEvent('unexpected');
@@ -209,7 +209,7 @@ describe('sessionContinuity', () => {
     };
 
     const events = await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -247,12 +247,12 @@ describe('sessionContinuity', () => {
 
   it('passes downstream terminals through unmodified when no final continuity delta exists', async () => {
     const downstreamTerminal = terminalEvent('pass-through');
-    const provider: Provider<CodexExecutionContext> = async function* passthroughProvider() {
+    const provider: Provider<CodexExecutionPlan> = async function* passthroughProvider() {
       yield downstreamTerminal;
     };
 
     const events = await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -280,9 +280,9 @@ describe('sessionContinuity', () => {
         baseTransportClosedCalls += 1;
       },
     });
-    let bridgeInsideProvider: ProviderRuntime<CodexExecutionContext>['continuityBridge'] | null = null;
+    let bridgeInsideProvider: ProviderRuntime<CodexExecutionPlan>['continuityBridge'] | null = null;
     const downstreamTerminal = terminalEvent('checkpointed');
-    const provider: Provider<CodexExecutionContext> = async function* checkpointProvider(_request, runtime) {
+    const provider: Provider<CodexExecutionPlan> = async function* checkpointProvider(_request, runtime) {
       bridgeInsideProvider = runtime.continuityBridge;
       runtime.continuityBridge.checkpoint({
         conversationRef: 'live-1',
@@ -293,7 +293,7 @@ describe('sessionContinuity', () => {
     };
 
     const events = await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -322,7 +322,7 @@ describe('sessionContinuity', () => {
 
   it('translates transport-closed state into a final continuity body here before the downstream terminal', async () => {
     const downstreamTerminal = terminalEvent('closed');
-    const provider: Provider<CodexExecutionContext> = async function* transportClosedProvider(_request, runtime) {
+    const provider: Provider<CodexExecutionPlan> = async function* transportClosedProvider(_request, runtime) {
       runtime.continuityBridge.transportClosed({
         kind: 'transport_closed',
         error: new Error('socket closed'),
@@ -331,7 +331,7 @@ describe('sessionContinuity', () => {
     };
 
     const events = await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -360,14 +360,14 @@ describe('sessionContinuity', () => {
   });
 
   it('treats post-deactivation bridge calls as silent no-ops in production', async () => {
-    let capturedBridge: ProviderRuntime<CodexExecutionContext>['continuityBridge'] | null = null;
-    const provider: Provider<CodexExecutionContext> = async function* postDeactivationProdProvider(_request, runtime) {
+    let capturedBridge: ProviderRuntime<CodexExecutionPlan>['continuityBridge'] | null = null;
+    const provider: Provider<CodexExecutionPlan> = async function* postDeactivationProdProvider(_request, runtime) {
       capturedBridge = runtime.continuityBridge;
       yield terminalEvent('prod');
     };
 
     await collect(
-      sessionContinuity<TestState, CodexExecutionContext>(
+      sessionContinuity<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {
@@ -392,17 +392,14 @@ describe('sessionContinuity', () => {
     const { sessionContinuity: sessionContinuityWithAssertions } =
       await import('#src/providers/middleware/session-continuity.js');
 
-    let capturedBridge: ProviderRuntime<CodexExecutionContext>['continuityBridge'] | null = null;
-    const provider: Provider<CodexExecutionContext> = async function* postDeactivationAssertProvider(
-      _request,
-      runtime,
-    ) {
+    let capturedBridge: ProviderRuntime<CodexExecutionPlan>['continuityBridge'] | null = null;
+    const provider: Provider<CodexExecutionPlan> = async function* postDeactivationAssertProvider(_request, runtime) {
       capturedBridge = runtime.continuityBridge;
       yield terminalEvent('assert');
     };
 
     await collect(
-      sessionContinuityWithAssertions<TestState, CodexExecutionContext>(
+      sessionContinuityWithAssertions<TestState, CodexExecutionPlan>(
         TEST_PROVIDER_NAME,
         makeContract({
           opening: {

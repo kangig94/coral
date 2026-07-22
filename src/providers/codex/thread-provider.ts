@@ -6,7 +6,6 @@ import type { AppServerContract } from '../app-server.js';
 import {
   applyCodexContinuityUpdate,
   applyCodexTransportClosed,
-  buildCodexProviderServerSpec,
   isCodexSessionUnavailable,
   readCodexPersistedContinuity,
   snapshotCodexPersistedContinuity,
@@ -14,7 +13,7 @@ import {
   type CodexPersistedContinuity,
 } from './request-mapping.js';
 import { codexTurnKernel, mapCodexInterrupt } from './thread-kernel.js';
-import type { CodexExecutionContext } from './execution-context.js';
+import type { CodexExecutionPlan } from './execution-plan.js';
 
 function readOpeningContinuity(
   persistedContinuity: CodexPersistedContinuity | undefined,
@@ -48,12 +47,9 @@ const codexThreadContinuity: SessionContinuityContract<CodexPersistedContinuity>
 
 const codexAppServerContract = {
   name: 'codex',
-  buildServerSpec(request, persistedContinuity, _ports, providerContext) {
-    return { ...buildCodexProviderServerSpec(request, persistedContinuity), env: { ...providerContext.appServerEnv } };
-  },
   interrupt: mapCodexInterrupt,
   subscriptionPhase: 'afterInitialize',
-} satisfies AppServerContract<CodexExecutionContext>;
+} satisfies AppServerContract<CodexExecutionPlan>;
 
 export const codexThreadProvider = compose(
   sessionContinuity('codex', codexThreadContinuity),

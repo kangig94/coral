@@ -4,6 +4,7 @@ import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ExecResult, IdPort, Runtime } from '../runtime/ports.js';
 import type { JsonValue } from '../infra/json-value.js';
+import type { ProviderExecutionPlan } from './execution-plan.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
@@ -82,7 +83,7 @@ export interface ProviderServerSpec {
   args: string[];
   cwd: string;
   env?: Record<string, string>;
-  shared?: boolean;
+  leaseMode: 'shared' | 'job-exclusive';
   initializeRequest?: {
     method: string;
     params: Record<string, unknown>;
@@ -97,6 +98,13 @@ export interface ProviderServerSpec {
     transportMode?: string;
   };
 }
+
+/** One concrete process launch derived from a stable host specification. */
+export type ProviderServerLaunch = Readonly<{
+  host: ProviderServerSpec;
+  /** Additions applied to the stable host environment for this concrete job. */
+  turnEnv: Readonly<Record<string, string>>;
+}>;
 
 export interface ProviderServerLease {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
@@ -114,16 +122,18 @@ export type ProviderCurationRequest = {
   readonly signal?: AbortSignal;
 };
 
-export type ProviderCurationCompleteRuntime = {
+export type ProviderCurationPreparationRuntime = {
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
   readonly baseEnv: Readonly<Record<string, string>>;
   readonly platform: string;
-  readonly acquireServer: (
-    spec: ProviderServerSpec,
-    options?: { signal?: AbortSignal },
-  ) => Promise<ProviderServerLease>;
 };
+
+export type ProviderPreparedCuration<Plan extends ProviderExecutionPlan> = Readonly<{
+  hostPlan: Plan['host'];
+  turnEnv: Readonly<Record<string, string>>;
+  complete(runtime: { readonly acquirePreparedServer: () => Promise<ProviderServerLease> }): Promise<string>;
+}>;
 
 export type ProviderCurationUsageRuntime = {
   readonly storage: Pick<StoragePort, 'readFileSync'>;
@@ -131,11 +141,11 @@ export type ProviderCurationUsageRuntime = {
 };
 
 /** Provider-owned daemon-internal assistant work exposed only through a bound provider. */
-export interface ProviderCurationCapability<Source extends ProviderSource = ProviderSource> {
-  complete(
+export interface ProviderCurationCapability<Plan extends ProviderExecutionPlan, Source extends ProviderSource> {
+  prepare(
     request: ProviderCurationRequest,
-    runtime: ProviderCurationCompleteRuntime & { readonly source: Source },
-  ): Promise<string>;
+    runtime: ProviderCurationPreparationRuntime & { readonly source: Source },
+  ): ProviderPreparedCuration<Plan>;
   isUsageBudgetExhausted(runtime: ProviderCurationUsageRuntime & { readonly source: Source }): boolean;
 }
 
@@ -346,14 +356,14 @@ export interface ProviderEquippedToolSummary {
   readonly guidance?: readonly string[];
 }
 
-export interface ProviderRuntime<Context = never> {
+export interface ProviderRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> {
   signal: AbortSignal;
   runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
   storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync' | 'readdirSync'>;
   env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
-  acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
+  acquirePreparedServer: () => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge: ProviderContinuityBridge;
   /**
@@ -369,25 +379,22 @@ export interface ProviderRuntime<Context = never> {
   projectSource?: string;
   /** Installed /equip tools that should be advertised in provider system prompts. */
   equippedTools?: readonly ProviderEquippedToolSummary[];
-  /** Provider-private prepared state. Generic execution code never constructs or inspects this value. */
-  providerContext: Context;
+  /** Provider-private lifetime-scoped plan. Generic execution code never inspects its payloads. */
+  executionPlan: Plan;
 }
 
-export type Provider<Context = never> = (
+export type Provider<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> = (
   request: ProviderRequest,
-  runtime: ProviderRuntime<Context>,
+  runtime: ProviderRuntime<Plan>,
 ) => AsyncIterable<ProviderEventBody>;
-export type ProviderMiddleware<Context = never> = (next: Provider<Context>) => Provider<Context>;
+export type ProviderMiddleware<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> = (
+  next: Provider<Plan>,
+) => Provider<Plan>;
 
-export interface ProviderAppServerContract<Context = never> {
+export interface ProviderAppServerCapability<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> {
   readonly name: string;
   readonly subscriptionPhase: AppServerSubscriptionPhase;
-  buildServerSpec(
-    request: ProviderRequest,
-    persistedContinuity: ProviderContinuityBlob | undefined,
-    ports: { storage: Pick<StoragePort, 'existsSync'> },
-    providerContext: Context,
-  ): ProviderServerSpec;
+  compileStableHost(host: Plan['host']): ProviderServerSpec;
   interrupt?(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
@@ -492,41 +499,47 @@ export type ProviderArtifactCapability<Source extends ProviderSource = ProviderS
   | ProviderManagedArtifactCapability<Source>
   | ProviderNoArtifactCapability;
 
-export interface ProviderImplementation<Context, Source extends ProviderSource = ProviderSource> {
+export interface ProviderImplementation<
+  Plan extends ProviderExecutionPlan,
+  Source extends ProviderSource = ProviderSource,
+> {
   readonly name: string;
-  readonly run: Provider<Context>;
-  readonly prepareExecutionContext: (input: {
+  readonly run: Provider<Plan>;
+  readonly prepareExecutionPlan: (input: {
     source: Source;
     request: ProviderRequest;
+    persistedContinuity?: ProviderContinuityBlob;
     baseEnv: Readonly<Record<string, string>>;
     protectedEnv?: Readonly<Record<string, string>>;
     platform: string;
+    storage: Pick<StoragePort, 'existsSync'>;
   }) => {
-    readonly context: Context;
+    readonly plan: Plan;
+    readonly appServerTurnEnv?: Readonly<Record<string, string>>;
     prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
   };
   readonly preflight?: (input: ProviderPreflightInput<Source>) => Promise<void>;
-  readonly appServer?: ProviderAppServerContract<Context>;
+  readonly appServer?: ProviderAppServerCapability<Plan>;
   readonly recovery?: ProviderRecoveryContract<Source>;
-  readonly curation?: ProviderCurationCapability<Source>;
+  readonly curation?: ProviderCurationCapability<Plan, Source>;
 }
 
-export function compose<Context>(
-  middleware: readonly ProviderMiddleware<Context>[],
-  provider: Provider<Context>,
-): Provider<Context>;
-export function compose<Context>(
-  ...parts: readonly [...ProviderMiddleware<Context>[], Provider<Context>]
-): Provider<Context>;
-export function compose<Context>(
+export function compose<Plan extends ProviderExecutionPlan>(
+  middleware: readonly ProviderMiddleware<Plan>[],
+  provider: Provider<Plan>,
+): Provider<Plan>;
+export function compose<Plan extends ProviderExecutionPlan>(
+  ...parts: readonly [...ProviderMiddleware<Plan>[], Provider<Plan>]
+): Provider<Plan>;
+export function compose<Plan extends ProviderExecutionPlan>(
   ...parts:
-    | readonly [readonly ProviderMiddleware<Context>[], Provider<Context>]
-    | readonly [...ProviderMiddleware<Context>[], Provider<Context>]
-): Provider<Context> {
+    | readonly [readonly ProviderMiddleware<Plan>[], Provider<Plan>]
+    | readonly [...ProviderMiddleware<Plan>[], Provider<Plan>]
+): Provider<Plan> {
   const [middleware, provider] =
     parts.length === 2 && Array.isArray(parts[0])
       ? [parts[0], parts[1]]
-      : [parts.slice(0, -1) as readonly ProviderMiddleware<Context>[], parts[parts.length - 1] as Provider<Context>];
+      : [parts.slice(0, -1) as readonly ProviderMiddleware<Plan>[], parts[parts.length - 1] as Provider<Plan>];
 
   const composed = middleware.reduceRight((next, layer) => layer(next), provider);
 

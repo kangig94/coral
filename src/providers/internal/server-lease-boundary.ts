@@ -1,5 +1,5 @@
-import type { ProviderServerLease, ProviderServerSpec } from '../contract.js';
-import { snapshotBoundaryData, snapshotPlainReceiver, snapshotProviderResult } from './snapshot.js';
+import type { ProviderServerLease } from '../contract.js';
+import { snapshotBoundaryData, snapshotProviderResult } from './snapshot.js';
 
 function dataMember(receiver: object, key: string, label: string): unknown {
   let cursor: object | null = receiver;
@@ -61,18 +61,13 @@ export function wrapServerLease(lease: ProviderServerLease, label: string): Prov
   return wrapped;
 }
 
-export function wrapAcquireServer(
+export function wrapAcquirePreparedServer(
   receiver: object,
-  acquireServer: (spec: ProviderServerSpec, options?: { signal?: AbortSignal }) => Promise<ProviderServerLease>,
+  acquirePreparedServer: () => Promise<ProviderServerLease>,
   label: string,
-): (spec: ProviderServerSpec, options?: { signal?: AbortSignal }) => Promise<ProviderServerLease> {
-  return async (spec, options) => {
-    const canonicalSpec = snapshotBoundaryData(spec, `${label} specification`);
-    const canonicalOptions =
-      options === undefined
-        ? undefined
-        : (snapshotPlainReceiver(options, `${label} options`, new Set(['signal'])) as typeof options);
-    const lease = await acquireServer.call(receiver, canonicalSpec, canonicalOptions);
+): () => Promise<ProviderServerLease> {
+  return async () => {
+    const lease = await acquirePreparedServer.call(receiver);
     return wrapServerLease(lease, `${label} lease`);
   };
 }

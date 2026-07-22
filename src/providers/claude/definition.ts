@@ -6,11 +6,11 @@ import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { claudeArtifactCapability, locateClaudeJsonlArtifact } from './artifacts.js';
 import { claudeBindingCodec } from './binding.js';
 import {
-  buildClaudeExecutionContext,
+  buildClaudeExecutionPlan,
   buildClaudePreflightRuntime,
   type ClaudeCredentialSource,
-  type ClaudeExecutionContext,
-} from './execution-context.js';
+  type ClaudeExecutionPlan,
+} from './execution-plan.js';
 import { claudeCurationCapability } from './one-shot.js';
 import { claudeProvider } from './provider.js';
 import { claudeAppServerLifecycle, claudePreflight, claudeRecoveryLifecycle } from './provider-facets.js';
@@ -102,20 +102,19 @@ const recovery: ProviderRecoveryContract<ClaudeCredentialSource> = {
   finalizeFromArtifacts,
 };
 
-export const claudeProviderDefinition: ProviderDefinition = defineProvider<
-  ClaudeExecutionContext,
-  ClaudeCredentialSource
->({
-  name: 'claude',
-  run: claudeProvider,
-  prepareExecutionContext(input) {
-    return buildClaudeExecutionContext(input);
+export const claudeProviderDefinition: ProviderDefinition = defineProvider<ClaudeExecutionPlan, ClaudeCredentialSource>(
+  {
+    name: 'claude',
+    run: claudeProvider,
+    prepareExecutionPlan(input) {
+      return buildClaudeExecutionPlan(input);
+    },
+    preflight: (input) => claudePreflight(buildClaudePreflightRuntime(input)),
+    appServer: claudeAppServerLifecycle,
+    recovery,
+    curation: claudeCurationCapability,
   },
-  preflight: (input) => claudePreflight(buildClaudePreflightRuntime(input)),
-  appServer: claudeAppServerLifecycle,
-  recovery,
-  curation: claudeCurationCapability,
-})
+)
   .binding(claudeBindingCodec)
   .artifacts(claudeArtifactCapability)
   .build();

@@ -4,7 +4,7 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/coordinator/live/provider-server-transport.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import type { ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderServerLaunch, ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
@@ -14,12 +14,17 @@ function createProviderServerSpec(overrides: Partial<ProviderServerSpec> = {}): 
     command: 'codex',
     args: ['app-server'],
     cwd: '/tmp/sim/project',
+    leaseMode: 'job-exclusive',
     initializeRequest: {
       method: 'initialize',
       params: { clientInfo: { name: 'coral-test' } },
     },
     ...overrides,
   };
+}
+
+function createProviderServerLaunch(overrides: Partial<ProviderServerSpec> = {}): ProviderServerLaunch {
+  return { host: createProviderServerSpec(overrides), turnEnv: {} };
 }
 
 function observePromise<T>(promise: Promise<T>): { settled: boolean; value?: T; error?: unknown } {
@@ -47,7 +52,7 @@ describe('provider transport concurrency hardening', () => {
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
 
-    const observed = observePromise(hostManager.acquireServer(createProviderServerSpec()));
+    const observed = observePromise(hostManager.acquireServer(createProviderServerLaunch(), { jobId: 'job-a' }));
     await flushMicrotasks();
 
     runtime.time.tick(PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS - 1);
@@ -72,7 +77,9 @@ describe('provider transport concurrency hardening', () => {
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
 
-    const observed = observePromise(hostManager.acquireServer(createProviderServerSpec({ initializeTimeoutMs: 250 })));
+    const observed = observePromise(
+      hostManager.acquireServer(createProviderServerLaunch({ initializeTimeoutMs: 250 }), { jobId: 'job-a' }),
+    );
     await flushMicrotasks();
 
     runtime.time.tick(249);
@@ -96,7 +103,9 @@ describe('provider transport concurrency hardening', () => {
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
 
-    const observed = observePromise(hostManager.acquireServer(createProviderServerSpec({ initializeTimeoutMs: 0 })));
+    const observed = observePromise(
+      hostManager.acquireServer(createProviderServerLaunch({ initializeTimeoutMs: 0 }), { jobId: 'job-a' }),
+    );
     await flushMicrotasks();
 
     runtime.time.tick(PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS - 1);
@@ -125,10 +134,11 @@ describe('provider transport concurrency hardening', () => {
     controller.abort(reason);
 
     await expect(
-      hostManager.acquireServer(createProviderServerSpec({ initializeRequest: undefined }), {
+      hostManager.acquireServer(createProviderServerLaunch({ initializeRequest: undefined }), {
+        jobId: 'job-a',
         signal: controller.signal,
       }),
-    ).rejects.toMatchObject({ stage: 'provider codex spawn', reason });
+    ).rejects.toMatchObject({ stage: 'provider_host_acquire', reason });
     expect(runtime.spawner.spawnCalls).toHaveLength(0);
   });
 
@@ -143,7 +153,7 @@ describe('provider transport concurrency hardening', () => {
     const controller = new AbortController();
 
     const observed = observePromise(
-      hostManager.acquireServer(createProviderServerSpec(), { signal: controller.signal }),
+      hostManager.acquireServer(createProviderServerLaunch(), { jobId: 'job-a', signal: controller.signal }),
     );
     await flushMicrotasks();
 
@@ -181,10 +191,7 @@ describe('provider transport concurrency hardening', () => {
     await flushMicrotasks();
 
     expect(runtime.spawner.killCalls).toContainEqual({ pid: 20_000, signal: 'SIGTERM' });
-    expect(logError).toHaveBeenCalledWith(
-      expect.stringContaining('notification handler failed'),
-      expect.any(Error),
-    );
+    expect(logError).toHaveBeenCalledWith(expect.stringContaining('notification handler failed'), expect.any(Error));
     await expect(handle.closePromise).resolves.toBeInstanceOf(Error);
   });
 

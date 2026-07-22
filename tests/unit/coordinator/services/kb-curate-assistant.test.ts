@@ -8,7 +8,7 @@ import {
   createKbCurateUsageBudgetHandler,
 } from '#src/coordinator/services/kb-curate-assistant.js';
 import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan, type FixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE, withTestProfileLocation } from '#tests/helpers/provider-credentials.js';
 import type { ProviderBindingFailure } from '#src/providers/contracts/binding.js';
 import type { SystemProviderScope } from '#src/infra/provider-scope.js';
@@ -22,13 +22,35 @@ function claudeSystemScope(scope: SystemProviderScope = TEST_SYSTEM_PROVIDER_SCO
 function createClaudeRegistry(
   options: {
     readonly readinessFailure?: ProviderBindingFailure;
-    readonly complete?: ProviderCurationCapability<FixtureProviderSource>['complete'];
+    readonly complete?: (
+      request: Parameters<ProviderCurationCapability<FixtureExecutionPlan, FixtureProviderSource>['prepare']>[0],
+      runtime: Parameters<ProviderCurationCapability<FixtureExecutionPlan, FixtureProviderSource>['prepare']>[1],
+    ) => Promise<string>;
     readonly includeCuration?: boolean;
   } = {},
 ): ProviderRegistry {
   const registry = new ProviderRegistry();
-  const curation: ProviderCurationCapability<FixtureProviderSource> = {
-    complete: options.complete ?? (async () => 'curated'),
+  const curation: ProviderCurationCapability<FixtureExecutionPlan, FixtureProviderSource> = {
+    prepare(request, runtime) {
+      const prepared = prepareFixtureExecutionPlan({
+        source: runtime.source,
+        request: {
+          action: 'exec',
+          sessionId: 'curation-session',
+          prompt: request.prompt,
+          cwd: request.cwd,
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        baseEnv: runtime.baseEnv,
+        platform: runtime.platform,
+      });
+      return {
+        hostPlan: prepared.plan.host,
+        turnEnv: {},
+        complete: () => (options.complete ?? (async () => 'curated'))(request, runtime),
+      };
+    },
     isUsageBudgetExhausted(runtime) {
       return isClaudeCurationUsageBudgetExhausted({
         configDir: runtime.source.root,
@@ -40,7 +62,16 @@ function createClaudeRegistry(
     defineProvider({
       name: 'claude',
       run: async function* () {},
-      prepareExecutionContext: prepareFixtureExecutionContext,
+      prepareExecutionPlan: prepareFixtureExecutionPlan,
+      appServer: {
+        name: 'claude',
+        subscriptionPhase: 'beforeInitialize',
+        compileStableHost: (host) => ({ ...host.serverSpec, leaseMode: 'shared' }),
+      },
+      recovery: {
+        finalizeInterrupted: () => ({ kind: 'preserve' }),
+        finalizeFromArtifacts: async () => ({ terminal: {} as never }),
+      },
       ...(options.includeCuration === false ? {} : { curation }),
     })
       .binding(
@@ -75,7 +106,7 @@ describe('KB curate assistant provider scope', () => {
       runtime: createRealRuntime('prod'),
       providerRegistry: createClaudeRegistry({ complete: runTurn }),
       readActiveRuntime: () => ({
-        acquireServer: async () => {
+        acquireCoordinatorProviderHost: async () => {
           throw new Error('must not acquire');
         },
       }),
@@ -102,7 +133,7 @@ describe('KB curate assistant provider scope', () => {
       providerRegistry: createClaudeRegistry({ complete: runTurn }),
       readActiveRuntime: () => ({
         systemProviderScope: systemScope,
-        acquireServer: async () => {
+        acquireCoordinatorProviderHost: async () => {
           throw new Error('stubbed runner must not acquire');
         },
       }),
@@ -134,7 +165,7 @@ describe('KB curate assistant provider scope', () => {
       }),
       readActiveRuntime: () => ({
         systemProviderScope: claudeSystemScope(),
-        acquireServer: async () => {
+        acquireCoordinatorProviderHost: async () => {
           throw new Error('must not acquire');
         },
       }),
@@ -153,7 +184,7 @@ describe('KB curate assistant provider scope', () => {
       providerRegistry: createClaudeRegistry({ includeCuration: false }),
       readActiveRuntime: () => ({
         systemProviderScope: claudeSystemScope(),
-        acquireServer: async () => {
+        acquireCoordinatorProviderHost: async () => {
           throw new Error('must not acquire');
         },
       }),

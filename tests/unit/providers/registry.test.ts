@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { managed, none } from '#src/providers/capability.js';
@@ -7,25 +7,42 @@ import { bindingFailure, bindingSuccess } from '#src/providers/contracts/binding
 import type {
   ProviderArtifactCapability,
   ProviderArtifactHandleInput,
+  ProviderAppServerCapability,
   ProviderImplementation,
   ProviderRecoveryContract,
   ProviderRequest,
+  ProviderServerLaunch,
   ProviderServerLease,
 } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 
+type EmptyPlan = ProviderExecutionPlan<undefined, undefined, undefined>;
+const TEST_PREPARATION_STORAGE = { existsSync: () => false } as const;
+const TEST_APP_SERVER_LAUNCH: ProviderServerLaunch = {
+  host: { provider: 'fixture', command: 'fixture', args: [], cwd: '/tmp', leaseMode: 'job-exclusive' as const },
+  turnEnv: {},
+};
 type ProviderFacetOverrides = Partial<
-  Pick<ProviderImplementation<undefined>, 'preflight' | 'appServer' | 'recovery' | 'curation'>
+  Pick<ProviderImplementation<EmptyPlan>, 'preflight' | 'recovery' | 'curation'>
 > & {
+  readonly appServer?: Omit<ProviderAppServerCapability<EmptyPlan>, 'compileStableHost'> & {
+    readonly compileStableHost?: ProviderAppServerCapability<EmptyPlan>['compileStableHost'];
+  };
   readonly artifacts?: ProviderArtifactCapability;
+  readonly serverLaunch?: ProviderServerLaunch;
 };
 
 function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): ProviderDefinition {
   const definition = defineProvider({
     name,
-    prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+    prepareExecutionPlan: () => ({
+      plan: { host: undefined, session: undefined, turn: undefined },
+      ...(overrides.appServer ? { appServerTurnEnv: (overrides.serverLaunch ?? TEST_APP_SERVER_LAUNCH).turnEnv } : {}),
+      prepareCliRequest: (request) => request,
+    }),
     run: async function* () {
       yield {
         kind: 'terminal',
@@ -38,7 +55,15 @@ function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): Provide
       };
     },
     ...(overrides.preflight ? { preflight: overrides.preflight } : {}),
-    ...(overrides.appServer ? { appServer: overrides.appServer } : {}),
+    ...(overrides.appServer
+      ? {
+          appServer: {
+            ...overrides.appServer,
+            compileStableHost:
+              overrides.appServer.compileStableHost ?? (() => (overrides.serverLaunch ?? TEST_APP_SERVER_LAUNCH).host),
+          },
+        }
+      : {}),
     ...(overrides.recovery ? { recovery: overrides.recovery } : {}),
     ...(overrides.curation ? { curation: overrides.curation } : {}),
   })
@@ -78,7 +103,7 @@ function executionRuntime() {
     time: {},
     storage: {},
     ids: {},
-    acquireServer: async () => {
+    acquirePreparedServer: async () => {
       throw new Error('No server expected in registry boundary test.');
     },
     continuityBridge: { checkpoint() {}, transportClosed() {} },
@@ -105,7 +130,6 @@ async function invokeInterruptLeaseBoundary(
       appServer: {
         name: 'negative-lease-boundary',
         subscriptionPhase: 'afterInitialize',
-        buildServerSpec: () => ({ provider: 'negative-lease-boundary', command: 'fixture', args: [], cwd: '/tmp' }),
         interrupt: async (lease) => exercise(lease),
       },
       recovery: {
@@ -117,27 +141,109 @@ async function invokeInterruptLeaseBoundary(
   const prepared = successfulBinding(registry, 'negative-lease-boundary').prepareExecution({
     request: {} as never,
     baseEnv: {},
+    storage: TEST_PREPARATION_STORAGE,
     platform: 'linux',
   });
   await prepared.appServer?.interrupt?.(rawLease as ProviderServerLease, {});
 }
 
 describe('ProviderRegistry', () => {
+  it('uses one captured app-server compiler for normal, recovery, and curation host plans', () => {
+    type CustomPlan = ProviderExecutionPlan<Readonly<{ cwd: string; accountRoot: string }>, undefined, undefined>;
+    const compileStableHost = vi.fn((host: CustomPlan['host']): ProviderServerLaunch['host'] => ({
+      provider: 'single-host-authority',
+      command: 'fixture',
+      args: ['app-server'],
+      cwd: host.cwd,
+      env: { ACCOUNT_ROOT: host.accountRoot },
+      leaseMode: 'job-exclusive',
+    }));
+    const registry = new ProviderRegistry();
+    registry.register(
+      defineProvider<CustomPlan, { root: string; routingEnv: Readonly<Record<string, string>> }>({
+        name: 'single-host-authority',
+        prepareExecutionPlan: (input) => ({
+          plan: {
+            host: {
+              cwd: input.request.cwd,
+              accountRoot: input.source.root,
+            },
+            session: undefined,
+            turn: undefined,
+          },
+          appServerTurnEnv: input.protectedEnv ?? {},
+          prepareCliRequest: (request) => request,
+        }),
+        run: async function* () {},
+        appServer: {
+          name: 'single-host-authority',
+          subscriptionPhase: 'afterInitialize',
+          compileStableHost,
+        },
+        recovery: {
+          finalizeInterrupted: () => ({ kind: 'preserve' }),
+          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
+        },
+        curation: {
+          prepare: (request, runtime) => ({
+            hostPlan: { cwd: request.cwd, accountRoot: runtime.source.root },
+            turnEnv: {},
+            complete: async () => 'curated',
+          }),
+          isUsageBudgetExhausted: () => false,
+        },
+      })
+        .binding(fixtureProviderBindingCodec('single-host-authority'))
+        .artifacts(none('test'))
+        .build(),
+    );
+    const bound = successfulBinding(registry, 'single-host-authority');
+    const input = {
+      request: {
+        action: 'exec' as const,
+        sessionId: 'session-1',
+        prompt: 'test',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    };
+
+    const normal = bound.prepareExecution({
+      ...input,
+      protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-only' },
+    });
+    const recovery = bound.appServer?.prepareStableHost(input);
+    const curation = bound.curation?.prepare({ cwd: '/workspace', prompt: 'curate' }, {
+      storage: TEST_PREPARATION_STORAGE,
+      ids: {},
+    } as never);
+
+    expect(normal.appServer?.launch.host).toEqual(recovery?.host);
+    expect(curation?.launch.host).toEqual(recovery?.host);
+    expect(normal.appServer?.launch.turnEnv).toEqual({ CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-only' });
+    expect(curation?.launch.turnEnv).toEqual({});
+    expect(compileStableHost).toHaveBeenCalledTimes(3);
+    expect(compileStableHost.mock.calls[0]?.[0]).toEqual(compileStableHost.mock.calls[1]?.[0]);
+    expect(compileStableHost.mock.calls[1]?.[0]).toEqual(compileStableHost.mock.calls[2]?.[0]);
+  });
+
   it('rejects an app-server provider without provider-owned recovery interpretation', () => {
     expect(() =>
       defineProvider({
         name: 'uninterpreted',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {},
         appServer: {
           name: 'uninterpreted',
           subscriptionPhase: 'afterInitialize',
-          buildServerSpec: () => ({
-            provider: 'uninterpreted',
-            command: 'uninterpreted',
-            args: [],
-            cwd: '/tmp',
-          }),
+          compileStableHost: () => TEST_APP_SERVER_LAUNCH.host,
         },
       }),
     ).toThrow("App-server provider 'uninterpreted' must define recovery interpretation.");
@@ -158,7 +264,12 @@ describe('ProviderRegistry', () => {
     registry.register(makeSpec('transparent'));
     const definition = registry.get('transparent');
     const bound = successfulBinding(registry, 'transparent');
-    const prepared = bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
+    const prepared = bound.prepareExecution({
+      request: {} as never,
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    });
 
     const events = [];
     for await (const event of prepared.execute(executionRuntime() as never)) events.push(event);
@@ -202,17 +313,36 @@ describe('ProviderRegistry', () => {
     expect(definition).not.toHaveProperty('curation');
   });
 
+  it('fails closed when curation has no app-server capability to compile its host plan', () => {
+    const registry = new ProviderRegistry();
+    expect(() =>
+      registry.register(
+        makeSpec('orphan-curation', {
+          curation: {
+            prepare: () => ({ hostPlan: undefined, turnEnv: {}, complete: async () => 'unused' }),
+            isUsageBudgetExhausted: () => false,
+          },
+        }),
+      ),
+    ).toThrow("Provider 'orphan-curation' curation requires an app-server capability.");
+  });
+
   it('closes the verified credential source inside bound curation', async () => {
     let observedSource: unknown;
     let observedRequest: unknown;
     let observedBaseEnv: unknown;
     const curation = {
       state: { result: 'curated' },
-      async complete(request: unknown, runtime: { source: unknown; baseEnv: unknown }) {
+      prepare(request: unknown, runtime: { source: unknown; baseEnv: unknown }) {
         observedRequest = request;
         observedBaseEnv = runtime.baseEnv;
         observedSource = runtime.source;
-        return this.state.result;
+        const result = this.state.result;
+        return {
+          hostPlan: undefined,
+          turnEnv: {},
+          complete: async () => result,
+        };
       },
       isUsageBudgetExhausted(runtime: { source: unknown }) {
         observedSource = runtime.source;
@@ -220,13 +350,23 @@ describe('ProviderRegistry', () => {
       },
     };
     const registry = new ProviderRegistry();
-    registry.register(makeSpec('claude', { curation }));
+    registry.register(
+      makeSpec('claude', {
+        curation,
+        appServer: { name: 'claude', subscriptionPhase: 'beforeInitialize' },
+        recovery: {
+          finalizeInterrupted: () => ({ kind: 'preserve' }),
+          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
+        },
+      }),
+    );
     curation.state.result = 'retained-mutation';
 
     const bound = successfulBinding(registry, 'claude');
     const request = { cwd: '/kb', prompt: 'curate' };
     const baseEnv = { PATH: '/bin' };
-    await expect(bound.curation?.complete(request, { baseEnv } as never)).resolves.toBe('curated');
+    const prepared = bound.curation?.prepare(request, { baseEnv } as never);
+    await expect(prepared?.complete({ acquirePreparedServer: async () => ({}) as never })).resolves.toBe('curated');
 
     expect(observedSource).toEqual({
       root: '/claude',
@@ -246,7 +386,6 @@ describe('ProviderRegistry', () => {
     const appServer = {
       name: 'claude',
       subscriptionPhase: 'beforeInitialize' as const,
-      buildServerSpec: () => ({ provider: 'claude', command: 'claude', args: [], cwd: process.cwd() }),
       interrupt: async () => {},
     };
     const recovery = {
@@ -271,7 +410,12 @@ describe('ProviderRegistry', () => {
 
     registry.register(spec);
     const bound = successfulBinding(registry, 'claude');
-    const prepared = bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
+    const prepared = bound.prepareExecution({
+      request: {} as never,
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    });
 
     expect(prepared.appServer).toMatchObject({
       name: 'claude',
@@ -356,7 +500,10 @@ describe('ProviderRegistry', () => {
     };
     const definition = defineProvider({
       name: 'normalized-binding',
-      prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+      prepareExecutionPlan: () => ({
+        plan: { host: undefined, session: undefined, turn: undefined },
+        prepareCliRequest: (request) => request,
+      }),
       run: async function* () {},
     })
       .binding(codec)
@@ -398,7 +545,10 @@ describe('ProviderRegistry', () => {
     rejectingRegistry.register(
       defineProvider({
         name: 'rejected-binding',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {},
       })
         .binding({
@@ -500,9 +650,12 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'class-codec',
-        prepareExecutionContext: (input) => {
+        prepareExecutionPlan: (input) => {
           preparedSource = input.source;
-          return { context: undefined, prepareCliRequest: (request) => request };
+          return {
+            plan: { host: undefined, session: undefined, turn: undefined },
+            prepareCliRequest: (request) => request,
+          };
         },
         run: async function* () {},
       })
@@ -600,7 +753,12 @@ describe('ProviderRegistry', () => {
         value: { ready: true, use: 'resume' },
       });
       expect(bound.compareIdentity(envelope)).toEqual({ ok: true, value: true });
-      bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
+      bound.prepareExecution({
+        request: {} as never,
+        baseEnv: {},
+        storage: TEST_PREPARATION_STORAGE,
+        platform: 'linux',
+      });
       expect(preparedSource).toEqual(expect.objectContaining({ provider: 'claude', configDir: '/accounts/captured' }));
     }
   });
@@ -619,9 +777,12 @@ describe('ProviderRegistry', () => {
     let preparedSource: unknown;
     const definition = defineProvider({
       name: 'sealed-source',
-      prepareExecutionContext: (input) => {
+      prepareExecutionPlan: (input) => {
         preparedSource = input.source;
-        return { context: undefined, prepareCliRequest: (request) => request };
+        return {
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        };
       },
       run: async function* () {},
     })
@@ -633,7 +794,12 @@ describe('ProviderRegistry', () => {
     const bound = successfulBinding(registry, 'sealed-source');
 
     source.home = '/mutated-source';
-    bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
+    bound.prepareExecution({
+      request: {} as never,
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    });
     expect(preparedSource).toEqual({ version: 1, provider: 'codex', kind: 'home', home: '/sealed-source' });
     expect(Object.isFrozen(preparedSource)).toBe(true);
     expect(Reflect.set(preparedSource as object, 'home', '/caller-mutation')).toBe(false);
@@ -648,10 +814,6 @@ describe('ProviderRegistry', () => {
     const appServer = {
       name: 'sealed-capability',
       subscriptionPhase: 'beforeInitialize' as const,
-      state: { command: 'original' },
-      buildServerSpec() {
-        return { provider: 'sealed-capability', command: this.state.command, args: [], cwd: '/tmp' };
-      },
     };
     const recovery = {
       state: { content: 'original' },
@@ -673,16 +835,19 @@ describe('ProviderRegistry', () => {
     const registry = new ProviderRegistry();
     registry.register(makeSpec('sealed-capability', { appServer, recovery }));
 
-    appServer.state.command = 'mutated';
     recovery.state.content = 'mutated';
     expect(Reflect.set(appServer, 'name', 'mutated')).toBe(true);
-    expect(Reflect.set(appServer, 'buildServerSpec', () => ({ command: 'mutated' }))).toBe(true);
     expect(Reflect.set(recovery, 'finalizeInterrupted', () => ({ kind: 'clear_non_resumable' }))).toBe(true);
 
     const bound = successfulBinding(registry, 'sealed-capability');
-    const prepared = bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
+    const prepared = bound.prepareExecution({
+      request: {} as never,
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    });
     expect(prepared.appServer?.name).toBe('sealed-capability');
-    expect(prepared.appServer?.buildServerSpec(undefined, { storage: {} as never }).command).toBe('original');
+    expect(prepared.appServer?.launch.host.command).toBe('fixture');
     expect(bound.recovery?.finalizeInterrupted({ resumable: true }, undefined, {})).toEqual({ kind: 'preserve' });
     expect((await bound.recovery?.finalizeFromArtifacts({} as never))?.terminal.terminal.content).toBe('original');
   });
@@ -785,7 +950,10 @@ describe('ProviderRegistry', () => {
       registry.register(
         defineProvider({
           name,
-          prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+          prepareExecutionPlan: () => ({
+            plan: { host: undefined, session: undefined, turn: undefined },
+            prepareCliRequest: (request) => request,
+          }),
           run: async function* () {},
         })
           .binding({ ...base, credentialSource: () => source as never })
@@ -807,21 +975,26 @@ describe('ProviderRegistry', () => {
     }
     const implementation = Object.assign(new PrivateReceiver(), {
       name: 'class-implementation',
-      prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request: never) => request }),
+      prepareExecutionPlan: () => ({
+        plan: { host: undefined, session: undefined, turn: undefined },
+        prepareCliRequest: (request: never) => request,
+      }),
       run: async function* () {},
     });
     expect(() => defineProvider(implementation as never)).toThrow('Provider implementation must be a plain object');
 
     const baseImplementation = (name: string, facets: object = {}) => ({
       name,
-      prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request: never) => request }),
+      prepareExecutionPlan: () => ({
+        plan: { host: undefined, session: undefined, turn: undefined },
+        prepareCliRequest: (request: never) => request,
+      }),
       run: async function* () {},
       ...facets,
     });
     const classAppServer = Object.assign(new PrivateReceiver(), {
       name: 'class-app-server',
       subscriptionPhase: 'beforeInitialize' as const,
-      buildServerSpec: () => ({ provider: 'class-app-server', command: 'fixture', args: [], cwd: '/tmp' }),
     });
     expect(() =>
       defineProvider(baseImplementation('class-app-server', { appServer: classAppServer }) as never),
@@ -870,9 +1043,9 @@ describe('ProviderRegistry', () => {
     preparedRegistry.register(
       defineProvider({
         name: 'class-prepared-rejected',
-        prepareExecutionContext: () =>
+        prepareExecutionPlan: () =>
           Object.assign(new PrivateReceiver(), {
-            context: undefined,
+            plan: { host: undefined, session: undefined, turn: undefined },
             prepareCliRequest: (request: never) => request,
           }),
         run: async function* () {},
@@ -885,6 +1058,7 @@ describe('ProviderRegistry', () => {
       successfulBinding(preparedRegistry, 'class-prepared-rejected').prepareExecution({
         request: {} as never,
         baseEnv: {},
+        storage: TEST_PREPARATION_STORAGE,
         platform: 'linux',
       }),
     ).toThrow('Provider prepared execution must be a plain object');
@@ -904,7 +1078,10 @@ describe('ProviderRegistry', () => {
     };
     const baseImplementation = (name: string, facets: object = {}) => ({
       name,
-      prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request: never) => request }),
+      prepareExecutionPlan: () => ({
+        plan: { host: undefined, session: undefined, turn: undefined },
+        prepareCliRequest: (request: never) => request,
+      }),
       run: async function* () {},
       ...facets,
     });
@@ -914,7 +1091,10 @@ describe('ProviderRegistry', () => {
         accessor(
           {
             name: 'getter-implementation',
-            prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request: never) => request }),
+            prepareExecutionPlan: () => ({
+              plan: { host: undefined, session: undefined, turn: undefined },
+              prepareCliRequest: (request: never) => request,
+            }),
           },
           'run',
           async function* () {},
@@ -926,8 +1106,8 @@ describe('ProviderRegistry', () => {
         baseImplementation('getter-app-server', {
           appServer: accessor(
             { name: 'getter-app-server', subscriptionPhase: 'beforeInitialize' as const },
-            'buildServerSpec',
-            () => ({ provider: 'getter-app-server', command: 'fixture', args: [], cwd: '/tmp' }),
+            'interrupt',
+            async () => {},
           ),
         }) as never,
       ),
@@ -972,7 +1152,7 @@ describe('ProviderRegistry', () => {
     preparedRegistry.register(
       defineProvider({
         name: 'getter-prepared',
-        prepareExecutionContext: () =>
+        prepareExecutionPlan: () =>
           accessor({ context: undefined }, 'prepareCliRequest', (request: never) => request) as never,
         run: async function* () {},
       })
@@ -984,6 +1164,7 @@ describe('ProviderRegistry', () => {
       successfulBinding(preparedRegistry, 'getter-prepared').prepareExecution({
         request: {} as never,
         baseEnv: {},
+        storage: TEST_PREPARATION_STORAGE,
         platform: 'linux',
       }),
     ).toThrow('must be a data property');
@@ -997,7 +1178,10 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'sealed-preflight',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {},
         async preflight(input) {
           observedBaseEnv = input.baseEnv;
@@ -1028,14 +1212,14 @@ describe('ProviderRegistry', () => {
     const implementation = {
       name: 'sealed-implementation',
       state: { marker: 'captured' },
-      prepareExecutionContext() {
+      prepareExecutionPlan() {
         return {
-          context: { marker: this.state.marker },
+          plan: { host: { marker: this.state.marker }, session: undefined, turn: undefined },
           prepareCliRequest: (request: never) => request,
         };
       },
-      async *run(_request: unknown, runtime: { providerContext: unknown }) {
-        executedContext = runtime.providerContext;
+      async *run(_request: unknown, runtime: { executionPlan: unknown }) {
+        executedContext = runtime.executionPlan;
       },
     };
     const definition = defineProvider(implementation as never)
@@ -1043,21 +1227,25 @@ describe('ProviderRegistry', () => {
       .artifacts(none('no artifacts'))
       .build();
     implementation.state.marker = 'retained-mutation';
-    implementation.prepareExecutionContext = function () {
-      return { context: { marker: 'method-mutation' }, prepareCliRequest: (request: never) => request };
+    implementation.prepareExecutionPlan = function () {
+      return {
+        plan: { host: { marker: 'method-mutation' }, session: undefined, turn: undefined },
+        prepareCliRequest: (request: never) => request,
+      };
     };
     const registry = new ProviderRegistry();
     registry.register(definition);
     const prepared = successfulBinding(registry, 'sealed-implementation').prepareExecution({
       request: {} as never,
       baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
     for await (const _event of prepared.execute(executionRuntime() as never)) {
       // Empty provider stream.
     }
 
-    expect(executedContext).toEqual({ marker: 'captured' });
+    expect(executedContext).toEqual({ host: { marker: 'captured' }, session: undefined, turn: undefined });
     expect(Object.isFrozen(executedContext)).toBe(true);
   });
 
@@ -1096,7 +1284,10 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'codec-boundary',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {},
       })
         .binding(codec)
@@ -1152,16 +1343,12 @@ describe('ProviderRegistry', () => {
   });
 
   it('snapshots app-server continuity and notifications before asynchronous provider observation', async () => {
-    let observedBuildContinuity: unknown;
     let observedInterruptContinuity: unknown;
     let observedNotification: unknown;
     const appServer = {
       name: 'app-server-boundary',
       subscriptionPhase: 'beforeInitialize' as const,
-      buildServerSpec(_request: unknown, continuity: unknown) {
-        observedBuildContinuity = continuity;
-        return { provider: 'app-server-boundary', command: 'fixture', args: [], cwd: '/tmp' };
-      },
+      compileStableHost: () => TEST_APP_SERVER_LAUNCH.host,
       async interrupt(_lease: unknown, continuity: unknown) {
         await Promise.resolve();
         observedInterruptContinuity = continuity;
@@ -1174,7 +1361,11 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'app-server-boundary',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          appServerTurnEnv: TEST_APP_SERVER_LAUNCH.turnEnv,
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {},
         appServer,
         recovery: {
@@ -1195,11 +1386,9 @@ describe('ProviderRegistry', () => {
     const prepared = successfulBinding(registry, 'app-server-boundary').prepareExecution({
       request: {} as never,
       baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
-    const buildContinuity = { nested: { marker: 'captured' } };
-    prepared.appServer?.buildServerSpec(buildContinuity, { storage: {} as never });
-    buildContinuity.nested.marker = 'caller-mutated';
     const notification = { method: 'fixture/event', params: { nested: { marker: 'captured' } } };
     prepared.appServer?.onNotification?.(notification);
     notification.params.nested.marker = 'caller-mutated';
@@ -1208,22 +1397,20 @@ describe('ProviderRegistry', () => {
     interruptContinuity.nested.marker = 'caller-mutated';
     await interruptPromise;
 
-    expect(observedBuildContinuity).toEqual({ nested: { marker: 'captured' } });
     expect(observedInterruptContinuity).toEqual({ nested: { marker: 'captured' } });
     expect(observedNotification).toEqual({
       method: 'fixture/event',
       params: { nested: { marker: 'captured' } },
     });
-    expect(Object.isFrozen(observedBuildContinuity)).toBe(true);
     expect(Object.isFrozen(observedInterruptContinuity)).toBe(true);
     expect(Object.isFrozen(observedNotification)).toBe(true);
     expect(Object.isFrozen((observedNotification as { params: object }).params)).toBe(true);
   });
 
-  it('seals prepared execution receiver data, context, and CLI requests against retained mutation', async () => {
+  it('seals prepared execution receiver data, plan, and CLI requests against retained mutation', async () => {
     let returnedPrepared:
       | {
-          context: { route: string };
+          plan: { host: { route: string }; session: undefined; turn: undefined };
           prepareCliRequest(request: {
             command: string;
             args: string[];
@@ -1241,7 +1428,7 @@ describe('ProviderRegistry', () => {
     let executedContext: unknown;
 
     const makePreparedExecution = () => ({
-      context: { route: 'captured' },
+      plan: { host: { route: 'captured' }, session: undefined, turn: undefined },
       prepareCliRequest(request: {
         command: string;
         args: string[];
@@ -1251,9 +1438,9 @@ describe('ProviderRegistry', () => {
         observedCliInput = request;
         returnedCliRequest = {
           ...request,
-          args: [...request.args, this.context.route],
-          extraEnv: { ...(request.extraEnv ?? {}), PREPARED: this.context.route },
-          exactEnv: { ...(request.exactEnv ?? {}), ROUTE: this.context.route },
+          args: [...request.args, this.plan.host.route],
+          extraEnv: { ...(request.extraEnv ?? {}), PREPARED: this.plan.host.route },
+          exactEnv: { ...(request.exactEnv ?? {}), ROUTE: this.plan.host.route },
         };
         return returnedCliRequest;
       },
@@ -1263,12 +1450,12 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'sealed-prepared',
-        prepareExecutionContext: () => {
+        prepareExecutionPlan: () => {
           returnedPrepared = makePreparedExecution();
           return returnedPrepared;
         },
         run: async function* (_request, runtime) {
-          executedContext = runtime.providerContext;
+          executedContext = runtime.executionPlan;
         },
       })
         .binding(fixtureProviderBindingCodec('sealed-prepared'))
@@ -1278,12 +1465,13 @@ describe('ProviderRegistry', () => {
     const prepared = successfulBinding(registry, 'sealed-prepared').prepareExecution({
       request: {} as never,
       baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
     returnedPrepared!.prepareCliRequest = function (request) {
       return { ...request, args: ['prototype-drift'], exactEnv: { ROUTE: 'prototype-drift' } };
     };
-    returnedPrepared!.context.route = 'retained-mutation';
+    returnedPrepared!.plan.host.route = 'retained-mutation';
     const input = {
       command: 'fixture',
       args: ['captured-arg'],
@@ -1314,8 +1502,8 @@ describe('ProviderRegistry', () => {
     expect(Object.isFrozen(cliRequest.args)).toBe(true);
     expect(Object.isFrozen(cliRequest.extraEnv)).toBe(true);
     expect(Object.isFrozen(cliRequest.exactEnv)).toBe(true);
-    expect(executedContext).toEqual({ route: 'captured' });
-    expect(executedContext).not.toBe(returnedPrepared!.context);
+    expect(executedContext).toEqual({ host: { route: 'captured' }, session: undefined, turn: undefined });
+    expect(executedContext).not.toBe(returnedPrepared!.plan);
     expect(Object.isFrozen(executedContext)).toBe(true);
   });
 
@@ -1326,11 +1514,13 @@ describe('ProviderRegistry', () => {
     const exactCliEnv = { ROUTE: 'sealed' };
     const definition = defineProvider({
       name: 'single-request',
-      prepareExecutionContext: (input) => {
+      prepareExecutionPlan: (input) => {
         preparedRequest = input.request;
+        appServerRequest = input.request;
         const capturedEnv = { ...exactCliEnv };
         return {
-          context: undefined,
+          plan: { host: undefined, session: undefined, turn: undefined },
+          appServerTurnEnv: {},
           prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...capturedEnv } }),
         };
       },
@@ -1340,10 +1530,13 @@ describe('ProviderRegistry', () => {
       appServer: {
         name: 'single-request',
         subscriptionPhase: 'afterInitialize',
-        buildServerSpec: (request) => {
-          appServerRequest = request;
-          return { provider: 'single-request', command: 'single-request', args: [], cwd: request.cwd };
-        },
+        compileStableHost: () => ({
+          provider: 'single-request',
+          command: 'single-request',
+          args: [],
+          cwd: appServerRequest?.cwd ?? '/missing',
+          leaseMode: 'job-exclusive' as const,
+        }),
       },
       recovery: {
         finalizeInterrupted: () => ({ kind: 'preserve' }),
@@ -1372,21 +1565,20 @@ describe('ProviderRegistry', () => {
     const prepared = successfulBinding(registry, 'single-request').prepareExecution({
       request,
       baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
 
     request.prompt = 'caller mutation';
     request.coralEnv.ROUTING = 'caller mutation';
     exactCliEnv.ROUTE = 'caller mutation';
-    prepared.appServer?.buildServerSpec(undefined, { storage: {} as never });
     for await (const _event of prepared.execute(executionRuntime() as never)) {
       // Empty provider stream.
     }
 
     expect(prepared.execute).toHaveLength(1);
     expect(executedRequest).toBe(preparedRequest);
-    expect(appServerRequest).not.toBe(preparedRequest);
-    expect(appServerRequest).toStrictEqual(preparedRequest);
+    expect(appServerRequest).toBe(preparedRequest);
     expect(executedRequest).toMatchObject({ prompt: 'prepared prompt', coralEnv: { ROUTING: 'prepared' } });
     expect(Object.isFrozen(executedRequest)).toBe(true);
     expect(Object.isFrozen(executedRequest?.coralEnv)).toBe(true);
@@ -1458,7 +1650,10 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'immutable-schema',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {},
       })
         .binding(codec)
@@ -1529,8 +1724,7 @@ describe('ProviderRegistry', () => {
     expect(components.every((component) => Object.isFrozen(component.contract))).toBe(true);
   });
 
-  it('snapshots lazy execution state and every acquire-server, continuity, and event boundary', async () => {
-    const providerSpec = { provider: 'runtime-boundary', command: 'fixture', args: ['captured'], cwd: '/tmp' };
+  it('snapshots lazy execution state and every prepared acquisition, continuity, and event boundary', async () => {
     const rpcParams = { nested: { route: 'captured' } };
     const checkpoint = { conversationRef: 'captured', providerContinuity: { nested: { route: 'captured' } } };
     const event = { kind: 'progress' as const, message: 'captured' };
@@ -1539,14 +1733,17 @@ describe('ProviderRegistry', () => {
     let observedRpcResult: unknown;
     const definition = defineProvider({
       name: 'runtime-boundary',
-      prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+      prepareExecutionPlan: () => ({
+        plan: { host: undefined, session: undefined, turn: undefined },
+        prepareCliRequest: (request) => request,
+      }),
       run: async function* (_request, runtime) {
         observedRuntime = {
           persistedContinuity: runtime.persistedContinuity,
           equippedTools: runtime.equippedTools,
         };
         runtime.continuityBridge.checkpoint(checkpoint);
-        const lease = await runtime.acquireServer(providerSpec);
+        const lease = await runtime.acquirePreparedServer();
         observedRpcResult = await lease.rpc('fixture/read', rpcParams);
         yield event;
         event.message = 'provider-retained-mutation';
@@ -1560,6 +1757,7 @@ describe('ProviderRegistry', () => {
     const prepared = successfulBinding(registry, 'runtime-boundary').prepareExecution({
       request: {} as never,
       baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
     const acquired: unknown[] = [];
@@ -1569,8 +1767,8 @@ describe('ProviderRegistry', () => {
       ...executionRuntime(),
       persistedContinuity: { nested: { route: 'captured' } },
       equippedTools: [{ id: 'captured', summary: 'captured', guidance: ['captured'] }],
-      acquireServer: async (spec: unknown) => {
-        acquired.push(spec);
+      acquirePreparedServer: async () => {
+        acquired.push('prepared');
         return {
           rpc: async (_method: string, params: unknown) => {
             rpcInputs.push(params);
@@ -1593,7 +1791,6 @@ describe('ProviderRegistry', () => {
     runtime.equippedTools[0].guidance[0] = 'caller-retained-mutation';
     const iterator = stream[Symbol.asyncIterator]();
     const first = await iterator.next();
-    providerSpec.args[0] = 'provider-retained-mutation';
     rpcParams.nested.route = 'provider-retained-mutation';
     checkpoint.providerContinuity.nested.route = 'provider-retained-mutation';
     rpcResult.nested.route = 'host-retained-mutation';
@@ -1603,7 +1800,7 @@ describe('ProviderRegistry', () => {
       persistedContinuity: { nested: { route: 'captured' } },
       equippedTools: [{ id: 'captured', summary: 'captured', guidance: ['captured'] }],
     });
-    expect(acquired).toEqual([{ provider: 'runtime-boundary', command: 'fixture', args: ['captured'], cwd: '/tmp' }]);
+    expect(acquired).toEqual(['prepared']);
     expect(rpcInputs).toEqual([{ nested: { route: 'captured' } }]);
     expect(checkpoints).toEqual([
       { conversationRef: 'captured', providerContinuity: { nested: { route: 'captured' } } },
@@ -1614,7 +1811,13 @@ describe('ProviderRegistry', () => {
   });
 
   it('snapshots provider-owned server, recovery, and artifact outcomes', async () => {
-    const serverSpec = { provider: 'outbound', command: 'fixture', args: ['captured'], cwd: '/tmp' };
+    const serverSpec = {
+      provider: 'outbound',
+      command: 'fixture',
+      args: ['captured'],
+      cwd: '/tmp',
+      leaseMode: 'shared' as const,
+    };
     const probeOutcome = { resumable: true, updatedContinuity: { nested: { route: 'captured' } } };
     const recoveryOutcome = { kind: 'preserve' as const, conversationRef: 'captured' };
     const discardOutcome = { kind: 'discarded' as const, details: { route: 'captured' } };
@@ -1624,8 +1827,8 @@ describe('ProviderRegistry', () => {
         appServer: {
           name: 'outbound',
           subscriptionPhase: 'afterInitialize',
-          buildServerSpec: () => serverSpec,
         },
+        serverLaunch: { host: serverSpec, turnEnv: {} },
         recovery: {
           probe: async () => probeOutcome,
           finalizeInterrupted: () => recoveryOutcome as never,
@@ -1635,8 +1838,13 @@ describe('ProviderRegistry', () => {
       }),
     );
     const bound = successfulBinding(registry, 'outbound');
-    const prepared = bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
-    const capturedSpec = prepared.appServer?.buildServerSpec(undefined, { storage: {} as never });
+    const prepared = bound.prepareExecution({
+      request: {} as never,
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    });
+    const capturedSpec = prepared.appServer?.launch.host;
     const capturedProbe = await bound.recovery?.probe?.(serverLease(), {});
     const capturedRecovery = bound.recovery?.finalizeInterrupted(probeOutcome, undefined, {});
     const capturedDiscard =
@@ -1684,12 +1892,6 @@ describe('ProviderRegistry', () => {
         appServer: {
           name: 'lease-boundary',
           subscriptionPhase: 'afterInitialize',
-          buildServerSpec: () => ({
-            provider: 'lease-boundary',
-            command: 'fixture',
-            args: [],
-            cwd: '/tmp',
-          }),
           async interrupt(lease) {
             interruptLease = lease;
             lease.subscribe((message) => {
@@ -1712,7 +1914,12 @@ describe('ProviderRegistry', () => {
       }),
     );
     const bound = successfulBinding(registry, 'lease-boundary');
-    const prepared = bound.prepareExecution({ request: {} as never, baseEnv: {}, platform: 'linux' });
+    const prepared = bound.prepareExecution({
+      request: {} as never,
+      baseEnv: {},
+      storage: TEST_PREPARATION_STORAGE,
+      platform: 'linux',
+    });
     await prepared.appServer?.interrupt?.(rawLease as never, {});
     rawLease.rpc = async () => ({ nested: { route: 'host-method-mutation' } });
     const notification = { method: 'fixture/event', params: { nested: { route: 'captured' } } };
@@ -1840,7 +2047,10 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'negative-event-boundary',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {
           yield new Map() as never;
         },
@@ -1853,6 +2063,7 @@ describe('ProviderRegistry', () => {
       .prepareExecution({
         request: {} as never,
         baseEnv: {},
+        storage: TEST_PREPARATION_STORAGE,
         platform: 'linux',
       })
       .execute(executionRuntime() as never);

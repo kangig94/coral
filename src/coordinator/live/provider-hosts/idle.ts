@@ -48,7 +48,7 @@ export function clearIdleTimer(entry: ProviderHostEntry, time: Pick<TimePort, 'c
 }
 
 function usesHostStats(entry: ProviderHostEntry): boolean {
-  return entry.spec.shared === true;
+  return entry.spec.leaseMode === 'shared';
 }
 
 function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
@@ -60,7 +60,7 @@ function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, Provide
   if (entry.closingError || entries.get(entry.hostKey) !== entry || !entry.handle) {
     return false;
   }
-  if (entry.waiters.length > 0 || activeLeaseCount(entry) > 0) {
+  if (activeLeaseCount(entry) > 0) {
     return false;
   }
   if (usesHostStats(entry)) {
@@ -81,7 +81,7 @@ export function maybeArmIdleTimer(
   if (!entry.handle || entry.closingError) {
     return;
   }
-  if (entry.waiters.length > 0 || activeLeaseCount(entry) > 0) {
+  if (activeLeaseCount(entry) > 0) {
     return;
   }
   if (usesHostStats(entry) && !isHostIdleFromStats(entry)) {

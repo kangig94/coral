@@ -399,7 +399,7 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
       providerMeta: {
         provider: parsed.providerMeta.provider,
         leaseState: parsed.providerMeta.leaseState,
-        ...(parsed.providerMeta.serverGeneration === undefined
+        ...(parsed.providerMeta.leaseState !== 'acquired' || parsed.providerMeta.serverGeneration === undefined
           ? {}
           : { serverGeneration: parsed.providerMeta.serverGeneration }),
         ...(parsed.providerMeta.transportMode === undefined

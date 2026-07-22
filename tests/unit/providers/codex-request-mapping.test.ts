@@ -8,7 +8,6 @@ import {
   applyCodexContinuityUpdate,
   buildCodexContinuity,
   buildCodexPrompt,
-  buildCodexProviderServerSpec,
   mapThreadResumeParams,
   mapThreadStartParams,
   mapRecoveryContinuationTurnStartParams,
@@ -17,12 +16,13 @@ import {
   resolveCodexServiceTier,
   snapshotCodexPersistedContinuity,
 } from '#src/providers/codex/request-mapping.js';
+import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import type { ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
-import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import { buildCodexExecutionPlan, type CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import { backendLog } from '#src/infra/backend-log.js';
 
 const tempHomes: string[] = [];
-type CodexRuntime = ProviderRuntime<CodexExecutionContext>;
+type CodexRuntime = ProviderRuntime<CodexExecutionPlan>;
 type TierReadFileSync = NonNullable<NonNullable<CodexRuntime['storage']>['readFileSync']>;
 type TierStatSync = NonNullable<NonNullable<CodexRuntime['storage']>['statSync']>;
 const defaultReadFileSync: TierReadFileSync = (path, encoding) => readFileSync(path, encoding);
@@ -91,13 +91,21 @@ function makeTierRuntime(
   readFileSyncImpl: TierReadFileSync = defaultReadFileSync,
   statSyncImpl: TierStatSync = defaultStatSync,
   codexHome = join(home, '.codex'),
-): Pick<CodexRuntime, 'providerContext' | 'storage'> {
+): Pick<CodexRuntime, 'executionPlan' | 'storage'> {
   return {
-    providerContext: {
+    executionPlan: buildCodexExecutionPlan({
       source: { home: codexHome },
-      appServerEnv: { CODEX_HOME: codexHome },
+      request: {
+        action: 'exec',
+        sessionId: 'tier-test',
+        prompt: 'test',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      baseEnv: {},
       platform: 'linux',
-    },
+    }).plan,
     storage: {
       readFileSync: readFileSyncImpl,
       statSync: statSyncImpl,
@@ -382,9 +390,10 @@ describe('Codex continuity refs', () => {
       attacker: 'keep-out',
     };
 
-    const spec = buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    const spec = prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
 
     expect(spec.cwd).toBe('/workspace/project/subdir');
+    expect(spec.leaseMode).toBe('job-exclusive');
     expect(readCodexPersistedContinuity(continuity)).toEqual({
       cwd: '/workspace/project/subdir',
       threadId: 'thread-1',
@@ -398,7 +407,7 @@ describe('Codex continuity refs', () => {
       threadId: 'thread-1',
     };
 
-    const spec = buildCodexProviderServerSpec({ cwd: '/workspace/project', coralEnv: {} }, continuity);
+    const spec = prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
 
     expect(spec.cwd).toBe('/workspace/project');
     expect(readCodexPersistedContinuity(continuity)).toEqual({

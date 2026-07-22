@@ -1,18 +1,25 @@
 import { dirname, join } from 'node:path';
 
 import { detectClaudeCli } from './cli-detection.js';
-import type { ProviderPreflightRuntime, ProviderAppServerContract, ProviderRecoveryContract } from '../contract.js';
+import type { ProviderPreflightRuntime, ProviderAppServerCapability, ProviderRecoveryContract } from '../contract.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
-import { claudeRoutingEnv, type ClaudeCredentialSource, type ClaudeExecutionContext } from './execution-context.js';
-import { CLAUDE_CREDENTIAL_ENV_KEYS } from './credential-policy.js';
+import {
+  claudeRoutingEnv,
+  compileClaudeBrokerHost,
+  type ClaudeCredentialSource,
+  type ClaudeExecutionPlan,
+} from './execution-plan.js';
+import { isClaudeCredentialEnvKey } from './credential-policy.js';
 
-const UNSUPPORTED_CLAUDE_HELPER_SETTINGS = Object.freeze(
-  new Set(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport']),
-);
+const UNSUPPORTED_CLAUDE_HELPER_SETTINGS: ReadonlySet<string> = new Set([
+  'apiKeyHelper',
+  'awsAuthRefresh',
+  'awsCredentialExport',
+]);
 
 function claudeConfigRoot(runtime: ProviderPreflightRuntime<ClaudeCredentialSource>): string {
   return runtime.credentialSource.configDir;
@@ -67,7 +74,7 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeC
     for (const [key, value] of Object.entries(configuredEnv as Record<string, unknown>)) {
       const selectorKey = key.toUpperCase();
       if (
-        CLAUDE_CREDENTIAL_ENV_KEYS.has(selectorKey) &&
+        isClaudeCredentialEnvKey(selectorKey) &&
         ((typeof value === 'string' && value.trim().length > 0) ||
           (typeof value !== 'string' && value !== null && value !== undefined))
       ) {
@@ -94,12 +101,11 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeCr
   }
 }
 
-export const claudeAppServerLifecycle: ProviderAppServerContract<ClaudeExecutionContext> = {
+export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan> = {
   name: 'claude',
   subscriptionPhase: 'beforeInitialize',
-  buildServerSpec(request, _persistedContinuity, ports, providerContext) {
-    return buildClaudeProviderServerSpec(request, ports.storage, providerContext.brokerEnv);
-  },
+  compileStableHost: (host) =>
+    buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
 };
 
 export const claudeRecoveryLifecycle = {

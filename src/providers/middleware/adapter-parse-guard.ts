@@ -1,6 +1,7 @@
 import type { ProviderMiddleware } from '../contract.js';
 import { adapterOutputUnparseable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
+import type { ProviderExecutionPlan } from '../execution-plan.js';
 
 export interface ParseErrorDetail {
   exitCode: number | null;
@@ -16,10 +17,10 @@ function buildParseGuardFailureCause(provider: string, detail: ParseErrorDetail)
   });
 }
 
-export function adapterParseGuard<Context>(
+export function adapterParseGuard<Plan extends ProviderExecutionPlan>(
   provider: string,
   classify: (err: unknown) => ParseErrorDetail | null,
-): ProviderMiddleware<Context> {
+): ProviderMiddleware<Plan> {
   return (next) =>
     async function* adapterParseGuardProvider(request, runtime) {
       const startedAt = runtime.time.now();

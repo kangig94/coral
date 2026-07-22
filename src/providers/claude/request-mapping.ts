@@ -16,11 +16,19 @@ import {
   type ClaudeBootstrapSignature,
   type PermissionMode,
 } from './request-prep.js';
-import { claudeTransportEnv, resolveClaudeTransportMode } from './transport-mode.js';
+import type { resolveClaudeTransportMode } from './transport-mode.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   bootstrapSignature?: ClaudeBootstrapSignature;
 }
+
+export type ClaudeBrokerHostPlan = Readonly<{
+  command: string;
+  args: readonly string[];
+  cwd: string;
+  environment: Readonly<Record<string, string>>;
+  transportMode: ReturnType<typeof resolveClaudeTransportMode>;
+}>;
 
 let envHashCache: {
   controllerEnv: Record<string, string> | undefined;
@@ -51,20 +59,15 @@ export function buildClaudeBootstrapSignature(
   };
 }
 
-export function buildClaudeProviderServerSpec(
-  request: Pick<ProviderRequest, 'cwd'> & { coralEnv?: Record<string, string> },
-  storage: Pick<StoragePort, 'existsSync'>,
-  brokerEnv: Readonly<Record<string, string>> = {},
-): ProviderServerSpec {
-  const transportMode = resolveClaudeTransportMode(request.coralEnv);
+export function buildClaudeProviderServerSpec(host: ClaudeBrokerHostPlan): ProviderServerSpec {
   return {
     provider: 'claude',
-    command: process.execPath,
-    args: [resolveClaudeBrokerEntrypoint(storage)],
-    cwd: request.cwd,
-    env: { ...brokerEnv, ...claudeTransportEnv(transportMode) },
-    shared: true,
-    runtimeMetadata: { transportMode },
+    command: host.command,
+    args: [...host.args],
+    cwd: host.cwd,
+    env: { ...host.environment },
+    leaseMode: 'shared',
+    runtimeMetadata: { transportMode: host.transportMode },
     shutdownCapability: {
       method: 'broker/shutdown',
       timeoutMs: 3_000,
@@ -137,7 +140,7 @@ export function withClaudeContinuity(
   return bootstrapSignature === undefined ? {} : { bootstrapSignature };
 }
 
-function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
+export function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');
   }

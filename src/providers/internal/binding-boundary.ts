@@ -15,6 +15,7 @@ import {
 import type { ProviderArtifactCapability, ProviderImplementation } from '../contract.js';
 import type { BoundProvider } from '../bound-provider-contract.js';
 import type { ProviderValueParser } from '../binding-parser-contract.js';
+import type { ProviderExecutionPlan } from '../execution-plan.js';
 import { providerBindingEnvelopeSchema, type ProviderBindingEnvelope } from '../../infra/provider-binding-envelope.js';
 import { jsonValueSchema, type JsonValue } from '../../infra/json-value.js';
 import { providerProfileEnvelopeSchema, type ProviderProfileEnvelope } from '../../infra/provider-scope.js';
@@ -113,10 +114,14 @@ function captureBoundCodec<
   });
 }
 
-function decodeCodecBinding<Context, Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
+function decodeCodecBinding<
+  Plan extends ProviderExecutionPlan,
+  Profile extends CredentialProfile & JsonValue,
+  Source extends JsonValue,
+>(
   provider: string,
   authority: CapturedBindingAuthority<Profile, Source>,
-  implementation: ProviderImplementation<Context, Source>,
+  implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
   rawBinding: unknown,
 ): ProviderBindingResult<BoundProvider> {
@@ -173,10 +178,14 @@ async function canonicalizeBoundaryProfile<Profile extends CredentialProfile & J
     : profile;
 }
 
-async function bindBoundaryProfile<Context, Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
+async function bindBoundaryProfile<
+  Plan extends ProviderExecutionPlan,
+  Profile extends CredentialProfile & JsonValue,
+  Source extends JsonValue,
+>(
   provider: string,
   authority: CapturedBindingAuthority<Profile, Source>,
-  implementation: ProviderImplementation<Context, Source>,
+  implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
   rawEnvelope: ProviderProfileEnvelope,
   runtime: ProviderBindingRuntime,
@@ -196,10 +205,14 @@ async function bindBoundaryProfile<Context, Profile extends CredentialProfile & 
   return binding.ok ? decodeCodecBinding(provider, authority, implementation, artifacts, binding.value) : binding;
 }
 
-function decodeBoundaryEnvelope<Context, Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
+function decodeBoundaryEnvelope<
+  Plan extends ProviderExecutionPlan,
+  Profile extends CredentialProfile & JsonValue,
+  Source extends JsonValue,
+>(
   provider: string,
   authority: CapturedBindingAuthority<Profile, Source>,
-  implementation: ProviderImplementation<Context, Source>,
+  implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
   rawEnvelope: ProviderBindingEnvelope,
 ): ProviderBindingResult<BoundProvider> {
@@ -224,7 +237,7 @@ function parseBoundaryProfile<Profile extends CredentialProfile & JsonValue, Sou
 }
 
 export function eraseBindingCodec<
-  Context,
+  Plan extends ProviderExecutionPlan,
   Selection extends JsonValue,
   Profile extends CredentialProfile & JsonValue,
   Subject extends AccountSubject & JsonValue,
@@ -232,7 +245,7 @@ export function eraseBindingCodec<
 >(
   provider: string,
   codec: ProviderBindingCodec<Selection, Profile, Subject, Source>,
-  implementation: ProviderImplementation<Context, Source>,
+  implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
 ): ErasedProviderBindingBoundary {
   const authority = captureBindingAuthority(codec);

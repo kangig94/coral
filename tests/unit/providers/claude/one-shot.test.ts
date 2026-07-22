@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { claudeCurationCapability } from '#src/providers/claude/one-shot.js';
-import type { ProviderServerLease } from '#src/providers/contract.js';
+import type { ProviderServerLaunch, ProviderServerLease } from '#src/providers/contract.js';
+import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 
 type BrokerNotificationHandler = (msg: { method: string; params?: Record<string, unknown> }) => void;
 
@@ -23,20 +24,26 @@ function systemContext(configDir: string) {
 
 function runClaudeOneShotTurn(
   deps: {
-    readonly storage: Parameters<typeof claudeCurationCapability.complete>[1]['storage'];
-    readonly ids: Parameters<typeof claudeCurationCapability.complete>[1]['ids'];
-    readonly providerContext: ReturnType<typeof systemContext>;
-    readonly acquireServer: Parameters<typeof claudeCurationCapability.complete>[1]['acquireServer'];
+    readonly storage: Parameters<typeof claudeCurationCapability.prepare>[1]['storage'];
+    readonly ids: Parameters<typeof claudeCurationCapability.prepare>[1]['ids'];
+    readonly executionPlan: ReturnType<typeof systemContext>;
+    readonly acquireServer: (launch: ProviderServerLaunch) => Promise<ProviderServerLease>;
   },
-  request: Parameters<typeof claudeCurationCapability.complete>[0],
+  request: Parameters<typeof claudeCurationCapability.prepare>[0],
 ) {
-  return claudeCurationCapability.complete(request, {
+  const prepared = claudeCurationCapability.prepare(request, {
     storage: deps.storage,
     ids: deps.ids,
-    source: deps.providerContext.source,
-    baseEnv: deps.providerContext.brokerEnv,
+    source: deps.executionPlan.source,
+    baseEnv: deps.executionPlan.brokerEnv,
     platform: 'linux',
-    acquireServer: deps.acquireServer,
+  });
+  return prepared.complete({
+    acquirePreparedServer: () =>
+      deps.acquireServer({
+        host: claudeAppServerLifecycle.compileStableHost(prepared.hostPlan),
+        turnEnv: prepared.turnEnv,
+      }),
   });
 }
 
@@ -131,7 +138,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        providerContext: systemContext(`${home}/.claude`),
+        executionPlan: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -250,7 +257,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        providerContext: systemContext(`${home}/.claude`),
+        executionPlan: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -371,7 +378,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        providerContext: systemContext(`${home}/.claude`),
+        executionPlan: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -488,7 +495,7 @@ describe('runClaudeOneShotTurn', () => {
     const turn = runClaudeOneShotTurn(
       {
         storage,
-        providerContext: systemContext(`${home}/.claude`),
+        executionPlan: systemContext(`${home}/.claude`),
         ids: {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
@@ -557,7 +564,7 @@ describe('runClaudeOneShotTurn', () => {
       runClaudeOneShotTurn(
         {
           storage,
-          providerContext: systemContext('/home/user/.claude'),
+          executionPlan: systemContext('/home/user/.claude'),
           ids: {
             uuid: () => 'turn-1',
             sha256: (value) => `hash:${value}`,

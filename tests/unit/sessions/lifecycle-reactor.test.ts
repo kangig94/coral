@@ -41,7 +41,7 @@ import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import type { CauseRef } from '#src/causality/cause-ref.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
@@ -97,15 +97,14 @@ function createHarness(
     defineProvider({
       name: 'codex',
       run: noopProvider,
-      prepareExecutionContext: prepareFixtureExecutionContext,
+      prepareExecutionPlan: prepareFixtureExecutionPlan,
       ...(options.interruptedRecovery
         ? {
             appServer: {
               name: 'codex',
               subscriptionPhase: 'afterInitialize' as const,
-              buildServerSpec: () => {
-                throw new Error('waiting recovery must not build an app-server spec');
-              },
+              compileStableHost: (host: ReturnType<typeof prepareFixtureExecutionPlan>['plan']['host']) =>
+                host.serverSpec,
             },
             recovery: {
               finalizeInterrupted: (probeResult, _continuity, context) =>

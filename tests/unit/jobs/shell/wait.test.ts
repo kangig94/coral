@@ -31,7 +31,7 @@ import { composeReducers } from '#src/store/reducers.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
+import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
   AgentNamespaceNotFoundError as _AgentNamespaceNotFoundError,
@@ -426,8 +426,8 @@ function _makeCodexAppServerProvider(): Provider {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      buildServerSpec: (_continuity, request) =>
-        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      prepareHostSpec: (_continuity, request) =>
+        prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
       interrupt: async (lease, continuity) => {
         const threadId = continuity.threadId;
         const turnId = continuity.turnId;
@@ -502,7 +502,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
   command: string;
   args: string[];
   cwd: string;
-  shared: true;
+  leaseMode: 'shared';
 }): Provider {
   return {
     name: 'claude',
@@ -510,7 +510,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      buildServerSpec: () => spec,
+      prepareHostSpec: () => spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;

@@ -36,9 +36,9 @@ import {
   type ErrorNotificationEvidence,
   type RecoverableTurnFailure,
 } from './turn-recovery.js';
-import type { CodexExecutionContext } from './execution-context.js';
+import type { CodexExecutionPlan } from './execution-plan.js';
 
-type CodexProviderRuntime = ProviderRuntime<CodexExecutionContext>;
+type CodexProviderRuntime = ProviderRuntime<CodexExecutionPlan>;
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -106,7 +106,7 @@ export type CodexTurnState = {
   signal: AbortSignal;
   lease: ProviderServerLease | null;
   artifactHandleEmissionAttempted: boolean;
-  artifactLocatorRuntime: Pick<CodexProviderRuntime, 'providerContext' | 'storage'>;
+  artifactLocatorRuntime: Pick<CodexProviderRuntime, 'executionPlan' | 'storage'>;
   preTurnMailbox: {
     status(): PreTurnMailboxStatus;
   };
@@ -194,7 +194,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
     lease: null,
     artifactHandleEmissionAttempted: false,
     artifactLocatorRuntime: {
-      providerContext: runtime.providerContext,
+      executionPlan: runtime.executionPlan,
       storage: runtime.storage,
     },
     preTurnMailbox: {
@@ -1242,7 +1242,7 @@ function emitFinalTurnProgress(result: CodexKernelResult, emit: (event: Provider
   emitProgress(emit, `Turn ${result.turn.status ?? 'finished'}.`);
 }
 
-export const codexTurnKernel: Provider<CodexExecutionContext> = (request, runtime) =>
+export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) =>
   streamProviderEvents<ProviderEventBody>(async (emit) => {
     const lease = requireAppServerLease(runtime, 'codex');
     const state = createState(request, runtime);

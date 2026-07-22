@@ -1,11 +1,5 @@
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type {
-  EffortLevel,
-  ProviderContinuityUpdate,
-  ProviderRequest,
-  ProviderRuntime,
-  ProviderServerSpec,
-} from '../contract.js';
+import type { EffortLevel, ProviderContinuityUpdate, ProviderRequest, ProviderRuntime } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { pickProviderContinuityKeys } from '../middleware/session-continuity.js';
 import { resolveModelTier, resolveProviderEffort } from '../request-policy.js';
@@ -15,9 +9,7 @@ import { isRecord, readString } from '../../infra/json.js';
 import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 import type { RecoverableTurnFailure } from './turn-recovery.js';
-import type { CodexExecutionContext } from './execution-context.js';
-
-type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
+import type { CodexExecutionPlan } from './execution-plan.js';
 
 const CODEX_CONTINUITY_KEYS = ['cwd', 'threadId', 'turnId'] as const;
 const codexContinuityCwdScopes = new WeakMap<Record<string, unknown>, string>();
@@ -258,28 +250,6 @@ export function isCodexSessionUnavailable(error: unknown): boolean {
   );
 }
 
-function createCodexProviderServerSpec(
-  projectRoot: string,
-  env?: Record<string, string>,
-  clientVersion?: string,
-): ProviderServerSpec {
-  return {
-    provider: 'codex',
-    command: 'codex',
-    args: ['app-server'],
-    cwd: projectRoot,
-    env,
-    // codex app-server handles concurrent threads per process — each turn carries its own
-    // threadId, so a shared lease (many concurrent leases on one host) matches reality.
-    // Without this, host-manager forces exclusive leases and serializes concurrent codex jobs.
-    shared: true,
-    initializeRequest: {
-      method: 'initialize',
-      params: { clientInfo: { name: 'coral', version: clientVersion ?? 'unknown' } },
-    },
-  };
-}
-
 function rememberCodexContinuityCwdScope(
   persistedContinuity: ProviderContinuityBlob | undefined,
   cwdScope: string | undefined,
@@ -308,37 +278,12 @@ function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): 
   return undefined;
 }
 
-export function buildCodexProviderServerSpec(
-  projectRoot: string,
-  env?: Record<string, string>,
-  clientVersion?: string,
-): ProviderServerSpec;
-export function buildCodexProviderServerSpec(
-  request: CodexServerSpecRequest,
-  persistedContinuity?: ProviderContinuityBlob,
-  clientVersion?: string,
-): ProviderServerSpec;
-export function buildCodexProviderServerSpec(
-  projectRootOrRequest: string | CodexServerSpecRequest,
-  envOrPersisted?: Record<string, string> | ProviderContinuityBlob,
-  clientVersion?: string,
-): ProviderServerSpec {
-  if (typeof projectRootOrRequest !== 'string') {
-    const persistedContinuity = envOrPersisted as ProviderContinuityBlob | undefined;
-    rememberCodexContinuityCwdScope(persistedContinuity, projectRootOrRequest.cwd);
-    const continuity = readCodexPersistedContinuity(persistedContinuity, { cwdScope: projectRootOrRequest.cwd });
-    return createCodexProviderServerSpec(
-      continuity.cwd ?? projectRootOrRequest.cwd,
-      projectRootOrRequest.coralEnv,
-      clientVersion,
-    );
-  }
-
-  return createCodexProviderServerSpec(
-    projectRootOrRequest,
-    envOrPersisted as Record<string, string> | undefined,
-    clientVersion,
-  );
+export function resolveCodexHostCwd(
+  requestCwd: string,
+  persistedContinuity: ProviderContinuityBlob | undefined,
+): string {
+  rememberCodexContinuityCwdScope(persistedContinuity, requestCwd);
+  return readCodexPersistedContinuity(persistedContinuity, { cwdScope: requestCwd }).cwd ?? requestCwd;
 }
 
 function buildCodexTurnInput(prompt: string): UserInput[] {
@@ -403,12 +348,12 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
  * the scan halts at the first section header.
  */
 function readCodexConfigServiceTier(
-  runtime: Pick<ProviderRuntime<CodexExecutionContext>, 'providerContext' | 'storage'>,
+  runtime: Pick<ProviderRuntime<CodexExecutionPlan>, 'executionPlan' | 'storage'>,
 ): CodexServiceTier | undefined {
   if (!runtime.storage) {
     return undefined;
   }
-  const configPath = join(runtime.providerContext.source.home, 'config.toml');
+  const configPath = join(runtime.executionPlan.host.source.home, 'config.toml');
   // Set only when statSync succeeds; stays undefined when stat throws a
   // non-ENOENT/EACCES error but readFileSync still works, so both cache-write
   // sites below fall back to `?? 0` (treated as always-stale).
@@ -460,7 +405,7 @@ function readCodexConfigServiceTier(
 
 export function resolveCodexServiceTier(
   request: ProviderRequest,
-  runtime?: Pick<ProviderRuntime<CodexExecutionContext>, 'providerContext' | 'storage'>,
+  runtime?: Pick<ProviderRuntime<CodexExecutionPlan>, 'executionPlan' | 'storage'>,
 ): CodexServiceTier | undefined {
   const rawEnvTier = request.coralEnv['CORAL_CODEX_FAST'];
   // Blank env = unset; fall through to config.toml. Non-blank but unrecognized = explicit rejection (no fallback).

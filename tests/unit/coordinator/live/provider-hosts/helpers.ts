@@ -1,9 +1,9 @@
 import { afterEach, vi } from 'vitest';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import type { ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderServerLaunch, ProviderServerSpec } from '#src/providers/contract.js';
 import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
-import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 
 export const runtime = createRealRuntime('prod');
 
@@ -13,7 +13,7 @@ export function createSharedSpec(overrides: Partial<ProviderServerSpec> = {}): P
     command: process.execPath,
     args: ['broker.js'],
     cwd: process.cwd(),
-    shared: true,
+    leaseMode: 'shared',
     ...overrides,
   };
 }
@@ -24,20 +24,30 @@ export function createExclusiveSpec(overrides: Partial<ProviderServerSpec> = {})
     command: 'codex',
     args: ['app-server'],
     cwd: '/workspace',
+    leaseMode: 'job-exclusive',
     ...overrides,
   };
+}
+
+export function createLaunch(
+  host: ProviderServerSpec,
+  turnEnv: Readonly<Record<string, string>> = {},
+): ProviderServerLaunch {
+  return { host, turnEnv };
 }
 
 export function createEntry(overrides: Partial<ProviderHostEntry> = {}): ProviderHostEntry {
   return {
     hostKey: 'host-key',
+    identityKey: 'host-key',
     spec: createSharedSpec(),
+    exactEnv: {},
     handle: null,
     spawnPromise: null,
     leaseHeld: false,
     sharedLeaseCount: 0,
-    waiters: [],
     closingError: null,
+    closePromise: null,
     hostStats: { liveControllers: 0, activeTurns: 0 },
     idleTimer: null,
     disposeHostNotifications: null,
@@ -101,7 +111,7 @@ export function createFakeProviderServerHandle(options?: {
 
 export function createSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
   const fallback = handles.at(-1);
-  const spawnProviderServer = vi.fn(async () => {
+  const spawnProviderServer = vi.fn(async (_options: Parameters<SpawnProviderServerFn>[0]) => {
     if (!fallback) {
       throw new Error('No provider server handle configured');
     }

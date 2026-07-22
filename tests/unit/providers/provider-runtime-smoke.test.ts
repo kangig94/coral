@@ -38,11 +38,11 @@ type MockLease = ProviderServerLease & {
   subscribeMock: ReturnType<typeof vi.fn>;
 };
 
-type PreparedRuntime = Omit<ProviderRuntime<never>, 'providerContext'>;
+type PreparedRuntime = Omit<ProviderRuntime<never>, 'executionPlan'>;
 
 type SmokeRuntime = PreparedRuntime & {
   controller: AbortController;
-  acquireServer: ReturnType<typeof vi.fn>;
+  acquirePreparedServer: ReturnType<typeof vi.fn>;
   runCli: ReturnType<typeof vi.fn>;
 };
 
@@ -83,7 +83,7 @@ function makeRuntime(options: {
   controller?: AbortController;
   persistedContinuity?: PreparedRuntime['persistedContinuity'];
   runCliImpl?: ProviderCliRunner;
-  acquireServerImpl?: () => Promise<ProviderServerLease>;
+  acquirePreparedServerImpl?: () => Promise<ProviderServerLease>;
   env?: PreparedRuntime['env'];
   storage?: PreparedRuntime['storage'];
 }): SmokeRuntime {
@@ -94,10 +94,10 @@ function makeRuntime(options: {
         throw new Error('runCli should not be called in this smoke scenario.');
       }),
   );
-  const acquireServer = vi.fn(
-    options.acquireServerImpl ??
+  const acquirePreparedServer = vi.fn(
+    options.acquirePreparedServerImpl ??
       (async () => {
-        throw new Error('acquireServer should not be called in this smoke scenario.');
+        throw new Error('acquirePreparedServer should not be called in this smoke scenario.');
       }),
   );
 
@@ -115,7 +115,7 @@ function makeRuntime(options: {
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     storage: options.storage ?? ({ existsSync: () => true } as unknown as PreparedRuntime['storage']),
     env: options.env,
-    acquireServer,
+    acquirePreparedServer,
     persistedContinuity: options.persistedContinuity,
     continuityBridge: {
       checkpoint: vi.fn(),
@@ -151,6 +151,7 @@ function executeProvider(provider: BoundProvider, request: ProviderRequest, runt
   const prepared = provider.prepareExecution({
     request,
     baseEnv: {},
+    storage: { existsSync: () => false },
     platform: process.platform,
   });
   return prepared.execute(runtime);
@@ -222,7 +223,7 @@ describe('provider runtime smoke', () => {
           }
           throw new Error(`Unexpected Claude smoke RPC: ${method}`);
         });
-        const runtime = makeRuntime({ acquireServerImpl: async () => lease });
+        const runtime = makeRuntime({ acquirePreparedServerImpl: async () => lease });
 
         const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
@@ -264,7 +265,7 @@ describe('provider runtime smoke', () => {
 
         expect(continuityEvents.length).toBeGreaterThan(0);
         expect(terminal.terminal.outcome).toEqual({ kind: 'completed' });
-        expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
+        expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
         expect(runtime.runCli).not.toHaveBeenCalled();
         return;
       }
@@ -278,7 +279,7 @@ describe('provider runtime smoke', () => {
         }
         throw new Error(`Unexpected Codex smoke RPC: ${method}`);
       });
-      const runtime = makeRuntime({ acquireServerImpl: async () => lease });
+      const runtime = makeRuntime({ acquirePreparedServerImpl: async () => lease });
 
       const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('codex'), runtime));
 
@@ -311,7 +312,7 @@ describe('provider runtime smoke', () => {
 
       expect(continuityEvents.length).toBeGreaterThan(0);
       expect(terminal.terminal.outcome).toEqual({ kind: 'completed' });
-      expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
+      expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
       expect(runtime.runCli).not.toHaveBeenCalled();
     },
   );
@@ -343,7 +344,7 @@ describe('provider runtime smoke', () => {
       }
       throw new Error(`Unexpected Claude abort RPC: ${method}`);
     });
-    const runtime = makeRuntime({ controller, acquireServerImpl: async () => lease });
+    const runtime = makeRuntime({ controller, acquirePreparedServerImpl: async () => lease });
 
     const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
@@ -374,7 +375,7 @@ describe('provider runtime smoke', () => {
         : false,
     ).toBe(false);
     expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
-    expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
+    expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
     expect(runtime.runCli).not.toHaveBeenCalled();
   });
 
@@ -403,7 +404,7 @@ describe('provider runtime smoke', () => {
       throw new Error(`Unexpected Claude artifact RPC: ${method}`);
     });
     const runtime = makeRuntime({
-      acquireServerImpl: async () => lease,
+      acquirePreparedServerImpl: async () => lease,
       env: {
         homedir: () => '/home/tester',
         fullSnapshot: () => ({}),
@@ -480,7 +481,7 @@ describe('provider runtime smoke', () => {
       }
       throw new Error(`Unexpected Codex abort RPC: ${method}`);
     });
-    const runtime = makeRuntime({ controller, acquireServerImpl: async () => lease });
+    const runtime = makeRuntime({ controller, acquirePreparedServerImpl: async () => lease });
 
     const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('codex'), runtime));
 
@@ -513,7 +514,7 @@ describe('provider runtime smoke', () => {
 
     expectValidContinuitySnapshots(events);
     expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
-    expect(runtime.acquireServer).toHaveBeenCalledTimes(1);
+    expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
     expect(runtime.runCli).not.toHaveBeenCalled();
   });
 });

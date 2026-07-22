@@ -8,11 +8,11 @@ import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from './artifacts.js';
 import { codexBindingCodec } from './binding.js';
 import {
-  buildCodexExecutionContext,
+  buildCodexExecutionPlan,
   buildCodexPreflightRuntime,
   type CodexCredentialSource,
-  type CodexExecutionContext,
-} from './execution-context.js';
+  type CodexExecutionPlan,
+} from './execution-plan.js';
 import { codexAppServerLifecycle, codexPreflight, codexRecoveryLifecycle } from './provider-facets.js';
 import { codexThreadProvider } from './thread-provider.js';
 
@@ -91,18 +91,16 @@ const recovery: ProviderRecoveryContract<CodexCredentialSource> = {
   probe: codexRecoveryLifecycle.probe.bind(codexRecoveryLifecycle),
 };
 
-export const codexProviderDefinition: ProviderDefinition = defineProvider<CodexExecutionContext, CodexCredentialSource>(
-  {
-    name: 'codex',
-    run: codexThreadProvider,
-    prepareExecutionContext(input) {
-      return buildCodexExecutionContext(input);
-    },
-    preflight: (input) => codexPreflight(buildCodexPreflightRuntime(input)),
-    appServer: codexAppServerLifecycle,
-    recovery,
+export const codexProviderDefinition: ProviderDefinition = defineProvider<CodexExecutionPlan, CodexCredentialSource>({
+  name: 'codex',
+  run: codexThreadProvider,
+  prepareExecutionPlan(input) {
+    return buildCodexExecutionPlan(input);
   },
-)
+  preflight: (input) => codexPreflight(buildCodexPreflightRuntime(input)),
+  appServer: codexAppServerLifecycle,
+  recovery,
+})
   .binding(codexBindingCodec)
   .artifacts(codexArtifactCapability)
   .build();

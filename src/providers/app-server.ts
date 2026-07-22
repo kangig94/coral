@@ -1,17 +1,10 @@
-import type { ProviderRequest, ProviderRuntime, ProviderServerLease, ProviderServerSpec } from './contract.js';
-import type { StoragePort } from '../infra/port-types.js';
-import type { ProviderContinuityBlob } from '../sessions/continuity.js';
+import type { ProviderRuntime, ProviderServerLease } from './contract.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase } from './protocol.js';
+import type { ProviderExecutionPlan } from './execution-plan.js';
 
-export interface AppServerContract<Context> {
+export interface AppServerContract<_Plan extends ProviderExecutionPlan> {
   readonly name: string;
   readonly subscriptionPhase: AppServerSubscriptionPhase;
-  buildServerSpec(
-    request: ProviderRequest,
-    persistedContinuity: ProviderContinuityBlob | undefined,
-    ports: { storage: Pick<StoragePort, 'existsSync'> },
-    providerContext: Context,
-  ): ProviderServerSpec;
   interrupt(lease: ProviderServerLease): Promise<void>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
@@ -19,7 +12,10 @@ export interface AppServerContract<Context> {
 const appServerLeaseBindings = new WeakMap<object, ProviderServerLease>();
 const appServerNotificationBindings = new WeakMap<object, (message: AppServerNotificationMessage) => void>();
 
-export function bindAppServerLease<Context>(runtime: ProviderRuntime<Context>, lease: ProviderServerLease): () => void {
+export function bindAppServerLease<Plan extends ProviderExecutionPlan>(
+  runtime: ProviderRuntime<Plan>,
+  lease: ProviderServerLease,
+): () => void {
   appServerLeaseBindings.set(runtime, lease);
   return () => {
     if (appServerLeaseBindings.get(runtime) === lease) {
@@ -28,12 +24,14 @@ export function bindAppServerLease<Context>(runtime: ProviderRuntime<Context>, l
   };
 }
 
-function getAppServerLease<Context>(runtime: ProviderRuntime<Context>): ProviderServerLease | undefined {
+function getAppServerLease<Plan extends ProviderExecutionPlan>(
+  runtime: ProviderRuntime<Plan>,
+): ProviderServerLease | undefined {
   return appServerLeaseBindings.get(runtime);
 }
 
-export function bindAppServerNotificationHandler<Context>(
-  runtime: ProviderRuntime<Context>,
+export function bindAppServerNotificationHandler<Plan extends ProviderExecutionPlan>(
+  runtime: ProviderRuntime<Plan>,
   handler: (message: AppServerNotificationMessage) => void,
 ): () => void {
   appServerNotificationBindings.set(runtime, handler);
@@ -44,14 +42,14 @@ export function bindAppServerNotificationHandler<Context>(
   };
 }
 
-export function getAppServerNotificationHandler<Context>(
-  runtime: ProviderRuntime<Context>,
+export function getAppServerNotificationHandler<Plan extends ProviderExecutionPlan>(
+  runtime: ProviderRuntime<Plan>,
 ): ((message: AppServerNotificationMessage) => void) | undefined {
   return appServerNotificationBindings.get(runtime);
 }
 
-export function requireAppServerLease<Context>(
-  runtime: ProviderRuntime<Context>,
+export function requireAppServerLease<Plan extends ProviderExecutionPlan>(
+  runtime: ProviderRuntime<Plan>,
   providerName: string,
 ): ProviderServerLease {
   const lease = getAppServerLease(runtime);

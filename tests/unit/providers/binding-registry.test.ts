@@ -56,6 +56,7 @@ describe('provider binding registry boundary', () => {
             coralEnv: {},
           },
           baseEnv: {},
+          storage: { existsSync: () => false },
           platform: 'linux',
         })
         .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
@@ -242,7 +243,10 @@ describe('provider binding registry boundary', () => {
       defineProvider({
         name: 'account-fixture',
         run: async function* () {},
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
       })
         .binding(codec)
         .artifacts(none('fixture'))
@@ -311,7 +315,10 @@ describe('provider binding registry boundary', () => {
       defineProvider({
         name: 'receiver',
         run: async function* () {},
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
       })
         .binding(codec)
         .artifacts(none('receiver'))

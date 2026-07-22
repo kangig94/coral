@@ -1,6 +1,6 @@
 # Provider multi-account execution: most-elegant target design
 
-Status: implementation complete through B05; B06 is next
+Status: implementation complete through B06; B07 is next
 
 Scope: provider multi-account execution merged by PR #275 and the provider/session/app-server/recovery boundaries it exposes
 
@@ -84,7 +84,7 @@ The refactoring changes adjacent domains only where the new provider/account mod
 
 ## Baseline structural contradictions before this refactoring
 
-This section records the pre-B01 baseline that motivated the plan. B01-B05 have corrected the store-manifest foundation, explicit scope origin, canonical profile capture, verified/profile-only binding distinctions, aggregate ownership, and bound-provider execution. Any remaining baseline descriptions below are historical motivation or post-B05 target-state gaps, not supported alternate behavior or compatibility promises.
+This section records the pre-B01 baseline that motivated the plan. B01-B06 have corrected the store-manifest foundation, explicit scope origin, canonical profile capture, verified/profile-only binding distinctions, aggregate ownership, bound-provider execution, and lifetime-scoped execution planning. Any remaining baseline descriptions below are historical motivation or post-B06 target-state gaps, not supported alternate behavior or compatibility promises.
 
 ### A locator is described as account authority
 
@@ -415,13 +415,14 @@ Environment values retain provenance and lifetime:
 type EnvironmentLayer = {
   name: string;
   lifetime: 'host' | 'session' | 'turn';
+  provenance: string;
   values: Readonly<Record<string, string>>;
-  writes: ReadonlySet<string>;
-  protects: ReadonlySet<string>;
+  writes: readonly string[];
+  protects: readonly string[];
 };
 ```
 
-The exact-environment compiler owns platform case folding, allowlists, collision rejection, precedence, and protected writes. Provider modules own which selectors and stable settings belong to each process.
+The exact-environment compiler owns platform case folding, allowlists, collision rejection, precedence, and protected writes. `writes` and `protects` are canonical sorted arrays so the plan remains plain immutable snapshot data; mutable `Set` instances are not part of the plan contract. Provider modules own which selectors and stable settings belong to each process.
 
 Named topologies remain explicit:
 
@@ -435,7 +436,7 @@ Claude controller host:
 
 Codex app-server host:
   stable account-bound host layers
-  + session/turn capability through the app-server protocol
+  + job-exclusive exact process environment carrying the turn capability
 ```
 
 ### Codex sharing decision
@@ -448,7 +449,7 @@ Until that channel is implemented and verified, Codex app-server declares:
 leaseMode: 'job-exclusive';
 ```
 
-It must not claim shared reuse while a per-job credential participates in `hostKeyFromSpec`. This intermediate state is semantically honest and preserves isolation.
+The stable host specification and additions-only turn environment are separate values. The host manager rejects any turn addition that redefines a stable binding and composes the full exact process environment only at acquisition. The callback credential remains honestly turn-scoped in the additions; it is never relabeled as a host value. `job-exclusive` means every job receives a fresh process that is closed on release, not a serialized lease on a cached process. B07 may make the stable host reusable only after moving the turn capability into a verified post-acquisition channel.
 
 ## App-server capability
 
@@ -618,7 +619,7 @@ Planning contains no host, filesystem, credential, terminal, or Journal effects.
 - adoption of Coral-owned runtime state;
 - durable finalization after a typed provider outcome.
 
-Normal launch and recovery both begin with `BoundProvider`; recovery does not maintain a parallel provider execution-context builder.
+Normal launch and recovery both begin with `BoundProvider`; recovery does not maintain a parallel provider execution-plan builder.
 
 ## Complete store-format fingerprint
 
@@ -694,8 +695,8 @@ Recovery and adoption
 |     3 | B03 — explicit scope and verified binding           | complete | B02          | caller/system scope and durable verified binding                  | yes                                                   |
 |     4 | B04 — aggregate correction                          | complete | B03          | real provider sessions and independent execution ownership        | yes                                                   |
 |     5 | B05 — `BoundProvider` execution cutover             | complete | B04          | one bound execution surface                                       | internal behavior-preserving cutover                  |
-|     6 | B06 — lifetime-scoped execution plans               | next     | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
-|     7 | B07 — unified app-server and Codex turn capability  | pending  | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
+|     6 | B06 — lifetime-scoped execution plans               | complete | B05          | host/session/turn plans and lifetime-safe environments            | internal behavior correction                          |
+|     7 | B07 — unified app-server and Codex turn capability  | next     | B06          | explicit app-server sessions, host references, real Codex sharing | yes                                                   |
 |     8 | B08 — bound-provider recovery pipeline              | pending  | B07          | `plan -> perform -> finalize` recovery                            | behavior-preserving except corrected failure handling |
 |     9 | B09 — superseded-surface cleanup and adoption reset | pending  | B08          | one store-format authority and no superseded surfaces             | one intentional store reset                           |
 
@@ -899,8 +900,8 @@ The system has one provider execution story: rehydrate or create a binding, obta
 - A fixture provider traverses `JobLaunchService -> LaunchOrchestrator -> BoundProvider -> durable dispatch` without a generic provider branch.
 - Missing-launch recovery records a terminal cause without fabricating a launch record or provider authority.
 - Architecture invariants derive provider verticals from registered `*/definition.ts` modules and reject cross-vertical imports and provider-specific generic execution surfaces.
-- Concrete verification lives in [`tests/unit/providers/registry.test.ts`](../tests/unit/providers/registry.test.ts) (parser mutation and boundary rejection), [`tests/unit/providers/execution-context.test.ts`](../tests/unit/providers/execution-context.test.ts) (Windows launch/preflight parity), and [`tests/unit/coordinator/service-composition.test.ts`](../tests/unit/coordinator/service-composition.test.ts) (minimal recovery authority).
-- Fixture runtime evidence is covered by [`tests/unit/jobs/event-bodies.test.ts`](../tests/unit/jobs/event-bodies.test.ts) (neutral `transportMode` acceptance and removed-field rejection), [`tests/unit/jobs/shell/launch.test.ts`](../tests/unit/jobs/shell/launch.test.ts) (waiting/acquired metadata persistence), and [`tests/unit/coordinator/recovery-provider-contract.test.ts`](../tests/unit/coordinator/recovery-provider-contract.test.ts) (fixture recovery metadata). [`tests/invariants/bound-provider-execution.test.ts`](../tests/invariants/bound-provider-execution.test.ts) covers the fixture launch path plus architecture and no-legacy invariants.
+- Concrete verification lives in [`tests/unit/providers/registry.test.ts`](../tests/unit/providers/registry.test.ts) (parser mutation and boundary rejection), [`tests/unit/providers/execution-plan.test.ts`](../tests/unit/providers/execution-plan.test.ts) (Windows launch/preflight parity), and [`tests/unit/coordinator/service-composition.test.ts`](../tests/unit/coordinator/service-composition.test.ts) (minimal recovery authority).
+- Fixture runtime evidence is covered by [`tests/unit/jobs/event-bodies.test.ts`](../tests/unit/jobs/event-bodies.test.ts) (neutral `transportMode` acceptance and removed-field rejection), [`tests/unit/jobs/shell/launch.test.ts`](../tests/unit/jobs/shell/launch.test.ts) (shared overlap and fresh job-exclusive acquisition metadata), and [`tests/unit/coordinator/recovery-provider-contract.test.ts`](../tests/unit/coordinator/recovery-provider-contract.test.ts) (fixture recovery metadata). [`tests/invariants/bound-provider-execution.test.ts`](../tests/invariants/bound-provider-execution.test.ts) covers the fixture launch path plus architecture and no-legacy invariants.
 
 ### B06 — Lifetime-scoped execution plans
 
@@ -928,7 +929,26 @@ Separate process-static identity from provider-session continuity and turn-scope
 
 **Exit gate**
 
-Every execution value has one explicit lifetime, and only host-lifetime values contribute to reusable process identity.
+Every process-launch value has one explicit lifetime, and only host-lifetime values contribute to reusable process identity. Provider-protocol payload fields remain governed by their typed protocol contracts rather than being forced into environment lifetimes.
+
+**Implemented evidence**
+
+- `ProviderExecutionPlan<Host, Session, Turn>` is the only provider preparation contract. Claude, Codex, fixture, and simulation plans expose explicit immutable `host`, `session`, and `turn` components; the former generic and provider-private execution-context files and symbols have no aliases or compatibility exports.
+- Named `EnvironmentLayer` values carry lifetime, provenance, values, canonical writes, and canonical protections. One compiler applies allowlists, Linux/Win32 key identity, deterministic collision rejection, protected ownership, and exact-environment output.
+- `ProviderAppServerCapability.compileStableHost(plan.host)` is the sole stable-host authority at the provider contract. `prepareExecutionPlan` returns only the provider-private lifetime plan, additions-only `appServerTurnEnv`, and CLI projection; it cannot return a second command, cwd, account environment, initialization request, or host specification. The bound layer assembles `ProviderServerLaunch` from the capability-owned host and prepared turn additions. Provider execution receives only a captured no-argument `acquirePreparedServer`; it cannot substitute another launch.
+- Curation is parameterized by the provider execution plan. Provider-owned `prepare` returns only provider-private `hostPlan`, additions-only `turnEnv`, and a completion closure; it cannot return a launch/specification or invoke a compiler. The bound layer snapshots those declarative values and uses its captured `ProviderAppServerCapability.compileStableHost` to assemble the launch, so normal execution, recovery attachment, and Claude curation necessarily cross the same stable-host authority. The coordinator-internal curation service alone connects that launch to low-level acquisition and gives provider completion only a no-argument `acquirePreparedServer`.
+- Daemon base and request layers are allowlisted before an environment layer is stored, so discarded credentials, cross-provider settings, or unrelated values never remain latent inside the plan. Exported allowlists are runtime-frozen readonly tuples, with membership lookup retained only in private sets; no exported `ReadonlySet` offers mutable `add`/`delete` methods. Process-launch settings such as proxy and CA paths are host-lifetime. `CORAL_KB_PATH` and `CORAL_KB_ENABLE` are daemon-fixed process settings: they participate in Codex host identity and the Claude controller environment, but never enter the shared Claude broker. `CORAL_OWNER`, `CORAL_EFFORT`, provider options, and Coral authority remain turn-lifetime. Collision diagnostics identify both layer names and provenance on Linux and Windows, while the host-manager boundary independently rejects case-fold duplicates inside either stable or turn environment maps.
+- Claude's reusable broker compiles only filtered host-lifetime daemon values plus its normalized transport mode. Its `HOME` is always the daemon infrastructure `HOME`: two caller-default bindings retain distinct controller-routing `HOME` values while compiling the same broker environment and host key. Owner, effort, model cap, KB settings, account routing, projects root, callback principal, session id, and job authority stay in the account-bound controller/session/turn plan and never affect the shared broker specification or host key.
+- Codex stable account routing remains host-lifetime, while callback authority remains explicitly turn-lifetime in the separate exact launch environment. Because B07's per-turn capability channel does not exist yet, `leaseMode: 'job-exclusive'` creates a fresh process for every job and closes it on release; it never serializes jobs onto a cached process.
+- Normal launch and recovery use the same provider-owned stable host compiler. Recovery calls `BoundProvider.appServer.prepareStableHost`, which performs the same credential-free declarative plan preparation and then invokes the same capability compiler used by normal launch; there is no second provider callback or compatibility alias. Only an explicit replacement calls `BoundProvider.prepareExecution` and mints the new turn credential. Tests prove custom providers and the Claude/Codex built-ins derive identical stable hosts while separately issued turn credentials change only the exact replacement additions.
+- `hostKeyFromSpec` covers provider, command, arguments, working directory, stable exact environment, initialization request and timeout, shutdown capability, and runtime metadata using canonical object ordering. On first acquisition the manager recursively clones and freezes that complete specification, including nested initialization parameters, so caller mutation cannot change entry identity, spawn input, or shutdown lifecycle after admission. Lease policy is compared outside executable identity and a shared/exclusive conflict fails closed in either request order.
+- Recovery may borrow a server only from an `acquired` runtime record. Job-exclusive attachment additionally requires the exact server generation and job id. Persisted `waiting` records are forbidden from carrying a generation, and every transition back to waiting clears prior generation evidence; missing generation, mismatched job, mismatched lease policy, or released lease fails closed. Attach-only interrupt and probe planning does not mint a child credential; one explicit replacement preparation obtains exactly one credential only when a new process needs turn authority, and that credential remains in replacement `turnEnv`, never stable host identity. Replacement acquisition receives exactly `{ jobId: launchRecord.jobId }`, and the temporary replacement lease is released after successful, non-resumable, and throwing probe paths.
+- Shared spawn and initialization are manager-owned and never receive an acquisition signal. Every caller, including the creator, independently races its signal against that one spawn. A creator-only abort leaves initialization owned by the manager; when it finishes with no leases, the host immediately becomes eligible for ordinary idle cleanup. Before exposing a lease the manager revalidates acquisition admission, entry registration, closing state, signal state, and handle identity, so a same-tick drain cannot return a closed lease.
+- Drain begins background cleanup exactly once per entry and rejects new acquisitions immediately. Its signal cancels only that caller's wait, including the final wait over closes that began and removed their entries before the drain snapshot; cleanup remains tracked, and a later shutdown awaits the same operation. Pending spawns and already-started closes are drained to completion. Releasing a job-exclusive lease closes that process directly; later jobs cannot reuse it.
+- The arbitrary `acquireServer(launch)` port is absent from provider execution, bound-provider curation, and provider-public contracts. Provider code sees only the no-argument acquisition capability for its prepared launch; the raw launch-taking port is named and scoped solely as a coordinator-internal curation/host operation.
+- B06 deliberately stops at exact acquired-runtime evidence. B07 is the next batch that introduces opaque `HostRef` identity and explicit `AppServerSession` attachment; no compatibility alias or premature pseudo-`HostRef` is added here.
+- Behavioral coverage lives in [`tests/unit/providers/execution-plan.test.ts`](../tests/unit/providers/execution-plan.test.ts), [`tests/unit/providers/claude/request-mapping.test.ts`](../tests/unit/providers/claude/request-mapping.test.ts), [`tests/unit/providers/codex-request-mapping.test.ts`](../tests/unit/providers/codex-request-mapping.test.ts), and [`tests/unit/coordinator/live/provider-hosts/pool.test.ts`](../tests/unit/coordinator/live/provider-hosts/pool.test.ts). [`tests/invariants/bound-provider-execution.test.ts`](../tests/invariants/bound-provider-execution.test.ts) rejects the removed execution API and provider-private plan access from generic execution code.
+- Final B06 verification passed the broad changed unit/invariant set (41 files, 755 tests), the focused provider/host/recovery set (6 files, 138 tests), production and test TypeScript checks, lint, the default full suite (427 files, 4,017 tests), and the integration suite (18 files, 41 tests). `git diff --check` also passed, and source searches found no duplicate host callback, removed execution-context, server-builder, public raw-acquisition, mutable exported provider allowlist, or compatibility API outside the invariants that prohibit their return.
 
 ### B07 — Unified app-server and Codex turn capability
 
@@ -939,11 +959,14 @@ Give live and recovered app-server behavior one owner and complete the real shar
 **Work package**
 
 - Replace live/recovery app-server definitions with one provider `AppServerCapability`.
+- Extend B06's existing `ProviderAppServerCapability` and bound `appServer` capability in place with acquisition, attachment, and session lifecycle; do not introduce a parallel replacement abstraction.
 - Introduce explicit `AppServerSession` and opaque non-secret `HostRef`.
 - Pass `AppServerSession` to provider kernels instead of recovering leases and notifications from WeakMaps.
 - Make acquisition, attachment, subscription, live/recovered interruption, probing, execution, and close operations capability-owned.
 - Persist or rehydrate safe `HostRef` data needed to attach to a concrete managed process.
-- Attach recovery by `HostRef`; compile a replacement host plan only when attachment fails.
+- Attach recovery by `HostRef`; classify a stale/missing attachment separately from a provider probe failure, and compile exactly one explicit replacement only for the stale/missing attachment outcome.
+- Let the extended capability own host planning and acquisition so B06's remaining bound launch assembly/projection and coordinator low-level acquire seam disappear rather than surviving as aliases.
+- Move the existing acquire-orchestration branches into that extended capability/session abstraction; do not grow the current coordinator acquisition method further or extract cosmetic helpers that leave ownership unchanged.
 - Implement the secure Codex per-thread/per-turn channel for lineage and callback capability.
 - Change Codex from `job-exclusive` to shared only after isolation, routing, cancellation, and callback tests prove that turn state never enters the host spec.
 - Delete duplicate app-server contracts and WeakMap lifecycle bindings in the same batch.
@@ -951,8 +974,10 @@ Give live and recovered app-server behavior one owner and complete the real shar
 **Verification**
 
 - Runtime and recovery call the same app-server capability and host-plan compiler.
+- No provider definition has a second host-producing callback; normal execution, recovery attachment, and Claude curation all invoke the capability-owned stable compiler.
 - Recovered hosts attach without recreating an old ephemeral credential.
-- A stale `HostRef` produces an explicit replacement plan.
+- A stale `HostRef` produces exactly one explicit replacement plan; a provider probe failure remains a distinct unavailable outcome and does not silently trigger another replacement.
+- Provider kernels and generic execution no longer project app-server launch details or receive a low-level acquire operation after the unified capability takes ownership.
 - Concurrent Codex turns receive only their own lineage, callback authority, notifications, and cancellation.
 - Identical Codex host specs reuse one host; different profiles or stable host inputs do not.
 - Claude broker sharing and controller isolation remain unchanged.

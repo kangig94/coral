@@ -12,6 +12,7 @@ import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { isRecord } from '../../infra/json.js';
+import type { ProviderExecutionPlan } from '../execution-plan.js';
 
 /**
  * Copy only the provider-allowlisted keys out of a persisted continuity blob.
@@ -68,17 +69,17 @@ function buildSessionUnavailableFailureCause(provider: string, reason: string) {
   return providerSessionUnavailable({ provider, reason });
 }
 
-export function sessionContinuity<TState, Context>(
+export function sessionContinuity<TState, Plan extends ProviderExecutionPlan>(
   contract: SessionContinuityContract<TState>,
-): ProviderMiddleware<Context>;
-export function sessionContinuity<TState, Context>(
+): ProviderMiddleware<Plan>;
+export function sessionContinuity<TState, Plan extends ProviderExecutionPlan>(
   providerName: string,
   contract: SessionContinuityContract<TState>,
-): ProviderMiddleware<Context>;
-export function sessionContinuity<TState, Context>(
+): ProviderMiddleware<Plan>;
+export function sessionContinuity<TState, Plan extends ProviderExecutionPlan>(
   providerNameOrContract: string | SessionContinuityContract<TState>,
   maybeContract?: SessionContinuityContract<TState>,
-): ProviderMiddleware<Context> {
+): ProviderMiddleware<Plan> {
   const providerName = typeof providerNameOrContract === 'string' ? providerNameOrContract : undefined;
   const contract = typeof providerNameOrContract === 'string' ? maybeContract : providerNameOrContract;
   if (!contract) {
@@ -100,7 +101,7 @@ export function sessionContinuity<TState, Context>(
       const bridgeLifecycle = createBridgeLifecycle(devAssertions);
       const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue, devAssertions);
 
-      const wrappedRuntime: ProviderRuntime<Context> = {
+      const wrappedRuntime: ProviderRuntime<Plan> = {
         ...runtime,
         signal: createAbortAwareSignal(runtime.signal),
         continuityBridge,

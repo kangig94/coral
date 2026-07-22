@@ -23,7 +23,7 @@ import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 
 const PROJECT_ROOT = '/tmp/coral-workflow-replacement-atomicity';
 const WORKFLOW_ID = 'workflow-replacement-atomicity';
@@ -116,7 +116,7 @@ describe('workflow replacement launch atomicity', () => {
     const provider = defineProvider({
       name: 'codex',
       run: async function* noop() {},
-      prepareExecutionContext: prepareFixtureExecutionContext,
+      prepareExecutionPlan: prepareFixtureExecutionPlan,
     })
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('atomicity fixture has no artifacts'))

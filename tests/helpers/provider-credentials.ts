@@ -1,6 +1,8 @@
 import type { ProviderScope } from '#src/infra/provider-scope.js';
-import type { ClaudeCredentialSource, ClaudeExecutionContext } from '#src/providers/claude/execution-context.js';
-import type { CodexCredentialSource, CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import { buildClaudeExecutionPlan, type ClaudeCredentialSource } from '#src/providers/claude/execution-plan.js';
+import { buildCodexExecutionPlan, type CodexCredentialSource } from '#src/providers/codex/execution-plan.js';
+import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
+import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 
 export const TEST_CODEX_SOURCE = {
@@ -96,15 +98,54 @@ export function withTestBindingLocation(
   return { ...envelope, binding: { ...binding, profile: { ...profile, canonicalLocation } } };
 }
 
-export const TEST_CODEX_CONTEXT = {
-  source: TEST_CODEX_SOURCE,
-  appServerEnv: { CODEX_HOME: TEST_CODEX_SOURCE.home },
-  platform: 'linux',
-} as const satisfies CodexExecutionContext;
+const TEST_EXECUTION_REQUEST = {
+  action: 'exec',
+  sessionId: 'test-session',
+  prompt: 'test',
+  cwd: '/workspace',
+  bypassPermissions: false,
+  coralEnv: {},
+} as const;
 
-export const TEST_CLAUDE_CONTEXT = {
+const TEST_CODEX_PREPARED = buildCodexExecutionPlan({
+  source: TEST_CODEX_SOURCE,
+  request: TEST_EXECUTION_REQUEST,
+  baseEnv: {},
+  platform: 'linux',
+});
+export const TEST_CODEX_PLAN = TEST_CODEX_PREPARED.plan;
+export const TEST_CODEX_APP_SERVER_LAUNCH = {
+  host: codexAppServerLifecycle.compileStableHost(TEST_CODEX_PREPARED.plan.host),
+  turnEnv: TEST_CODEX_PREPARED.appServerTurnEnv,
+};
+
+const TEST_CLAUDE_PREPARED = buildClaudeExecutionPlan({
   source: TEST_CLAUDE_SOURCE,
-  brokerEnv: {},
-  controllerEnv: { CLAUDE_CONFIG_DIR: TEST_CLAUDE_SOURCE.configDir },
-  projectsRoot: TEST_CLAUDE_SOURCE.projectsRoot,
-} as const satisfies ClaudeExecutionContext;
+  request: TEST_EXECUTION_REQUEST,
+  baseEnv: {},
+  storage: { existsSync: () => false },
+  platform: 'linux',
+});
+export const TEST_CLAUDE_PLAN = TEST_CLAUDE_PREPARED.plan;
+export const TEST_CLAUDE_APP_SERVER_LAUNCH = {
+  host: claudeAppServerLifecycle.compileStableHost(TEST_CLAUDE_PREPARED.plan.host),
+  turnEnv: TEST_CLAUDE_PREPARED.appServerTurnEnv,
+};
+
+export function prepareTestCodexAppServer(
+  request: { readonly cwd: string; readonly coralEnv?: Record<string, string> },
+  persistedContinuity?: Record<string, unknown>,
+) {
+  const prepared = buildCodexExecutionPlan({
+    source: TEST_CODEX_SOURCE,
+    request: {
+      ...TEST_EXECUTION_REQUEST,
+      cwd: request.cwd,
+      coralEnv: request.coralEnv ?? {},
+    },
+    persistedContinuity,
+    baseEnv: {},
+    platform: 'linux',
+  });
+  return codexAppServerLifecycle.compileStableHost(prepared.plan.host);
+}

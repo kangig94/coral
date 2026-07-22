@@ -30,7 +30,7 @@ import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
 import { none } from '#src/providers/capability.js';
 import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -116,7 +116,7 @@ function createRecoveryProviderRegistry(modules: LoadedModules) {
       .defineProvider({
         name: 'codex',
         run: async function* noopProvider() {},
-        prepareExecutionContext: prepareFixtureExecutionContext,
+        prepareExecutionPlan: prepareFixtureExecutionPlan,
       })
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('recovery fixture owns no provider artifacts'))

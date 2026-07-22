@@ -325,6 +325,7 @@ describe('provider binding lifecycle', () => {
             coralEnv: {},
           },
           baseEnv: { PATH: '/bin' },
+          storage: { existsSync: () => false },
           platform: 'linux',
         })
         .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
@@ -408,6 +409,7 @@ describe('provider binding lifecycle', () => {
             coralEnv: {},
           },
           baseEnv: { PATH: '/bin' },
+          storage: { existsSync: () => false },
           platform: 'linux',
         })
         .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,

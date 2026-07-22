@@ -16,7 +16,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { TEST_CLAUDE_BINDING } from '#tests/helpers/provider-credentials.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 async function* noopProvider() {}
@@ -86,7 +86,7 @@ function createHarness(): {
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
   providerRegistry.register(
-    defineProvider({ name: 'claude', run: noopProvider, prepareExecutionContext: prepareFixtureExecutionContext })
+    defineProvider({ name: 'claude', run: noopProvider, prepareExecutionPlan: prepareFixtureExecutionPlan })
       .binding(fixtureProviderBindingCodec('claude'))
       .artifacts(
         managed({

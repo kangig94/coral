@@ -2,7 +2,7 @@ import type { SessionContinuityMutation } from '#src/sessions/continuity-mutatio
 import { none } from '#src/providers/capability.js';
 import type {
   PreflightRuntime,
-  ProviderAppServerContract,
+  ProviderAppServerCapability,
   ProviderArtifactCapability,
   ProviderArtifactHandleInput,
   ProviderEventBody,
@@ -13,7 +13,17 @@ import type {
   ProviderServerSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
-import { buildExactProviderEnv } from '#src/providers/execution-context.js';
+import {
+  allExecutionLifetimes,
+  compileEnvironmentLayers,
+  CORAL_PROCESS_ENV_KEYS,
+  CORAL_TURN_ENV_KEYS,
+  environmentLayer,
+  EXECUTION_ENV_ALLOWLIST,
+  filterEnvironmentValues,
+  type EnvironmentLayer,
+  type ProviderExecutionPlan,
+} from '#src/providers/execution-plan.js';
 import { defineProvider, type ProviderDefinition } from '#src/providers/registry.js';
 import type { ProviderContinuityBlob } from '#src/sessions/continuity.js';
 import type { ProviderCliRequest } from '#src/providers/protocol.js';
@@ -24,11 +34,22 @@ const FIXTURE_ALLOWED_REQUEST_ENV_KEYS = Object.freeze(new Set(['FIXTURE_TUNING'
 
 type TestProviderInvocation = (
   request: ProviderRequest,
-  runtime: ProviderRuntime<FixtureProviderSource>,
+  runtime: ProviderRuntime<FixtureExecutionPlan>,
 ) => AsyncIterable<ProviderEventBody>;
 
+export type FixtureExecutionPlan = ProviderExecutionPlan<
+  Readonly<{
+    source: FixtureProviderSource;
+    platform: string;
+    environment: readonly EnvironmentLayer[];
+    serverSpec: ProviderServerSpec;
+  }>,
+  Readonly<{ sessionId: string }>,
+  Readonly<{ environment: readonly EnvironmentLayer[] }>
+>;
+
 type TestAppServerLifecycle = {
-  buildServerSpec(
+  prepareHostSpec(
     persistedContinuity: ProviderContinuityBlob | undefined,
     request: ProviderRequest,
   ): ProviderServerSpec;
@@ -72,35 +93,123 @@ export type Provider = {
   artifactCapability?: ProviderArtifactCapability;
 };
 
-export function prepareFixtureExecutionContext(input: {
+export function prepareFixtureExecutionPlan(input: {
   source: FixtureProviderSource;
   request: ProviderRequest;
   baseEnv: Readonly<Record<string, string>>;
   protectedEnv?: Readonly<Record<string, string>>;
   platform: string;
+  persistedContinuity?: ProviderContinuityBlob;
 }): {
-  readonly context: FixtureProviderSource;
+  readonly plan: FixtureExecutionPlan;
+  readonly appServerTurnEnv: Readonly<Record<string, string>>;
   prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
 } {
-  const exactEnv = buildExactProviderEnv({
-    baseEnv: input.baseEnv,
-    requestEnv: input.request.coralEnv,
-    protectedEnv: {
-      CORAL_CHILD: '1',
-      CORAL_SESSION_ID: input.request.sessionId,
-      ...(input.protectedEnv ?? {}),
-    },
-    routingEnv: input.source.routingEnv,
-    allowedRequestKeys: FIXTURE_ALLOWED_REQUEST_ENV_KEYS,
+  const hostEnvironment = [
+    environmentLayer(
+      {
+        name: 'daemon-base',
+        lifetime: 'host',
+        provenance: 'test-runtime',
+        values: filterEnvironmentValues(input.baseEnv, EXECUTION_ENV_ALLOWLIST, input.platform),
+        writes: EXECUTION_ENV_ALLOWLIST,
+        protects: new Set(),
+      },
+      input.platform,
+    ),
+    environmentLayer(
+      {
+        name: 'fixture-routing',
+        lifetime: 'host',
+        provenance: 'fixture-binding',
+        values: input.source.routingEnv,
+        writes: new Set(Object.keys(input.source.routingEnv)),
+        protects: new Set(Object.keys(input.source.routingEnv)),
+      },
+      input.platform,
+    ),
+    environmentLayer(
+      {
+        name: 'fixture-process-settings',
+        lifetime: 'host',
+        provenance: 'test-request-process',
+        values: filterEnvironmentValues(
+          input.request.coralEnv,
+          new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+          input.platform,
+        ),
+        writes: new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+        protects: new Set(),
+      },
+      input.platform,
+    ),
+  ];
+  const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: input.request.sessionId, ...(input.protectedEnv ?? {}) };
+  const turnEnvironment = [
+    environmentLayer(
+      {
+        name: 'fixture-turn-authority',
+        lifetime: 'turn',
+        provenance: 'test-principal',
+        values: authority,
+        writes: new Set(Object.keys(authority)),
+        protects: new Set(Object.keys(authority)),
+      },
+      input.platform,
+    ),
+    environmentLayer(
+      {
+        name: 'fixture-turn-request',
+        lifetime: 'turn',
+        provenance: 'test-request',
+        values: filterEnvironmentValues(
+          input.request.coralEnv,
+          new Set([...CORAL_TURN_ENV_KEYS, ...FIXTURE_ALLOWED_REQUEST_ENV_KEYS]),
+          input.platform,
+        ),
+        writes: new Set([...CORAL_TURN_ENV_KEYS, ...FIXTURE_ALLOWED_REQUEST_ENV_KEYS]),
+        protects: new Set(),
+      },
+      input.platform,
+    ),
+  ];
+  const serverSpec: ProviderServerSpec = {
+    provider: 'fixture',
+    command: 'fixture',
+    args: ['app-server'],
+    cwd: input.request.cwd,
+    env: compileEnvironmentLayers(hostEnvironment, {
+      platform: input.platform,
+      lifetimes: new Set(['host']),
+    }),
+    leaseMode: 'job-exclusive',
+  };
+  const plan: FixtureExecutionPlan = Object.freeze({
+    host: Object.freeze({
+      source: input.source,
+      platform: input.platform,
+      environment: Object.freeze(hostEnvironment),
+      serverSpec,
+    }),
+    session: Object.freeze({ sessionId: input.request.sessionId }),
+    turn: Object.freeze({ environment: Object.freeze(turnEnvironment) }),
+  });
+  const exactEnv = compileEnvironmentLayers([...hostEnvironment, ...turnEnvironment], {
     platform: input.platform,
+    lifetimes: allExecutionLifetimes(),
+  });
+  const turnEnv = compileEnvironmentLayers(turnEnvironment, {
+    platform: input.platform,
+    lifetimes: new Set(['turn']),
   });
   return {
-    context: input.source,
+    plan,
+    appServerTurnEnv: turnEnv,
     prepareCliRequest: (request) => ({ ...request, exactEnv: { ...exactEnv }, extraEnv: undefined }),
   };
 }
 
-function inferSubscriptionPhase(name: string): ProviderAppServerContract<unknown>['subscriptionPhase'] {
+function inferSubscriptionPhase(name: string): ProviderAppServerCapability<FixtureExecutionPlan>['subscriptionPhase'] {
   return name === 'claude' ? 'beforeInitialize' : 'afterInitialize';
 }
 
@@ -131,8 +240,7 @@ export function defineFakeProvider(
     ? {
         name: provider.name,
         subscriptionPhase: inferSubscriptionPhase(provider.name),
-        buildServerSpec: (request: ProviderRequest, persistedContinuity: ProviderContinuityBlob | undefined) =>
-          appServerLifecycle.buildServerSpec(persistedContinuity, request),
+        compileStableHost: (host: FixtureExecutionPlan['host']) => host.serverSpec,
         interrupt: appServerLifecycle.interrupt,
       }
     : undefined;
@@ -164,10 +272,22 @@ export function defineFakeProvider(
 
   const artifactCapability =
     provider.artifactCapability ?? none(`Test provider ${provider.name} declares no provider artifacts.`);
-  const definition = defineProvider({
+  const definition = defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
     name: provider.name,
     run: provider.execute,
-    prepareExecutionContext: prepareFixtureExecutionContext,
+    prepareExecutionPlan: (input) => {
+      const prepared = prepareFixtureExecutionPlan(input);
+      if (appServerLifecycle === undefined) return prepared;
+      const host = appServerLifecycle.prepareHostSpec(input.persistedContinuity, input.request);
+      return {
+        ...prepared,
+        plan: Object.freeze({
+          ...prepared.plan,
+          host: Object.freeze({ ...prepared.plan.host, serverSpec: host }),
+        }),
+        appServerTurnEnv: prepared.appServerTurnEnv,
+      };
+    },
     ...(provider.preflight ? { preflight: provider.preflight } : {}),
     ...(appServer ? { appServer } : {}),
     ...(recovery ? { recovery } : {}),

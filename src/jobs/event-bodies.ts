@@ -40,14 +40,23 @@ const appServerRuntimeStartedBodySchema = z
   .object({
     transport: z.literal('app-server'),
     startedAt: runtimeStartedAtSchema,
-    providerMeta: z
-      .object({
-        provider: z.string().min(1),
-        leaseState: z.enum(['waiting', 'acquired']),
-        serverGeneration: z.number().int().nonnegative().optional(),
-        transportMode: z.string().min(1).optional(),
-      })
-      .strict(),
+    providerMeta: z.discriminatedUnion('leaseState', [
+      z
+        .object({
+          provider: z.string().min(1),
+          leaseState: z.literal('waiting'),
+          transportMode: z.string().min(1).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          provider: z.string().min(1),
+          leaseState: z.literal('acquired'),
+          serverGeneration: z.number().int().nonnegative().optional(),
+          transportMode: z.string().min(1).optional(),
+        })
+        .strict(),
+    ]),
   })
   .strict();
 

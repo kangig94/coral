@@ -98,11 +98,13 @@ describe('registerBuiltInProviders', () => {
     const preparedClaude = claude.prepareExecution({
       request: request('claude'),
       baseEnv: {},
+      storage: { existsSync: () => false },
       platform: 'linux',
     });
     const preparedCodex = codex.prepareExecution({
       request: request('codex'),
       baseEnv: {},
+      storage: { existsSync: () => false },
       platform: 'linux',
     });
 
@@ -110,7 +112,7 @@ describe('registerBuiltInProviders', () => {
       name: 'claude',
       subscriptionPhase: 'beforeInitialize',
     });
-    expect(typeof preparedClaude.appServer?.buildServerSpec).toBe('function');
+    expect(preparedClaude.appServer?.launch.host.provider).toBe('claude');
     expect(preparedClaude.appServer?.interrupt).toBeUndefined();
     expect(claude.recovery?.probe).toBeUndefined();
     expect(typeof claude.recovery?.finalizeInterrupted).toBe('function');
@@ -121,7 +123,7 @@ describe('registerBuiltInProviders', () => {
       name: 'codex',
       subscriptionPhase: 'afterInitialize',
     });
-    expect(typeof preparedCodex.appServer?.buildServerSpec).toBe('function');
+    expect(preparedCodex.appServer?.launch.host.provider).toBe('codex');
     expect(typeof preparedCodex.appServer?.interrupt).toBe('function');
     expect(typeof codex.recovery?.probe).toBe('function');
     expect(typeof codex.recovery?.finalizeInterrupted).toBe('function');
@@ -414,7 +416,10 @@ describe('registerBuiltInProviders', () => {
     registry.register(
       defineProvider({
         name: 'codex',
-        prepareExecutionContext: () => ({ context: undefined, prepareCliRequest: (request) => request }),
+        prepareExecutionPlan: () => ({
+          plan: { host: undefined, session: undefined, turn: undefined },
+          prepareCliRequest: (request) => request,
+        }),
         run: async function* () {
           yield {
             kind: 'terminal',

@@ -25,7 +25,7 @@ import {
   providerTerminalEventBodySchema,
   providerJobTerminalSchema,
 } from '#src/providers/contract.js';
-import { buildExactProviderEnv } from '#src/providers/execution-context.js';
+import { prepareFixtureExecutionPlan, type FixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import type { ProviderTransportClose } from '#src/providers/protocol.js';
 import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { jobRuntimeStartedBodySchema } from '#src/jobs/event-bodies.js';
@@ -116,14 +116,14 @@ function continuityContract(
 
 type TestProvider = {
   readonly name: string;
-  readonly run: Provider<unknown>;
+  readonly run: Provider<FixtureExecutionPlan>;
 };
 
 function wrapWithSessionContinuity(
-  provider: Provider<unknown>,
+  provider: Provider<FixtureExecutionPlan>,
   contract: SessionContinuityContract<ContinuityState>,
-): Provider<unknown> {
-  return sessionContinuity(contract)(provider);
+): Provider<FixtureExecutionPlan> {
+  return sessionContinuity<ContinuityState, FixtureExecutionPlan>(contract)(provider);
 }
 
 function continuitySnapshot(
@@ -175,22 +175,10 @@ describe('coordinator continuity lifecycle integration', () => {
     const providerRegistry = new ProviderRegistry();
     for (const provider of providers) {
       providerRegistry.register(
-        defineProvider<FixtureProviderSource, FixtureProviderSource>({
+        defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
           name: provider.name,
           run: provider.run,
-          prepareExecutionContext: ({ source, request, baseEnv, protectedEnv, platform }) => {
-            const exactEnv = buildExactProviderEnv({
-              baseEnv,
-              requestEnv: request.coralEnv,
-              protectedEnv,
-              routingEnv: source.routingEnv,
-              platform,
-            });
-            return {
-              context: source,
-              prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...exactEnv }, extraEnv: undefined }),
-            };
-          },
+          prepareExecutionPlan: prepareFixtureExecutionPlan,
         })
           .binding(fixtureProviderBindingCodec(provider.name))
           .artifacts(none('continuity fixture has no provider artifacts'))

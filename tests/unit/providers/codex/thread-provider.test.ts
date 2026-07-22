@@ -7,9 +7,9 @@ import type {
   ProviderServerLease,
 } from '#src/providers/contract.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
-import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import { buildCodexExecutionPlan, type CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
 
 type MockLease = ProviderServerLease & {
   close(outcome?: Error | void): void;
@@ -67,7 +67,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
-type CodexRuntime = ProviderRuntime<CodexExecutionContext>;
+type CodexRuntime = ProviderRuntime<CodexExecutionPlan>;
 
 function makeRuntime(
   lease: ProviderServerLease,
@@ -76,7 +76,14 @@ function makeRuntime(
     threadId: 'thread-1',
   },
   overrides: Partial<Pick<CodexRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge'>> = {},
-): CodexRuntime & { acquireServer: ReturnType<typeof vi.fn> } {
+): CodexRuntime & { acquirePreparedServer: ReturnType<typeof vi.fn> } {
+  const prepared = buildCodexExecutionPlan({
+    source: TEST_CODEX_SOURCE,
+    request: makeRequest(),
+    ...(persistedContinuity === undefined ? {} : { persistedContinuity }),
+    baseEnv: {},
+    platform: 'linux',
+  });
   return {
     signal: overrides.signal ?? new AbortController().signal,
     time: {
@@ -90,7 +97,7 @@ function makeRuntime(
     storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
     ...(overrides.env ? { env: overrides.env } : {}),
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
-    acquireServer: vi.fn(async () => lease),
+    acquirePreparedServer: vi.fn(async () => lease),
     persistedContinuity,
     continuityBridge:
       overrides.continuityBridge ??
@@ -99,7 +106,7 @@ function makeRuntime(
         transportClosed: () => {},
       } satisfies CodexRuntime['continuityBridge']),
     kbRoot: '/mock/kb',
-    providerContext: TEST_CODEX_CONTEXT,
+    executionPlan: prepared.plan,
   };
 }
 
@@ -158,12 +165,7 @@ describe('codexThreadProvider', () => {
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
 
     await vi.waitFor(() => {
-      expect(runtime.acquireServer).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: 'codex',
-          cwd: '/workspace/persisted',
-        }),
-      );
+      expect(runtime.acquirePreparedServer).toHaveBeenCalledWith();
     });
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith(

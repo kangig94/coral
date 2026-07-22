@@ -1,19 +1,20 @@
 import type { ProviderEventBody, ProviderRuntime } from '../contract.js';
 import type { ProviderCliRequest } from '../protocol.js';
-import { wrapAcquireServer } from './server-lease-boundary.js';
+import type { ProviderExecutionPlan } from '../execution-plan.js';
+import { wrapAcquirePreparedServer } from './server-lease-boundary.js';
 import { snapshotBoundaryData, snapshotCliRequest, snapshotPlainReceiver, snapshotProviderResult } from './snapshot.js';
 
-export function snapshotExecutionRuntime<Context>(
-  runtime: Omit<ProviderRuntime<never>, 'providerContext'>,
-  providerContext: Context,
-): ProviderRuntime<Context> {
+export function snapshotExecutionRuntime<Plan extends ProviderExecutionPlan>(
+  runtime: Omit<ProviderRuntime<never>, 'executionPlan'>,
+  executionPlan: Plan,
+): ProviderRuntime<Plan> {
   const receiver = snapshotPlainReceiver(
     runtime,
     'Provider execution runtime',
     new Set(Object.getOwnPropertyNames(runtime)),
   );
   const runCli = receiver.runCli;
-  const acquireServer = receiver.acquireServer;
+  const acquirePreparedServer = receiver.acquirePreparedServer;
   const bridge = snapshotPlainReceiver(receiver.continuityBridge, 'Provider continuity bridge');
   const checkpoint = bridge.checkpoint;
   const transportClosed = bridge.transportClosed;
@@ -25,7 +26,11 @@ export function snapshotExecutionRuntime<Context>(
     storage: receiver.storage,
     ...(receiver.env === undefined ? {} : { env: receiver.env }),
     ids: receiver.ids,
-    acquireServer: wrapAcquireServer(receiver, acquireServer, 'Provider acquire-server'),
+    acquirePreparedServer: wrapAcquirePreparedServer(
+      receiver,
+      acquirePreparedServer,
+      'Provider prepared acquire-server',
+    ),
     ...(receiver.persistedContinuity === undefined
       ? {}
       : { persistedContinuity: snapshotBoundaryData(receiver.persistedContinuity, 'Provider persisted continuity') }),
@@ -43,7 +48,7 @@ export function snapshotExecutionRuntime<Context>(
     ...(receiver.equippedTools === undefined
       ? {}
       : { equippedTools: snapshotBoundaryData(receiver.equippedTools, 'Provider equipped tools') }),
-    providerContext,
+    executionPlan,
   });
 }
 

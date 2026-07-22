@@ -1,7 +1,6 @@
 import type { ProviderServerLease } from '../../../providers/contract.js';
 import type { ProviderServerHandle } from '../provider-server-transport.js';
-import type { ProviderHostEntry, ProviderServerAttachment, ProviderServerWaiter } from './state.js';
-import { AbortError } from '../../../runtime/abort.js';
+import type { ProviderHostEntry, ProviderServerAttachment } from './state.js';
 
 export function createProviderServerLease(
   handle: ProviderServerHandle,
@@ -19,7 +18,7 @@ export function createProviderServerLease(
         return;
       }
       released = true;
-      if (entry.spec.shared === true) {
+      if (entry.spec.leaseMode === 'shared') {
         releaseSharedLease(entry);
         return;
       }
@@ -39,53 +38,6 @@ export function createProviderServerAttachment(handle: ProviderServerHandle): Pr
   };
 }
 
-export async function waitForProviderServerLease(entry: ProviderHostEntry, signal?: AbortSignal): Promise<void> {
-  if (entry.closingError) {
-    throw entry.closingError;
-  }
-  if (!entry.leaseHeld) {
-    entry.leaseHeld = true;
-    return;
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    let settled = false;
-
-    const finish = (callback: () => void): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      waiter.cleanup();
-      callback();
-    };
-
-    const waiter: ProviderServerWaiter = {
-      resolve: () => finish(resolve),
-      reject: (error: Error) => finish(() => reject(error)),
-      cleanup: () => {
-        signal?.removeEventListener('abort', onAbort);
-        const index = entry.waiters.indexOf(waiter);
-        if (index !== -1) {
-          entry.waiters.splice(index, 1);
-        }
-      },
-    };
-
-    const onAbort = () => {
-      waiter.reject(new AbortError({ stage: 'provider_server_lease_wait', reason: signal?.reason }));
-    };
-
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-
-    signal?.addEventListener('abort', onAbort, { once: true });
-    entry.waiters.push(waiter);
-  });
-}
-
 export function acquireSharedProviderServerLease(entry: ProviderHostEntry): void {
   entry.sharedLeaseCount += 1;
 }
@@ -101,21 +53,12 @@ export function releaseSharedProviderServerLease(
   maybeArmIdleTimer(entry);
 }
 
-export function releaseProviderServerLease(
-  entry: ProviderHostEntry,
-  maybeArmIdleTimer: (entry: ProviderHostEntry) => void,
-): void {
-  const next = entry.waiters.shift();
-  if (next) {
-    next.resolve();
-    return;
-  }
+export function releaseProviderServerLease(entry: ProviderHostEntry): void {
   entry.leaseHeld = false;
-  maybeArmIdleTimer(entry);
 }
 
 export function activeLeaseCount(entry: ProviderHostEntry): number {
-  if (entry.spec.shared === true) {
+  if (entry.spec.leaseMode === 'shared') {
     return entry.sharedLeaseCount;
   }
   return entry.leaseHeld ? 1 : 0;

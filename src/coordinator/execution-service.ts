@@ -18,7 +18,7 @@ import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '.
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
-import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
+import type { ProviderServerLaunch, ProviderServerLease } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
@@ -299,10 +299,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
   }
 
   async acquireServer(
-    spec: ProviderServerSpec,
+    launch: ProviderServerLaunch,
     options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
-    return this.recoveryService.acquireServer(spec, options);
+    return this.recoveryService.acquireServer(launch, options);
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {

@@ -2,17 +2,14 @@ import { join } from 'node:path';
 
 import type {
   ProviderPreflightRuntime,
-  ProviderAppServerContract,
+  ProviderAppServerCapability,
   ProviderRecoveryContract,
-  ProviderRequest,
   ProviderServerLease,
-  ProviderServerSpec,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
 import type { AppServerMethod, AppServerRequestParams, AppServerResponse } from './protocol.js';
 import {
-  buildCodexProviderServerSpec,
   clearCodexTurnContinuity,
   hasCodexContinuity,
   isCodexSessionUnavailable,
@@ -20,7 +17,7 @@ import {
   readCodexPersistedContinuity,
 } from './request-mapping.js';
 import { verifyCodexEffectiveTransport } from './transport-policy.js';
-import type { CodexCredentialSource, CodexExecutionContext } from './execution-context.js';
+import { compileCodexHostEnvironment, type CodexCredentialSource, type CodexExecutionPlan } from './execution-plan.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
@@ -139,22 +136,21 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-export const codexAppServerLifecycle: ProviderAppServerContract<CodexExecutionContext> = {
+export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecutionPlan> = {
   name: 'codex',
   subscriptionPhase: 'afterInitialize',
-  buildServerSpec(
-    request: ProviderRequest,
-    persistedContinuity: ProviderContinuityBlob | undefined,
-    _ports,
-    providerContext,
-  ): ProviderServerSpec {
-    const spec = buildCodexProviderServerSpec(request, persistedContinuity);
-    return {
-      ...spec,
-      command: windowsCommandName(spec.command, providerContext.platform),
-      env: { ...providerContext.appServerEnv },
-    };
-  },
+  compileStableHost: (host) => ({
+    provider: 'codex',
+    command: windowsCommandName(host.command, host.platform),
+    args: [...host.args],
+    cwd: host.cwd,
+    env: { ...compileCodexHostEnvironment(host) },
+    leaseMode: host.leaseMode,
+    initializeRequest: {
+      method: 'initialize',
+      params: { clientInfo: { name: 'coral', version: 'unknown' } },
+    },
+  }),
   async interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void> {
     const parsed = readCodexPersistedContinuity(continuity);
     if (parsed.threadId === undefined || parsed.turnId === undefined) {

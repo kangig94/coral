@@ -10,7 +10,7 @@ import type { ProviderDurableSpawner } from '#src/providers/cli-runner.js';
 import type { AdmittedHandle, JobAdmissionPort, LaunchPool } from '#src/jobs/contracts/admission.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
 import type { ContinuitySnapshot } from '#src/sessions/continuity.js';
-import type { ProviderServerLease, ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderServerLaunch, ProviderServerLease } from '#src/providers/contract.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import type {
@@ -19,7 +19,7 @@ import type {
   SessionJobClaimPort,
 } from '#src/sessions/contracts.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 
 // AC4: quiesce-for-handoff must synchronously detach durable terminal/
 // completion side effects for active app-server jobs. Continuity checkpoints
@@ -211,9 +211,9 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   (runtime.storage as unknown as { writeAtomicSync: ReturnType<typeof vi.fn> }).writeAtomicSync =
     writeResultArtifactWatcher;
 
-  const acquireServerCalls: ProviderServerSpec[] = [];
-  const acquireServer = async (spec: ProviderServerSpec): Promise<ProviderServerLease> => {
-    acquireServerCalls.push(spec);
+  const acquireServerCalls: ProviderServerLaunch[] = [];
+  const acquireServer = async (launch: ProviderServerLaunch): Promise<ProviderServerLease> => {
+    acquireServerCalls.push(launch);
     return {
       rpc: async () => ({}),
       subscribe: () => () => {},
@@ -246,15 +246,21 @@ async function buildOrchestratorAroundProviderStream(): Promise<QuiesceHarness> 
   // the job as app-server.
   const provider = defineProvider({
     name: 'codex',
-    run: ((
-      _request: ProviderRequest,
-      providerRuntime: { acquireServer: (s: ProviderServerSpec) => Promise<unknown> },
-    ) => {
+    run: ((_request: ProviderRequest, providerRuntime: { acquirePreparedServer: () => Promise<unknown> }) => {
       // mark this job as app-server through the runtime port
-      void providerRuntime.acquireServer({ provider: 'codex', shared: false } as ProviderServerSpec).catch(() => {});
+      void providerRuntime.acquirePreparedServer().catch(() => {});
       return providerStream.iterable;
     }) as never,
-    prepareExecutionContext: prepareFixtureExecutionContext,
+    prepareExecutionPlan: prepareFixtureExecutionPlan,
+    appServer: {
+      name: 'codex',
+      subscriptionPhase: 'afterInitialize',
+      compileStableHost: (host) => host.serverSpec,
+    },
+    recovery: {
+      finalizeInterrupted: () => ({ kind: 'preserve' }),
+      finalizeFromArtifacts: async () => ({ terminal: {} as never }),
+    },
   })
     .binding(fixtureProviderBindingCodec('codex'))
     .artifacts(none('quiesce fixture owns no provider artifacts'))

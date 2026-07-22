@@ -13,10 +13,10 @@ import {
   type ProviderBindingRuntime,
   type ProviderBindingResult,
 } from '../contracts/binding.js';
-import type { CodexCredentialSource } from './execution-context.js';
+import type { CodexCredentialSource } from './execution-plan.js';
 import type { JsonValue } from '../../infra/json-value.js';
 import { absoluteProfilePathSchema, canonicalProfileDirectory } from '../contracts/profile.js';
-import { CODEX_CREDENTIAL_ENV_KEYS } from './credential-policy.js';
+import { isCodexCredentialEnvKey } from './credential-policy.js';
 import { unsupportedCodexTransportSetting } from './transport-policy.js';
 import { zodPersistedParser, zodValueParser } from '../binding-parser.js';
 
@@ -52,7 +52,7 @@ export function captureCodexSelection(
   homeDir: string,
 ): ProviderBindingResult<CodexSelection> {
   for (const [key, value] of Object.entries(env)) {
-    if (value?.trim() && CODEX_CREDENTIAL_ENV_KEYS.has(key.toUpperCase())) {
+    if (value?.trim() && isCodexCredentialEnvKey(key.toUpperCase())) {
       return bindingFailure({ reason: 'unsupported-selection', provider: 'codex', selector: key });
     }
   }

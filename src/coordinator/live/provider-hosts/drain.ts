@@ -3,7 +3,6 @@ import type { ProviderServerHandle } from '../provider-server-transport.js';
 import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
 import { clearIdleTimer } from './idle.js';
 import type { ProviderHostEntry } from './state.js';
 
@@ -35,14 +34,7 @@ export async function closeAllProviderServerEntries(
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const snapshot = [...entries.values()];
-  await Promise.all(
-    snapshot.map((entry) => {
-      if (options.signal !== undefined) {
-        throwIfAborted(options.signal, 'provider_host_close_all');
-      }
-      return closeProviderServerEntry(entry, detail, options);
-    }),
-  );
+  await Promise.all(snapshot.map((entry) => closeProviderServerEntry(entry, detail, options)));
 }
 
 export async function closeProviderServerEntry(
@@ -52,10 +44,8 @@ export async function closeProviderServerEntry(
     runtime: Pick<Runtime, 'time'>;
     entries: Map<string, ProviderHostEntry>;
     shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
-    signal?: AbortSignal;
   },
 ): Promise<void> {
-  const signal = options.signal;
   clearIdleTimer(entry, options.runtime.time);
   entry.disposeHostNotifications?.();
   entry.disposeHostNotifications = null;
@@ -65,19 +55,12 @@ export async function closeProviderServerEntry(
     options.entries.delete(entry.hostKey);
   }
 
-  const waiters = entry.waiters.splice(0, entry.waiters.length);
-  for (const waiter of waiters) {
-    waiter.reject(entry.closingError);
-  }
   entry.leaseHeld = false;
   entry.sharedLeaseCount = 0;
 
   const handle = entry.handle;
   entry.handle = null;
   if (handle) {
-    if (signal !== undefined) {
-      throwIfAborted(signal, 'provider_host_shutdown_handle');
-    }
     await options.shutdownHandle(handle, entry.spec).catch(() => {});
     return;
   }
@@ -87,35 +70,10 @@ export async function closeProviderServerEntry(
     return;
   }
 
-  const spawnedHandle = await waitForPendingSpawn(
-    pendingSpawn.catch(() => null),
-    signal,
-  );
+  const spawnedHandle = await pendingSpawn.catch(() => null);
   if (spawnedHandle) {
-    if (signal !== undefined) {
-      throwIfAborted(signal, 'provider_host_shutdown_spawned_handle');
-    }
     await options.shutdownHandle(spawnedHandle, entry.spec).catch(() => {});
   }
-}
-
-async function waitForPendingSpawn(
-  pendingSpawn: Promise<ProviderServerHandle | null>,
-  signal: AbortSignal | undefined,
-): Promise<ProviderServerHandle | null> {
-  if (signal === undefined) {
-    return await pendingSpawn;
-  }
-  throwIfAborted(signal, 'provider_host_pending_spawn');
-  return await new Promise<ProviderServerHandle | null>((resolve, reject) => {
-    const onAbort = () => {
-      reject(new AbortError({ stage: 'provider_host_pending_spawn', reason: signal.reason }));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    pendingSpawn.then(resolve, reject).finally(() => {
-      signal.removeEventListener('abort', onAbort);
-    });
-  });
 }
 
 export async function shutdownHandle(

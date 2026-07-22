@@ -4,7 +4,7 @@ import { discardRecordedArtifacts, managed } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
-import type { ClaudeCredentialSource, ClaudeExecutionContext } from './execution-context.js';
+import type { ClaudeCredentialSource, ClaudeExecutionPlan } from './execution-plan.js';
 
 type ClaudeArtifactLocatorStorage = Pick<StoragePort, 'existsSync' | 'readdirSync'>;
 type ClaudeArtifactCleanupStorage = ClaudeArtifactLocatorStorage & Pick<StoragePort, 'unlinkSync'>;
@@ -67,11 +67,11 @@ export function locateClaudeJsonlArtifact(options: {
 
 export function locateClaudeJsonlArtifactFromRuntime(
   conversationRef: string,
-  runtime: Pick<ProviderRuntime<ClaudeExecutionContext>, 'providerContext' | 'storage'>,
+  runtime: Pick<ProviderRuntime<ClaudeExecutionPlan>, 'executionPlan' | 'storage'>,
 ): ClaudeArtifactLocatorResult | null {
   return locateClaudeJsonlArtifact({
     conversationRef,
-    projectsRoot: runtime.providerContext.projectsRoot,
+    projectsRoot: runtime.executionPlan.session.projectsRoot,
     storage: runtime.storage,
   });
 }

@@ -28,6 +28,7 @@ import { snapshotBoundaryData } from './internal/snapshot.js';
 import { snapshotArtifacts, snapshotImplementation } from './internal/definition-boundary.js';
 import { eraseBindingCodec, type ErasedProviderBindingBoundary } from './internal/binding-boundary.js';
 import type { BoundProvider } from './bound-provider-contract.js';
+import type { ProviderExecutionPlan } from './execution-plan.js';
 
 declare const providerDefinitionBrand: unique symbol;
 
@@ -36,7 +37,10 @@ export type ProviderDefinition = {
   readonly [providerDefinitionBrand]: true;
 };
 
-export type ProviderDefinitionInput<Context, Source extends JsonValue> = ProviderImplementation<Context, Source>;
+export type ProviderDefinitionInput<
+  Plan extends ProviderExecutionPlan,
+  Source extends JsonValue,
+> = ProviderImplementation<Plan, Source>;
 
 export interface ProviderBindingBuilder<Source extends JsonValue> {
   binding<
@@ -64,8 +68,8 @@ function registeredBindingBoundary(definition: ProviderDefinition): ErasedProvid
   return boundary;
 }
 
-export function defineProvider<Context, Source extends JsonValue>(
-  spec: ProviderDefinitionInput<Context, Source>,
+export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
+  spec: ProviderDefinitionInput<Plan, Source>,
 ): ProviderBindingBuilder<Source> {
   const definitionInput = snapshotImplementation(spec);
   if (

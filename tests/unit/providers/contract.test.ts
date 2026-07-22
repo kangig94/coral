@@ -21,9 +21,9 @@ import {
   usageSummarySchema,
 } from '#src/providers/contract.js';
 import type { ProviderFailureCause } from '#src/providers/fault.js';
-import { TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../helpers/provider-credentials.js';
 
-type TestProviderContext = typeof TEST_CODEX_CONTEXT;
+type TestProviderContext = typeof TEST_CODEX_PLAN;
 type TestProvider = Provider<TestProviderContext>;
 type TestProviderMiddleware = ProviderMiddleware<TestProviderContext>;
 type TestRuntime = ProviderRuntime<TestProviderContext>;
@@ -67,7 +67,7 @@ const BASE_RUNTIME: TestRuntime = {
     clearTimeout: () => {},
   } as TestRuntime['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquireServer: async () => {
+  acquirePreparedServer: async () => {
     throw new Error('not used in contract tests');
   },
   storage: { existsSync: () => true } as unknown as TestRuntime['storage'],
@@ -76,7 +76,7 @@ const BASE_RUNTIME: TestRuntime = {
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
-  providerContext: TEST_CODEX_CONTEXT,
+  executionPlan: TEST_CODEX_PLAN,
 };
 
 function terminal(content: string): ProviderEventBody {

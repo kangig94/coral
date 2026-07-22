@@ -8,44 +8,55 @@ export type ProviderServerAttachment = {
   closed: Promise<Error | void>;
 };
 
-export type ProviderServerWaiter = {
-  resolve: () => void;
-  reject: (error: Error) => void;
-  cleanup: () => void;
-};
-
 export type HostStatsState = {
   liveControllers: number;
   activeTurns: number;
 };
 
 export type ProviderHostEntry = {
+  /** Concrete pool-entry key; unique for every job-exclusive process. */
   hostKey: string;
+  /** Stable executable identity shared by equivalent host plans. */
+  identityKey: string;
   spec: ProviderServerSpec;
+  exactEnv: Readonly<Record<string, string>>;
+  /** Owning job for a job-exclusive process. */
+  jobId?: string;
   handle: ProviderServerHandle | null;
   spawnPromise: Promise<ProviderServerHandle> | null;
   leaseHeld: boolean;
   sharedLeaseCount: number;
-  waiters: ProviderServerWaiter[];
   closingError: Error | null;
+  closePromise: Promise<void> | null;
   hostStats: HostStatsState | null;
   idleTimer: ReturnType<TimePort['setTimeout']> | null;
   disposeHostNotifications: (() => void) | null;
 };
 
-function normalizedHostEnvEntries(spec: Pick<ProviderServerSpec, 'env'>): Array<[string, string]> {
-  return Object.entries(spec.env ?? {}).sort(([left], [right]) => left.localeCompare(right));
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalValue(entry)]),
+    );
+  }
+  return value;
 }
 
 export function hostKeyFromSpec(spec: ProviderServerSpec): string {
-  // Host identity is the executable boundary. Bootstrap/shutdown policy such as
-  // initializeTimeoutMs and shutdownCapability is intentionally not part of the
-  // key; it only affects spawning or draining a concrete handle for this host.
-  return JSON.stringify({
-    provider: spec.provider,
-    command: spec.command,
-    args: [...spec.args],
-    cwd: spec.cwd,
-    env: normalizedHostEnvEntries(spec),
-  });
+  return JSON.stringify(
+    canonicalValue({
+      provider: spec.provider,
+      command: spec.command,
+      args: [...spec.args],
+      cwd: spec.cwd,
+      env: spec.env ?? {},
+      initializeRequest: spec.initializeRequest ?? null,
+      initializeTimeoutMs: spec.initializeTimeoutMs ?? null,
+      shutdownCapability: spec.shutdownCapability ?? null,
+      runtimeMetadata: spec.runtimeMetadata ?? null,
+    }),
+  );
 }

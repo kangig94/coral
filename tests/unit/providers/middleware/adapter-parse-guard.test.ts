@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
-import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import { adapterParseGuard, type ParseErrorDetail } from '#src/providers/middleware/adapter-parse-guard.js';
-import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -14,25 +14,25 @@ const BASE_REQUEST: ProviderRequest = {
   coralEnv: {},
 };
 
-const BASE_RUNTIME: ProviderRuntime<CodexExecutionContext> = {
+const BASE_RUNTIME: ProviderRuntime<CodexExecutionPlan> = {
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
     now: () => 0,
     setTimeout: () => ({ unref: () => {} }),
     clearTimeout: () => {},
-  } as ProviderRuntime<CodexExecutionContext>['time'],
+  } as ProviderRuntime<CodexExecutionPlan>['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquireServer: async () => {
+  acquirePreparedServer: async () => {
     throw new Error('not used in adapter-parse-guard tests');
   },
-  storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionContext>['storage'],
+  storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionPlan>['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
-  providerContext: TEST_CODEX_CONTEXT,
+  executionPlan: TEST_CODEX_PLAN,
 };
 
 async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<ProviderEventBody[]> {
@@ -52,12 +52,12 @@ describe('adapterParseGuard', () => {
       parseError: 'parse failed',
     };
     const parseError = new Error('parse failed');
-    const provider: Provider<CodexExecutionContext> = async function* throwingProvider() {
+    const provider: Provider<CodexExecutionPlan> = async function* throwingProvider() {
       throw parseError;
     };
 
     const events = await collect(
-      adapterParseGuard<CodexExecutionContext>('claude', (err) => (err === parseError ? parseFailure : null))(provider)(
+      adapterParseGuard<CodexExecutionPlan>('claude', (err) => (err === parseError ? parseFailure : null))(provider)(
         BASE_REQUEST,
         BASE_RUNTIME,
       ),
@@ -85,12 +85,12 @@ describe('adapterParseGuard', () => {
 
   it('re-throws non-parse errors unchanged', async () => {
     const nonParseError = new Error('non-parse failure');
-    const provider: Provider<CodexExecutionContext> = async function* throwingProvider() {
+    const provider: Provider<CodexExecutionPlan> = async function* throwingProvider() {
       throw nonParseError;
     };
 
     const result = collect(
-      adapterParseGuard<CodexExecutionContext>('claude', () => null)(provider)(BASE_REQUEST, BASE_RUNTIME),
+      adapterParseGuard<CodexExecutionPlan>('claude', () => null)(provider)(BASE_REQUEST, BASE_RUNTIME),
     );
 
     await expect(result).rejects.toThrow('non-parse failure');

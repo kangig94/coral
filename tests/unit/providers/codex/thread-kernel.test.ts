@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
-import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import type { AppServerNotificationMessage } from '#src/providers/protocol.js';
 import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 import {
@@ -13,7 +13,7 @@ import {
   createCodexTurnStateForTest,
   finishCodexCompletedForTest,
 } from '#src/providers/codex/thread-kernel.js';
-import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -29,7 +29,7 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
-type CodexRuntime = ProviderRuntime<CodexExecutionContext>;
+type CodexRuntime = ProviderRuntime<CodexExecutionPlan>;
 
 function makeRuntime(
   persistedContinuity: CodexRuntime['persistedContinuity'] = {
@@ -49,7 +49,7 @@ function makeRuntime(
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
-    acquireServer: vi.fn(async () => {
+    acquirePreparedServer: vi.fn(async () => {
       throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');
     }),
     storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
@@ -60,7 +60,7 @@ function makeRuntime(
       transportClosed: () => {},
     },
     kbRoot: '/mock/kb',
-    providerContext: TEST_CODEX_CONTEXT,
+    executionPlan: TEST_CODEX_PLAN,
   };
 }
 

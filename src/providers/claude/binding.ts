@@ -11,9 +11,9 @@ import {
   type ProviderBindingResult,
 } from '../contracts/binding.js';
 import type { JsonValue } from '../../infra/json-value.js';
-import type { ClaudeCredentialSource } from './execution-context.js';
+import type { ClaudeCredentialSource } from './execution-plan.js';
 import { absoluteProfilePathSchema, canonicalProfileDirectory } from '../contracts/profile.js';
-import { CLAUDE_CREDENTIAL_ENV_KEYS } from './credential-policy.js';
+import { isClaudeCredentialEnvKey } from './credential-policy.js';
 import { zodPersistedParser, zodValueParser } from '../binding-parser.js';
 
 function createClaudeSelectionSchema() {
@@ -61,7 +61,7 @@ export function captureClaudeSelection(
   homeDir: string,
 ): ProviderBindingResult<ClaudeSelection> {
   for (const [key, value] of Object.entries(env)) {
-    if (value?.trim() && CLAUDE_CREDENTIAL_ENV_KEYS.has(key.toUpperCase())) {
+    if (value?.trim() && isClaudeCredentialEnvKey(key.toUpperCase())) {
       return bindingFailure<ClaudeSelection>({
         reason: 'unsupported-selection',
         provider: 'claude',

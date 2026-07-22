@@ -3,6 +3,7 @@ import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts
 import {
   createExclusiveSpec,
   createFakeProviderServerHandle,
+  createLaunch,
   createSpawnProviderServerMock,
   runtime,
 } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
@@ -14,9 +15,9 @@ describe('provider host recovery', () => {
     const manager = new DefaultProviderHostManager({ runtime, spawnProviderServer });
 
     const spec = createExclusiveSpec();
-    const lease = await manager.acquireServer(spec);
-    const borrowed = await manager.borrowLiveServer(spec, { serverGeneration: 41 });
-    const mismatched = await manager.borrowLiveServer(spec, { serverGeneration: 99 });
+    const lease = await manager.acquireServer(createLaunch(spec), { jobId: 'job-a' });
+    const borrowed = await manager.borrowLiveServer(spec, { serverGeneration: 41, jobId: 'job-a' });
+    const mismatched = await manager.borrowLiveServer(spec, { serverGeneration: 99, jobId: 'job-a' });
 
     expect(borrowed).not.toBeNull();
     expect(mismatched).toBeNull();
@@ -25,7 +26,7 @@ describe('provider host recovery', () => {
     ).resolves.toEqual({});
 
     lease.release();
-    await expect(manager.borrowLiveServer(spec, { serverGeneration: 41 })).resolves.toBeNull();
+    await expect(manager.borrowLiveServer(spec, { serverGeneration: 41, jobId: 'job-a' })).resolves.toBeNull();
     await manager.shutdown();
   });
 
@@ -42,7 +43,7 @@ describe('provider host recovery', () => {
       initializeTimeoutMs: 12_345,
     });
 
-    const lease = await manager.acquireServer(spec);
+    const lease = await manager.acquireServer(createLaunch(spec), { jobId: 'job-a' });
     expect(spawnProviderServer).toHaveBeenCalledWith(
       expect.objectContaining({
         initializeRequest: {
@@ -52,6 +53,25 @@ describe('provider host recovery', () => {
         initializeTimeoutMs: 12_345,
       }),
     );
+    lease.release();
+    await manager.shutdown();
+  });
+
+  it('fails closed for missing generation, wrong job, and wrong requested lease policy', async () => {
+    const server = createFakeProviderServerHandle({ generation: 61 });
+    const manager = new DefaultProviderHostManager({
+      runtime,
+      spawnProviderServer: createSpawnProviderServerMock(server.handle),
+    });
+    const spec = createExclusiveSpec();
+    const lease = await manager.acquireServer(createLaunch(spec), { jobId: 'job-a' });
+
+    await expect(manager.borrowLiveServer(spec, { jobId: 'job-a' })).resolves.toBeNull();
+    await expect(manager.borrowLiveServer(spec, { serverGeneration: 61, jobId: 'job-b' })).resolves.toBeNull();
+    await expect(
+      manager.borrowLiveServer({ ...spec, leaseMode: 'shared' }, { serverGeneration: 61, jobId: 'job-a' }),
+    ).resolves.toBeNull();
+
     lease.release();
     await manager.shutdown();
   });

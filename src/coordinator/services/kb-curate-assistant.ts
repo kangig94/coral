@@ -2,15 +2,15 @@ import type { SystemProviderScope } from '../../infra/provider-scope.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
-import type { ProviderServerLease, ProviderServerSpec } from '../../providers/contract.js';
+import type { ProviderServerLaunch, ProviderServerLease } from '../../providers/contract.js';
 import type { KbDaemonCurateAssistantHandler } from '../live/kb-daemon-supervisor.js';
 import type { KbDaemonCurateUsageBudgetHandler } from '../live/kb-daemon-supervisor.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
 
 type ActiveSystemProviderRuntime = {
   readonly systemProviderScope?: SystemProviderScope;
-  readonly acquireServer: (
-    spec: ProviderServerSpec,
+  readonly acquireCoordinatorProviderHost: (
+    launch: ProviderServerLaunch,
     options?: { signal?: AbortSignal },
   ) => Promise<ProviderServerLease>;
 };
@@ -72,7 +72,7 @@ export function createKbCurateAssistantHandler(options: {
       runtime: options.runtime,
     });
     const curation = requireCurationCapability(bound);
-    return curation.complete(
+    const prepared = curation.prepare(
       {
         cwd: options.runtime.env.cwd(),
         prompt: request.prompt,
@@ -85,9 +85,12 @@ export function createKbCurateAssistantHandler(options: {
         ids: options.runtime.ids,
         baseEnv: options.runtime.env.fullSnapshot(),
         platform: options.runtime.env.platform(),
-        acquireServer: active.acquireServer,
       },
     );
+    return prepared.complete({
+      acquirePreparedServer: () =>
+        active.acquireCoordinatorProviderHost(prepared.launch, signal === undefined ? undefined : { signal }),
+    });
   };
 }
 

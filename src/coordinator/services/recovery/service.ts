@@ -1,4 +1,4 @@
-import type { ProviderRequest, ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
+import type { ProviderRequest, ProviderServerLaunch, ProviderServerLease } from '../../../providers/contract.js';
 import { join } from 'node:path';
 import {
   readContinuityRef,
@@ -33,6 +33,7 @@ import type { Runtime } from '../../../runtime/ports.js';
 import type {
   BoundProvider,
   BoundProviderPreparedExecution,
+  BoundProviderPreparedStableHost,
   BoundProviderRecovery,
 } from '../../../providers/bound-provider-contract.js';
 import type { JobAbortRegistryPort } from '../../../jobs/contracts/abort-registry.js';
@@ -99,7 +100,7 @@ export interface RecoveryServiceDeps {
   childPrincipalRegistry: ChildPrincipalRegistry;
   parentPrincipal: Principal;
   acquireServer?: (
-    spec: ProviderServerSpec,
+    launch: ProviderServerLaunch,
     options?: { jobId?: string; signal?: AbortSignal },
   ) => Promise<ProviderServerLease>;
 }
@@ -110,7 +111,25 @@ export class RecoveryService {
     this.deps = deps;
   }
 
-  private prepareRecoveryExecution(
+  private prepareRecoveryStableHost(
+    bound: BoundProvider,
+    session: ProviderRecoverySession,
+    request: ProviderRequest,
+  ): BoundProviderPreparedStableHost {
+    const appServer = bound.appServer;
+    if (appServer === undefined) {
+      throw new Error(`Provider '${bound.name}' has no app-server capability.`);
+    }
+    return appServer.prepareStableHost({
+      request,
+      persistedContinuity: session.providerContinuity ?? undefined,
+      baseEnv: this.deps.runtime.env.fullSnapshot(),
+      platform: this.deps.runtime.env.platform(),
+      storage: this.deps.runtime.storage,
+    });
+  }
+
+  private prepareRecoveryReplacement(
     bound: BoundProvider,
     session: ProviderRecoverySession,
     request: ProviderRequest,
@@ -118,9 +137,11 @@ export class RecoveryService {
   ): BoundProviderPreparedExecution {
     return bound.prepareExecution({
       request,
+      persistedContinuity: session.providerContinuity ?? undefined,
       baseEnv: this.deps.runtime.env.fullSnapshot(),
       protectedEnv: this.recoveryChildEnv(session, jobId),
       platform: this.deps.runtime.env.platform(),
+      storage: this.deps.runtime.storage,
     });
   }
 
@@ -204,16 +225,17 @@ export class RecoveryService {
   }
 
   private requestServer(
-    spec: ProviderServerSpec,
+    launch: ProviderServerLaunch,
     options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
-    return this.deps.acquireServer ? this.deps.acquireServer(spec, options) : this.acquireServer(spec, options);
+    return this.deps.acquireServer ? this.deps.acquireServer(launch, options) : this.acquireServer(launch, options);
   }
 
   async acquireServer(
-    spec: ProviderServerSpec,
+    launch: ProviderServerLaunch,
     options?: { jobId?: string; signal?: AbortSignal },
   ): Promise<ProviderServerLease> {
+    const spec = launch.host;
     const transportMode = spec.runtimeMetadata?.transportMode;
     if (options?.jobId) {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
@@ -222,7 +244,10 @@ export class RecoveryService {
       });
     }
 
-    const lease = await this.deps.providerHostManager.acquireServer(spec, { signal: options?.signal });
+    const lease = await this.deps.providerHostManager.acquireServer(launch, {
+      ...(options?.jobId === undefined ? {} : { jobId: options.jobId }),
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
     if (options?.jobId) {
       this.writeAppServerRuntimeRecord(options.jobId, spec.provider, {
         leaseState: 'acquired',
@@ -235,18 +260,24 @@ export class RecoveryService {
 
   async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
     const { launchRecord, session, boundProvider } = authority;
+    if (runtimeRecord.providerMeta.leaseState !== 'acquired') {
+      backendLog.warn(
+        `Cannot interrupt recovered app-server job ${launchRecord.jobId}: no acquired provider lease evidence.`,
+      );
+      return;
+    }
     const request = toProviderRequest(launchRecord, session.conversationRef);
-    const prepared = this.prepareRecoveryExecution(boundProvider, session, request, launchRecord.jobId);
-    const appServer = prepared.appServer;
+    const appServer = boundProvider.appServer;
     if (!appServer?.interrupt) return;
+    const prepared = this.prepareRecoveryStableHost(boundProvider, session, request);
     const continuity = this.sessionProviderContinuity(session);
     if (!continuity) {
       return;
     }
 
-    const spec = appServer.buildServerSpec(continuity, { storage: this.deps.runtime.storage });
-    const liveServer = await this.deps.providerHostManager.borrowLiveServer(spec, {
+    const liveServer = await this.deps.providerHostManager.borrowLiveServer(prepared.host, {
       serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+      jobId: launchRecord.jobId,
     });
     if (liveServer) {
       await appServer.interrupt(this.createAttachedProviderServerLease(liveServer), continuity);
@@ -374,30 +405,38 @@ export class RecoveryService {
   private async probeInterruptedAppServerContinuity(options: {
     launchRecord: ProviderRecoveryLaunch;
     runtimeRecord: AppServerRuntime;
-    prepared: BoundProviderPreparedExecution;
+    prepared: BoundProviderPreparedStableHost;
+    prepareReplacement: () => BoundProviderPreparedExecution;
     recovery: BoundProviderRecovery;
     continuity: ProviderContinuityBlob;
     recoveryConversationRef: string | undefined;
   }): Promise<{ mutation: SessionContinuityMutation; probeOutcome: InterruptedProbeOutcome }> {
-    const { launchRecord, runtimeRecord, prepared, recovery, continuity, recoveryConversationRef } = options;
-    const appServer = prepared.appServer;
-    if (appServer === undefined) {
-      throw new Error(`Provider '${launchRecord.provider}' has no bound app-server capability.`);
-    }
+    const { launchRecord, runtimeRecord, prepared, prepareReplacement, recovery, continuity, recoveryConversationRef } =
+      options;
     const probe = recovery.probe;
     if (probe === undefined) {
       throw new Error(`Provider '${launchRecord.provider}' has no interrupted recovery probe.`);
     }
-    const spec = appServer.buildServerSpec(continuity, { storage: this.deps.runtime.storage });
+    const spec = prepared.host;
 
     try {
       const liveServer =
-        spec.shared !== true && runtimeRecord.providerMeta.leaseState === 'acquired'
+        runtimeRecord.providerMeta.leaseState === 'acquired'
           ? await this.deps.providerHostManager.borrowLiveServer(spec, {
               serverGeneration: runtimeRecord.providerMeta.serverGeneration,
+              jobId: launchRecord.jobId,
             })
           : null;
-      const lease = liveServer ? this.createAttachedProviderServerLease(liveServer) : await this.requestServer(spec);
+      let lease: ProviderServerLease;
+      if (liveServer) {
+        lease = this.createAttachedProviderServerLease(liveServer);
+      } else {
+        const replacementLaunch = prepareReplacement().appServer?.launch;
+        if (replacementLaunch === undefined) {
+          throw new Error(`Provider '${launchRecord.provider}' produced no replacement app-server launch.`);
+        }
+        lease = await this.requestServer(replacementLaunch, { jobId: launchRecord.jobId });
+      }
       try {
         const probeResult = await probe(lease, continuity);
         return {
@@ -432,18 +471,11 @@ export class RecoveryService {
   }> {
     const { launchRecord, runtimeRecord, session, bound } = options;
     const request = toProviderRequest(launchRecord, session.conversationRef);
-    const prepared = this.prepareRecoveryExecution(bound, session, request, launchRecord.jobId);
-    const appServer = prepared.appServer;
     const recovery = bound.recovery;
     const persistedConversationRef = readContinuityRef(session.conversationRef);
     const recoveryConversationRef = persistedConversationRef;
     const continuity = this.sessionProviderContinuity(session);
 
-    if (appServer === undefined) {
-      throw new Error(
-        `Provider '${launchRecord.provider}' produced an app-server runtime without an app-server capability.`,
-      );
-    }
     if (recovery === undefined) {
       throw new Error(`Provider '${launchRecord.provider}' has no interrupted app-server recovery capability.`);
     }
@@ -472,11 +504,13 @@ export class RecoveryService {
       };
     }
     if (continuity !== undefined) {
+      const prepared = this.prepareRecoveryStableHost(bound, session, request);
       return {
         ...(await this.probeInterruptedAppServerContinuity({
           launchRecord,
           runtimeRecord,
           prepared,
+          prepareReplacement: () => this.prepareRecoveryReplacement(bound, session, request, launchRecord.jobId),
           recovery,
           continuity,
           recoveryConversationRef,
@@ -726,7 +760,11 @@ export class RecoveryService {
       providerMeta: {
         provider: providerName,
         leaseState: update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting',
-        serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
+        ...((update.leaseState ?? appRuntime?.providerMeta.leaseState ?? 'waiting') === 'acquired'
+          ? {
+              serverGeneration: update.serverGeneration ?? appRuntime?.providerMeta.serverGeneration,
+            }
+          : {}),
         transportMode: update.transportMode ?? appRuntime?.providerMeta.transportMode,
       },
     };

@@ -224,7 +224,7 @@ describe('coordinator topology invariants', () => {
   it('keeps KB curation on the opaque bound-provider capability', () => {
     const violations = COORDINATOR_EDGES.filter(({ source, target }) => {
       if (source !== 'src/coordinator/services/kb-curate-assistant.ts') return false;
-      return target === 'src/providers/execution-context.ts' || startsWithAny(target, PROVIDER_IMPLEMENTATION_PREFIXES);
+      return target === 'src/providers/execution-plan.ts' || startsWithAny(target, PROVIDER_IMPLEMENTATION_PREFIXES);
     }).map(({ source, target }) => `${source} -> ${target}`);
 
     expect(violations).toEqual([]);

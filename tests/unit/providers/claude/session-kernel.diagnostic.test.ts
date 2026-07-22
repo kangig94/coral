@@ -10,9 +10,9 @@ import type {
 import { collectProviderEvents } from '#src/providers/stream.js';
 import { brokerNotificationMethods, type TurnFailureDiagnostic } from '#src/providers/claude/appserver/protocol.js';
 import { claudeSessionKernel } from '#src/providers/claude/session-kernel.js';
-import type { ClaudeExecutionContext } from '#src/providers/claude/execution-context.js';
+import type { ClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { TEST_CLAUDE_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CLAUDE_PLAN } from '../../../helpers/provider-credentials.js';
 
 type MockLease = ProviderServerLease & {
   readonly rpcMock: ReturnType<typeof vi.fn>;
@@ -75,7 +75,7 @@ function makeLease(): MockLease {
   };
 }
 
-type ClaudeRuntime = ProviderRuntime<ClaudeExecutionContext>;
+type ClaudeRuntime = ProviderRuntime<ClaudeExecutionPlan>;
 
 function makeRuntime(controller = new AbortController()): ClaudeRuntime {
   return {
@@ -95,7 +95,7 @@ function makeRuntime(controller = new AbortController()): ClaudeRuntime {
       readdirSync: () => [],
     } as unknown as ClaudeRuntime['storage'],
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:test' },
-    acquireServer: async () => {
+    acquirePreparedServer: async () => {
       throw new Error('acquireServer should already be bound by app-server middleware.');
     },
     continuityBridge: {
@@ -103,7 +103,7 @@ function makeRuntime(controller = new AbortController()): ClaudeRuntime {
       transportClosed: vi.fn(),
     },
     kbRoot: '/mock/kb',
-    providerContext: TEST_CLAUDE_CONTEXT,
+    executionPlan: TEST_CLAUDE_PLAN,
   };
 }
 

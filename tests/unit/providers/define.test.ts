@@ -5,8 +5,11 @@ import type { ProviderImplementation, ProviderManagedArtifactCapability } from '
 import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 
-const run: ProviderImplementation<undefined>['run'] = async function* () {
+type EmptyPlan = ProviderExecutionPlan<undefined, undefined, undefined>;
+
+const run: ProviderImplementation<EmptyPlan>['run'] = async function* () {
   yield {
     kind: 'terminal',
     terminal: {
@@ -18,15 +21,15 @@ const run: ProviderImplementation<undefined>['run'] = async function* () {
   };
 };
 
-const prepareExecutionContext: ProviderImplementation<undefined>['prepareExecutionContext'] = () => ({
-  context: undefined,
+const prepareExecutionPlan: ProviderImplementation<EmptyPlan>['prepareExecutionPlan'] = () => ({
+  plan: { host: undefined, session: undefined, turn: undefined },
   prepareCliRequest: (request) => request,
 });
 
 function compileTimeAssertions(): void {
   // @ts-expect-error artifacts is unavailable until binding(...) declares the provider-owned codec.
-  defineProvider({ name: 'missing-binding', run, prepareExecutionContext }).artifacts(none('unreachable'));
-  const missingArtifacts = defineProvider({ name: 'missing-artifacts', run, prepareExecutionContext }).binding(
+  defineProvider({ name: 'missing-binding', run, prepareExecutionPlan }).artifacts(none('unreachable'));
+  const missingArtifacts = defineProvider({ name: 'missing-artifacts', run, prepareExecutionPlan }).binding(
     fixtureProviderBindingCodec('missing-artifacts'),
   );
   // @ts-expect-error build is unavailable until artifacts(...) declares the artifact capability.
@@ -34,14 +37,14 @@ function compileTimeAssertions(): void {
 
   const registry = new ProviderRegistry();
   // @ts-expect-error register accepts only branded ProviderDefinition, not raw implementation values.
-  registry.register({ name: 'raw-provider-spec', run, prepareExecutionContext });
+  registry.register({ name: 'raw-provider-spec', run, prepareExecutionPlan });
 }
 
 void compileTimeAssertions;
 
 describe('defineProvider', () => {
   it('builds a branded provider definition after artifact capability declaration', () => {
-    const definition = defineProvider({ name: 'fake', run, prepareExecutionContext })
+    const definition = defineProvider({ name: 'fake', run, prepareExecutionPlan })
       .binding(fixtureProviderBindingCodec('fake'))
       .artifacts(none('fake provider emits no provider artifacts'))
       .build();
@@ -60,7 +63,7 @@ describe('defineProvider', () => {
     const discardArtifacts: ProviderManagedArtifactCapability['discardArtifacts'] = async ({ handles }) => ({
       kind: handles.length === 0 ? ('skipped_no_handles' as const) : ('discarded' as const),
     });
-    const definition = defineProvider({ name: 'managed-fake', run, prepareExecutionContext })
+    const definition = defineProvider({ name: 'managed-fake', run, prepareExecutionPlan })
       .binding(fixtureProviderBindingCodec('managed-fake'))
       .artifacts(
         managed({

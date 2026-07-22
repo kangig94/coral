@@ -12,11 +12,11 @@ import {
   bindAppServerNotificationHandler,
   requireAppServerLease,
 } from '#src/providers/app-server.js';
-import type { CodexExecutionContext } from '#src/providers/codex/execution-context.js';
+import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import { buildJobDiagnostics, buildJobTerminal } from '#src/providers/terminal.js';
 import { appServerSession } from '#src/providers/middleware/app-server-session.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -81,8 +81,8 @@ function makeRuntime(
   lease: ProviderServerLease,
   controller = new AbortController(),
   bridge = makeBridge(),
-): ProviderRuntime<CodexExecutionContext> & {
-  acquireServer: ReturnType<typeof vi.fn>;
+): ProviderRuntime<CodexExecutionPlan> & {
+  acquirePreparedServer: ReturnType<typeof vi.fn>;
   continuityBridge: MockBridge;
 } {
   return {
@@ -92,28 +92,22 @@ function makeRuntime(
       now: () => 0,
       setTimeout: () => ({ unref: () => {} }),
       clearTimeout: () => {},
-    } as ProviderRuntime<CodexExecutionContext>['time'],
+    } as ProviderRuntime<CodexExecutionPlan>['time'],
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionContext>['storage'],
-    acquireServer: vi.fn(async () => lease),
+    storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionPlan>['storage'],
+    acquirePreparedServer: vi.fn(async () => lease),
     persistedContinuity: undefined,
-    continuityBridge: bridge as ProviderRuntime<CodexExecutionContext>['continuityBridge'] & MockBridge,
+    continuityBridge: bridge as ProviderRuntime<CodexExecutionPlan>['continuityBridge'] & MockBridge,
     kbRoot: '/mock/kb',
-    providerContext: TEST_CODEX_CONTEXT,
+    executionPlan: TEST_CODEX_PLAN,
   };
 }
 
 function makeContract(
-  overrides: Partial<AppServerContract<CodexExecutionContext>> = {},
-): AppServerContract<CodexExecutionContext> {
+  overrides: Partial<AppServerContract<CodexExecutionPlan>> = {},
+): AppServerContract<CodexExecutionPlan> {
   return {
     name: 'app-server-test',
-    buildServerSpec: vi.fn(() => ({
-      provider: 'app-server-test',
-      command: 'echo',
-      args: [],
-      cwd: '/workspace',
-    })),
     interrupt: vi.fn(async () => {}),
     subscriptionPhase: 'beforeInitialize',
     ...overrides,
@@ -148,7 +142,7 @@ describe('appServerSession', () => {
     const runtime = makeRuntime(lease);
     const contract = makeContract({ subscriptionPhase: 'beforeInitialize' });
     const terminal = terminalEvent({ kind: 'completed' }, 'before-initialize');
-    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionPlan> = async function* leaf(_request, nextRuntime) {
       order.push('kernel:start');
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       yield terminal;
@@ -160,14 +154,7 @@ describe('appServerSession', () => {
     expect(events).toEqual([terminal]);
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
     expect(lease.releaseMock).toHaveBeenCalledTimes(1);
-    expect(contract.buildServerSpec).toHaveBeenCalledWith(
-      BASE_REQUEST,
-      undefined,
-      expect.objectContaining({
-        storage: expect.anything(),
-      }),
-      TEST_CODEX_CONTEXT,
-    );
+    expect(runtime.acquirePreparedServer).toHaveBeenCalledWith();
   });
 
   it('delivers notifications through the bound runtime handler with a single lease subscription', async () => {
@@ -179,7 +166,7 @@ describe('appServerSession', () => {
     const started = createDeferred<void>();
     const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent({ kind: 'completed' }, 'bound-handler');
-    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionPlan> = async function* leaf(_request, nextRuntime) {
       const clearNotificationBinding = bindAppServerNotificationHandler(nextRuntime, dynamicHandler);
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();
@@ -217,7 +204,7 @@ describe('appServerSession', () => {
     const started = createDeferred<void>();
     const nextTerminal = createDeferred<Extract<ProviderEventBody, { kind: 'terminal' }>>();
     const terminal = terminalEvent({ kind: 'aborted', reason: 'signal_abort' });
-    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionPlan> = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();
       yield await nextTerminal.promise;
@@ -264,7 +251,7 @@ describe('appServerSession', () => {
         message: 'leaf-authored close handling',
       },
     });
-    const provider: Provider<CodexExecutionContext> = async function* leaf(_request, nextRuntime) {
+    const provider: Provider<CodexExecutionPlan> = async function* leaf(_request, nextRuntime) {
       expect(requireAppServerLease(nextRuntime, contract.name)).toBe(lease);
       started.resolve();
       yield await nextTerminal.promise;

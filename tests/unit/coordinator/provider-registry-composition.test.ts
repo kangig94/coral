@@ -23,7 +23,7 @@ import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { assertCurrentStoreFormat } from '#src/store/current-format.js';
 import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
-import { prepareFixtureExecutionContext } from '#tests/helpers/scripted-provider.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const roots: string[] = [];
@@ -53,7 +53,7 @@ describe('coordinator provider registry composition', () => {
         defineProvider({
           name: 'fixture',
           run: async function* () {},
-          prepareExecutionContext: prepareFixtureExecutionContext,
+          prepareExecutionPlan: prepareFixtureExecutionPlan,
         })
           .binding(fixtureProviderBindingCodec('fixture'))
           .artifacts(none('fixture'))
@@ -91,7 +91,7 @@ describe('coordinator provider registry composition', () => {
         defineProvider({
           name: 'late',
           run: async function* () {},
-          prepareExecutionContext: prepareFixtureExecutionContext,
+          prepareExecutionPlan: prepareFixtureExecutionPlan,
         })
           .binding(fixtureProviderBindingCodec('late'))
           .artifacts(none('late'))

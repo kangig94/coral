@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  buildClaudeProviderServerSpec,
   buildClaudeContinuity,
   mapSessionEnsureParams,
   mapTurnStartParams,
   readClaudePersistedContinuity,
   withClaudeContinuity,
 } from '#src/providers/claude/request-mapping.js';
+import { buildClaudeExecutionPlan } from '#src/providers/claude/execution-plan.js';
+import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
+import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
 import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
 import { CORAL_CLAUDE_TRANSPORT_ENV } from '#src/providers/claude/transport-mode.js';
 
@@ -29,6 +31,29 @@ function withBundleDir<T>(run: () => T): T {
 function withPluginRoot<T>(run: () => T): T {
   vi.stubGlobal('__PLUGIN_ROOT__', '/plugin');
   return run();
+}
+
+function prepareBroker(options: {
+  cwd?: string;
+  coralEnv?: Record<string, string>;
+  baseEnv?: Record<string, string>;
+  existsSync?: (path: string) => boolean;
+}) {
+  const prepared = buildClaudeExecutionPlan({
+    source: TEST_CLAUDE_SOURCE,
+    request: {
+      action: 'exec',
+      sessionId: 'session',
+      prompt: 'test',
+      cwd: options.cwd ?? '/workspace',
+      bypassPermissions: false,
+      coralEnv: options.coralEnv ?? {},
+    },
+    baseEnv: options.baseEnv ?? {},
+    storage: { existsSync: options.existsSync ?? (() => true) },
+    platform: 'linux',
+  });
+  return claudeAppServerLifecycle.compileStableHost(prepared.plan.host);
 }
 
 describe('Claude continuity refs', () => {
@@ -102,33 +127,21 @@ describe('Claude continuity refs', () => {
 describe('Claude appserver request mapping', () => {
   it('prefers the active bundle appserver when running from build output', () => {
     const spec = withPluginRoot(() =>
-      withBundleDir(() =>
-        buildClaudeProviderServerSpec(
-          { cwd: '/workspace', coralEnv: {} },
-          { existsSync: (path) => path === '/plugin/build/coral-claude-appserver.cjs' },
-        ),
-      ),
+      withBundleDir(() => prepareBroker({ existsSync: (path) => path === '/plugin/build/coral-claude-appserver.cjs' })),
     );
 
     expect(spec.args).toEqual(['/plugin/build/coral-claude-appserver.cjs']);
   });
 
   it('defaults the Claude broker transport to print mode in provider server identity', () => {
-    const spec = withPluginRoot(() =>
-      buildClaudeProviderServerSpec({ cwd: '/workspace', coralEnv: {} }, { existsSync: () => true }),
-    );
+    const spec = withPluginRoot(() => prepareBroker({}));
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'print' });
     expect(spec.runtimeMetadata).toEqual({ transportMode: 'print' });
   });
 
   it('carries explicit TUI transport into provider server identity', () => {
-    const spec = withPluginRoot(() =>
-      buildClaudeProviderServerSpec(
-        { cwd: '/workspace', coralEnv: { [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' } },
-        { existsSync: () => true },
-      ),
-    );
+    const spec = withPluginRoot(() => prepareBroker({ coralEnv: { [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' } }));
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' });
     expect(spec.runtimeMetadata).toEqual({ transportMode: 'tui' });
@@ -168,12 +181,8 @@ describe('Claude appserver request mapping', () => {
   });
 
   it('keeps one account-neutral broker while binding each controller to its Claude account', () => {
-    const brokerA = withPluginRoot(() =>
-      buildClaudeProviderServerSpec({ cwd: '/workspace', coralEnv: {} }, { existsSync: () => true }, { PATH: '/bin' }),
-    );
-    const brokerB = withPluginRoot(() =>
-      buildClaudeProviderServerSpec({ cwd: '/workspace', coralEnv: {} }, { existsSync: () => true }, { PATH: '/bin' }),
-    );
+    const brokerA = withPluginRoot(() => prepareBroker({ baseEnv: { PATH: '/bin' } }));
+    const brokerB = withPluginRoot(() => prepareBroker({ baseEnv: { PATH: '/bin' } }));
     const ensureA = mapSessionEnsureParams(
       { action: 'exec', sessionId: 'session-a', cwd: '/workspace', bypassPermissions: false, coralEnv: {} },
       { sha256: () => 'system-hash' },
@@ -192,7 +201,11 @@ describe('Claude appserver request mapping', () => {
     );
 
     expect(brokerA).toEqual(brokerB);
+    expect(brokerA.leaseMode).toBe('shared');
     expect(brokerA.env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+    expect(brokerA.env).not.toHaveProperty('CORAL_CHILD_PRINCIPAL_HANDLE');
+    expect(brokerA.env).not.toHaveProperty('CORAL_JOB_ID');
+    expect(brokerA.env).not.toHaveProperty('CORAL_SESSION_ID');
     expect(ensureA.controllerEnv).toMatchObject({ CLAUDE_CONFIG_DIR: '/accounts/a' });
     expect(ensureA.projectsRoot).toBe('/accounts/a/projects');
     expect(ensureB.controllerEnv).toMatchObject({ CLAUDE_CONFIG_DIR: '/accounts/b' });

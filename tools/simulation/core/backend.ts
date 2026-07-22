@@ -12,7 +12,17 @@ import { ProviderRegistry } from '../../../src/providers/registry.js';
 import { none } from '../../../src/providers/capability.js';
 import type { Provider, ProviderRecoveryContract, ProviderTerminal } from '../../../src/providers/contract.js';
 import { defineProvider, type ProviderDefinition } from '../../../src/providers/registry.js';
-import { buildExactProviderEnv } from '../../../src/providers/execution-context.js';
+import {
+  allExecutionLifetimes,
+  compileEnvironmentLayers,
+  CORAL_PROCESS_ENV_KEYS,
+  CORAL_TURN_ENV_KEYS,
+  environmentLayer,
+  EXECUTION_ENV_ALLOWLIST,
+  filterEnvironmentValues,
+  type EnvironmentLayer,
+  type ProviderExecutionPlan,
+} from '../../../src/providers/execution-plan.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
 import type { ProviderScope } from '../../../src/infra/provider-scope.js';
@@ -92,6 +102,12 @@ type SimulationProviderSource = {
   readonly profileRoot: string;
   readonly routingEnv: Readonly<Record<string, string>>;
 };
+
+type SimulationExecutionPlan = ProviderExecutionPlan<
+  Readonly<{ source: SimulationProviderSource; platform: string; environment: readonly EnvironmentLayer[] }>,
+  Readonly<{ sessionId: string }>,
+  Readonly<{ environment: readonly EnvironmentLayer[] }>
+>;
 
 type SimulationBindingCodec = Extract<
   ProviderBindingCodec<SimulationSelection, SimulationProfile, AccountSubject & JsonValue, SimulationProviderSource>,
@@ -309,7 +325,7 @@ export function createFakeProvider(
 ): ProviderDefinition {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
-  const run: Provider<unknown> = (request, providerRuntime) =>
+  const run: Provider<SimulationExecutionPlan> = (request, providerRuntime) =>
     streamProviderEvents(async (emit) => {
       const startedAt = runtime.time.now();
 
@@ -355,26 +371,86 @@ export function createFakeProvider(
         }),
       );
     });
-  return defineProvider<SimulationProviderSource, SimulationProviderSource>({
+  return defineProvider<SimulationExecutionPlan, SimulationProviderSource>({
     name: providerName,
     run,
-    prepareExecutionContext: ({ source, request, baseEnv, protectedEnv, platform }) => {
-      const exactEnv = Object.freeze({
-        ...buildExactProviderEnv({
-          baseEnv,
-          requestEnv: request.coralEnv,
-          protectedEnv: {
-            CORAL_CHILD: '1',
-            CORAL_SESSION_ID: request.sessionId,
-            ...(protectedEnv ?? {}),
+    prepareExecutionPlan: ({ source, request, baseEnv, protectedEnv, platform }) => {
+      const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...(protectedEnv ?? {}) };
+      const hostEnvironment = [
+        environmentLayer(
+          {
+            name: 'simulation-base',
+            lifetime: 'host',
+            provenance: 'simulation-runtime',
+            values: filterEnvironmentValues(baseEnv, EXECUTION_ENV_ALLOWLIST, platform),
+            writes: EXECUTION_ENV_ALLOWLIST,
+            protects: new Set(),
           },
-          routingEnv: source.routingEnv,
           platform,
-        }),
-        ...(scenario?.cli?.extraEnv ?? {}),
+        ),
+        environmentLayer(
+          {
+            name: 'simulation-routing',
+            lifetime: 'host',
+            provenance: 'simulation-binding',
+            values: source.routingEnv,
+            writes: new Set(Object.keys(source.routingEnv)),
+            protects: new Set(Object.keys(source.routingEnv)),
+          },
+          platform,
+        ),
+        environmentLayer(
+          {
+            name: 'simulation-process-settings',
+            lifetime: 'host',
+            provenance: 'simulation-request-process',
+            values: filterEnvironmentValues(
+              request.coralEnv,
+              new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+              platform,
+            ),
+            writes: new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+            protects: new Set(),
+          },
+          platform,
+        ),
+      ];
+      const turnEnvironment = [
+        environmentLayer(
+          {
+            name: 'simulation-turn',
+            lifetime: 'turn',
+            provenance: 'simulation',
+            values: filterEnvironmentValues(
+              { ...request.coralEnv, ...authority, ...(scenario?.cli?.extraEnv ?? {}) },
+              new Set([
+                ...CORAL_TURN_ENV_KEYS,
+                ...Object.keys(authority),
+                ...Object.keys(scenario?.cli?.extraEnv ?? {}),
+              ]),
+              platform,
+            ),
+            writes: new Set([
+              ...CORAL_TURN_ENV_KEYS,
+              ...Object.keys(authority),
+              ...Object.keys(scenario?.cli?.extraEnv ?? {}),
+            ]),
+            protects: new Set(Object.keys(authority)),
+          },
+          platform,
+        ),
+      ];
+      const plan: SimulationExecutionPlan = Object.freeze({
+        host: Object.freeze({ source, platform, environment: Object.freeze(hostEnvironment) }),
+        session: Object.freeze({ sessionId: request.sessionId }),
+        turn: Object.freeze({ environment: Object.freeze(turnEnvironment) }),
+      });
+      const exactEnv = compileEnvironmentLayers([...hostEnvironment, ...turnEnvironment], {
+        platform,
+        lifetimes: allExecutionLifetimes(),
       });
       return {
-        context: source,
+        plan,
         prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...exactEnv }, extraEnv: undefined }),
       };
     },

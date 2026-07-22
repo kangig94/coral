@@ -4,7 +4,7 @@ import { discardRecordedArtifacts, managed } from '../capability.js';
 import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
-import type { CodexCredentialSource, CodexExecutionContext } from './execution-context.js';
+import type { CodexCredentialSource, CodexExecutionPlan } from './execution-plan.js';
 
 const CODEX_ROLLOUT_SCAN_DEPTH = 4;
 
@@ -62,11 +62,11 @@ export function locateCodexRolloutArtifact(options: {
 
 export function locateCodexRolloutArtifactFromRuntime(
   threadId: string,
-  runtime: Pick<ProviderRuntime<CodexExecutionContext>, 'providerContext' | 'storage'>,
+  runtime: Pick<ProviderRuntime<CodexExecutionPlan>, 'executionPlan' | 'storage'>,
 ): ProviderArtifactLocatorResult | null {
   return locateCodexRolloutArtifact({
     threadId,
-    sessionsRoot: join(runtime.providerContext.source.home, 'sessions'),
+    sessionsRoot: join(runtime.executionPlan.host.source.home, 'sessions'),
     storage: runtime.storage,
   });
 }

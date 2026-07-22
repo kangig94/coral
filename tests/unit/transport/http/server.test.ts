@@ -1704,10 +1704,12 @@ describe('execution backend server', () => {
 
   it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
     const { serverModule } = await loadExecutionModules();
-    const [{ ExecutionService }, claudeRequestMapping, codexRequestMapping] = await Promise.all([
+    const [{ ExecutionService }, claudeExecution, codexExecution, claudeFacets, codexFacets] = await Promise.all([
       import('#src/coordinator/execution-service.js'),
-      import('#src/providers/claude/request-mapping.js'),
-      import('#src/providers/codex/request-mapping.js'),
+      import('#src/providers/claude/execution-plan.js'),
+      import('#src/providers/codex/execution-plan.js'),
+      import('#src/providers/claude/provider-facets.js'),
+      import('#src/providers/codex/provider-facets.js'),
     ]);
     const progressStore = createProgressStore();
     const projectRootA = createProjectRoot('provider-host-project-a');
@@ -1837,21 +1839,84 @@ describe('execution backend server', () => {
     expect(serviceA).toBeInstanceOf(ExecutionService);
     expect(serviceB).toBeInstanceOf(ExecutionService);
 
-    const claudeSpec = claudeRequestMapping.buildClaudeProviderServerSpec(
-      { cwd: projectRootA },
-      { existsSync: () => true },
-    );
-    const codexSpecA = codexRequestMapping.buildCodexProviderServerSpec(projectRootA, {
-      PROJECT_ROOT: 'a',
+    const providerRequest = (cwd: string) => ({
+      action: 'exec' as const,
+      sessionId: `session:${cwd}`,
+      prompt: 'test',
+      cwd,
+      bypassPermissions: false,
+      coralEnv: {},
     });
-    const codexSpecB = codexRequestMapping.buildCodexProviderServerSpec(projectRootB, {
-      PROJECT_ROOT: 'b',
+    const claudePrepared = claudeExecution.buildClaudeExecutionPlan({
+      source: TEST_CLAUDE_SOURCE,
+      request: providerRequest(projectRootA),
+      baseEnv: {},
+      storage: { existsSync: () => true },
+      platform: 'linux',
+    });
+    const claudeLaunch = {
+      host: claudeFacets.claudeAppServerLifecycle.compileStableHost(claudePrepared.plan.host),
+      turnEnv: claudePrepared.appServerTurnEnv,
+    };
+    const codexPreparedA = codexExecution.buildCodexExecutionPlan({
+      source: TEST_CODEX_SOURCE,
+      request: providerRequest(projectRootA),
+      baseEnv: {},
+      platform: 'linux',
+    });
+    const codexLaunchA = {
+      host: codexFacets.codexAppServerLifecycle.compileStableHost(codexPreparedA.plan.host),
+      turnEnv: codexPreparedA.appServerTurnEnv,
+    };
+    const codexPreparedB = codexExecution.buildCodexExecutionPlan({
+      source: TEST_CODEX_SOURCE,
+      request: providerRequest(projectRootB),
+      baseEnv: {},
+      platform: 'linux',
+    });
+    const codexLaunchB = {
+      host: codexFacets.codexAppServerLifecycle.compileStableHost(codexPreparedB.plan.host),
+      turnEnv: codexPreparedB.appServerTurnEnv,
+    };
+    const leaseJobIdA = 'provider-host-lease-a';
+    const leaseJobIdB = 'provider-host-lease-b';
+    createdJobIds.add(leaseJobIdA);
+    createdJobIds.add(leaseJobIdB);
+    seedTestJobSession(progressStore, {
+      jobId: leaseJobIdA,
+      sessionId: 'provider-host-lease-session-a',
+      provider: 'codex',
+      projectRoot: projectRootA,
+      backendNamespace: testBackendNamespace,
+      initialPhase: 'running',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId: leaseJobIdA,
+      sessionId: 'provider-host-lease-session-a',
+      provider: 'codex',
+      projectRoot: projectRootA,
+      backendNamespace: testBackendNamespace,
+    });
+    seedTestJobSession(progressStore, {
+      jobId: leaseJobIdB,
+      sessionId: 'provider-host-lease-session-b',
+      provider: 'codex',
+      projectRoot: projectRootB,
+      backendNamespace: testBackendNamespace,
+      initialPhase: 'running',
+    });
+    stubLaunchRecord(progressStore, {
+      jobId: leaseJobIdB,
+      sessionId: 'provider-host-lease-session-b',
+      provider: 'codex',
+      projectRoot: projectRootB,
+      backendNamespace: testBackendNamespace,
     });
 
-    const claudeLeaseA = await serviceA!.acquireServer(claudeSpec);
-    const claudeLeaseB = await serviceB!.acquireServer(claudeSpec);
-    const codexLeaseA = await serviceA!.acquireServer(codexSpecA);
-    const codexLeaseB = await serviceB!.acquireServer(codexSpecB);
+    const claudeLeaseA = await serviceA!.acquireServer(claudeLaunch);
+    const claudeLeaseB = await serviceB!.acquireServer(claudeLaunch);
+    const codexLeaseA = await serviceA!.acquireServer(codexLaunchA, { jobId: leaseJobIdA });
+    const codexLeaseB = await serviceB!.acquireServer(codexLaunchB, { jobId: leaseJobIdB });
 
     expect(claudeLeaseA.generation).toBe(11);
     expect(claudeLeaseB.generation).toBe(11);

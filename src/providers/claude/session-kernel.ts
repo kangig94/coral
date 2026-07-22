@@ -32,7 +32,7 @@ import {
 } from './request-prep.js';
 import { locateClaudeJsonlArtifactFromRuntime } from './artifacts.js';
 import { normalizeClaudeUsage } from './usage.js';
-import type { ClaudeExecutionContext } from './execution-context.js';
+import { compileClaudeControllerEnvironment, type ClaudeExecutionPlan } from './execution-plan.js';
 
 function buildClaudeSessionFailureCause(
   message: string,
@@ -86,12 +86,12 @@ export async function mapClaudeInterrupt(lease: ProviderServerLease): Promise<vo
   await brokerRpc<void>(lease, 'turn/interrupt', mapInterruptParams(state.brokerSessionKey, state.brokerTurnId));
 }
 
-export const claudeSessionKernel: Provider<ClaudeExecutionContext> = (request, runtime) =>
+export const claudeSessionKernel: Provider<ClaudeExecutionPlan> = (request, runtime) =>
   streamProviderEvents(async (emit) => {
     const lease = requireAppServerLease(runtime, 'claude');
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
     const state = createInitialState(request, persistedContinuity, runtime);
-    const providerContext = runtime.providerContext;
+    const executionPlan = runtime.executionPlan;
     const clearBinding = bindInterruptState(lease, state);
     const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
       applyNotification(state, message, runtime, emit);
@@ -110,8 +110,8 @@ export const claudeSessionKernel: Provider<ClaudeExecutionContext> = (request, r
           runtime.ids,
           {
             derivedSystemPrompt: state.prepared.systemPrompt,
-            controllerEnv: providerContext.controllerEnv,
-            projectsRoot: providerContext.projectsRoot,
+            controllerEnv: compileClaudeControllerEnvironment(executionPlan),
+            projectsRoot: executionPlan.session.projectsRoot,
           },
         ),
       );
@@ -172,7 +172,7 @@ export const claudeSessionKernel: Provider<ClaudeExecutionContext> = (request, r
 function createInitialState(
   request: Parameters<Provider>[0],
   persistedContinuity: ReturnType<typeof readClaudePersistedContinuity>,
-  runtime: ProviderRuntime<ClaudeExecutionContext>,
+  runtime: ProviderRuntime<ClaudeExecutionPlan>,
 ): ClaudeTurnState {
   let resolveTerminal!: (outcome: ClaudeTurnOutcome) => void;
   const terminal = new Promise<ClaudeTurnOutcome>((resolve) => {
@@ -204,7 +204,7 @@ function bindInterruptState(lease: ProviderServerLease, state: ClaudeTurnState):
   };
 }
 
-function checkpointBrokerContinuity(runtime: ProviderRuntime<ClaudeExecutionContext>, state: ClaudeTurnState): void {
+function checkpointBrokerContinuity(runtime: ProviderRuntime<ClaudeExecutionPlan>, state: ClaudeTurnState): void {
   if (state.bootstrapSignature === undefined) {
     return;
   }
@@ -220,7 +220,7 @@ function checkpointBrokerContinuity(runtime: ProviderRuntime<ClaudeExecutionCont
 
 function emitClaudeArtifactHandleOnce(
   state: ClaudeTurnState,
-  runtime: ProviderRuntime<ClaudeExecutionContext>,
+  runtime: ProviderRuntime<ClaudeExecutionPlan>,
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (state.artifactHandleEmissionAttempted || state.conversationRef === undefined) {
@@ -260,7 +260,7 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: ClaudeTurnOutcome)
 function applyNotification(
   state: ClaudeTurnState,
   message: { method: string; params?: Record<string, unknown> },
-  runtime: ProviderRuntime<ClaudeExecutionContext>,
+  runtime: ProviderRuntime<ClaudeExecutionPlan>,
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (!isRecord(message)) {

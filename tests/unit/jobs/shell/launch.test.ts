@@ -23,7 +23,7 @@ import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/r
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
+import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
   AgentNamespaceNotFoundError,
@@ -402,8 +402,8 @@ function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderD
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      buildServerSpec: (_continuity, request) =>
-        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      prepareHostSpec: (_continuity, request) =>
+        prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
       interrupt: async (lease, continuity) => {
         const threadId = continuity.threadId;
         const turnId = continuity.turnId;
@@ -484,7 +484,7 @@ function makeSharedClaudeAppServerProvider(spec: {
   command: string;
   args: string[];
   cwd: string;
-  shared: true;
+  leaseMode: 'shared';
 }): NonNullable<ReturnType<typeof toProviderDefinition>> {
   return toProviderDefinition({
     name: 'claude',
@@ -492,7 +492,7 @@ function makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      buildServerSpec: () => spec,
+      prepareHostSpec: () => spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -857,7 +857,7 @@ describe('ExecutionService launch', () => {
     const seenHomes: string[] = [];
     const { provider } = makeProvider({
       execute: async (_request, providerRuntime) => {
-        seenHomes.push(providerRuntime.providerContext.root);
+        seenHomes.push(providerRuntime.executionPlan.host.source.root);
         return { content: 'ok', durationMs: 0 };
       },
     });
@@ -1092,9 +1092,9 @@ describe('ExecutionService launch', () => {
     ]);
   });
 
-  it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
+  it('acquires a fresh app-server process for every job-exclusive runtime without waiting or reuse', async () => {
     const spec = {
-      ...buildCodexProviderServerSpec(ctx.projectRoot),
+      ...prepareTestCodexAppServer({ cwd: ctx.projectRoot }),
       runtimeMetadata: { transportMode: 'fixture-wire' },
     };
     const server = createFakeProviderServerHandle({ generation: 41 });
@@ -1163,7 +1163,7 @@ describe('ExecutionService launch', () => {
       createdAt: new Date().toISOString(),
     });
 
-    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+    const firstLease = await service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId1 });
     const firstRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
     expect(firstRuntime).toMatchObject({
       transport: 'app-server',
@@ -1178,30 +1178,26 @@ describe('ExecutionService launch', () => {
     expect(firstRuntime.providerMeta).not.toHaveProperty('conversationRef');
     expect(firstRuntime.providerMeta).not.toHaveProperty('providerContinuity');
 
-    let secondSettled = false;
-    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
-      secondSettled = true;
-      return lease;
+    const replacement = createFakeProviderServerHandle({ generation: 42 });
+    const replacementSpawn = createDeferred<ProviderServerHandle>();
+    spawnProviderServerMock.mockImplementationOnce(async () => replacementSpawn.promise);
+    const reacquisition = service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId1 });
+    await vi.waitFor(() => {
+      expect(progressStore.readRuntimeProjection(jobId1)).toMatchObject({
+        transport: 'app-server',
+        providerMeta: { provider: 'codex', leaseState: 'waiting', transportMode: 'fixture-wire' },
+      });
+    });
+    const waitingRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
+    expect(waitingRuntime.providerMeta).not.toHaveProperty('serverGeneration');
+    replacementSpawn.resolve(replacement.handle);
+    const replacementLease = await reacquisition;
+    expect(progressStore.readRuntimeProjection(jobId1)).toMatchObject({
+      providerMeta: { leaseState: 'acquired', serverGeneration: 42 },
     });
 
-    await Promise.resolve();
-
-    const waitingRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
-    expect(waitingRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        leaseState: 'waiting',
-        transportMode: 'fixture-wire',
-      },
-    });
-    expect(waitingRuntime.startTime).toEqual(expect.any(String));
-    expect(waitingRuntime.providerMeta.serverGeneration).toBeUndefined();
-    expect(waitingRuntime.providerMeta).not.toHaveProperty('providerContinuity');
-    expect(secondSettled).toBe(false);
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-
-    firstLease.release();
-    const secondLease = await secondLeasePromise;
+    const secondLease = await service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId2 });
+    expect(spawnProviderServerMock).toHaveBeenCalledTimes(3);
 
     const acquiredRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
     expect(acquiredRuntime).toMatchObject({
@@ -1216,6 +1212,8 @@ describe('ExecutionService launch', () => {
     expect(acquiredRuntime.startTime).toEqual(expect.any(String));
     expect(acquiredRuntime.providerMeta).not.toHaveProperty('providerContinuity');
 
+    firstLease.release();
+    replacementLease.release();
     secondLease.release();
   });
 
@@ -1226,7 +1224,7 @@ describe('ExecutionService launch', () => {
       args: ['broker.js'],
       cwd: process.cwd(),
       env: { [CONTEXT_ENV_KEY.claudeTransport]: 'print' },
-      shared: true as const,
+      leaseMode: 'shared' as const,
     };
     const requestGate = createDeferred<void>();
     let inFlight = 0;
@@ -1306,10 +1304,10 @@ describe('ExecutionService launch', () => {
       createdAt: new Date().toISOString(),
     });
 
-    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
+    const firstLease = await service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId1 });
 
     let secondSettled = false;
-    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
+    const secondLeasePromise = service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId2 }).then((lease) => {
       secondSettled = true;
       return lease;
     });
@@ -1421,12 +1419,15 @@ describe('ExecutionService launch', () => {
       command: process.execPath,
       args: ['broker.js'],
       cwd: process.cwd(),
-      shared: true as const,
+      leaseMode: 'shared' as const,
     };
     const server = createFakeProviderServerHandle();
     const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
     mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
-    const service = createService(ctx);
+    const providerHostManager = createProviderHostManager({ runtime, spawnProviderServer });
+    const borrowLiveServerSpy = vi.spyOn(providerHostManager, 'borrowLiveServer');
+    const registerChildSpy = vi.spyOn(ChildPrincipalRegistry.prototype, 'register');
+    const service = createService(ctx, { providerHostManager });
     const { sessionManager } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
@@ -1449,7 +1450,7 @@ describe('ExecutionService launch', () => {
         envHash: 'sha256:env',
       },
     });
-    const firstLease = await service.acquireServer(spec);
+    const firstLease = await service.acquireServer({ host: spec, turnEnv: {} });
     const acquireServerSpy = vi.spyOn(service, 'acquireServer');
 
     const launchRecord: JobLaunch = {
@@ -1483,6 +1484,18 @@ describe('ExecutionService launch', () => {
 
     const recoveryAuthority = await service.captureProviderRecoveryAuthority(launchRecord);
     if (recoveryAuthority === null) throw new Error('Expected provider recovery authority.');
+    await service.interruptAppServerJob(recoveryAuthority, {
+      ...runtimeRecord,
+      providerMeta: {
+        ...runtimeRecord.providerMeta,
+        leaseState: 'waiting',
+      },
+    });
+
+    expect(borrowLiveServerSpy).not.toHaveBeenCalled();
+    expect(server.requestMock).not.toHaveBeenCalledWith('turn/interrupt', expect.anything());
+    expect(registerChildSpy).not.toHaveBeenCalled();
+
     await service.interruptAppServerJob(recoveryAuthority, runtimeRecord);
 
     expect(acquireServerSpy).not.toHaveBeenCalled();
@@ -1491,6 +1504,7 @@ describe('ExecutionService launch', () => {
       brokerTurnId: 'broker-turn-1',
     });
     expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
+    expect(registerChildSpy).not.toHaveBeenCalled();
 
     acquireServerSpy.mockRestore();
     firstLease.release();

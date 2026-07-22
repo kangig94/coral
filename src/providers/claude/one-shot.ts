@@ -8,9 +8,8 @@ import type {
   ProviderCurationCapability,
   ProviderCurationRequest,
   ProviderServerLease,
-  ProviderServerSpec,
 } from '../contract.js';
-import { buildExactProviderEnv } from '../execution-context.js';
+import { compileEnvironmentLayers, hostExecutionLifetime } from '../execution-plan.js';
 import { deleteClaudeJsonlArtifactsForConversation } from './artifacts.js';
 import {
   brokerNotificationMethods,
@@ -18,10 +17,16 @@ import {
   type SessionEnsureResult,
   type TurnStartResult,
 } from './appserver/protocol.js';
-import { buildClaudeBootstrapSignature, buildClaudeProviderServerSpec } from './request-mapping.js';
+import { buildClaudeBootstrapSignature } from './request-mapping.js';
 import type { PermissionMode } from './request-prep.js';
 import { isClaudeCurationUsageBudgetExhausted } from './usage-budget.js';
-import { claudeRoutingEnv, type ClaudeCredentialSource } from './execution-context.js';
+import {
+  claudeBaseLayer,
+  claudeRoutingLayer,
+  createClaudeBrokerHost,
+  type ClaudeCredentialSource,
+  type ClaudeExecutionPlan,
+} from './execution-plan.js';
 
 type ClaudeOneShotRequest = {
   readonly cwd: string;
@@ -33,9 +38,9 @@ type ClaudeOneShotRequest = {
   readonly signal?: AbortSignal;
 };
 
-type ClaudeSystemExecutionContext = {
+type ClaudeSystemExecutionPlan = {
   readonly source: ClaudeCredentialSource;
-  readonly brokerEnv: Readonly<Record<string, string>>;
+  readonly hostPlan: ClaudeExecutionPlan['host'];
   readonly controllerEnv: Readonly<Record<string, string>>;
   readonly projectsRoot: string;
 };
@@ -43,11 +48,8 @@ type ClaudeSystemExecutionContext = {
 type ClaudeOneShotDeps = {
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
-  readonly providerContext: ClaudeSystemExecutionContext;
-  readonly acquireServer: (
-    spec: ProviderServerSpec,
-    options?: { signal?: AbortSignal },
-  ) => Promise<ProviderServerLease>;
+  readonly executionPlan: ClaudeSystemExecutionPlan;
+  readonly acquirePreparedServer: () => Promise<ProviderServerLease>;
 };
 
 type ClaudeOneShotOutcome =
@@ -70,12 +72,7 @@ type ClaudeOneShotState = {
 
 async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
   const state = createOneShotState();
-  const lease = await deps.acquireServer(
-    buildClaudeProviderServerSpec({ cwd: request.cwd }, deps.storage, deps.providerContext.brokerEnv),
-    {
-      signal: request.signal,
-    },
-  );
+  const lease = await deps.acquirePreparedServer();
   const unsubscribe = lease.subscribe((message) => {
     applyOneShotNotification(state, message);
   });
@@ -91,8 +88,8 @@ async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneS
         deps.ids,
         request.systemPrompt,
       ),
-      controllerEnv: { ...deps.providerContext.controllerEnv },
-      projectsRoot: deps.providerContext.projectsRoot,
+      controllerEnv: { ...deps.executionPlan.controllerEnv },
+      projectsRoot: deps.executionPlan.projectsRoot,
       ...(request.systemPrompt === undefined ? {} : { systemPrompt: request.systemPrompt }),
       ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.effort === undefined ? {} : { effort: request.effort }),
@@ -137,41 +134,70 @@ async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneS
 }
 
 export const claudeCurationCapability = Object.freeze({
-  complete(
+  prepare(
     request: ProviderCurationRequest,
-    runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['complete']>[1],
+    runtime: Parameters<ProviderCurationCapability<ClaudeExecutionPlan, ClaudeCredentialSource>['prepare']>[1],
   ) {
-    return runClaudeOneShotTurn(
-      {
-        storage: runtime.storage,
-        ids: runtime.ids,
-        providerContext: {
-          source: runtime.source,
-          brokerEnv: buildExactProviderEnv({
-            baseEnv: runtime.baseEnv,
-            platform: runtime.platform,
-          }),
-          controllerEnv: buildExactProviderEnv({
-            baseEnv: runtime.baseEnv,
-            routingEnv: claudeRoutingEnv(runtime.source),
-            platform: runtime.platform,
-          }),
-          projectsRoot: runtime.source.projectsRoot,
-        },
-        acquireServer: runtime.acquireServer,
-      },
-      request,
+    const executionPlan = buildClaudeSystemExecutionPlan(
+      runtime.source,
+      runtime.baseEnv,
+      runtime.platform,
+      request.cwd,
+      runtime.storage,
     );
+    return Object.freeze({
+      hostPlan: executionPlan.hostPlan,
+      turnEnv: Object.freeze({}),
+      complete: ({ acquirePreparedServer }: { acquirePreparedServer: () => Promise<ProviderServerLease> }) =>
+        runClaudeOneShotTurn(
+          {
+            storage: runtime.storage,
+            ids: runtime.ids,
+            executionPlan,
+            acquirePreparedServer,
+          },
+          request,
+        ),
+    });
   },
   isUsageBudgetExhausted(
-    runtime: Parameters<ProviderCurationCapability<ClaudeCredentialSource>['isUsageBudgetExhausted']>[0],
+    runtime: Parameters<
+      ProviderCurationCapability<ClaudeExecutionPlan, ClaudeCredentialSource>['isUsageBudgetExhausted']
+    >[0],
   ) {
     return isClaudeCurationUsageBudgetExhausted({
       configDir: runtime.source.configDir,
       runtime,
     });
   },
-}) satisfies ProviderCurationCapability<ClaudeCredentialSource>;
+}) satisfies ProviderCurationCapability<ClaudeExecutionPlan, ClaudeCredentialSource>;
+
+function buildClaudeSystemExecutionPlan(
+  source: ClaudeCredentialSource,
+  baseEnv: Readonly<Record<string, string>>,
+  platform: string,
+  cwd: string,
+  storage: Pick<StoragePort, 'existsSync'>,
+): ClaudeSystemExecutionPlan {
+  const broker = createClaudeBrokerHost({
+    cwd,
+    baseEnv,
+    platform,
+    storage,
+    transportMode: 'print',
+  });
+  const controllerEnvironment = [claudeBaseLayer(baseEnv, platform), claudeRoutingLayer(source, platform)];
+  return Object.freeze({
+    source,
+    hostPlan: Object.freeze({
+      platform,
+      broker,
+      controller: Object.freeze({ source, environment: Object.freeze(controllerEnvironment) }),
+    }),
+    controllerEnv: compileEnvironmentLayers(controllerEnvironment, { platform, lifetimes: hostExecutionLifetime() }),
+    projectsRoot: source.projectsRoot,
+  });
+}
 
 function createOneShotState(): ClaudeOneShotState {
   let resolveTerminal!: (outcome: ClaudeOneShotOutcome) => void;
@@ -298,7 +324,7 @@ function cleanupOneShotJsonl(deps: ClaudeOneShotDeps, state: ClaudeOneShotState)
 
   const result = deleteClaudeJsonlArtifactsForConversation({
     conversationRef: state.conversationRef,
-    projectsRoot: deps.providerContext.projectsRoot,
+    projectsRoot: deps.executionPlan.projectsRoot,
     storage: deps.storage,
   });
   for (const cleanupError of result.errors) {

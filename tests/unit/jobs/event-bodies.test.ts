@@ -19,6 +19,17 @@ describe('job event body schemas', () => {
     ).toBe(true);
     expect(
       jobRuntimeStartedBodySchema.safeParse({
+        transport: 'app-server',
+        startedAt: '2026-06-12T00:00:00.000Z',
+        providerMeta: {
+          provider: 'fixture',
+          leaseState: 'waiting',
+          serverGeneration: 7,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      jobRuntimeStartedBodySchema.safeParse({
         transport: 'workflow',
         startedAt: '2026-06-12T00:00:00.000Z',
       }).success,

@@ -10,7 +10,12 @@ import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
-import type { ProviderServerLease, ProviderServerSpec, UsageSummary } from '../providers/contract.js';
+import type {
+  ProviderServerLaunch,
+  ProviderServerLease,
+  ProviderServerSpec,
+  UsageSummary,
+} from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -60,10 +65,13 @@ export interface ExecutionProviderServerAttachment {
 }
 
 export interface ExecutionProviderHostManager {
-  acquireServer(spec: ProviderServerSpec, options?: { signal?: AbortSignal }): Promise<ProviderServerLease>;
+  acquireServer(
+    launch: ProviderServerLaunch,
+    options?: { jobId?: string; signal?: AbortSignal },
+  ): Promise<ProviderServerLease>;
   borrowLiveServer(
     spec: ProviderServerSpec,
-    options: { serverGeneration?: number },
+    options: { serverGeneration?: number; jobId?: string },
   ): Promise<ExecutionProviderServerAttachment | null>;
 }
 

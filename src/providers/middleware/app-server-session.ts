@@ -1,12 +1,7 @@
-import type {
-  ProviderEventBody,
-  ProviderMiddleware,
-  ProviderRuntime,
-  ProviderServerLease,
-  ProviderServerSpec,
-} from '../contract.js';
+import type { ProviderEventBody, ProviderMiddleware, ProviderRuntime, ProviderServerLease } from '../contract.js';
 import { bindAppServerLease, getAppServerNotificationHandler, type AppServerContract } from '../app-server.js';
 import type { AppServerNotificationMessage, AppServerSubscriptionPhase, ProviderTransportClose } from '../protocol.js';
+import type { ProviderExecutionPlan } from '../execution-plan.js';
 
 type DownstreamStep = IteratorResult<ProviderEventBody>;
 type ClosedResult = { kind: 'closed'; closed: Error | void };
@@ -28,8 +23,8 @@ function toTransportClose(closed: Error | void): ProviderTransportClose {
   };
 }
 
-function installAbortRelay<Context>(
-  runtime: ProviderRuntime<Context>,
+function installAbortRelay<Plan extends ProviderExecutionPlan>(
+  runtime: ProviderRuntime<Plan>,
   lease: ProviderServerLease,
   interrupt: (lease: ProviderServerLease) => Promise<void>,
 ): () => void {
@@ -134,19 +129,12 @@ async function teardownSession(options: {
   }
 }
 
-export function appServerSession<Context>(contract: AppServerContract<Context>): ProviderMiddleware<Context> {
+export function appServerSession<Plan extends ProviderExecutionPlan>(
+  contract: AppServerContract<Plan>,
+): ProviderMiddleware<Plan> {
   return (next) =>
     async function* appServerSessionProvider(request, runtime) {
-      if (!runtime.storage) {
-        throw new Error('appServerSession requires runtime.storage to build the provider server spec.');
-      }
-      const spec: ProviderServerSpec = contract.buildServerSpec(
-        request,
-        runtime.persistedContinuity,
-        { storage: runtime.storage },
-        runtime.providerContext,
-      );
-      const lease: ProviderServerLease = await runtime.acquireServer(spec);
+      const lease: ProviderServerLease = await runtime.acquirePreparedServer();
       const clearBoundLease = bindAppServerLease(runtime, lease);
       const removeAbortRelay = installAbortRelay(runtime, lease, contract.interrupt.bind(contract));
       const notifications = subscribeWithPhase(contract.subscriptionPhase, lease, (message) => {
