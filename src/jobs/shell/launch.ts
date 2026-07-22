@@ -1,12 +1,15 @@
 import { bindProviderRunner, type ProviderDurableSpawner } from '../../providers/cli-runner.js';
+import type { HostRef, ProviderEventBody, ProviderRequest, ProviderRuntime } from '../../providers/contract.js';
 import type {
-  ProviderEventBody,
-  ProviderRequest,
-  ProviderRuntime,
-  ProviderServerLaunch,
-  ProviderServerLease,
-} from '../../providers/contract.js';
-import type { BoundProvider, BoundProviderPreparedExecution } from '../../providers/bound-provider-contract.js';
+  BoundProvider,
+  BoundProviderAppServerExecutionRuntime,
+  BoundProviderPreparedExecution,
+} from '../../providers/bound-provider-contract.js';
+
+type BoundProviderExecutionRuntimeCommon = Omit<
+  BoundProviderAppServerExecutionRuntime,
+  'transport' | 'onAppServerWaiting' | 'onHostRef'
+>;
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
 import { backendLog } from '../../infra/backend-log.js';
@@ -86,10 +89,6 @@ export interface LaunchOrchestratorDeps {
       },
     ): void;
   };
-  acquireServer: (
-    launch: ProviderServerLaunch,
-    options?: { jobId?: string; signal?: AbortSignal },
-  ) => Promise<ProviderServerLease>;
 }
 
 type ProviderLaunchOptions = {
@@ -106,8 +105,8 @@ type ProviderLaunchOptions = {
 };
 
 export class LaunchOrchestrator {
-  // Tracks jobs whose runtime has called `acquireServer` (i.e. app-server
-  // transport). Quiesce-for-handoff acts on this set: any active CLI/durable
+  // Tracks every admitted app-server job before its first asynchronous
+  // preparation boundary. Quiesce-for-handoff acts on this set; CLI/durable
   // jobs not in the set keep the existing handoff preservation behavior.
   private readonly appServerJobs = new Set<string>();
   // Set when shutdown is in handoff mode. Captured callbacks for matched job
@@ -115,26 +114,59 @@ export class LaunchOrchestrator {
   // result artifact, release admission, remove abort registry entries,
   // delete job-pool entries, or release session continuity/claim.
   private readonly quiescedAppServerJobs = new Set<string>();
+  private readonly appServerHandoffAborts = new Map<string, AbortController>();
+  private readonly inFlightAppServerWrites = new Map<string, Set<Promise<unknown>>>();
+  private appServerHandoffQuiesced = false;
 
   private readonly deps: LaunchOrchestratorDeps;
   constructor(deps: LaunchOrchestratorDeps) {
     this.deps = deps;
   }
 
-  /**
-   * Synchronously detach durable terminal/completion side effects for active
-   * app-server jobs so a subsequent provider-host drain cannot mutate state.
-   *
-   * No awaits-that-can-hang: the function flips an in-memory flag for matching
-   * job IDs and returns immediately. Continuity checkpoints up to this call
-   * have already committed; subsequent stream events on the orphaned consumer
-   * loop fall on no-op callbacks.
-   */
-  quiesceAppServerJobsForHandoff(_signal: AbortSignal): Promise<void> {
+  async quiesceAppServerJobsForHandoff(): Promise<void> {
+    this.appServerHandoffQuiesced = true;
     for (const jobId of this.appServerJobs) {
       this.quiescedAppServerJobs.add(jobId);
+      this.appServerHandoffAborts.get(jobId)?.abort(new Error('App-server execution quiesced for daemon handoff.'));
     }
-    return Promise.resolve();
+    const writes = [...this.quiescedAppServerJobs].flatMap((jobId) => [
+      ...(this.inFlightAppServerWrites.get(jobId) ?? []),
+    ]);
+    await Promise.allSettled(writes);
+  }
+
+  private trackAppServerWrite<T>(jobId: string, operation: () => Promise<T>): Promise<T> {
+    // Install the fence entry before invoking any persistence code. The
+    // operation may synchronously trigger observers that begin handoff.
+    const write = Promise.resolve().then(operation);
+    const writes = this.inFlightAppServerWrites.get(jobId) ?? new Set<Promise<unknown>>();
+    this.inFlightAppServerWrites.set(jobId, writes);
+    writes.add(write);
+    void write
+      .finally(() => {
+        writes.delete(write);
+        if (writes.size === 0) this.inFlightAppServerWrites.delete(jobId);
+      })
+      .catch(() => undefined);
+    return write;
+  }
+
+  private preserveAppServerJobForHandoff(provider: BoundProvider, jobId: string): boolean {
+    if (!this.appServerHandoffQuiesced || provider.appServer === undefined) return false;
+    this.quiescedAppServerJobs.add(jobId);
+    return true;
+  }
+
+  private registerAppServerJob(provider: BoundProvider, jobId: string, jobSignal: AbortSignal): AbortSignal {
+    if (provider.appServer === undefined) return jobSignal;
+    this.appServerJobs.add(jobId);
+    const handoffAbort = new AbortController();
+    this.appServerHandoffAborts.set(jobId, handoffAbort);
+    if (this.appServerHandoffQuiesced) {
+      this.quiescedAppServerJobs.add(jobId);
+      handoffAbort.abort(new Error('App-server execution quiesced for daemon handoff.'));
+    }
+    return AbortSignal.any([jobSignal, handoffAbort.signal]);
   }
 
   private resolveEventMetadata(
@@ -656,10 +688,14 @@ export class LaunchOrchestrator {
       return;
     }
 
+    const executionSignal = this.registerAppServerJob(provider, jobId, signal);
+
     void (async () => {
       let permitAcquired = admission.type === 'immediate';
+      let preserveOwnership = false;
 
       try {
+        if (this.preserveAppServerJobForHandoff(provider, jobId)) return;
         if (admission.type === 'queued') {
           const queueOutcome = await this.waitForQueuedPermit(admission, signal);
           if (queueOutcome === 'aborted') {
@@ -668,11 +704,22 @@ export class LaunchOrchestrator {
           }
 
           permitAcquired = true;
+          if (this.preserveAppServerJobForHandoff(provider, jobId)) return;
           this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
           this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
         }
 
-        await this.executeJob(provider, request, jobId, sessionId, signal, pool, protectedEnv);
+        const disposition = await this.executeJob(
+          provider,
+          request,
+          jobId,
+          sessionId,
+          executionSignal,
+          pool,
+          protectedEnv,
+        );
+        preserveOwnership = disposition === 'preserved';
+        if (disposition === 'settled') permitAcquired = false;
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
@@ -691,9 +738,13 @@ export class LaunchOrchestrator {
           throw finalizeError;
         }
       } finally {
-        if (permitAcquired && !this.quiescedAppServerJobs.has(jobId)) {
+        const quiesced = this.quiescedAppServerJobs.has(jobId);
+        if (permitAcquired && !quiesced && !preserveOwnership) {
           launchAdmission.releaseLaunch(jobId, pool);
         }
+        this.appServerJobs.delete(jobId);
+        this.quiescedAppServerJobs.delete(jobId);
+        this.appServerHandoffAborts.delete(jobId);
       }
     })();
   }
@@ -717,14 +768,21 @@ export class LaunchOrchestrator {
       return;
     }
 
+    const executionSignal = this.registerAppServerJob(provider, jobId, signal);
+
     void (async () => {
+      let permitAcquired = false;
+      let preserveOwnership = false;
       try {
+        if (this.preserveAppServerJobForHandoff(provider, jobId)) return;
         const queueOutcome = await this.waitForQueuedPermit(admission, signal);
         if (queueOutcome === 'aborted') {
           this.finishQueuedAbort(jobId, sessionId, 'queue_shutdown');
           return;
         }
 
+        permitAcquired = true;
+        if (this.preserveAppServerJobForHandoff(provider, jobId)) return;
         this.appendJobEvent(jobId, sessionId, 'job.queue.admitted', {});
         this.appendProgressEvent(jobId, sessionId, 'dequeued, launching');
 
@@ -732,17 +790,19 @@ export class LaunchOrchestrator {
         if (session === null) {
           throw new Error(`Recovered queued job ${jobId} has no provider session snapshot.`);
         }
-        await this.executeJob(
+        const disposition = await this.executeJob(
           provider,
           toProviderRequest(launchRecord, session.conversationRef),
           jobId,
           sessionId,
-          signal,
+          executionSignal,
           pool,
           {
             ...protectedEnv,
           },
         );
+        preserveOwnership = disposition === 'preserved';
+        if (disposition === 'settled') permitAcquired = false;
       } catch (error: unknown) {
         if (error instanceof TerminalWriteError) {
           backendLog.error(error.message, error.cause);
@@ -761,9 +821,13 @@ export class LaunchOrchestrator {
           throw finalizeError;
         }
       } finally {
-        if (!this.quiescedAppServerJobs.has(jobId)) {
+        const quiesced = this.quiescedAppServerJobs.has(jobId);
+        if (permitAcquired && !quiesced && !preserveOwnership) {
           launchAdmission.releaseLaunch(jobId, pool);
         }
+        this.appServerJobs.delete(jobId);
+        this.quiescedAppServerJobs.delete(jobId);
+        this.appServerHandoffAborts.delete(jobId);
       }
     })();
   }
@@ -835,7 +899,7 @@ export class LaunchOrchestrator {
     signal: AbortSignal,
     pool: LaunchPool,
     protectedEnv?: Record<string, string>,
-  ): Promise<void> {
+  ): Promise<'settled' | 'preserved'> {
     const session = this.deps.sessionManager.get(provider.name, sessionId);
     if (!session) {
       throw new ProviderBindingRuntimeError(
@@ -849,6 +913,7 @@ export class LaunchOrchestrator {
       throw new ProviderBindingRuntimeError(failure, this.deps.providerRegistry.renderBindingFailure(failure));
     }
     const readiness = await provider.readiness('launch', this.deps.runtime.storage);
+    if (this.preserveAppServerJobForHandoff(provider, jobId)) return 'preserved';
     if (!readiness.ok) {
       throw new ProviderBindingRuntimeError(
         readiness.failure,
@@ -875,76 +940,110 @@ export class LaunchOrchestrator {
       platform: this.deps.runtime.env.platform(),
       storage: this.deps.runtime.storage,
     });
-    const runtime = this.createProviderRuntime(
-      provider,
-      prepared,
-      requestWithInject,
-      sessionId,
-      jobId,
-      signal,
-      pool,
-      equippedTools,
-    );
+    const runtime = this.createProviderRuntime(provider, requestWithInject, sessionId, jobId, signal, equippedTools);
     const initialVersion = this.readClaimVersion(provider.name, sessionId, jobId);
-    const consumed = await consumeJobStream({
-      jobId,
-      sessionId,
-      initialVersion,
-      stream: prepared.execute(runtime),
-      sessionApi: {
-        checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
-          if (this.quiescedAppServerJobs.has(jobId)) {
-            // After quiesce: short-circuit so the dying daemon does not mutate
-            // session continuity. The replacement daemon's startup recovery
-            // probes the latest checkpoint that committed before quiesce.
-            return { ok: false as const };
-          }
-          const result = await this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options);
-          return result;
+    try {
+      const consumed = await consumeJobStream({
+        jobId,
+        sessionId,
+        initialVersion,
+        stream: this.executePreparedProvider(provider, prepared, runtime, jobId, signal, pool),
+        sessionApi: {
+          checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
+            if (this.quiescedAppServerJobs.has(jobId)) {
+              // After quiesce: short-circuit so the dying daemon does not mutate
+              // session continuity. The replacement daemon's startup recovery
+              // probes the latest checkpoint that committed before quiesce.
+              return { ok: false as const };
+            }
+            const result = await this.trackAppServerWrite(jobId, () =>
+              this.deps.sessionManager.checkpointJobContinuityAtomic(claimedSessionId, options),
+            );
+            if (this.quiescedAppServerJobs.has(jobId)) return { ok: false as const };
+            return result;
+          },
+          recordArtifactHandleAtomic: async (claimedSessionId, options) => {
+            if (this.quiescedAppServerJobs.has(jobId)) {
+              return { ok: false as const };
+            }
+            const result = await this.trackAppServerWrite(jobId, () =>
+              this.deps.sessionManager.recordArtifactHandleAtomic(claimedSessionId, options),
+            );
+            if (this.quiescedAppServerJobs.has(jobId)) return { ok: false as const };
+            return result;
+          },
         },
-        recordArtifactHandleAtomic: async (claimedSessionId, options) => {
-          if (this.quiescedAppServerJobs.has(jobId)) {
-            return { ok: false as const };
-          }
-          return this.deps.sessionManager.recordArtifactHandleAtomic(claimedSessionId, options);
+        appendProgress: (message) => {
+          if (this.quiescedAppServerJobs.has(jobId)) return;
+          this.appendProgressEvent(jobId, sessionId, message);
         },
-      },
-      appendProgress: (message) => {
-        if (this.quiescedAppServerJobs.has(jobId)) return;
-        this.appendProgressEvent(jobId, sessionId, message);
-      },
-      recordTerminal: (event) => {
-        if (this.quiescedAppServerJobs.has(jobId)) return;
-        this.appendProviderTerminal(jobId, sessionId, request.cwd, event);
-      },
-    });
-    if (this.quiescedAppServerJobs.has(jobId)) return;
-    await this.handleConsumedJobCompletion(provider.name, sessionId, jobId, consumed.terminal.content);
+      });
+      if (consumed.kind === 'suspended' || this.quiescedAppServerJobs.has(jobId)) return 'preserved';
+      const completion = this.trackAppServerWrite(jobId, () =>
+        this.completeConsumedJob({
+          sessionId,
+          jobId,
+          pool,
+          projectRoot: request.cwd,
+          event: consumed.event,
+          expectedClaimVersion: consumed.claimVersion,
+        }),
+      );
+      return (await completion) ? 'settled' : 'preserved';
+    } finally {
+      this.inFlightAppServerWrites.delete(jobId);
+    }
   }
 
-  private async handleConsumedJobCompletion(
-    providerName: string,
-    sessionId: string,
-    jobId: string,
-    content: string,
-  ): Promise<void> {
-    const { abortRegistry, jobPools } = this.deps;
+  private async completeConsumedJob(options: {
+    sessionId: string;
+    jobId: string;
+    pool: LaunchPool;
+    projectRoot: string | undefined;
+    event: Extract<ProviderEventBody, { kind: 'terminal' }>;
+    expectedClaimVersion: number;
+  }): Promise<boolean> {
+    const { sessionId, jobId, pool, projectRoot, event, expectedClaimVersion } = options;
+
     try {
-      writeResultArtifact(this.deps.runtime.storage, this.deps.runtime.paths.coral.exports.jobsRoot, jobId, content);
+      this.appendProviderTerminal(jobId, sessionId, projectRoot, event);
+    } catch (error: unknown) {
+      backendLog.error(`Failed to persist provider terminal for ${jobId}: ${errorMessage(error)}`, error);
+      return false;
+    }
+
+    let released: boolean;
+    try {
+      released = await this.deps.sessionManager.releaseJobClaimAtomic(sessionId, {
+        expectedActiveJobId: jobId,
+        expectedVersion: expectedClaimVersion,
+      });
+    } catch (error: unknown) {
+      backendLog.error(
+        `Failed to release claimed session ${sessionId} for terminal job ${jobId}: ${errorMessage(error)}`,
+      );
+      return false;
+    }
+    if (!released) {
+      backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
+      return false;
+    }
+
+    try {
+      writeResultArtifact(
+        this.deps.runtime.storage,
+        this.deps.runtime.paths.coral.exports.jobsRoot,
+        jobId,
+        event.terminal.content,
+      );
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifacts failed for ${jobId}: ${errorMessage(error)}`);
-    } finally {
-      abortRegistry.remove(jobId);
-      jobPools.delete(jobId);
-
-      const released = await this.deps.sessionManager.releaseJobClaimAtomic(sessionId, {
-        expectedActiveJobId: jobId,
-        expectedVersion: this.readClaimVersion(providerName, sessionId, jobId),
-      });
-      if (!released) {
-        backendLog.warn(`Failed to release claimed session ${sessionId} for terminal job ${jobId}.`);
-      }
     }
+
+    this.deps.abortRegistry.remove(jobId);
+    this.deps.jobPools.delete(jobId);
+    this.deps.launchAdmission.releaseLaunch(jobId, pool);
+    return true;
   }
 
   private handleProviderJobError(jobId: string, sessionId: string, signal: AbortSignal, error: unknown): void {
@@ -1010,39 +1109,19 @@ export class LaunchOrchestrator {
 
   private createProviderRuntime(
     provider: BoundProvider,
-    prepared: BoundProviderPreparedExecution,
     request: ProviderRequest,
     sessionId: string,
     jobId: string,
     signal: AbortSignal,
-    pool: LaunchPool,
     equippedTools: ReturnType<typeof resolveEquippedTools>,
-  ): Omit<ProviderRuntime<never>, 'executionPlan'> {
-    const runCli = bindProviderRunner(
-      this.deps.durableSpawner,
-      provider.name,
-      signal,
-      pool,
-      this.deps.progressStore.jobDir(jobId),
-      (record) => {
-        this.deps.progressStore.appendRuntimeStarted(jobId, record);
-      },
-    );
+  ): BoundProviderExecutionRuntimeCommon {
     return {
       signal,
-      runCli: (cliRequest) => runCli(prepared.prepareCliRequest(cliRequest)),
       time: this.deps.runtime.time,
       storage: this.deps.runtime.storage,
       env: this.deps.runtime.env,
       ids: this.deps.runtime.ids,
-      acquirePreparedServer: () => {
-        const launch = prepared.appServer?.launch;
-        if (launch === undefined) {
-          throw new Error(`Provider '${provider.name}' has no prepared app-server launch.`);
-        }
-        this.appServerJobs.add(jobId);
-        return this.deps.acquireServer(launch, { jobId, signal });
-      },
+      jobId,
       persistedContinuity: this.deps.sessionManager.get(provider.name, sessionId)?.providerContinuity ?? undefined,
       continuityBridge: NOOP_CONTINUITY_BRIDGE,
       kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
@@ -1056,6 +1135,57 @@ export class LaunchOrchestrator {
           }
         : {}),
     };
+  }
+
+  private executePreparedProvider(
+    provider: BoundProvider,
+    prepared: BoundProviderPreparedExecution,
+    runtime: BoundProviderExecutionRuntimeCommon,
+    jobId: string,
+    signal: AbortSignal,
+    pool: LaunchPool,
+  ): AsyncIterable<ProviderEventBody> {
+    if (prepared.kind === 'app-server') {
+      return prepared.execute({
+        ...runtime,
+        transport: 'app-server',
+        onAppServerWaiting: ({ provider: observedProvider }) => {
+          if (this.appServerHandoffQuiesced) {
+            this.quiescedAppServerJobs.add(jobId);
+            return;
+          }
+          this.deps.progressStore.appendRuntimeStarted(jobId, {
+            transport: 'app-server',
+            startTime: nowIsoString(this.deps.runtime.time.now()),
+            providerMeta: { provider: observedProvider, leaseState: 'waiting' },
+          });
+        },
+        onHostRef: (hostRef: HostRef) => {
+          if (this.appServerHandoffQuiesced || this.quiescedAppServerJobs.has(jobId)) return;
+          this.deps.progressStore.appendRuntimeStarted(jobId, {
+            transport: 'app-server',
+            startTime: nowIsoString(this.deps.runtime.time.now()),
+            providerMeta: { provider: hostRef.provider, leaseState: 'acquired', hostRef },
+          });
+        },
+      });
+    }
+
+    const runCli = bindProviderRunner(
+      this.deps.durableSpawner,
+      provider.name,
+      signal,
+      pool,
+      this.deps.progressStore.jobDir(jobId),
+      (record) => {
+        this.deps.progressStore.appendRuntimeStarted(jobId, record);
+      },
+    );
+    return prepared.execute({
+      ...runtime,
+      transport: 'standalone',
+      runCli: (request) => runCli(prepared.prepareCliRequest(request)),
+    });
   }
 
   private appendProviderTerminal(

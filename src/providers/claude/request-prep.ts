@@ -23,7 +23,16 @@ export interface ClaudeBootstrapSignature {
   cwd: string;
   systemPromptHash: string;
   permissionMode: PermissionMode;
+  bootstrapConfigHash: string;
 }
+
+export type ClaudeBootstrapConfiguration = Readonly<{
+  conversationRef?: string;
+  resumeExisting?: boolean;
+  projectsRoot: string;
+  model?: string;
+  effort?: EffortLevel;
+}>;
 
 const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 const DEFAULT_CLAUDE_MODEL_CAP = 'opus';
@@ -63,6 +72,7 @@ export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature
     !isRecord(value) ||
     typeof value.cwd !== 'string' ||
     typeof value.systemPromptHash !== 'string' ||
+    typeof value.bootstrapConfigHash !== 'string' ||
     !permissionMode?.success
   ) {
     return undefined;
@@ -72,11 +82,28 @@ export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature
     cwd: value.cwd,
     systemPromptHash: value.systemPromptHash,
     permissionMode: permissionMode.data,
+    bootstrapConfigHash: value.bootstrapConfigHash,
   };
 }
 
 export function sameBootstrapSignature(a: ClaudeBootstrapSignature, b: ClaudeBootstrapSignature): boolean {
-  return a.cwd === b.cwd && a.systemPromptHash === b.systemPromptHash && a.permissionMode === b.permissionMode;
+  return (
+    a.cwd === b.cwd &&
+    a.systemPromptHash === b.systemPromptHash &&
+    a.permissionMode === b.permissionMode &&
+    a.bootstrapConfigHash === b.bootstrapConfigHash
+  );
+}
+
+export function hashClaudeBootstrapConfiguration(configuration: ClaudeBootstrapConfiguration): string {
+  const normalized = {
+    conversationRef: configuration.conversationRef ?? null,
+    resumeExisting: configuration.resumeExisting ?? false,
+    projectsRoot: configuration.projectsRoot,
+    model: configuration.model ?? null,
+    effort: configuration.effort ?? null,
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(normalized)).digest('hex')}`;
 }
 
 export function normalizeControllerEnv(env?: Record<string, string>): Record<string, string> {

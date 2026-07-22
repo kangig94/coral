@@ -1,16 +1,16 @@
 import { errorMessage } from '../../infra/error-format.js';
 import { isRecord, readString } from '../../infra/json.js';
 import type {
-  Provider,
+  ProviderAppServer,
+  ProviderAppServerRuntime,
   ProviderEventBody,
-  ProviderRuntime,
-  ProviderServerLease,
+  AppServerSession,
   ProviderTerminalEventBody,
   UsageSummary,
 } from '../contract.js';
 import { providerRequestFailed, type ProviderFailureCause } from '../fault.js';
 import { sessionProviderFailureDiagnosticSchema, type SessionProviderFailureDiagnostic } from '../../sessions/fault.js';
-import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
+import { buildProviderFailureMessage } from '../app-server.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
 import { brokerNotificationMethods } from './appserver/protocol.js';
@@ -18,13 +18,13 @@ import {
   claudeConversationRef,
   buildClaudeContinuity,
   buildClaudeEnvHash,
-  mapInterruptParams,
   mapSessionEnsureParams,
   mapTurnStartParams,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
 import {
   buildPreparedClaudeRequest,
+  sameBootstrapSignature,
   type ClaudeBootstrapSignature,
   readBootstrapSignature,
   readTurnConversationRef,
@@ -71,57 +71,56 @@ type ClaudeTurnState = {
   turnRequested: boolean;
   completed: boolean;
   lastKnownUsage?: UsageSummary;
+  pendingCheckpoint?: Promise<void>;
   terminal: Promise<ClaudeTurnOutcome>;
   resolveTerminal: (outcome: ClaudeTurnOutcome) => void;
 };
 
-const claudeInterruptBindings = new WeakMap<ProviderServerLease, ClaudeTurnState>();
-
-export async function mapClaudeInterrupt(lease: ProviderServerLease): Promise<void> {
-  const state = claudeInterruptBindings.get(lease);
-  if (state === undefined || !state.turnRequested || state.brokerSessionKey === undefined) {
-    return;
+class UnconfirmedClaudeTurnCancellationError extends Error {
+  constructor(brokerTurnId: string, cause?: unknown) {
+    super(`Claude turn ${brokerTurnId} could not be confirmed cancelled.`, { cause });
+    this.name = 'UnconfirmedClaudeTurnCancellationError';
   }
-
-  await brokerRpc<void>(lease, 'turn/interrupt', mapInterruptParams(state.brokerSessionKey, state.brokerTurnId));
 }
 
-export const claudeSessionKernel: Provider<ClaudeExecutionPlan> = (request, runtime) =>
+export const claudeSessionKernel: ProviderAppServer<ClaudeExecutionPlan> = (request, runtime) =>
   streamProviderEvents(async (emit) => {
-    const lease = requireAppServerLease(runtime, 'claude');
+    const lease = runtime.appServerSession;
     const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
     const state = createInitialState(request, persistedContinuity, runtime);
     const executionPlan = runtime.executionPlan;
-    const clearBinding = bindInterruptState(lease, state);
-    const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
+    const clearNotificationBinding = lease.subscribe((message) => {
       applyNotification(state, message, runtime, emit);
     });
 
     try {
-      const ensureResult = await brokerRpc<Record<string, unknown>>(
-        lease,
-        'session/ensure',
-        mapSessionEnsureParams(
-          {
-            ...request,
-            model: state.prepared.model,
-            effort: state.prepared.effort,
-          },
-          runtime.ids,
-          {
-            derivedSystemPrompt: state.prepared.systemPrompt,
-            controllerEnv: compileClaudeControllerEnvironment(executionPlan),
-            projectsRoot: executionPlan.session.projectsRoot,
-          },
-        ),
+      const ensureParams = mapSessionEnsureParams(
+        {
+          ...request,
+          model: state.prepared.model,
+          effort: state.prepared.effort,
+        },
+        runtime.ids,
+        {
+          derivedSystemPrompt: state.prepared.systemPrompt,
+          controllerEnv: compileClaudeControllerEnvironment(executionPlan),
+          projectsRoot: executionPlan.session.projectsRoot,
+        },
       );
-      state.brokerSessionKey = readString(ensureResult.brokerSessionKey) ?? state.brokerSessionKey;
+      const ensureResult = await brokerRpc<Record<string, unknown>>(lease, 'session/ensure', ensureParams);
+      state.brokerSessionKey = readString(ensureResult.brokerSessionKey);
       state.bootstrapSignature = readBootstrapSignature(ensureResult.bootstrapSignature);
       state.conversationRef = readTurnConversationRef(ensureResult) ?? state.conversationRef;
       if (state.brokerSessionKey === undefined) {
         throw new Error('Claude broker session key missing from session/ensure response.');
       }
-      checkpointBrokerContinuity(runtime, state);
+      if (state.bootstrapSignature === undefined) {
+        throw new Error('Claude bootstrap signature missing or invalid in session/ensure response.');
+      }
+      if (!sameBootstrapSignature(state.bootstrapSignature, ensureParams)) {
+        throw new Error('Claude session/ensure did not return the exact requested bootstrap signature.');
+      }
+      await checkpointBrokerContinuity(runtime, state);
       emitClaudeArtifactHandleOnce(state, runtime, emit);
 
       if (runtime.signal.aborted) {
@@ -133,21 +132,37 @@ export const claudeSessionKernel: Provider<ClaudeExecutionPlan> = (request, runt
       state.turnRequested = true;
       const startParams = mapTurnStartParams(state.prepared.prompt, state.brokerSessionKey, runtime.ids);
       state.brokerTurnId = startParams.brokerTurnId;
-      const startResult = await brokerRpc<Record<string, unknown>>(lease, 'turn/start', startParams);
-      state.brokerTurnId = readString(startResult.brokerTurnId) ?? startParams.brokerTurnId;
+      await checkpointBrokerContinuity(runtime, state);
+      const startOutcome = await startBrokerTurn(lease, startParams, runtime.signal);
+      if (startOutcome.kind === 'aborted') {
+        await clearActiveBrokerTurn(runtime, state);
+        emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
+        return;
+      }
+      const startResult = startOutcome.result;
+      if (readString(startResult.brokerSessionKey) !== startParams.brokerSessionKey) {
+        throw new Error('Claude turn/start did not return the exact requested broker session key.');
+      }
+      if (readString(startResult.brokerTurnId) !== startParams.brokerTurnId) {
+        throw new Error('Claude turn/start did not return the exact requested broker turn id.');
+      }
       state.conversationRef = readTurnConversationRef(startResult) ?? state.conversationRef;
-      checkpointBrokerContinuity(runtime, state);
+      await checkpointBrokerContinuity(runtime, state);
       emitClaudeArtifactHandleOnce(state, runtime, emit);
 
       const outcome = await waitForClaudeOutcome(state, lease, runtime.signal);
       if (outcome.kind === 'aborted') {
         await interruptBrokerTurnOnAbort(lease, state);
-        state.brokerTurnId = undefined;
-        checkpointBrokerContinuity(runtime, state);
       }
+      await clearActiveBrokerTurn(runtime, state);
 
       emit(finalizeOutcome(state, outcome, runtime.time.now()));
     } catch (error) {
+      if (error instanceof UnconfirmedClaudeTurnCancellationError) {
+        emit({ kind: 'suspended', reason: 'interrupt_unconfirmed' });
+        return;
+      }
+      await clearActiveBrokerTurn(runtime, state);
       if (runtime.signal.aborted) {
         emit(buildAbortedTerminal(state.prepared.model, state.startedAt, runtime.time.now(), state.lastKnownUsage));
         return;
@@ -165,14 +180,13 @@ export const claudeSessionKernel: Provider<ClaudeExecutionPlan> = (request, runt
       );
     } finally {
       clearNotificationBinding();
-      clearBinding();
     }
   });
 
 function createInitialState(
-  request: Parameters<Provider>[0],
+  request: Parameters<ProviderAppServer>[0],
   persistedContinuity: ReturnType<typeof readClaudePersistedContinuity>,
-  runtime: ProviderRuntime<ClaudeExecutionPlan>,
+  runtime: ProviderAppServerRuntime<ClaudeExecutionPlan>,
 ): ClaudeTurnState {
   let resolveTerminal!: (outcome: ClaudeTurnOutcome) => void;
   const terminal = new Promise<ClaudeTurnOutcome>((resolve) => {
@@ -195,32 +209,45 @@ function createInitialState(
   };
 }
 
-function bindInterruptState(lease: ProviderServerLease, state: ClaudeTurnState): () => void {
-  claudeInterruptBindings.set(lease, state);
-  return () => {
-    if (claudeInterruptBindings.get(lease) === state) {
-      claudeInterruptBindings.delete(lease);
-    }
-  };
-}
-
-function checkpointBrokerContinuity(runtime: ProviderRuntime<ClaudeExecutionPlan>, state: ClaudeTurnState): void {
+async function checkpointBrokerContinuity(
+  runtime: ProviderAppServerRuntime<ClaudeExecutionPlan>,
+  state: ClaudeTurnState,
+): Promise<void> {
   if (state.bootstrapSignature === undefined) {
     return;
   }
 
-  runtime.continuityBridge.checkpoint({
-    conversationRef: state.conversationRef ?? null,
-    resumable: true,
-    providerContinuity: buildClaudeContinuity({
-      bootstrapSignature: state.bootstrapSignature,
+  const pending = Promise.resolve(
+    runtime.continuityBridge.checkpoint({
+      conversationRef: state.conversationRef ?? null,
+      resumable: true,
+      providerContinuity: buildClaudeContinuity({
+        bootstrapSignature: state.bootstrapSignature,
+        ...(state.brokerSessionKey === undefined || state.brokerTurnId === undefined
+          ? {}
+          : { brokerSessionKey: state.brokerSessionKey, brokerTurnId: state.brokerTurnId }),
+      }),
     }),
-  });
+  );
+  state.pendingCheckpoint = pending;
+  await pending;
+  if (state.pendingCheckpoint === pending) state.pendingCheckpoint = undefined;
+}
+
+async function clearActiveBrokerTurn(
+  runtime: ProviderAppServerRuntime<ClaudeExecutionPlan>,
+  state: ClaudeTurnState,
+): Promise<void> {
+  if (state.brokerTurnId !== undefined) {
+    state.brokerTurnId = undefined;
+    await checkpointBrokerContinuity(runtime, state);
+  }
+  await state.pendingCheckpoint;
 }
 
 function emitClaudeArtifactHandleOnce(
   state: ClaudeTurnState,
-  runtime: ProviderRuntime<ClaudeExecutionPlan>,
+  runtime: ProviderAppServerRuntime<ClaudeExecutionPlan>,
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (state.artifactHandleEmissionAttempted || state.conversationRef === undefined) {
@@ -260,7 +287,7 @@ function resolveTerminalOnce(state: ClaudeTurnState, outcome: ClaudeTurnOutcome)
 function applyNotification(
   state: ClaudeTurnState,
   message: { method: string; params?: Record<string, unknown> },
-  runtime: ProviderRuntime<ClaudeExecutionPlan>,
+  runtime: ProviderAppServerRuntime<ClaudeExecutionPlan>,
   emit: (event: ProviderEventBody) => void,
 ): void {
   if (!isRecord(message)) {
@@ -274,7 +301,7 @@ function applyNotification(
 
   const params = isRecord(message.params) ? message.params : {};
   const messageBrokerSessionKey = readString(params.brokerSessionKey);
-  if (messageBrokerSessionKey !== undefined && messageBrokerSessionKey !== state.brokerSessionKey) {
+  if (message.method !== hostStats && messageBrokerSessionKey !== state.brokerSessionKey) {
     return;
   }
 
@@ -298,7 +325,7 @@ function applyNotification(
     if (updatedSignature) {
       state.bootstrapSignature = updatedSignature;
     }
-    checkpointBrokerContinuity(runtime, state);
+    void checkpointBrokerContinuity(runtime, state);
     return;
   }
 
@@ -312,7 +339,7 @@ function applyNotification(
 
   if (message.method === turnCompleted) {
     state.brokerTurnId = undefined;
-    checkpointBrokerContinuity(runtime, state);
+    void checkpointBrokerContinuity(runtime, state);
 
     const usage = rememberClaudeUsage(state, params.usage, readCostUsd(params.costUsd));
     const content = typeof params.result === 'string' ? params.result : '';
@@ -335,7 +362,7 @@ function applyNotification(
   if (message.method === turnFailed) {
     rememberClaudeUsage(state, params.usage, readCostUsd(params.costUsd));
     state.brokerTurnId = undefined;
-    checkpointBrokerContinuity(runtime, state);
+    void checkpointBrokerContinuity(runtime, state);
     const diagnostic = readTurnFailureDiagnostic(params.diagnostic);
     resolveTerminalOnce(state, {
       kind: 'failed',
@@ -443,7 +470,7 @@ function buildFailedTerminal(
 }
 
 function brokerRpc<R = unknown>(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   method: string,
   params: Record<string, unknown> | object,
 ): Promise<R> {
@@ -452,7 +479,7 @@ function brokerRpc<R = unknown>(
 
 async function waitForClaudeOutcome(
   state: ClaudeTurnState,
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   signal: AbortSignal,
 ): Promise<ClaudeTurnOutcome> {
   if (signal.aborted) {
@@ -487,7 +514,7 @@ async function waitForClaudeOutcome(
   }
 }
 
-async function closeBrokerSessionBeforeTurn(lease: ProviderServerLease, state: ClaudeTurnState): Promise<void> {
+async function closeBrokerSessionBeforeTurn(lease: AppServerSession, state: ClaudeTurnState): Promise<void> {
   if (state.turnRequested || state.brokerSessionKey === undefined) {
     return;
   }
@@ -495,14 +522,65 @@ async function closeBrokerSessionBeforeTurn(lease: ProviderServerLease, state: C
   await brokerRpc(lease, 'session/close', { brokerSessionKey: state.brokerSessionKey }).catch(() => {});
 }
 
-async function interruptBrokerTurnOnAbort(lease: ProviderServerLease, state: ClaudeTurnState): Promise<void> {
+async function startBrokerTurn(
+  lease: AppServerSession,
+  params: ReturnType<typeof mapTurnStartParams>,
+  signal: AbortSignal,
+): Promise<{ kind: 'started'; result: Record<string, unknown> } | { kind: 'aborted' }> {
+  let removeAbortListener = () => {};
+  const aborted = new Promise<{ kind: 'aborted' }>((resolve) => {
+    if (signal.aborted) {
+      resolve({ kind: 'aborted' });
+      return;
+    }
+    const onAbort = (): void => resolve({ kind: 'aborted' });
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+  });
+  const started = brokerRpc<Record<string, unknown>>(lease, 'turn/start', params).then(
+    (result): { kind: 'started'; result: Record<string, unknown> } => ({ kind: 'started', result }),
+  );
+  try {
+    const outcome = await Promise.race([started, aborted]);
+    if (outcome.kind === 'started') return outcome;
+
+    const continuity = { brokerSessionKey: params.brokerSessionKey, brokerTurnId: params.brokerTurnId };
+    let firstInterruptError: unknown;
+    try {
+      if (await lease.interrupt(continuity)) return outcome;
+    } catch (error) {
+      firstInterruptError = error;
+    }
+
+    try {
+      await started;
+    } catch {
+      return outcome;
+    }
+
+    try {
+      if (await lease.interrupt(continuity)) return outcome;
+    } catch (error) {
+      throw new UnconfirmedClaudeTurnCancellationError(params.brokerTurnId, error);
+    }
+    throw new UnconfirmedClaudeTurnCancellationError(params.brokerTurnId, firstInterruptError);
+  } finally {
+    removeAbortListener();
+  }
+}
+
+async function interruptBrokerTurnOnAbort(lease: AppServerSession, state: ClaudeTurnState): Promise<void> {
   if (state.brokerSessionKey === undefined || state.brokerTurnId === undefined) {
     return;
   }
 
-  await brokerRpc(lease, 'turn/interrupt', mapInterruptParams(state.brokerSessionKey, state.brokerTurnId)).catch(
-    () => {},
-  );
+  const brokerTurnId = state.brokerTurnId;
+  try {
+    if (await lease.interrupt({ brokerSessionKey: state.brokerSessionKey, brokerTurnId })) return;
+  } catch (error) {
+    throw new UnconfirmedClaudeTurnCancellationError(brokerTurnId, error);
+  }
+  throw new UnconfirmedClaudeTurnCancellationError(brokerTurnId);
 }
 
 function readErrors(value: unknown): string[] {

@@ -2,17 +2,12 @@ import type { SystemProviderScope } from '../../infra/provider-scope.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors.js';
 import type { ProviderBindingCatalog } from '../../providers/catalog.js';
-import type { ProviderServerLaunch, ProviderServerLease } from '../../providers/contract.js';
 import type { KbDaemonCurateAssistantHandler } from '../live/kb-daemon-supervisor.js';
 import type { KbDaemonCurateUsageBudgetHandler } from '../live/kb-daemon-supervisor.js';
 import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
 
 type ActiveSystemProviderRuntime = {
   readonly systemProviderScope?: SystemProviderScope;
-  readonly acquireCoordinatorProviderHost: (
-    launch: ProviderServerLaunch,
-    options?: { signal?: AbortSignal },
-  ) => Promise<ProviderServerLease>;
 };
 
 function bindingSetupError(
@@ -87,10 +82,7 @@ export function createKbCurateAssistantHandler(options: {
         platform: options.runtime.env.platform(),
       },
     );
-    return prepared.complete({
-      acquirePreparedServer: () =>
-        active.acquireCoordinatorProviderHost(prepared.launch, signal === undefined ? undefined : { signal }),
-    });
+    return prepared.complete();
   };
 }
 

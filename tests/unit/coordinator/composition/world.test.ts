@@ -96,10 +96,10 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       launchCoordinator: {} as never,
       providerHostManager: {
-        acquireServer: async () => {
-          throw new Error('acquireServer was not expected');
+        openSession: async () => {
+          throw new Error('openSession was not expected');
         },
-        borrowLiveServer: async () => null,
+        attachSession: async () => null,
         drainForHandoff: async () => undefined,
         shutdown: async () => undefined,
       } as never,

@@ -5,11 +5,12 @@ import type {
   ProviderAppServerCapability,
   ProviderArtifactCapability,
   ProviderArtifactHandleInput,
-  ProviderEventBody,
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
-  ProviderServerLease,
+  ProviderAppServer,
+  ProviderStandalone,
+  AppServerTransport,
   ProviderServerSpec,
   ProviderTerminalEventBody,
 } from '#src/providers/contract.js';
@@ -32,11 +33,6 @@ import type { FixtureProviderSource } from '#tests/helpers/provider-binding.js';
 
 const FIXTURE_ALLOWED_REQUEST_ENV_KEYS = Object.freeze(new Set(['FIXTURE_TUNING']));
 
-type TestProviderInvocation = (
-  request: ProviderRequest,
-  runtime: ProviderRuntime<FixtureExecutionPlan>,
-) => AsyncIterable<ProviderEventBody>;
-
 export type FixtureExecutionPlan = ProviderExecutionPlan<
   Readonly<{
     source: FixtureProviderSource;
@@ -49,15 +45,15 @@ export type FixtureExecutionPlan = ProviderExecutionPlan<
 >;
 
 type TestAppServerLifecycle = {
-  prepareHostSpec(
-    persistedContinuity: ProviderContinuityBlob | undefined,
-    request: ProviderRequest,
-  ): ProviderServerSpec;
-  interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
+  host:
+    | ProviderServerSpec
+    | ((persistedContinuity: ProviderContinuityBlob | undefined, request: ProviderRequest) => ProviderServerSpec);
+  interrupt(lease: AppServerTransport, continuity: ProviderContinuityBlob): Promise<void>;
   probe?(
-    lease: ProviderServerLease,
+    lease: AppServerTransport,
     continuity: ProviderContinuityBlob,
   ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
+  onNotification?(message: { method: string; params?: Record<string, unknown> }): void;
   finalizeInterrupted(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
     continuity: ProviderContinuityBlob | undefined,
@@ -84,66 +80,38 @@ type TestArtifactRecovery = {
   };
 };
 
-export type Provider = {
+type ProviderCommon = {
   readonly name: string;
-  execute: TestProviderInvocation;
   preflight?(runtime: PreflightRuntime): Promise<void>;
-  appServerLifecycle?: TestAppServerLifecycle;
   artifactRecovery?: TestArtifactRecovery;
   artifactCapability?: ProviderArtifactCapability;
 };
 
-export function prepareFixtureExecutionPlan(input: {
+export type Provider =
+  | (ProviderCommon & {
+      execute: ProviderStandalone<FixtureExecutionPlan>;
+      appServerLifecycle?: undefined;
+    })
+  | (ProviderCommon & {
+      execute: ProviderAppServer<FixtureExecutionPlan>;
+      appServerLifecycle: TestAppServerLifecycle;
+    });
+
+export type StandaloneTestProvider = Extract<Provider, { appServerLifecycle?: undefined }>;
+export type AppServerTestProvider = Extract<Provider, { appServerLifecycle: TestAppServerLifecycle }>;
+
+export function prepareFixtureAppServerExecutionPlan(input: {
   source: FixtureProviderSource;
+  hostPlan: FixtureExecutionPlan['host'];
   request: ProviderRequest;
   baseEnv: Readonly<Record<string, string>>;
   protectedEnv?: Readonly<Record<string, string>>;
   platform: string;
   persistedContinuity?: ProviderContinuityBlob;
 }): {
-  readonly plan: FixtureExecutionPlan;
-  readonly appServerTurnEnv: Readonly<Record<string, string>>;
-  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+  readonly session: FixtureExecutionPlan['session'];
+  readonly turn: FixtureExecutionPlan['turn'];
 } {
-  const hostEnvironment = [
-    environmentLayer(
-      {
-        name: 'daemon-base',
-        lifetime: 'host',
-        provenance: 'test-runtime',
-        values: filterEnvironmentValues(input.baseEnv, EXECUTION_ENV_ALLOWLIST, input.platform),
-        writes: EXECUTION_ENV_ALLOWLIST,
-        protects: new Set(),
-      },
-      input.platform,
-    ),
-    environmentLayer(
-      {
-        name: 'fixture-routing',
-        lifetime: 'host',
-        provenance: 'fixture-binding',
-        values: input.source.routingEnv,
-        writes: new Set(Object.keys(input.source.routingEnv)),
-        protects: new Set(Object.keys(input.source.routingEnv)),
-      },
-      input.platform,
-    ),
-    environmentLayer(
-      {
-        name: 'fixture-process-settings',
-        lifetime: 'host',
-        provenance: 'test-request-process',
-        values: filterEnvironmentValues(
-          input.request.coralEnv,
-          new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
-          input.platform,
-        ),
-        writes: new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
-        protects: new Set(),
-      },
-      input.platform,
-    ),
-  ];
   const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: input.request.sessionId, ...(input.protectedEnv ?? {}) };
   const turnEnvironment = [
     environmentLayer(
@@ -173,44 +141,12 @@ export function prepareFixtureExecutionPlan(input: {
       input.platform,
     ),
   ];
-  const serverSpec: ProviderServerSpec = {
-    provider: 'fixture',
-    command: 'fixture',
-    args: ['app-server'],
-    cwd: input.request.cwd,
-    env: compileEnvironmentLayers(hostEnvironment, {
-      platform: input.platform,
-      lifetimes: new Set(['host']),
-    }),
-    leaseMode: 'job-exclusive',
-  };
-  const plan: FixtureExecutionPlan = Object.freeze({
-    host: Object.freeze({
-      source: input.source,
-      platform: input.platform,
-      environment: Object.freeze(hostEnvironment),
-      serverSpec,
-    }),
-    session: Object.freeze({ sessionId: input.request.sessionId }),
-    turn: Object.freeze({ environment: Object.freeze(turnEnvironment) }),
-  });
-  const exactEnv = compileEnvironmentLayers([...hostEnvironment, ...turnEnvironment], {
-    platform: input.platform,
-    lifetimes: allExecutionLifetimes(),
-  });
-  const turnEnv = compileEnvironmentLayers(turnEnvironment, {
-    platform: input.platform,
-    lifetimes: new Set(['turn']),
-  });
+  const session = Object.freeze({ sessionId: input.request.sessionId });
+  const turn = Object.freeze({ environment: Object.freeze(turnEnvironment) });
   return {
-    plan,
-    appServerTurnEnv: turnEnv,
-    prepareCliRequest: (request) => ({ ...request, exactEnv: { ...exactEnv }, extraEnv: undefined }),
+    session,
+    turn,
   };
-}
-
-function inferSubscriptionPhase(name: string): ProviderAppServerCapability<FixtureExecutionPlan>['subscriptionPhase'] {
-  return name === 'claude' ? 'beforeInitialize' : 'afterInitialize';
 }
 
 function normalizeRecoveryResult(
@@ -239,16 +175,32 @@ export function defineFakeProvider(
   const appServer = appServerLifecycle
     ? {
         name: provider.name,
-        subscriptionPhase: inferSubscriptionPhase(provider.name),
+        planHost: (
+          input: Parameters<ProviderAppServerCapability<FixtureExecutionPlan, FixtureProviderSource>['planHost']>[0],
+        ) => {
+          if (input.purpose !== 'execution') throw new Error('Fixture provider does not support curation hosts.');
+          const host =
+            typeof appServerLifecycle.host === 'function'
+              ? appServerLifecycle.host(input.persistedContinuity, input.request)
+              : appServerLifecycle.host;
+          const preparedHost = prepareFixtureHost(input, host);
+          return preparedHost;
+        },
         compileStableHost: (host: FixtureExecutionPlan['host']) => host.serverSpec,
-        interrupt: appServerLifecycle.interrupt,
+        interrupt: async (transport: AppServerTransport, continuity: ProviderContinuityBlob) => {
+          await appServerLifecycle.interrupt(transport, continuity);
+          return true;
+        },
+        ...(appServerLifecycle.probe === undefined ? {} : { probe: appServerLifecycle.probe }),
+        ...(appServerLifecycle.onNotification === undefined
+          ? {}
+          : { onNotification: appServerLifecycle.onNotification }),
       }
     : undefined;
 
   const recovery =
     provider.artifactRecovery || provider.appServerLifecycle
       ? {
-          ...(provider.appServerLifecycle?.probe ? { probe: provider.appServerLifecycle.probe } : {}),
           finalizeInterrupted:
             provider.appServerLifecycle === undefined
               ? () => {
@@ -272,31 +224,113 @@ export function defineFakeProvider(
 
   const artifactCapability =
     provider.artifactCapability ?? none(`Test provider ${provider.name} declares no provider artifacts.`);
-  const definition = defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+  const common = {
     name: provider.name,
-    run: provider.execute,
-    prepareExecutionPlan: (input) => {
-      const prepared = prepareFixtureExecutionPlan(input);
-      if (appServerLifecycle === undefined) return prepared;
-      const host = appServerLifecycle.prepareHostSpec(input.persistedContinuity, input.request);
-      return {
-        ...prepared,
-        plan: Object.freeze({
-          ...prepared.plan,
-          host: Object.freeze({ ...prepared.plan.host, serverSpec: host }),
-        }),
-        appServerTurnEnv: prepared.appServerTurnEnv,
-      };
-    },
     ...(provider.preflight ? { preflight: provider.preflight } : {}),
-    ...(appServer ? { appServer } : {}),
     ...(recovery ? { recovery } : {}),
-  })
+  };
+  const builder =
+    provider.appServerLifecycle === undefined
+      ? defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+          ...common,
+          transport: 'standalone',
+          run: provider.execute,
+          prepareExecutionPlan: (input) => prepareFixtureExecutionPlan(input),
+        })
+      : defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+          ...common,
+          transport: 'app-server',
+          run: provider.execute,
+          appServer: appServer!,
+          prepareExecutionPlan: (input) => prepareFixtureAppServerExecutionPlan(input),
+        });
+  const definition = builder
     .binding(fixtureProviderBindingCodec(provider.name, options.binding))
     .artifacts(artifactCapability)
     .build();
 
   return definition;
+}
+
+export function prepareFixtureExecutionPlan(
+  input: Omit<Parameters<typeof prepareFixtureAppServerExecutionPlan>[0], 'hostPlan'> & {
+    storage: Pick<ProviderRuntime['storage'], 'existsSync'>;
+  },
+) {
+  const serverSpec: ProviderServerSpec = {
+    provider: 'fixture',
+    command: 'fixture',
+    args: ['app-server'],
+    cwd: input.request.cwd,
+    leaseMode: 'job-exclusive',
+  };
+  const host = prepareFixtureHost({ ...input, purpose: 'execution' }, serverSpec);
+  const prepared = prepareFixtureAppServerExecutionPlan({ ...input, hostPlan: host });
+  const exactEnv = compileEnvironmentLayers([...host.environment, ...prepared.turn.environment], {
+    platform: input.platform,
+    lifetimes: allExecutionLifetimes(),
+  });
+  return {
+    plan: Object.freeze({ host, session: prepared.session, turn: prepared.turn }),
+    prepareCliRequest: (request: ProviderCliRequest) => ({
+      ...request,
+      exactEnv: { ...exactEnv },
+      extraEnv: undefined,
+    }),
+  };
+}
+
+export function prepareFixtureHost(
+  input: Parameters<ProviderAppServerCapability<FixtureExecutionPlan, FixtureProviderSource>['planHost']>[0],
+  serverSpec: ProviderServerSpec,
+): FixtureExecutionPlan['host'] {
+  const environment = Object.freeze([
+    environmentLayer(
+      {
+        name: 'daemon-base',
+        lifetime: 'host',
+        provenance: 'test-runtime',
+        values: filterEnvironmentValues(input.baseEnv, EXECUTION_ENV_ALLOWLIST, input.platform),
+        writes: EXECUTION_ENV_ALLOWLIST,
+        protects: new Set(),
+      },
+      input.platform,
+    ),
+    environmentLayer(
+      {
+        name: 'fixture-routing',
+        lifetime: 'host',
+        provenance: 'fixture-binding',
+        values: input.source.routingEnv,
+        writes: new Set(Object.keys(input.source.routingEnv)),
+        protects: new Set(Object.keys(input.source.routingEnv)),
+      },
+      input.platform,
+    ),
+    environmentLayer(
+      {
+        name: 'fixture-process-settings',
+        lifetime: 'host',
+        provenance: 'test-request-process',
+        values: filterEnvironmentValues(
+          input.purpose === 'execution' ? input.request.coralEnv : {},
+          new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+          input.platform,
+        ),
+        writes: new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+        protects: new Set(),
+      },
+      input.platform,
+    ),
+  ]);
+  const compiledSpec = Object.freeze({
+    ...serverSpec,
+    env: compileEnvironmentLayers(environment, {
+      platform: input.platform,
+      lifetimes: new Set(['host']),
+    }),
+  });
+  return Object.freeze({ source: input.source, platform: input.platform, environment, serverSpec: compiledSpec });
 }
 
 export function toProviderDefinition(

@@ -22,6 +22,7 @@ import { providerProfileEnvelopeSchema, type ProviderProfileEnvelope } from '../
 import type { CanonicalContractValue } from '../../store/format-fingerprint.js';
 import { rehydrateCodecBinding, type CapturedBoundCodec } from './bound-provider.js';
 import { snapshotBoundaryData, snapshotPlainReceiver, snapshotProviderResult } from './snapshot.js';
+import type { AppServerHostAuthority } from './app-server-host.js';
 
 export interface ErasedProviderBindingBoundary {
   readonly provider: string;
@@ -35,9 +36,13 @@ export interface ErasedProviderBindingBoundary {
   bindProfile(
     envelope: ProviderProfileEnvelope,
     runtime: ProviderBindingRuntime,
+    appServerHost: AppServerHostAuthority | undefined,
   ): Promise<ProviderBindingResult<BoundProvider>>;
   selectorLabel(rawSelection: unknown): string;
-  decode(envelope: ProviderBindingEnvelope): ProviderBindingResult<BoundProvider>;
+  decode(
+    envelope: ProviderBindingEnvelope,
+    appServerHost: AppServerHostAuthority | undefined,
+  ): ProviderBindingResult<BoundProvider>;
   parseProfile(rawProfile: unknown): ProviderBindingResult<ProviderProfileEnvelope>;
   renderFailure(failure: ProviderBindingFailure): string;
 }
@@ -124,10 +129,13 @@ function decodeCodecBinding<
   implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
   rawBinding: unknown,
+  appServerHost: AppServerHostAuthority | undefined,
 ): ProviderBindingResult<BoundProvider> {
   const binding = authority.bindingParser(snapshotBoundaryData(rawBinding, 'Provider binding parser input'));
   return binding.success
-    ? bindingSuccess(rehydrateCodecBinding(provider, authority.boundCodec, binding.data, implementation, artifacts))
+    ? bindingSuccess(
+        rehydrateCodecBinding(provider, authority.boundCodec, binding.data, implementation, artifacts, appServerHost),
+      )
     : bindingFailure({ reason: 'invalid-persisted-binding', provider });
 }
 
@@ -189,6 +197,7 @@ async function bindBoundaryProfile<
   artifacts: ProviderArtifactCapability<Source>,
   rawEnvelope: ProviderProfileEnvelope,
   runtime: ProviderBindingRuntime,
+  appServerHost: AppServerHostAuthority | undefined,
 ): Promise<ProviderBindingResult<BoundProvider>> {
   const envelope = providerProfileEnvelopeSchema.safeParse(rawEnvelope);
   if (!envelope.success || envelope.data.provider !== provider)
@@ -202,7 +211,9 @@ async function bindBoundaryProfile<
     await authority.bindProfile(canonicalProfile, runtime),
     'Provider profile binding result',
   );
-  return binding.ok ? decodeCodecBinding(provider, authority, implementation, artifacts, binding.value) : binding;
+  return binding.ok
+    ? decodeCodecBinding(provider, authority, implementation, artifacts, binding.value, appServerHost)
+    : binding;
 }
 
 function decodeBoundaryEnvelope<
@@ -215,12 +226,13 @@ function decodeBoundaryEnvelope<
   implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
   rawEnvelope: ProviderBindingEnvelope,
+  appServerHost: AppServerHostAuthority | undefined,
 ): ProviderBindingResult<BoundProvider> {
   const envelope = providerBindingEnvelopeSchema.safeParse(rawEnvelope);
   if (!envelope.success || envelope.data.provider !== provider || envelope.data.kind !== authority.bindingKind) {
     return bindingFailure({ reason: 'invalid-persisted-binding', provider });
   }
-  return decodeCodecBinding(provider, authority, implementation, artifacts, envelope.data.binding);
+  return decodeCodecBinding(provider, authority, implementation, artifacts, envelope.data.binding, appServerHost);
 }
 
 function parseBoundaryProfile<Profile extends CredentialProfile & JsonValue, Source extends JsonValue>(
@@ -258,8 +270,11 @@ export function eraseBindingCodec<
       captureBoundarySelection(provider, authority, context),
     canonicalizeProfile: (envelope: ProviderSelectionEnvelope, runtime: ProviderBindingRuntime) =>
       canonicalizeBoundaryProfile(provider, authority, envelope, runtime),
-    bindProfile: (envelope: ProviderProfileEnvelope, runtime: ProviderBindingRuntime) =>
-      bindBoundaryProfile(provider, authority, implementation, artifacts, envelope, runtime),
+    bindProfile: (
+      envelope: ProviderProfileEnvelope,
+      runtime: ProviderBindingRuntime,
+      appServerHost: AppServerHostAuthority | undefined,
+    ) => bindBoundaryProfile(provider, authority, implementation, artifacts, envelope, runtime, appServerHost),
     selectorLabel: (rawSelection: unknown) => {
       const parsed = authority.selectionParser(snapshotBoundaryData(rawSelection, 'Provider selector parser input'));
       if (!parsed.success) throw parsed.error;
@@ -267,8 +282,8 @@ export function eraseBindingCodec<
         snapshotBoundaryData(jsonValueSchema.parse(parsed.data), 'Provider selector input'),
       );
     },
-    decode: (envelope: ProviderBindingEnvelope) =>
-      decodeBoundaryEnvelope(provider, authority, implementation, artifacts, envelope),
+    decode: (envelope: ProviderBindingEnvelope, appServerHost: AppServerHostAuthority | undefined) =>
+      decodeBoundaryEnvelope(provider, authority, implementation, artifacts, envelope, appServerHost),
     parseProfile: (profile: unknown) => parseBoundaryProfile(provider, authority, profile),
     renderFailure: (failure: ProviderBindingFailure) =>
       authority.renderFailure(snapshotBoundaryData(failure, 'Provider binding failure')),

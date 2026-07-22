@@ -19,7 +19,7 @@ import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
-import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import type { ProviderSession } from '#src/sessions/entry.js';
 import {
@@ -41,7 +41,12 @@ import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
-import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
+import {
+  prepareFixtureAppServerExecutionPlan,
+  prepareFixtureExecutionPlan,
+  prepareFixtureHost,
+  type FixtureExecutionPlan,
+} from '#tests/helpers/scripted-provider.js';
 import type { CauseRef } from '#src/causality/cause-ref.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
@@ -93,31 +98,45 @@ function createHarness(
   const projectRoot = '/workspace/project';
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
+  const providerBuilder = options.interruptedRecovery
+    ? defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+        name: 'codex',
+        transport: 'app-server',
+        run: noopProvider,
+        prepareExecutionPlan: prepareFixtureAppServerExecutionPlan,
+        appServer: {
+          name: 'codex',
+          planHost: (input) => {
+            if (input.purpose !== 'execution') throw new Error('Codex fixture has no curation host.');
+            return prepareFixtureHost(input, {
+              provider: 'codex',
+              command: 'codex',
+              args: [],
+              cwd: input.request.cwd,
+              env: {},
+              leaseMode: 'job-exclusive',
+            });
+          },
+          compileStableHost: (host: FixtureExecutionPlan['host']) => host.serverSpec,
+        },
+        recovery: {
+          finalizeInterrupted: (probeResult, _continuity, context) =>
+            probeResult.resumable && context.preservedConversationRef !== undefined
+              ? { kind: 'set_resumable' as const, conversationRef: context.preservedConversationRef }
+              : { kind: 'clear_non_resumable' as const },
+          finalizeFromArtifacts: async () => {
+            throw new Error('waiting recovery must not inspect artifacts');
+          },
+        },
+      })
+    : defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
+        name: 'codex',
+        transport: 'standalone',
+        run: noopProvider,
+        prepareExecutionPlan: prepareFixtureExecutionPlan,
+      });
   providerRegistry.register(
-    defineProvider({
-      name: 'codex',
-      run: noopProvider,
-      prepareExecutionPlan: prepareFixtureExecutionPlan,
-      ...(options.interruptedRecovery
-        ? {
-            appServer: {
-              name: 'codex',
-              subscriptionPhase: 'afterInitialize' as const,
-              compileStableHost: (host: ReturnType<typeof prepareFixtureExecutionPlan>['plan']['host']) =>
-                host.serverSpec,
-            },
-            recovery: {
-              finalizeInterrupted: (probeResult, _continuity, context) =>
-                probeResult.resumable && context.preservedConversationRef !== undefined
-                  ? { kind: 'set_resumable' as const, conversationRef: context.preservedConversationRef }
-                  : { kind: 'clear_non_resumable' as const },
-              finalizeFromArtifacts: async () => {
-                throw new Error('waiting recovery must not inspect artifacts');
-              },
-            },
-          }
-        : {}),
-    })
+    providerBuilder
       .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(
         artifactMode === 'managed'
@@ -1210,12 +1229,6 @@ describe('LifecycleReactor retention enforcement', () => {
       backendNamespace: harness.namespace,
       bundleHash: 'test-bundle',
       progressStore: harness.progressStore,
-      providerHostManager: {
-        acquireServer: async () => {
-          throw new Error('unexpected acquireServer');
-        },
-        borrowLiveServer: async () => null,
-      },
       launchAdmission: {
         releaseLaunch: vi.fn(),
       },

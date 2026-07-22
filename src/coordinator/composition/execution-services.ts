@@ -44,7 +44,6 @@ export function createExecutionServices({
       progressStore,
       bundleHash,
       backendNamespace,
-      providerHostManager: world.providerHostManager,
       launchCoordinator: world.launchCoordinator,
       eventBus: world.eventBus,
       providerRegistry: world.providerRegistry,

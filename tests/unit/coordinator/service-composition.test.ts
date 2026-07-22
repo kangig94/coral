@@ -47,7 +47,12 @@ import { composeReducers } from '#src/store/reducers.js';
 import type { CommitContext } from '#src/store/append.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { defineFakeProvider, toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
+import {
+  defineFakeProvider,
+  toProviderDefinition,
+  type Provider,
+  type StandaloneTestProvider,
+} from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
@@ -243,6 +248,9 @@ function createService(
     providerRegistry.register(provider);
   }
   const progressStore = options.progressStore ?? createProgressStore();
+  const providerHostManager =
+    options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer });
+  providerRegistry.connectAppServerHost(providerHostManager);
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
   const subscribeJobEvents = async function* ({
@@ -290,7 +298,6 @@ function createService(
     progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
     providerRegistry,
@@ -427,6 +434,7 @@ function createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
+      isClosed: () => false,
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -485,7 +493,7 @@ function streamCompletedResult(
 
 function makeProvider(options?: {
   execute?: (
-    ...args: Parameters<Provider['execute']>
+    ...args: Parameters<StandaloneTestProvider['execute']>
   ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
@@ -493,13 +501,13 @@ function makeProvider(options?: {
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
+  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
     streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute: execute as unknown as Provider['execute'],
+    execute: execute as unknown as StandaloneTestProvider['execute'],
     ...(preflight ? { preflight } : {}),
   };
   return { provider, execute, preflight };
@@ -512,7 +520,7 @@ function makeCodexAppServerProvider(): Provider {
       streamProviderTerminal({ content: 'ok', durationMs: 0, outcome: { kind: 'completed' as const } }),
     ),
     appServerLifecycle: {
-      prepareHostSpec: (_continuity, request) =>
+      host: (_continuity, request) =>
         prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
       interrupt: async (lease, continuity) => {
         const threadId = continuity.threadId;
@@ -594,6 +602,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   leaseMode: 'shared';
+  idlePolicy: 'host-stats' | 'daemon';
 }): Provider {
   return {
     name: 'claude',
@@ -601,7 +610,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', durationMs: 0, outcome: { kind: 'completed' as const } }),
     ),
     appServerLifecycle: {
-      prepareHostSpec: () => spec,
+      host: spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -1637,14 +1646,32 @@ describe('ExecutionService', () => {
       };
     }
 
-    function makeAppServerRuntimeRecord(overrides?: Partial<AppServerRuntime['providerMeta']>): AppServerRuntime {
+    function makeAppServerRuntimeRecord(overrides?: {
+      provider?: string;
+      leaseState?: 'waiting' | 'acquired';
+    }): AppServerRuntime {
+      if (overrides?.leaseState === 'waiting') {
+        return {
+          transport: 'app-server',
+          startTime: new Date().toISOString(),
+          providerMeta: {
+            provider: overrides.provider ?? 'codex',
+            leaseState: 'waiting',
+          },
+        };
+      }
       return {
         transport: 'app-server',
         startTime: new Date().toISOString(),
         providerMeta: {
-          provider: 'codex',
+          provider: overrides?.provider ?? 'codex',
           leaseState: 'acquired',
-          ...overrides,
+          hostRef: {
+            provider: 'test',
+            fingerprint: '0'.repeat(64),
+            instanceId: 'instance-1',
+            leaseMode: 'shared',
+          },
         },
       };
     }
@@ -2573,13 +2600,13 @@ describe('ExecutionService', () => {
               streamProviderTerminal({ content: 'ok', durationMs: 0, outcome: { kind: 'completed' } }),
             ),
             appServerLifecycle: {
-              prepareHostSpec: () => ({
+              host: {
                 provider: 'codex',
                 command: 'codex',
                 args: [],
                 cwd: ctx.projectRoot,
                 leaseMode: 'job-exclusive',
-              }),
+              },
               interrupt: async () => {},
               finalizeInterrupted,
             },
@@ -2818,14 +2845,15 @@ describe('ExecutionService', () => {
               streamProviderTerminal({ content: 'ok', durationMs: 0, outcome: { kind: 'completed' } }),
             ),
             appServerLifecycle: {
-              prepareHostSpec: () => ({
+              host: {
                 provider: 'claude',
                 command: 'claude',
                 args: [],
                 cwd: ctx.projectRoot,
                 env: {},
                 leaseMode: 'shared',
-              }),
+                idlePolicy: 'daemon',
+              },
               interrupt: async () => {},
               finalizeInterrupted: (probeResult, _continuity, context) =>
                 probeResult.resumable && context.preservedConversationRef !== undefined

@@ -44,23 +44,21 @@ describe('provider binding registry boundary', () => {
     expect(binding.present()).not.toContain('/accounts/claude-a');
     expect(Object.isFrozen(binding)).toBe(true);
     expect(binding).not.toHaveProperty('credentialSource');
-    expect(
-      binding
-        .prepareExecution({
-          request: {
-            action: 'exec',
-            sessionId: 'session-a',
-            prompt: 'test',
-            cwd: '/workspace',
-            bypassPermissions: false,
-            coralEnv: {},
-          },
-          baseEnv: {},
-          storage: { existsSync: () => false },
-          platform: 'linux',
-        })
-        .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
-    ).toMatchObject({ CLAUDE_CONFIG_DIR: '/accounts/claude-a' });
+    const execution = binding.prepareExecution({
+      request: {
+        action: 'exec',
+        sessionId: 'session-a',
+        prompt: 'test',
+        cwd: '/workspace',
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      baseEnv: {},
+      storage: { existsSync: () => false },
+      platform: 'linux',
+    });
+    expect(execution.kind).toBe('app-server');
+    expect(execution).not.toHaveProperty('prepareCliRequest');
     expect(binding.compareIdentity(binding.envelope)).toEqual({ ok: true, value: true });
     expectTypeOf(binding).not.toHaveProperty('profile');
     expectTypeOf(binding).not.toHaveProperty('subject');
@@ -242,6 +240,7 @@ describe('provider binding registry boundary', () => {
     registry.register(
       defineProvider({
         name: 'account-fixture',
+        transport: 'standalone',
         run: async function* () {},
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
@@ -314,6 +313,7 @@ describe('provider binding registry boundary', () => {
     registry.register(
       defineProvider({
         name: 'receiver',
+        transport: 'standalone',
         run: async function* () {},
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },

@@ -361,7 +361,7 @@ export type LifecycleDeps = {
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
-  readonly providerHostManager: ProviderHostManager;
+  readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void;

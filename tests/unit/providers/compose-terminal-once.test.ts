@@ -23,6 +23,7 @@ const BASE_REQUEST: ProviderRequest = {
 };
 
 const BASE_RUNTIME: TestRuntime = {
+  transport: 'standalone',
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
@@ -31,9 +32,6 @@ const BASE_RUNTIME: TestRuntime = {
     clearTimeout: () => {},
   } as TestRuntime['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquirePreparedServer: async () => {
-    throw new Error('not used in compose tests');
-  },
   storage: { existsSync: () => true } as unknown as TestRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
@@ -60,6 +58,7 @@ const CONTINUITY: ProviderEventBody = {
   resumable: true,
   providerContinuity: {},
 };
+const SUSPENDED: ProviderEventBody = { kind: 'suspended', reason: 'interrupt_unconfirmed' };
 
 const WRAPPER_LOST_TERMINAL: ProviderEventBody = {
   kind: 'terminal',
@@ -100,6 +99,15 @@ describe('compose() terminalOnce guard', () => {
     }
 
     expect(collected).toEqual([PROGRESS, WRAPPER_LOST_TERMINAL]);
+  });
+
+  it('accepts suspension as a final disposition without synthesizing a terminal', async () => {
+    const stream = compose([], fromEvents([PROGRESS, SUSPENDED, COMPLETED_TERMINAL]))(BASE_REQUEST, BASE_RUNTIME);
+
+    const collected: ProviderEventBody[] = [];
+    for await (const event of stream) collected.push(event);
+
+    expect(collected).toEqual([PROGRESS, SUSPENDED]);
   });
 
   it('drops a second terminal yielded by a misbehaving inner stream', async () => {
@@ -151,6 +159,25 @@ describe('compose() terminalOnce guard', () => {
     // No terminal value should be yielded by .return() — consumer opted out.
     expect(returned.value).toBeUndefined();
     expect(yieldedAfterReturn).toBe(false);
+  });
+
+  it('closes the owned inner iterator when a consumer returns after the terminal', async () => {
+    let cleanedUp = false;
+    const never = new Promise<void>(() => {});
+    const provider: TestProvider = async function* terminalThenWaitProvider() {
+      try {
+        yield COMPLETED_TERMINAL;
+        await never;
+      } finally {
+        cleanedUp = true;
+      }
+    };
+    const iterator = compose([], provider)(BASE_REQUEST, BASE_RUNTIME)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: COMPLETED_TERMINAL });
+    await iterator.return?.();
+
+    expect(cleanedUp).toBe(true);
   });
 
   it('does not synthesize wrapper_lost when the inner stream throws', async () => {

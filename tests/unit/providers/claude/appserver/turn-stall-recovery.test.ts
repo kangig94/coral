@@ -109,6 +109,8 @@ async function ensureController(
     cwd: '/workspace',
     projectsRoot,
     systemPromptHash: 'sha256:test',
+
+    bootstrapConfigHash: 'sha256:test-bootstrap',
     permissionMode: 'default',
   });
 }
@@ -581,6 +583,8 @@ describe('Claude phase-specific turn-stall recovery', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
     });
     await pool.turnStart({
@@ -640,6 +644,8 @@ describe('Claude phase-specific turn-stall recovery', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
     });
     await pool.turnStart({

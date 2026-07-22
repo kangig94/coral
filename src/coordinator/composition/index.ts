@@ -1051,7 +1051,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       services
         .listExecutionServices()
         .filter(
-          (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
+          (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: () => Promise<void> } =>
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
     createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisorWithTrackedShutdown),
@@ -1093,7 +1093,6 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     eventBus: world.eventBus,
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
-    providerHostManager: world.providerHostManager,
     ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,

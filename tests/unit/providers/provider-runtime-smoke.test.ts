@@ -1,19 +1,18 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
-import { brokerNotificationMethods } from '#src/providers/claude/appserver/protocol.js';
+import { brokerNotificationMethods, type SessionEnsureParams } from '#src/providers/claude/appserver/protocol.js';
 import type { ClaudeBootstrapSignature } from '#src/providers/claude/request-prep.js';
-import type { ProviderCliRunner } from '#src/providers/protocol.js';
 import type {
   ProviderContinuityEventBody,
   ProviderEventBody,
   ProviderRequest,
-  ProviderRuntime,
-  ProviderServerLease,
+  AppServerSession,
 } from '#src/providers/contract.js';
-import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
+import type { BoundProvider, BoundProviderAppServerExecutionRuntime } from '#src/providers/bound-provider-contract.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 import { collectProviderEvents } from '#src/providers/stream.js';
+import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import {
   TEST_CLAUDE_BINDING,
@@ -26,24 +25,58 @@ type RegisteredProviderName = (typeof REGISTERED_PROVIDER_NAMES)[number];
 
 const CLAUDE_BOOTSTRAP_SIGNATURE: ClaudeBootstrapSignature = {
   cwd: '/workspace',
-  systemPromptHash: 'sha256:smoke',
+  systemPromptHash: 'sha256:sha256:fake',
+
+  bootstrapConfigHash: 'sha256:test-bootstrap',
   permissionMode: 'default',
 };
 
-type MockLease = ProviderServerLease & {
+function echoClaudeBootstrapSignature(params: Record<string, unknown> | undefined): ClaudeBootstrapSignature {
+  const ensure = params as unknown as SessionEnsureParams;
+  return {
+    cwd: ensure.cwd,
+    systemPromptHash: ensure.systemPromptHash,
+    permissionMode: ensure.permissionMode,
+    bootstrapConfigHash: ensure.bootstrapConfigHash,
+  };
+}
+
+beforeAll(() => vi.stubGlobal('__PLUGIN_ROOT__', '/test/plugin'));
+afterAll(() => vi.unstubAllGlobals());
+
+type MockLease = AppServerSession & {
   close(outcome?: Error | void): void;
   emit(message: { method: string; params?: Record<string, unknown> }): void;
-  releaseMock: ReturnType<typeof vi.fn>;
+  releaseMock: () => void;
   rpcMock: ReturnType<typeof vi.fn>;
   subscribeMock: ReturnType<typeof vi.fn>;
 };
 
-type PreparedRuntime = Omit<ProviderRuntime<never>, 'executionPlan'>;
+type PreparedRuntime = BoundProviderAppServerExecutionRuntime;
 
 type SmokeRuntime = PreparedRuntime & {
   controller: AbortController;
-  acquirePreparedServer: ReturnType<typeof vi.fn>;
-  runCli: ReturnType<typeof vi.fn>;
+};
+
+let testSessionFactory: () => Promise<AppServerSession> = async () => {
+  throw new Error('appServerSession should not be called in this smoke scenario.');
+};
+
+const appServerHost = {
+  openSession: vi.fn(async () => {
+    const session = await testSessionFactory();
+    return {
+      session,
+      hostRef: {
+        provider: 'test',
+        fingerprint: '0'.repeat(64),
+        instanceId: 'instance-1',
+        leaseMode: 'shared' as const,
+      },
+      close: () => (session as MockLease).releaseMock(),
+    };
+  }),
+  attachSession: async () => null,
 };
 
 function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>): MockLease {
@@ -61,10 +94,10 @@ function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) =>
   const releaseMock = vi.fn();
 
   return {
-    rpc: rpcMock as unknown as ProviderServerLease['rpc'],
-    subscribe: subscribeMock as unknown as ProviderServerLease['subscribe'],
-    release: releaseMock,
+    rpc: rpcMock as unknown as AppServerSession['rpc'],
+    subscribe: subscribeMock as unknown as AppServerSession['subscribe'],
     closed: closed.promise,
+    interrupt: vi.fn(async () => false),
     close(outcome) {
       closed.resolve(outcome);
     },
@@ -82,27 +115,21 @@ function makeLease(rpcImpl: (method: string, params: Record<string, unknown>) =>
 function makeRuntime(options: {
   controller?: AbortController;
   persistedContinuity?: PreparedRuntime['persistedContinuity'];
-  runCliImpl?: ProviderCliRunner;
-  acquirePreparedServerImpl?: () => Promise<ProviderServerLease>;
+  appServerSessionImpl?: () => Promise<AppServerSession>;
   env?: PreparedRuntime['env'];
   storage?: PreparedRuntime['storage'];
 }): SmokeRuntime {
+  appServerHost.openSession.mockClear();
   const controller = options.controller ?? new AbortController();
-  const runCli = vi.fn<ProviderCliRunner>(
-    options.runCliImpl ??
-      (async () => {
-        throw new Error('runCli should not be called in this smoke scenario.');
-      }),
-  );
-  const acquirePreparedServer = vi.fn(
-    options.acquirePreparedServerImpl ??
-      (async () => {
-        throw new Error('acquirePreparedServer should not be called in this smoke scenario.');
-      }),
-  );
+  testSessionFactory =
+    options.appServerSessionImpl ??
+    (async () => {
+      throw new Error('appServerSession should not be called in this smoke scenario.');
+    });
 
   return {
     controller,
+    transport: 'app-server',
     signal: controller.signal,
     time: {
       now: () => Date.now(),
@@ -111,11 +138,12 @@ function makeRuntime(options: {
         if (handle !== null) clearTimeout(handle as ReturnType<typeof setTimeout>);
       },
     },
-    runCli,
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     storage: options.storage ?? ({ existsSync: () => true } as unknown as PreparedRuntime['storage']),
     env: options.env,
-    acquirePreparedServer,
+    jobId: 'smoke-job',
+    onAppServerWaiting: vi.fn(),
+    onHostRef: vi.fn(),
     persistedContinuity: options.persistedContinuity,
     continuityBridge: {
       checkpoint: vi.fn(),
@@ -142,7 +170,9 @@ function getProductionProvider(
   name: RegisteredProviderName,
   binding: ProviderBindingEnvelope = name === 'claude' ? TEST_CLAUDE_BINDING : TEST_CODEX_BINDING,
 ): BoundProvider {
-  const provider = createBuiltInProviderRegistry().rehydrateBinding(binding);
+  const registry = createBuiltInProviderRegistry();
+  registry.connectAppServerHost(appServerHost);
+  const provider = registry.rehydrateBinding(binding);
   if (!provider.ok || provider.value.name !== name) throw new Error(`Expected built-in provider ${name} to bind.`);
   return provider.value;
 }
@@ -154,6 +184,7 @@ function executeProvider(provider: BoundProvider, request: ProviderRequest, runt
     storage: { existsSync: () => false },
     platform: process.platform,
   });
+  if (prepared.kind !== 'app-server') throw new Error(`Expected ${provider.name} to prepare app-server execution.`);
   return prepared.execute(runtime);
 }
 
@@ -205,25 +236,26 @@ describe('provider runtime smoke', () => {
       const provider = getProductionProvider(providerName);
 
       if (providerName === 'claude') {
-        const lease = makeLease(async (method) => {
+        const lease = makeLease(async (method, params) => {
           if (method === 'session/ensure') {
             return {
               brokerSessionKey: 'broker-claude-smoke',
-              bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
+              bootstrapSignature: echoClaudeBootstrapSignature(params),
               sessionId: 'claude-session-smoke',
               conversationRef: 'claude-session-smoke',
             };
           }
           if (method === 'turn/start') {
             return {
-              brokerTurnId: 'claude-turn-smoke',
+              brokerSessionKey: params.brokerSessionKey,
+              brokerTurnId: params.brokerTurnId,
               sessionId: 'claude-session-smoke',
               conversationRef: 'claude-session-smoke',
             };
           }
           throw new Error(`Unexpected Claude smoke RPC: ${method}`);
         });
-        const runtime = makeRuntime({ acquirePreparedServerImpl: async () => lease });
+        const runtime = makeRuntime({ appServerSessionImpl: async () => lease });
 
         const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
@@ -235,7 +267,7 @@ describe('provider runtime smoke', () => {
           method: brokerNotificationMethods.turnProgress,
           params: {
             brokerSessionKey: 'broker-claude-smoke',
-            brokerTurnId: 'claude-turn-smoke',
+            brokerTurnId: 'test-uuid',
             sessionId: 'claude-session-smoke',
             conversationRef: 'claude-session-smoke',
             message: 'Claude broker progress',
@@ -245,7 +277,7 @@ describe('provider runtime smoke', () => {
           method: brokerNotificationMethods.turnCompleted,
           params: {
             brokerSessionKey: 'broker-claude-smoke',
-            brokerTurnId: 'claude-turn-smoke',
+            brokerTurnId: 'test-uuid',
             sessionId: 'claude-session-smoke',
             conversationRef: 'claude-session-smoke',
             result: 'Claude broker result',
@@ -265,8 +297,8 @@ describe('provider runtime smoke', () => {
 
         expect(continuityEvents.length).toBeGreaterThan(0);
         expect(terminal.terminal.outcome).toEqual({ kind: 'completed' });
-        expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
-        expect(runtime.runCli).not.toHaveBeenCalled();
+        expect(appServerHost.openSession).toHaveBeenCalledTimes(1);
+        expect('runCli' in runtime).toBe(false);
         return;
       }
 
@@ -279,7 +311,7 @@ describe('provider runtime smoke', () => {
         }
         throw new Error(`Unexpected Codex smoke RPC: ${method}`);
       });
-      const runtime = makeRuntime({ acquirePreparedServerImpl: async () => lease });
+      const runtime = makeRuntime({ appServerSessionImpl: async () => lease });
 
       const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('codex'), runtime));
 
@@ -312,8 +344,8 @@ describe('provider runtime smoke', () => {
 
       expect(continuityEvents.length).toBeGreaterThan(0);
       expect(terminal.terminal.outcome).toEqual({ kind: 'completed' });
-      expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
-      expect(runtime.runCli).not.toHaveBeenCalled();
+      expect(appServerHost.openSession).toHaveBeenCalledTimes(1);
+      expect('runCli' in runtime).toBe(false);
     },
   );
 
@@ -324,27 +356,28 @@ describe('provider runtime smoke', () => {
       if (method === 'session/ensure') {
         return {
           brokerSessionKey: 'broker-claude-aborted',
-          bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
+          bootstrapSignature: echoClaudeBootstrapSignature(params),
           sessionId: 'claude-session-aborted',
           conversationRef: 'claude-session-aborted',
         };
       }
       if (method === 'turn/start') {
         return {
-          brokerTurnId: 'claude-turn-aborted',
+          brokerSessionKey: params.brokerSessionKey,
+          brokerTurnId: params.brokerTurnId,
           sessionId: 'claude-session-aborted',
           conversationRef: 'claude-session-aborted',
         };
       }
       if (method === 'turn/interrupt') {
         return {
-          brokerTurnId: params.brokerTurnId ?? 'claude-turn-aborted',
+          brokerTurnId: params.brokerTurnId,
           interrupted: true,
         };
       }
       throw new Error(`Unexpected Claude abort RPC: ${method}`);
     });
-    const runtime = makeRuntime({ controller, acquirePreparedServerImpl: async () => lease });
+    const runtime = makeRuntime({ controller, appServerSessionImpl: async () => lease });
 
     const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('claude'), runtime));
 
@@ -359,7 +392,7 @@ describe('provider runtime smoke', () => {
         'turn/interrupt',
         expect.objectContaining({
           brokerSessionKey: 'broker-claude-aborted',
-          brokerTurnId: 'claude-turn-aborted',
+          brokerTurnId: 'test-uuid',
         }),
       );
     });
@@ -375,8 +408,121 @@ describe('provider runtime smoke', () => {
         : false,
     ).toBe(false);
     expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
-    expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
-    expect(runtime.runCli).not.toHaveBeenCalled();
+    expect(appServerHost.openSession).toHaveBeenCalledTimes(1);
+    expect('runCli' in runtime).toBe(false);
+  });
+
+  it('persists active Claude interrupt coordinates, reattaches for the exact recovered interrupt, and clears them on settlement', async () => {
+    const provider = getProductionProvider('claude');
+    const lease = makeLease(async (method, params) => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-recovered-interrupt',
+          bootstrapSignature: echoClaudeBootstrapSignature(params),
+          conversationRef: 'claude-recovered-interrupt',
+        };
+      }
+      if (method === 'turn/start') {
+        return {
+          brokerSessionKey: params.brokerSessionKey,
+          brokerTurnId: params.brokerTurnId,
+          conversationRef: 'claude-recovered-interrupt',
+        };
+      }
+      if (method === 'turn/interrupt') {
+        return { brokerSessionKey: params.brokerSessionKey, brokerTurnId: params.brokerTurnId, interrupted: true };
+      }
+      throw new Error(`Unexpected recovered interrupt RPC: ${method}`);
+    });
+    const runtime = makeRuntime({ appServerSessionImpl: async () => lease });
+    const observedEvents: ProviderEventBody[] = [];
+    const eventsPromise = (async () => {
+      for await (const event of executeProvider(provider, makeRequest('claude'), runtime)) {
+        observedEvents.push(event);
+        if (event.kind === 'continuity') commitContinuityEvent(event);
+      }
+      return observedEvents;
+    })();
+
+    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+    lease.emit({
+      method: brokerNotificationMethods.turnProgress,
+      params: {
+        brokerSessionKey: 'broker-recovered-interrupt',
+        brokerTurnId: 'test-uuid',
+        message: 'checkpoint active coordinates',
+      },
+    });
+    await vi.waitFor(() => {
+      expect(
+        observedEvents.some(
+          (event) => event.kind === 'continuity' && event.providerContinuity?.brokerTurnId === 'test-uuid',
+        ),
+      ).toBe(true);
+    });
+    const active = [...observedEvents]
+      .reverse()
+      .find(
+        (event): event is ProviderContinuityEventBody =>
+          event.kind === 'continuity' && event.providerContinuity?.brokerTurnId === 'test-uuid',
+      )?.providerContinuity;
+    expect(active).toMatchObject({
+      brokerSessionKey: 'broker-recovered-interrupt',
+      brokerTurnId: 'test-uuid',
+    });
+
+    const hostRef = {
+      provider: 'claude',
+      fingerprint: '0'.repeat(64),
+      instanceId: 'instance-recovered-interrupt',
+      leaseMode: 'shared' as const,
+    };
+    const recoveryRegistry = createBuiltInProviderRegistry();
+    recoveryRegistry.connectAppServerHost({
+      openSession: async () => {
+        throw new Error('Recovered interrupt must attach, not open.');
+      },
+      attachSession: async () => ({ session: lease, hostRef, close: vi.fn() }),
+    });
+    const recovered = recoveryRegistry.rehydrateBinding(TEST_CLAUDE_BINDING);
+    if (!recovered.ok) throw new Error('Expected recovered Claude binding.');
+    const recoveredHostInput = {
+      request: makeRequest('claude'),
+      baseEnv: {},
+      platform: 'linux',
+      storage: { existsSync: () => false },
+      jobId: 'job-claude-runtime-smoke',
+    } as const;
+    const callsBeforeInterrupt = lease.rpcMock.mock.calls.length;
+    await expect(recovered.value.appServer?.interrupt(hostRef, active ?? {}, recoveredHostInput)).resolves.toBe(true);
+    expect(lease.rpcMock).toHaveBeenNthCalledWith(callsBeforeInterrupt + 1, 'turn/interrupt', {
+      brokerSessionKey: 'broker-recovered-interrupt',
+      brokerTurnId: 'test-uuid',
+    });
+    await expect(
+      recovered.value.appServer?.interrupt(
+        hostRef,
+        { bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE },
+        recoveredHostInput,
+      ),
+    ).resolves.toBe(false);
+    expect(lease.rpcMock).toHaveBeenCalledTimes(callsBeforeInterrupt + 1);
+
+    lease.emit({
+      method: brokerNotificationMethods.turnCompleted,
+      params: {
+        brokerSessionKey: 'broker-recovered-interrupt',
+        brokerTurnId: 'test-uuid',
+        conversationRef: 'claude-recovered-interrupt',
+        result: 'done',
+        durationMs: 1,
+        isError: false,
+      },
+    });
+    const settledEvents = await eventsPromise;
+    const settled = settledEvents.filter(isContinuityEvent).at(-1)?.providerContinuity;
+    expect(settled).not.toHaveProperty('brokerSessionKey');
+    expect(settled).not.toHaveProperty('brokerTurnId');
   });
 
   it('retries Claude JSONL artifact discovery after the transcript appears', async () => {
@@ -385,18 +531,19 @@ describe('provider runtime smoke', () => {
       withTestBindingLocation(TEST_CLAUDE_BINDING, '/home/tester/.claude'),
     );
     let artifactVisible = false;
-    const lease = makeLease(async (method) => {
+    const lease = makeLease(async (method, params) => {
       if (method === 'session/ensure') {
         return {
           brokerSessionKey: 'broker-claude-artifact',
-          bootstrapSignature: CLAUDE_BOOTSTRAP_SIGNATURE,
+          bootstrapSignature: echoClaudeBootstrapSignature(params),
           sessionId: 'claude-session-artifact',
           conversationRef: 'claude-session-artifact',
         };
       }
       if (method === 'turn/start') {
         return {
-          brokerTurnId: 'claude-turn-artifact',
+          brokerSessionKey: params.brokerSessionKey,
+          brokerTurnId: params.brokerTurnId,
           sessionId: 'claude-session-artifact',
           conversationRef: 'claude-session-artifact',
         };
@@ -404,7 +551,7 @@ describe('provider runtime smoke', () => {
       throw new Error(`Unexpected Claude artifact RPC: ${method}`);
     });
     const runtime = makeRuntime({
-      acquirePreparedServerImpl: async () => lease,
+      appServerSessionImpl: async () => lease,
       env: {
         homedir: () => '/home/tester',
         fullSnapshot: () => ({}),
@@ -437,7 +584,7 @@ describe('provider runtime smoke', () => {
       method: brokerNotificationMethods.turnCompleted,
       params: {
         brokerSessionKey: 'broker-claude-artifact',
-        brokerTurnId: 'claude-turn-artifact',
+        brokerTurnId: 'test-uuid',
         sessionId: 'claude-session-artifact',
         conversationRef: 'claude-session-artifact',
         result: 'Claude broker result',
@@ -481,7 +628,7 @@ describe('provider runtime smoke', () => {
       }
       throw new Error(`Unexpected Codex abort RPC: ${method}`);
     });
-    const runtime = makeRuntime({ controller, acquirePreparedServerImpl: async () => lease });
+    const runtime = makeRuntime({ controller, appServerSessionImpl: async () => lease });
 
     const eventsPromise = collectProviderEvents(executeProvider(provider, makeRequest('codex'), runtime));
 
@@ -514,7 +661,7 @@ describe('provider runtime smoke', () => {
 
     expectValidContinuitySnapshots(events);
     expect(terminal.terminal.outcome).toEqual({ kind: 'aborted', reason: 'signal_abort' });
-    expect(runtime.acquirePreparedServer).toHaveBeenCalledTimes(1);
-    expect(runtime.runCli).not.toHaveBeenCalled();
+    expect(appServerHost.openSession).toHaveBeenCalledTimes(1);
+    expect('runCli' in runtime).toBe(false);
   });
 });

@@ -1,77 +1,114 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
-import { managed, none } from '#src/providers/capability.js';
+import { none } from '#src/providers/capability.js';
 import { zodPersistedParser, zodValueParser } from '#src/providers/binding-parser.js';
 import { bindingFailure, bindingSuccess } from '#src/providers/contracts/binding.js';
 import type {
   ProviderArtifactCapability,
-  ProviderArtifactHandleInput,
   ProviderAppServerCapability,
+  ProviderAppServerImplementation,
   ProviderImplementation,
-  ProviderRecoveryContract,
   ProviderRequest,
-  ProviderServerLaunch,
-  ProviderServerLease,
+  ProviderServerSpec,
+  AppServerTransport,
 } from '#src/providers/contract.js';
 import { defineProvider, ProviderRegistry, type ProviderDefinition } from '#src/providers/registry.js';
 import type { BoundProvider } from '#src/providers/bound-provider-contract.js';
-import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { fixtureProviderBindingCodec, type FixtureProviderSource } from '#tests/helpers/provider-binding.js';
 import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 
 type EmptyPlan = ProviderExecutionPlan<undefined, undefined, undefined>;
 const TEST_PREPARATION_STORAGE = { existsSync: () => false } as const;
-const TEST_APP_SERVER_LAUNCH: ProviderServerLaunch = {
-  host: { provider: 'fixture', command: 'fixture', args: [], cwd: '/tmp', leaseMode: 'job-exclusive' as const },
-  turnEnv: {},
+const TEST_APP_SERVER_SPEC: ProviderServerSpec = {
+  provider: 'fixture',
+  command: 'fixture',
+  args: [],
+  cwd: '/tmp',
+  leaseMode: 'job-exclusive',
 };
-type ProviderFacetOverrides = Partial<
-  Pick<ProviderImplementation<EmptyPlan>, 'preflight' | 'recovery' | 'curation'>
-> & {
-  readonly appServer?: Omit<ProviderAppServerCapability<EmptyPlan>, 'compileStableHost'> & {
+type ProviderFacetOverrides = Partial<Pick<ProviderImplementation<EmptyPlan>, 'preflight' | 'recovery'>> & {
+  readonly curation?: ProviderAppServerImplementation<EmptyPlan>['curation'];
+  readonly appServer?: Omit<ProviderAppServerCapability<EmptyPlan>, 'planHost' | 'compileStableHost'> & {
+    readonly planHost?: ProviderAppServerCapability<EmptyPlan>['planHost'];
     readonly compileStableHost?: ProviderAppServerCapability<EmptyPlan>['compileStableHost'];
   };
   readonly artifacts?: ProviderArtifactCapability;
-  readonly serverLaunch?: ProviderServerLaunch;
+  readonly serverSpec?: ProviderServerSpec;
 };
 
 function makeSpec(name: string, overrides: ProviderFacetOverrides = {}): ProviderDefinition {
-  const definition = defineProvider({
+  const run = async function* () {
+    yield {
+      kind: 'terminal' as const,
+      terminal: {
+        content: `${name} response`,
+        durationMs: 0,
+        outcome: { kind: 'completed' as const },
+      },
+      diagnostics: {},
+    };
+  };
+  const facets = {
+    ...(overrides.preflight ? { preflight: overrides.preflight } : {}),
+    ...(overrides.recovery ? { recovery: overrides.recovery } : {}),
+  };
+  const artifacts = overrides.artifacts ?? none(`Test provider ${name} declares no provider artifacts.`);
+
+  if (overrides.appServer !== undefined) {
+    return defineProvider<EmptyPlan, FixtureProviderSource>({
+      name,
+      transport: 'app-server',
+      prepareExecutionPlan: () => ({
+        session: undefined,
+        turn: undefined,
+      }),
+      run,
+      ...facets,
+      ...(overrides.curation ? { curation: overrides.curation } : {}),
+      appServer: {
+        ...overrides.appServer,
+        planHost: overrides.appServer.planHost ?? (() => undefined),
+        compileStableHost:
+          overrides.appServer.compileStableHost ??
+          (() => overrides.serverSpec ?? { ...TEST_APP_SERVER_SPEC, provider: name }),
+      },
+    })
+      .binding(fixtureProviderBindingCodec(name))
+      .artifacts(artifacts)
+      .build();
+  }
+
+  if (overrides.curation !== undefined) {
+    return defineProvider<EmptyPlan, FixtureProviderSource>({
+      name,
+      transport: 'app-server',
+      prepareExecutionPlan: () => ({
+        session: undefined,
+        turn: undefined,
+      }),
+      run,
+      ...facets,
+      curation: overrides.curation,
+    } as never)
+      .binding(fixtureProviderBindingCodec(name))
+      .artifacts(artifacts)
+      .build();
+  }
+
+  return defineProvider<EmptyPlan, FixtureProviderSource>({
     name,
+    transport: 'standalone',
     prepareExecutionPlan: () => ({
       plan: { host: undefined, session: undefined, turn: undefined },
-      ...(overrides.appServer ? { appServerTurnEnv: (overrides.serverLaunch ?? TEST_APP_SERVER_LAUNCH).turnEnv } : {}),
       prepareCliRequest: (request) => request,
     }),
-    run: async function* () {
-      yield {
-        kind: 'terminal',
-        terminal: {
-          content: `${name} response`,
-          durationMs: 0,
-          outcome: { kind: 'completed' as const },
-        },
-        diagnostics: {},
-      };
-    },
-    ...(overrides.preflight ? { preflight: overrides.preflight } : {}),
-    ...(overrides.appServer
-      ? {
-          appServer: {
-            ...overrides.appServer,
-            compileStableHost:
-              overrides.appServer.compileStableHost ?? (() => (overrides.serverLaunch ?? TEST_APP_SERVER_LAUNCH).host),
-          },
-        }
-      : {}),
-    ...(overrides.recovery ? { recovery: overrides.recovery } : {}),
-    ...(overrides.curation ? { curation: overrides.curation } : {}),
+    run,
+    ...facets,
   })
     .binding(fixtureProviderBindingCodec(name))
-    .artifacts(overrides.artifacts ?? none(`Test provider ${name} declares no provider artifacts.`))
+    .artifacts(artifacts)
     .build();
-
-  return definition;
 }
 
 function providerNames(providers: ProviderDefinition[]): string[] {
@@ -103,34 +140,27 @@ function executionRuntime() {
     time: {},
     storage: {},
     ids: {},
-    acquirePreparedServer: async () => {
-      throw new Error('No server expected in registry boundary test.');
-    },
+    jobId: 'registry-test-job',
+    onAppServerWaiting() {},
+    onHostRef() {},
     continuityBridge: { checkpoint() {}, transportClosed() {} },
     kbRoot: '/kb',
   };
 }
 
-function serverLease() {
-  return {
-    rpc: async <R = unknown>() => ({}) as R,
-    subscribe: () => () => {},
-    release() {},
-    closed: Promise.resolve(),
-  };
-}
-
 async function invokeInterruptLeaseBoundary(
   rawLease: unknown,
-  exercise: (lease: ProviderServerLease) => void | Promise<void> = () => {},
+  exercise: (lease: AppServerTransport) => void | Promise<void> = () => {},
 ): Promise<void> {
   const registry = new ProviderRegistry();
   registry.register(
     makeSpec('negative-lease-boundary', {
       appServer: {
         name: 'negative-lease-boundary',
-        subscriptionPhase: 'afterInitialize',
-        interrupt: async (lease) => exercise(lease),
+        interrupt: async (lease) => {
+          await exercise(lease);
+          return true;
+        },
       },
       recovery: {
         finalizeInterrupted: () => ({ kind: 'preserve' }) as never,
@@ -138,112 +168,50 @@ async function invokeInterruptLeaseBoundary(
       },
     }),
   );
-  const prepared = successfulBinding(registry, 'negative-lease-boundary').prepareExecution({
-    request: {} as never,
-    baseEnv: {},
-    storage: TEST_PREPARATION_STORAGE,
-    platform: 'linux',
+  registry.connectAppServerHost({
+    openSession: async () => {
+      throw new Error('not used');
+    },
+    attachSession: async (hostRef) => ({
+      session: rawLease as AppServerTransport,
+      hostRef,
+      close: () => {},
+    }),
   });
-  await prepared.appServer?.interrupt?.(rawLease as ProviderServerLease, {});
+  const bound = successfulBinding(registry, 'negative-lease-boundary');
+  await bound.appServer?.interrupt(
+    {
+      provider: 'negative-lease-boundary',
+      fingerprint: '0'.repeat(64),
+      instanceId: 'instance-1',
+      leaseMode: 'shared',
+    },
+    {},
+    {
+      request: {} as ProviderRequest,
+      baseEnv: {},
+      platform: 'linux',
+      storage: TEST_PREPARATION_STORAGE,
+      jobId: 'registry-test-job',
+    },
+  );
 }
 
 describe('ProviderRegistry', () => {
-  it('uses one captured app-server compiler for normal, recovery, and curation host plans', () => {
-    type CustomPlan = ProviderExecutionPlan<Readonly<{ cwd: string; accountRoot: string }>, undefined, undefined>;
-    const compileStableHost = vi.fn((host: CustomPlan['host']): ProviderServerLaunch['host'] => ({
-      provider: 'single-host-authority',
-      command: 'fixture',
-      args: ['app-server'],
-      cwd: host.cwd,
-      env: { ACCOUNT_ROOT: host.accountRoot },
-      leaseMode: 'job-exclusive',
-    }));
-    const registry = new ProviderRegistry();
-    registry.register(
-      defineProvider<CustomPlan, { root: string; routingEnv: Readonly<Record<string, string>> }>({
-        name: 'single-host-authority',
-        prepareExecutionPlan: (input) => ({
-          plan: {
-            host: {
-              cwd: input.request.cwd,
-              accountRoot: input.source.root,
-            },
-            session: undefined,
-            turn: undefined,
-          },
-          appServerTurnEnv: input.protectedEnv ?? {},
-          prepareCliRequest: (request) => request,
-        }),
-        run: async function* () {},
-        appServer: {
-          name: 'single-host-authority',
-          subscriptionPhase: 'afterInitialize',
-          compileStableHost,
-        },
-        recovery: {
-          finalizeInterrupted: () => ({ kind: 'preserve' }),
-          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
-        },
-        curation: {
-          prepare: (request, runtime) => ({
-            hostPlan: { cwd: request.cwd, accountRoot: runtime.source.root },
-            turnEnv: {},
-            complete: async () => 'curated',
-          }),
-          isUsageBudgetExhausted: () => false,
-        },
-      })
-        .binding(fixtureProviderBindingCodec('single-host-authority'))
-        .artifacts(none('test'))
-        .build(),
-    );
-    const bound = successfulBinding(registry, 'single-host-authority');
-    const input = {
-      request: {
-        action: 'exec' as const,
-        sessionId: 'session-1',
-        prompt: 'test',
-        cwd: '/workspace',
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    };
-
-    const normal = bound.prepareExecution({
-      ...input,
-      protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-only' },
-    });
-    const recovery = bound.appServer?.prepareStableHost(input);
-    const curation = bound.curation?.prepare({ cwd: '/workspace', prompt: 'curate' }, {
-      storage: TEST_PREPARATION_STORAGE,
-      ids: {},
-    } as never);
-
-    expect(normal.appServer?.launch.host).toEqual(recovery?.host);
-    expect(curation?.launch.host).toEqual(recovery?.host);
-    expect(normal.appServer?.launch.turnEnv).toEqual({ CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-only' });
-    expect(curation?.launch.turnEnv).toEqual({});
-    expect(compileStableHost).toHaveBeenCalledTimes(3);
-    expect(compileStableHost.mock.calls[0]?.[0]).toEqual(compileStableHost.mock.calls[1]?.[0]);
-    expect(compileStableHost.mock.calls[1]?.[0]).toEqual(compileStableHost.mock.calls[2]?.[0]);
-  });
-
   it('rejects an app-server provider without provider-owned recovery interpretation', () => {
     expect(() =>
-      defineProvider({
+      defineProvider<EmptyPlan, FixtureProviderSource>({
         name: 'uninterpreted',
+        transport: 'app-server',
         prepareExecutionPlan: () => ({
-          plan: { host: undefined, session: undefined, turn: undefined },
-          prepareCliRequest: (request) => request,
+          session: undefined,
+          turn: undefined,
         }),
         run: async function* () {},
         appServer: {
           name: 'uninterpreted',
-          subscriptionPhase: 'afterInitialize',
-          compileStableHost: () => TEST_APP_SERVER_LAUNCH.host,
+          planHost: () => undefined,
+          compileStableHost: () => TEST_APP_SERVER_SPEC,
         },
       }),
     ).toThrow("App-server provider 'uninterpreted' must define recovery interpretation.");
@@ -319,12 +287,12 @@ describe('ProviderRegistry', () => {
       registry.register(
         makeSpec('orphan-curation', {
           curation: {
-            prepare: () => ({ hostPlan: undefined, turnEnv: {}, complete: async () => 'unused' }),
+            prepare: () => ({ complete: async () => 'unused' }),
             isUsageBudgetExhausted: () => false,
           },
         }),
       ),
-    ).toThrow("Provider 'orphan-curation' curation requires an app-server capability.");
+    ).toThrow("Provider 'orphan-curation' requires an app-server capability.");
   });
 
   it('closes the verified credential source inside bound curation', async () => {
@@ -339,8 +307,6 @@ describe('ProviderRegistry', () => {
         observedSource = runtime.source;
         const result = this.state.result;
         return {
-          hostPlan: undefined,
-          turnEnv: {},
           complete: async () => result,
         };
       },
@@ -353,20 +319,33 @@ describe('ProviderRegistry', () => {
     registry.register(
       makeSpec('claude', {
         curation,
-        appServer: { name: 'claude', subscriptionPhase: 'beforeInitialize' },
+        appServer: { name: 'claude' },
         recovery: {
           finalizeInterrupted: () => ({ kind: 'preserve' }),
           finalizeFromArtifacts: async () => ({ terminal: {} as never }),
         },
       }),
     );
+    registry.connectAppServerHost({
+      openSession: async () => ({
+        session: { rpc: async <R>() => ({}) as R, subscribe: () => () => {}, closed: Promise.resolve() },
+        hostRef: {
+          provider: 'claude',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
+        },
+        close: () => {},
+      }),
+      attachSession: async () => null,
+    });
     curation.state.result = 'retained-mutation';
 
     const bound = successfulBinding(registry, 'claude');
     const request = { cwd: '/kb', prompt: 'curate' };
     const baseEnv = { PATH: '/bin' };
     const prepared = bound.curation?.prepare(request, { baseEnv } as never);
-    await expect(prepared?.complete({ acquirePreparedServer: async () => ({}) as never })).resolves.toBe('curated');
+    await expect(prepared?.complete()).resolves.toBe('curated');
 
     expect(observedSource).toEqual({
       root: '/claude',
@@ -379,53 +358,6 @@ describe('ProviderRegistry', () => {
     expect(observedBaseEnv).not.toBe(baseEnv);
     expect(Object.isFrozen(observedBaseEnv)).toBe(true);
     expect(Object.isFrozen(bound.curation)).toBe(true);
-  });
-
-  it('retains registered facets behind a bound provider', () => {
-    const registry = new ProviderRegistry();
-    const appServer = {
-      name: 'claude',
-      subscriptionPhase: 'beforeInitialize' as const,
-      interrupt: async () => {},
-    };
-    const recovery = {
-      probe: async () => ({ resumable: true }),
-      finalizeInterrupted: () => ({ kind: 'preserve' as const }),
-      finalizeFromArtifacts: async () => ({
-        terminal: {
-          kind: 'terminal' as const,
-          terminal: {
-            content: 'recovered',
-            durationMs: 0,
-            outcome: { kind: 'completed' as const },
-          },
-          diagnostics: {},
-        },
-      }),
-    };
-    const artifacts = managed({
-      discardArtifacts: async () => ({ kind: 'discarded' as const }),
-    });
-    const spec = makeSpec('claude', { appServer, recovery, artifacts });
-
-    registry.register(spec);
-    const bound = successfulBinding(registry, 'claude');
-    const prepared = bound.prepareExecution({
-      request: {} as never,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
-
-    expect(prepared.appServer).toMatchObject({
-      name: 'claude',
-      subscriptionPhase: 'beforeInitialize',
-    });
-    expect(bound.recovery?.probe).toBeTypeOf('function');
-    expect(bound.recovery?.finalizeInterrupted).toBeTypeOf('function');
-    expect(bound.artifacts.kind).toBe('managed');
-    expect(Object.isFrozen(registry.get('claude'))).toBe(true);
-    expect(Object.isFrozen(bound)).toBe(true);
   });
 
   it('snapshots managed artifact receiver data and methods independently from retained mutation', async () => {
@@ -498,8 +430,9 @@ describe('ProviderRegistry', () => {
         },
       },
     };
-    const definition = defineProvider({
+    const definition = defineProvider<EmptyPlan, FixtureProviderSource>({
       name: 'normalized-binding',
+      transport: 'standalone',
       prepareExecutionPlan: () => ({
         plan: { host: undefined, session: undefined, turn: undefined },
         prepareCliRequest: (request) => request,
@@ -545,6 +478,7 @@ describe('ProviderRegistry', () => {
     rejectingRegistry.register(
       defineProvider({
         name: 'rejected-binding',
+        transport: 'standalone',
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,
@@ -650,6 +584,7 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'class-codec',
+        transport: 'standalone',
         prepareExecutionPlan: (input) => {
           preparedSource = input.source;
           return {
@@ -777,6 +712,7 @@ describe('ProviderRegistry', () => {
     let preparedSource: unknown;
     const definition = defineProvider({
       name: 'sealed-source',
+      transport: 'standalone',
       prepareExecutionPlan: (input) => {
         preparedSource = input.source;
         return {
@@ -810,131 +746,6 @@ describe('ProviderRegistry', () => {
     expect(Object.isFrozen(binding.profile.routing)).toBe(true);
   });
 
-  it('snapshots nested app-server and recovery capabilities when the definition is created', async () => {
-    const appServer = {
-      name: 'sealed-capability',
-      subscriptionPhase: 'beforeInitialize' as const,
-    };
-    const recovery = {
-      state: { content: 'original' },
-      finalizeInterrupted() {
-        return this.state.content === 'original'
-          ? ({ kind: 'preserve' } as const)
-          : ({ kind: 'clear_non_resumable' } as const);
-      },
-      async finalizeFromArtifacts() {
-        return {
-          terminal: {
-            kind: 'terminal' as const,
-            terminal: { content: this.state.content, durationMs: 0, outcome: { kind: 'completed' as const } },
-            diagnostics: {},
-          },
-        };
-      },
-    };
-    const registry = new ProviderRegistry();
-    registry.register(makeSpec('sealed-capability', { appServer, recovery }));
-
-    recovery.state.content = 'mutated';
-    expect(Reflect.set(appServer, 'name', 'mutated')).toBe(true);
-    expect(Reflect.set(recovery, 'finalizeInterrupted', () => ({ kind: 'clear_non_resumable' }))).toBe(true);
-
-    const bound = successfulBinding(registry, 'sealed-capability');
-    const prepared = bound.prepareExecution({
-      request: {} as never,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
-    expect(prepared.appServer?.name).toBe('sealed-capability');
-    expect(prepared.appServer?.launch.host.command).toBe('fixture');
-    expect(bound.recovery?.finalizeInterrupted({ resumable: true }, undefined, {})).toEqual({ kind: 'preserve' });
-    expect((await bound.recovery?.finalizeFromArtifacts({} as never))?.terminal.terminal.content).toBe('original');
-  });
-
-  it('snapshots recovery receiver state and retained continuity inputs', async () => {
-    let observedReceiver = false;
-    let observedKnownArtifacts: readonly ProviderArtifactHandleInput[] | undefined;
-    let observedProbeContinuity: Record<string, unknown> | undefined;
-    let observedFinalizeProbe: { resumable: boolean; updatedContinuity?: Record<string, unknown> } | undefined;
-    let observedFinalizeContinuity: Record<string, unknown> | undefined;
-    let observedFinalizeContext: { preservedConversationRef?: string } | undefined;
-    const recovery = {
-      state: { content: 'captured-recovery' },
-      async probe(_lease: unknown, continuity: Record<string, unknown>) {
-        observedReceiver = this !== recovery;
-        observedProbeContinuity = continuity;
-        return { resumable: true };
-      },
-      finalizeInterrupted(
-        probeResult: { resumable: boolean; updatedContinuity?: Record<string, unknown> },
-        continuity: Record<string, unknown> | undefined,
-        context: { preservedConversationRef?: string },
-      ) {
-        observedReceiver = observedReceiver && this !== recovery;
-        observedFinalizeProbe = probeResult;
-        observedFinalizeContinuity = continuity;
-        observedFinalizeContext = context;
-        return { kind: 'preserve' as const };
-      },
-      async finalizeFromArtifacts(options: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0]) {
-        observedReceiver = observedReceiver && this !== recovery;
-        observedKnownArtifacts = options.knownArtifactHandles;
-        return {
-          terminal: {
-            kind: 'terminal' as const,
-            terminal: { content: this.state.content, durationMs: 0, outcome: { kind: 'completed' as const } },
-            diagnostics: {},
-          },
-        };
-      },
-    };
-
-    const registry = new ProviderRegistry();
-    registry.register(makeSpec('class-recovery', { recovery }));
-    recovery.state.content = 'retained-mutation';
-    const boundRecovery = successfulBinding(registry, 'class-recovery').recovery;
-
-    const probeContinuity = { nested: { marker: 'captured' } };
-    await expect(boundRecovery?.probe?.(serverLease(), probeContinuity)).resolves.toEqual({ resumable: true });
-    probeContinuity.nested.marker = 'caller-mutated';
-    expect(observedProbeContinuity).toEqual({ nested: { marker: 'captured' } });
-    expect(Object.isFrozen(observedProbeContinuity)).toBe(true);
-    expect(Object.isFrozen(observedProbeContinuity?.nested as object | undefined)).toBe(true);
-    const probeResult = { resumable: true, updatedContinuity: { nested: { marker: 'captured' } } };
-    const continuity = { nested: { marker: 'captured' } };
-    const context = { preservedConversationRef: 'captured' };
-    expect(boundRecovery?.finalizeInterrupted(probeResult, continuity, context)).toEqual({ kind: 'preserve' });
-    probeResult.updatedContinuity.nested.marker = 'caller-mutated';
-    continuity.nested.marker = 'caller-mutated';
-    context.preservedConversationRef = 'caller-mutated';
-    expect(observedFinalizeProbe).toEqual({
-      resumable: true,
-      updatedContinuity: { nested: { marker: 'captured' } },
-    });
-    expect(observedFinalizeContinuity).toEqual({ nested: { marker: 'captured' } });
-    expect(observedFinalizeContext).toEqual({ preservedConversationRef: 'captured' });
-    expect(Object.isFrozen(observedFinalizeProbe)).toBe(true);
-    expect(Object.isFrozen(observedFinalizeContinuity)).toBe(true);
-    expect(Object.isFrozen(observedFinalizeContext)).toBe(true);
-    const knownArtifactHandles = [{ handle: '/captured', identity: { kind: 'transcript' } }];
-    expect(
-      (
-        await boundRecovery?.finalizeFromArtifacts({
-          knownArtifactHandles,
-        } as never)
-      )?.terminal.terminal.content,
-    ).toBe('captured-recovery');
-    knownArtifactHandles[0].handle = '/caller-mutated';
-    knownArtifactHandles[0].identity.kind = 'caller-mutated';
-    expect(observedKnownArtifacts).toEqual([{ handle: '/captured', identity: { kind: 'transcript' } }]);
-    expect(observedKnownArtifacts).not.toBe(knownArtifactHandles);
-    expect(Object.isFrozen(observedKnownArtifacts)).toBe(true);
-    expect(Object.isFrozen(observedKnownArtifacts?.[0])).toBe(true);
-    expect(Object.isFrozen(observedKnownArtifacts?.[0]?.identity)).toBe(true);
-    expect(observedReceiver).toBe(true);
-  });
-
   it('rejects provider sources that cannot be represented as immutable JSON data', () => {
     class PrivateSource {
       readonly root = '/private';
@@ -950,6 +761,7 @@ describe('ProviderRegistry', () => {
       registry.register(
         defineProvider({
           name,
+          transport: 'standalone',
           prepareExecutionPlan: () => ({
             plan: { host: undefined, session: undefined, turn: undefined },
             prepareCliRequest: (request) => request,
@@ -975,6 +787,7 @@ describe('ProviderRegistry', () => {
     }
     const implementation = Object.assign(new PrivateReceiver(), {
       name: 'class-implementation',
+      transport: 'standalone' as const,
       prepareExecutionPlan: () => ({
         plan: { host: undefined, session: undefined, turn: undefined },
         prepareCliRequest: (request: never) => request,
@@ -985,6 +798,7 @@ describe('ProviderRegistry', () => {
 
     const baseImplementation = (name: string, facets: object = {}) => ({
       name,
+      transport: 'standalone' as const,
       prepareExecutionPlan: () => ({
         plan: { host: undefined, session: undefined, turn: undefined },
         prepareCliRequest: (request: never) => request,
@@ -994,10 +808,14 @@ describe('ProviderRegistry', () => {
     });
     const classAppServer = Object.assign(new PrivateReceiver(), {
       name: 'class-app-server',
-      subscriptionPhase: 'beforeInitialize' as const,
     });
     expect(() =>
-      defineProvider(baseImplementation('class-app-server', { appServer: classAppServer }) as never),
+      defineProvider({
+        ...baseImplementation('class-app-server'),
+        transport: 'app-server',
+        prepareExecutionPlan: () => ({ session: undefined, turn: undefined }),
+        appServer: classAppServer,
+      } as never),
     ).toThrow('must be a plain object');
 
     const classRecovery = Object.assign(new PrivateReceiver(), {
@@ -1018,9 +836,23 @@ describe('ProviderRegistry', () => {
       complete: async () => '',
       isUsageBudgetExhausted: () => false,
     });
-    expect(() => defineProvider(baseImplementation('class-curation', { curation: classCuration }) as never)).toThrow(
-      'must be a plain object',
-    );
+    expect(() =>
+      defineProvider({
+        ...baseImplementation('class-curation'),
+        transport: 'app-server',
+        prepareExecutionPlan: () => ({ session: undefined, turn: undefined }),
+        appServer: {
+          name: 'class-curation',
+          planHost: () => undefined,
+          compileStableHost: () => TEST_APP_SERVER_SPEC,
+        },
+        recovery: {
+          finalizeInterrupted: () => ({ kind: 'preserve' as const }),
+          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
+        },
+        curation: classCuration,
+      } as never),
+    ).toThrow('must be a plain object');
 
     const codecBuilder = defineProvider(baseImplementation('class-codec-rejected') as never);
     const classCodec = Object.assign(new PrivateReceiver(), fixtureProviderBindingCodec('class-codec-rejected'));
@@ -1043,6 +875,7 @@ describe('ProviderRegistry', () => {
     preparedRegistry.register(
       defineProvider({
         name: 'class-prepared-rejected',
+        transport: 'standalone',
         prepareExecutionPlan: () =>
           Object.assign(new PrivateReceiver(), {
             plan: { host: undefined, session: undefined, turn: undefined },
@@ -1061,7 +894,7 @@ describe('ProviderRegistry', () => {
         storage: TEST_PREPARATION_STORAGE,
         platform: 'linux',
       }),
-    ).toThrow('Provider prepared execution must be a plain object');
+    ).toThrow('Provider prepared standalone execution must be a plain object');
   });
 
   it('rejects receiver accessors without executing getters at every provider boundary', () => {
@@ -1078,6 +911,7 @@ describe('ProviderRegistry', () => {
     };
     const baseImplementation = (name: string, facets: object = {}) => ({
       name,
+      transport: 'standalone' as const,
       prepareExecutionPlan: () => ({
         plan: { host: undefined, session: undefined, turn: undefined },
         prepareCliRequest: (request: never) => request,
@@ -1091,6 +925,7 @@ describe('ProviderRegistry', () => {
         accessor(
           {
             name: 'getter-implementation',
+            transport: 'standalone',
             prepareExecutionPlan: () => ({
               plan: { host: undefined, session: undefined, turn: undefined },
               prepareCliRequest: (request: never) => request,
@@ -1102,15 +937,12 @@ describe('ProviderRegistry', () => {
       ),
     ).toThrow('must be a data property');
     expect(() =>
-      defineProvider(
-        baseImplementation('getter-app-server', {
-          appServer: accessor(
-            { name: 'getter-app-server', subscriptionPhase: 'beforeInitialize' as const },
-            'interrupt',
-            async () => {},
-          ),
-        }) as never,
-      ),
+      defineProvider({
+        ...baseImplementation('getter-app-server'),
+        transport: 'app-server',
+        prepareExecutionPlan: () => ({ session: undefined, turn: undefined }),
+        appServer: accessor({ name: 'getter-app-server' }, 'interrupt', async () => {}),
+      } as never),
     ).toThrow('must be a data property');
     expect(() =>
       defineProvider(
@@ -1126,11 +958,21 @@ describe('ProviderRegistry', () => {
       ),
     ).toThrow('must be a data property');
     expect(() =>
-      defineProvider(
-        baseImplementation('getter-curation', {
-          curation: accessor({ isUsageBudgetExhausted: () => false }, 'complete', async () => ''),
-        }) as never,
-      ),
+      defineProvider({
+        ...baseImplementation('getter-curation'),
+        transport: 'app-server',
+        prepareExecutionPlan: () => ({ session: undefined, turn: undefined }),
+        appServer: {
+          name: 'getter-curation',
+          planHost: () => undefined,
+          compileStableHost: () => TEST_APP_SERVER_SPEC,
+        },
+        recovery: {
+          finalizeInterrupted: () => ({ kind: 'preserve' as const }),
+          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
+        },
+        curation: accessor({ isUsageBudgetExhausted: () => false }, 'complete', async () => ''),
+      } as never),
     ).toThrow('must be a data property');
 
     const codecBuilder = defineProvider(baseImplementation('getter-codec') as never);
@@ -1152,6 +994,7 @@ describe('ProviderRegistry', () => {
     preparedRegistry.register(
       defineProvider({
         name: 'getter-prepared',
+        transport: 'standalone',
         prepareExecutionPlan: () =>
           accessor({ context: undefined }, 'prepareCliRequest', (request: never) => request) as never,
         run: async function* () {},
@@ -1178,6 +1021,7 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'sealed-preflight',
+        transport: 'standalone',
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,
@@ -1211,6 +1055,7 @@ describe('ProviderRegistry', () => {
     let executedContext: unknown;
     const implementation = {
       name: 'sealed-implementation',
+      transport: 'standalone' as const,
       state: { marker: 'captured' },
       prepareExecutionPlan() {
         return {
@@ -1284,6 +1129,7 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'codec-boundary',
+        transport: 'standalone',
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,
@@ -1342,71 +1188,6 @@ describe('ProviderRegistry', () => {
     }
   });
 
-  it('snapshots app-server continuity and notifications before asynchronous provider observation', async () => {
-    let observedInterruptContinuity: unknown;
-    let observedNotification: unknown;
-    const appServer = {
-      name: 'app-server-boundary',
-      subscriptionPhase: 'beforeInitialize' as const,
-      compileStableHost: () => TEST_APP_SERVER_LAUNCH.host,
-      async interrupt(_lease: unknown, continuity: unknown) {
-        await Promise.resolve();
-        observedInterruptContinuity = continuity;
-      },
-      onNotification(message: unknown) {
-        observedNotification = message;
-      },
-    };
-    const registry = new ProviderRegistry();
-    registry.register(
-      defineProvider({
-        name: 'app-server-boundary',
-        prepareExecutionPlan: () => ({
-          plan: { host: undefined, session: undefined, turn: undefined },
-          appServerTurnEnv: TEST_APP_SERVER_LAUNCH.turnEnv,
-          prepareCliRequest: (request) => request,
-        }),
-        run: async function* () {},
-        appServer,
-        recovery: {
-          finalizeInterrupted: () => ({ kind: 'preserve' as const }),
-          finalizeFromArtifacts: async () => ({
-            terminal: {
-              kind: 'terminal' as const,
-              terminal: { content: '', durationMs: 0, outcome: { kind: 'completed' as const } },
-              diagnostics: {},
-            },
-          }),
-        },
-      })
-        .binding(fixtureProviderBindingCodec('app-server-boundary'))
-        .artifacts(none('no artifacts'))
-        .build(),
-    );
-    const prepared = successfulBinding(registry, 'app-server-boundary').prepareExecution({
-      request: {} as never,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
-    const notification = { method: 'fixture/event', params: { nested: { marker: 'captured' } } };
-    prepared.appServer?.onNotification?.(notification);
-    notification.params.nested.marker = 'caller-mutated';
-    const interruptContinuity = { nested: { marker: 'captured' } };
-    const interruptPromise = prepared.appServer?.interrupt?.(serverLease(), interruptContinuity);
-    interruptContinuity.nested.marker = 'caller-mutated';
-    await interruptPromise;
-
-    expect(observedInterruptContinuity).toEqual({ nested: { marker: 'captured' } });
-    expect(observedNotification).toEqual({
-      method: 'fixture/event',
-      params: { nested: { marker: 'captured' } },
-    });
-    expect(Object.isFrozen(observedInterruptContinuity)).toBe(true);
-    expect(Object.isFrozen(observedNotification)).toBe(true);
-    expect(Object.isFrozen((observedNotification as { params: object }).params)).toBe(true);
-  });
-
   it('seals prepared execution receiver data, plan, and CLI requests against retained mutation', async () => {
     let returnedPrepared:
       | {
@@ -1450,6 +1231,7 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'sealed-prepared',
+        transport: 'standalone',
         prepareExecutionPlan: () => {
           returnedPrepared = makePreparedExecution();
           return returnedPrepared;
@@ -1468,6 +1250,7 @@ describe('ProviderRegistry', () => {
       storage: TEST_PREPARATION_STORAGE,
       platform: 'linux',
     });
+    if (prepared.kind !== 'standalone') throw new Error('Expected standalone prepared execution.');
     returnedPrepared!.prepareCliRequest = function (request) {
       return { ...request, args: ['prototype-drift'], exactEnv: { ROUTE: 'prototype-drift' } };
     };
@@ -1511,17 +1294,17 @@ describe('ProviderRegistry', () => {
     let preparedRequest: ProviderRequest | undefined;
     let executedRequest: ProviderRequest | undefined;
     let appServerRequest: ProviderRequest | undefined;
-    const exactCliEnv = { ROUTE: 'sealed' };
-    const definition = defineProvider({
+    const definition = defineProvider<EmptyPlan, FixtureProviderSource>({
       name: 'single-request',
-      prepareExecutionPlan: (input) => {
+      transport: 'app-server',
+      prepareExecutionPlan: (
+        input: Parameters<ProviderAppServerImplementation<EmptyPlan, FixtureProviderSource>['prepareExecutionPlan']>[0],
+      ) => {
         preparedRequest = input.request;
         appServerRequest = input.request;
-        const capturedEnv = { ...exactCliEnv };
         return {
-          plan: { host: undefined, session: undefined, turn: undefined },
-          appServerTurnEnv: {},
-          prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...capturedEnv } }),
+          session: undefined,
+          turn: undefined,
         };
       },
       run: async function* (request) {
@@ -1529,7 +1312,7 @@ describe('ProviderRegistry', () => {
       },
       appServer: {
         name: 'single-request',
-        subscriptionPhase: 'afterInitialize',
+        planHost: () => undefined,
         compileStableHost: () => ({
           provider: 'single-request',
           command: 'single-request',
@@ -1554,6 +1337,20 @@ describe('ProviderRegistry', () => {
       .build();
     const registry = new ProviderRegistry();
     registry.register(definition);
+    registry.connectAppServerHost({
+      openSession: async () => ({
+        session: { rpc: async <R>() => ({}) as R, subscribe: () => () => {}, closed: Promise.resolve() },
+        hostRef: {
+          provider: 'single-request',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'single-request-instance',
+          leaseMode: 'job-exclusive',
+          ownerJobId: 'registry-test-job',
+        },
+        close: () => {},
+      }),
+      attachSession: async () => null,
+    });
     const request: ProviderRequest = {
       action: 'exec',
       sessionId: 'single-request-session',
@@ -1571,7 +1368,7 @@ describe('ProviderRegistry', () => {
 
     request.prompt = 'caller mutation';
     request.coralEnv.ROUTING = 'caller mutation';
-    exactCliEnv.ROUTE = 'caller mutation';
+    if (prepared.kind !== 'app-server') throw new Error('Expected app-server prepared execution.');
     for await (const _event of prepared.execute(executionRuntime() as never)) {
       // Empty provider stream.
     }
@@ -1582,9 +1379,7 @@ describe('ProviderRegistry', () => {
     expect(executedRequest).toMatchObject({ prompt: 'prepared prompt', coralEnv: { ROUTING: 'prepared' } });
     expect(Object.isFrozen(executedRequest)).toBe(true);
     expect(Object.isFrozen(executedRequest?.coralEnv)).toBe(true);
-    const cliRequest = prepared.prepareCliRequest({ command: 'fixture', args: [] });
-    expect(cliRequest.exactEnv).toEqual({ ROUTE: 'sealed' });
-    expect(Object.isFrozen(cliRequest.exactEnv)).toBe(true);
+    expect(prepared).not.toHaveProperty('prepareCliRequest');
   });
 
   it('rejects forged definition accessors by provenance without executing them', () => {
@@ -1650,6 +1445,7 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'immutable-schema',
+        transport: 'standalone',
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,
@@ -1724,302 +1520,6 @@ describe('ProviderRegistry', () => {
     expect(components.every((component) => Object.isFrozen(component.contract))).toBe(true);
   });
 
-  it('snapshots lazy execution state and every prepared acquisition, continuity, and event boundary', async () => {
-    const rpcParams = { nested: { route: 'captured' } };
-    const checkpoint = { conversationRef: 'captured', providerContinuity: { nested: { route: 'captured' } } };
-    const event = { kind: 'progress' as const, message: 'captured' };
-    const rpcResult = { nested: { route: 'captured' } };
-    let observedRuntime: unknown;
-    let observedRpcResult: unknown;
-    const definition = defineProvider({
-      name: 'runtime-boundary',
-      prepareExecutionPlan: () => ({
-        plan: { host: undefined, session: undefined, turn: undefined },
-        prepareCliRequest: (request) => request,
-      }),
-      run: async function* (_request, runtime) {
-        observedRuntime = {
-          persistedContinuity: runtime.persistedContinuity,
-          equippedTools: runtime.equippedTools,
-        };
-        runtime.continuityBridge.checkpoint(checkpoint);
-        const lease = await runtime.acquirePreparedServer();
-        observedRpcResult = await lease.rpc('fixture/read', rpcParams);
-        yield event;
-        event.message = 'provider-retained-mutation';
-      },
-    })
-      .binding(fixtureProviderBindingCodec('runtime-boundary'))
-      .artifacts(none('no artifacts'))
-      .build();
-    const registry = new ProviderRegistry();
-    registry.register(definition);
-    const prepared = successfulBinding(registry, 'runtime-boundary').prepareExecution({
-      request: {} as never,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
-    const acquired: unknown[] = [];
-    const rpcInputs: unknown[] = [];
-    const checkpoints: unknown[] = [];
-    const runtime = {
-      ...executionRuntime(),
-      persistedContinuity: { nested: { route: 'captured' } },
-      equippedTools: [{ id: 'captured', summary: 'captured', guidance: ['captured'] }],
-      acquirePreparedServer: async () => {
-        acquired.push('prepared');
-        return {
-          rpc: async (_method: string, params: unknown) => {
-            rpcInputs.push(params);
-            return rpcResult;
-          },
-          subscribe: () => () => {},
-          release() {},
-          closed: Promise.resolve(),
-        };
-      },
-      continuityBridge: {
-        checkpoint(update: unknown) {
-          checkpoints.push(update);
-        },
-        transportClosed() {},
-      },
-    };
-    const stream = prepared.execute(runtime as never);
-    runtime.persistedContinuity.nested.route = 'caller-retained-mutation';
-    runtime.equippedTools[0].guidance[0] = 'caller-retained-mutation';
-    const iterator = stream[Symbol.asyncIterator]();
-    const first = await iterator.next();
-    rpcParams.nested.route = 'provider-retained-mutation';
-    checkpoint.providerContinuity.nested.route = 'provider-retained-mutation';
-    rpcResult.nested.route = 'host-retained-mutation';
-    await iterator.next();
-
-    expect(observedRuntime).toEqual({
-      persistedContinuity: { nested: { route: 'captured' } },
-      equippedTools: [{ id: 'captured', summary: 'captured', guidance: ['captured'] }],
-    });
-    expect(acquired).toEqual(['prepared']);
-    expect(rpcInputs).toEqual([{ nested: { route: 'captured' } }]);
-    expect(checkpoints).toEqual([
-      { conversationRef: 'captured', providerContinuity: { nested: { route: 'captured' } } },
-    ]);
-    expect(observedRpcResult).toEqual({ nested: { route: 'captured' } });
-    expect(first.value).toEqual({ kind: 'progress', message: 'captured' });
-    expect(Object.isFrozen(first.value)).toBe(true);
-  });
-
-  it('snapshots provider-owned server, recovery, and artifact outcomes', async () => {
-    const serverSpec = {
-      provider: 'outbound',
-      command: 'fixture',
-      args: ['captured'],
-      cwd: '/tmp',
-      leaseMode: 'shared' as const,
-    };
-    const probeOutcome = { resumable: true, updatedContinuity: { nested: { route: 'captured' } } };
-    const recoveryOutcome = { kind: 'preserve' as const, conversationRef: 'captured' };
-    const discardOutcome = { kind: 'discarded' as const, details: { route: 'captured' } };
-    const registry = new ProviderRegistry();
-    registry.register(
-      makeSpec('outbound', {
-        appServer: {
-          name: 'outbound',
-          subscriptionPhase: 'afterInitialize',
-        },
-        serverLaunch: { host: serverSpec, turnEnv: {} },
-        recovery: {
-          probe: async () => probeOutcome,
-          finalizeInterrupted: () => recoveryOutcome as never,
-          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
-        },
-        artifacts: managed({ discardArtifacts: async () => discardOutcome }),
-      }),
-    );
-    const bound = successfulBinding(registry, 'outbound');
-    const prepared = bound.prepareExecution({
-      request: {} as never,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
-    const capturedSpec = prepared.appServer?.launch.host;
-    const capturedProbe = await bound.recovery?.probe?.(serverLease(), {});
-    const capturedRecovery = bound.recovery?.finalizeInterrupted(probeOutcome, undefined, {});
-    const capturedDiscard =
-      bound.artifacts.kind === 'managed'
-        ? await bound.artifacts.discardArtifacts({ handles: [], runtime: {} as never })
-        : undefined;
-    serverSpec.args[0] = 'provider-retained-mutation';
-    probeOutcome.updatedContinuity.nested.route = 'provider-retained-mutation';
-    recoveryOutcome.conversationRef = 'provider-retained-mutation';
-    discardOutcome.details.route = 'provider-retained-mutation';
-
-    expect(capturedSpec?.args).toEqual(['captured']);
-    expect(capturedProbe).toEqual({ resumable: true, updatedContinuity: { nested: { route: 'captured' } } });
-    expect(capturedRecovery).toEqual({ kind: 'preserve', conversationRef: 'captured' });
-    expect(capturedDiscard).toEqual({ kind: 'discarded', details: { route: 'captured' } });
-  });
-
-  it('normalizes interrupt and recovery leases through one retained-mutation-safe boundary', async () => {
-    const rpcResult = { nested: { route: 'captured' } };
-    const rpcInputs: unknown[] = [];
-    let notificationHandler: ((message: unknown) => void) | undefined;
-    let interruptLease: unknown;
-    let probeLease: unknown;
-    let observedInterruptResult: unknown;
-    let observedProbeResult: unknown;
-    let observedNotification: unknown;
-    const interruptParams = { nested: { route: 'interrupt' } };
-    const probeParams = { nested: { route: 'probe' } };
-    const rawLease = {
-      rpc: async (_method: string, params: unknown) => {
-        rpcInputs.push(params);
-        return rpcResult;
-      },
-      subscribe: (handler: (message: unknown) => void) => {
-        notificationHandler = handler;
-        return () => {};
-      },
-      release() {},
-      closed: Promise.resolve(),
-      generation: 7,
-    };
-    const registry = new ProviderRegistry();
-    registry.register(
-      makeSpec('lease-boundary', {
-        appServer: {
-          name: 'lease-boundary',
-          subscriptionPhase: 'afterInitialize',
-          async interrupt(lease) {
-            interruptLease = lease;
-            lease.subscribe((message) => {
-              observedNotification = message;
-            });
-            observedInterruptResult = await lease.rpc('interrupt', interruptParams);
-            interruptParams.nested.route = 'provider-retained-mutation';
-          },
-        },
-        recovery: {
-          async probe(lease) {
-            probeLease = lease;
-            observedProbeResult = await lease.rpc('probe', probeParams);
-            probeParams.nested.route = 'provider-retained-mutation';
-            return { resumable: true };
-          },
-          finalizeInterrupted: () => ({ kind: 'preserve' }) as never,
-          finalizeFromArtifacts: async () => ({ terminal: {} as never }),
-        },
-      }),
-    );
-    const bound = successfulBinding(registry, 'lease-boundary');
-    const prepared = bound.prepareExecution({
-      request: {} as never,
-      baseEnv: {},
-      storage: TEST_PREPARATION_STORAGE,
-      platform: 'linux',
-    });
-    await prepared.appServer?.interrupt?.(rawLease as never, {});
-    rawLease.rpc = async () => ({ nested: { route: 'host-method-mutation' } });
-    const notification = { method: 'fixture/event', params: { nested: { route: 'captured' } } };
-    notificationHandler?.(notification);
-    notification.params.nested.route = 'host-retained-mutation';
-    await bound.recovery?.probe?.(rawLease as never, {});
-    rpcResult.nested.route = 'host-retained-mutation';
-
-    expect(interruptLease).toBe(probeLease);
-    expect(interruptLease).not.toBe(rawLease);
-    expect(rpcInputs).toEqual([{ nested: { route: 'interrupt' } }, { nested: { route: 'probe' } }]);
-    expect(observedInterruptResult).toEqual({ nested: { route: 'captured' } });
-    expect(observedProbeResult).toEqual({ nested: { route: 'captured' } });
-    expect(observedNotification).toEqual({
-      method: 'fixture/event',
-      params: { nested: { route: 'captured' } },
-    });
-  });
-
-  it.each([
-    {
-      name: 'an invalid lease shape',
-      create: () => ({ lease: {}, assertUntouched: () => {} }),
-      message: 'Provider interrupt lease must expose rpc, subscribe, and release data methods.',
-    },
-    {
-      name: 'an accessor without invoking its getter',
-      create: () => {
-        let getterCalls = 0;
-        const lease = Object.defineProperty(
-          { subscribe: () => () => {}, release() {}, closed: Promise.resolve() },
-          'rpc',
-          {
-            get: () => {
-              getterCalls += 1;
-              return async () => ({});
-            },
-          },
-        );
-        return { lease, assertUntouched: () => expect(getterCalls).toBe(0) };
-      },
-      message: 'Provider interrupt lease.rpc must be a data property.',
-    },
-    {
-      name: 'a non-Promise closed member',
-      create: () => ({
-        lease: { rpc: async () => ({}), subscribe: () => () => {}, release() {}, closed: undefined },
-        assertUntouched: () => {},
-      }),
-      message: 'Provider interrupt lease.closed must be a Promise.',
-    },
-  ])('rejects $name with its exact lease boundary error', async ({ create, message }) => {
-    const { lease, assertUntouched } = create();
-    await expect(Promise.resolve().then(() => invokeInterruptLeaseBoundary(lease))).rejects.toThrowError(
-      new TypeError(message),
-    );
-    assertUntouched();
-  });
-
-  const asynchronousLeaseFailures: readonly {
-    readonly name: string;
-    readonly lease: ProviderServerLease;
-    readonly exercise: (lease: ProviderServerLease) => void | Promise<void>;
-    readonly message: string;
-  }[] = [
-    {
-      name: 'a non-function unsubscribe result',
-      lease: {
-        rpc: async <R = unknown>() => ({}) as R,
-        subscribe: () => null as never,
-        release() {},
-        closed: Promise.resolve(),
-      },
-      exercise: (lease) => {
-        lease.subscribe(() => {});
-      },
-      message: 'Provider interrupt lease.subscribe must return an unsubscribe function.',
-    },
-    {
-      name: 'a non-snapshot-safe RPC result',
-      lease: {
-        rpc: async () => new Map() as never,
-        subscribe: () => () => {},
-        release() {},
-        closed: Promise.resolve(),
-      },
-      exercise: async (lease) => {
-        await lease.rpc('fixture/read', {});
-      },
-      message: 'Provider interrupt lease RPC result must be a plain object; received a non-plain object.',
-    },
-  ];
-
-  it.each(asynchronousLeaseFailures)(
-    'rejects $name with its exact asynchronous lease error',
-    async ({ lease, exercise, message }) => {
-      await expect(invokeInterruptLeaseBoundary(lease, exercise)).rejects.toThrowError(new TypeError(message));
-    },
-  );
-
   it('rejects a non-snapshot-safe lease notification with its exact boundary error', async () => {
     let notify: ((message: unknown) => void) | undefined;
     const lease = {
@@ -2031,13 +1531,13 @@ describe('ProviderRegistry', () => {
       release() {},
       closed: Promise.resolve(),
     };
-    await invokeInterruptLeaseBoundary(lease as ProviderServerLease, (wrapped) => {
+    await invokeInterruptLeaseBoundary(lease as AppServerTransport, (wrapped) => {
       wrapped.subscribe(() => {});
     });
 
     expect(() => notify?.({ method: 'fixture/event', params: new Map() })).toThrowError(
       new TypeError(
-        'Provider interrupt lease notification.params must be a plain object; received a non-plain object.',
+        'Provider interrupt session notification.params must be a plain object; received a non-plain object.',
       ),
     );
   });
@@ -2047,6 +1547,7 @@ describe('ProviderRegistry', () => {
     registry.register(
       defineProvider({
         name: 'negative-event-boundary',
+        transport: 'standalone',
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,

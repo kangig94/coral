@@ -241,6 +241,7 @@ describe('coordinator startup ordering', () => {
     let recoveryObservedPending = false;
     const provider = defineProvider({
       name: 'codex',
+      transport: 'standalone',
       run: async function* noop() {},
       prepareExecutionPlan: prepareFixtureExecutionPlan,
     })

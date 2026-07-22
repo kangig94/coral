@@ -88,15 +88,13 @@ async function finalizeFromArtifacts(
 const recovery: ProviderRecoveryContract<CodexCredentialSource> = {
   finalizeInterrupted: codexRecoveryLifecycle.finalizeInterrupted.bind(codexRecoveryLifecycle),
   finalizeFromArtifacts,
-  probe: codexRecoveryLifecycle.probe.bind(codexRecoveryLifecycle),
 };
 
 export const codexProviderDefinition: ProviderDefinition = defineProvider<CodexExecutionPlan, CodexCredentialSource>({
   name: 'codex',
+  transport: 'app-server',
   run: codexThreadProvider,
-  prepareExecutionPlan(input) {
-    return buildCodexExecutionPlan(input);
-  },
+  prepareExecutionPlan: buildCodexExecutionPlan,
   preflight: (input) => codexPreflight(buildCodexPreflightRuntime(input)),
   appServer: codexAppServerLifecycle,
   recovery,

@@ -23,7 +23,13 @@ function bgDir(fixture: HookFixture): string {
 function runMonitor(fixture: HookFixture, toolInput: Record<string, unknown>) {
   return runHook(
     MONITOR_TRACK_HOOK,
-    { hook_event_name: 'PreToolUse', tool_name: 'Monitor', session_id: SESSION, cwd: fixture.projectRoot, tool_input: toolInput },
+    {
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Monitor',
+      session_id: SESSION,
+      cwd: fixture.projectRoot,
+      tool_input: toolInput,
+    },
     { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
   );
 }
@@ -54,7 +60,11 @@ describe('monitor-track.mjs', () => {
 
   it('skips the ws-variant monitor (no command to wrap)', () => {
     const fixture = createFixture();
-    const result = runMonitor(fixture, { ws: { url: 'wss://events.example.com' }, description: 'ws', persistent: false });
+    const result = runMonitor(fixture, {
+      ws: { url: 'wss://events.example.com' },
+      description: 'ws',
+      persistent: false,
+    });
 
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
@@ -64,7 +74,12 @@ describe('monitor-track.mjs', () => {
     const fixture = createFixture();
     const result = runHook(
       MONITOR_TRACK_HOOK,
-      { hook_event_name: 'PreToolUse', tool_name: 'Monitor', cwd: fixture.projectRoot, tool_input: { command: 'tail -f app.log', description: 'x', persistent: false } },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Monitor',
+        cwd: fixture.projectRoot,
+        tool_input: { command: 'tail -f app.log', description: 'x', persistent: false },
+      },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
     );
 

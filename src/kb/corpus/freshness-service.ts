@@ -1,8 +1,4 @@
-import type {
-  EnsureCorpusFreshnessOptions,
-  KbIndexState,
-  KbRuntime,
-} from '../contract.js';
+import type { EnsureCorpusFreshnessOptions, KbIndexState, KbRuntime } from '../contract.js';
 import type { KbIndex } from '../entry-types.js';
 import { emptyIndex, isFreshTextSnapshot, type KbIndexStore } from './index/store.js';
 import { captureIndexStateSnapshot } from './lanes.js';
@@ -84,10 +80,7 @@ export class CorpusFreshnessService {
         return;
       }
 
-      const result = await performRescan(
-        this.options.getRuntime(),
-        captureIndexStateSnapshot(state),
-      );
+      const result = await performRescan(this.options.getRuntime(), captureIndexStateSnapshot(state));
       if (result.status === 'committed') {
         return;
       }

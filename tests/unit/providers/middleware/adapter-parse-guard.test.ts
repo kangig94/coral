@@ -15,6 +15,7 @@ const BASE_REQUEST: ProviderRequest = {
 };
 
 const BASE_RUNTIME: ProviderRuntime<CodexExecutionPlan> = {
+  transport: 'standalone',
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
@@ -23,9 +24,6 @@ const BASE_RUNTIME: ProviderRuntime<CodexExecutionPlan> = {
     clearTimeout: () => {},
   } as ProviderRuntime<CodexExecutionPlan>['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquirePreparedServer: async () => {
-    throw new Error('not used in adapter-parse-guard tests');
-  },
   storage: { existsSync: () => true } as unknown as ProviderRuntime<CodexExecutionPlan>['storage'],
   continuityBridge: {
     checkpoint: () => {},

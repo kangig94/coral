@@ -173,7 +173,7 @@ export class BrokerSessionPool implements ClaudeBrokerSession {
     const entry = this.controllers.get(params.brokerSessionKey);
     if (!entry) {
       return {
-        brokerTurnId: params.brokerTurnId ?? null,
+        brokerTurnId: params.brokerTurnId,
         interrupted: false,
       };
     }

@@ -269,8 +269,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ? null
         : {
             systemProviderScope: activeCore.systemProviderScope,
-            acquireCoordinatorProviderHost: (spec, serverOptions) =>
-              activeCore.providerHostManager.acquireServer(spec, serverOptions),
           };
     },
   });

@@ -229,7 +229,9 @@ afterEach(async () => {
 describe('mutating commands via IPC', () => {
   it('auto-launches the coordinator and completes coral-cli codex through a fake Codex app-server', async () => {
     if (!existsSync(SOURCE_BACKEND_BUNDLE) || !existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error('Expected clients/build/coral-backend.cjs, clients/build/coral-cli.cjs, and clients/build/manifest.json to exist.');
+      throw new Error(
+        'Expected clients/build/coral-backend.cjs, clients/build/coral-cli.cjs, and clients/build/manifest.json to exist.',
+      );
     }
 
     const fixture = createFixture();

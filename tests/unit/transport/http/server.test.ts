@@ -23,7 +23,6 @@ import type * as ServerMod from '#src/coordinator/index.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
 import type * as LifecycleMod from '#src/coordinator/lifecycle.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
-import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
@@ -55,7 +54,6 @@ import { domainError, domainSuccess, type ToolDomainResult } from '#src/transpor
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
-import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import type { MutableRuntimeState as MutableCoordinatorRuntimeState } from '#src/coordinator/lifecycle.js';
 import {
   createStoreServicesRef,
@@ -251,60 +249,11 @@ function createFakeIdleTimer() {
 
 function createFakeProviderHostManager(overrides: Record<string, unknown> = {}) {
   return {
-    acquireServer: vi.fn(),
-    borrowLiveServer: vi.fn(),
+    openSession: vi.fn(),
+    attachSession: vi.fn(async () => null),
     drainForHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
     ...overrides,
-  };
-}
-
-function createFakeProviderServerHandle(options?: {
-  generation?: number;
-  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
-}) {
-  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
-  const closed = createDeferred<Error | void>();
-  const request =
-    options?.request ??
-    (async (_method: string, _params: Record<string, unknown>) => {
-      return {};
-    });
-  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
-  const notifyMock = vi.fn();
-  const onNotificationMock = vi.fn(
-    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-      handlers.add(handler);
-      return () => {
-        handlers.delete(handler);
-      };
-    },
-  );
-  const markExpectedCloseMock = vi.fn();
-  const closeMock = vi.fn(async () => {
-    closed.resolve();
-  });
-
-  return {
-    handle: {
-      pid: options?.generation ?? 1,
-      child: {} as never,
-      generation: options?.generation ?? 1,
-      rpc: {
-        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
-        notify: notifyMock,
-      },
-      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
-      closePromise: closed.promise,
-      markExpectedClose: markExpectedCloseMock,
-      close: closeMock,
-    } satisfies ProviderServerHandle,
-    requestMock,
-    markExpectedCloseMock,
-    closeMock,
-    resolveClosed: () => {
-      closed.resolve();
-    },
   };
 }
 
@@ -1700,234 +1649,6 @@ describe('execution backend server', () => {
       launchCoordinator.releaseLaunch('job-1');
       launchCoordinator.releaseLaunch('job-2');
     }
-  });
-
-  it('injects one shared ProviderHostManager across project-root services so Claude shares and incompatible Codex hosts stay isolated', async () => {
-    const { serverModule } = await loadExecutionModules();
-    const [{ ExecutionService }, claudeExecution, codexExecution, claudeFacets, codexFacets] = await Promise.all([
-      import('#src/coordinator/execution-service.js'),
-      import('#src/providers/claude/execution-plan.js'),
-      import('#src/providers/codex/execution-plan.js'),
-      import('#src/providers/claude/provider-facets.js'),
-      import('#src/providers/codex/provider-facets.js'),
-    ]);
-    const progressStore = createProgressStore();
-    const projectRootA = createProjectRoot('provider-host-project-a');
-    const projectRootB = createProjectRoot('provider-host-project-b');
-    const jobIdA = 'provider-host-job-a';
-    const jobIdB = 'provider-host-job-b';
-    createdJobIds.add(jobIdA);
-    createdJobIds.add(jobIdB);
-
-    seedTestJobSession(progressStore, {
-      jobId: jobIdA,
-      sessionId: 'session-a',
-      provider: 'codex',
-      projectRoot: projectRootA,
-      backendNamespace: testBackendNamespace,
-      initialPhase: 'running',
-    });
-    stubLaunchRecord(progressStore, {
-      jobId: jobIdA,
-      sessionId: 'session-a',
-      provider: 'codex',
-      projectRoot: projectRootA,
-      backendNamespace: testBackendNamespace,
-    });
-    commitJobTerminal(
-      progressStore,
-      jobIdA,
-      'session-a',
-      { content: 'done-a', durationMs: 1_000, outcome: { kind: 'completed' } },
-      'completed',
-    );
-
-    seedTestJobSession(progressStore, {
-      jobId: jobIdB,
-      sessionId: 'session-b',
-      provider: 'codex',
-      projectRoot: projectRootB,
-      backendNamespace: testBackendNamespace,
-      initialPhase: 'running',
-    });
-    stubLaunchRecord(progressStore, {
-      jobId: jobIdB,
-      sessionId: 'session-b',
-      provider: 'codex',
-      projectRoot: projectRootB,
-      backendNamespace: testBackendNamespace,
-    });
-    commitJobTerminal(
-      progressStore,
-      jobIdB,
-      'session-b',
-      { content: 'done-b', durationMs: 1_000, outcome: { kind: 'completed' } },
-      'completed',
-    );
-
-    const services = new Map<string, InstanceType<typeof ExecutionService>>();
-    const capturedManagers: unknown[] = [];
-    const sharedClaudeHandle = createFakeProviderServerHandle({
-      generation: 11,
-      request: async (method) => {
-        if (method === 'broker/shutdown') {
-          sharedClaudeHandle.resolveClosed();
-        }
-        return {};
-      },
-    });
-    const codexHandleA = createFakeProviderServerHandle({ generation: 22 });
-    const codexHandleB = createFakeProviderServerHandle({ generation: 33 });
-    const spawnProviderServer = vi
-      .fn()
-      .mockResolvedValueOnce(sharedClaudeHandle.handle)
-      .mockResolvedValueOnce(codexHandleA.handle)
-      .mockResolvedValueOnce(codexHandleB.handle);
-    const providerHostManager = createProviderHostManager({ runtime, spawnProviderServer });
-    controller = serverModule.createCoordinatorServer({
-      bootSnapshot: {
-        instanceId: 'execution-backend-instance-1',
-        token: 'test-token',
-        bootToken: 'test-boot-token',
-        version: '9.9.9',
-        bundleHash: 'testhash1234',
-        flavor: 'prod',
-        log: () => {},
-      },
-      kbDaemonSupervisor: createMockKbDaemonSupervisor(),
-      cleanupStaleJobsFn: () => {},
-      providerHostManager,
-      createExecutionService: (ctx, deps) => {
-        capturedManagers.push(deps.providerHostManager);
-        const service = new ExecutionService(ctx, deps);
-        services.set(ctx.projectRoot, service);
-        return service;
-      },
-    });
-    const started = await controller.start();
-    const backend = {
-      baseUrl: `http://127.0.0.1:${started.port}`,
-      token: started.token,
-    };
-
-    const waitForService = async (projectRoot: string, jobId: string): Promise<void> => {
-      const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Coral-Backend-Token': backend.token,
-        },
-        body: JSON.stringify({
-          jobIds: [jobId],
-          timeoutSeconds: 1,
-          projectRoot,
-        }),
-      });
-
-      expect(response.status).toBe(200);
-      await response.text();
-    };
-
-    await waitForService(projectRootA, jobIdA);
-    await waitForService(projectRootB, jobIdB);
-
-    expect(capturedManagers).toHaveLength(2);
-    expect(capturedManagers[0]).toBe(capturedManagers[1]);
-
-    const serviceA = services.get(projectRootA);
-    const serviceB = services.get(projectRootB);
-    expect(serviceA).toBeInstanceOf(ExecutionService);
-    expect(serviceB).toBeInstanceOf(ExecutionService);
-
-    const providerRequest = (cwd: string) => ({
-      action: 'exec' as const,
-      sessionId: `session:${cwd}`,
-      prompt: 'test',
-      cwd,
-      bypassPermissions: false,
-      coralEnv: {},
-    });
-    const claudePrepared = claudeExecution.buildClaudeExecutionPlan({
-      source: TEST_CLAUDE_SOURCE,
-      request: providerRequest(projectRootA),
-      baseEnv: {},
-      storage: { existsSync: () => true },
-      platform: 'linux',
-    });
-    const claudeLaunch = {
-      host: claudeFacets.claudeAppServerLifecycle.compileStableHost(claudePrepared.plan.host),
-      turnEnv: claudePrepared.appServerTurnEnv,
-    };
-    const codexPreparedA = codexExecution.buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
-      request: providerRequest(projectRootA),
-      baseEnv: {},
-      platform: 'linux',
-    });
-    const codexLaunchA = {
-      host: codexFacets.codexAppServerLifecycle.compileStableHost(codexPreparedA.plan.host),
-      turnEnv: codexPreparedA.appServerTurnEnv,
-    };
-    const codexPreparedB = codexExecution.buildCodexExecutionPlan({
-      source: TEST_CODEX_SOURCE,
-      request: providerRequest(projectRootB),
-      baseEnv: {},
-      platform: 'linux',
-    });
-    const codexLaunchB = {
-      host: codexFacets.codexAppServerLifecycle.compileStableHost(codexPreparedB.plan.host),
-      turnEnv: codexPreparedB.appServerTurnEnv,
-    };
-    const leaseJobIdA = 'provider-host-lease-a';
-    const leaseJobIdB = 'provider-host-lease-b';
-    createdJobIds.add(leaseJobIdA);
-    createdJobIds.add(leaseJobIdB);
-    seedTestJobSession(progressStore, {
-      jobId: leaseJobIdA,
-      sessionId: 'provider-host-lease-session-a',
-      provider: 'codex',
-      projectRoot: projectRootA,
-      backendNamespace: testBackendNamespace,
-      initialPhase: 'running',
-    });
-    stubLaunchRecord(progressStore, {
-      jobId: leaseJobIdA,
-      sessionId: 'provider-host-lease-session-a',
-      provider: 'codex',
-      projectRoot: projectRootA,
-      backendNamespace: testBackendNamespace,
-    });
-    seedTestJobSession(progressStore, {
-      jobId: leaseJobIdB,
-      sessionId: 'provider-host-lease-session-b',
-      provider: 'codex',
-      projectRoot: projectRootB,
-      backendNamespace: testBackendNamespace,
-      initialPhase: 'running',
-    });
-    stubLaunchRecord(progressStore, {
-      jobId: leaseJobIdB,
-      sessionId: 'provider-host-lease-session-b',
-      provider: 'codex',
-      projectRoot: projectRootB,
-      backendNamespace: testBackendNamespace,
-    });
-
-    const claudeLeaseA = await serviceA!.acquireServer(claudeLaunch);
-    const claudeLeaseB = await serviceB!.acquireServer(claudeLaunch);
-    const codexLeaseA = await serviceA!.acquireServer(codexLaunchA, { jobId: leaseJobIdA });
-    const codexLeaseB = await serviceB!.acquireServer(codexLaunchB, { jobId: leaseJobIdB });
-
-    expect(claudeLeaseA.generation).toBe(11);
-    expect(claudeLeaseB.generation).toBe(11);
-    expect(codexLeaseA.generation).toBe(22);
-    expect(codexLeaseB.generation).toBe(33);
-    expect(spawnProviderServer).toHaveBeenCalledTimes(3);
-
-    claudeLeaseA.release();
-    claudeLeaseB.release();
-    codexLeaseA.release();
-    codexLeaseB.release();
   });
 
   it('reports only in-namespace live jobs from /health even when a foreign namespace shares the same bundle hash', async () => {
@@ -6143,12 +5864,18 @@ describe('execution backend server', () => {
         providerMeta: {
           provider: 'codex',
           leaseState: 'acquired',
+          hostRef: {
+            provider: 'test',
+            fingerprint: '0'.repeat(64),
+            instanceId: 'instance-1',
+            leaseMode: 'shared',
+          },
         },
       });
 
       const fakeService = {
         finalizeInterruptedAppServerJob: vi.fn(async () => {}),
-        quiesceAppServerJobsForHandoff: vi.fn(async (_signal: AbortSignal) => {}),
+        quiesceAppServerJobsForHandoff: vi.fn(async () => {}),
       };
       const providerHostManager = createFakeProviderHostManager();
       const fakeIdleTimer = createFakeIdleTimer();

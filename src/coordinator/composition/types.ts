@@ -108,7 +108,6 @@ export type CoordinatorCoreResult = {
   eventBus: TypedEventBus;
   launchCoordinator: LaunchCoordinator;
   providerRegistry: ProviderRegistry;
-  providerHostManager: ProviderHostManager;
   systemProviderScope?: Extract<ProviderScope, { origin: 'system' }>;
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;

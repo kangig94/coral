@@ -1,11 +1,14 @@
 import { join } from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { claudeCurationCapability } from '#src/providers/claude/one-shot.js';
-import type { ProviderServerLaunch, ProviderServerLease } from '#src/providers/contract.js';
+import type { ProviderServerSpec, AppServerSession } from '#src/providers/contract.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
+
+beforeAll(() => vi.stubGlobal('__PLUGIN_ROOT__', '/test/plugin'));
+afterAll(() => vi.unstubAllGlobals());
 
 type BrokerNotificationHandler = (msg: { method: string; params?: Record<string, unknown> }) => void;
 
@@ -22,15 +25,23 @@ function systemContext(configDir: string) {
   };
 }
 
-function runClaudeOneShotTurn(
+async function runClaudeOneShotTurn(
   deps: {
     readonly storage: Parameters<typeof claudeCurationCapability.prepare>[1]['storage'];
     readonly ids: Parameters<typeof claudeCurationCapability.prepare>[1]['ids'];
     readonly executionPlan: ReturnType<typeof systemContext>;
-    readonly acquireServer: (launch: ProviderServerLaunch) => Promise<ProviderServerLease>;
+    readonly openServer: (spec: ProviderServerSpec) => Promise<AppServerSession>;
   },
   request: Parameters<typeof claudeCurationCapability.prepare>[0],
 ) {
+  const hostPlan = claudeAppServerLifecycle.planHost({
+    purpose: 'curation',
+    source: deps.executionPlan.source,
+    request,
+    baseEnv: deps.executionPlan.brokerEnv,
+    platform: 'linux',
+    storage: deps.storage,
+  });
   const prepared = claudeCurationCapability.prepare(request, {
     storage: deps.storage,
     ids: deps.ids,
@@ -38,13 +49,8 @@ function runClaudeOneShotTurn(
     baseEnv: deps.executionPlan.brokerEnv,
     platform: 'linux',
   });
-  return prepared.complete({
-    acquirePreparedServer: () =>
-      deps.acquireServer({
-        host: claudeAppServerLifecycle.compileStableHost(prepared.hostPlan),
-        turnEnv: prepared.turnEnv,
-      }),
-  });
+  const appServerSession = await deps.openServer(claudeAppServerLifecycle.compileStableHost(hostPlan));
+  return prepared.complete({ appServerSession });
 }
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -66,6 +72,19 @@ function createDeferred<T>() {
 }
 
 describe('runClaudeOneShotTurn', () => {
+  it('confirms lifecycle interruption only for the exact broker turn response', async () => {
+    const transport = (brokerTurnId: string): AppServerSession => ({
+      rpc: async <R>() => ({ interrupted: true, brokerTurnId }) as R,
+      subscribe: () => () => {},
+      closed: Promise.resolve(),
+      interrupt: async () => false,
+    });
+    const continuity = { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' };
+
+    await expect(claudeAppServerLifecycle.interrupt?.(transport('turn-other'), continuity)).resolves.toBe(false);
+    await expect(claudeAppServerLifecycle.interrupt?.(transport('turn-1'), continuity)).resolves.toBe(true);
+  });
+
   it('returns the completed turn, closes the broker session, and removes the transient JSONL', async () => {
     const home = '/home/user';
     const projectsRoot = join(home, '.claude', 'projects');
@@ -89,7 +108,6 @@ describe('runClaudeOneShotTurn', () => {
       unlinkSync,
     };
 
-    const release = vi.fn();
     const rpc = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => {
       if (method === 'session/ensure') {
         return {
@@ -97,6 +115,8 @@ describe('runClaudeOneShotTurn', () => {
           bootstrapSignature: {
             cwd: params.cwd,
             systemPromptHash: params.systemPromptHash,
+
+            bootstrapConfigHash: params.bootstrapConfigHash,
             permissionMode: params.permissionMode,
           },
           sessionId: 'conversation-1',
@@ -125,14 +145,14 @@ describe('runClaudeOneShotTurn', () => {
 
       throw new Error(`unexpected RPC ${method}`);
     });
-    const lease: ProviderServerLease = {
-      rpc: rpc as ProviderServerLease['rpc'],
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
       subscribe(handler) {
         broker.notify = handler;
         return () => {};
       },
-      release,
       closed: new Promise(() => {}),
+      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -143,7 +163,7 @@ describe('runClaudeOneShotTurn', () => {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
         },
-        acquireServer: vi.fn(async () => lease),
+        openServer: vi.fn(async () => lease),
       },
       {
         cwd: '/workspace/kb',
@@ -179,7 +199,6 @@ describe('runClaudeOneShotTurn', () => {
     expect(rpc.mock.calls.map(([method]) => method)).toEqual(['session/ensure', 'turn/start', 'session/close']);
     expect(rpc.mock.calls[0]?.[1]).toMatchObject({ permissionMode: 'auto' });
     expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
-    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it('ignores shared broker notifications until its session and turn are known', async () => {
@@ -216,6 +235,8 @@ describe('runClaudeOneShotTurn', () => {
           bootstrapSignature: {
             cwd: params.cwd,
             systemPromptHash: params.systemPromptHash,
+
+            bootstrapConfigHash: params.bootstrapConfigHash,
             permissionMode: params.permissionMode,
           },
           sessionId: 'conversation-1',
@@ -244,14 +265,14 @@ describe('runClaudeOneShotTurn', () => {
 
       throw new Error(`unexpected RPC ${method}`);
     });
-    const lease: ProviderServerLease = {
-      rpc: rpc as ProviderServerLease['rpc'],
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
       subscribe(handler) {
         broker.notify = handler;
         return () => {};
       },
-      release: vi.fn(),
       closed: new Promise(() => {}),
+      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -262,7 +283,7 @@ describe('runClaudeOneShotTurn', () => {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
         },
-        acquireServer: vi.fn(async () => lease),
+        openServer: vi.fn(async () => lease),
       },
       {
         cwd: '/workspace/kb',
@@ -337,6 +358,8 @@ describe('runClaudeOneShotTurn', () => {
           bootstrapSignature: {
             cwd: params.cwd,
             systemPromptHash: params.systemPromptHash,
+
+            bootstrapConfigHash: params.bootstrapConfigHash,
             permissionMode: params.permissionMode,
           },
           sessionId: 'conversation-1',
@@ -365,14 +388,14 @@ describe('runClaudeOneShotTurn', () => {
 
       throw new Error(`unexpected RPC ${method}`);
     });
-    const lease: ProviderServerLease = {
-      rpc: rpc as ProviderServerLease['rpc'],
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
       subscribe(handler) {
         broker.notify = handler;
         return () => {};
       },
-      release: vi.fn(),
       closed: new Promise(() => {}),
+      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -383,7 +406,7 @@ describe('runClaudeOneShotTurn', () => {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
         },
-        acquireServer: vi.fn(async () => lease),
+        openServer: vi.fn(async () => lease),
       },
       {
         cwd: '/workspace/kb',
@@ -424,7 +447,7 @@ describe('runClaudeOneShotTurn', () => {
     expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
   });
 
-  it('keeps the requested turn id when turn/start omits it from the response', async () => {
+  it('rejects turn/start responses that omit the requested turn id', async () => {
     const home = '/home/user';
     const projectsRoot = join(home, '.claude', 'projects');
     const projectDir = join(projectsRoot, '-workspace-kb');
@@ -455,6 +478,8 @@ describe('runClaudeOneShotTurn', () => {
           bootstrapSignature: {
             cwd: params.cwd,
             systemPromptHash: params.systemPromptHash,
+
+            bootstrapConfigHash: params.bootstrapConfigHash,
             permissionMode: params.permissionMode,
           },
           sessionId: 'conversation-1',
@@ -482,14 +507,14 @@ describe('runClaudeOneShotTurn', () => {
 
       throw new Error(`unexpected RPC ${method}`);
     });
-    const lease: ProviderServerLease = {
-      rpc: rpc as ProviderServerLease['rpc'],
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
       subscribe(handler) {
         broker.notify = handler;
         return () => {};
       },
-      release: vi.fn(),
       closed: brokerClosed.promise,
+      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
     };
 
     const turn = runClaudeOneShotTurn(
@@ -500,7 +525,7 @@ describe('runClaudeOneShotTurn', () => {
           uuid: () => 'turn-1',
           sha256: (value) => `hash:${value}`,
         },
-        acquireServer: vi.fn(async () => lease),
+        openServer: vi.fn(async () => lease),
       },
       {
         cwd: '/workspace/kb',
@@ -509,24 +534,7 @@ describe('runClaudeOneShotTurn', () => {
     );
 
     await turnStarted.promise;
-    await Promise.resolve();
-    await Promise.resolve();
-    const notify = broker.notify;
-    if (notify === null) {
-      throw new Error('expected broker subscription');
-    }
-    notify({
-      method: 'turn/completed',
-      params: {
-        brokerSessionKey: 'broker-1',
-        brokerTurnId: 'turn-1',
-        result: 'right result',
-        isError: false,
-      },
-    });
-    brokerClosed.resolve(new Error('broker closed after ignored completion'));
-
-    await expect(turn).resolves.toBe('right result');
+    await expect(turn).rejects.toThrow('did not return the exact requested broker turn id');
     expect(unlinkSync).toHaveBeenCalledWith(jsonlPath);
   });
 
@@ -542,6 +550,8 @@ describe('runClaudeOneShotTurn', () => {
           bootstrapSignature: {
             cwd: params.cwd,
             systemPromptHash: params.systemPromptHash,
+
+            bootstrapConfigHash: params.bootstrapConfigHash,
             permissionMode: params.permissionMode,
           },
           sessionId: 'conversation-1',
@@ -552,12 +562,11 @@ describe('runClaudeOneShotTurn', () => {
       }
       throw new Error(`unexpected RPC ${method}`);
     });
-    const release = vi.fn();
-    const lease: ProviderServerLease = {
-      rpc: rpc as ProviderServerLease['rpc'],
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
       subscribe: () => () => {},
-      release,
       closed: new Promise(() => {}),
+      interrupt: (continuity) => Promise.resolve(rpc('turn/interrupt', continuity)).then(() => true),
     };
 
     await expect(
@@ -569,7 +578,7 @@ describe('runClaudeOneShotTurn', () => {
             uuid: () => 'turn-1',
             sha256: (value) => `hash:${value}`,
           },
-          acquireServer: vi.fn(async () => lease),
+          openServer: vi.fn(async () => lease),
         },
         {
           cwd: '/workspace/kb',
@@ -578,6 +587,127 @@ describe('runClaudeOneShotTurn', () => {
       ),
     ).rejects.toThrow('broker session key missing');
     expect(rpc.mock.calls.map(([method]) => method)).toEqual(['session/ensure']);
-    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('interrupts the exact reserved turn and closes the session when aborted during a hung turn/start', async () => {
+    const controller = new AbortController();
+    const turnStarted = createDeferred<void>();
+    const storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'> = {
+      existsSync: () => false,
+      readdirSync: (() => []) as unknown as StoragePort['readdirSync'],
+      unlinkSync: vi.fn(),
+    };
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-1',
+          bootstrapSignature: {
+            cwd: params.cwd,
+            systemPromptHash: params.systemPromptHash,
+
+            bootstrapConfigHash: params.bootstrapConfigHash,
+            permissionMode: params.permissionMode,
+          },
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+        };
+      }
+      if (method === 'turn/start') {
+        turnStarted.resolve();
+        return await new Promise<never>(() => {});
+      }
+      if (method === 'session/close') {
+        return { brokerSessionKey: params.brokerSessionKey, closed: true };
+      }
+      throw new Error(`unexpected RPC ${method}`);
+    });
+    const interrupt = vi.fn(async () => true);
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
+      subscribe: () => () => {},
+      closed: new Promise(() => {}),
+      interrupt,
+    };
+
+    const turn = runClaudeOneShotTurn(
+      {
+        storage,
+        executionPlan: systemContext('/home/user/.claude'),
+        ids: { uuid: () => 'turn-1', sha256: (value) => `hash:${value}` },
+        openServer: vi.fn(async () => lease),
+      },
+      { cwd: '/workspace/kb', prompt: 'Classify this note.', signal: controller.signal },
+    );
+    await turnStarted.promise;
+    controller.abort('cancel-curation');
+
+    await expect(turn).rejects.toThrow();
+    expect(interrupt).toHaveBeenCalledWith({ brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' });
+    expect(rpc).toHaveBeenCalledWith('session/close', { brokerSessionKey: 'broker-1' });
+  });
+
+  it.each([
+    {
+      name: 'persistent false responses',
+      interrupt: () => Promise.resolve(false),
+      close: (brokerSessionKey: unknown) => Promise.resolve({ brokerSessionKey, closed: false }),
+    },
+    {
+      name: 'throwing cancellation operations',
+      interrupt: () => Promise.reject(new Error('interrupt unavailable')),
+      close: () => Promise.reject(new Error('close unavailable')),
+    },
+  ])('does not report one-shot cancellation as confirmed after $name', async ({ interrupt, close }) => {
+    const controller = new AbortController();
+    const turnStarted = createDeferred<void>();
+    const storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'> = {
+      existsSync: () => false,
+      readdirSync: (() => []) as unknown as StoragePort['readdirSync'],
+      unlinkSync: vi.fn(),
+    };
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'session/ensure') {
+        return {
+          brokerSessionKey: 'broker-1',
+          bootstrapSignature: {
+            cwd: params.cwd,
+            systemPromptHash: params.systemPromptHash,
+            bootstrapConfigHash: params.bootstrapConfigHash,
+            permissionMode: params.permissionMode,
+          },
+          sessionId: 'conversation-1',
+          conversationRef: 'conversation-1',
+        };
+      }
+      if (method === 'turn/start') {
+        turnStarted.resolve();
+        return await new Promise<never>(() => {});
+      }
+      if (method === 'session/close') return await close(params.brokerSessionKey);
+      throw new Error(`unexpected RPC ${method}`);
+    });
+    const interruptMock = vi.fn(interrupt);
+    const lease: AppServerSession = {
+      rpc: rpc as AppServerSession['rpc'],
+      subscribe: () => () => {},
+      closed: new Promise(() => {}),
+      interrupt: interruptMock,
+    };
+
+    const turn = runClaudeOneShotTurn(
+      {
+        storage,
+        executionPlan: systemContext('/home/user/.claude'),
+        ids: { uuid: () => 'turn-1', sha256: (value) => `hash:${value}` },
+        openServer: vi.fn(async () => lease),
+      },
+      { cwd: '/workspace/kb', prompt: 'Classify this note.', signal: controller.signal },
+    );
+    await turnStarted.promise;
+    controller.abort('cancel-curation');
+
+    await expect(turn).rejects.toThrow('could not be confirmed cancelled');
+    expect(interruptMock).toHaveBeenCalledWith({ brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' });
+    expect(rpc).toHaveBeenCalledWith('session/close', { brokerSessionKey: 'broker-1' });
   });
 });

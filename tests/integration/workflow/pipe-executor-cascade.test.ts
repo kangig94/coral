@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseAgentRef, resolveAgent } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -153,12 +152,6 @@ describe('pipe executor coral cascade invariant', () => {
           progressStore,
           bundleHash: 'pipe-executor-cascade-test',
           backendNamespace: pluginRootNamespace(coralPluginRoot),
-          providerHostManager: createProviderHostManager({
-            runtime,
-            spawnProviderServer: async () => {
-              throw new Error('Provider host manager should not be used in pipe executor cascade test');
-            },
-          }),
           launchCoordinator: new LaunchCoordinator({ runtime }),
           eventBus,
           providerRegistry,
@@ -300,12 +293,6 @@ describe('pipe executor coral cascade invariant', () => {
           progressStore,
           bundleHash: 'pipe-executor-retention-test',
           backendNamespace: pluginRootNamespace(coralPluginRoot),
-          providerHostManager: createProviderHostManager({
-            runtime,
-            spawnProviderServer: async () => {
-              throw new Error('Provider host manager should not be used in pipe executor retention test');
-            },
-          }),
           launchCoordinator: new LaunchCoordinator({ runtime }),
           eventBus,
           providerRegistry,

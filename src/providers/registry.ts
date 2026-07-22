@@ -1,5 +1,10 @@
 import type { ProviderCatalog } from './catalog.js';
-import type { ProviderArtifactCapability, ProviderImplementation } from './contract.js';
+import type {
+  ProviderAppServerImplementation,
+  ProviderArtifactCapability,
+  ProviderImplementation,
+  ProviderStandaloneImplementation,
+} from './contract.js';
 import {
   bindingFailure,
   bindingSuccess,
@@ -29,6 +34,7 @@ import { snapshotArtifacts, snapshotImplementation } from './internal/definition
 import { eraseBindingCodec, type ErasedProviderBindingBoundary } from './internal/binding-boundary.js';
 import type { BoundProvider } from './bound-provider-contract.js';
 import type { ProviderExecutionPlan } from './execution-plan.js';
+import type { AppServerHostAuthority } from './internal/app-server-host.js';
 
 declare const providerDefinitionBrand: unique symbol;
 
@@ -69,11 +75,17 @@ function registeredBindingBoundary(definition: ProviderDefinition): ErasedProvid
 }
 
 export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
+  spec: ProviderAppServerImplementation<Plan, Source>,
+): ProviderBindingBuilder<Source>;
+export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
+  spec: ProviderStandaloneImplementation<Plan, Source>,
+): ProviderBindingBuilder<Source>;
+export function defineProvider<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
   spec: ProviderDefinitionInput<Plan, Source>,
 ): ProviderBindingBuilder<Source> {
   const definitionInput = snapshotImplementation(spec);
   if (
-    definitionInput.appServer !== undefined &&
+    definitionInput.transport === 'app-server' &&
     (definitionInput.recovery === undefined || typeof definitionInput.recovery.finalizeInterrupted !== 'function')
   ) {
     throw new Error(`App-server provider '${definitionInput.name}' must define recovery interpretation.`);
@@ -134,6 +146,14 @@ export class ProviderRegistry implements ProviderCatalog {
     string,
     { readonly definition: ProviderDefinition; readonly binding: ErasedProviderBindingBoundary }
   >();
+  private appServerHost: AppServerHostAuthority | undefined;
+
+  connectAppServerHost(authority: AppServerHostAuthority): void {
+    if (this.appServerHost !== undefined && this.appServerHost !== authority) {
+      throw new Error('Provider registry app-server host authority is already connected.');
+    }
+    this.appServerHost = authority;
+  }
 
   register(spec: ProviderDefinition): void {
     const binding = registeredBindingBoundary(spec);
@@ -313,7 +333,7 @@ export class ProviderRegistry implements ProviderCatalog {
         selector: `${providerName} credential profile`,
       });
     }
-    return registration.binding.bindProfile(envelope.data, runtime);
+    return registration.binding.bindProfile(envelope.data, runtime, this.appServerHost);
   }
 
   rehydrateBinding(rawEnvelope: unknown): ProviderBindingResult<BoundProvider> {
@@ -326,7 +346,7 @@ export class ProviderRegistry implements ProviderCatalog {
     if (registration === undefined) {
       return bindingFailure({ reason: 'invalid-persisted-binding', provider: envelope.provider });
     }
-    return registration.binding.decode(envelope);
+    return registration.binding.decode(envelope, this.appServerHost);
   }
 
   renderBindingFailure(failure: ProviderBindingFailure): string {

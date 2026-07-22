@@ -244,16 +244,16 @@ export class PrintSessionController implements BrokerSessionController {
     }
   }
 
-  async turnInterrupt(params: ControllerTurnInterruptParams = {}): Promise<TurnInterruptResult> {
+  async turnInterrupt(params: ControllerTurnInterruptParams): Promise<TurnInterruptResult> {
     const turn = this.activeTurn;
     if (turn === null) {
       return {
-        brokerTurnId: params.brokerTurnId ?? this.lastTerminalTurnId,
+        brokerTurnId: params.brokerTurnId,
         interrupted: false,
       };
     }
 
-    if (params.brokerTurnId !== undefined && params.brokerTurnId !== turn.brokerTurnId) {
+    if (params.brokerTurnId !== turn.brokerTurnId) {
       return {
         brokerTurnId: turn.brokerTurnId,
         interrupted: false,

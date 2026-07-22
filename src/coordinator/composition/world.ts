@@ -232,6 +232,7 @@ export function createCoordinatorWorld(
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
+  providerRegistry.connectAppServerHost(providerHostManager);
 
   const identity: CoordinatorIdentity = {
     pluginRoot,

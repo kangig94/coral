@@ -16,6 +16,8 @@ import { CORAL_CLAUDE_TRANSPORT_ENV } from '#src/providers/claude/transport-mode
 const BOOTSTRAP_SIGNATURE: ClaudeBootstrapSignature = {
   cwd: '/workspace',
   systemPromptHash: 'sha256:test',
+
+  bootstrapConfigHash: 'sha256:test-bootstrap',
   permissionMode: 'default',
 };
 
@@ -39,7 +41,7 @@ function prepareBroker(options: {
   baseEnv?: Record<string, string>;
   existsSync?: (path: string) => boolean;
 }) {
-  const prepared = buildClaudeExecutionPlan({
+  const input = {
     source: TEST_CLAUDE_SOURCE,
     request: {
       action: 'exec',
@@ -52,8 +54,10 @@ function prepareBroker(options: {
     baseEnv: options.baseEnv ?? {},
     storage: { existsSync: options.existsSync ?? (() => true) },
     platform: 'linux',
-  });
-  return claudeAppServerLifecycle.compileStableHost(prepared.plan.host);
+  } as const;
+  const hostPlan = claudeAppServerLifecycle.planHost({ purpose: 'execution', ...input });
+  buildClaudeExecutionPlan({ ...input, hostPlan });
+  return claudeAppServerLifecycle.compileStableHost(hostPlan);
 }
 
 describe('Claude continuity refs', () => {
@@ -74,6 +78,8 @@ describe('Claude continuity refs', () => {
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:test',
+
+          bootstrapConfigHash: 'sha256:test-bootstrap',
           permissionMode: 'unknown',
         },
       }),
@@ -86,12 +92,16 @@ describe('Claude continuity refs', () => {
         bootstrapSignature: {
           cwd: '/workspace',
           systemPromptHash: 'sha256:test',
+
+          bootstrapConfigHash: 'sha256:test-bootstrap',
           permissionMode: 'auto',
         },
       }).bootstrapSignature,
     ).toEqual({
       cwd: '/workspace',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'auto',
     });
   });
@@ -137,14 +147,14 @@ describe('Claude appserver request mapping', () => {
     const spec = withPluginRoot(() => prepareBroker({}));
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'print' });
-    expect(spec.runtimeMetadata).toEqual({ transportMode: 'print' });
+    expect(spec.env).toMatchObject({ CORAL_CLAUDE_TRANSPORT: 'print' });
   });
 
   it('carries explicit TUI transport into provider server identity', () => {
     const spec = withPluginRoot(() => prepareBroker({ coralEnv: { [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' } }));
 
     expect(spec.env).toEqual({ [CORAL_CLAUDE_TRANSPORT_ENV]: 'tui' });
-    expect(spec.runtimeMetadata).toEqual({ transportMode: 'tui' });
+    expect(spec.env).toMatchObject({ CORAL_CLAUDE_TRANSPORT: 'tui' });
   });
 
   it('carries model and effort in session bootstrap while turn/start only sends the prompt', () => {
@@ -202,6 +212,7 @@ describe('Claude appserver request mapping', () => {
 
     expect(brokerA).toEqual(brokerB);
     expect(brokerA.leaseMode).toBe('shared');
+    expect(brokerA.idlePolicy).toBe('host-stats');
     expect(brokerA.env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
     expect(brokerA.env).not.toHaveProperty('CORAL_CHILD_PRINCIPAL_HANDLE');
     expect(brokerA.env).not.toHaveProperty('CORAL_JOB_ID');

@@ -102,7 +102,12 @@ describe('command class coverage', () => {
       path: 'kb search',
       commandClass: 'servedRead',
     });
-    expect(kbEntries.filter((entry) => entry.commandClass === 'directRead').map((entry) => entry.path).sort()).toEqual([
+    expect(
+      kbEntries
+        .filter((entry) => entry.commandClass === 'directRead')
+        .map((entry) => entry.path)
+        .sort(),
+    ).toEqual([
       'kb community list-stale',
       'kb community summary-input',
       'kb diagnose',

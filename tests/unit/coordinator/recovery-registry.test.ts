@@ -32,13 +32,23 @@ function makeRuntimeRecord(overrides: Partial<DurableCliRuntimeRecord> = {}): Du
   };
 }
 
-function makeAppServerRuntimeRecord(overrides: Partial<AppServerRuntime['providerMeta']> = {}): AppServerRuntime {
+type AcquiredAppServerRuntime = Extract<AppServerRuntime, { providerMeta: { leaseState: 'acquired' } }>;
+
+function makeAppServerRuntimeRecord(
+  overrides: Partial<AcquiredAppServerRuntime['providerMeta']> = {},
+): AppServerRuntime {
   return {
     transport: 'app-server',
     startTime: new Date().toISOString(),
     providerMeta: {
       provider: 'codex',
       leaseState: 'acquired',
+      hostRef: {
+        provider: 'test',
+        fingerprint: '0'.repeat(64),
+        instanceId: 'instance-1',
+        leaseMode: 'shared',
+      },
       ...overrides,
     },
   };

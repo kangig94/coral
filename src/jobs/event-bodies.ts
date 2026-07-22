@@ -25,6 +25,28 @@ export const jobQueueAdmittedBodySchema = z
 
 const runtimeStartedAtSchema = z.string().min(1);
 
+const providerHostRefIdentitySchema = {
+  provider: z.string().min(1),
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
+  instanceId: z.string().min(1),
+} as const;
+
+export const providerHostRefSchema = z.discriminatedUnion('leaseMode', [
+  z
+    .object({
+      ...providerHostRefIdentitySchema,
+      leaseMode: z.literal('shared'),
+    })
+    .strict(),
+  z
+    .object({
+      ...providerHostRefIdentitySchema,
+      leaseMode: z.literal('job-exclusive'),
+      ownerJobId: z.string().min(1),
+    })
+    .strict(),
+]);
+
 const durableCliRuntimeStartedBodySchema = z
   .object({
     transport: z.literal('durable-cli'),
@@ -45,15 +67,13 @@ const appServerRuntimeStartedBodySchema = z
         .object({
           provider: z.string().min(1),
           leaseState: z.literal('waiting'),
-          transportMode: z.string().min(1).optional(),
         })
         .strict(),
       z
         .object({
           provider: z.string().min(1),
           leaseState: z.literal('acquired'),
-          serverGeneration: z.number().int().nonnegative().optional(),
-          transportMode: z.string().min(1).optional(),
+          hostRef: providerHostRefSchema,
         })
         .strict(),
     ]),

@@ -435,7 +435,13 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
   function runBg(fixture: HookFixture, toolInput: Record<string, unknown>) {
     return runHook(
       BASH_REWRITE_HOOK,
-      { hook_event_name: 'PreToolUse', tool_name: 'Bash', session_id: SESSION, cwd: fixture.projectRoot, tool_input: toolInput },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        session_id: SESSION,
+        cwd: fixture.projectRoot,
+        tool_input: toolInput,
+      },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
     );
   }
@@ -483,7 +489,12 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     const fixture = createFixture();
     const result = runHook(
       BASH_REWRITE_HOOK,
-      { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: fixture.projectRoot, tool_input: { command: 'npm run build', run_in_background: true } },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command: 'npm run build', run_in_background: true },
+      },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
     );
 
@@ -495,7 +506,12 @@ describe('bash-rewrite.mjs: background-task wrapping', () => {
     const fixture = createFixture();
     const result = runHook(
       BASH_REWRITE_HOOK,
-      { hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: fixture.projectRoot, tool_input: { command: 'coral-cli kb search q', run_in_background: true } },
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: fixture.projectRoot,
+        tool_input: { command: 'coral-cli kb search q', run_in_background: true },
+      },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
     );
 

@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import type {
   ProviderPreflightRuntime,
   ProviderAppServerCapability,
+  AppServerTransport,
   ProviderRecoveryContract,
-  ProviderServerLease,
 } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionContinuityMutation } from '../../sessions/continuity-mutation.js';
@@ -17,7 +17,12 @@ import {
   readCodexPersistedContinuity,
 } from './request-mapping.js';
 import { verifyCodexEffectiveTransport } from './transport-policy.js';
-import { compileCodexHostEnvironment, type CodexCredentialSource, type CodexExecutionPlan } from './execution-plan.js';
+import {
+  buildCodexHost,
+  compileCodexHostEnvironment,
+  type CodexCredentialSource,
+  type CodexExecutionPlan,
+} from './execution-plan.js';
 import { windowsCommandName } from '../../infra/windows-shell.js';
 
 const CODEX_APP_SERVER_UPGRADE_MESSAGE =
@@ -26,7 +31,6 @@ const CODEX_AUTH_ERROR_MESSAGE =
   'The selected Codex account is not authenticated. Run "codex login" with the same CODEX_HOME and retry.';
 const CODEX_PREFLIGHT_CACHE_TTL_MS = 60_000;
 const CODEX_AUTH_TOKEN_KEYS = ['access_token', 'refresh_token', 'id_token'] as const;
-const SCOPED_CODEX_CONTINUITY_READ = { allowUnscopedCwd: false } as const;
 
 type PreflightCacheEntry = {
   available: boolean;
@@ -37,15 +41,11 @@ let codexAppServerAvailabilityCache: PreflightCacheEntry | null = null;
 const codexAuthTokensCache = new Map<string, PreflightCacheEntry>();
 
 async function rpc<M extends AppServerMethod>(
-  lease: ProviderServerLease,
+  lease: AppServerTransport,
   method: M,
   params: AppServerRequestParams<M>,
 ): Promise<AppServerResponse<M>> {
   return lease.rpc<AppServerResponse<M>>(method, params as unknown as Record<string, unknown>);
-}
-
-async function interruptTurn(lease: ProviderServerLease, threadId: string, turnId: string): Promise<void> {
-  await rpc(lease, 'turn/interrupt', { threadId, turnId });
 }
 
 type CodexProbeResult = {
@@ -60,7 +60,7 @@ function codexProbeResult(resumable: boolean, updatedContinuity: ProviderContinu
 function sanitizeCodexProviderContinuity(
   continuity: ProviderContinuityBlob | undefined,
 ): CodexPersistedContinuity | undefined {
-  const parsed = readCodexPersistedContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
+  const parsed = readCodexPersistedContinuity(continuity);
   return hasCodexContinuity(parsed) ? parsed : undefined;
 }
 
@@ -136,9 +136,18 @@ function hasCodexAuthTokens(value: unknown): boolean {
   });
 }
 
-export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecutionPlan> = {
+export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecutionPlan, CodexCredentialSource> = {
   name: 'codex',
-  subscriptionPhase: 'afterInitialize',
+  planHost: (input) => {
+    if (input.purpose !== 'execution') throw new Error('Codex does not support curation hosts.');
+    return buildCodexHost({
+      source: input.source,
+      request: input.request,
+      persistedContinuity: input.persistedContinuity,
+      baseEnv: input.baseEnv,
+      platform: input.platform,
+    });
+  },
   compileStableHost: (host) => ({
     provider: 'codex',
     command: windowsCommandName(host.command, host.platform),
@@ -146,53 +155,66 @@ export const codexAppServerLifecycle: ProviderAppServerCapability<CodexExecution
     cwd: host.cwd,
     env: { ...compileCodexHostEnvironment(host) },
     leaseMode: host.leaseMode,
+    idlePolicy: 'daemon',
     initializeRequest: {
       method: 'initialize',
       params: { clientInfo: { name: 'coral', version: 'unknown' } },
     },
   }),
-  async interrupt(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void> {
+  async interrupt(lease: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean> {
     const parsed = readCodexPersistedContinuity(continuity);
     if (parsed.threadId === undefined || parsed.turnId === undefined) {
-      return;
+      return false;
     }
-    await interruptTurn(lease, parsed.threadId, parsed.turnId);
+    const result = await rpc(lease, 'turn/interrupt', { threadId: parsed.threadId, turnId: parsed.turnId });
+    return result.threadId === parsed.threadId && result.turnId === parsed.turnId;
+  },
+  async probe(lease, continuity, context): Promise<CodexProbeResult> {
+    return probeCodexSession(lease, continuity, context.request.cwd);
   },
 };
 
-export const codexRecoveryLifecycle = {
-  async probe(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<CodexProbeResult> {
-    const parsed = readCodexPersistedContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
-    const updatedContinuity = clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ);
-    if (parsed.threadId === undefined || parsed.cwd === undefined) {
-      return codexProbeResult(false, updatedContinuity);
-    }
+async function probeCodexSession(
+  lease: AppServerTransport,
+  continuity: ProviderContinuityBlob,
+  cwdScope: string,
+): Promise<CodexProbeResult> {
+  const parsed = readCodexPersistedContinuity(continuity, { cwdScope });
+  const updatedContinuity = clearCodexTurnContinuity(continuity, { cwdScope });
+  if (parsed.threadId === undefined || parsed.cwd === undefined) {
+    return codexProbeResult(false, updatedContinuity);
+  }
 
-    try {
-      await verifyCodexEffectiveTransport(lease, parsed.cwd);
-      await rpc(lease, 'thread/resume', {
-        threadId: parsed.threadId,
-        cwd: parsed.cwd,
-        model: null,
-        modelProvider: 'openai',
-        approvalPolicy: 'never',
-      });
-      return codexProbeResult(true, updatedContinuity);
-    } catch (error) {
-      if (!isCodexSessionUnavailable(error)) {
-        throw error;
-      }
-      return codexProbeResult(false, updatedContinuity);
+  try {
+    await verifyCodexEffectiveTransport(lease, parsed.cwd);
+    const response = await rpc(lease, 'thread/resume', {
+      threadId: parsed.threadId,
+      cwd: parsed.cwd,
+      model: null,
+      modelProvider: 'openai',
+      approvalPolicy: 'never',
+      config: {},
+    });
+    if (response.thread?.id !== parsed.threadId) {
+      throw new Error('Codex recovery probe did not resume the exact requested thread id.');
     }
-  },
+    return codexProbeResult(true, updatedContinuity);
+  } catch (error) {
+    if (!isCodexSessionUnavailable(error)) {
+      throw error;
+    }
+    return codexProbeResult(false, updatedContinuity);
+  }
+}
+
+export const codexRecoveryLifecycle = {
   finalizeInterrupted(
     probeResult: CodexProbeResult,
     continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation {
     const nextContinuity = sanitizeCodexProviderContinuity(
-      probeResult.updatedContinuity ??
-        (continuity === undefined ? undefined : clearCodexTurnContinuity(continuity, SCOPED_CODEX_CONTINUITY_READ)),
+      probeResult.updatedContinuity ?? (continuity === undefined ? undefined : clearCodexTurnContinuity(continuity)),
     );
     const parsed = readCodexPersistedContinuity(nextContinuity ?? continuity ?? {});
     const effectiveConversationRef = parsed.threadId ?? context.preservedConversationRef;
@@ -216,4 +238,4 @@ export const codexRecoveryLifecycle = {
       ...(nextContinuity ? { providerContinuity: nextContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'probe' | 'finalizeInterrupted'>;
+} satisfies Pick<ProviderRecoveryContract, 'finalizeInterrupted'>;

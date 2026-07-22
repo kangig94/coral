@@ -8,12 +8,10 @@ import type * as NodeOs from 'node:os';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
-import type { SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
@@ -123,7 +121,7 @@ function wrapWithSessionContinuity(
   provider: Provider<FixtureExecutionPlan>,
   contract: SessionContinuityContract<ContinuityState>,
 ): Provider<FixtureExecutionPlan> {
-  return sessionContinuity<ContinuityState, FixtureExecutionPlan>(contract)(provider);
+  return sessionContinuity<ContinuityState, FixtureExecutionPlan>('fixture', contract)(provider);
 }
 
 function continuitySnapshot(
@@ -142,7 +140,6 @@ describe('coordinator continuity lifecycle integration', () => {
   let runtime: ReturnType<typeof createRealRuntime>;
   let eventBus: TypedEventBus;
   let launchCoordinator: LaunchCoordinator;
-  let spawnProviderServer: SpawnProviderServerFn;
   let ctx: InvocationContext;
 
   beforeEach(() => {
@@ -162,7 +159,6 @@ describe('coordinator continuity lifecycle integration', () => {
     runtime = createRealRuntime('prod');
     eventBus = new TypedEventBus();
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
   });
 
   afterEach(() => {
@@ -177,6 +173,7 @@ describe('coordinator continuity lifecycle integration', () => {
       providerRegistry.register(
         defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
           name: provider.name,
+          transport: 'standalone',
           run: provider.run,
           prepareExecutionPlan: prepareFixtureExecutionPlan,
         })
@@ -205,7 +202,6 @@ describe('coordinator continuity lifecycle integration', () => {
       progressStore,
       backendNamespace: TEST_BACKEND_NAMESPACE,
       bundleHash: 'bundle-test',
-      providerHostManager: createProviderHostManager({ runtime, spawnProviderServer }),
       launchCoordinator,
       eventBus,
       providerRegistry,

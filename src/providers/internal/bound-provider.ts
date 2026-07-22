@@ -9,12 +9,20 @@ import type {
   ArtifactCleanupRuntime,
   ProviderArtifactCapability,
   ProviderArtifactHandle,
+  AppServerSession,
+  AppServerTransport,
+  HostRef,
   ProviderCurationRequest,
   ProviderCurationUsageRuntime,
   ProviderImplementation,
+  ProviderAppServerImplementation,
+  ProviderStandaloneImplementation,
   ProviderPreflightInput,
+  ProviderRequest,
   ProviderRecoveryContract,
   ProviderRuntime,
+  ProviderEventBody,
+  ProviderServerSpec,
 } from '../contract.js';
 import type { ProviderCliRequest } from '../protocol.js';
 import type { ProviderValueParseResult } from '../binding-parser-contract.js';
@@ -24,15 +32,21 @@ import type {
   BoundProviderAppServerCapability,
   BoundProviderArtifacts,
   BoundProviderCuration,
-  BoundProviderExecutionPreparationInput,
+  BoundProviderHostPreparationInput,
+  BoundProviderAppServerExecutionRuntime,
+  BoundProviderStandaloneExecutionRuntime,
   BoundProviderPreparedExecution,
-  BoundProviderPreparedStableHost,
   BoundProviderRecovery,
 } from '../bound-provider-contract.js';
+import type { AppServerHostAuthority, ManagedHostSession } from './app-server-host.js';
 import { providerBindingEnvelopeSchema } from '../../infra/provider-binding-envelope.js';
 import { jsonValueSchema, type JsonValue } from '../../infra/json-value.js';
-import { wrapAcquirePreparedServer } from './server-lease-boundary.js';
-import { snapshotEventStream, snapshotExecutionRuntime } from './runtime-boundary.js';
+import { wrapAppServerSession } from './server-lease-boundary.js';
+import {
+  snapshotAppServerExecutionRuntime,
+  snapshotEventStream,
+  snapshotStandaloneExecutionRuntime,
+} from './runtime-boundary.js';
 import {
   snapshotArtifactHandles,
   snapshotBoundaryData,
@@ -54,6 +68,218 @@ export interface CapturedBoundCodec<Source extends JsonValue> {
     runtime: ProviderBindingRuntime,
   ): Promise<ProviderBindingResult<ProviderReadiness>>;
   compareBinding(left: unknown, right: unknown): ProviderBindingResult<true>;
+}
+
+function requireAppServerHost(authority: AppServerHostAuthority | undefined, provider: string): AppServerHostAuthority {
+  if (authority === undefined) {
+    throw new Error(`Provider '${provider}' has no connected app-server host authority.`);
+  }
+  return authority;
+}
+
+function providerAppServerSession<Plan extends ProviderExecutionPlan>(
+  transport: AppServerTransport,
+  capability: ProviderAppServerImplementation<Plan>['appServer'],
+): AppServerSession {
+  return Object.freeze({
+    rpc: transport.rpc.bind(transport),
+    subscribe: transport.subscribe.bind(transport),
+    closed: transport.closed,
+    interrupt: async (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) => {
+      if (capability.interrupt === undefined) return false;
+      return capability.interrupt(transport, snapshotBoundaryData(continuity, 'Provider interrupt continuity'));
+    },
+  });
+}
+
+type PreparedBoundAppServer<Plan extends ProviderExecutionPlan> = {
+  readonly hostPlan: Plan['host'];
+  execute(
+    runtime: BoundProviderAppServerExecutionRuntime,
+    operation: (session: AppServerSession) => AsyncIterable<ProviderEventBody>,
+  ): AsyncIterable<ProviderEventBody>;
+};
+
+interface BoundAppServerLifecycle<Plan extends ProviderExecutionPlan> extends BoundProviderAppServerCapability {
+  prepareExecution(input: BoundProviderHostPreparationInput): PreparedBoundAppServer<Plan>;
+  planCuration(
+    request: ProviderCurationRequest,
+    runtime: Parameters<BoundProviderCuration['prepare']>[1],
+  ): Plan['host'];
+  completeCuration(
+    hostPlan: Plan['host'],
+    signal: AbortSignal | undefined,
+    operation: (session: AppServerSession) => Promise<string>,
+  ): Promise<string>;
+}
+
+type BoundAppServerTools<Plan extends ProviderExecutionPlan> = Readonly<{
+  providerName: string;
+  capability: ProviderAppServerImplementation<Plan>['appServer'];
+  host(): AppServerHostAuthority;
+  planExecution(input: BoundProviderHostPreparationInput): Plan['host'];
+  compileHost(hostPlan: Plan['host']): ProviderServerSpec;
+  session(transport: AppServerTransport): AppServerSession;
+}>;
+
+function createBoundAppServerTools<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
+  implementation: ProviderAppServerImplementation<Plan, Source>,
+  source: Source,
+  appServerHost: AppServerHostAuthority | undefined,
+): BoundAppServerTools<Plan> {
+  const capability = implementation.appServer;
+  return Object.freeze({
+    providerName: implementation.name,
+    capability,
+    host: () => requireAppServerHost(appServerHost, implementation.name),
+    planExecution: (input) =>
+      capability.planHost({
+        purpose: 'execution',
+        request: snapshotRequest(input.request),
+        ...(input.persistedContinuity === undefined
+          ? {}
+          : { persistedContinuity: snapshotBoundaryData(input.persistedContinuity, 'Provider host continuity') }),
+        baseEnv: snapshotBoundaryData(input.baseEnv, 'Provider host base environment'),
+        platform: input.platform,
+        storage: input.storage,
+        source,
+      }),
+    compileHost: (hostPlan) => {
+      const spec = snapshotBoundaryData(capability.compileStableHost(hostPlan), 'Provider stable host specification');
+      if (spec.provider !== implementation.name) {
+        throw new Error(`Provider '${implementation.name}' compiled a stable host labeled for '${spec.provider}'.`);
+      }
+      return spec;
+    },
+    session: (transport) => providerAppServerSession(transport, capability),
+  });
+}
+
+function subscribeBoundAppServerNotifications<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  managed: ManagedHostSession,
+): () => void {
+  const onNotification = tools.capability.onNotification;
+  return onNotification === undefined ? () => {} : managed.session.subscribe(onNotification);
+}
+
+function closeManagedHostSession(managed: ManagedHostSession, unsubscribe: () => void): void {
+  try {
+    unsubscribe();
+  } finally {
+    managed.close();
+  }
+}
+
+function executeBoundAppServer<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  hostPlan: Plan['host'],
+  runtime: BoundProviderAppServerExecutionRuntime,
+  operation: (session: AppServerSession) => AsyncIterable<ProviderEventBody>,
+): AsyncIterable<ProviderEventBody> {
+  return (async function* () {
+    runtime.signal.throwIfAborted();
+    const spec = tools.compileHost(hostPlan);
+    runtime.onAppServerWaiting({ provider: spec.provider });
+    const managed = await tools.host().openSession(spec, { jobId: runtime.jobId, signal: runtime.signal });
+    let unsubscribe = () => {};
+    try {
+      runtime.signal.throwIfAborted();
+      runtime.onHostRef(managed.hostRef);
+      unsubscribe = subscribeBoundAppServerNotifications(tools, managed);
+      yield* snapshotEventStream(operation(tools.session(managed.session)));
+    } finally {
+      closeManagedHostSession(managed, unsubscribe);
+    }
+  })();
+}
+
+async function completeBoundAppServerCuration<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  hostPlan: Plan['host'],
+  signal: AbortSignal | undefined,
+  operation: (session: AppServerSession) => Promise<string>,
+): Promise<string> {
+  const managed = await tools
+    .host()
+    .openSession(tools.compileHost(hostPlan), signal === undefined ? undefined : { signal });
+  let unsubscribe = () => {};
+  try {
+    unsubscribe = subscribeBoundAppServerNotifications(tools, managed);
+    return await operation(
+      wrapAppServerSession(tools.session(managed.session), 'Provider prepared curation app-server session'),
+    );
+  } finally {
+    closeManagedHostSession(managed, unsubscribe);
+  }
+}
+
+async function openBoundReplacement<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  input: BoundProviderHostPreparationInput,
+  runtime: { jobId: string; signal?: AbortSignal },
+): Promise<Readonly<{ hostRef: HostRef; close(): void }>> {
+  const managed = await tools.host().openSession(tools.compileHost(tools.planExecution(input)), {
+    jobId: runtime.jobId,
+    ...(runtime.signal === undefined ? {} : { signal: runtime.signal }),
+  });
+  return Object.freeze({ hostRef: managed.hostRef, close: () => managed.close() });
+}
+
+async function attachExpectedBoundSession<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  hostRef: HostRef,
+  input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+  label: string,
+): Promise<Readonly<{ managed: ManagedHostSession; session: AppServerSession }> | null> {
+  if (hostRef.provider !== tools.providerName) return null;
+  const managed = await tools.host().attachSession(snapshotBoundaryData(hostRef, label), {
+    spec: tools.compileHost(tools.planExecution(input)),
+    jobId: input.jobId,
+  });
+  return managed === null ? null : Object.freeze({ managed, session: tools.session(managed.session) });
+}
+
+async function interruptBoundAppServer<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  hostRef: HostRef,
+  continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
+  input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+): Promise<boolean> {
+  if (tools.capability.interrupt === undefined) return false;
+  const attached = await attachExpectedBoundSession(tools, hostRef, input, 'Provider interrupt host reference');
+  if (attached === null) return false;
+  try {
+    return await attached.session.interrupt(continuity);
+  } finally {
+    attached.managed.close();
+  }
+}
+
+async function probeBoundAppServer<Plan extends ProviderExecutionPlan>(
+  tools: BoundAppServerTools<Plan>,
+  hostRef: HostRef,
+  continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
+  input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+): ReturnType<BoundProviderAppServerCapability['probe']> {
+  if (tools.capability.probe === undefined) {
+    throw new Error(`Provider '${tools.providerName}' has no interrupted recovery probe.`);
+  }
+  const attached = await attachExpectedBoundSession(tools, hostRef, input, 'Provider probe host reference');
+  if (attached === null) return Object.freeze({ kind: 'stale' as const });
+  try {
+    const result = await tools.capability.probe(
+      attached.managed.session,
+      snapshotBoundaryData(continuity, 'Provider probe continuity'),
+      { request: snapshotRequest(input.request) },
+    );
+    return Object.freeze({
+      kind: 'probed' as const,
+      result: snapshotProviderResult(result, 'Provider recovery probe outcome'),
+    });
+  } finally {
+    attached.managed.close();
+  }
 }
 
 function bindArtifacts<Source extends JsonValue>(
@@ -95,7 +321,6 @@ function bindRecovery<Source extends JsonValue>(
 ): BoundProviderRecovery | undefined {
   if (recovery === undefined) return undefined;
   return Object.freeze({
-    ...(recovery.probe === undefined ? {} : { probe: recovery.probe }),
     finalizeInterrupted: recovery.finalizeInterrupted,
     finalizeFromArtifacts: (
       options: Omit<Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0], 'source'>,
@@ -118,8 +343,8 @@ function bindRecovery<Source extends JsonValue>(
 }
 
 function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  curation: ProviderImplementation<Plan, Source>['curation'],
-  appServer: ProviderImplementation<Plan, Source>['appServer'],
+  curation: ProviderAppServerImplementation<Plan, Source>['curation'] | undefined,
+  appServer: BoundAppServerLifecycle<Plan> | undefined,
   source: Source,
 ): BoundProviderCuration | undefined {
   if (curation === undefined) return undefined;
@@ -130,6 +355,7 @@ function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonVal
     prepare: (request: ProviderCurationRequest, runtime: Parameters<BoundProviderCuration['prepare']>[1]) => {
       const canonicalRequest = snapshotPlainReceiver(request, 'Provider curation request', new Set(['signal']));
       const canonicalRuntime = snapshotPlainReceiver(runtime, 'Provider curation runtime', new Set(['storage', 'ids']));
+      const hostPlan = appServer.planCuration(canonicalRequest, canonicalRuntime);
       const prepared = curation.prepare(
         canonicalRequest,
         Object.freeze({
@@ -141,26 +367,11 @@ function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonVal
         }),
       );
       const receiver = snapshotPlainReceiver(prepared, 'Prepared provider curation');
-      const hostPlan = snapshotBoundaryData(receiver.hostPlan, 'Prepared provider curation host plan');
-      const turnEnv = snapshotBoundaryData(receiver.turnEnv, 'Prepared provider curation turn environment');
-      const launch = snapshotBoundaryData(
-        { host: appServer.compileStableHost(hostPlan), turnEnv },
-        'Prepared provider curation launch',
-      );
       return Object.freeze({
-        launch,
-        complete: (completionRuntime: Parameters<typeof receiver.complete>[0]) => {
-          const canonicalCompletionRuntime = snapshotPlainReceiver(
-            completionRuntime,
-            'Provider prepared curation completion runtime',
-          );
-          const acquirePreparedServer = wrapAcquirePreparedServer(
-            canonicalCompletionRuntime,
-            canonicalCompletionRuntime.acquirePreparedServer,
-            'Provider prepared curation acquisition',
-          );
-          return receiver.complete.call(receiver, Object.freeze({ acquirePreparedServer }));
-        },
+        complete: () =>
+          appServer.completeCuration(hostPlan, canonicalRequest.signal, (session) =>
+            receiver.complete.call(receiver, Object.freeze({ appServerSession: session })),
+          ),
       });
     },
     isUsageBudgetExhausted: (runtime: ProviderCurationUsageRuntime) => {
@@ -176,61 +387,51 @@ function bindCuration<Plan extends ProviderExecutionPlan, Source extends JsonVal
   });
 }
 
-function prepareStableHost<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
+function createBoundAppServerLifecycle<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
   implementation: ProviderImplementation<Plan, Source>,
   source: Source,
-  input: Omit<BoundProviderExecutionPreparationInput, 'protectedEnv'>,
-): BoundProviderPreparedStableHost {
-  const appServer = implementation.appServer;
-  if (appServer === undefined) {
-    throw new TypeError(`Provider '${implementation.name}' has no app-server capability.`);
-  }
-  const canonicalInput = snapshotPlainReceiver(input, 'Provider stable host preparation input', new Set(['storage']));
-  const prepared = implementation.prepareExecutionPlan({
-    source,
-    request: snapshotRequest(canonicalInput.request),
-    ...(canonicalInput.persistedContinuity === undefined
-      ? {}
-      : {
-          persistedContinuity: snapshotBoundaryData(
-            canonicalInput.persistedContinuity,
-            'Provider attachment persisted continuity',
-          ),
-        }),
-    baseEnv: snapshotBoundaryData(canonicalInput.baseEnv, 'Provider attachment base environment'),
-    platform: canonicalInput.platform,
-    storage: canonicalInput.storage,
-  });
-  const receiver = snapshotPlainReceiver(prepared, 'Provider stable host plan');
-  return Object.freeze({
-    host: snapshotBoundaryData(appServer.compileStableHost(receiver.plan.host), 'Provider stable host specification'),
-  });
-}
+  appServerHost: AppServerHostAuthority | undefined,
+): BoundAppServerLifecycle<Plan> | undefined {
+  if (implementation.transport === 'standalone') return undefined;
+  const tools = createBoundAppServerTools(implementation, source, appServerHost);
 
-function bindAppServerCapability<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
-  implementation: ProviderImplementation<Plan, Source>,
-  source: Source,
-): BoundProviderAppServerCapability | undefined {
-  const appServer = implementation.appServer;
-  if (appServer === undefined) return undefined;
-  return Object.freeze({
-    name: appServer.name,
-    subscriptionPhase: appServer.subscriptionPhase,
-    prepareStableHost: (input: Omit<BoundProviderExecutionPreparationInput, 'protectedEnv'>) =>
-      prepareStableHost(implementation, source, input),
-    ...(appServer.interrupt === undefined ? {} : { interrupt: appServer.interrupt }),
-    ...(appServer.onNotification === undefined ? {} : { onNotification: appServer.onNotification }),
-  });
+  const lifecycle: BoundAppServerLifecycle<Plan> = {
+    supportsInterrupt: tools.capability.interrupt !== undefined,
+    supportsProbe: tools.capability.probe !== undefined,
+    prepareExecution: (input) => {
+      const hostPlan = tools.planExecution(input);
+      return Object.freeze({
+        hostPlan,
+        execute: (runtime, operation) => executeBoundAppServer(tools, hostPlan, runtime, operation),
+      });
+    },
+    planCuration: (request, runtime) =>
+      tools.capability.planHost({
+        purpose: 'curation',
+        request,
+        baseEnv: snapshotBoundaryData(runtime.baseEnv, 'Provider curation environment'),
+        platform: runtime.platform,
+        storage: runtime.storage,
+        source,
+      }),
+    completeCuration: (hostPlan, signal, operation) =>
+      completeBoundAppServerCuration(tools, hostPlan, signal, operation),
+    openReplacement: (input, runtime) => openBoundReplacement(tools, input, runtime),
+    interrupt: (hostRef, continuity, input) => interruptBoundAppServer(tools, hostRef, continuity, input),
+    probe: (hostRef, continuity, input) => probeBoundAppServer(tools, hostRef, continuity, input),
+  };
+  return Object.freeze(lifecycle);
 }
 
 function prepareExecution<Plan extends ProviderExecutionPlan, Source extends JsonValue>(
   implementation: ProviderImplementation<Plan, Source>,
   source: Source,
   input: Parameters<BoundProvider['prepareExecution']>[0],
+  appServer: BoundAppServerLifecycle<Plan> | undefined,
 ): BoundProviderPreparedExecution {
   const canonicalInput = snapshotPlainReceiver(input, 'Provider execution preparation input', new Set(['storage']));
   const request = snapshotRequest(canonicalInput.request);
-  const prepared = implementation.prepareExecutionPlan({
+  const preparationContext = {
     request,
     ...(canonicalInput.persistedContinuity === undefined
       ? {}
@@ -247,35 +448,63 @@ function prepareExecution<Plan extends ProviderExecutionPlan, Source extends Jso
     platform: canonicalInput.platform,
     storage: canonicalInput.storage,
     source,
-  });
-  const receiver = snapshotPlainReceiver(prepared, 'Provider prepared execution');
-  const prepareCliRequest = receiver.prepareCliRequest;
-  const plan = receiver.plan;
-  const appServerTurnEnv = receiver.appServerTurnEnv;
-  const appServer = implementation.appServer;
-  let boundAppServer: BoundProviderPreparedExecution['appServer'];
-  if (appServer !== undefined) {
-    if (appServerTurnEnv === undefined) {
-      throw new TypeError(`Provider '${implementation.name}' must prepare app-server turn environment additions.`);
-    }
-    const launch = {
-      host: appServer.compileStableHost(plan.host),
-      turnEnv: appServerTurnEnv,
-    };
-    boundAppServer = Object.freeze({
-      name: appServer.name,
-      subscriptionPhase: appServer.subscriptionPhase,
-      launch: snapshotBoundaryData(launch, 'Provider app-server launch'),
-      ...(appServer.interrupt === undefined ? {} : { interrupt: appServer.interrupt }),
-      ...(appServer.onNotification === undefined ? {} : { onNotification: appServer.onNotification }),
-    });
+  };
+
+  if (implementation.transport === 'standalone') {
+    const receiver = snapshotPlainReceiver(
+      implementation.prepareExecutionPlan(preparationContext),
+      'Provider prepared standalone execution',
+    );
+    return sealPreparedStandaloneExecution(
+      implementation,
+      request,
+      snapshotBoundaryData(receiver.plan, 'Provider standalone execution plan'),
+      receiver.prepareCliRequest.bind(receiver),
+    );
   }
+
+  if (appServer === undefined) {
+    throw new TypeError(`Provider '${implementation.name}' app-server lifecycle was not bound.`);
+  }
+  const preparedAppServer = appServer.prepareExecution(canonicalInput);
+  const receiver = snapshotPlainReceiver(
+    implementation.prepareExecutionPlan({ ...preparationContext, hostPlan: preparedAppServer.hostPlan }),
+    'Provider prepared app-server execution',
+  );
+  const plan = snapshotBoundaryData(
+    { host: preparedAppServer.hostPlan, session: receiver.session, turn: receiver.turn } as Plan,
+    'Provider app-server execution plan',
+  );
+  return sealPreparedAppServerExecution(implementation, request, plan, preparedAppServer);
+}
+
+function sealPreparedStandaloneExecution<Plan extends ProviderExecutionPlan>(
+  implementation: Pick<ProviderStandaloneImplementation<Plan>, 'run'>,
+  request: ProviderRequest,
+  plan: Plan,
+  prepareCliRequest: (request: ProviderCliRequest) => ProviderCliRequest,
+): BoundProviderPreparedExecution {
   return Object.freeze({
+    kind: 'standalone' as const,
     prepareCliRequest: (request: ProviderCliRequest) =>
-      snapshotCliRequest(prepareCliRequest.call(receiver, snapshotCliRequest(request))),
-    execute: (runtime: Omit<ProviderRuntime<never>, 'executionPlan'>) =>
-      snapshotEventStream(implementation.run(request, snapshotExecutionRuntime(runtime, plan))),
-    ...(boundAppServer === undefined ? {} : { appServer: boundAppServer }),
+      snapshotCliRequest(prepareCliRequest(snapshotCliRequest(request))),
+    execute: (runtime: BoundProviderStandaloneExecutionRuntime) =>
+      snapshotEventStream(implementation.run(request, snapshotStandaloneExecutionRuntime(runtime, plan))),
+  });
+}
+
+function sealPreparedAppServerExecution<Plan extends ProviderExecutionPlan>(
+  implementation: Pick<ProviderAppServerImplementation<Plan>, 'run'>,
+  request: ProviderRequest,
+  plan: Plan,
+  preparedAppServer: PreparedBoundAppServer<Plan>,
+): BoundProviderPreparedExecution {
+  return Object.freeze({
+    kind: 'app-server' as const,
+    execute: (runtime: BoundProviderAppServerExecutionRuntime) =>
+      preparedAppServer.execute(runtime, (appServerSession) =>
+        implementation.run(request, snapshotAppServerExecutionRuntime(runtime, plan, appServerSession)),
+      ),
   });
 }
 
@@ -311,6 +540,7 @@ export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Source
   binding: unknown,
   implementation: ProviderImplementation<Plan, Source>,
   artifacts: ProviderArtifactCapability<Source>,
+  appServerHost: AppServerHostAuthority | undefined,
 ): BoundProvider {
   const canonicalBinding = snapshotBoundaryData(jsonValueSchema.parse(binding), 'Provider binding');
   const envelope = snapshotBoundaryData(
@@ -320,8 +550,12 @@ export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Source
   const presentation = codec.presentBinding(canonicalBinding);
   const source = snapshotSource(codec.credentialSource(canonicalBinding));
   const recovery = bindRecovery(implementation.recovery, source);
-  const curation = bindCuration(implementation.curation, implementation.appServer, source);
-  const appServer = bindAppServerCapability(implementation, source);
+  const appServer = createBoundAppServerLifecycle(implementation, source, appServerHost);
+  const curation = bindCuration(
+    implementation.transport === 'app-server' ? implementation.curation : undefined,
+    appServer,
+    source,
+  );
   return Object.freeze({
     name: provider,
     envelope,
@@ -330,7 +564,7 @@ export function rehydrateCodecBinding<Plan extends ProviderExecutionPlan, Source
       snapshotProviderResult(await codec.readiness(canonicalBinding, use, runtime), 'Provider readiness result'),
     preflight: (input: Omit<ProviderPreflightInput, 'credentialSource'>) => runPreflight(implementation, source, input),
     prepareExecution: (input: Parameters<BoundProvider['prepareExecution']>[0]) =>
-      prepareExecution(implementation, source, input),
+      prepareExecution(implementation, source, input, appServer),
     ...(appServer === undefined ? {} : { appServer }),
     ...(recovery === undefined ? {} : { recovery }),
     artifacts: bindArtifacts(artifacts, source),

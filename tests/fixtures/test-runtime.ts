@@ -109,10 +109,12 @@ export interface CreateTestRuntimeOptions {
   registerConsumer?: (reg: ConsumerRegistration) => ConsumerHandle;
 }
 
-export function createEmptyGeneratedCommunityProjectionStore(options: {
-  runtimeDir?: string;
-  runtime?: Runtime;
-} = {}): GeneratedCommunityProjectionStore {
+export function createEmptyGeneratedCommunityProjectionStore(
+  options: {
+    runtimeDir?: string;
+    runtime?: Runtime;
+  } = {},
+): GeneratedCommunityProjectionStore {
   const root = options.runtimeDir ?? mkdtempSync(join(tmpdir(), 'coral-generated-community-store-'));
   const runtime = options.runtime ?? createRealRuntime('prod');
   return new GeneratedCommunityProjectionStore({

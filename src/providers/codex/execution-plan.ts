@@ -12,7 +12,6 @@ import {
   type ProviderExecutionPlan,
 } from '../execution-plan.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
-import type { ProviderCliRequest } from '../protocol.js';
 import { CODEX_ALLOWED_REQUEST_ENV_KEYS, CODEX_PROTECTED_REQUEST_ENV_KEYS } from './credential-policy.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { resolveCodexHostCwd } from './request-mapping.js';
@@ -31,10 +30,12 @@ export type CodexExecutionPlan = ProviderExecutionPlan<
     args: readonly string[];
     cwd: string;
     environment: readonly EnvironmentLayer[];
-    leaseMode: 'job-exclusive';
+    leaseMode: 'shared';
   }>,
   Readonly<{ sessionId: string }>,
-  Readonly<{ processEnvironment: readonly EnvironmentLayer[] }>
+  Readonly<{
+    threadConfig: Readonly<Record<string, unknown>>;
+  }>
 >;
 
 function baseLayer(values: Readonly<Record<string, string>>, platform: string): EnvironmentLayer {
@@ -115,20 +116,6 @@ function turnAuthorityLayer(
   );
 }
 
-export function compileCodexProcessEnvironment(plan: CodexExecutionPlan): Readonly<Record<string, string>> {
-  return compileEnvironmentLayers([...plan.host.environment, ...plan.turn.processEnvironment], {
-    platform: plan.host.platform,
-    lifetimes: allExecutionLifetimes(),
-  });
-}
-
-export function compileCodexTurnEnvironment(plan: CodexExecutionPlan): Readonly<Record<string, string>> {
-  return compileEnvironmentLayers(plan.turn.processEnvironment, {
-    platform: plan.host.platform,
-    lifetimes: new Set(['turn']),
-  });
-}
-
 export function compileCodexHostEnvironment(host: CodexExecutionPlan['host']): Readonly<Record<string, string>> {
   return compileEnvironmentLayers(host.environment, {
     platform: host.platform,
@@ -136,7 +123,7 @@ export function compileCodexHostEnvironment(host: CodexExecutionPlan['host']): R
   });
 }
 
-function buildCodexHost(options: {
+export function buildCodexHost(options: {
   source: CodexCredentialSource;
   request: ProviderRequest;
   persistedContinuity?: ProviderContinuityBlob;
@@ -154,43 +141,45 @@ function buildCodexHost(options: {
       routingLayer(options.source, options.platform),
       processSettingsLayer(options.request.coralEnv, options.platform),
     ]),
-    leaseMode: 'job-exclusive' as const,
+    leaseMode: 'shared' as const,
   });
 }
 
 export function buildCodexExecutionPlan(options: {
   source: CodexCredentialSource;
+  hostPlan: CodexExecutionPlan['host'];
   request: ProviderRequest;
   persistedContinuity?: ProviderContinuityBlob;
   baseEnv: Readonly<Record<string, string>>;
   protectedEnv?: Readonly<Record<string, string>>;
   platform: string;
 }): {
-  readonly plan: CodexExecutionPlan;
-  readonly appServerTurnEnv: Readonly<Record<string, string>>;
-  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+  readonly session: CodexExecutionPlan['session'];
+  readonly turn: CodexExecutionPlan['turn'];
 } {
+  const threadConfigurationLayers = Object.freeze([
+    turnAuthorityLayer(options.request, options.protectedEnv ?? {}, options.platform),
+    requestLayer(options.request.coralEnv, options.platform),
+  ]);
+  const threadConfiguration = compileEnvironmentLayers(threadConfigurationLayers, {
+    platform: options.platform,
+    lifetimes: new Set(['turn']),
+  });
   const plan: CodexExecutionPlan = Object.freeze({
-    host: buildCodexHost(options),
+    host: options.hostPlan,
     session: Object.freeze({ sessionId: options.request.sessionId }),
     turn: Object.freeze({
-      processEnvironment: Object.freeze([
-        turnAuthorityLayer(options.request, options.protectedEnv ?? {}, options.platform),
-        requestLayer(options.request.coralEnv, options.platform),
-      ]),
+      threadConfig: Object.freeze({
+        shell_environment_policy: Object.freeze({
+          inherit: 'all',
+          set: Object.freeze({ ...threadConfiguration }),
+        }),
+      }),
     }),
   });
-  const processEnv = compileCodexProcessEnvironment(plan);
-  const turnEnv = compileCodexTurnEnvironment(plan);
   return {
-    plan,
-    appServerTurnEnv: turnEnv,
-    prepareCliRequest: (request) => ({
-      ...request,
-      command: windowsCommandName(request.command, options.platform),
-      exactEnv: { ...processEnv },
-      extraEnv: undefined,
-    }),
+    session: plan.session,
+    turn: plan.turn,
   };
 }
 

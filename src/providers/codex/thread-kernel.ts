@@ -2,14 +2,8 @@ import { errorMessage } from '../../infra/error-format.js';
 import { readString } from '../../infra/json.js';
 import type { TimePort } from '../../infra/port-types.js';
 import { resolveModelTier } from '../request-policy.js';
-import type {
-  Provider,
-  ProviderEventBody,
-  ProviderRequest,
-  ProviderRuntime,
-  ProviderServerLease,
-} from '../contract.js';
-import { bindAppServerNotificationHandler, buildProviderFailureMessage, requireAppServerLease } from '../app-server.js';
+import type { Provider, ProviderEventBody, ProviderRequest, ProviderRuntime, AppServerSession } from '../contract.js';
+import { buildProviderFailureMessage } from '../app-server.js';
 import type { AppServerNotificationMessage } from '../protocol.js';
 import { streamProviderEvents } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -38,7 +32,7 @@ import {
 } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
 
-type CodexProviderRuntime = ProviderRuntime<CodexExecutionPlan>;
+type CodexProviderRuntime = Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>;
 
 const INFERRED_COMPLETION_DELAY_MS = 250;
 export const PRE_TURN_MAILBOX_CAP = 64;
@@ -62,6 +56,7 @@ type CodexKernelResult =
       attempt: TurnAttempt;
     }
   | { kind: 'failed'; message: string; preserveRecoverySnapshot?: boolean; attempt?: TurnAttempt }
+  | { kind: 'suspended'; reason: 'interrupt_unconfirmed'; attempt: TurnAttempt }
   | { kind: 'aborted'; reason: 'signal_abort'; preserveRecoverySnapshot?: boolean; attempt?: TurnAttempt };
 
 export type TurnAttempt = {
@@ -103,8 +98,9 @@ export type CodexTurnState = {
   retiredControllerTurnIds: Set<string>;
   activeAttempt: TurnAttempt;
   continuityBridge: CodexProviderRuntime['continuityBridge'];
+  checkpointBarrier: Promise<void>;
   signal: AbortSignal;
-  lease: ProviderServerLease | null;
+  lease: AppServerSession | null;
   artifactHandleEmissionAttempted: boolean;
   artifactLocatorRuntime: Pick<CodexProviderRuntime, 'executionPlan' | 'storage'>;
   preTurnMailbox: {
@@ -116,17 +112,6 @@ export type CodexTurnState = {
   finalized: boolean;
   time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
 };
-
-const codexInterruptBindings = new WeakMap<ProviderServerLease, CodexTurnState>();
-
-function bindCodexInterruptState(lease: ProviderServerLease, state: CodexTurnState): () => void {
-  codexInterruptBindings.set(lease, state);
-  return () => {
-    if (codexInterruptBindings.get(lease) === state) {
-      codexInterruptBindings.delete(lease);
-    }
-  };
-}
 
 function createAttempt(sequence: number): TurnAttempt {
   let resolveCompletion!: (result: CodexKernelResult) => void;
@@ -190,6 +175,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
     retiredControllerTurnIds: new Set(),
     activeAttempt: createAttempt(0),
     continuityBridge: runtime.continuityBridge,
+    checkpointBarrier: Promise.resolve(),
     signal: runtime.signal,
     lease: null,
     artifactHandleEmissionAttempted: false,
@@ -311,11 +297,11 @@ function claimControllerTurnId(state: CodexTurnState, attempt: TurnAttempt, turn
   attempt.turnId = turnId;
   attempt.resolveIdReady(turnId);
   if (state.threadId !== null && attempt.checkpointedTurnId !== turnId) {
-    checkpoint(state, state.threadId, turnId);
+    void checkpoint(state, state.threadId, turnId);
     attempt.checkpointedTurnId = turnId;
   }
   if (state.signal.aborted && state.lease !== null) {
-    void ensureInterrupt(state.lease, state, attempt);
+    void ensureInterrupt(state.lease, state, attempt).catch(() => undefined);
   }
   return true;
 }
@@ -745,59 +731,50 @@ function flushBufferedNotifications(
   }
 }
 
-function checkpoint(state: CodexTurnState, threadId: string, turnId?: string): void {
-  state.continuityBridge.checkpoint({
+function checkpoint(state: CodexTurnState, threadId: string, turnId?: string): Promise<void> {
+  const snapshot = {
     conversationRef: threadId,
-    resumable: true,
+    resumable: true as const,
     providerContinuity: buildCodexContinuity({
       cwd: state.cwd,
       threadId,
       turnId,
     }),
-  });
+  };
+  const barrier = state.checkpointBarrier.then(() => state.continuityBridge.checkpoint(snapshot));
+  state.checkpointBarrier = barrier;
+  void barrier.catch(() => undefined);
+  return barrier;
 }
 
 async function rpc<M extends AppServerMethod>(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   method: M,
   params: AppServerRequestParams<M>,
 ): Promise<AppServerResponse<M>> {
   return lease.rpc<AppServerResponse<M>>(method, params as unknown as Record<string, unknown>);
 }
 
-async function interruptTurn(lease: ProviderServerLease, threadId: string, turnId: string): Promise<void> {
-  await rpc(lease, 'turn/interrupt', { threadId, turnId });
-}
-
-export async function mapCodexInterrupt(lease: ProviderServerLease): Promise<void> {
-  const state = codexInterruptBindings.get(lease);
-  const attempt = state?.activeAttempt;
-  if (!state || !attempt || attempt.lifecycle === 'settled' || state.threadId === null || attempt.turnId === null) {
-    return;
-  }
-
-  await ensureInterrupt(lease, state, attempt);
-}
-
-function ensureInterrupt(
-  lease: ProviderServerLease,
+async function ensureInterrupt(
+  lease: AppServerSession,
   state: CodexTurnState,
   attempt: TurnAttempt,
 ): Promise<'confirmed' | 'failed'> {
   if (state.threadId === null || attempt.turnId === null) {
-    return Promise.resolve('failed');
+    return 'failed';
   }
-  attempt.interruptRequest ??= interruptTurn(lease, state.threadId, attempt.turnId).then(
-    () => 'confirmed' as const,
+  await state.checkpointBarrier;
+  attempt.interruptRequest ??= lease.interrupt({ threadId: state.threadId, turnId: attempt.turnId }).then(
+    (interrupted) => (interrupted ? ('confirmed' as const) : ('failed' as const)),
     () => 'failed' as const,
   );
-  return attempt.interruptRequest;
+  return await attempt.interruptRequest;
 }
 
 async function initializeThread(
   request: ProviderRequest,
   runtime: CodexProviderRuntime,
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   state: CodexTurnState,
   emit: (event: ProviderEventBody) => void,
 ): Promise<void> {
@@ -810,9 +787,12 @@ async function initializeThread(
       const response = await rpc(
         lease,
         'thread/resume',
-        mapThreadResumeParams(request, conversationRef, state.serviceTier),
+        mapThreadResumeParams(request, conversationRef, runtime.executionPlan.turn.threadConfig, state.serviceTier),
       );
       threadId = requireRpcThreadId(response, 'thread/resume');
+      if (threadId !== conversationRef) {
+        throw new Error('Codex thread/resume did not return the exact requested thread id.');
+      }
     } catch (error) {
       if (isCodexSessionUnavailable(error)) {
         throw new Error(
@@ -823,14 +803,18 @@ async function initializeThread(
       throw error;
     }
   } else {
-    const response = await rpc(lease, 'thread/start', mapThreadStartParams(request, state.serviceTier));
+    const response = await rpc(
+      lease,
+      'thread/start',
+      mapThreadStartParams(request, runtime.executionPlan.turn.threadConfig, state.serviceTier),
+    );
     threadId = requireRpcThreadId(response, 'thread/start');
   }
 
   state.threadId = threadId;
   registerMailboxThreadCandidate(state, threadId);
   registerThread(state, threadId);
-  checkpoint(state, threadId);
+  await checkpoint(state, threadId);
   emitProgress(emit, `Thread ready (${threadId}).`);
 }
 
@@ -844,7 +828,7 @@ function requireRpcThreadId(response: { thread?: { id?: unknown } }, method: 'th
 
 async function startTurn(
   runtime: CodexProviderRuntime,
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   state: CodexTurnState,
   attempt: TurnAttempt,
   params: TurnStartParams,
@@ -903,7 +887,7 @@ async function startTurn(
       if (attempt.turnId !== null) {
         return await finishAbortedStart(lease, runtime, state, attempt);
       }
-      return { kind: 'aborted', reason: 'signal_abort', attempt };
+      return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
     }
     return {
       kind: 'failed',
@@ -926,13 +910,7 @@ async function startTurn(
 
   if (runtime.signal.aborted) {
     if (attempt.turnId === null) {
-      const discovered = await Promise.race([
-        attempt.idReady.then(() => 'id' as const),
-        lease.closed.then(() => 'closed' as const),
-      ]);
-      if (discovered === 'closed') {
-        return { kind: 'aborted', reason: 'signal_abort', attempt };
-      }
+      return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
     }
     return await finishAbortedStart(lease, runtime, state, attempt);
   }
@@ -976,7 +954,7 @@ function applyNotification(
 }
 
 function abortResultPromise(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   runtime: CodexProviderRuntime,
   state: CodexTurnState,
   attempt: TurnAttempt,
@@ -992,13 +970,7 @@ function abortResultPromise(
     cleanup = () => runtime.signal.removeEventListener('abort', onAbort);
   }).then(async (): Promise<CodexKernelResult> => {
     if (attempt.turnId === null) {
-      const discovered = await Promise.race([
-        attempt.idReady.then(() => 'id' as const),
-        lease.closed.then(() => 'closed' as const),
-      ]);
-      if (discovered === 'closed') {
-        return { kind: 'aborted', reason: 'signal_abort', attempt };
-      }
+      return { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
     }
     return await finishAbortedStart(lease, runtime, state, attempt);
   });
@@ -1027,7 +999,7 @@ function transportClosedResult(
 }
 
 async function finishAbortedStart(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   runtime: CodexProviderRuntime,
   state: CodexTurnState,
   attempt: TurnAttempt,
@@ -1039,16 +1011,13 @@ async function finishAbortedStart(
   if (outcome.kind === 'closed') {
     return transportClosedResult(runtime, attempt, undefined);
   }
-  return {
-    kind: 'aborted',
-    reason: 'signal_abort',
-    preserveRecoverySnapshot: outcome.interrupted !== 'confirmed',
-    attempt,
-  };
+  return outcome.interrupted === 'confirmed'
+    ? { kind: 'aborted', reason: 'signal_abort', attempt }
+    : { kind: 'suspended', reason: 'interrupt_unconfirmed', attempt };
 }
 
 async function waitForTurnResult(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   runtime: CodexProviderRuntime,
   state: CodexTurnState,
 ): Promise<CodexKernelResult> {
@@ -1101,7 +1070,7 @@ export function finishCodexCompletedForTest(
   state: CodexTurnState,
   turn: Turn,
   emit: (event: ProviderEventBody) => void,
-): Extract<ProviderEventBody, { kind: 'terminal' }> | null {
+): Promise<Extract<ProviderEventBody, { kind: 'terminal' | 'suspended' }> | null> {
   return finishInvocation(
     state,
     { kind: 'completed', turn, source: 'notification', attempt: state.activeAttempt },
@@ -1186,11 +1155,11 @@ function codexTurnOutcome(turnAborted: boolean, turnFailed: boolean, failureNote
   return { kind: 'completed' } as const;
 }
 
-function finishInvocation(
+async function finishInvocation(
   state: CodexTurnState,
   result: CodexKernelResult,
   emit: (event: ProviderEventBody) => void,
-): Extract<ProviderEventBody, { kind: 'terminal' }> | null {
+): Promise<Extract<ProviderEventBody, { kind: 'terminal' | 'suspended' }> | null> {
   if (state.finalized) {
     return null;
   }
@@ -1202,25 +1171,29 @@ function finishInvocation(
       emitCodexRolloutArtifactHandleOnce(state, emit);
     }
     if (state.threadId !== null) {
-      checkpoint(state, state.threadId);
+      await checkpoint(state, state.threadId);
     }
     return buildCompletedTerminal(state, result.turn);
   }
 
+  if (result.kind === 'suspended') {
+    return { kind: 'suspended', reason: result.reason };
+  }
+
   if (result.kind === 'aborted') {
     if (!result.preserveRecoverySnapshot && state.threadId !== null) {
-      checkpoint(state, state.threadId);
+      await checkpoint(state, state.threadId);
     }
     return buildAbortedTerminal(state);
   }
 
   if (!result.preserveRecoverySnapshot && state.threadId !== null) {
-    checkpoint(state, state.threadId);
+    await checkpoint(state, state.threadId);
   }
   return buildFailedTerminal(state, result.message);
 }
 
-function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): void {
+async function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): Promise<void> {
   clearCompletionTimer(state, attempt);
   attempt.lifecycle = 'settled';
   if (attempt.turnId !== null) {
@@ -1228,7 +1201,7 @@ function retireAttempt(state: CodexTurnState, attempt: TurnAttempt): void {
   }
   attempt.bufferedNotifications.length = 0;
   if (state.threadId !== null) {
-    checkpoint(state, state.threadId);
+    await checkpoint(state, state.threadId);
   }
 }
 
@@ -1242,21 +1215,23 @@ function emitFinalTurnProgress(result: CodexKernelResult, emit: (event: Provider
   emitProgress(emit, `Turn ${result.turn.status ?? 'finished'}.`);
 }
 
-export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) =>
+export const codexTurnKernel: Provider<
+  CodexExecutionPlan,
+  Extract<ProviderRuntime<CodexExecutionPlan>, { appServerSession: unknown }>
+> = (request, runtime) =>
   streamProviderEvents<ProviderEventBody>(async (emit) => {
-    const lease = requireAppServerLease(runtime, 'codex');
+    const lease = runtime.appServerSession;
     const state = createState(request, runtime);
     state.lease = lease;
-    const clearNotificationBinding = bindAppServerNotificationHandler(runtime, (message) => {
+    const clearNotificationBinding = lease.subscribe((message) => {
       applyNotification(state, message, emit);
     });
-    const clearInterruptBinding = bindCodexInterruptState(lease, state);
 
     try {
       await initializeThread(request, runtime, lease, state, emit);
 
       if (runtime.signal.aborted) {
-        const terminal = finishInvocation(state, { kind: 'aborted', reason: 'signal_abort' }, emit);
+        const terminal = await finishInvocation(state, { kind: 'aborted', reason: 'signal_abort' }, emit);
         if (terminal) emit(terminal);
         return;
       }
@@ -1282,7 +1257,7 @@ export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) 
           recoveryReason !== null &&
           !recoveredFailures.has(recoveryReason)
         ) {
-          retireAttempt(state, attempt);
+          await retireAttempt(state, attempt);
           emitProgress(
             emit,
             recoveryReason === 'serverOverloaded'
@@ -1290,7 +1265,7 @@ export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) 
               : 'Codex policy check stopped the turn; retrying the same thread (1/1).',
           );
           if (runtime.signal.aborted) {
-            const terminal = finishInvocation(state, { kind: 'aborted', reason: 'signal_abort', attempt }, emit);
+            const terminal = await finishInvocation(state, { kind: 'aborted', reason: 'signal_abort', attempt }, emit);
             if (terminal) emit(terminal);
             return;
           }
@@ -1302,7 +1277,7 @@ export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) 
         }
 
         emitFinalTurnProgress(result, emit);
-        const terminal = finishInvocation(state, result, emit);
+        const terminal = await finishInvocation(state, result, emit);
         if (terminal) emit(terminal);
         return;
       }
@@ -1312,7 +1287,7 @@ export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) 
       }
 
       if (runtime.signal.aborted) {
-        const terminal = finishInvocation(
+        const terminal = await finishInvocation(
           state,
           { kind: 'aborted', reason: 'signal_abort', attempt: state.activeAttempt },
           emit,
@@ -1321,7 +1296,7 @@ export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) 
         return;
       }
 
-      const terminal = finishInvocation(
+      const terminal = await finishInvocation(
         state,
         { kind: 'failed', message: errorMessage(error), attempt: state.activeAttempt },
         emit,
@@ -1329,7 +1304,6 @@ export const codexTurnKernel: Provider<CodexExecutionPlan> = (request, runtime) 
       if (terminal) emit(terminal);
     } finally {
       clearCompletionTimer(state, state.activeAttempt);
-      clearInterruptBinding();
       clearNotificationBinding();
     }
   });

@@ -10,7 +10,11 @@ import {
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import { none } from '../../../src/providers/capability.js';
-import type { Provider, ProviderRecoveryContract, ProviderTerminal } from '../../../src/providers/contract.js';
+import type {
+  ProviderRecoveryContract,
+  ProviderStandalone,
+  ProviderTerminal,
+} from '../../../src/providers/contract.js';
 import { defineProvider, type ProviderDefinition } from '../../../src/providers/registry.js';
 import {
   allExecutionLifetimes,
@@ -325,7 +329,7 @@ export function createFakeProvider(
 ): ProviderDefinition {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
-  const run: Provider<SimulationExecutionPlan> = (request, providerRuntime) =>
+  const run: ProviderStandalone<SimulationExecutionPlan> = (request, providerRuntime) =>
     streamProviderEvents(async (emit) => {
       const startedAt = runtime.time.now();
 
@@ -373,6 +377,7 @@ export function createFakeProvider(
     });
   return defineProvider<SimulationExecutionPlan, SimulationProviderSource>({
     name: providerName,
+    transport: 'standalone',
     run,
     prepareExecutionPlan: ({ source, request, baseEnv, protectedEnv, platform }) => {
       const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...(protectedEnv ?? {}) };

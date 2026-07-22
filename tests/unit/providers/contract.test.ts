@@ -5,6 +5,7 @@ import { sessionContinuityMutationSchema, type SessionContinuityMutation } from 
 import {
   compose,
   providerArtifactHandleEventBodySchema,
+  providerSuspendedEventBodySchema,
   providerFailureCauseSchema,
   providerContinuityEventBodySchema,
   providerTerminalEventBodySchema,
@@ -59,6 +60,7 @@ const BASE_REQUEST: ProviderRequest = {
 };
 
 const BASE_RUNTIME: TestRuntime = {
+  transport: 'standalone',
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
@@ -67,9 +69,6 @@ const BASE_RUNTIME: TestRuntime = {
     clearTimeout: () => {},
   } as TestRuntime['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquirePreparedServer: async () => {
-    throw new Error('not used in contract tests');
-  },
   storage: { existsSync: () => true } as unknown as TestRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
@@ -100,7 +99,7 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('compose', () => {
-  it('wraps middleware outermost-first and preserves next() semantics', async () => {
+  it('wraps middleware outermost-first and closes the chain at the first terminal', async () => {
     const calls: string[] = [];
     const provider: TestProvider = async function* leaf() {
       calls.push('leaf');
@@ -137,8 +136,6 @@ describe('compose', () => {
       'outer:event:progress',
       'inner:event:terminal',
       'outer:event:terminal',
-      'inner:after',
-      'outer:after',
     ]);
   });
 
@@ -175,6 +172,8 @@ describe('compose', () => {
           return event.conversationRef ?? 'none';
         case 'artifact_handle':
           return event.handle;
+        case 'suspended':
+          return event.reason;
         case 'terminal':
           return event.terminal.content;
       }
@@ -265,6 +264,10 @@ describe('contract schemas', () => {
       handle: '/tmp/provider.jsonl',
       identity: { kind: 'test-artifact', path: '/tmp/provider.jsonl' },
     });
+    const suspended = providerSuspendedEventBodySchema.parse({
+      kind: 'suspended',
+      reason: 'interrupt_unconfirmed',
+    });
     const continuityMutation = sessionContinuityMutationSchema.parse({
       kind: 'set_resumable',
       conversationRef: 'conversation-1',
@@ -297,6 +300,7 @@ describe('contract schemas', () => {
       handle: '/tmp/provider.jsonl',
       identity: { kind: 'test-artifact', path: '/tmp/provider.jsonl' },
     });
+    expect(suspended).toEqual({ kind: 'suspended', reason: 'interrupt_unconfirmed' });
     expect(continuityMutation).toEqual({
       kind: 'set_resumable',
       conversationRef: 'conversation-1',

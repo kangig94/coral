@@ -42,10 +42,10 @@ import {
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -53,7 +53,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { PreflightRuntime, UsageSummary } from '#src/providers/contract.js';
-import { toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
@@ -127,7 +127,6 @@ const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
 let eventBus: TypedEventBus;
 let launchCoordinator: LaunchCoordinator;
-let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
@@ -232,7 +231,6 @@ function createService(
     progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
     providerRegistry,
@@ -266,7 +264,6 @@ function _setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
   for (const handle of handles) {
     mock.mockResolvedValueOnce(handle);
   }
-  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
   return mock;
 }
 
@@ -332,6 +329,7 @@ function _createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
+      isClosed: () => false,
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -399,7 +397,7 @@ function streamCompletedResult(
 
 function makeProvider(options?: {
   execute?: (
-    ...args: Parameters<Provider['execute']>
+    ...args: Parameters<StandaloneTestProvider['execute']>
   ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
@@ -407,13 +405,13 @@ function makeProvider(options?: {
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
+  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
     streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute: execute as unknown as Provider['execute'],
+    execute: execute as unknown as StandaloneTestProvider['execute'],
     ...(preflight ? { preflight } : {}),
   };
   return { provider: toProviderDefinition(provider)!, execute, preflight };
@@ -426,7 +424,7 @@ function _makeCodexAppServerProvider(): Provider {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      prepareHostSpec: (_continuity, request) =>
+      host: (_continuity, request) =>
         prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
       interrupt: async (lease, continuity) => {
         const threadId = continuity.threadId;
@@ -503,6 +501,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
   args: string[];
   cwd: string;
   leaseMode: 'shared';
+  idlePolicy: 'host-stats' | 'daemon';
 }): Provider {
   return {
     name: 'claude',
@@ -510,7 +509,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
     ),
     appServerLifecycle: {
-      prepareHostSpec: () => spec,
+      host: spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -721,7 +720,6 @@ describe('ExecutionService wait', () => {
     runtime = createRealRuntime('prod');
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
   });

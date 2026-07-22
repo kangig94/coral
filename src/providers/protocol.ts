@@ -18,8 +18,6 @@ type ProviderCliResult = {
 
 export type ProviderCliRunner = (request: ProviderCliRequest) => Promise<ProviderCliResult>;
 
-export type AppServerSubscriptionPhase = 'beforeInitialize' | 'afterInitialize';
-
 export type AppServerNotificationMessage = {
   method: string;
   params?: Record<string, unknown>;

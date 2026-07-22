@@ -1,14 +1,17 @@
 import { type SessionContinuityContract, sessionContinuity } from '../middleware/session-continuity.js';
-import { appServerSession } from '../middleware/app-server-session.js';
-import type { AppServerContract } from '../app-server.js';
-import { compose, type Provider, type ProviderContinuityUpdate } from '../contract.js';
+import {
+  compose,
+  type ProviderAppServer,
+  type ProviderAppServerRuntime,
+  type ProviderContinuityUpdate,
+} from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import {
   buildClaudeBootstrapSignature,
   readClaudePersistedContinuity,
   type ClaudePersistedContinuity,
 } from './request-mapping.js';
-import { claudeSessionKernel, mapClaudeInterrupt } from './session-kernel.js';
+import { claudeSessionKernel } from './session-kernel.js';
 import { buildPreparedClaudeRequest, sameBootstrapSignature } from './request-prep.js';
 import { streamProviderTerminal } from '../stream.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
@@ -22,27 +25,30 @@ type ClaudeContinuityState = ClaudePersistedContinuity & {
   conversationRef?: string;
 };
 
-const claudeAppServerContract = {
-  name: 'claude',
-  subscriptionPhase: 'beforeInitialize',
-  interrupt: mapClaudeInterrupt,
-} satisfies AppServerContract<ClaudeExecutionPlan>;
-
 const claudeBrokerContinuity = createClaudeContinuityContract(inferBrokerResumable, isClaudeBrokerSessionUnavailable);
 
 const claudeSessionProvider = compose(
-  sessionContinuity('claude', claudeBrokerContinuity),
-  appServerSession(claudeAppServerContract),
+  sessionContinuity<ClaudeContinuityState, ClaudeExecutionPlan, ProviderAppServerRuntime<ClaudeExecutionPlan>>(
+    'claude',
+    claudeBrokerContinuity,
+  ),
   claudeSessionKernel,
 );
 
-const claude: Provider<ClaudeExecutionPlan> = (request, runtime) => {
+const claude: ProviderAppServer<ClaudeExecutionPlan> = (request, runtime) => {
   const startedAt = runtime.time.now();
   const prepared = buildPreparedClaudeRequest(request);
   const persistedContinuity = readClaudePersistedContinuity(runtime.persistedContinuity);
 
   if (persistedContinuity.bootstrapSignature) {
-    const actual = buildClaudeBootstrapSignature(request, runtime.ids, prepared.systemPrompt);
+    const actual = buildClaudeBootstrapSignature(request, runtime.ids, {
+      derivedSystemPrompt: prepared.systemPrompt,
+      conversationRef: request.conversationRef ?? (request.action === 'exec' ? request.sessionId : undefined),
+      resumeExisting: request.action === 'resume',
+      projectsRoot: runtime.executionPlan.session.projectsRoot,
+      model: prepared.model,
+      effort: prepared.effort,
+    });
     if (!sameBootstrapSignature(persistedContinuity.bootstrapSignature, actual)) {
       return streamProviderTerminal(
         buildDispatchRejectedTerminal(

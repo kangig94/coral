@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Database } from '#src/store/db.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import { applyCommunitySummary, listStaleCommunities, readCommunitySummaryInput } from '#src/kb/curate/community/summary-surface.js';
+import {
+  applyCommunitySummary,
+  listStaleCommunities,
+  readCommunitySummaryInput,
+} from '#src/kb/curate/community/summary-surface.js';
 import { captureIndexStateSnapshot } from '#src/kb/corpus/lanes.js';
 import { corpusStructuralCacheKey } from '#src/kb/corpus/structural-key.js';
 import { detectRescanInfo } from '#src/kb/corpus/rescan/drift.js';
@@ -119,7 +123,10 @@ function stageGeneratedCommunity(kb: KbRuntime, content = generatedCommunityRaw(
   });
 }
 
-async function adoptGeneratedCommunity(kb: KbRuntime, content = generatedCommunityRaw()): Promise<{
+async function adoptGeneratedCommunity(
+  kb: KbRuntime,
+  content = generatedCommunityRaw(),
+): Promise<{
   readonly generation: number;
   readonly generatedCommunityDocsHash: string;
 }> {
@@ -186,7 +193,9 @@ describe('generated community projection lifecycle', () => {
     const projectionInput = await kb.corpusProjectionReader.prepareCurrentProjectionInput({ ensureFreshness: false });
     expect(projectionInput.generatedCommunityGeneration).toBe(firstGenerated.generation);
     expect(projectionInput.generatedCommunityDocsHash).toBe(firstGenerated.generatedCommunityDocsHash);
-    expect(projectionInput.records.some((record) => record.kind === 'community' && record.entry.slug === slug)).toBe(true);
+    expect(projectionInput.records.some((record) => record.kind === 'community' && record.entry.slug === slug)).toBe(
+      true,
+    );
 
     const structuralKey = kb.readCorpusStructuralKey(index!);
     expect(index?.structuralKey?.communityDocsHash).toBe(structuralKey?.communityDocsHash);
@@ -280,7 +289,9 @@ describe('generated community projection lifecycle', () => {
   it('detects generated-doc drift after restart and rebuilds from durable PULL state', async () => {
     const harness = createHarness();
     await adoptGeneratedCommunity(harness.kb);
-    await expect(performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState()))).resolves.toMatchObject({
+    await expect(
+      performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState())),
+    ).resolves.toMatchObject({
       status: 'committed',
     });
 
@@ -295,7 +306,9 @@ describe('generated community projection lifecycle', () => {
       externalMutation: 'metadata',
     });
 
-    await expect(performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState()))).resolves.toMatchObject({
+    await expect(
+      performRescan(harness.kb, captureIndexStateSnapshot(harness.kb.readIndexState())),
+    ).resolves.toMatchObject({
       status: 'committed',
     });
     expect(harness.kb.readIndex()).toMatchObject({

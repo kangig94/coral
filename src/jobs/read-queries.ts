@@ -1,5 +1,5 @@
 import type { Database } from '../store/db.js';
-import type { UsageSummary } from '../providers/contract.js';
+import type { HostRef, UsageSummary } from '../providers/contract.js';
 
 import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodies.js';
@@ -45,16 +45,24 @@ type JobCliRuntimeProjection = {
   tailWatermark?: number;
 };
 
-type JobAppServerRuntimeProjection = {
-  transport: 'app-server';
-  startTime: string;
-  providerMeta: {
-    provider: string;
-    leaseState: 'waiting' | 'acquired';
-    serverGeneration?: number;
-    transportMode?: string;
-  };
-};
+type JobAppServerRuntimeProjection =
+  | {
+      transport: 'app-server';
+      startTime: string;
+      providerMeta: {
+        provider: string;
+        leaseState: 'waiting';
+      };
+    }
+  | {
+      transport: 'app-server';
+      startTime: string;
+      providerMeta: {
+        provider: string;
+        leaseState: 'acquired';
+        hostRef: HostRef;
+      };
+    };
 
 type JobInternalRuntimeProjection = {
   transport: 'internal';
@@ -393,18 +401,23 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
 function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRuntimeProjection {
   const parsed = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
   if (parsed.transport === 'app-server') {
+    if (parsed.providerMeta.leaseState === 'waiting') {
+      return {
+        transport: 'app-server',
+        startTime: parsed.startedAt,
+        providerMeta: {
+          provider: parsed.providerMeta.provider,
+          leaseState: 'waiting',
+        },
+      };
+    }
     return {
       transport: 'app-server',
       startTime: parsed.startedAt,
       providerMeta: {
         provider: parsed.providerMeta.provider,
-        leaseState: parsed.providerMeta.leaseState,
-        ...(parsed.providerMeta.leaseState !== 'acquired' || parsed.providerMeta.serverGeneration === undefined
-          ? {}
-          : { serverGeneration: parsed.providerMeta.serverGeneration }),
-        ...(parsed.providerMeta.transportMode === undefined
-          ? {}
-          : { transportMode: parsed.providerMeta.transportMode }),
+        leaseState: 'acquired',
+        hostRef: parsed.providerMeta.hostRef,
       },
     };
   }

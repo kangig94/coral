@@ -108,24 +108,20 @@ describe('registerBuiltInProviders', () => {
       platform: 'linux',
     });
 
-    expect(preparedClaude.appServer).toMatchObject({
-      name: 'claude',
-      subscriptionPhase: 'beforeInitialize',
+    expect(claude.appServer).toMatchObject({
+      supportsInterrupt: true,
+      supportsProbe: false,
     });
-    expect(preparedClaude.appServer?.launch.host.provider).toBe('claude');
-    expect(preparedClaude.appServer?.interrupt).toBeUndefined();
-    expect(claude.recovery?.probe).toBeUndefined();
+    expect(preparedClaude).not.toHaveProperty('appServer');
     expect(typeof claude.recovery?.finalizeInterrupted).toBe('function');
     expect(typeof claude.recovery?.finalizeFromArtifacts).toBe('function');
     expect(claude.artifacts.kind).toBe('managed');
 
-    expect(preparedCodex.appServer).toMatchObject({
-      name: 'codex',
-      subscriptionPhase: 'afterInitialize',
+    expect(codex.appServer).toMatchObject({
+      supportsInterrupt: true,
+      supportsProbe: true,
     });
-    expect(preparedCodex.appServer?.launch.host.provider).toBe('codex');
-    expect(typeof preparedCodex.appServer?.interrupt).toBe('function');
-    expect(typeof codex.recovery?.probe).toBe('function');
+    expect(preparedCodex).not.toHaveProperty('appServer');
     expect(typeof codex.recovery?.finalizeInterrupted).toBe('function');
     expect(typeof codex.recovery?.finalizeFromArtifacts).toBe('function');
     expect(codex.artifacts.kind).toBe('managed');
@@ -416,6 +412,7 @@ describe('registerBuiltInProviders', () => {
     registry.register(
       defineProvider({
         name: 'codex',
+        transport: 'standalone',
         prepareExecutionPlan: () => ({
           plan: { host: undefined, session: undefined, turn: undefined },
           prepareCliRequest: (request) => request,

@@ -18,7 +18,6 @@ import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '.
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
-import type { ProviderServerLaunch, ProviderServerLease } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
@@ -37,12 +36,12 @@ import { recordProviderTerminal } from './services/terminal-materializer.js';
  * provider-host drain, so subsequent transport closure cannot record provider
  * terminals or release admission/session claim for active app-server jobs.
  *
- * Implementations MUST NOT contain awaits-that-can-hang — the contract is
- * synchronous-in-spirit so AC4's atomicity argument holds: detach must already
- * have completed before the budget timer fires.
+ * Implementations synchronously close admission, then may await only durability
+ * operations already admitted to the handoff fence. They never await provider
+ * work or start new persistence after the fence.
  */
 export interface HandoffQuiescePort {
-  quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void>;
+  quiesceAppServerJobsForHandoff(): Promise<void>;
 }
 
 export class ExecutionService implements RecoveryCapableService, ProjectRequestPort, HandoffQuiescePort {
@@ -102,7 +101,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
         }
       },
       terminalMaterializer: { recordProviderTerminal },
-      acquireServer: (spec, options) => this.recoveryService.acquireServer(spec, options),
     });
     const waitCoordinator = new WaitCoordinator({
       sessionManager: this.sessionManager,
@@ -126,7 +124,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       progressStore: this.progressStore,
-      providerHostManager: deps.providerHostManager,
       launchAdmission: deps.launchCoordinator,
       launchRecovery: deps.launchCoordinator,
       providerRegistry: deps.providerRegistry,
@@ -134,7 +131,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchOrchestrator: this.launchOrchestrator,
       childPrincipalRegistry: deps.childPrincipalRegistry,
       parentPrincipal: ctx.principal,
-      acquireServer: (spec, options) => this.acquireServer(spec, options),
     });
     this.launchService = new JobLaunchService({
       runtime: this.runtime,
@@ -298,13 +294,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
   }
 
-  async acquireServer(
-    launch: ProviderServerLaunch,
-    options?: { jobId?: string; signal?: AbortSignal },
-  ): Promise<ProviderServerLease> {
-    return this.recoveryService.acquireServer(launch, options);
-  }
-
   private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
     this.abortService.finishQueuedAbort(jobId, sessionId, reason);
   }
@@ -317,8 +306,8 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.recoveryService.finalizeInterruptedAppServerJob(authority, runtimeRecord, context);
   }
 
-  quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void> {
-    return this.launchOrchestrator.quiesceAppServerJobsForHandoff(signal);
+  quiesceAppServerJobsForHandoff(): Promise<void> {
+    return this.launchOrchestrator.quiesceAppServerJobsForHandoff();
   }
 
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {

@@ -1,21 +1,19 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { allocateTestSession, initTestJob, seedTestJobSession } from '../../../helpers/session.js';
+import { allocateTestSession, initTestJob } from '../../../helpers/session.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
-import { createDeferred } from '#tools/testing/deferred.js';
 import type { JobPhase } from '#src/jobs/phase.js';
-import type { AppServerRuntime, JobLaunch, JobEvent, JobStatus } from '#src/jobs/records.js';
+import type { JobEvent, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
   providerProgressEvent,
   providerTerminalEvent,
   streamProviderEvents,
-  streamProviderTerminal,
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
@@ -23,7 +21,6 @@ import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/r
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
   AgentNamespaceNotFoundError,
@@ -34,10 +31,9 @@ import {
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
@@ -45,7 +41,7 @@ import { ExecutionService } from '#src/coordinator/execution-service.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { CommitEventsFn } from '#src/store/append.js';
-import { toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -53,11 +49,8 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
-import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import {
-  TEST_CLAUDE_BINDING,
-  TEST_CODEX_BINDING,
   TEST_CODEX_SCOPE,
   TEST_CODEX_SCOPE_INPUT,
   TEST_SYSTEM_PROVIDER_SCOPE,
@@ -108,7 +101,6 @@ const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
 let eventBus: TypedEventBus;
 let launchCoordinator: LaunchCoordinator;
-let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
@@ -208,7 +200,6 @@ function createService(
     progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
     providerRegistry,
@@ -229,21 +220,6 @@ function createResolvedAgent(ref: AgentRef, content: string) {
     content,
     path: `/tmp/${ref.name}.md`,
   };
-}
-
-function setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
-  const fallback = handles.at(-1);
-  const mock = vi.fn(async () => {
-    if (!fallback) {
-      throw new Error('No provider server handle configured');
-    }
-    return fallback;
-  });
-  for (const handle of handles) {
-    mock.mockResolvedValueOnce(handle);
-  }
-  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
-  return mock;
 }
 
 function trackJob(jobId: string): void {
@@ -271,57 +247,6 @@ function trackAllJobDirs(): void {
   } catch {
     /* best effort */
   }
-}
-
-function createFakeProviderServerHandle(options?: {
-  generation?: number;
-  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
-}) {
-  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
-  const request =
-    options?.request ??
-    (async (_method: string, _params: Record<string, unknown>) => {
-      return {};
-    });
-  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
-  const notifyMock = vi.fn();
-  const onNotificationMock = vi.fn(
-    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-      handlers.add(handler);
-      return () => {
-        handlers.delete(handler);
-      };
-    },
-  );
-  const markExpectedCloseMock = vi.fn();
-  const closeMock = vi.fn(async () => {});
-  const closePromise = new Promise<Error | void>(() => {});
-
-  return {
-    handle: {
-      pid: 43210,
-      child: {} as never,
-      generation: options?.generation ?? 7,
-      rpc: {
-        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
-        notify: notifyMock,
-      },
-      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
-      closePromise,
-      markExpectedClose: markExpectedCloseMock,
-      close: closeMock,
-    } satisfies ProviderServerHandle,
-    requestMock,
-    notifyMock,
-    onNotificationMock,
-    markExpectedCloseMock,
-    closeMock,
-    emit(message: { method: string; params?: Record<string, unknown> }) {
-      for (const handler of handlers) {
-        handler(message);
-      }
-    },
-  };
 }
 
 type TestProviderTurnResult = ProviderTurnResult;
@@ -375,7 +300,7 @@ function streamCompletedResult(
 
 function makeProvider(options?: {
   execute?: (
-    ...args: Parameters<Provider['execute']>
+    ...args: Parameters<StandaloneTestProvider['execute']>
   ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
@@ -383,85 +308,16 @@ function makeProvider(options?: {
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
+  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
     streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute: execute as unknown as Provider['execute'],
+    execute: execute as unknown as StandaloneTestProvider['execute'],
     ...(preflight ? { preflight } : {}),
   };
   return { provider: toProviderDefinition(provider)!, execute, preflight };
-}
-
-function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderDefinition>> {
-  return toProviderDefinition({
-    name: 'codex',
-    execute: vi.fn(() =>
-      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
-    ),
-    appServerLifecycle: {
-      prepareHostSpec: (_continuity, request) =>
-        prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
-      interrupt: async (lease, continuity) => {
-        const threadId = continuity.threadId;
-        const turnId = continuity.turnId;
-        if (typeof threadId !== 'string' || typeof turnId !== 'string') {
-          return;
-        }
-        await lease.rpc('turn/interrupt', { threadId, turnId });
-      },
-      probe: async (lease, continuity) => {
-        const threadId = continuity.threadId;
-        if (typeof threadId !== 'string') {
-          return { resumable: false, updatedContinuity: continuity };
-        }
-        const cwd = typeof continuity.cwd === 'string' ? continuity.cwd : process.cwd();
-        try {
-          await lease.rpc('thread/resume', {
-            threadId,
-            cwd,
-            model: null,
-            approvalPolicy: 'never',
-            sandbox: 'workspace-write',
-          });
-          return { resumable: true, updatedContinuity: continuity };
-        } catch (error) {
-          const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-          if (
-            message.includes('not found') ||
-            message.includes('missing thread') ||
-            message.includes('unknown thread') ||
-            message.includes('does not exist') ||
-            message.includes('no such thread')
-          ) {
-            return { resumable: false, updatedContinuity: continuity };
-          }
-          throw error;
-        }
-      },
-      finalizeInterrupted: (probeResult, continuity, context) => {
-        const effectiveConversationRef =
-          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
-        return probeResult.resumable
-          ? effectiveConversationRef
-            ? {
-                kind: 'set_resumable' as const,
-                conversationRef: effectiveConversationRef,
-                providerContinuity: continuity,
-              }
-            : {
-                kind: 'preserve' as const,
-                providerContinuity: continuity,
-              }
-          : {
-              kind: 'clear_non_resumable' as const,
-              providerContinuity: continuity,
-            };
-      },
-    },
-  })!;
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
@@ -477,58 +333,6 @@ function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
       platform: expect.any(String),
     }),
   );
-}
-
-function makeSharedClaudeAppServerProvider(spec: {
-  provider: string;
-  command: string;
-  args: string[];
-  cwd: string;
-  leaseMode: 'shared';
-}): NonNullable<ReturnType<typeof toProviderDefinition>> {
-  return toProviderDefinition({
-    name: 'claude',
-    execute: vi.fn(() =>
-      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
-    ),
-    appServerLifecycle: {
-      prepareHostSpec: () => spec,
-      interrupt: async (lease, continuity) => {
-        const brokerSessionKey =
-          typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
-        if (!brokerSessionKey) {
-          return;
-        }
-        await lease.rpc('turn/interrupt', {
-          brokerSessionKey,
-          ...(typeof continuity.brokerTurnId === 'string' ? { brokerTurnId: continuity.brokerTurnId } : {}),
-        });
-      },
-      probe: async (_lease, continuity) => ({
-        resumable: true,
-        updatedContinuity: continuity,
-      }),
-      finalizeInterrupted: (probeResult, continuity, context) => {
-        const effectiveConversationRef =
-          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
-        return probeResult.resumable
-          ? effectiveConversationRef
-            ? {
-                kind: 'set_resumable' as const,
-                conversationRef: effectiveConversationRef,
-                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-              }
-            : {
-                kind: 'preserve' as const,
-                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-              }
-          : {
-              kind: 'clear_non_resumable' as const,
-              ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-            };
-      },
-    },
-  })!;
 }
 
 async function occupyProviderSlots(
@@ -739,7 +543,6 @@ describe('ExecutionService launch', () => {
     runtime = createRealRuntime('prod');
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
   });
@@ -1092,424 +895,6 @@ describe('ExecutionService launch', () => {
     ]);
   });
 
-  it('acquires a fresh app-server process for every job-exclusive runtime without waiting or reuse', async () => {
-    const spec = {
-      ...prepareTestCodexAppServer({ cwd: ctx.projectRoot }),
-      runtimeMetadata: { transportMode: 'fixture-wire' },
-    };
-    const server = createFakeProviderServerHandle({ generation: 41 });
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const jobId1 = `app-server-runtime-${randomUUID()}`;
-    const jobId2 = `app-server-runtime-${randomUUID()}`;
-    trackJob(jobId1);
-    trackJob(jobId2);
-
-    seedTestJobSession(progressStore, {
-      jobId: jobId1,
-      sessionId: 'session-1',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId1, {
-      jobId: jobId1,
-      owner: { kind: 'provider-session', id: 'session-1' },
-      sessionId: 'session-1',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'acquire first lease',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-    seedTestJobSession(progressStore, {
-      jobId: jobId2,
-      sessionId: 'session-2',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId2, {
-      jobId: jobId2,
-      owner: { kind: 'provider-session', id: 'session-2' },
-      sessionId: 'session-2',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'acquire second lease',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-
-    const firstLease = await service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId1 });
-    const firstRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
-    expect(firstRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 41,
-        transportMode: 'fixture-wire',
-      },
-    });
-    expect(firstRuntime.startTime).toEqual(expect.any(String));
-    expect(firstRuntime.providerMeta).not.toHaveProperty('conversationRef');
-    expect(firstRuntime.providerMeta).not.toHaveProperty('providerContinuity');
-
-    const replacement = createFakeProviderServerHandle({ generation: 42 });
-    const replacementSpawn = createDeferred<ProviderServerHandle>();
-    spawnProviderServerMock.mockImplementationOnce(async () => replacementSpawn.promise);
-    const reacquisition = service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId1 });
-    await vi.waitFor(() => {
-      expect(progressStore.readRuntimeProjection(jobId1)).toMatchObject({
-        transport: 'app-server',
-        providerMeta: { provider: 'codex', leaseState: 'waiting', transportMode: 'fixture-wire' },
-      });
-    });
-    const waitingRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
-    expect(waitingRuntime.providerMeta).not.toHaveProperty('serverGeneration');
-    replacementSpawn.resolve(replacement.handle);
-    const replacementLease = await reacquisition;
-    expect(progressStore.readRuntimeProjection(jobId1)).toMatchObject({
-      providerMeta: { leaseState: 'acquired', serverGeneration: 42 },
-    });
-
-    const secondLease = await service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId2 });
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(3);
-
-    const acquiredRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
-    expect(acquiredRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 41,
-        transportMode: 'fixture-wire',
-      },
-    });
-    expect(acquiredRuntime.startTime).toEqual(expect.any(String));
-    expect(acquiredRuntime.providerMeta).not.toHaveProperty('providerContinuity');
-
-    firstLease.release();
-    replacementLease.release();
-    secondLease.release();
-  });
-
-  it('allows shared app-server leases to overlap on the same handle', async () => {
-    const spec = {
-      provider: 'claude',
-      command: process.execPath,
-      args: ['broker.js'],
-      cwd: process.cwd(),
-      env: { [CONTEXT_ENV_KEY.claudeTransport]: 'print' },
-      leaseMode: 'shared' as const,
-    };
-    const requestGate = createDeferred<void>();
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const server = createFakeProviderServerHandle({
-      generation: 41,
-      request: async (_method, params) => {
-        inFlight += 1;
-        maxInFlight = Math.max(maxInFlight, inFlight);
-        await requestGate.promise;
-        inFlight -= 1;
-        return params;
-      },
-    });
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const jobId1 = `shared-app-server-${randomUUID()}`;
-    const jobId2 = `shared-app-server-${randomUUID()}`;
-    trackJob(jobId1);
-    trackJob(jobId2);
-
-    seedTestJobSession(progressStore, {
-      jobId: jobId1,
-      sessionId: 'session-1',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId1, {
-      jobId: jobId1,
-      owner: { kind: 'provider-session', id: 'session-1' },
-      sessionId: 'session-1',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'shared lease first',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-    seedTestJobSession(progressStore, {
-      jobId: jobId2,
-      sessionId: 'session-2',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId2, {
-      jobId: jobId2,
-      owner: { kind: 'provider-session', id: 'session-2' },
-      sessionId: 'session-2',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'shared lease second',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-
-    const firstLease = await service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId1 });
-
-    let secondSettled = false;
-    const secondLeasePromise = service.acquireServer({ host: spec, turnEnv: {} }, { jobId: jobId2 }).then((lease) => {
-      secondSettled = true;
-      return lease;
-    });
-    await vi.waitFor(() => {
-      expect(secondSettled).toBe(true);
-    });
-    const secondLease = await secondLeasePromise;
-
-    const secondRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
-    expect(secondRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        provider: 'claude',
-        leaseState: 'acquired',
-        serverGeneration: 41,
-      },
-    });
-
-    const firstRpc = firstLease.rpc('turn/start', { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' });
-    const secondRpc = secondLease.rpc('turn/start', { brokerSessionKey: 'broker-2', brokerTurnId: 'turn-2' });
-    await Promise.resolve();
-
-    expect(maxInFlight).toBe(2);
-    requestGate.resolve();
-    await Promise.all([firstRpc, secondRpc]);
-
-    firstLease.release();
-    secondLease.release();
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('abort does not reacquire a provider server from durable metadata', async () => {
-    const jobId = `app-server-abort-${randomUUID()}`;
-    const server = createFakeProviderServerHandle({
-      request: async (method, params) => {
-        if (method === 'turn/interrupt') {
-          return {
-            threadId: params.threadId,
-            turnId: params.turnId,
-          };
-        }
-        return {};
-      },
-    });
-    setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { progressStore, abortRegistry, sessionManager } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const session = sessionManager.allocate({
-      binding: TEST_CODEX_BINDING,
-      name: 'abort-session',
-      cwd: ctx.projectRoot,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-    });
-    trackJob(jobId);
-    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-
-    seedTestJobSession(progressStore, {
-      jobId,
-      sessionId: session.sessionId,
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId, {
-      jobId,
-      owner: { kind: 'provider-session', id: session.sessionId },
-      sessionId: session.sessionId,
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'abort me',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-    progressStore.appendRuntimeStarted(jobId, {
-      transport: 'app-server',
-      startTime: new Date().toISOString(),
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 7,
-      },
-    });
-    abortRegistry.register(jobId);
-
-    expect(service.abort([jobId])).toEqual({
-      aborted: [jobId],
-      notFound: [],
-    });
-
-    expect(server.requestMock).not.toHaveBeenCalledWith('turn/interrupt', expect.anything());
-  });
-
-  it('routes shared app-server interrupts through the bound live server without reacquiring', async () => {
-    const spec = {
-      provider: 'claude',
-      command: process.execPath,
-      args: ['broker.js'],
-      cwd: process.cwd(),
-      leaseMode: 'shared' as const,
-    };
-    const server = createFakeProviderServerHandle();
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
-    const providerHostManager = createProviderHostManager({ runtime, spawnProviderServer });
-    const borrowLiveServerSpy = vi.spyOn(providerHostManager, 'borrowLiveServer');
-    const registerChildSpy = vi.spyOn(ChildPrincipalRegistry.prototype, 'register');
-    const service = createService(ctx, { providerHostManager });
-    const { sessionManager } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const session = sessionManager.allocate({
-      binding: TEST_CLAUDE_BINDING,
-      name: 'shared-interrupt-session',
-      cwd: ctx.projectRoot,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-    });
-    sessionManager.checkpointProviderContinuity(session.sessionId, {
-      providerContinuity: {
-        brokerSessionKey: 'broker-session-1',
-        brokerTurnId: 'broker-turn-1',
-        bootstrapSignature: {
-          cwd: '/workspace',
-          systemPromptHash: 'sha256:bootstrap',
-          permissionMode: 'bypassPermissions',
-        },
-        envHash: 'sha256:env',
-      },
-    });
-    const firstLease = await service.acquireServer({ host: spec, turnEnv: {} });
-    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
-
-    const launchRecord: JobLaunch = {
-      jobId: `shared-interrupt-${randomUUID()}`,
-      owner: { kind: 'provider-session', id: session.sessionId },
-      sessionId: session.sessionId,
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'interrupt me',
-        cwd: ctx.projectRoot,
-        bypassPermissions: true,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    };
-    const runtimeRecord: AppServerRuntime = {
-      transport: 'app-server',
-      startTime: new Date().toISOString(),
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 7,
-      },
-    };
-
-    const recoveryAuthority = await service.captureProviderRecoveryAuthority(launchRecord);
-    if (recoveryAuthority === null) throw new Error('Expected provider recovery authority.');
-    await service.interruptAppServerJob(recoveryAuthority, {
-      ...runtimeRecord,
-      providerMeta: {
-        ...runtimeRecord.providerMeta,
-        leaseState: 'waiting',
-      },
-    });
-
-    expect(borrowLiveServerSpy).not.toHaveBeenCalled();
-    expect(server.requestMock).not.toHaveBeenCalledWith('turn/interrupt', expect.anything());
-    expect(registerChildSpy).not.toHaveBeenCalled();
-
-    await service.interruptAppServerJob(recoveryAuthority, runtimeRecord);
-
-    expect(acquireServerSpy).not.toHaveBeenCalled();
-    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
-      brokerSessionKey: 'broker-session-1',
-      brokerTurnId: 'broker-turn-1',
-    });
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-    expect(registerChildSpy).not.toHaveBeenCalled();
-
-    acquireServerSpy.mockRestore();
-    firstLease.release();
-  });
-
   it('start rejects unknown providers', async () => {
     mockState.getNewProvider.mockReturnValue(undefined);
     const service = createService(ctx);
@@ -1775,7 +1160,6 @@ describe('ExecutionService launch', () => {
     }
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
 
     const never = new Promise<ProviderTurnResult>(() => {});
     const { provider } = makeProvider({ execute: () => never });

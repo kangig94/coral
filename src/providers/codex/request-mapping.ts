@@ -12,7 +12,6 @@ import type { RecoverableTurnFailure } from './turn-recovery.js';
 import type { CodexExecutionPlan } from './execution-plan.js';
 
 const CODEX_CONTINUITY_KEYS = ['cwd', 'threadId', 'turnId'] as const;
-const codexContinuityCwdScopes = new WeakMap<Record<string, unknown>, string>();
 
 export interface CodexPersistedContinuity extends ProviderContinuityBlob {
   cwd?: string;
@@ -21,7 +20,6 @@ export interface CodexPersistedContinuity extends ProviderContinuityBlob {
 }
 
 type CodexContinuityReadOptions = {
-  allowUnscopedCwd?: boolean;
   cwdScope?: string;
 };
 
@@ -129,19 +127,13 @@ export function readCodexPersistedContinuity(
   }
 
   const continuity = pickProviderContinuityKeys(persistedContinuity, CODEX_CONTINUITY_KEYS);
-  const cwdScope = readString(options.cwdScope) ?? codexContinuityCwdScopes.get(persistedContinuity);
+  const cwdScope = readString(options.cwdScope);
   const cwd = readString(continuity.cwd);
   const parsed = {
-    cwd:
-      cwdScope === undefined && options.allowUnscopedCwd !== false
-        ? cwd === undefined
-          ? undefined
-          : resolve(cwd)
-        : scopedCodexCwd(cwd, cwdScope),
+    cwd: cwdScope === undefined ? (cwd === undefined ? undefined : resolve(cwd)) : scopedCodexCwd(cwd, cwdScope),
     threadId: readString(continuity.threadId),
     turnId: readString(continuity.turnId),
   };
-  rememberCodexContinuityCwdScope(parsed, parsed.cwd);
   return parsed;
 }
 
@@ -158,7 +150,6 @@ export function buildCodexContinuity(update: {
     ...(threadId !== undefined ? { threadId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
   };
-  rememberCodexContinuityCwdScope(continuity, continuity.cwd);
   return continuity;
 }
 
@@ -250,17 +241,6 @@ export function isCodexSessionUnavailable(error: unknown): boolean {
   );
 }
 
-function rememberCodexContinuityCwdScope(
-  persistedContinuity: ProviderContinuityBlob | undefined,
-  cwdScope: string | undefined,
-): void {
-  const normalizedScope = readString(cwdScope);
-  if (!normalizedScope || !isRecord(persistedContinuity)) {
-    return;
-  }
-  codexContinuityCwdScopes.set(persistedContinuity, resolve(normalizedScope));
-}
-
 function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): string | undefined {
   if (cwd === undefined || cwdScope === undefined) {
     return undefined;
@@ -282,7 +262,6 @@ export function resolveCodexHostCwd(
   requestCwd: string,
   persistedContinuity: ProviderContinuityBlob | undefined,
 ): string {
-  rememberCodexContinuityCwdScope(persistedContinuity, requestCwd);
   return readCodexPersistedContinuity(persistedContinuity, { cwdScope: requestCwd }).cwd ?? requestCwd;
 }
 
@@ -451,7 +430,11 @@ function resolveCodexModel(request: ProviderRequest): string {
   return resolveModelTier(request.model) ?? baseline;
 }
 
-export function mapThreadStartParams(request: ProviderRequest, serviceTier?: CodexServiceTier): ThreadStartParams {
+export function mapThreadStartParams(
+  request: ProviderRequest,
+  threadConfig: Readonly<Record<string, unknown>>,
+  serviceTier?: CodexServiceTier,
+): ThreadStartParams {
   return {
     cwd: request.cwd,
     model: resolveCodexModel(request),
@@ -459,6 +442,7 @@ export function mapThreadStartParams(request: ProviderRequest, serviceTier?: Cod
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
     ephemeral: false,
+    config: threadConfig,
     ...(serviceTier && { serviceTier }),
   };
 }
@@ -466,6 +450,7 @@ export function mapThreadStartParams(request: ProviderRequest, serviceTier?: Cod
 export function mapThreadResumeParams(
   request: ProviderRequest,
   threadId: string,
+  threadConfig: Readonly<Record<string, unknown>>,
   serviceTier?: CodexServiceTier,
 ): ThreadResumeParams {
   return {
@@ -477,6 +462,7 @@ export function mapThreadResumeParams(
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
     // ThreadMetadata — omitting sandbox causes a downgrade to the config default (read-only).
     sandbox: resolveCodexSandbox(request.bypassPermissions),
+    config: threadConfig,
     ...(serviceTier && { serviceTier }),
   };
 }

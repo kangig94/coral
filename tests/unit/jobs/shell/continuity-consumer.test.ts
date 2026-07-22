@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { consumeJobStream } from '#src/jobs/shell/continuity-consumer.js';
 import { backendLog } from '#src/infra/backend-log.js';
+import { attachContinuityCommit } from '#src/providers/internal/continuity-commit.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 describe('consumeJobStream', () => {
   afterEach(() => {
@@ -10,7 +12,6 @@ describe('consumeJobStream', () => {
 
   it('threads session versions through continuity checkpoints and preserves event order', async () => {
     const appendProgress = vi.fn();
-    const recordTerminal = vi.fn();
     const checkpointJobContinuityAtomic = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, nextVersion: 8 })
@@ -53,7 +54,6 @@ describe('consumeJobStream', () => {
         recordArtifactHandleAtomic,
       },
       appendProgress,
-      recordTerminal,
     });
 
     expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(1, 'session-1', {
@@ -76,31 +76,25 @@ describe('consumeJobStream', () => {
     });
     expect(appendProgress.mock.calls).toEqual([['starting'], ['streaming']]);
     expect(recordArtifactHandleAtomic).not.toHaveBeenCalled();
-    expect(recordTerminal).toHaveBeenCalledTimes(1);
-    expect(recordTerminal).toHaveBeenCalledWith({
-      kind: 'terminal',
-      terminal: {
-        content: 'done',
-        outcome: { kind: 'completed' },
-        durationMs: 0,
-      },
-      diagnostics: { warnings: ['kept'] },
-    });
     expect(result).toEqual({
-      terminal: {
-        content: 'done',
-        outcome: { kind: 'completed' },
-        durationMs: 0,
-      },
-      diagnostics: {
-        warnings: ['kept'],
+      kind: 'terminal',
+      claimVersion: 9,
+      event: {
+        kind: 'terminal',
+        terminal: {
+          content: 'done',
+          outcome: { kind: 'completed' },
+          durationMs: 0,
+        },
+        diagnostics: {
+          warnings: ['kept'],
+        },
       },
     });
   });
 
   it('returns only the provider terminal when the stream never emits a continuity body', async () => {
     const appendProgress = vi.fn();
-    const recordTerminal = vi.fn();
     const checkpointJobContinuityAtomic = vi.fn();
     const recordArtifactHandleAtomic = vi.fn();
 
@@ -125,25 +119,28 @@ describe('consumeJobStream', () => {
         recordArtifactHandleAtomic,
       },
       appendProgress,
-      recordTerminal,
     });
 
     expect(checkpointJobContinuityAtomic).not.toHaveBeenCalled();
     expect(recordArtifactHandleAtomic).not.toHaveBeenCalled();
     expect(appendProgress).toHaveBeenCalledWith('only-progress');
     expect(result).toEqual({
-      terminal: {
-        content: 'done',
-        outcome: { kind: 'completed' },
-        durationMs: 0,
+      kind: 'terminal',
+      claimVersion: 3,
+      event: {
+        kind: 'terminal',
+        terminal: {
+          content: 'done',
+          outcome: { kind: 'completed' },
+          durationMs: 0,
+        },
+        diagnostics: {},
       },
-      diagnostics: {},
     });
   });
 
-  it('warns on stale checkpoints and drains the terminal without copying continuity into the result', async () => {
+  it('fails closed on a stale checkpoint without accepting a later terminal', async () => {
     const appendProgress = vi.fn();
-    const recordTerminal = vi.fn();
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
     const checkpointJobContinuityAtomic = vi
       .fn()
@@ -151,7 +148,7 @@ describe('consumeJobStream', () => {
       .mockResolvedValueOnce({ ok: false });
     const recordArtifactHandleAtomic = vi.fn();
 
-    const result = await consumeJobStream({
+    const consumed = consumeJobStream({
       jobId: 'job-3',
       sessionId: 'session-3',
       initialVersion: 10,
@@ -185,8 +182,9 @@ describe('consumeJobStream', () => {
         recordArtifactHandleAtomic,
       },
       appendProgress,
-      recordTerminal,
     });
+
+    await expect(consumed).resolves.toEqual({ kind: 'suspended', reason: 'durable_state_uncommitted' });
 
     expect(checkpointJobContinuityAtomic).toHaveBeenNthCalledWith(1, 'session-3', {
       expectedActiveJobId: 'job-3',
@@ -206,35 +204,13 @@ describe('consumeJobStream', () => {
         providerContinuity: { threadId: 'thread-2', state: 'closed' },
       },
     });
-    expect(warn).toHaveBeenCalledWith(
-      'Continuity checkpoint went stale for claimed job job-3 on session session-3; draining terminal.',
-    );
+    expect(warn).toHaveBeenCalledWith('Continuity checkpoint went stale for claimed job job-3 on session session-3.');
     expect(appendProgress).not.toHaveBeenCalled();
     expect(recordArtifactHandleAtomic).not.toHaveBeenCalled();
-    expect(recordTerminal).toHaveBeenCalledWith({
-      kind: 'terminal',
-      terminal: {
-        content: 'done',
-        outcome: { kind: 'completed' },
-        durationMs: 0,
-      },
-      diagnostics: { warnings: ['terminal-kept'] },
-    });
-    expect(result).toEqual({
-      terminal: {
-        content: 'done',
-        outcome: { kind: 'completed' },
-        durationMs: 0,
-      },
-      diagnostics: {
-        warnings: ['terminal-kept'],
-      },
-    });
   });
 
   it('records artifact handles before continuity and advances the expected version for the checkpoint', async () => {
     const appendProgress = vi.fn();
-    const recordTerminal = vi.fn();
     const recordArtifactHandleAtomic = vi.fn().mockResolvedValueOnce({ ok: true, nextVersion: 6 });
     const checkpointJobContinuityAtomic = vi.fn().mockResolvedValueOnce({ ok: true, nextVersion: 7 });
 
@@ -269,7 +245,6 @@ describe('consumeJobStream', () => {
         recordArtifactHandleAtomic,
       },
       appendProgress,
-      recordTerminal,
     });
 
     expect(recordArtifactHandleAtomic).toHaveBeenCalledWith('session-4', {
@@ -289,5 +264,128 @@ describe('consumeJobStream', () => {
       },
     });
     expect(result).not.toHaveProperty('finalContinuity');
+  });
+
+  it('commits the provider receipt only after the atomic checkpoint succeeds', async () => {
+    const persisted = createDeferred<{ ok: true; nextVersion: number }>();
+    const committed = createDeferred<void>();
+    let providerSideEffectStarted = false;
+    const stream = (async function* () {
+      yield attachContinuityCommit(
+        {
+          kind: 'continuity',
+          conversationRef: 'thread-durable',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-durable' },
+        },
+        { commit: () => committed.resolve(), reject: (error) => committed.reject(error) },
+      );
+      await committed.promise;
+      providerSideEffectStarted = true;
+      yield {
+        kind: 'terminal',
+        terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
+        diagnostics: {},
+      } as const;
+    })();
+    const checkpointJobContinuityAtomic = vi.fn(() => persisted.promise);
+    const consumed = consumeJobStream({
+      jobId: 'job-durable',
+      sessionId: 'session-durable',
+      initialVersion: 1,
+      stream,
+      sessionApi: { checkpointJobContinuityAtomic, recordArtifactHandleAtomic: vi.fn() },
+      appendProgress: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(checkpointJobContinuityAtomic).toHaveBeenCalledTimes(1));
+    expect(providerSideEffectStarted).toBe(false);
+    persisted.resolve({ ok: true, nextVersion: 2 });
+    await consumed;
+    expect(providerSideEffectStarted).toBe(true);
+  });
+
+  it('rejects the provider receipt on a stale checkpoint so no side effect starts', async () => {
+    const committed = createDeferred<void>();
+    // Production continuity receipts install a rejection observer before the
+    // event is yielded; mirror that contract in this hand-built fixture.
+    void committed.promise.catch(() => undefined);
+    let providerSideEffectStarted = false;
+    const stream = (async function* () {
+      yield attachContinuityCommit(
+        {
+          kind: 'continuity',
+          conversationRef: 'thread-stale',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-stale' },
+        },
+        { commit: () => committed.resolve(), reject: (error) => committed.reject(error) },
+      );
+      try {
+        await committed.promise;
+        providerSideEffectStarted = true;
+      } catch {
+        // A lost claim is a failed checkpoint barrier, not permission to run.
+      }
+      yield {
+        kind: 'terminal',
+        terminal: { content: 'stale', outcome: { kind: 'failed' }, durationMs: 0 },
+        diagnostics: {},
+        failureCause: {
+          type: 'session.provider_failed',
+          body: { provider: 'fixture', reason: 'request_failed', message: 'checkpoint rejected' },
+        },
+      } as const;
+    })();
+
+    await expect(
+      consumeJobStream({
+        jobId: 'job-stale',
+        sessionId: 'session-stale',
+        initialVersion: 1,
+        stream,
+        sessionApi: {
+          checkpointJobContinuityAtomic: vi.fn(async () => ({ ok: false as const })),
+          recordArtifactHandleAtomic: vi.fn(),
+        },
+        appendProgress: vi.fn(),
+      }),
+    ).resolves.toEqual({ kind: 'suspended', reason: 'durable_state_uncommitted' });
+
+    expect(providerSideEffectStarted).toBe(false);
+  });
+
+  it('rejects the provider receipt when checkpoint persistence throws', async () => {
+    const rejection = vi.fn();
+    let providerSideEffectStarted = false;
+    const stream = (async function* () {
+      yield attachContinuityCommit(
+        {
+          kind: 'continuity',
+          conversationRef: 'thread-write-error',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-write-error' },
+        },
+        { commit: vi.fn(), reject: rejection },
+      );
+      providerSideEffectStarted = true;
+    })();
+    const failure = new Error('sqlite write failed');
+
+    await expect(
+      consumeJobStream({
+        jobId: 'job-write-error',
+        sessionId: 'session-write-error',
+        initialVersion: 1,
+        stream,
+        sessionApi: {
+          checkpointJobContinuityAtomic: vi.fn(async () => Promise.reject(failure)),
+          recordArtifactHandleAtomic: vi.fn(),
+        },
+        appendProgress: vi.fn(),
+      }),
+    ).resolves.toEqual({ kind: 'suspended', reason: 'durable_state_uncommitted' });
+    expect(rejection).toHaveBeenCalledWith(failure);
+    expect(providerSideEffectStarted).toBe(false);
   });
 });

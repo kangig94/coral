@@ -115,6 +115,7 @@ function createRecoveryProviderRegistry(modules: LoadedModules) {
     modules.providerRegistryModule
       .defineProvider({
         name: 'codex',
+        transport: 'standalone',
         run: async function* noopProvider() {},
         prepareExecutionPlan: prepareFixtureExecutionPlan,
       })
@@ -173,8 +174,8 @@ function createLaunchCoordinator(
 
 function createFakeProviderHostManager() {
   return {
-    acquireServer: vi.fn(),
-    borrowLiveServer: vi.fn(),
+    openSession: vi.fn(),
+    attachSession: vi.fn(async () => null),
     drainForHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
   };
@@ -467,6 +468,12 @@ function stubAppServerRuntime(
     providerMeta: {
       provider,
       leaseState: 'acquired',
+      hostRef: {
+        provider: 'test',
+        fingerprint: '0'.repeat(64),
+        instanceId: 'instance-1',
+        leaseMode: 'shared',
+      },
     },
   });
 }
@@ -558,6 +565,7 @@ function createLifecycleHarness(
     eventBus: options.eventBus,
     launchCoordinator,
     providerRegistry,
+    providerHostManager: createFakeProviderHostManager() as never,
     server: createServer(),
     getExecutionService: getExecutionService as never,
     getRecoveryService: getRecoveryService as never,
@@ -574,7 +582,6 @@ function createLifecycleHarness(
     cleanupStaleJobsFn: () => {},
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
-    providerHostManager: createFakeProviderHostManager() as never,
     kbDaemonSupervisor,
     handoffQuiescePorts: () => [],
     createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
@@ -648,7 +655,6 @@ function createActualRecoveryService(
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
-      providerHostManager: createFakeProviderHostManager() as never,
       launchCoordinator: options.launchCoordinator,
       eventBus: options.eventBus,
       providerRegistry: options.providerRegistry,
@@ -1640,7 +1646,7 @@ describe('lifecycle recovery', () => {
 
     stubLaunchRecord(progressStore, {
       jobId: 'app-server-job',
-      sessionId: 'app-server-session',
+      sessionId: 'recovered-provider-session',
       provider: 'codex',
       projectRoot,
       backendNamespace: namespace,
@@ -1651,6 +1657,12 @@ describe('lifecycle recovery', () => {
       providerMeta: {
         provider: 'codex',
         leaseState: 'acquired',
+        hostRef: {
+          provider: 'test',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
+        },
       },
     });
 
@@ -1703,6 +1715,12 @@ describe('lifecycle recovery', () => {
       providerMeta: {
         provider: 'codex',
         leaseState: 'acquired',
+        hostRef: {
+          provider: 'test',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
+        },
       },
     });
 

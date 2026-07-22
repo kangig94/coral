@@ -1,7 +1,7 @@
 import type {
   ArtifactCleanupRuntime,
   DiscardOutcome,
-  ProviderAppServerCapability,
+  HostRef,
   ProviderArtifactHandle,
   ProviderCurationPreparationRuntime,
   ProviderCurationRequest,
@@ -11,11 +11,9 @@ import type {
   ProviderRecoveryContract,
   ProviderRequest,
   ProviderRuntime,
-  ProviderServerLaunch,
-  ProviderServerLease,
-  ProviderServerSpec,
 } from './contract.js';
 import type { ProviderCliRequest } from './protocol.js';
+import type { ProviderCliRunner } from './protocol.js';
 import type {
   ProviderBindingResult,
   ProviderBindingRuntime,
@@ -50,8 +48,7 @@ export interface BoundProviderCuration {
 }
 
 export type BoundProviderPreparedCuration = Readonly<{
-  launch: ProviderServerLaunch;
-  complete(runtime: { readonly acquirePreparedServer: () => Promise<ProviderServerLease> }): Promise<string>;
+  complete(): Promise<string>;
 }>;
 
 export type BoundProviderExecutionPreparationInput = {
@@ -63,24 +60,65 @@ export type BoundProviderExecutionPreparationInput = {
   storage: Pick<ProviderRuntime['storage'], 'existsSync'>;
 };
 
-export type BoundProviderPreparedStableHost = Readonly<{ host: ProviderServerSpec }>;
+export type BoundProviderHostPreparationInput = Omit<BoundProviderExecutionPreparationInput, 'protectedEnv'>;
 
-export interface BoundProviderAppServerCapability extends Omit<
-  ProviderAppServerCapability<never>,
-  'compileStableHost'
-> {
-  prepareStableHost(
-    input: Omit<BoundProviderExecutionPreparationInput, 'protectedEnv'>,
-  ): BoundProviderPreparedStableHost;
+type BoundProviderExecutionRuntimeCommon = Omit<
+  ProviderRuntime<never>,
+  'transport' | 'executionPlan' | 'appServerSession' | 'runCli'
+> &
+  Readonly<{
+    jobId: string;
+  }>;
+
+export type BoundProviderAppServerExecutionRuntime = BoundProviderExecutionRuntimeCommon &
+  Readonly<{
+    transport: 'app-server';
+    onAppServerWaiting(observation: { provider: string }): void;
+    onHostRef(hostRef: HostRef): void;
+  }>;
+
+export type BoundProviderStandaloneExecutionRuntime = BoundProviderExecutionRuntimeCommon &
+  Readonly<{ transport: 'standalone'; runCli: ProviderCliRunner }>;
+
+export type BoundProviderExecutionRuntime =
+  | BoundProviderAppServerExecutionRuntime
+  | BoundProviderStandaloneExecutionRuntime;
+
+export interface BoundProviderAppServerCapability {
+  readonly supportsInterrupt: boolean;
+  readonly supportsProbe: boolean;
+  openReplacement(
+    input: BoundProviderHostPreparationInput,
+    runtime: { jobId: string; signal?: AbortSignal },
+  ): Promise<Readonly<{ hostRef: HostRef; close(): void }>>;
+  interrupt(
+    hostRef: HostRef,
+    continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
+    input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+  ): Promise<boolean>;
+  probe(
+    hostRef: HostRef,
+    continuity: NonNullable<ProviderRuntime['persistedContinuity']>,
+    input: BoundProviderHostPreparationInput & Readonly<{ jobId: string }>,
+  ): Promise<
+    | { kind: 'stale' }
+    | {
+        kind: 'probed';
+        result: { resumable: boolean; updatedContinuity?: NonNullable<ProviderRuntime['persistedContinuity']> };
+      }
+  >;
 }
 
-export interface BoundProviderPreparedExecution {
-  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
-  execute(runtime: Omit<ProviderRuntime<never>, 'executionPlan'>): AsyncIterable<ProviderEventBody>;
-  readonly appServer?: Omit<BoundProviderAppServerCapability, 'prepareStableHost'> & {
-    readonly launch: ProviderServerLaunch;
-  };
-}
+export type BoundProviderPreparedExecution =
+  | Readonly<{
+      kind: 'app-server';
+      execute(runtime: BoundProviderAppServerExecutionRuntime): AsyncIterable<ProviderEventBody>;
+    }>
+  | Readonly<{
+      kind: 'standalone';
+      prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+      execute(runtime: BoundProviderStandaloneExecutionRuntime): AsyncIterable<ProviderEventBody>;
+    }>;
 
 export interface BoundProvider {
   readonly name: string;

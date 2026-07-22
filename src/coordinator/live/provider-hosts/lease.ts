@@ -1,13 +1,8 @@
-import type { ProviderServerLease } from '../../../providers/contract.js';
+import type { AppServerTransport } from '../../../providers/contract.js';
 import type { ProviderServerHandle } from '../provider-server-transport.js';
-import type { ProviderHostEntry, ProviderServerAttachment } from './state.js';
+import type { ProviderHostEntry } from './state.js';
 
-export function createProviderServerLease(
-  handle: ProviderServerHandle,
-  entry: ProviderHostEntry,
-  releaseSharedLease: (entry: ProviderHostEntry) => void,
-  releaseExclusiveLease: (entry: ProviderHostEntry) => void,
-): ProviderServerLease {
+export function createProviderServerLease(handle: ProviderServerHandle, releasePin: () => void): ProviderServerLease {
   let released = false;
   return {
     rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
@@ -18,18 +13,14 @@ export function createProviderServerLease(
         return;
       }
       released = true;
-      if (entry.spec.leaseMode === 'shared') {
-        releaseSharedLease(entry);
-        return;
-      }
-      releaseExclusiveLease(entry);
+      releasePin();
     },
     closed: handle.closePromise,
     generation: handle.generation,
   };
 }
 
-export function createProviderServerAttachment(handle: ProviderServerHandle): ProviderServerAttachment {
+export function createProviderServerAttachment(handle: ProviderServerHandle): AppServerTransport {
   return {
     rpc: <R = unknown>(method: string, params: Record<string, unknown>) => handle.rpc.request<R>(method, params),
     subscribe: (handler: (msg: { method: string; params?: Record<string, unknown> }) => void) =>
@@ -38,28 +29,21 @@ export function createProviderServerAttachment(handle: ProviderServerHandle): Pr
   };
 }
 
-export function acquireSharedProviderServerLease(entry: ProviderHostEntry): void {
-  entry.sharedLeaseCount += 1;
+export function acquireProviderHostPin(entry: ProviderHostEntry): void {
+  entry.pinCount += 1;
 }
 
-export function releaseSharedProviderServerLease(
-  entry: ProviderHostEntry,
-  maybeArmIdleTimer: (entry: ProviderHostEntry) => void,
-): void {
-  if (entry.sharedLeaseCount === 0) {
-    return;
+export function releaseProviderHostPin(entry: ProviderHostEntry): void {
+  if (entry.pinCount === 0) {
+    throw new Error(`Provider host '${entry.hostKey}' pin count underflow.`);
   }
-  entry.sharedLeaseCount -= 1;
-  maybeArmIdleTimer(entry);
+  entry.pinCount -= 1;
 }
 
-export function releaseProviderServerLease(entry: ProviderHostEntry): void {
-  entry.leaseHeld = false;
+export function activePinCount(entry: ProviderHostEntry): number {
+  return entry.pinCount;
 }
-
-export function activeLeaseCount(entry: ProviderHostEntry): number {
-  if (entry.spec.leaseMode === 'shared') {
-    return entry.sharedLeaseCount;
-  }
-  return entry.leaseHeld ? 1 : 0;
+export interface ProviderServerLease extends AppServerTransport {
+  release(): void;
+  generation: number;
 }

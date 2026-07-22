@@ -87,7 +87,12 @@ describe('jobs queries', () => {
           providerMeta: {
             provider: 'codex',
             leaseState: 'acquired',
-            serverGeneration: 7,
+            hostRef: {
+              provider: 'codex',
+              fingerprint: '0'.repeat(64),
+              instanceId: 'instance-1',
+              leaseMode: 'shared',
+            },
           },
         },
       },
@@ -264,7 +269,12 @@ describe('jobs queries', () => {
         providerMeta: {
           provider: 'codex',
           leaseState: 'acquired',
-          serverGeneration: 7,
+          hostRef: {
+            provider: 'codex',
+            fingerprint: '0'.repeat(64),
+            instanceId: 'instance-1',
+            leaseMode: 'shared',
+          },
         },
       },
       exit: {

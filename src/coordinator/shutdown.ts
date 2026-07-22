@@ -4,7 +4,7 @@ import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
 import type { IdleTimer } from './live/idle.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { ProviderHostManager } from './live/provider-hosts/index.js';
+import type { ProviderHostLifecycle } from './live/provider-hosts/index.js';
 import type { IpcListener } from '../transport/ipc/server.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { StoreServicesRef } from './composition/store-services-ref.js';
@@ -55,7 +55,7 @@ type RunShutdownSequenceContext = {
   runtime: Runtime;
   namespace: string;
   markJobsAsErrorFn: (namespace: string, message: string) => void;
-  providerHostManager: ProviderHostManager;
+  providerHostManager: ProviderHostLifecycle;
   kbDaemonSupervisor?: KbDaemonSupervisor;
   storeServicesRef: StoreServicesRef;
   terminateAllFn: () => void;
@@ -189,28 +189,12 @@ export async function runShutdownSequence({
     );
     terminateAllFn();
   } else {
-    // Phase A2: detach durable terminal/completion side effects for active
-    // app-server jobs before provider-host drain closes their leases.
-    // Quiesce is structurally bounded — synchronous detach completes before
-    // the budget can fire, so subsequent transport closure cannot reach
-    // `recordTerminal` or admission/session release. Replacement startup
-    // recovery owns the durable finalization sequence under the new daemon's
-    // socket ownership.
-    await withBudget(
-      'app-server handoff quiesce',
-      async (signal) => {
-        for (const port of handoffQuiescePorts()) {
-          try {
-            await port.quiesceAppServerJobsForHandoff(signal);
-          } catch (error: unknown) {
-            log(`app-server handoff quiesce failed: ${formatError(error)}\n`);
-          }
-        }
-      },
-      remainingDrain,
-      runtime.time,
-      log,
-    );
+    // Phase A2 is a durability fence, not a best-effort drain. Admission is
+    // closed synchronously, then every write already admitted by the old daemon
+    // settles before host shutdown or replacement recovery may proceed.
+    for (const port of handoffQuiescePorts()) {
+      await port.quiesceAppServerJobsForHandoff();
+    }
     await withBudget(
       'provider host drain for handoff',
       async (signal) => providerHostManager.drainForHandoff(signal),

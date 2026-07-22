@@ -48,6 +48,7 @@ export type ProviderServerHandle = {
   rpc: ProviderServerRpc;
   onNotification: (handler: (message: ProviderServerNotification) => void) => () => void;
   closePromise: Promise<Error | void>;
+  isClosed(): boolean;
   markExpectedClose: () => void;
   close: () => Promise<void>;
 };
@@ -270,6 +271,7 @@ export async function spawnProviderServerTransport(params: {
       };
     },
     closePromise,
+    isClosed: () => entry.closed,
     markExpectedClose: () => {
       entry.closeRequested = true;
     },

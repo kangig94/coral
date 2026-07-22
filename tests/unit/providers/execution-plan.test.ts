@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   allExecutionLifetimes,
@@ -12,14 +12,16 @@ import {
   type ExecutionLifetime,
 } from '#src/providers/execution-plan.js';
 import {
-  buildClaudeExecutionPlan,
+  buildClaudeExecutionPlan as buildClaudeExecutionPlanWithHost,
+  buildClaudeHost,
   buildClaudePreflightRuntime,
   compileClaudeBrokerEnvironment,
   compileClaudeControllerEnvironment,
   claudeRoutingEnv,
 } from '#src/providers/claude/execution-plan.js';
 import {
-  buildCodexExecutionPlan,
+  buildCodexExecutionPlan as buildCodexExecutionPlanWithHost,
+  buildCodexHost,
   buildCodexPreflightRuntime,
   codexRoutingEnv,
 } from '#src/providers/codex/execution-plan.js';
@@ -38,6 +40,32 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/index.js';
 import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
+import { resolveClaudeTransportMode } from '#src/providers/claude/transport-mode.js';
+
+beforeAll(() => vi.stubGlobal('__PLUGIN_ROOT__', '/test/plugin'));
+afterAll(() => vi.unstubAllGlobals());
+
+function buildClaudeExecutionPlan(options: Omit<Parameters<typeof buildClaudeExecutionPlanWithHost>[0], 'hostPlan'>) {
+  const host = buildClaudeHost({
+    source: options.source,
+    request: options.request,
+    baseEnv: options.baseEnv,
+    platform: options.platform,
+    storage: options.storage,
+    transportMode: resolveClaudeTransportMode(options.request.coralEnv),
+  });
+  const prepared = buildClaudeExecutionPlanWithHost({
+    ...options,
+    hostPlan: host,
+  });
+  return { ...prepared, plan: { host, session: prepared.session, turn: prepared.turn } };
+}
+
+function buildCodexExecutionPlan(options: Omit<Parameters<typeof buildCodexExecutionPlanWithHost>[0], 'hostPlan'>) {
+  const host = buildCodexHost(options);
+  const prepared = buildCodexExecutionPlanWithHost({ ...options, hostPlan: host });
+  return { ...prepared, plan: { host, session: prepared.session, turn: prepared.turn } };
+}
 
 function layer(
   name: string,
@@ -65,17 +93,19 @@ function compile(layers: readonly EnvironmentLayer[], platform = 'linux') {
 }
 
 function claudeLaunch(prepared: ReturnType<typeof buildClaudeExecutionPlan>) {
-  return {
-    host: claudeAppServerLifecycle.compileStableHost(prepared.plan.host),
-    turnEnv: prepared.appServerTurnEnv,
-  };
+  return claudeAppServerLifecycle.compileStableHost(prepared.plan.host);
 }
 
 function codexLaunch(prepared: ReturnType<typeof buildCodexExecutionPlan>) {
-  return {
-    host: codexAppServerLifecycle.compileStableHost(prepared.plan.host),
-    turnEnv: prepared.appServerTurnEnv,
-  };
+  return codexAppServerLifecycle.compileStableHost(prepared.plan.host);
+}
+
+function codexThreadEnvironment(prepared: ReturnType<typeof buildCodexExecutionPlan>) {
+  return (
+    prepared.plan.turn.threadConfig.shell_environment_policy as {
+      readonly set: Readonly<Record<string, string>>;
+    }
+  ).set;
 }
 
 describe('provider execution plan', () => {
@@ -286,7 +316,7 @@ describe('provider execution plan', () => {
       'ANTHROPIC_API_KEY',
     );
     expect(brokerEnv).not.toHaveProperty('CLAUDE_CONFIG_DIR');
-    expect(prepared.prepareCliRequest({ command: 'claude', args: [] }).exactEnv).toEqual(controllerEnv);
+    expect(prepared).not.toHaveProperty('prepareCliRequest');
   });
 
   it('keeps Claude broker identity invariant across owner, model, effort, and KB turn settings', () => {
@@ -318,9 +348,8 @@ describe('provider execution plan', () => {
     const first = prepare('a');
     const second = prepare('b');
 
-    expect(claudeLaunch(first).host).toEqual(claudeLaunch(second).host);
-    expect(hostKeyFromSpec(claudeLaunch(first).host)).toBe(hostKeyFromSpec(claudeLaunch(second).host));
-    expect(claudeLaunch(first).turnEnv).toEqual(claudeLaunch(second).turnEnv);
+    expect(claudeLaunch(first)).toEqual(claudeLaunch(second));
+    expect(hostKeyFromSpec(claudeLaunch(first))).toBe(hostKeyFromSpec(claudeLaunch(second)));
     expect(compileClaudeControllerEnvironment(first.plan)).not.toEqual(compileClaudeControllerEnvironment(second.plan));
   });
 
@@ -357,8 +386,8 @@ describe('provider execution plan', () => {
     expect(compileClaudeBrokerEnvironment(second.plan)).not.toHaveProperty('CLAUDE_CONFIG_DIR');
     expect(compileClaudeControllerEnvironment(first.plan)).toMatchObject({ HOME: '/accounts/claude-a' });
     expect(compileClaudeControllerEnvironment(second.plan)).toMatchObject({ HOME: '/accounts/claude-b' });
-    expect(claudeLaunch(first).host).toEqual(claudeLaunch(second).host);
-    expect(hostKeyFromSpec(claudeLaunch(first).host)).toBe(hostKeyFromSpec(claudeLaunch(second).host));
+    expect(claudeLaunch(first)).toEqual(claudeLaunch(second));
+    expect(hostKeyFromSpec(claudeLaunch(first))).toBe(hostKeyFromSpec(claudeLaunch(second)));
   });
 
   it('prepares attachment host identity without constructing or admitting replacement turn authority', () => {
@@ -401,10 +430,46 @@ describe('provider execution plan', () => {
     const codexAttachment = codexAppServerLifecycle.compileStableHost(codexAttachmentPlan.plan.host);
     const claudeAttachment = claudeAppServerLifecycle.compileStableHost(claudeAttachmentPlan.plan.host);
 
-    expect(codexAttachment).toEqual(codexLaunch(codexExecution).host);
-    expect(claudeAttachment).toEqual(claudeLaunch(claudeExecution).host);
+    expect(codexAttachment).toEqual(codexLaunch(codexExecution));
+    expect(claudeAttachment).toEqual(claudeLaunch(claudeExecution));
     expect(JSON.stringify(codexAttachment)).not.toContain('replacement-only');
     expect(JSON.stringify(claudeAttachment)).not.toContain('replacement-only');
+  });
+
+  it('reuses a Codex host for one profile and splits hosts across profiles', () => {
+    const prepare = (home: string, sessionId: string, handle: string) =>
+      buildCodexExecutionPlan({
+        source: { home },
+        request: {
+          action: 'exec',
+          sessionId,
+          prompt: 'hello',
+          cwd: '/workspace',
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        baseEnv: { PATH: '/bin' },
+        protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: handle },
+        platform: 'linux',
+      });
+    const first = prepare('/accounts/a', 'session-a', 'handle-a');
+    const second = prepare('/accounts/a', 'session-b', 'handle-b');
+    const otherProfile = prepare('/accounts/b', 'session-c', 'handle-c');
+
+    expect(first.plan.host.leaseMode).toBe('shared');
+    expect(codexLaunch(first).idlePolicy).toBe('daemon');
+    expect(hostKeyFromSpec(codexLaunch(first))).toBe(hostKeyFromSpec(codexLaunch(second)));
+    expect(hostKeyFromSpec(codexLaunch(first))).not.toBe(hostKeyFromSpec(codexLaunch(otherProfile)));
+    expect(codexThreadEnvironment(first)).toMatchObject({
+      CORAL_CHILD: '1',
+      CORAL_SESSION_ID: 'session-a',
+      CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-a',
+    });
+    expect(codexThreadEnvironment(second)).toMatchObject({
+      CORAL_CHILD: '1',
+      CORAL_SESSION_ID: 'session-b',
+      CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-b',
+    });
   });
 
   it.each([
@@ -429,11 +494,9 @@ describe('provider execution plan', () => {
     const first = prepare(firstValue);
     const second = prepare(secondValue);
 
-    expect(codexLaunch(first).host.env).toMatchObject({ [key]: firstValue });
-    expect(codexLaunch(second).host.env).toMatchObject({ [key]: secondValue });
-    expect(hostKeyFromSpec(codexLaunch(first).host)).not.toBe(hostKeyFromSpec(codexLaunch(second).host));
-    expect(codexLaunch(first).turnEnv).not.toHaveProperty(key);
-    expect(codexLaunch(second).turnEnv).not.toHaveProperty(key);
+    expect(codexLaunch(first).env).toMatchObject({ [key]: firstValue });
+    expect(codexLaunch(second).env).toMatchObject({ [key]: secondValue });
+    expect(hostKeyFromSpec(codexLaunch(first))).not.toBe(hostKeyFromSpec(codexLaunch(second)));
   });
 
   it.each([
@@ -460,11 +523,9 @@ describe('provider execution plan', () => {
       const first = prepare(firstValue);
       const second = prepare(secondValue);
 
-      expect(codexLaunch(first).host.env).toMatchObject({ [key]: firstValue });
-      expect(codexLaunch(second).host.env).toMatchObject({ [key]: secondValue });
-      expect(hostKeyFromSpec(codexLaunch(first).host)).not.toBe(hostKeyFromSpec(codexLaunch(second).host));
-      expect(codexLaunch(first).turnEnv).not.toHaveProperty(key);
-      expect(codexLaunch(second).turnEnv).not.toHaveProperty(key);
+      expect(codexLaunch(first).env).toMatchObject({ [key]: firstValue });
+      expect(codexLaunch(second).env).toMatchObject({ [key]: secondValue });
+      expect(hostKeyFromSpec(codexLaunch(first))).not.toBe(hostKeyFromSpec(codexLaunch(second)));
     },
   );
 
@@ -492,8 +553,8 @@ describe('provider execution plan', () => {
     const first = prepare(firstValue);
     const second = prepare(secondValue);
 
-    expect(claudeLaunch(first).host).toEqual(claudeLaunch(second).host);
-    expect(hostKeyFromSpec(claudeLaunch(first).host)).toBe(hostKeyFromSpec(claudeLaunch(second).host));
+    expect(claudeLaunch(first)).toEqual(claudeLaunch(second));
+    expect(hostKeyFromSpec(claudeLaunch(first))).toBe(hostKeyFromSpec(claudeLaunch(second)));
     expect(compileClaudeControllerEnvironment(first.plan)).toMatchObject({ [key]: firstValue });
     expect(compileClaudeControllerEnvironment(second.plan)).toMatchObject({ [key]: secondValue });
     expect(compileClaudeBrokerEnvironment(first.plan)).not.toHaveProperty(key);
@@ -525,8 +586,8 @@ describe('provider execution plan', () => {
       const first = prepare(firstValue);
       const second = prepare(secondValue);
 
-      expect(claudeLaunch(first).host).toEqual(claudeLaunch(second).host);
-      expect(hostKeyFromSpec(claudeLaunch(first).host)).toBe(hostKeyFromSpec(claudeLaunch(second).host));
+      expect(claudeLaunch(first)).toEqual(claudeLaunch(second));
+      expect(hostKeyFromSpec(claudeLaunch(first))).toBe(hostKeyFromSpec(claudeLaunch(second)));
       expect(compileClaudeControllerEnvironment(first.plan)).toMatchObject({ [key]: firstValue });
       expect(compileClaudeControllerEnvironment(second.plan)).toMatchObject({ [key]: secondValue });
       expect(compileClaudeBrokerEnvironment(first.plan)).not.toHaveProperty(key);
@@ -557,9 +618,9 @@ describe('provider execution plan', () => {
       platform: 'linux',
     });
 
-    expect(codexLaunch(codex).host.env).not.toHaveProperty('CORAL_OWNER');
-    expect(codexLaunch(codex).host.env).not.toHaveProperty('CORAL_EFFORT');
-    expect(codexLaunch(codex).turnEnv).toMatchObject({ CORAL_OWNER: 'reviewer', CORAL_EFFORT: 'high' });
+    expect(codexLaunch(codex).env).not.toHaveProperty('CORAL_OWNER');
+    expect(codexLaunch(codex).env).not.toHaveProperty('CORAL_EFFORT');
+    expect(codexThreadEnvironment(codex)).toMatchObject({ CORAL_OWNER: 'reviewer', CORAL_EFFORT: 'high' });
     expect(compileClaudeBrokerEnvironment(claude.plan)).not.toHaveProperty('CORAL_OWNER');
     expect(compileClaudeBrokerEnvironment(claude.plan)).not.toHaveProperty('CORAL_EFFORT');
     expect(compileClaudeControllerEnvironment(claude.plan)).toMatchObject({
@@ -623,9 +684,11 @@ describe('provider execution plan', () => {
       ...claude.plan.host.controller.environment,
       ...claude.plan.turn.controllerEnvironment,
       ...codex.plan.host.environment,
-      ...codex.plan.turn.processEnvironment,
     ];
-    const storedKeys = storedLayers.flatMap((entry) => Object.keys(entry.values));
+    const storedKeys = [
+      ...storedLayers.flatMap((entry) => Object.keys(entry.values)),
+      ...Object.keys(codexThreadEnvironment(codex)),
+    ];
 
     expect(storedKeys).not.toEqual(
       expect.arrayContaining([
@@ -638,7 +701,7 @@ describe('provider execution plan', () => {
     );
   });
 
-  it('keeps Codex job-exclusive while callback authority remains process-environment scoped', () => {
+  it('keeps Codex shared while callback authority remains thread scoped', () => {
     const prepared = buildCodexExecutionPlan({
       source: TEST_CODEX_SOURCE,
       request: {
@@ -653,11 +716,18 @@ describe('provider execution plan', () => {
       protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-handle' },
       platform: 'linux',
     });
-    expect(prepared.plan.host.leaseMode).toBe('job-exclusive');
+    expect(prepared.plan.host.leaseMode).toBe('shared');
     expect(prepared.plan.host.environment.every((entry) => entry.lifetime === 'host')).toBe(true);
-    expect(prepared.plan.turn.processEnvironment).toEqual(
-      expect.arrayContaining([expect.objectContaining({ lifetime: 'turn', provenance: 'coral-child-principal' })]),
-    );
+    expect(codexThreadEnvironment(prepared)).toMatchObject({
+      CORAL_CHILD: '1',
+      CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-handle',
+    });
+    expect(codexLaunch(prepared).env).not.toHaveProperty('CORAL_CHILD_PRINCIPAL_HANDLE');
+    expect(codexThreadEnvironment(prepared)).toMatchObject({
+      CORAL_CHILD: '1',
+      CORAL_SESSION_ID: 'session-1',
+      CORAL_CHILD_PRINCIPAL_HANDLE: 'turn-handle',
+    });
   });
 
   it('derives identical stable routing for normal and recovery preparation', () => {
@@ -703,15 +773,15 @@ describe('provider execution plan', () => {
     });
 
     expect(normalClaude.plan.host).toEqual(recoveryClaude.plan.host);
-    expect(claudeLaunch(normalClaude).host).toEqual(claudeLaunch(recoveryClaude).host);
+    expect(claudeLaunch(normalClaude)).toEqual(claudeLaunch(recoveryClaude));
     expect(compileClaudeBrokerEnvironment(normalClaude.plan)).toEqual(
       compileClaudeBrokerEnvironment(recoveryClaude.plan),
     );
     expect(normalCodex.plan.host).toEqual(recoveryCodex.plan.host);
-    expect(codexLaunch(normalCodex).host).toEqual(codexLaunch(recoveryCodex).host);
+    expect(codexLaunch(normalCodex)).toEqual(codexLaunch(recoveryCodex));
     expect(normalClaude.plan.turn.controllerEnvironment).not.toEqual(recoveryClaude.plan.turn.controllerEnvironment);
-    expect(normalCodex.plan.turn.processEnvironment).not.toEqual(recoveryCodex.plan.turn.processEnvironment);
-    expect(codexLaunch(normalCodex).turnEnv).not.toEqual(codexLaunch(recoveryCodex).turnEnv);
+    expect(codexThreadEnvironment(normalCodex)).not.toEqual(codexThreadEnvironment(recoveryCodex));
+    expect(codexThreadEnvironment(normalCodex)).not.toEqual(codexThreadEnvironment(recoveryCodex));
   });
 
   it('constructs Codex preflight execution inside the provider vertical', async () => {

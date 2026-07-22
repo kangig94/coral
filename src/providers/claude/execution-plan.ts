@@ -12,11 +12,11 @@ import {
   type ProviderExecutionPlan,
 } from '../execution-plan.js';
 import { shouldUseWindowsCommandShell, windowsCommandName } from '../../infra/windows-shell.js';
-import type { ProviderCliRequest } from '../protocol.js';
 import { CLAUDE_ALLOWED_REQUEST_ENV_KEYS, CLAUDE_PROTECTED_REQUEST_ENV_KEYS } from './credential-policy.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import { resolveClaudeBrokerEntrypoint, type ClaudeBrokerHostPlan } from './request-mapping.js';
-import { claudeTransportEnv, resolveClaudeTransportMode } from './transport-mode.js';
+import { claudeTransportEnv } from './transport-mode.js';
+import type { resolveClaudeTransportMode } from './transport-mode.js';
 
 export type ClaudeCredentialSource =
   | {
@@ -190,6 +190,48 @@ export function createClaudeBrokerHost(options: {
   });
 }
 
+export function buildClaudeHost(options: {
+  readonly source: ClaudeCredentialSource;
+  readonly request: Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
+  readonly baseEnv: Readonly<Record<string, string>>;
+  readonly platform: string;
+  readonly storage: Pick<StoragePort, 'existsSync'>;
+  readonly transportMode: ReturnType<typeof resolveClaudeTransportMode>;
+}): ClaudeExecutionPlan['host'] {
+  return Object.freeze({
+    platform: options.platform,
+    broker: createClaudeBrokerHost({
+      cwd: options.request.cwd,
+      baseEnv: options.baseEnv,
+      platform: options.platform,
+      storage: options.storage,
+      transportMode: options.transportMode,
+    }),
+    controller: buildClaudeControllerHost({
+      source: options.source,
+      coralEnv: options.request.coralEnv,
+      baseEnv: options.baseEnv,
+      platform: options.platform,
+    }),
+  });
+}
+
+export function buildClaudeControllerHost(options: {
+  readonly source: ClaudeCredentialSource;
+  readonly coralEnv: Readonly<Record<string, string>>;
+  readonly baseEnv: Readonly<Record<string, string>>;
+  readonly platform: string;
+}): ClaudeExecutionPlan['host']['controller'] {
+  return Object.freeze({
+    source: options.source,
+    environment: Object.freeze([
+      claudeBaseLayer(options.baseEnv, options.platform),
+      claudeRoutingLayer(options.source, options.platform),
+      processSettingsLayer(options.coralEnv, options.platform),
+    ]),
+  });
+}
+
 export function compileClaudeControllerEnvironment(plan: ClaudeExecutionPlan): Readonly<Record<string, string>> {
   return compileEnvironmentLayers([...plan.host.controller.environment, ...plan.turn.controllerEnvironment], {
     platform: plan.host.platform,
@@ -199,37 +241,18 @@ export function compileClaudeControllerEnvironment(plan: ClaudeExecutionPlan): R
 
 export function buildClaudeExecutionPlan(options: {
   source: ClaudeCredentialSource;
+  hostPlan: ClaudeExecutionPlan['host'];
   request: ProviderRequest;
   baseEnv: Readonly<Record<string, string>>;
   protectedEnv?: Readonly<Record<string, string>>;
   platform: string;
   storage: Pick<StoragePort, 'existsSync'>;
 }): {
-  readonly plan: ClaudeExecutionPlan;
-  readonly appServerTurnEnv: Readonly<Record<string, string>>;
-  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+  readonly session: ClaudeExecutionPlan['session'];
+  readonly turn: ClaudeExecutionPlan['turn'];
 } {
-  const transportMode = resolveClaudeTransportMode(options.request.coralEnv);
-  const broker = createClaudeBrokerHost({
-    cwd: options.request.cwd,
-    baseEnv: options.baseEnv,
-    platform: options.platform,
-    storage: options.storage,
-    transportMode,
-  });
   const plan: ClaudeExecutionPlan = Object.freeze({
-    host: Object.freeze({
-      platform: options.platform,
-      broker,
-      controller: Object.freeze({
-        source: options.source,
-        environment: Object.freeze([
-          claudeBaseLayer(options.baseEnv, options.platform),
-          claudeRoutingLayer(options.source, options.platform),
-          processSettingsLayer(options.request.coralEnv, options.platform),
-        ]),
-      }),
-    }),
+    host: options.hostPlan,
     session: Object.freeze({ sessionId: options.request.sessionId, projectsRoot: options.source.projectsRoot }),
     turn: Object.freeze({
       controllerEnvironment: Object.freeze([
@@ -238,16 +261,9 @@ export function buildClaudeExecutionPlan(options: {
       ]),
     }),
   });
-  const controllerEnv = compileClaudeControllerEnvironment(plan);
   return {
-    plan,
-    appServerTurnEnv: Object.freeze({}),
-    prepareCliRequest: (request) => ({
-      ...request,
-      command: windowsCommandName(request.command, options.platform),
-      exactEnv: { ...controllerEnv },
-      extraEnv: undefined,
-    }),
+    session: plan.session,
+    turn: plan.turn,
   };
 }
 

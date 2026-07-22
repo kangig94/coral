@@ -1,4 +1,4 @@
-import type { ProviderServerLease } from '../contract.js';
+import type { AppServerSession, AppServerTransport, ProviderRuntime } from '../contract.js';
 import { snapshotBoundaryData, snapshotProviderResult } from './snapshot.js';
 
 function dataMember(receiver: object, key: string, label: string): unknown {
@@ -14,31 +14,22 @@ function dataMember(receiver: object, key: string, label: string): unknown {
   return undefined;
 }
 
-const wrappedServerLeases = new WeakMap<object, ProviderServerLease>();
-
-export function wrapServerLease(lease: ProviderServerLease, label: string): ProviderServerLease {
-  if (lease === null || typeof lease !== 'object') throw new TypeError(`${label} must be an object.`);
-  const existing = wrappedServerLeases.get(lease);
-  if (existing !== undefined) return existing;
-  const rpc = dataMember(lease, 'rpc', label);
-  const subscribe = dataMember(lease, 'subscribe', label);
-  const release = dataMember(lease, 'release', label);
-  const closed = dataMember(lease, 'closed', label);
-  const generation = dataMember(lease, 'generation', label);
-  if (typeof rpc !== 'function' || typeof subscribe !== 'function' || typeof release !== 'function') {
-    throw new TypeError(`${label} must expose rpc, subscribe, and release data methods.`);
+export function wrapAppServerTransport(session: AppServerTransport, label: string): AppServerTransport {
+  if (session === null || typeof session !== 'object') throw new TypeError(`${label} must be an object.`);
+  const rpc = dataMember(session, 'rpc', label);
+  const subscribe = dataMember(session, 'subscribe', label);
+  const closed = dataMember(session, 'closed', label);
+  if (typeof rpc !== 'function' || typeof subscribe !== 'function') {
+    throw new TypeError(`${label} must expose rpc and subscribe data methods.`);
   }
   if (!(closed instanceof Promise)) throw new TypeError(`${label}.closed must be a Promise.`);
-  if (generation !== undefined && typeof generation !== 'number') {
-    throw new TypeError(`${label}.generation must be a number when present.`);
-  }
-  const wrapped = Object.freeze({
+  return Object.freeze({
     rpc: async <R = unknown>(method: string, params: Record<string, unknown>): Promise<R> => {
-      const result = await rpc.call(lease, method, snapshotBoundaryData(params, `${label} RPC parameters`));
+      const result = await rpc.call(session, method, snapshotBoundaryData(params, `${label} RPC parameters`));
       return snapshotProviderResult(result, `${label} RPC result`) as R;
     },
     subscribe: (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-      const unsubscribe = subscribe.call(lease, (message: unknown) => {
+      const unsubscribe = subscribe.call(session, (message: unknown) => {
         handler(
           snapshotBoundaryData(message, `${label} notification`) as {
             method: string;
@@ -46,28 +37,27 @@ export function wrapServerLease(lease: ProviderServerLease, label: string): Prov
           },
         );
       }) as unknown;
-      if (typeof unsubscribe !== 'function')
+      if (typeof unsubscribe !== 'function') {
         throw new TypeError(`${label}.subscribe must return an unsubscribe function.`);
-      return () => {
-        unsubscribe.call(undefined);
-      };
+      }
+      return () => unsubscribe.call(undefined);
     },
-    release: () => release.call(lease),
     closed: closed.then((result) => result),
-    ...(generation === undefined ? {} : { generation: snapshotBoundaryData(generation, `${label} generation`) }),
   });
-  wrappedServerLeases.set(lease, wrapped);
-  wrappedServerLeases.set(wrapped, wrapped);
-  return wrapped;
 }
 
-export function wrapAcquirePreparedServer(
-  receiver: object,
-  acquirePreparedServer: () => Promise<ProviderServerLease>,
-  label: string,
-): () => Promise<ProviderServerLease> {
-  return async () => {
-    const lease = await acquirePreparedServer.call(receiver);
-    return wrapServerLease(lease, `${label} lease`);
-  };
+export function wrapAppServerSession(session: AppServerSession, label: string): AppServerSession {
+  const transport = wrapAppServerTransport(session, label);
+  const interrupt = dataMember(session, 'interrupt', label);
+  if (typeof interrupt !== 'function') throw new TypeError(`${label} must expose an interrupt data method.`);
+  return Object.freeze({
+    ...transport,
+    interrupt: (continuity: NonNullable<ProviderRuntime['persistedContinuity']>) =>
+      Promise.resolve(
+        interrupt.call(session, snapshotBoundaryData(continuity, `${label} interrupt continuity`)) as unknown,
+      ).then((acted) => {
+        if (typeof acted !== 'boolean') throw new TypeError(`${label}.interrupt must resolve to a boolean.`);
+        return acted;
+      }),
+  });
 }

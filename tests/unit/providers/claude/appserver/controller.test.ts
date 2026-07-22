@@ -7,6 +7,7 @@ import { MAX_BUFFER } from '#src/infra/process-constants.js';
 import { SingleSessionController } from '#src/providers/claude/appserver/controller.js';
 import type { ControllerNotification } from '#src/providers/claude/appserver/session-contract.js';
 import { FakeClaudeChild } from '#tests/helpers/fake-claude-child.js';
+import { createDeferred } from '#tools/testing/deferred.js';
 
 const TEST_SESSION_ID = '00000000-0000-4000-8000-000000000001';
 const TEST_MODEL = 'claude-sonnet-test';
@@ -127,6 +128,8 @@ async function startUsageController(): Promise<UsageControllerHarness> {
     cwd: '/workspace',
     projectsRoot: '/tmp/coral-test-home/.claude/projects',
     systemPromptHash: 'sha256:test',
+
+    bootstrapConfigHash: 'sha256:test-bootstrap',
     permissionMode: 'default',
   });
   await controller.turnStart({ brokerTurnId: 'turn-usage', prompt: 'hello' });
@@ -190,6 +193,8 @@ describe('SingleSessionController PTY lifecycle', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
     });
     let ensured = false;
@@ -227,6 +232,8 @@ describe('SingleSessionController PTY lifecycle', () => {
         cwd: '/workspace',
         projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
       let ready = false;
@@ -254,6 +261,40 @@ describe('SingleSessionController PTY lifecycle', () => {
     }
   });
 
+  it('reserves the exact turn before transcript discovery so an in-flight interrupt cancels it', async () => {
+    const child = new FakeClaudeChild();
+    const controller = new SingleSessionController({
+      spawnChild: () => child,
+      ids: { uuid: () => TEST_SESSION_ID },
+      ...FAST_TIMING,
+    });
+    await controller.sessionEnsure({
+      cwd: '/workspace',
+      projectsRoot: '/tmp/coral-test-home/.claude/projects',
+      systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
+      permissionMode: 'default',
+    });
+    const cursor = createDeferred<{ path: string | null; offset: number }>();
+    Object.defineProperty(controller, 'readTranscriptCursorBeforeTurn', {
+      configurable: true,
+      value: () => cursor.promise,
+    });
+
+    const started = controller.turnStart({ brokerTurnId: 'turn-reserved', prompt: 'must not run' });
+    await expect(controller.turnInterrupt({ brokerTurnId: 'turn-reserved' })).resolves.toEqual({
+      brokerTurnId: 'turn-reserved',
+      interrupted: true,
+    });
+    cursor.resolve({ path: null, offset: 0 });
+    await started;
+
+    expect(child.writes).not.toContain('[200~must not run[201~\r');
+    expect(controller.hasActiveTurn()).toBe(false);
+    await controller.shutdown();
+  });
+
   it('clears the active turn and emits failure when an interactive turn is interrupted', async () => {
     const child = new FakeClaudeChild();
     const notifications: ControllerNotification[] = [];
@@ -270,6 +311,8 @@ describe('SingleSessionController PTY lifecycle', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
     });
     await controller.turnStart({
@@ -315,6 +358,8 @@ describe('SingleSessionController PTY lifecycle', () => {
         cwd: '/workspace',
         projectsRoot: '/home/user/.claude/projects',
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
 
@@ -349,6 +394,8 @@ describe('SingleSessionController PTY lifecycle', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
     });
     await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
@@ -396,6 +443,8 @@ describe('SingleSessionController PTY lifecycle', () => {
         cwd: '/workspace',
         projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
       await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });
@@ -445,6 +494,8 @@ describe('SingleSessionController PTY lifecycle', () => {
         cwd: '/workspace',
         projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
       await controller.turnStart({ brokerTurnId: 'turn-1', prompt: 'hello' });

@@ -1,19 +1,29 @@
 import { dirname, join } from 'node:path';
 
 import { detectClaudeCli } from './cli-detection.js';
-import type { ProviderPreflightRuntime, ProviderAppServerCapability, ProviderRecoveryContract } from '../contract.js';
+import type {
+  AppServerTransport,
+  ProviderPreflightRuntime,
+  ProviderAppServerCapability,
+  ProviderRecoveryContract,
+} from '../contract.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import { isRecord, readString } from '../../infra/json.js';
+import { mapInterruptParams } from './request-mapping.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
 import {
+  buildClaudeHost,
   claudeRoutingEnv,
   compileClaudeBrokerHost,
   type ClaudeCredentialSource,
   type ClaudeExecutionPlan,
 } from './execution-plan.js';
 import { isClaudeCredentialEnvKey } from './credential-policy.js';
+import { resolveClaudeTransportMode } from './transport-mode.js';
 
 const UNSUPPORTED_CLAUDE_HELPER_SETTINGS: ReadonlySet<string> = new Set([
   'apiKeyHelper',
@@ -101,11 +111,33 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeCr
   }
 }
 
-export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan> = {
+export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan, ClaudeCredentialSource> = {
   name: 'claude',
-  subscriptionPhase: 'beforeInitialize',
+  planHost: (input) =>
+    buildClaudeHost({
+      source: input.source,
+      request:
+        input.purpose === 'execution'
+          ? input.request
+          : { cwd: input.request.cwd, coralEnv: { CORAL_CLAUDE_TRANSPORT: 'print' } },
+      baseEnv: input.baseEnv,
+      platform: input.platform,
+      storage: input.storage,
+      transportMode: input.purpose === 'curation' ? 'print' : resolveClaudeTransportMode(input.request.coralEnv),
+    }),
   compileStableHost: (host) =>
     buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
+  async interrupt(transport: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean> {
+    const brokerSessionKey = readString(continuity.brokerSessionKey);
+    if (brokerSessionKey === undefined) return false;
+    const brokerTurnId = readString(continuity.brokerTurnId);
+    if (brokerTurnId === undefined) return false;
+    const result = await transport.rpc<unknown>(
+      'turn/interrupt',
+      mapInterruptParams(brokerSessionKey, brokerTurnId) as unknown as Record<string, unknown>,
+    );
+    return isRecord(result) && result.interrupted === true && readString(result.brokerTurnId) === brokerTurnId;
+  },
 };
 
 export const claudeRecoveryLifecycle = {

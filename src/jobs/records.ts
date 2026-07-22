@@ -1,5 +1,5 @@
 import type { JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from './outcome.js';
-import type { UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
+import type { HostRef, UsageSummary, ProviderAction, ProviderInstruction } from '../providers/contract.js';
 import type { RetentionPolicy } from '../sessions/entry.js';
 import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { JobPhase } from './phase.js';
@@ -187,16 +187,24 @@ export type JobLaunch =
   | KbReindexJobLaunch
   | KbCommunitySummaryJobLaunch;
 
-export interface AppServerRuntime {
-  transport: 'app-server';
-  startTime: string;
-  providerMeta: {
-    provider: string;
-    leaseState: 'waiting' | 'acquired';
-    serverGeneration?: number;
-    transportMode?: string;
-  };
-}
+export type AppServerRuntime =
+  | {
+      transport: 'app-server';
+      startTime: string;
+      providerMeta: {
+        provider: string;
+        leaseState: 'waiting';
+      };
+    }
+  | {
+      transport: 'app-server';
+      startTime: string;
+      providerMeta: {
+        provider: string;
+        leaseState: 'acquired';
+        hostRef: HostRef;
+      };
+    };
 
 export interface InternalJobRuntime {
   transport: 'internal';

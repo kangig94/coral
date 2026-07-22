@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { none } from '#src/providers/capability.js';
 import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
@@ -119,18 +119,18 @@ describe('bound-provider execution architecture', () => {
     expect(contract).not.toContain('ProviderSpec');
     expect(contract).not.toContain('ProviderCurationCompleteRuntime');
     const preparedCuration = contract.slice(
-      contract.indexOf('export type ProviderPreparedCuration<'),
+      contract.indexOf('export type ProviderPreparedCuration ='),
       contract.indexOf('export type ProviderCurationUsageRuntime'),
     );
-    expect(preparedCuration).toContain("hostPlan: Plan['host']");
-    expect(preparedCuration).toContain('turnEnv: Readonly<Record<string, string>>');
-    expect(preparedCuration).not.toContain('ProviderServerLaunch');
+    expect(preparedCuration).not.toContain('hostPlan');
+    expect(preparedCuration).not.toContain(['turn', 'Env'].join(''));
+    expect(preparedCuration).not.toContain(['ProviderServer', 'Launch'].join(''));
     expect(preparedCuration).not.toContain('ProviderServerSpec');
     expect(preparedCuration).not.toMatch(/\blaunch\s*:/u);
     expect(claudeCuration).not.toContain('compileStableHost');
     expect(claudeCuration).not.toContain('claudeAppServerLifecycle');
     expect(boundContract).not.toContain('BoundProviderCurationRuntime');
-    expect(boundContract).not.toMatch(/readonly acquireServer\s*:/u);
+    expect(boundContract).not.toMatch(/readonly acquireS[e]rver\s*:/u);
     expect(serverLeaseBoundary).not.toContain('wrapAcquireServer');
     expect(registry).toMatch(/export type ProviderDefinition = \{\s*readonly name: string;/u);
     expect(registry).not.toMatch(/export type ProviderDefinition[^;]+readonly run:/su);
@@ -180,7 +180,8 @@ describe('bound-provider execution architecture', () => {
     const contract = readFileSync(new URL('src/providers/contract.ts', ROOT), 'utf-8');
     const executionPlan = readFileSync(new URL('src/providers/execution-plan.ts', ROOT), 'utf-8');
     const appServer = readFileSync(new URL('src/providers/app-server.ts', ROOT), 'utf-8');
-    const appServerMiddleware = readFileSync(new URL('src/providers/middleware/app-server-session.ts', ROOT), 'utf-8');
+    const oldAppServerMiddleware = new URL('src/providers/middleware/app-server-session.ts', ROOT);
+    const boundProvider = readFileSync(new URL('src/providers/internal/bound-provider.ts', ROOT), 'utf-8');
     const codexMapping = readFileSync(new URL('src/providers/codex/request-mapping.ts', ROOT), 'utf-8');
     const obsoleteExecutionNames =
       /\b(?:ProviderExecutionContext|ClaudeExecutionContext|CodexExecutionContext|prepareExecutionContext|providerContext|buildExactProviderEnv)\b/u;
@@ -197,17 +198,21 @@ describe('bound-provider execution architecture', () => {
     expect(executionPlan).toContain("export type ExecutionLifetime = 'host' | 'session' | 'turn'");
     expect(executionPlan).toContain('export type ProviderExecutionPlan<');
     expect(executionPlan).toContain('export type EnvironmentLayer =');
-    expect(contract).toContain('export type ProviderServerLaunch =');
-    expect(contract).toContain('readonly appServerTurnEnv?: Readonly<Record<string, string>>');
+    expect(contract).not.toContain(['ProviderServer', 'Launch'].join(''));
+    expect(contract).not.toContain(['appServerTurn', 'Env'].join(''));
     expect(contract).not.toContain('appServerLaunch');
     expect(contract).not.toContain('prepareAppServerAttachment');
     expect(contract).toContain("compileStableHost(host: Plan['host'])");
+    expect(contract).toContain('planHost(input: ProviderHostPlanningInput<Source>)');
     expect(appServer).not.toContain('ProviderRequest');
     expect(appServer).not.toContain('ProviderContinuityBlob');
     expect(appServer).not.toContain('buildServerSpec');
-    expect(appServerMiddleware).toContain('runtime.acquirePreparedServer()');
-    expect(appServerMiddleware).not.toContain('appServerLaunch');
-    expect(appServerMiddleware).not.toContain('buildServerSpec');
+    expect(existsSync(oldAppServerMiddleware)).toBe(false);
+    expect(boundProvider).toContain('requireAppServerHost(appServerHost');
+    expect(boundProvider).not.toContain('acquirePreparedServer');
+    expect(boundProvider).not.toContain('appServerLaunch');
+    expect(boundProvider).not.toContain('buildServerSpec');
+    expect(boundProvider).toContain('createBoundAppServerLifecycle');
     expect(codexMapping).not.toContain('buildCodexProviderServerSpec');
     expect(codexMapping).not.toContain('CodexServerSpecRequest');
   });
@@ -249,6 +254,7 @@ describe('bound-provider execution architecture', () => {
     let observedCliEnv: Readonly<Record<string, string>> | undefined;
     const definition = defineProvider<FixtureExecutionPlan, FixtureProviderSource>({
       name: 'fixture',
+      transport: 'standalone',
       prepareExecutionPlan: (input) => {
         prepared = true;
         observedSource = input.source;
@@ -372,9 +378,6 @@ describe('bound-provider execution architecture', () => {
           terminalCalls.push({ event, metadata });
         },
       },
-      acquireServer: async () => {
-        throw new Error('Fixture provider does not use an app server.');
-      },
     });
     const service = new JobLaunchService({
       runtime,
@@ -404,6 +407,7 @@ describe('bound-provider execution architecture', () => {
       },
     );
     await released;
+    await vi.waitFor(() => expect(jobPools.has('fixture-job')).toBe(false));
 
     expect(decision).toEqual({
       kind: 'provider-session',

@@ -1,11 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
-import { jobQueueQueuedBodySchema, jobRuntimeStartedBodySchema } from '#src/jobs/event-bodies.js';
+import {
+  jobQueueQueuedBodySchema,
+  jobRuntimeStartedBodySchema,
+  providerHostRefSchema,
+} from '#src/jobs/event-bodies.js';
 import { jobLaunchRequestBodySchema } from '#src/jobs/launch.js';
 import { jobTerminalSchema } from '#src/jobs/terminal/result.js';
 import { jobCreatedEvent } from '#src/jobs/event-bus.js';
 
 describe('job event body schemas', () => {
+  it('encodes HostRef ownership in the lease-mode structure', () => {
+    const identity = { provider: 'codex', fingerprint: '0'.repeat(64), instanceId: 'instance-1' };
+
+    expect(providerHostRefSchema.safeParse({ ...identity, leaseMode: 'shared' }).success).toBe(true);
+    expect(providerHostRefSchema.safeParse({ ...identity, leaseMode: 'shared', ownerJobId: 'job-a' }).success).toBe(
+      false,
+    );
+    expect(providerHostRefSchema.safeParse({ ...identity, leaseMode: 'job-exclusive' }).success).toBe(false);
+    expect(
+      providerHostRefSchema.safeParse({ ...identity, leaseMode: 'job-exclusive', ownerJobId: 'job-a' }).success,
+    ).toBe(true);
+  });
+
   it('accepts only complete, explicitly discriminated durable runtime variants', () => {
     expect(
       jobRuntimeStartedBodySchema.safeParse({
@@ -24,7 +41,7 @@ describe('job event body schemas', () => {
         providerMeta: {
           provider: 'fixture',
           leaseState: 'waiting',
-          serverGeneration: 7,
+          staleHostIdentity: 'must-not-be-accepted',
         },
       }).success,
     ).toBe(false);
@@ -41,8 +58,12 @@ describe('job event body schemas', () => {
         providerMeta: {
           provider: 'fixture',
           leaseState: 'acquired',
-          serverGeneration: 7,
-          transportMode: 'fixture-wire',
+          hostRef: {
+            provider: 'fixture',
+            fingerprint: '0'.repeat(64),
+            instanceId: 'instance-1',
+            leaseMode: 'shared',
+          },
         },
       }).success,
     ).toBe(true);

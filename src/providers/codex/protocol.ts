@@ -55,6 +55,7 @@ export interface ThreadStartParams {
   serviceTier?: 'default' | 'fast' | 'flex';
   serviceName?: string;
   ephemeral?: boolean;
+  config: Readonly<Record<string, unknown>>;
 }
 
 export interface ThreadStartResponse {
@@ -70,6 +71,7 @@ export interface ThreadResumeParams {
   approvalPolicy: string;
   sandbox?: string;
   serviceTier?: 'default' | 'fast' | 'flex';
+  config: Readonly<Record<string, unknown>>;
 }
 
 interface ThreadResumeResponse {

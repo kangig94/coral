@@ -5,9 +5,11 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { beginBgTask, bgWrapperPreamble, hasLiveWork, recordSubagentStart, recordSubagentStop } from '../../../clients/hooks/lib/live-work-registry.mjs';
+import * as liveWorkRegistry from '../../../clients/hooks/lib/live-work-registry.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { projectSlug, sandboxTmpDir } from '../../../clients/hooks/lib/plugin-paths.mjs';
+
+const { beginBgTask, bgWrapperPreamble, hasLiveWork, recordSubagentStart, recordSubagentStop } = liveWorkRegistry;
 
 const SESSION = 'sess-11111111';
 const OTHER = 'sess-22222222';
@@ -169,7 +171,7 @@ describe('live-work-registry: subagents', () => {
     expect(hasLiveWork(projectDir, forkSession, forkTranscript)).toBe(true);
   });
 
-  it('isolates sessions: one session\'s subagents do not affect another', () => {
+  it("isolates sessions: one session's subagents do not affect another", () => {
     recordSubagentStart(projectDir, SESSION, 'agentA');
     writeSubagentTranscript(parentTranscript, 'agentA');
 

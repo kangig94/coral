@@ -105,10 +105,9 @@ const recovery: ProviderRecoveryContract<ClaudeCredentialSource> = {
 export const claudeProviderDefinition: ProviderDefinition = defineProvider<ClaudeExecutionPlan, ClaudeCredentialSource>(
   {
     name: 'claude',
+    transport: 'app-server',
     run: claudeProvider,
-    prepareExecutionPlan(input) {
-      return buildClaudeExecutionPlan(input);
-    },
+    prepareExecutionPlan: buildClaudeExecutionPlan,
     preflight: (input) => claudePreflight(buildClaudePreflightRuntime(input)),
     appServer: claudeAppServerLifecycle,
     recovery,

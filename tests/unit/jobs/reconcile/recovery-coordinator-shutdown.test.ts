@@ -124,8 +124,8 @@ function createLaunchCoordinator(
 
 function createFakeProviderHostManager() {
   return {
-    acquireServer: vi.fn(),
-    borrowLiveServer: vi.fn(),
+    openSession: vi.fn(),
+    attachSession: vi.fn(async () => null),
     drainForHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
   };

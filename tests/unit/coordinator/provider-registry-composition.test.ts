@@ -52,6 +52,7 @@ describe('coordinator provider registry composition', () => {
       received.register(
         defineProvider({
           name: 'fixture',
+          transport: 'standalone',
           run: async function* () {},
           prepareExecutionPlan: prepareFixtureExecutionPlan,
         })
@@ -90,6 +91,7 @@ describe('coordinator provider registry composition', () => {
       registry.register(
         defineProvider({
           name: 'late',
+          transport: 'standalone',
           run: async function* () {},
           prepareExecutionPlan: prepareFixtureExecutionPlan,
         })

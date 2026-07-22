@@ -52,6 +52,8 @@ export async function ensureProviderServerHandle(
     shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
     clearIdleTimer: (entry: ProviderHostEntry) => void;
+    removeEntry: (entry: ProviderHostEntry) => void;
+    createInstanceId: () => string;
     signal?: AbortSignal;
   },
 ): Promise<ProviderServerHandle> {
@@ -84,6 +86,8 @@ async function initializeProviderServerHandle(
     shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
     clearIdleTimer: (entry: ProviderHostEntry) => void;
+    removeEntry: (entry: ProviderHostEntry) => void;
+    createInstanceId: () => string;
   },
 ): Promise<ProviderServerHandle> {
   const handle = await spawned;
@@ -93,13 +97,16 @@ async function initializeProviderServerHandle(
     await options.shutdownHandle(handle, entry.spec).catch(() => {});
     throw new Error(closingError.message, { cause: closingError });
   }
+  entry.instanceId = options.createInstanceId();
   entry.handle = handle;
   options.attachHostNotificationListener(entry, handle);
   const cleanup = () => {
     if (entry.handle === handle) {
       entry.handle = null;
+      entry.instanceId = null;
     }
     options.clearIdleTimer(entry);
+    options.removeEntry(entry);
     entry.disposeHostNotifications?.();
     entry.disposeHostNotifications = null;
     entry.hostStats = null;

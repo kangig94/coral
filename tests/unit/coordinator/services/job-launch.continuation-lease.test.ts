@@ -57,6 +57,7 @@ describe('JobLaunchService continuation lease admission', () => {
     };
     const provider = defineProvider({
       name: 'codex',
+      transport: 'standalone',
       run: async function* noopProvider() {},
       prepareExecutionPlan: prepareFixtureExecutionPlan,
     })

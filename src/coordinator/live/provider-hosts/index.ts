@@ -1,32 +1,40 @@
-import type { ProviderServerLaunch, ProviderServerLease, ProviderServerSpec } from '../../../providers/contract.js';
+import type { AppServerTransport, HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { ProviderServerHandle, SpawnProviderServerFn } from '../provider-server-transport.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import {
-  acquireSharedProviderServerLease,
+  acquireProviderHostPin,
   createProviderServerAttachment,
   createProviderServerLease,
-  releaseProviderServerLease,
-  releaseSharedProviderServerLease,
+  releaseProviderHostPin,
+  type ProviderServerLease,
 } from './lease.js';
 import { attachHostNotificationListener, clearIdleTimer, maybeArmIdleTimer, parseIdleTimeoutMs } from './idle.js';
 import { closeAllProviderServerEntries, closeProviderServerEntry as closeEntry, shutdownHandle } from './drain.js';
 import { cloneSpec, ensureProviderServerHandle } from './recovery.js';
-import { hostKeyFromSpec, type ProviderHostEntry, type ProviderServerAttachment } from './state.js';
+import { hostFingerprintFromSpec, hostKeyFromSpec, hostRefFromEntry, type ProviderHostEntry } from './state.js';
 import { AbortError, throwIfAborted } from '../../../runtime/abort.js';
-export type { ProviderHostEntry, ProviderServerAttachment } from './state.js';
+export type { ProviderHostEntry } from './state.js';
 
 export interface ProviderHostManager {
-  acquireServer(
-    launch: ProviderServerLaunch,
-    options?: { jobId?: string; signal?: AbortSignal },
-  ): Promise<ProviderServerLease>;
-  borrowLiveServer(
+  openSession(
     spec: ProviderServerSpec,
-    options: { serverGeneration?: number; jobId?: string },
-  ): Promise<ProviderServerAttachment | null>;
+    options?: { jobId?: string; signal?: AbortSignal },
+  ): Promise<ManagedAppServerSession>;
+  attachSession(
+    hostRef: HostRef,
+    expectation: Readonly<{ spec: ProviderServerSpec; jobId: string }>,
+  ): Promise<ManagedAppServerSession | null>;
   drainForHandoff(signal?: AbortSignal): Promise<void>;
   shutdown(signal?: AbortSignal): Promise<void>;
 }
+
+export type ProviderHostLifecycle = Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
+
+export type ManagedAppServerSession = Readonly<{
+  session: AppServerTransport;
+  hostRef: HostRef;
+  close(): void;
+}>;
 
 export { hostKeyFromSpec } from './state.js';
 
@@ -34,24 +42,23 @@ function foldedKey(key: string, platform: string): string {
   return platform === 'win32' ? key.toLowerCase() : key;
 }
 
-function compileLaunchEnvironment(launch: ProviderServerLaunch, platform: string): Readonly<Record<string, string>> {
-  const stable = launch.host.env ?? {};
-  const additions = launch.turnEnv;
-  rejectCaseFoldedDuplicates(stable, platform, 'stable host environment');
-  rejectCaseFoldedDuplicates(additions, platform, 'turn environment');
-  if (launch.host.leaseMode === 'shared' && Object.keys(additions).length > 0) {
-    throw new Error('provider_host_policy_invalid: shared host launch must not contain turn environment additions');
+function compileLaunchEnvironment(spec: ProviderServerSpec, platform: string): Readonly<Record<string, string>> {
+  const environment = spec.env ?? {};
+  rejectCaseFoldedDuplicates(environment, platform, 'stable host environment');
+  return Object.freeze({ ...environment });
+}
+
+function assertProviderHostPolicy(spec: ProviderServerSpec): void {
+  const value = spec as unknown as Record<string, unknown>;
+  if (value.leaseMode === 'shared') {
+    if (value.idlePolicy === 'host-stats' || value.idlePolicy === 'daemon') return;
+    throw new Error("provider_host_policy_invalid: shared hosts require idlePolicy 'host-stats' or 'daemon'");
   }
-  const stableKeys = new Map(Object.keys(stable).map((key) => [foldedKey(key, platform), key]));
-  for (const key of Object.keys(additions)) {
-    const stableKey = stableKeys.get(foldedKey(key, platform));
-    if (stableKey !== undefined) {
-      throw new Error(
-        `provider_host_environment_conflict: turn environment '${key}' redefines stable host binding '${stableKey}'`,
-      );
-    }
+  if (value.leaseMode === 'job-exclusive') {
+    if (!Object.hasOwn(value, 'idlePolicy')) return;
+    throw new Error('provider_host_policy_invalid: job-exclusive hosts cannot declare idlePolicy');
   }
-  return Object.freeze({ ...stable, ...additions });
+  throw new Error("provider_host_policy_invalid: leaseMode must be 'shared' or 'job-exclusive'");
 }
 
 function rejectCaseFoldedDuplicates(
@@ -70,6 +77,27 @@ function rejectCaseFoldedDuplicates(
     }
     keys.set(folded, key);
   }
+}
+
+function isExactHostRef(value: HostRef): boolean {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    typeof value.provider !== 'string' ||
+    typeof value.instanceId !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(value.fingerprint)
+  ) {
+    return false;
+  }
+  const keys = Object.keys(value).sort();
+  if (value.leaseMode === 'shared') {
+    return keys.join('\0') === ['fingerprint', 'instanceId', 'leaseMode', 'provider'].join('\0');
+  }
+  return (
+    value.leaseMode === 'job-exclusive' &&
+    typeof value.ownerJobId === 'string' &&
+    keys.join('\0') === ['fingerprint', 'instanceId', 'leaseMode', 'ownerJobId', 'provider'].join('\0')
+  );
 }
 
 function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined): Promise<void> {
@@ -95,16 +123,16 @@ function waitForClose(operation: Promise<void>, signal: AbortSignal | undefined)
 
 export class DefaultProviderHostManager implements ProviderHostManager {
   private readonly entries = new Map<string, ProviderHostEntry>();
-  private readonly leasePolicies = new Map<string, ProviderServerSpec['leaseMode']>();
   private readonly pendingCloses = new Set<Promise<void>>();
+  private readonly lifecyclePolicies = new Map<string, string>();
   private exclusiveSequence = 0;
   private acceptingAcquisitions = true;
   private readonly idleTimeoutMs: number;
   private readonly spawnProviderServer: SpawnProviderServerFn;
-  private readonly runtime: Pick<Runtime, 'time' | 'env'>;
+  private readonly runtime: Pick<Runtime, 'time' | 'env' | 'ids'>;
 
   constructor(options: {
-    runtime: Pick<Runtime, 'time' | 'env'>;
+    runtime: Pick<Runtime, 'time' | 'env' | 'ids'>;
     idleTimeoutMs?: number;
     spawnProviderServer: SpawnProviderServerFn;
   }) {
@@ -113,28 +141,24 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     this.spawnProviderServer = options.spawnProviderServer;
   }
 
-  async acquireServer(
-    launch: ProviderServerLaunch,
+  private async acquireHostLease(
+    spec: ProviderServerSpec,
     options?: { jobId?: string; signal?: AbortSignal },
-  ): Promise<ProviderServerLease> {
+  ): Promise<Readonly<{ lease: ProviderServerLease; entry: ProviderHostEntry }>> {
     if (!this.acceptingAcquisitions) {
       throw new Error('provider_host_draining: provider host manager no longer accepts acquisitions');
     }
     if (options?.signal !== undefined) {
       throwIfAborted(options.signal, 'provider_host_acquire');
     }
-    const spec = launch.host;
+    assertProviderHostPolicy(spec);
     if (spec.leaseMode === 'job-exclusive' && options?.jobId === undefined) {
       throw new Error('provider_host_policy_invalid: job-exclusive acquisition requires a job id');
     }
-    const exactEnv = compileLaunchEnvironment(launch, this.runtime.env.platform());
+    const exactEnv = compileLaunchEnvironment(spec, this.runtime.env.platform());
     const entry = this.getOrCreateProviderServerEntry(spec, exactEnv, options?.jobId);
     this.clearIdleTimer(entry);
-    if (entry.spec.leaseMode === 'shared') {
-      acquireSharedProviderServerLease(entry);
-    } else {
-      entry.leaseHeld = true;
-    }
+    acquireProviderHostPin(entry);
 
     try {
       const handle = await ensureProviderServerHandle(entry, {
@@ -153,6 +177,10 @@ export class DefaultProviderHostManager implements ProviderHostManager {
         shutdownHandle: (handle, nextSpec) => this.shutdownHandle(handle, nextSpec),
         attachHostNotificationListener: (nextEntry, handle) => this.attachHostNotificationListener(nextEntry, handle),
         clearIdleTimer: (nextEntry) => this.clearIdleTimer(nextEntry),
+        removeEntry: (nextEntry) => {
+          if (this.entries.get(nextEntry.hostKey) === nextEntry) this.entries.delete(nextEntry.hostKey);
+        },
+        createInstanceId: () => this.runtime.ids.uuid(),
         ...(options?.signal === undefined ? {} : { signal: options.signal }),
       });
       if (options?.signal !== undefined) {
@@ -166,62 +194,75 @@ export class DefaultProviderHostManager implements ProviderHostManager {
       ) {
         throw entry.closingError ?? new Error('provider_host_draining: provider host acquisition lost drain race');
       }
-      return createProviderServerLease(
-        handle,
+      return Object.freeze({
+        lease: createProviderServerLease(handle, () => this.releaseHostPin(entry)),
         entry,
-        (nextEntry) => this.releaseSharedProviderServerLease(nextEntry),
-        (nextEntry) => this.releaseProviderServerLease(nextEntry),
-      );
+      });
     } catch (error) {
-      if (entry.spec.leaseMode === 'shared') {
-        this.releaseSharedProviderServerLease(entry);
-      } else {
-        this.releaseProviderServerLease(entry);
-      }
+      this.releaseHostPin(entry);
       throw error;
     }
   }
 
-  async borrowLiveServer(
+  async openSession(
     spec: ProviderServerSpec,
-    options: { serverGeneration?: number; jobId?: string },
-  ): Promise<ProviderServerAttachment | null> {
-    const identityKey = hostKeyFromSpec(spec);
-    if (this.leasePolicies.get(identityKey) !== spec.leaseMode) return null;
-    if (spec.leaseMode === 'job-exclusive' && (options.serverGeneration === undefined || options.jobId === undefined)) {
+    options?: { jobId?: string; signal?: AbortSignal },
+  ): Promise<ManagedAppServerSession> {
+    const { lease, entry } = await this.acquireHostLease(spec, options);
+    return this.managedSession(lease, hostRefFromEntry(entry));
+  }
+
+  async attachSession(
+    hostRef: HostRef,
+    expectation: Readonly<{ spec: ProviderServerSpec; jobId: string }>,
+  ): Promise<ManagedAppServerSession | null> {
+    if (!this.acceptingAcquisitions || !isExactHostRef(hostRef)) return null;
+    if (
+      expectation.spec.provider !== hostRef.provider ||
+      expectation.spec.leaseMode !== hostRef.leaseMode ||
+      hostFingerprintFromSpec(expectation.spec) !== hostRef.fingerprint ||
+      (hostRef.leaseMode === 'job-exclusive' && hostRef.ownerJobId !== expectation.jobId)
+    ) {
       return null;
     }
     const candidates = [...this.entries.values()].filter(
       (entry) =>
-        entry.identityKey === identityKey &&
-        entry.spec.leaseMode === spec.leaseMode &&
-        !entry.closingError &&
-        entry.handle !== null &&
-        (spec.leaseMode !== 'job-exclusive' || entry.jobId === options.jobId),
+        entry.spec.provider === hostRef.provider &&
+        hostFingerprintFromSpec(entry.spec) === hostRef.fingerprint &&
+        entry.spec.leaseMode === hostRef.leaseMode &&
+        entry.instanceId === hostRef.instanceId &&
+        (hostRef.leaseMode !== 'job-exclusive' || entry.jobId === hostRef.ownerJobId) &&
+        entry.closingError === null,
     );
-    const matching =
-      options.serverGeneration === undefined
-        ? candidates
-        : candidates.filter((entry) => entry.handle?.generation === options.serverGeneration);
-    if (matching.length !== 1) {
-      return null;
-    }
-    const entry = matching[0];
+    if (candidates.length !== 1) return null;
+    const handle = candidates[0]?.handle;
+    if (handle === null || handle === undefined || handle.isClosed()) return null;
+    const entry = candidates[0];
     if (entry === undefined) return null;
-
-    const handle = entry.handle;
-    if (!handle) {
-      return null;
-    }
-    if (entry.spec.leaseMode === 'job-exclusive' && !entry.leaseHeld) {
-      return null;
-    }
-    if (options.serverGeneration !== undefined && handle.generation !== options.serverGeneration) {
-      return null;
-    }
-
     this.clearIdleTimer(entry);
-    return createProviderServerAttachment(handle);
+    acquireProviderHostPin(entry);
+    let closed = false;
+    return Object.freeze({
+      session: createProviderServerAttachment(handle),
+      hostRef,
+      close: () => {
+        if (closed) return;
+        closed = true;
+        this.releaseHostPin(entry);
+      },
+    });
+  }
+
+  private managedSession(lease: ProviderServerLease, hostRef: HostRef): ManagedAppServerSession {
+    return Object.freeze({
+      session: Object.freeze({
+        rpc: lease.rpc.bind(lease),
+        subscribe: lease.subscribe.bind(lease),
+        closed: lease.closed,
+      }),
+      hostRef,
+      close: () => lease.release(),
+    });
   }
 
   async drainForHandoff(signal?: AbortSignal): Promise<void> {
@@ -252,13 +293,14 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     jobId: string | undefined,
   ): ProviderHostEntry {
     const identityKey = hostKeyFromSpec(spec);
-    const existingPolicy = this.leasePolicies.get(identityKey);
-    if (existingPolicy !== undefined && existingPolicy !== spec.leaseMode) {
+    const requestedPolicy = spec.leaseMode === 'shared' ? `${spec.leaseMode}:${spec.idlePolicy}` : spec.leaseMode;
+    const existingPolicy = this.lifecyclePolicies.get(identityKey);
+    if (existingPolicy !== undefined && existingPolicy !== requestedPolicy) {
       throw new Error(
-        `provider_host_policy_conflict: executable identity requested as '${spec.leaseMode}' after '${existingPolicy}'`,
+        `provider_host_policy_conflict: executable identity requested as '${requestedPolicy}' after '${existingPolicy}'`,
       );
     }
-    this.leasePolicies.set(identityKey, spec.leaseMode);
+    this.lifecyclePolicies.set(identityKey, requestedPolicy);
     if (spec.leaseMode === 'shared') {
       const existing = this.entries.get(identityKey);
       if (existing) return existing;
@@ -271,11 +313,11 @@ export class DefaultProviderHostManager implements ProviderHostManager {
       identityKey,
       spec: cloneSpec(spec),
       exactEnv: Object.freeze({ ...exactEnv }),
-      ...(jobId === undefined ? {} : { jobId }),
+      ...(spec.leaseMode === 'job-exclusive' && jobId !== undefined ? { jobId } : {}),
       handle: null,
+      instanceId: null,
       spawnPromise: null,
-      leaseHeld: false,
-      sharedLeaseCount: 0,
+      pinCount: 0,
       closingError: null,
       closePromise: null,
       hostStats: null,
@@ -286,13 +328,14 @@ export class DefaultProviderHostManager implements ProviderHostManager {
     return created;
   }
 
-  private releaseSharedProviderServerLease(entry: ProviderHostEntry): void {
-    releaseSharedProviderServerLease(entry, (nextEntry) => this.maybeArmIdleTimer(nextEntry));
-  }
-
-  private releaseProviderServerLease(entry: ProviderHostEntry): void {
-    releaseProviderServerLease(entry);
-    void this.closeProviderServerEntry(entry, 'job-exclusive lease released').catch(() => {});
+  private releaseHostPin(entry: ProviderHostEntry): void {
+    releaseProviderHostPin(entry);
+    if (entry.pinCount > 0 || entry.closingError !== null) return;
+    if (entry.spec.leaseMode === 'shared') {
+      this.maybeArmIdleTimer(entry);
+      return;
+    }
+    void this.closeProviderServerEntry(entry, 'job-exclusive host unpinned').catch(() => {});
   }
 
   private attachHostNotificationListener(entry: ProviderHostEntry, handle: ProviderServerHandle): void {
@@ -344,7 +387,7 @@ export class DefaultProviderHostManager implements ProviderHostManager {
 }
 
 export function createProviderHostManager(options: {
-  runtime: Pick<Runtime, 'time' | 'env'>;
+  runtime: Pick<Runtime, 'time' | 'env' | 'ids'>;
   idleTimeoutMs?: number;
   spawnProviderServer: SpawnProviderServerFn;
 }): ProviderHostManager {

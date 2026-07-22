@@ -86,7 +86,12 @@ function createHarness(): {
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
   providerRegistry.register(
-    defineProvider({ name: 'claude', run: noopProvider, prepareExecutionPlan: prepareFixtureExecutionPlan })
+    defineProvider({
+      name: 'claude',
+      transport: 'standalone',
+      run: noopProvider,
+      prepareExecutionPlan: prepareFixtureExecutionPlan,
+    })
       .binding(fixtureProviderBindingCodec('claude'))
       .artifacts(
         managed({

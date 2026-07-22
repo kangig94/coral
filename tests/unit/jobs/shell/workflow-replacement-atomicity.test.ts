@@ -115,6 +115,7 @@ describe('workflow replacement launch atomicity', () => {
     const providerRegistry = new ProviderRegistry();
     const provider = defineProvider({
       name: 'codex',
+      transport: 'standalone',
       run: async function* noop() {},
       prepareExecutionPlan: prepareFixtureExecutionPlan,
     })
@@ -138,9 +139,6 @@ describe('workflow replacement launch atomicity', () => {
       bundleHash: 'test-bundle',
       jobPools,
       terminalMaterializer: { recordProviderTerminal: vi.fn() },
-      acquireServer: vi.fn(async () => {
-        throw new Error('provider execution is outside this atomicity test');
-      }),
     });
     const request: ProviderRequest = {
       action: 'resume',

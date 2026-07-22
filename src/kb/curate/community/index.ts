@@ -80,8 +80,9 @@ async function prepareCommunityPayload(
     relationships: capturedFinalIndex.relationships,
   });
   const partitionTree = buildCommunityPartitionTree(graph);
-  const activePriorCommunities: ExistingGeneratedCommunity[] =
-    kb.generatedCommunityProjectionStore.readActiveGeneration().records.map((record) => ({
+  const activePriorCommunities: ExistingGeneratedCommunity[] = kb.generatedCommunityProjectionStore
+    .readActiveGeneration()
+    .records.map((record) => ({
       slug: record.slug,
       title: record.title,
       level: record.level,

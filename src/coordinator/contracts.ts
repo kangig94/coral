@@ -10,12 +10,7 @@ import type { JobProgressStore } from '../jobs/contracts/job-store.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import type { JobEvent, LaunchReadiness } from '../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
-import type {
-  ProviderServerLaunch,
-  ProviderServerLease,
-  ProviderServerSpec,
-  UsageSummary,
-} from '../providers/contract.js';
+import type { UsageSummary } from '../providers/contract.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -58,29 +53,11 @@ export interface ListResult {
 
 type CoordinatorLaunchCoordinator = LaunchCoordinatorPort & ProviderDurableSpawner;
 
-export interface ExecutionProviderServerAttachment {
-  rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
-  subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
-  closed: Promise<Error | void>;
-}
-
-export interface ExecutionProviderHostManager {
-  acquireServer(
-    launch: ProviderServerLaunch,
-    options?: { jobId?: string; signal?: AbortSignal },
-  ): Promise<ProviderServerLease>;
-  borrowLiveServer(
-    spec: ProviderServerSpec,
-    options: { serverGeneration?: number; jobId?: string },
-  ): Promise<ExecutionProviderServerAttachment | null>;
-}
-
 export type ExecutionServiceDeps = {
   runtime: Runtime;
   progressStore: JobProgressStore;
   bundleHash?: string;
   backendNamespace: string;
-  providerHostManager: ExecutionProviderHostManager;
   launchCoordinator: CoordinatorLaunchCoordinator;
   eventBus: TypedEventBus;
   providerRegistry: ProviderBindingCatalog;

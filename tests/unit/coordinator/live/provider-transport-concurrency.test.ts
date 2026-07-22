@@ -4,11 +4,13 @@ import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS } from '#src/coordinator/live/provider-server-transport.js';
 import { backendLog } from '#src/infra/backend-log.js';
-import type { ProviderServerLaunch, ProviderServerSpec } from '#src/providers/contract.js';
+import type { ProviderServerSpec } from '#src/providers/contract.js';
 import { flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
-function createProviderServerSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
+type ExclusiveProviderServerSpec = Extract<ProviderServerSpec, { leaseMode: 'job-exclusive' }>;
+
+function createProviderServerSpec(overrides: Partial<ExclusiveProviderServerSpec> = {}): ExclusiveProviderServerSpec {
   return {
     provider: 'codex',
     command: 'codex',
@@ -23,8 +25,10 @@ function createProviderServerSpec(overrides: Partial<ProviderServerSpec> = {}): 
   };
 }
 
-function createProviderServerLaunch(overrides: Partial<ProviderServerSpec> = {}): ProviderServerLaunch {
-  return { host: createProviderServerSpec(overrides), turnEnv: {} };
+function createHostLaunch(
+  overrides: Partial<ExclusiveProviderServerSpec> = {},
+): Parameters<DefaultProviderHostManager['openSession']>[0] {
+  return createProviderServerSpec(overrides);
 }
 
 function observePromise<T>(promise: Promise<T>): { settled: boolean; value?: T; error?: unknown } {
@@ -52,7 +56,7 @@ describe('provider transport concurrency hardening', () => {
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
 
-    const observed = observePromise(hostManager.acquireServer(createProviderServerLaunch(), { jobId: 'job-a' }));
+    const observed = observePromise(hostManager.openSession(createHostLaunch(), { jobId: 'job-a' }));
     await flushMicrotasks();
 
     runtime.time.tick(PROVIDER_SERVER_INITIALIZE_TIMEOUT_MS - 1);
@@ -78,7 +82,7 @@ describe('provider transport concurrency hardening', () => {
     });
 
     const observed = observePromise(
-      hostManager.acquireServer(createProviderServerLaunch({ initializeTimeoutMs: 250 }), { jobId: 'job-a' }),
+      hostManager.openSession(createHostLaunch({ initializeTimeoutMs: 250 }), { jobId: 'job-a' }),
     );
     await flushMicrotasks();
 
@@ -104,7 +108,7 @@ describe('provider transport concurrency hardening', () => {
     });
 
     const observed = observePromise(
-      hostManager.acquireServer(createProviderServerLaunch({ initializeTimeoutMs: 0 }), { jobId: 'job-a' }),
+      hostManager.openSession(createHostLaunch({ initializeTimeoutMs: 0 }), { jobId: 'job-a' }),
     );
     await flushMicrotasks();
 
@@ -134,7 +138,7 @@ describe('provider transport concurrency hardening', () => {
     controller.abort(reason);
 
     await expect(
-      hostManager.acquireServer(createProviderServerLaunch({ initializeRequest: undefined }), {
+      hostManager.openSession(createHostLaunch({ initializeRequest: undefined }), {
         jobId: 'job-a',
         signal: controller.signal,
       }),
@@ -153,7 +157,7 @@ describe('provider transport concurrency hardening', () => {
     const controller = new AbortController();
 
     const observed = observePromise(
-      hostManager.acquireServer(createProviderServerLaunch(), { jobId: 'job-a', signal: controller.signal }),
+      hostManager.openSession(createHostLaunch(), { jobId: 'job-a', signal: controller.signal }),
     );
     await flushMicrotasks();
 

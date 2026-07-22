@@ -55,11 +55,9 @@ export async function closeProviderServerEntry(
     options.entries.delete(entry.hostKey);
   }
 
-  entry.leaseHeld = false;
-  entry.sharedLeaseCount = 0;
-
   const handle = entry.handle;
   entry.handle = null;
+  entry.instanceId = null;
   if (handle) {
     await options.shutdownHandle(handle, entry.spec).catch(() => {});
     return;

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ProviderBindingRuntime } from '#src/providers/contracts/binding.js';
-import { createBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
+import { createBuiltInProviderRegistry as createUnconnectedBuiltInProviderRegistry } from '#src/providers/bootstrap.js';
 import { providerLookupPortFromCatalog } from '#src/providers/catalog.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { CLAUDE_CREDENTIAL_ENV_KEYS } from '#src/providers/claude/credential-policy.js';
@@ -25,6 +25,17 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 const roots: string[] = [];
 const runtime: ProviderBindingRuntime = { readFileSync, readdirSync, realpathSync, statSync };
+
+function createBuiltInProviderRegistry() {
+  const registry = createUnconnectedBuiltInProviderRegistry();
+  registry.connectAppServerHost({
+    openSession: async () => {
+      throw new Error('binding lifecycle fixture does not open app-server sessions');
+    },
+    attachSession: async () => null,
+  });
+  return registry;
+}
 
 function fixtureRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-binding-'));
@@ -313,28 +324,21 @@ describe('provider binding lifecycle', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.envelope.kind).toBe('profile');
-    expect(
-      result.value
-        .prepareExecution({
-          request: {
-            action: 'exec',
-            sessionId: 'claude-session',
-            prompt: 'test',
-            cwd: root,
-            bypassPermissions: false,
-            coralEnv: {},
-          },
-          baseEnv: { PATH: '/bin' },
-          storage: { existsSync: () => false },
-          platform: 'linux',
-        })
-        .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
-    ).toMatchObject({
-      PATH: '/bin',
-      HOME: root,
-      CORAL_CHILD: '1',
-      CORAL_SESSION_ID: 'claude-session',
+    const claudeExecution = result.value.prepareExecution({
+      request: {
+        action: 'exec',
+        sessionId: 'claude-session',
+        prompt: 'test',
+        cwd: root,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      baseEnv: { PATH: '/bin' },
+      storage: { existsSync: () => false },
+      platform: 'linux',
     });
+    expect(claudeExecution.kind).toBe('app-server');
+    expect(claudeExecution).not.toHaveProperty('prepareCliRequest');
     expect(
       result.value.compareIdentity({
         provider: 'claude',
@@ -397,23 +401,21 @@ describe('provider binding lifecycle', () => {
         },
       }),
     ).toEqual({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
-    expect(
-      result.value
-        .prepareExecution({
-          request: {
-            action: 'exec',
-            sessionId: 'codex-session',
-            prompt: 'test',
-            cwd: root,
-            bypassPermissions: false,
-            coralEnv: {},
-          },
-          baseEnv: { PATH: '/bin' },
-          storage: { existsSync: () => false },
-          platform: 'linux',
-        })
-        .prepareCliRequest({ command: 'fixture', args: [] }).exactEnv,
-    ).toMatchObject({ PATH: '/bin', CODEX_HOME: codexHome, CORAL_SESSION_ID: 'codex-session' });
+    const codexExecution = result.value.prepareExecution({
+      request: {
+        action: 'exec',
+        sessionId: 'codex-session',
+        prompt: 'test',
+        cwd: root,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      baseEnv: { PATH: '/bin' },
+      storage: { existsSync: () => false },
+      platform: 'linux',
+    });
+    expect(codexExecution.kind).toBe('app-server');
+    expect(codexExecution).not.toHaveProperty('prepareCliRequest');
 
     writeCodexAuth(codexHome, { account_id: 'acct-two' });
     await expect(result.value.readiness('recovery', runtime)).resolves.toEqual({

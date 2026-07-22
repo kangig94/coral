@@ -1,7 +1,13 @@
 import type { ProviderScope } from '#src/infra/provider-scope.js';
-import { buildClaudeExecutionPlan, type ClaudeCredentialSource } from '#src/providers/claude/execution-plan.js';
+import {
+  buildClaudeExecutionPlan,
+  claudeBaseLayer,
+  claudeBrokerSettingsLayer,
+  claudeRoutingLayer,
+  type ClaudeCredentialSource,
+  type ClaudeExecutionPlan,
+} from '#src/providers/claude/execution-plan.js';
 import { buildCodexExecutionPlan, type CodexCredentialSource } from '#src/providers/codex/execution-plan.js';
-import { claudeAppServerLifecycle } from '#src/providers/claude/provider-facets.js';
 import { codexAppServerLifecycle } from '#src/providers/codex/provider-facets.js';
 import type { ProviderBindingEnvelope } from '#src/infra/provider-binding-envelope.js';
 
@@ -109,34 +115,77 @@ const TEST_EXECUTION_REQUEST = {
 
 const TEST_CODEX_PREPARED = buildCodexExecutionPlan({
   source: TEST_CODEX_SOURCE,
+  hostPlan: codexAppServerLifecycle.planHost({
+    purpose: 'execution',
+    source: TEST_CODEX_SOURCE,
+    request: TEST_EXECUTION_REQUEST,
+    baseEnv: {},
+    platform: 'linux',
+    storage: { existsSync: () => false },
+  }),
   request: TEST_EXECUTION_REQUEST,
   baseEnv: {},
   platform: 'linux',
 });
-export const TEST_CODEX_PLAN = TEST_CODEX_PREPARED.plan;
-export const TEST_CODEX_APP_SERVER_LAUNCH = {
-  host: codexAppServerLifecycle.compileStableHost(TEST_CODEX_PREPARED.plan.host),
-  turnEnv: TEST_CODEX_PREPARED.appServerTurnEnv,
-};
+export const TEST_CODEX_PLAN = Object.freeze({
+  host: codexAppServerLifecycle.planHost({
+    purpose: 'execution',
+    source: TEST_CODEX_SOURCE,
+    request: TEST_EXECUTION_REQUEST,
+    baseEnv: {},
+    platform: 'linux',
+    storage: { existsSync: () => false },
+  }),
+  session: TEST_CODEX_PREPARED.session,
+  turn: TEST_CODEX_PREPARED.turn,
+});
 
 const TEST_CLAUDE_PREPARED = buildClaudeExecutionPlan({
   source: TEST_CLAUDE_SOURCE,
+  hostPlan: Object.freeze({
+    platform: 'linux',
+    broker: Object.freeze({
+      command: process.execPath,
+      args: Object.freeze(['/test/coral-claude-appserver.cjs']),
+      cwd: TEST_EXECUTION_REQUEST.cwd,
+      transportMode: 'print',
+      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeBrokerSettingsLayer('print', 'linux')]),
+    }),
+    controller: Object.freeze({
+      source: TEST_CLAUDE_SOURCE,
+      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeRoutingLayer(TEST_CLAUDE_SOURCE, 'linux')]),
+    }),
+  }) satisfies ClaudeExecutionPlan['host'],
   request: TEST_EXECUTION_REQUEST,
   baseEnv: {},
   storage: { existsSync: () => false },
   platform: 'linux',
 });
-export const TEST_CLAUDE_PLAN = TEST_CLAUDE_PREPARED.plan;
-export const TEST_CLAUDE_APP_SERVER_LAUNCH = {
-  host: claudeAppServerLifecycle.compileStableHost(TEST_CLAUDE_PREPARED.plan.host),
-  turnEnv: TEST_CLAUDE_PREPARED.appServerTurnEnv,
-};
+export const TEST_CLAUDE_PLAN = Object.freeze({
+  host: Object.freeze({
+    platform: 'linux',
+    broker: Object.freeze({
+      command: process.execPath,
+      args: Object.freeze(['/test/coral-claude-appserver.cjs']),
+      cwd: TEST_EXECUTION_REQUEST.cwd,
+      transportMode: 'print' as const,
+      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeBrokerSettingsLayer('print', 'linux')]),
+    }),
+    controller: Object.freeze({
+      source: TEST_CLAUDE_SOURCE,
+      environment: Object.freeze([claudeBaseLayer({}, 'linux'), claudeRoutingLayer(TEST_CLAUDE_SOURCE, 'linux')]),
+    }),
+  }),
+  session: TEST_CLAUDE_PREPARED.session,
+  turn: TEST_CLAUDE_PREPARED.turn,
+}) satisfies ClaudeExecutionPlan;
 
 export function prepareTestCodexAppServer(
   request: { readonly cwd: string; readonly coralEnv?: Record<string, string> },
   persistedContinuity?: Record<string, unknown>,
 ) {
-  const prepared = buildCodexExecutionPlan({
+  const hostPlan = codexAppServerLifecycle.planHost({
+    purpose: 'execution',
     source: TEST_CODEX_SOURCE,
     request: {
       ...TEST_EXECUTION_REQUEST,
@@ -146,6 +195,19 @@ export function prepareTestCodexAppServer(
     persistedContinuity,
     baseEnv: {},
     platform: 'linux',
+    storage: { existsSync: () => false },
   });
-  return codexAppServerLifecycle.compileStableHost(prepared.plan.host);
+  buildCodexExecutionPlan({
+    source: TEST_CODEX_SOURCE,
+    hostPlan,
+    request: {
+      ...TEST_EXECUTION_REQUEST,
+      cwd: request.cwd,
+      coralEnv: request.coralEnv ?? {},
+    },
+    persistedContinuity,
+    baseEnv: {},
+    platform: 'linux',
+  });
+  return codexAppServerLifecycle.compileStableHost(hostPlan);
 }

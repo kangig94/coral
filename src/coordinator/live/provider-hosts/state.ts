@@ -1,12 +1,8 @@
-import type { ProviderServerSpec } from '../../../providers/contract.js';
+import { createHash } from 'node:crypto';
+
+import type { HostRef, ProviderServerSpec } from '../../../providers/contract.js';
 import type { TimePort } from '../../../infra/port-types.js';
 import type { ProviderServerHandle } from '../provider-server-transport.js';
-
-export type ProviderServerAttachment = {
-  rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
-  subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
-  closed: Promise<Error | void>;
-};
 
 export type HostStatsState = {
   liveControllers: number;
@@ -23,9 +19,11 @@ export type ProviderHostEntry = {
   /** Owning job for a job-exclusive process. */
   jobId?: string;
   handle: ProviderServerHandle | null;
+  /** Opaque identity minted for the currently installed concrete process. */
+  instanceId: string | null;
   spawnPromise: Promise<ProviderServerHandle> | null;
-  leaseHeld: boolean;
-  sharedLeaseCount: number;
+  /** Open and attached sessions pin the concrete process until idempotent close. */
+  pinCount: number;
   closingError: Error | null;
   closePromise: Promise<void> | null;
   hostStats: HostStatsState | null;
@@ -56,7 +54,36 @@ export function hostKeyFromSpec(spec: ProviderServerSpec): string {
       initializeRequest: spec.initializeRequest ?? null,
       initializeTimeoutMs: spec.initializeTimeoutMs ?? null,
       shutdownCapability: spec.shutdownCapability ?? null,
-      runtimeMetadata: spec.runtimeMetadata ?? null,
     }),
   );
+}
+
+export function hostFingerprintFromSpec(spec: ProviderServerSpec): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        identity: hostKeyFromSpec(spec),
+        leaseMode: spec.leaseMode,
+        idlePolicy: spec.leaseMode === 'shared' ? spec.idlePolicy : null,
+      }),
+    )
+    .digest('hex');
+}
+
+export function hostRefFromEntry(entry: ProviderHostEntry): HostRef {
+  if (entry.instanceId === null) {
+    throw new Error('provider_host_reference_invalid: concrete host has no instance identity');
+  }
+  const identity = {
+    provider: entry.spec.provider,
+    fingerprint: hostFingerprintFromSpec(entry.spec),
+    instanceId: entry.instanceId,
+  } as const;
+  if (entry.spec.leaseMode === 'shared') {
+    return Object.freeze({ ...identity, leaseMode: 'shared' as const });
+  }
+  if (entry.jobId === undefined) {
+    throw new Error('provider_host_reference_invalid: job-exclusive host has no owner');
+  }
+  return Object.freeze({ ...identity, leaseMode: 'job-exclusive' as const, ownerJobId: entry.jobId });
 }

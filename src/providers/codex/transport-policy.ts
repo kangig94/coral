@@ -1,4 +1,4 @@
-import type { ProviderServerLease } from '../contract.js';
+import type { AppServerTransport } from '../contract.js';
 import type { AppServerResponse } from './protocol.js';
 
 const OFFICIAL_CHATGPT_BASE_URLS = new Set(['https://chatgpt.com/backend-api', 'https://chatgpt.com/backend-api/']);
@@ -76,7 +76,7 @@ export function assertCodexEffectiveTransport(config: Record<string, unknown>): 
   }
 }
 
-export async function verifyCodexEffectiveTransport(lease: ProviderServerLease, cwd: string): Promise<void> {
+export async function verifyCodexEffectiveTransport(lease: AppServerTransport, cwd: string): Promise<void> {
   const response = await lease.rpc<AppServerResponse<'config/read'>>('config/read', {
     includeLayers: false,
     cwd,

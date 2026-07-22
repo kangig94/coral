@@ -895,7 +895,12 @@ describe('ralph-loop hook subagent gate', () => {
 
     const result = runHook(
       RALPH_LOOP_HOOK,
-      { hook_event_name: 'Stop', session_id: sessionId, transcript_path: transcriptPath, last_assistant_message: 'still working' },
+      {
+        hook_event_name: 'Stop',
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        last_assistant_message: 'still working',
+      },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
     );
 
@@ -913,7 +918,12 @@ describe('ralph-loop hook subagent gate', () => {
 
     const result = runHook(
       RALPH_LOOP_HOOK,
-      { hook_event_name: 'Stop', session_id: sessionId, transcript_path: transcriptPath, last_assistant_message: 'still working' },
+      {
+        hook_event_name: 'Stop',
+        session_id: sessionId,
+        transcript_path: transcriptPath,
+        last_assistant_message: 'still working',
+      },
       { CLAUDE_PROJECT_DIR: fixture.projectRoot, TMPDIR: fixture.tmpRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
     );
 
@@ -947,7 +957,12 @@ describe('kb-promote-gate hook subagent gate', () => {
     const deferred = runHook(
       KB_PROMOTE_GATE_HOOK,
       { hook_event_name: 'Stop', session_id: sessionId, transcript_path: transcriptPath },
-      { CLAUDE_PROJECT_DIR: fixture.projectRoot, HOME: fixture.root, TMPDIR: fixture.tmpRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+        CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot,
+      },
     );
     expect(deferred.status).toBe(0);
     expect(deferred.stdout.trim()).toBe(''); // deferred: no block
@@ -956,7 +971,12 @@ describe('kb-promote-gate hook subagent gate', () => {
     const fired = runHook(
       KB_PROMOTE_GATE_HOOK,
       { hook_event_name: 'Stop', session_id: 'sess-kb-none', transcript_path: transcriptPath },
-      { CLAUDE_PROJECT_DIR: fixture.projectRoot, HOME: fixture.root, TMPDIR: fixture.tmpRoot, CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        HOME: fixture.root,
+        TMPDIR: fixture.tmpRoot,
+        CORAL_WORK_ROOT_OVERRIDE: fixture.workRoot,
+      },
     );
     expect(expectStopOutput(fired).decision).toBe('block');
   });

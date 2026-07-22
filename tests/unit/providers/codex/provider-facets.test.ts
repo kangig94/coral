@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { prepareTestCodexAppServer, TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
-import { codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
+import { codexAppServerLifecycle, codexRecoveryLifecycle } from '#src/providers/codex/provider-facets.js';
 import { buildCodexContinuity } from '#src/providers/codex/request-mapping.js';
 import { codexArtifactCapability, locateCodexRolloutArtifact } from '#src/providers/codex/artifacts.js';
-import type { ArtifactCleanupRuntime, ProviderServerLease } from '#src/providers/contract.js';
+import type { ArtifactCleanupRuntime, AppServerTransport } from '#src/providers/contract.js';
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   return {
@@ -25,7 +25,7 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
 function leaseWithRpc(
   rpc: ReturnType<typeof vi.fn>,
   effectiveConfig: Record<string, unknown> = {},
-): ProviderServerLease {
+): AppServerTransport {
   return {
     rpc: ((method: string, params: Record<string, unknown>) =>
       method === 'config/read'
@@ -33,9 +33,8 @@ function leaseWithRpc(
         : (rpc as unknown as (method: string, params: Record<string, unknown>) => Promise<unknown>)(
             method,
             params,
-          )) as ProviderServerLease['rpc'],
+          )) as AppServerTransport['rpc'],
     subscribe: () => () => {},
-    release: () => {},
     closed: Promise.resolve(),
   };
 }
@@ -85,14 +84,26 @@ describe('codexRecoveryLifecycle.finalizeInterrupted', () => {
   });
 });
 
-describe('codexRecoveryLifecycle.probe', () => {
+describe('codexAppServerLifecycle.interrupt', () => {
+  it('confirms interruption only when the response echoes the exact thread and turn', async () => {
+    const continuity = { cwd: '/workspace', threadId: 'thread-1', turnId: 'turn-1' };
+    const mismatch = vi.fn(async () => ({ threadId: 'thread-other', turnId: 'turn-1' }));
+    const exact = vi.fn(async () => ({ threadId: 'thread-1', turnId: 'turn-1' }));
+
+    await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(mismatch), continuity)).resolves.toBe(false);
+    await expect(codexAppServerLifecycle.interrupt?.(leaseWithRpc(exact), continuity)).resolves.toBe(true);
+  });
+});
+
+describe('codexAppServerLifecycle.probe', () => {
   it('rejects hostile effective config before the recovery thread/resume RPC', async () => {
     const continuity = { cwd: '/workspace/project', threadId: 'thread-1' };
-    prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
     await expect(
-      codexRecoveryLifecycle.probe(leaseWithRpc(rpc, { openai_base_url: 'https://proxy.invalid/v1' }), continuity),
+      codexAppServerLifecycle.probe?.(leaseWithRpc(rpc, { openai_base_url: 'https://proxy.invalid/v1' }), continuity, {
+        request: { cwd: '/workspace/project' },
+      }),
     ).rejects.toThrow("Unsupported Codex effective setting 'openai_base_url'");
     expect(rpc).not.toHaveBeenCalled();
   });
@@ -104,10 +115,13 @@ describe('codexRecoveryLifecycle.probe', () => {
       turnId: 'turn-1',
       attacker: 'drop-me',
     };
-    prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
-    await expect(codexRecoveryLifecycle.probe(leaseWithRpc(rpc), continuity)).resolves.toEqual({
+    await expect(
+      codexAppServerLifecycle.probe?.(leaseWithRpc(rpc), continuity, {
+        request: { cwd: '/workspace/project' },
+      }),
+    ).resolves.toEqual({
       resumable: true,
       updatedContinuity: {
         cwd: '/workspace/project/subdir',
@@ -120,7 +134,19 @@ describe('codexRecoveryLifecycle.probe', () => {
       model: null,
       modelProvider: 'openai',
       approvalPolicy: 'never',
+      config: {},
     });
+  });
+
+  it('rejects a valid-shaped thread/resume response for a different thread', async () => {
+    const continuity = { cwd: '/workspace/project', threadId: 'thread-1' };
+    const rpc = vi.fn(async () => ({ thread: { id: 'thread-other' } }));
+
+    await expect(
+      codexAppServerLifecycle.probe?.(leaseWithRpc(rpc), continuity, {
+        request: { cwd: '/workspace/project' },
+      }),
+    ).rejects.toThrow('Codex recovery probe did not resume the exact requested thread id.');
   });
 
   it('does not resume when continuity cwd is outside the scoped project cwd', async () => {
@@ -129,10 +155,13 @@ describe('codexRecoveryLifecycle.probe', () => {
       threadId: 'thread-1',
       turnId: 'turn-1',
     };
-    prepareTestCodexAppServer({ cwd: '/workspace/project' }, continuity);
     const rpc = vi.fn(async () => ({ thread: { id: 'thread-1' } }));
 
-    await expect(codexRecoveryLifecycle.probe(leaseWithRpc(rpc), continuity)).resolves.toEqual({
+    await expect(
+      codexAppServerLifecycle.probe?.(leaseWithRpc(rpc), continuity, {
+        request: { cwd: '/workspace/project' },
+      }),
+    ).resolves.toEqual({
       resumable: false,
       updatedContinuity: {
         threadId: 'thread-1',

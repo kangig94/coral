@@ -1,20 +1,31 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type {
+  AppServerSession,
+  ProviderAppServerRuntime,
   ProviderEventBody,
   ProviderRequest,
-  ProviderRuntime,
-  ProviderServerLease,
 } from '#src/providers/contract.js';
 import { codexThreadProvider } from '#src/providers/codex/thread-provider.js';
-import { buildCodexExecutionPlan, type CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
+import { codexTurnKernel } from '#src/providers/codex/thread-kernel.js';
+import { commitContinuityEvent } from '#src/providers/internal/continuity-commit.js';
+import {
+  buildCodexExecutionPlan as buildCodexExecutionPlanWithHost,
+  buildCodexHost,
+  type CodexExecutionPlan,
+} from '#src/providers/codex/execution-plan.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { TEST_CODEX_SOURCE } from '../../../helpers/provider-credentials.js';
 
-type MockLease = ProviderServerLease & {
+function buildCodexExecutionPlan(options: Omit<Parameters<typeof buildCodexExecutionPlanWithHost>[0], 'hostPlan'>) {
+  const host = buildCodexHost(options);
+  const prepared = buildCodexExecutionPlanWithHost({ ...options, hostPlan: host });
+  return { ...prepared, plan: { host, session: prepared.session, turn: prepared.turn } };
+}
+
+type MockLease = AppServerSession & {
   close(outcome?: Error | void): void;
   emit(message: { method: string; params?: Record<string, unknown> }): void;
-  releaseMock: ReturnType<typeof vi.fn>;
   rpcMock: ReturnType<typeof vi.fn>;
   subscribeMock: ReturnType<typeof vi.fn>;
 };
@@ -23,31 +34,29 @@ function makeLease(
   rpcImpl: (method: string, params: Record<string, unknown>) => Promise<unknown>,
   effectiveConfig: Record<string, unknown> = {},
 ): MockLease {
-  let handler: ((message: { method: string; params?: Record<string, unknown> }) => void) | null = null;
+  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
-  const releaseMock = vi.fn();
   const rpcMock = vi.fn((method: string, params: Record<string, unknown>) =>
     method === 'config/read' ? Promise.resolve({ config: effectiveConfig }) : rpcImpl(method, params),
   );
   const subscribeMock = vi.fn((next: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-    handler = next;
+    handlers.add(next);
     return () => {
-      handler = null;
+      handlers.delete(next);
     };
   });
 
   return {
-    rpc: rpcMock as unknown as ProviderServerLease['rpc'],
-    subscribe: subscribeMock as unknown as ProviderServerLease['subscribe'],
-    release: releaseMock,
+    rpc: rpcMock as unknown as AppServerSession['rpc'],
+    subscribe: subscribeMock as unknown as AppServerSession['subscribe'],
     closed: closed.promise,
+    interrupt: (continuity) => Promise.resolve(rpcMock('turn/interrupt', continuity)).then(() => true),
     close(outcome) {
       closed.resolve(outcome);
     },
     emit(message) {
-      handler?.(message);
+      for (const handler of handlers) handler(message);
     },
-    releaseMock,
     rpcMock,
     subscribeMock,
   };
@@ -67,16 +76,16 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
-type CodexRuntime = ProviderRuntime<CodexExecutionPlan>;
+type CodexRuntime = ProviderAppServerRuntime<CodexExecutionPlan>;
 
 function makeRuntime(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   persistedContinuity: CodexRuntime['persistedContinuity'] = {
     cwd: '/workspace/persisted',
     threadId: 'thread-1',
   },
   overrides: Partial<Pick<CodexRuntime, 'signal' | 'storage' | 'env' | 'continuityBridge'>> = {},
-): CodexRuntime & { acquirePreparedServer: ReturnType<typeof vi.fn> } {
+): CodexRuntime {
   const prepared = buildCodexExecutionPlan({
     source: TEST_CODEX_SOURCE,
     request: makeRequest(),
@@ -85,6 +94,7 @@ function makeRuntime(
     platform: 'linux',
   });
   return {
+    transport: 'app-server',
     signal: overrides.signal ?? new AbortController().signal,
     time: {
       now: () => Date.now(),
@@ -96,8 +106,7 @@ function makeRuntime(
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
     storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
     ...(overrides.env ? { env: overrides.env } : {}),
-    runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
-    acquirePreparedServer: vi.fn(async () => lease),
+    appServerSession: lease,
     persistedContinuity,
     continuityBridge:
       overrides.continuityBridge ??
@@ -114,6 +123,7 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
   const events: ProviderEventBody[] = [];
   for await (const event of stream) {
     events.push(event);
+    if (event.kind === 'continuity') commitContinuityEvent(event);
   }
   return events;
 }
@@ -147,7 +157,6 @@ describe('codexThreadProvider', () => {
         },
       },
     });
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('runs the composed stack end-to-end and emits live continuity deltas before the terminal', async () => {
@@ -164,9 +173,6 @@ describe('codexThreadProvider', () => {
 
     const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
 
-    await vi.waitFor(() => {
-      expect(runtime.acquirePreparedServer).toHaveBeenCalledWith();
-    });
     await vi.waitFor(() => {
       expect(lease.rpcMock).toHaveBeenCalledWith(
         'turn/start',
@@ -202,39 +208,26 @@ describe('codexThreadProvider', () => {
     const events = await eventsPromise;
 
     expect(events).toHaveLength(6);
-    expect(events[0]).toEqual({
-      kind: 'continuity',
-      conversationRef: 'thread-1',
-      resumable: true,
-      providerContinuity: {
-        cwd: '/workspace/persisted',
-        threadId: 'thread-1',
-        turnId: 'turn-1',
-      },
-    });
-    expect(events[1]).toEqual({
-      kind: 'progress',
-      message: 'Thread ready (thread-1).',
-    });
-    expect(events[2]).toEqual({
-      kind: 'continuity',
-      conversationRef: 'thread-1',
-      resumable: true,
-      providerContinuity: {
-        cwd: '/workspace/persisted',
-        threadId: 'thread-1',
-        turnId: undefined,
-      },
-    });
-    expect(events[3]).toEqual({
-      kind: 'progress',
-      message: 'Turn completed.',
-    });
-    expect(events[4]).toEqual({
-      kind: 'progress',
-      message: expect.stringContaining('No rollout JSONL found matching thread thread-1'),
-    });
-    expect(events[5]).toMatchObject({
+    expect(events).toEqual(
+      expect.arrayContaining([
+        {
+          kind: 'continuity',
+          conversationRef: 'thread-1',
+          resumable: true,
+          providerContinuity: { cwd: '/workspace/persisted', threadId: 'thread-1', turnId: 'turn-1' },
+        },
+        { kind: 'progress', message: 'Thread ready (thread-1).' },
+        {
+          kind: 'continuity',
+          conversationRef: 'thread-1',
+          resumable: true,
+          providerContinuity: { cwd: '/workspace/persisted', threadId: 'thread-1', turnId: undefined },
+        },
+        { kind: 'progress', message: 'Turn completed.' },
+        { kind: 'progress', message: expect.stringContaining('No rollout JSONL found matching thread thread-1') },
+      ]),
+    );
+    expect(events.at(-1)).toMatchObject({
       kind: 'terminal',
       terminal: {
         content: 'Final answer',
@@ -243,7 +236,65 @@ describe('codexThreadProvider', () => {
       diagnostics: {},
     });
     expect(lease.subscribeMock).toHaveBeenCalledTimes(1);
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('isolates thread config, notifications, and cancellation for two turns on one shared session', async () => {
+    const lease = makeLease(async (method, params) => {
+      if (method === 'thread/resume') return { thread: { id: params.threadId } };
+      if (method === 'turn/start') return { turn: { id: `turn-${params.threadId}`, status: 'inProgress' } };
+      if (method === 'turn/interrupt') return { threadId: params.threadId, turnId: params.turnId };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const requestA = makeRequest({ sessionId: 'job-a', conversationRef: 'thread-a' });
+    const requestB = makeRequest({ sessionId: 'job-b', conversationRef: 'thread-b' });
+    const controllerB = new AbortController();
+    const runtimeA = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-a' });
+    const runtimeB = makeRuntime(lease, { cwd: '/workspace', threadId: 'thread-b' }, { signal: controllerB.signal });
+    runtimeA.executionPlan = buildCodexExecutionPlan({
+      source: TEST_CODEX_SOURCE,
+      request: requestA,
+      baseEnv: {},
+      protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-a' },
+      platform: 'linux',
+    }).plan;
+    runtimeB.executionPlan = buildCodexExecutionPlan({
+      source: TEST_CODEX_SOURCE,
+      request: requestB,
+      baseEnv: {},
+      protectedEnv: { CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-b' },
+      platform: 'linux',
+    }).plan;
+
+    const eventsA = collect(codexThreadProvider(requestA, runtimeA));
+    let bSettled = false;
+    const eventsB = collect(codexThreadProvider(requestB, runtimeB)).finally(() => {
+      bSettled = true;
+    });
+    await vi.waitFor(() => {
+      expect(lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/start')).toHaveLength(2);
+    });
+
+    const resumeCalls = lease.rpcMock.mock.calls.filter(([method]) => method === 'thread/resume');
+    const configA = resumeCalls.find(([, params]) => params.threadId === 'thread-a')?.[1].config;
+    const configB = resumeCalls.find(([, params]) => params.threadId === 'thread-b')?.[1].config;
+    expect(configA).toMatchObject({ shell_environment_policy: { set: { CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-a' } } });
+    expect(configB).toMatchObject({ shell_environment_policy: { set: { CORAL_CHILD_PRINCIPAL_HANDLE: 'handle-b' } } });
+    expect(configA).not.toEqual(configB);
+
+    lease.emit({
+      method: 'turn/completed',
+      params: { threadId: 'thread-a', turn: { id: 'turn-thread-a', status: 'completed' } },
+    });
+    await expect(eventsA).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'terminal' })]));
+    expect(bSettled).toBe(false);
+
+    controllerB.abort('cancel-b');
+    await expect(eventsB).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'terminal' })]));
+    expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', {
+      threadId: 'thread-b',
+      turnId: 'turn-thread-b',
+    });
+    expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/interrupt', expect.objectContaining({ threadId: 'thread-a' }));
   });
 
   it('rejects an empty thread id returned by the app-server before checkpointing', async () => {
@@ -274,7 +325,46 @@ describe('codexThreadProvider', () => {
       },
       diagnostics: {},
     });
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a turn until the resumed thread checkpoint is durably committed', async () => {
+    const durable = createDeferred<void>();
+    const checkpoint = vi.fn(() => durable.promise);
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'completed' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    const runtime = makeRuntime(lease, undefined, {
+      continuityBridge: { checkpoint, transportClosed: vi.fn() },
+    });
+
+    const events = collect(codexTurnKernel(makeRequest(), runtime));
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
+    expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/start', expect.any(Object));
+
+    durable.resolve();
+    await expect(events).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'terminal' })]));
+    expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.objectContaining({ threadId: 'thread-1' }));
+  });
+
+  it('rejects thread/resume when the app-server returns a different thread identity', async () => {
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-other' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+
+    const events = await collect(codexThreadProvider(makeRequest(), makeRuntime(lease)));
+
+    expect(lease.rpcMock).not.toHaveBeenCalledWith('turn/start', expect.any(Object));
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: 'terminal',
+        terminal: expect.objectContaining({
+          outcome: expect.objectContaining({ note: expect.stringContaining('exact requested thread id') }),
+        }),
+      }),
+    ]);
   });
 
   it('does not checkpoint an empty turn id returned by turn/start', async () => {
@@ -347,7 +437,6 @@ describe('codexThreadProvider', () => {
       },
     });
     expect(terminal?.terminal.outcome).toEqual({ kind: 'completed' });
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('emits the final transport-close continuity snapshot from the outer middleware before the terminal', async () => {
@@ -377,8 +466,7 @@ describe('codexThreadProvider', () => {
 
     const events = await eventsPromise;
 
-    expect(events).toHaveLength(3);
-    expect(events[0]).toEqual({
+    expect(events).toContainEqual({
       kind: 'continuity',
       conversationRef: 'thread-1',
       resumable: true,
@@ -388,11 +476,11 @@ describe('codexThreadProvider', () => {
         turnId: 'turn-1',
       },
     });
-    expect(events[1]).toEqual({
+    expect(events).toContainEqual({
       kind: 'progress',
       message: 'Thread ready (thread-1).',
     });
-    expect(events[2]).toMatchObject({
+    expect(events.at(-1)).toMatchObject({
       kind: 'terminal',
       terminal: {
         outcome: {
@@ -404,7 +492,6 @@ describe('codexThreadProvider', () => {
       diagnostics: {},
     });
     expect(events[2]).not.toHaveProperty('failureCause');
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('continues one structured capacity failure in the same thread and emits one terminal', async () => {
@@ -553,7 +640,6 @@ describe('codexThreadProvider', () => {
     expect(turn2Index).toBeGreaterThan(turn1Index);
     expect(continuity.slice(turn1Index + 1, turn2Index).some((entry) => entry?.turnId === undefined)).toBe(true);
     expect(continuity.at(-1)?.turnId).toBeUndefined();
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('continues one structured cyber-policy failure in the same thread', async () => {
@@ -1198,7 +1284,7 @@ describe('codexThreadProvider', () => {
     });
   });
 
-  it('interrupts a continuation discovered after abort while turn/start is pending', async () => {
+  it('suspends immediately when abort cannot name the pending continuation turn', async () => {
     const controller = new AbortController();
     const continuationStart = createDeferred<unknown>();
     let starts = 0;
@@ -1233,20 +1319,11 @@ describe('codexThreadProvider', () => {
     await vi.waitFor(() => expect(starts).toBe(2));
 
     controller.abort();
-    const settledBeforeId = await Promise.race([
-      eventsPromise.then(() => true),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 20)),
-    ]);
-    expect(settledBeforeId).toBe(false);
-
-    lease.emit({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-2' } } });
-    await vi.waitFor(() =>
-      expect(lease.rpcMock).toHaveBeenCalledWith('turn/interrupt', { threadId: 'thread-1', turnId: 'turn-2' }),
-    );
     const events = await eventsPromise;
-    expect(lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/interrupt')).toHaveLength(1);
-    expect(events.filter((event) => event.kind === 'terminal')).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
+    expect(events.at(-1)).toEqual({ kind: 'suspended', reason: 'interrupt_unconfirmed' });
+    expect(events.some((event) => event.kind === 'terminal')).toBe(false);
+    lease.emit({ method: 'turn/started', params: { threadId: 'thread-1', turn: { id: 'turn-2' } } });
+    expect(lease.rpcMock.mock.calls.filter(([method]) => method === 'turn/interrupt')).toHaveLength(0);
   });
 
   it('settles a pending continuation start when the transport closes', async () => {
@@ -1283,7 +1360,6 @@ describe('codexThreadProvider', () => {
       kind: 'terminal',
       terminal: { outcome: { kind: 'provider_exit', note: expect.stringContaining('closed during continuation') } },
     });
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps abort ownership when transport closes while interrupt is pending', async () => {
@@ -1313,7 +1389,32 @@ describe('codexThreadProvider', () => {
     expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
     const continuity = events.flatMap((event) => (event.kind === 'continuity' ? [event.providerContinuity] : []));
     expect(continuity.at(-1)?.turnId).toBe('turn-1');
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('suspends without a terminal when exact-turn interruption is not confirmed', async () => {
+    const controller = new AbortController();
+    const lease = makeLease(async (method) => {
+      if (method === 'thread/resume') return { thread: { id: 'thread-1' } };
+      if (method === 'turn/start') return { turn: { id: 'turn-1', status: 'inProgress' } };
+      throw new Error(`Unexpected method: ${method}`);
+    });
+    lease.interrupt = vi.fn(async () => false);
+    const runtime = makeRuntime(
+      lease,
+      { cwd: '/workspace/persisted', threadId: 'thread-1' },
+      { signal: controller.signal },
+    );
+    const eventsPromise = collect(codexThreadProvider(makeRequest(), runtime));
+    await vi.waitFor(() => expect(lease.rpcMock).toHaveBeenCalledWith('turn/start', expect.any(Object)));
+
+    controller.abort();
+    const events = await eventsPromise;
+
+    expect(lease.interrupt).toHaveBeenCalledWith({ threadId: 'thread-1', turnId: 'turn-1' });
+    expect(events.at(-1)).toEqual({ kind: 'suspended', reason: 'interrupt_unconfirmed' });
+    expect(events.some((event) => event.kind === 'terminal')).toBe(false);
+    const continuity = events.flatMap((event) => (event.kind === 'continuity' ? [event.providerContinuity] : []));
+    expect(continuity.at(-1)?.turnId).toBe('turn-1');
   });
 
   it('settles as aborted when close follows a start response while interrupt remains pending', async () => {
@@ -1361,6 +1462,5 @@ describe('codexThreadProvider', () => {
     expect(events.at(-1)).toMatchObject({ kind: 'terminal', terminal: { outcome: { kind: 'aborted' } } });
     const continuity = events.flatMap((event) => (event.kind === 'continuity' ? [event.providerContinuity] : []));
     expect(continuity.at(-1)?.turnId).toBe('turn-2');
-    expect(lease.releaseMock).toHaveBeenCalledTimes(1);
   });
 });
