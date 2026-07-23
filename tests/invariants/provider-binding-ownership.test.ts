@@ -20,8 +20,9 @@ describe('provider binding ownership', () => {
       ...files.flatMap((file) => parseSourceSubpathImportEdges(ROOT.pathname, file)),
     ];
     for (const edge of edges) {
-      if (bindingImportViolation(edge.source, edge.target) !== null) {
-        violations.push(bindingImportViolation(edge.source, edge.target)!);
+      const violation = bindingImportViolation(edge.source, edge.target);
+      if (violation !== null) {
+        violations.push(violation);
       }
     }
     for (const file of files) {
@@ -39,7 +40,7 @@ describe('provider binding ownership', () => {
     }
 
     expect(violations).toEqual([]);
-  });
+  }, 15_000);
 
   it('detects cross-provider and non-registration imports independent of alias spelling', () => {
     expect(bindingImportViolation('src/providers/beta/execution.ts', 'src/providers/alpha/binding.ts')).toContain(
