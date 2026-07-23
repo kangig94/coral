@@ -11,7 +11,11 @@ import { storePaths } from '#src/infra/path/store.js';
 
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
+  version: string;
+  buildSetId: string;
   bundleHash: string;
+  flavor: BuildFlavor;
+  storeFormatFingerprint: string;
 };
 
 export type PluginFixture = {
@@ -46,8 +50,11 @@ export function createPluginFixture(
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
     JSON.stringify({
+      version: sourceManifest.version,
+      buildSetId: sourceManifest.buildSetId,
       bundleHash: options.bundleHash ?? sourceManifest.bundleHash,
       flavor: options.flavor,
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
     }) + '\n',
     'utf-8',
   );
@@ -69,7 +76,13 @@ export function createPluginFixture(
 export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {
   writeFileSync(
     join(fixture.root, 'bridge', 'manifest.json'),
-    `${JSON.stringify({ bundleHash, flavor: fixture.flavor })}\n`,
+    `${JSON.stringify({
+      version: sourceManifest.version,
+      buildSetId: sourceManifest.buildSetId,
+      bundleHash,
+      flavor: fixture.flavor,
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+    })}\n`,
     'utf-8',
   );
   return { ...fixture, bundleHash };

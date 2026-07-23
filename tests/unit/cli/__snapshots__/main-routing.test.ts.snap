@@ -11,6 +11,7 @@ Options:
 Commands:
   status          Show backend daemon status
   shutdown        Gracefully shut down backend daemon
+  store-reset     Inspect retained store-reset incidents
   help [command]  display help for command
 "
 `;

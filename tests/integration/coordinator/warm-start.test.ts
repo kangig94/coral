@@ -46,7 +46,7 @@ describe('coordinator warm-start integration', () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-warm-home-'));
     tempRoots.push(home);
 
-    const firstFixture = createPluginFixture(tempRoots, { flavor: 'prod', bundleHash: 'bundle-a' });
+    const firstFixture = createPluginFixture(tempRoots, { flavor: 'prod', bundleHash: 'aaaaaaaaaaaaaaaa' });
 
     const first = spawnCoordinator({
       fixture: firstFixture,
@@ -59,10 +59,10 @@ describe('coordinator warm-start integration', () => {
     coordinators.push(first);
 
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    expect(initial.bundleHash).toBe('bundle-a');
+    expect(initial.bundleHash).toBe('aaaaaaaaaaaaaaaa');
     expect(isProcessAlive(initial.pid)).toBe(true);
 
-    const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bundle-b');
+    const secondFixture = updatePluginFixtureBundleHash(firstFixture, 'bbbbbbbbbbbbbbbb');
     const handoffStartedAt = Date.now();
     const second = spawnCoordinator({
       fixture: secondFixture,
@@ -96,7 +96,7 @@ describe('coordinator warm-start integration', () => {
     // EXPECTED_HANDOFF_MAX_MS is the steady-state handoff bound; the polling
     // budget above is just a safety ceiling.
     expect(elapsedMs).toBeLessThan(EXPECTED_HANDOFF_MAX_MS);
-    expect(replacement.bundleHash).toBe('bundle-b');
+    expect(replacement.bundleHash).toBe('bbbbbbbbbbbbbbbb');
     expect(replacement.pid).not.toBe(initial.pid);
     expect(firstExit.code).toBe(0);
     expect(isProcessAlive(initial.pid)).toBe(false);

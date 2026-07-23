@@ -187,8 +187,9 @@ export type FakeProviderScenario = {
 
 const DEFAULT_PLUGIN_ROOT = '/tmp/sim/plugin';
 const DEFAULT_PROJECT_ROOT = '/tmp/sim/project';
-const DEFAULT_VERSION = 'sim-version';
-const DEFAULT_BUNDLE_HASH = 'sim-bundle';
+const DEFAULT_VERSION = '0.0.0-sim';
+const DEFAULT_BUILD_SET_ID = '00000000-0000-4000-8000-000000000000';
+const DEFAULT_BUNDLE_HASH = '0000000000000000';
 const DEFAULT_FAKE_PROVIDER = 'codex';
 const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_LISTEN_PORT = 4_100;
@@ -702,8 +703,9 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     resolveProjectSourceFn: (root) => runtime.paths.projectSource(root),
     bootSnapshot: {
       version: DEFAULT_VERSION,
+      buildSetId: DEFAULT_BUILD_SET_ID,
       bundleHash: DEFAULT_BUNDLE_HASH,
-      flavor: 'dev',
+      flavor: runtime.flavor,
       now: () => runtime.time.now(),
       pid: runtime.env.pid(),
       bindHost: listenHost,
