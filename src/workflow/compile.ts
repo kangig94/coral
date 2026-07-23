@@ -1,7 +1,7 @@
 import { ZodError } from 'zod';
 
 import type { ProviderCatalog } from '../providers/catalog.js';
-import type { LaunchDecision } from '../jobs/launch.js';
+import type { RejectedLaunchDecision } from '../jobs/launch.js';
 import { errorMessage } from '../infra/error-format.js';
 import { isOwnerId } from '../infra/identifiers.js';
 import type { PipelineAST } from './ast.js';
@@ -16,7 +16,7 @@ import {
 import { parseExpression } from './parser.js';
 import { readWorkflowProjection } from './read-queries.js';
 
-function unknownProviderDecision(providers: string[]): LaunchDecision {
+function unknownProviderDecision(providers: string[]): RejectedLaunchDecision {
   const providerLabel = providers.join(', ');
   const isSingular = providers.length === 1;
   return {
@@ -40,7 +40,7 @@ export type CompiledWorkflow = {
 };
 
 export const workflowCompiler = {
-  compile(command: WorkflowCommand, providerRegistry: ProviderCatalog): CompiledWorkflow | LaunchDecision {
+  compile(command: WorkflowCommand, providerRegistry: ProviderCatalog): CompiledWorkflow | RejectedLaunchDecision {
     try {
       const ast = normalizeAst(parseExpression(command.expression), command.provider);
       validateNamespaces(ast);

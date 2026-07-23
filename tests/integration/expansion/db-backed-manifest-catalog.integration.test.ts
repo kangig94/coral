@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,11 +37,12 @@ describe('DB-backed expansion manifest catalog', () => {
     }
 
     const dbPath = join(tempRoot('coral-db-backed-manifest-store-'), 'store.db');
-    const db = openWritableStoreDbNoReset(runtime, { path: dbPath });
+    const storeFormat = currentCoralStoreFormat();
+    const db = openWritableStoreDbNoReset(runtime, { path: dbPath, storeFormat });
     createExpansionManifestCatalog({ db }).upsertInstalledEntry(dummyInstalledDbManifest);
     db.close();
 
-    const readDb = openReadOnlyStoreDatabase(runtime, { path: dbPath });
+    const readDb = openReadOnlyStoreDatabase(runtime, { path: dbPath, storeFormat });
     try {
       const entries = createExpansionManifestCatalog({ readDb }).listEntries();
       const installed = entries.find((entry) => entry.manifest.id === 'dummy-installed-db-engine');

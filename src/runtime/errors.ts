@@ -96,8 +96,9 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     remediation: 'The Coral backend is still starting; retry shortly.',
   },
   store_schema_outdated: {
-    userMessage: 'Coral backend store schema is outdated.',
-    remediation: 'Start the Coral backend daemon (`coral-cli backend start`) to reinitialize the store.',
+    userMessage: 'Coral backend store format does not match this installation.',
+    remediation:
+      'A read-only command cannot change the store. Start Coral through a normal provider launch; the next writable daemon startup quarantines the old store files and initializes the current format, making prior Coral history unavailable from the active store.',
   },
   store_reset_lock_contended: {
     userMessage: 'Another Coral process is initializing the backend store.',

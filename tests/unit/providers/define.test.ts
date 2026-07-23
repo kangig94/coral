@@ -1,51 +1,75 @@
 import { describe, expect, it } from 'vitest';
 
 import { managed, none } from '#src/providers/capability.js';
-import type { ProviderManagedArtifactCapability, ProviderSpec } from '#src/providers/contract.js';
-import { defineProvider } from '#src/providers/define.js';
+import type { ProviderManagedArtifactCapability, ProviderStandaloneImplementation } from '#src/providers/contract.js';
+import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 
-const run: ProviderSpec['run'] = async function* () {
+type EmptyPlan = ProviderExecutionPlan<undefined, undefined, undefined>;
+
+const run: ProviderStandaloneImplementation<EmptyPlan>['run'] = async function* () {
   yield {
     kind: 'terminal',
     terminal: {
       content: 'ok',
+      durationMs: 0,
       outcome: { kind: 'completed' },
     },
     diagnostics: {},
   };
 };
 
+const prepareExecutionPlan: ProviderStandaloneImplementation<EmptyPlan>['prepareExecutionPlan'] = () => ({
+  plan: { host: undefined, session: undefined, turn: undefined },
+  prepareCliRequest: (request) => request,
+});
+
 function compileTimeAssertions(): void {
+  // @ts-expect-error artifacts is unavailable until binding(...) declares the provider-owned codec.
+  defineProvider({ name: 'missing-binding', transport: 'standalone', run, prepareExecutionPlan }).artifacts(
+    none('unreachable'),
+  );
+  const missingArtifacts = defineProvider({
+    name: 'missing-artifacts',
+    transport: 'standalone',
+    run,
+    prepareExecutionPlan,
+  }).binding(fixtureProviderBindingCodec('missing-artifacts'));
   // @ts-expect-error build is unavailable until artifacts(...) declares the artifact capability.
-  defineProvider({ name: 'missing-artifacts', run }).build();
+  missingArtifacts.build();
 
   const registry = new ProviderRegistry();
-  // @ts-expect-error register accepts only branded ProviderDefinition, not raw ProviderSpec values.
-  registry.register({ name: 'raw-provider-spec', run } as ProviderSpec);
+  // @ts-expect-error register accepts only branded ProviderDefinition, not raw implementation values.
+  registry.register({ name: 'raw-provider-spec', transport: 'standalone', run, prepareExecutionPlan });
 }
 
 void compileTimeAssertions;
 
 describe('defineProvider', () => {
   it('builds a branded provider definition after artifact capability declaration', () => {
-    const definition = defineProvider({ name: 'fake', run })
+    const definition = defineProvider({ name: 'fake', transport: 'standalone', run, prepareExecutionPlan })
+      .binding(fixtureProviderBindingCodec('fake'))
       .artifacts(none('fake provider emits no provider artifacts'))
       .build();
 
-    expect(definition.name).toBe('fake');
-    expect(definition.run).toBe(run);
-    expect(definition.artifacts).toEqual({
-      kind: 'none',
-      reason: 'fake provider emits no provider artifacts',
-    });
+    expect(definition).toEqual({ name: 'fake' });
+    expect(definition).not.toHaveProperty('run');
+    expect(definition).not.toHaveProperty('preflight');
+    expect(definition).not.toHaveProperty('appServer');
+    expect(definition).not.toHaveProperty('recovery');
+    expect(definition).not.toHaveProperty('artifacts');
+    // @ts-expect-error provider-private codecs are unavailable from the public definition/catalog view.
+    void definition.binding;
   });
 
-  it('preserves managed artifact capabilities on the provider definition', () => {
+  it('keeps managed artifact capabilities out of the provider definition', () => {
     const discardArtifacts: ProviderManagedArtifactCapability['discardArtifacts'] = async ({ handles }) => ({
       kind: handles.length === 0 ? ('skipped_no_handles' as const) : ('discarded' as const),
     });
-    const definition = defineProvider({ name: 'managed-fake', run })
+    const definition = defineProvider({ name: 'managed-fake', transport: 'standalone', run, prepareExecutionPlan })
+      .binding(fixtureProviderBindingCodec('managed-fake'))
       .artifacts(
         managed({
           discardArtifacts,
@@ -53,9 +77,7 @@ describe('defineProvider', () => {
       )
       .build();
 
-    expect(definition.artifacts.kind).toBe('managed');
-    if (definition.artifacts.kind === 'managed') {
-      expect(definition.artifacts.discardArtifacts).toBe(discardArtifacts);
-    }
+    expect(definition).toEqual({ name: 'managed-fake' });
+    expect(definition).not.toHaveProperty('artifacts');
   });
 });

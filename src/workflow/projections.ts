@@ -9,12 +9,12 @@ import {
 import { nowDate } from '../infra/time.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import type { TimePort } from '../infra/port-types.js';
-import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { composeReducers } from '../store/reducers.js';
 import { workflowRegistry } from './events.js';
 
 const workflowReducers = composeReducers(workflowRegistry);
-const upcasters = createDefaultUpcasterRegistry();
+const bodyCodec = createEventBodyCodec();
 
 export type WorkflowJournal = {
   commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): void;
@@ -29,7 +29,7 @@ export function commitWorkflowEvents(
   commitEvents(db, cb, {
     now: () => nowDate(time),
     reducers: workflowReducers,
-    upcasters,
+    bodyCodec,
     providers,
   });
 }

@@ -4,7 +4,11 @@ import type { DiscussSessionStore } from './session-store.js';
 import type { EnvPort, StoragePort, TimePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { JobExit, JobStatus } from '../../jobs/records.js';
-import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
+import type { JobLaunch } from '../../jobs/records.js';
+import type { ContinuitySnapshot } from '../../sessions/continuity.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
+import type { JobLaunchRequest, JobResumeRequest, ProviderSessionLaunchDecision } from '../../jobs/launch.js';
+import type { InvocationContext } from '../../runtime/invocation-context.js';
 
 export type AgentConfig = {
   name: string;
@@ -37,6 +41,7 @@ export type LiveDiscussSession = {
 export type DiscussJobStatusReader = {
   read(jobId: string): JobStatus | null;
   readExit(jobId: string): JobExit | null;
+  listOwned(discussionId: string): Array<{ launch: JobLaunch; status: JobStatus }>;
 };
 
 export type DiscussRuntimePorts = {
@@ -48,27 +53,17 @@ export type DiscussRuntimePorts = {
   projectData: (projectRoot: string) => string;
 };
 
-export type DiscussLaunchDecision =
-  | {
-      status: 'running' | 'queued';
-      job: string;
-      session: string;
-    }
-  | {
-      status: 'rejected';
-      message: string;
-      code?: string;
-    };
+export type DiscussLaunchDecision = ProviderSessionLaunchDecision;
 
 export type DiscussWaitResult = {
   content: string;
-  continuity: JobContinuitySnapshot | null;
+  continuity: ContinuitySnapshot | null;
 };
 
 export type DiscussService = {
-  start(...args: unknown[]): Promise<DiscussLaunchDecision>;
-  resume(...args: unknown[]): Promise<DiscussLaunchDecision>;
-  waitStreamOnce(...args: unknown[]): Promise<DiscussWaitResult>;
+  start(provider: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<DiscussLaunchDecision>;
+  resume(provider: string, input: JobResumeRequest, ctx: InvocationContext): Promise<DiscussLaunchDecision>;
+  waitStreamOnce(jobId: string, timeoutMs?: number): Promise<DiscussWaitResult>;
 };
 
 export type DiscussContext = {
@@ -78,6 +73,7 @@ export type DiscussContext = {
   store: DiscussSessionStore;
   runtime: DiscussRuntimePorts;
   jobStatusReader: DiscussJobStatusReader;
+  providerRegistry: ProviderBindingCatalog;
   /**
    * Discards a participant session's provider native log. Wired from the lifecycle
    * reactor at composition; absent in lightweight harnesses, so callers guard with `?.`.

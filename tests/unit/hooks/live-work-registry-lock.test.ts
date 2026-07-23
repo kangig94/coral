@@ -13,7 +13,7 @@ vi.mock('node:child_process', () => ({ execFileSync: execFileSyncMock }));
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { hasLiveWork } from '../../../clients/hooks/lib/live-work-registry.mjs';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { projectSlug } from '../../../clients/hooks/lib/plugin-paths.mjs';
+import { projectPathKey } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
 const SESSION = 'sess-lock-0001';
 const BG_STALE_MS = 60_000; // > BG_MTIME_WINDOW_MS (30s)
@@ -61,7 +61,7 @@ afterEach(() => {
 });
 
 function writeBgMarker(name: string, ageMs = 0): void {
-  const dir = join(sandbox, 'coral-work', projectSlug(projectDir), SESSION, 'bg');
+  const dir = join(sandbox, 'coral-work', projectPathKey(projectDir), SESSION, 'bg');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, name);
   writeFileSync(file, '');

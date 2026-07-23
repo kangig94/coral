@@ -1,9 +1,10 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
@@ -15,7 +16,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 function setupDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   applyTestCounterSchema(db);
   return db;
 }
@@ -30,13 +31,12 @@ describe('commitInputs bulk', () => {
         Array.from({ length: 10000 }, () => ({
           type: 'test.counter.ticked' as const,
           stream: { kind: 'job' as const, id: 'bulk' },
-          bodyVersion: 1,
           body: { id: 'bulk', delta: 1 },
         })),
         {
           now: () => new Date(0),
           reducers: composeReducers(testCounterRegistry),
-          upcasters: createDefaultUpcasterRegistry(),
+          bodyCodec: createEventBodyCodec(),
           providers: permissiveProviderLookupPort,
         },
       );
@@ -79,6 +79,7 @@ describe('commitInputs bulk', () => {
                 throw new Error('induced failure at event 5000');
               }
             },
+            materializerContract: 'test:increment-counter-then-throw',
           }),
         ],
       };
@@ -89,13 +90,12 @@ describe('commitInputs bulk', () => {
           Array.from({ length: 10000 }, () => ({
             type: 'test.counter.ticked' as const,
             stream: { kind: 'job' as const, id: 'rollback' },
-            bodyVersion: 1,
             body: { id: 'rollback', delta: 1 },
           })),
           {
             now: () => new Date(0),
             reducers: composeReducers(throwingRegistry),
-            upcasters: createDefaultUpcasterRegistry(),
+            bodyCodec: createEventBodyCodec(),
             providers: permissiveProviderLookupPort,
           },
         ),

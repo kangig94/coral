@@ -155,7 +155,8 @@ describe('CorpusInboundSyncService', () => {
       },
     });
 
-    await expect(service.runInboundSync(() => ({ kind: 'no-change' as const }), { signal: controller.signal }))
-      .resolves.toEqual({ kind: 'no-change' });
+    await expect(
+      service.runInboundSync(() => ({ kind: 'no-change' as const }), { signal: controller.signal }),
+    ).resolves.toEqual({ kind: 'no-change' });
   });
 });

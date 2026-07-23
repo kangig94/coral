@@ -1,4 +1,3 @@
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProgressTiming } from '../event-bodies.js';
 import type { AppendedEvent } from '../../store/append.js';
 import type { JobEvent, JobTerminal, JobTerminalDiagnostics } from '../records.js';
@@ -22,7 +21,7 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     return null;
   }
 
-  const sessionId = typeof event.refs?.sessionId === 'string' ? event.refs.sessionId : '';
+  const sessionId = typeof event.refs?.sessionId === 'string' ? event.refs.sessionId : null;
 
   if (event.type === 'job.progress.emitted') {
     const body = event.body as { kind?: string; message: string; timing: JobProgressTiming };
@@ -48,7 +47,6 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
   const body = event.body as {
     terminal: JobTerminal;
     diagnostics?: JobTerminalDiagnostics;
-    continuity?: JobContinuitySnapshot | null;
   };
   const usage = body.diagnostics?.usage;
 
@@ -59,7 +57,6 @@ function toJobEvent(event: AppendedEvent): JobEvent | null {
     type: 'terminal',
     ts: event.ts,
     result: normalizeJobTerminal(body.terminal),
-    continuity: body.continuity ?? null,
     // Appended terminal events do not carry jobKind; the wait coordinator
     // replaces workflow terminal usage with the read-time aggregate.
     ...(usage === undefined ? {} : { usage }),

@@ -3,8 +3,13 @@ import { backendLog } from '../../infra/backend-log.js';
 import { isRecord, readString } from '../../infra/json.js';
 import { AbortError } from '../../runtime/abort.js';
 import type { IdPort } from '../../runtime/ports.js';
-import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
-import type { EffortLevel, ProviderServerLease, ProviderServerSpec } from '../contract.js';
+import type {
+  EffortLevel,
+  AppServerSession,
+  ProviderCurationCapability,
+  ProviderCurationRequest,
+} from '../contract.js';
+import { compileEnvironmentLayers, hostExecutionLifetime } from '../execution-plan.js';
 import { deleteClaudeJsonlArtifactsForConversation } from './artifacts.js';
 import {
   brokerNotificationMethods,
@@ -12,10 +17,12 @@ import {
   type SessionEnsureResult,
   type TurnStartResult,
 } from './appserver/protocol.js';
-import { buildClaudeBootstrapSignature, buildClaudeProviderServerSpec } from './request-mapping.js';
-import type { PermissionMode } from './request-prep.js';
+import { buildClaudeBootstrapSignature } from './request-mapping.js';
+import { readBootstrapSignature, sameBootstrapSignature, type PermissionMode } from './request-prep.js';
+import { isClaudeCurationUsageBudgetExhausted } from './usage-budget.js';
+import { buildClaudeControllerHost, type ClaudeProviderAccess } from './execution-plan.js';
 
-export type ClaudeOneShotRequest = {
+type ClaudeOneShotRequest = {
   readonly cwd: string;
   readonly prompt: string;
   readonly model?: string;
@@ -25,21 +32,17 @@ export type ClaudeOneShotRequest = {
   readonly signal?: AbortSignal;
 };
 
-export type ClaudeSystemExecutionContext = {
-  readonly source: Extract<ProviderCredentialSourceRef, { provider: 'claude' }>;
-  readonly brokerEnv: Readonly<Record<string, string>>;
+type ClaudeSystemExecutionPlan = {
+  readonly access: ClaudeProviderAccess;
   readonly controllerEnv: Readonly<Record<string, string>>;
   readonly projectsRoot: string;
 };
 
-export type ClaudeOneShotDeps = {
+type ClaudeOneShotDeps = {
   readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
   readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
-  readonly providerContext: ClaudeSystemExecutionContext;
-  readonly acquireServer: (
-    spec: ProviderServerSpec,
-    options?: { signal?: AbortSignal },
-  ) => Promise<ProviderServerLease>;
+  readonly executionPlan: ClaudeSystemExecutionPlan;
+  readonly appServerSession: AppServerSession;
 };
 
 type ClaudeOneShotOutcome =
@@ -54,37 +57,44 @@ type ClaudeOneShotState = {
   brokerSessionKey?: string;
   brokerTurnId?: string;
   conversationRef?: string;
-  turnRequested: boolean;
   completed: boolean;
   terminal: Promise<ClaudeOneShotOutcome>;
   resolveTerminal: (outcome: ClaudeOneShotOutcome) => void;
 };
 
-export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
+class UnconfirmedClaudeOneShotCancellationError extends Error {
+  constructor(brokerTurnId: string, cause?: unknown) {
+    super(`Claude one-shot turn ${brokerTurnId} could not be confirmed cancelled.`, { cause });
+    this.name = 'UnconfirmedClaudeOneShotCancellationError';
+  }
+}
+
+async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: ClaudeOneShotRequest): Promise<string> {
   const state = createOneShotState();
-  const lease = await deps.acquireServer(
-    buildClaudeProviderServerSpec({ cwd: request.cwd }, deps.storage, deps.providerContext.brokerEnv),
-    {
-      signal: request.signal,
-    },
-  );
-  const unsubscribe = lease.subscribe((message) => {
+  const session = deps.appServerSession;
+  const unsubscribe = session.subscribe((message) => {
     applyOneShotNotification(state, message);
   });
 
   try {
     throwIfRequestAborted(request.signal, 'claude_one_shot_session_ensure');
-    const ensureResult = await brokerRpc<SessionEnsureResult>(lease, 'session/ensure', {
-      ...buildClaudeBootstrapSignature(
-        {
-          cwd: request.cwd,
-          permissionMode: request.permissionMode ?? 'default',
-        },
-        deps.ids,
-        request.systemPrompt,
-      ),
-      controllerEnv: { ...deps.providerContext.controllerEnv },
-      projectsRoot: deps.providerContext.projectsRoot,
+    const requestedBootstrap = buildClaudeBootstrapSignature(
+      {
+        cwd: request.cwd,
+        permissionMode: request.permissionMode ?? 'default',
+      },
+      deps.ids,
+      {
+        derivedSystemPrompt: request.systemPrompt,
+        projectsRoot: deps.executionPlan.projectsRoot,
+        model: request.model,
+        effort: request.effort,
+      },
+    );
+    const ensureResult = await brokerRpc<SessionEnsureResult>(session, 'session/ensure', {
+      ...requestedBootstrap,
+      controllerEnv: { ...deps.executionPlan.controllerEnv },
+      projectsRoot: deps.executionPlan.projectsRoot,
       ...(request.systemPrompt === undefined ? {} : { systemPrompt: request.systemPrompt }),
       ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.effort === undefined ? {} : { effort: request.effort }),
@@ -93,23 +103,41 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
     if (brokerSessionKey === undefined) {
       throw new Error('Claude one-shot broker session key missing from session/ensure response.');
     }
+    const returnedBootstrap = readBootstrapSignature(ensureResult.bootstrapSignature);
+    if (returnedBootstrap === undefined || !sameBootstrapSignature(returnedBootstrap, requestedBootstrap)) {
+      throw new Error('Claude one-shot session/ensure did not return the exact requested bootstrap signature.');
+    }
     state.brokerSessionKey = brokerSessionKey;
     updateConversationRef(state, ensureResult);
 
     throwIfRequestAborted(request.signal, 'claude_one_shot_turn_start');
-    state.turnRequested = true;
     const requestedTurnId = deps.ids.uuid();
     state.brokerTurnId = requestedTurnId;
-    const startResult = await brokerRpc<TurnStartResult>(lease, 'turn/start', {
+    const startParams = {
       brokerSessionKey: state.brokerSessionKey,
       brokerTurnId: requestedTurnId,
       prompt: request.prompt,
-    });
-    state.brokerTurnId = readString(startResult.brokerTurnId) ?? requestedTurnId;
+    };
+    const startOutcome = await startOneShotBrokerTurn(session, startParams, request.signal);
+    if (startOutcome.kind === 'aborted') {
+      throw new AbortError({ stage: 'claude_one_shot_turn_start', reason: request.signal?.reason });
+    }
+    const startResult = startOutcome.result;
+    if (readString(startResult.brokerSessionKey) !== state.brokerSessionKey) {
+      throw new Error('Claude one-shot turn/start did not return the exact requested broker session key.');
+    }
+    if (readString(startResult.brokerTurnId) !== requestedTurnId) {
+      throw new Error('Claude one-shot turn/start did not return the exact requested broker turn id.');
+    }
+    state.brokerTurnId = requestedTurnId;
     updateConversationRef(state, startResult);
 
-    const outcome = await waitForOneShotOutcome(state, lease, request.signal);
+    const outcome = await waitForOneShotOutcome(state, session, request.signal);
     if (outcome.kind === 'aborted') {
+      await confirmOneShotCancellation(session, {
+        brokerSessionKey: state.brokerSessionKey,
+        brokerTurnId: state.brokerTurnId,
+      });
       throw new AbortError({ stage: 'claude_one_shot_turn', reason: request.signal?.reason });
     }
     if (outcome.kind === 'failed') {
@@ -122,10 +150,93 @@ export async function runClaudeOneShotTurn(deps: ClaudeOneShotDeps, request: Cla
     return outcome.turn.result;
   } finally {
     unsubscribe();
-    await closeOneShotSession(lease, state, request.signal);
+    await closeOneShotSession(session, state);
     cleanupOneShotJsonl(deps, state);
-    lease.release();
   }
+}
+
+async function startOneShotBrokerTurn(
+  session: AppServerSession,
+  params: { brokerSessionKey: string; brokerTurnId: string; prompt: string },
+  signal?: AbortSignal,
+): Promise<{ kind: 'started'; result: TurnStartResult } | { kind: 'aborted' }> {
+  const started = brokerRpc<TurnStartResult>(session, 'turn/start', params).then((result) => ({
+    kind: 'started' as const,
+    result,
+  }));
+  if (signal === undefined) return await started;
+
+  let removeAbortListener = () => {};
+  const aborted = new Promise<{ kind: 'aborted' }>((resolve) => {
+    if (signal.aborted) {
+      resolve({ kind: 'aborted' });
+      return;
+    }
+    const onAbort = (): void => resolve({ kind: 'aborted' });
+    signal.addEventListener('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+  });
+
+  try {
+    const outcome = await Promise.race([started, aborted]);
+    if (outcome.kind === 'started') return outcome;
+
+    await confirmOneShotCancellation(session, {
+      brokerSessionKey: params.brokerSessionKey,
+      brokerTurnId: params.brokerTurnId,
+    });
+    return outcome;
+  } finally {
+    removeAbortListener();
+  }
+}
+
+export const claudeCurationCapability = Object.freeze({
+  prepare(
+    request: ProviderCurationRequest,
+    runtime: Parameters<ProviderCurationCapability<ClaudeProviderAccess>['prepare']>[1],
+  ) {
+    const executionPlan = buildClaudeSystemExecutionPlan(runtime);
+    return Object.freeze({
+      complete: ({ appServerSession }: { appServerSession: AppServerSession }) =>
+        runClaudeOneShotTurn(
+          {
+            storage: runtime.storage,
+            ids: runtime.ids,
+            executionPlan,
+            appServerSession,
+          },
+          request,
+        ),
+    });
+  },
+  isUsageBudgetExhausted(
+    runtime: Parameters<ProviderCurationCapability<ClaudeProviderAccess>['isUsageBudgetExhausted']>[0],
+  ) {
+    return isClaudeCurationUsageBudgetExhausted({
+      configDir: runtime.access.configDir,
+      runtime,
+    });
+  },
+}) satisfies ProviderCurationCapability<ClaudeProviderAccess>;
+
+function buildClaudeSystemExecutionPlan(
+  runtime: Parameters<ProviderCurationCapability<ClaudeProviderAccess>['prepare']>[1],
+): ClaudeSystemExecutionPlan {
+  const controller = buildClaudeControllerHost({
+    access: runtime.access,
+    coralEnv: { CORAL_CLAUDE_TRANSPORT: 'print' },
+    baseEnv: runtime.baseEnv,
+    platform: runtime.platform,
+  });
+  return Object.freeze({
+    access: runtime.access,
+    controllerEnv: compileEnvironmentLayers(controller.environment, {
+      platform: runtime.platform,
+      lifetimes: hostExecutionLifetime(),
+    }),
+    projectsRoot: runtime.access.projectsRoot,
+  });
 }
 
 function createOneShotState(): ClaudeOneShotState {
@@ -134,7 +245,6 @@ function createOneShotState(): ClaudeOneShotState {
     resolveTerminal = resolve;
   });
   return {
-    turnRequested: false,
     completed: false,
     terminal,
     resolveTerminal,
@@ -189,7 +299,7 @@ function applyOneShotNotification(
 
 async function waitForOneShotOutcome(
   state: ClaudeOneShotState,
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   signal?: AbortSignal,
 ): Promise<ClaudeOneShotOutcome> {
   if (signal?.aborted) {
@@ -223,27 +333,42 @@ async function waitForOneShotOutcome(
   }
 }
 
-async function closeOneShotSession(
-  lease: ProviderServerLease,
-  state: ClaudeOneShotState,
-  signal?: AbortSignal,
-): Promise<void> {
+async function closeOneShotSession(lease: AppServerSession, state: ClaudeOneShotState): Promise<void> {
   const brokerSessionKey = state.brokerSessionKey;
   if (brokerSessionKey === undefined) {
     return;
-  }
-
-  if (signal?.aborted && state.turnRequested) {
-    await brokerRpc(lease, 'turn/interrupt', {
-      brokerSessionKey,
-      ...(state.brokerTurnId === undefined ? {} : { brokerTurnId: state.brokerTurnId }),
-    }).catch(() => {});
   }
 
   await Promise.race([
     brokerRpc<SessionCloseResult>(lease, 'session/close', { brokerSessionKey }).catch(() => undefined),
     lease.closed.then(() => undefined),
   ]);
+}
+
+async function confirmOneShotCancellation(
+  lease: AppServerSession,
+  exactTurn: { brokerSessionKey: string; brokerTurnId: string },
+): Promise<void> {
+  let interruptError: unknown;
+  try {
+    if (await lease.interrupt(exactTurn)) return;
+  } catch (error) {
+    interruptError = error;
+  }
+
+  try {
+    const outcome = await Promise.race([
+      brokerRpc<SessionCloseResult>(lease, 'session/close', {
+        brokerSessionKey: exactTurn.brokerSessionKey,
+      }).then((result) => ({ kind: 'closed_session' as const, result })),
+      lease.closed.then(() => ({ kind: 'closed_transport' as const })),
+    ]);
+    if (outcome.kind === 'closed_transport') return;
+    if (outcome.result.closed && outcome.result.brokerSessionKey === exactTurn.brokerSessionKey) return;
+  } catch (error) {
+    throw new UnconfirmedClaudeOneShotCancellationError(exactTurn.brokerTurnId, error);
+  }
+  throw new UnconfirmedClaudeOneShotCancellationError(exactTurn.brokerTurnId, interruptError);
 }
 
 function cleanupOneShotJsonl(deps: ClaudeOneShotDeps, state: ClaudeOneShotState): void {
@@ -253,7 +378,7 @@ function cleanupOneShotJsonl(deps: ClaudeOneShotDeps, state: ClaudeOneShotState)
 
   const result = deleteClaudeJsonlArtifactsForConversation({
     conversationRef: state.conversationRef,
-    projectsRoot: deps.providerContext.projectsRoot,
+    projectsRoot: deps.executionPlan.projectsRoot,
     storage: deps.storage,
   });
   for (const cleanupError of result.errors) {
@@ -281,7 +406,7 @@ function resolveTerminalOnce(state: ClaudeOneShotState, outcome: ClaudeOneShotOu
 }
 
 function brokerRpc<R = unknown>(
-  lease: ProviderServerLease,
+  lease: AppServerSession,
   method: string,
   params: Record<string, unknown> | object,
 ): Promise<R> {

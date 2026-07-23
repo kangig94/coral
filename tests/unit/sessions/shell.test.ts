@@ -1,5 +1,11 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { allocateTestSession } from '../../helpers/session.js';
+import {
+  allocateTestSession,
+  seedTestProviderContinuity,
+  validatedTestContinuityMutation,
+  validatedTestContinuitySnapshot,
+} from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -19,7 +25,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/append.js';
 import { openStoreDatabase } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -28,6 +34,7 @@ import { appendRetentionDiscardRequested } from '#src/sessions/retention-outbox.
 import { workflowRegistry } from '#src/workflow/events.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 const openDbs: Array<ReturnType<typeof openStoreDatabase>> = [];
@@ -38,6 +45,7 @@ function resolveScopeKey(projectRoot: string): string {
 
 function openSessionDb(): ReturnType<typeof openStoreDatabase> {
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
   });
@@ -66,7 +74,10 @@ describe('sessions shell store', () => {
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb()), workDir };
+    return {
+      mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
+      workDir,
+    };
   }
 
   function setupWithJournal(projectName: string): {
@@ -81,13 +92,13 @@ describe('sessions shell store', () => {
 
     const db = openSessionDb();
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const upcasters = createDefaultUpcasterRegistry();
+    const bodyCodec = createEventBodyCodec();
     const appendedBatches: AppendedEvent[][] = [];
     const coordinatorCommit: CommitEventsFn = (cb) => {
       const appended = commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
       appendedBatches.push(appended);
@@ -107,8 +118,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir } = setup('allocate-pending');
 
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -122,7 +132,7 @@ describe('sessions shell store', () => {
     expect(entry.version).toBe(1);
     expect(mgr.get('codex', entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
       name: 'alpha',
       state: 'pending',
       retention: 'retain',
@@ -133,11 +143,10 @@ describe('sessions shell store', () => {
     });
   });
 
-  it('allocate appends session.opened and continuity checkpoints append to the journal', () => {
+  it('allocate appends session.opened and continuity checkpoints append to the journal', async () => {
     const { db, mgr, workDir } = setupWithJournal('journal-events');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -146,51 +155,57 @@ describe('sessions shell store', () => {
       controllerProfile: { owner: 'team-a' },
     });
 
-    mgr.setConversationRef(entry.sessionId, 'thread-1');
+    await seedTestProviderContinuity(mgr, entry.sessionId, {
+      conversationRef: 'thread-1',
+      providerContinuity: { threadId: 'thread-1' },
+    });
 
     try {
       const rows = db
         .prepare(
-          `SELECT type, body_version, body
+          `SELECT type, body
              FROM events
             WHERE stream_kind = 'session' AND stream_id = ?
             ORDER BY seq ASC`,
         )
-        .all(entry.sessionId) as Array<{ type: string; body_version: number; body: Uint8Array | Buffer }>;
+        .all(entry.sessionId) as Array<{ type: string; body: Uint8Array | Buffer }>;
 
-      expect(rows.map((row) => row.type)).toEqual(['session.opened', 'session.continuity.checkpointed']);
-      expect(rows[0]?.body_version).toBe(1);
+      expect(rows.map((row) => row.type)).toEqual([
+        'session.opened',
+        'session.claimed',
+        'session.continuity.checkpointed',
+        'session.claim.released',
+      ]);
       expect(JSON.parse(new TextDecoder().decode(rows[0].body))).toMatchObject({
         controller: 'team-a',
         entry: {
           sessionId: entry.sessionId,
-          provider: 'codex',
+          binding: { provider: 'codex' },
           name: 'alpha',
           state: 'pending',
           retention: 'retain',
           artifactHandles: [],
           version: 1,
         },
-        provider: 'codex',
         scope_key: resolveScopeKey(workDir),
       });
-      expect(JSON.parse(new TextDecoder().decode(rows[1].body))).toMatchObject({
+      expect(JSON.parse(new TextDecoder().decode(rows[2].body))).toMatchObject({
         entry: {
           sessionId: entry.sessionId,
           state: 'ready',
           conversationRef: 'thread-1',
-          version: 2,
+          version: 3,
         },
         snapshot: {
           conversationRef: 'thread-1',
           resumable: true,
-          providerContinuity: null,
+          providerContinuity: { threadId: 'thread-1' },
         },
       });
-      expect(JSON.parse(new TextDecoder().decode(rows[1].body)).snapshot).toEqual({
+      expect(JSON.parse(new TextDecoder().decode(rows[2].body)).snapshot).toEqual({
         conversationRef: 'thread-1',
         resumable: true,
-        providerContinuity: null,
+        providerContinuity: { threadId: 'thread-1' },
       });
     } finally {
       db.close();
@@ -201,8 +216,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir } = setup('alloc-with-root');
 
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'beta',
       model: 'gpt-5',
       cwd: workDir,
@@ -218,8 +232,7 @@ describe('sessions shell store', () => {
   it('allocate captures explicit retention in session.opened', () => {
     const { db, mgr, workDir } = setupWithJournal('allocate-retention');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -270,8 +283,7 @@ describe('sessions shell store', () => {
     const { mgr, workDir } = setup('alloc-with-profile');
 
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'delta',
       model: 'gpt-5',
       cwd: workDir,
@@ -342,8 +354,7 @@ describe('sessions shell store', () => {
   it('claimForJobAtomic rejects sessions with an in-flight retention discard request', async () => {
     const { mgr, workDir, coordinatorCommit } = setupWithJournal('claim-retention-discard-in-flight');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       cwd: workDir,
       projectRoot: workDir,
@@ -390,65 +401,6 @@ describe('sessions shell store', () => {
     expect(mgr.get('claude', entry.sessionId)).toBeNull();
   });
 
-  it('setConversationRef transitions state to ready', () => {
-    const { mgr, workDir } = setup('conversation-ref');
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-
-    mgr.setConversationRef(entry.sessionId, 'thread-1');
-
-    expect(mgr.get('codex', entry.sessionId)).toMatchObject({
-      sessionId: entry.sessionId,
-      state: 'ready',
-      conversationRef: 'thread-1',
-    });
-  });
-
-  it('setNonResumable transitions state to non_resumable', () => {
-    const { mgr, workDir } = setup('non-resumable');
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-
-    mgr.setNonResumable(entry.sessionId);
-
-    expect(mgr.get('codex', entry.sessionId)?.state).toBe('non_resumable');
-  });
-
-  it('keeps the previous Journal-backed entry after append failure', () => {
-    const workDir = join(tmpHome, 'rollback-after-append-failure');
-    mkdirSync(workDir, { recursive: true });
-
-    const appendFailure = new Error('append failed');
-    let shouldThrow = false;
-    const mgr = new SessionManager(
-      workDir,
-      runtime,
-      () => {
-        if (shouldThrow) {
-          throw appendFailure;
-        }
-      },
-      undefined,
-      openSessionDb(),
-    );
-    const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-    const entryBeforeFailure = mgr.readById(entry.sessionId);
-
-    if (!entryBeforeFailure) {
-      throw new Error('Expected stored session before append failure');
-    }
-
-    shouldThrow = true;
-
-    expect(() =>
-      mgr.checkpoint(entry.sessionId, {
-        conversationRef: 'thread-rollback',
-        resumable: true,
-        providerContinuity: { threadId: 'thread-rollback' },
-      }),
-    ).toThrow('append failed');
-
-    expect(mgr.readById(entry.sessionId)).toEqual(entryBeforeFailure);
-  });
-
   it('finalizeJobContinuityAtomic releases the claim and stores a resumable conversationRef', async () => {
     const { mgr, workDir } = setup('finalize-resumable');
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
@@ -463,10 +415,10 @@ describe('sessions shell store', () => {
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version,
-        mutation: {
+        mutation: validatedTestContinuityMutation({
           kind: 'set_resumable',
           conversationRef: 'thread-1',
-        },
+        }),
       }),
     ).resolves.toBe(true);
 
@@ -478,7 +430,7 @@ describe('sessions shell store', () => {
     expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
   });
 
-  it('finalizeJobContinuityAtomic appends checkpoint and claim release in one commit and caches release entry', async () => {
+  it('finalizeJobContinuityAtomic appends caller state, checkpoint, and claim release in one commit', async () => {
     const { appendedBatches, mgr, workDir } = setupWithJournal('finalize-dual-event');
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
     mgr.claimForJobSync(entry.sessionId, 'job-1');
@@ -493,26 +445,35 @@ describe('sessions shell store', () => {
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version,
-        mutation: {
+        mutation: validatedTestContinuityMutation({
           kind: 'set_resumable',
           conversationRef: 'thread-1',
+        }),
+        appendBeforeRelease: (commit) => {
+          commit.append({
+            type: 'session.retention.discard.requested',
+            stream: { kind: 'session', id: entry.sessionId },
+            refs: { sessionId: entry.sessionId },
+            body: { sessionId: entry.sessionId, attempt: 1, handles: [] },
+          });
         },
       }),
     ).resolves.toBe(true);
 
     expect(appendedBatches).toHaveLength(1);
     expect(appendedBatches[0].map((event) => event.type)).toEqual([
+      'session.retention.discard.requested',
       'session.continuity.checkpointed',
       'session.claim.released',
     ]);
-    expect(appendedBatches[0][0].body).toMatchObject({
+    expect(appendedBatches[0][1].body).toMatchObject({
       entry: {
         sessionId: entry.sessionId,
         activeJobId: 'job-1',
         version: claimed.version + 1,
       },
     });
-    const releaseBody = appendedBatches[0][1].body as { entry: Record<string, unknown>; jobId: string };
+    const releaseBody = appendedBatches[0][2].body as { entry: Record<string, unknown>; jobId: string };
     expect(releaseBody).toMatchObject({
       entry: {
         sessionId: entry.sessionId,
@@ -531,10 +492,13 @@ describe('sessions shell store', () => {
     expect(Object.hasOwn(updated ?? {}, 'activeJobId')).toBe(false);
   });
 
-  it('clearConversationRefAndMarkNonResumableAtomic clears conversationRef and releases the claim', async () => {
+  it('a provider-validated non-resumable finalization clears conversationRef and releases the claim', async () => {
     const { mgr, workDir } = setup('finalize-non-resumable');
     const entry = allocateTestSession(mgr, 'codex', 'alpha', 'gpt-5', workDir);
-    mgr.setConversationRef(entry.sessionId, 'thread-stale');
+    await seedTestProviderContinuity(mgr, entry.sessionId, {
+      conversationRef: 'thread-stale',
+      providerContinuity: { threadId: 'thread-stale' },
+    });
     mgr.claimForJobSync(entry.sessionId, 'job-1');
 
     const claimed = mgr.get('codex', entry.sessionId);
@@ -543,7 +507,11 @@ describe('sessions shell store', () => {
     }
 
     await expect(
-      mgr.clearConversationRefAndMarkNonResumableAtomic(entry.sessionId, 'job-1', claimed.version),
+      mgr.finalizeJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+        mutation: validatedTestContinuityMutation({ kind: 'clear_non_resumable' }),
+      }),
     ).resolves.toBe(true);
 
     const updated = mgr.get('codex', entry.sessionId);
@@ -564,19 +532,22 @@ describe('sessions shell store', () => {
       throw new Error('Expected claimed session');
     }
 
+    const appendBeforeRelease = vi.fn();
     await expect(
       mgr.finalizeJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version - 1,
-        mutation: {
+        mutation: validatedTestContinuityMutation({
           kind: 'set_resumable',
           conversationRef: 'thread-1',
-        },
+        }),
+        appendBeforeRelease,
       }),
     ).resolves.toBe(false);
 
     expect(mgr.get('codex', entry.sessionId)?.activeJobId).toBe('job-1');
     expect(mgr.get('codex', entry.sessionId)?.state).toBe('pending');
+    expect(appendBeforeRelease).not.toHaveBeenCalled();
   });
 
   it('checkpointJobContinuityAtomic preserves activeJobId and returns the next version', async () => {
@@ -594,11 +565,11 @@ describe('sessions shell store', () => {
         mgr.checkpointJobContinuityAtomic(entry.sessionId, {
           expectedActiveJobId: 'job-1',
           expectedVersion: claimed.version,
-          snapshot: {
+          snapshot: validatedTestContinuitySnapshot({
             conversationRef: 'thread-1',
             resumable: true,
             providerContinuity: { threadId: 'thread-1' },
-          },
+          }),
         }),
       ).resolves.toEqual({
         ok: true,
@@ -650,11 +621,11 @@ describe('sessions shell store', () => {
       mgr.checkpointJobContinuityAtomic(entry.sessionId, {
         expectedActiveJobId: 'job-1',
         expectedVersion: claimed.version + 1,
-        snapshot: {
+        snapshot: validatedTestContinuitySnapshot({
           conversationRef: 'thread-stale',
           resumable: true,
           providerContinuity: { threadId: 'thread-stale' },
-        },
+        }),
       }),
     ).resolves.toEqual({ ok: false });
 
@@ -666,11 +637,74 @@ describe('sessions shell store', () => {
     expect(current?.conversationRef).toBeUndefined();
   });
 
+  it('checks continuity CAS after acquiring the database write transaction', async () => {
+    const workDir = join(tmpHome, 'checkpoint-cross-connection-cas');
+    mkdirSync(workDir, { recursive: true });
+    const dbPath = join(tmpHome, 'checkpoint-cross-connection-cas.db');
+    const dbA = openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
+      path: dbPath,
+      storage: runtime.storage,
+    });
+    const dbB = openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
+      path: dbPath,
+      storage: runtime.storage,
+    });
+    openDbs.push(dbA, dbB);
+    const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
+    const bodyCodec = createEventBodyCodec();
+    const commitWith = (db: typeof dbA, cb: Parameters<CommitEventsFn>[0]) =>
+      commit(db, cb, {
+        now: () => new Date('2026-04-19T00:00:00.000Z'),
+        reducers,
+        bodyCodec,
+        providers: permissiveProviderLookupPort,
+      });
+    let beforeNextACommit: (() => void) | undefined;
+    const commitA: CommitEventsFn = (cb) => {
+      const before = beforeNextACommit;
+      beforeNextACommit = undefined;
+      before?.();
+      return commitWith(dbA, cb);
+    };
+    const commitB: CommitEventsFn = (cb) => commitWith(dbB, cb);
+    const managerA = new SessionManager(workDir, runtime, commitA, undefined, dbA);
+    const managerB = new SessionManager(workDir, runtime, commitB, undefined, dbB);
+    const entry = allocateTestSession(managerA, 'codex', 'alpha', 'gpt-5', workDir);
+    managerA.claimForJobSync(entry.sessionId, 'job-1');
+    const claimed = managerA.readById(entry.sessionId, { forceFresh: true });
+    if (claimed === null) throw new Error('Expected claimed session');
+    managerB.readById(entry.sessionId, { forceFresh: true });
+    beforeNextACommit = () => {
+      void managerB.releaseJobClaimAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+      });
+    };
+
+    await expect(
+      managerA.checkpointJobContinuityAtomic(entry.sessionId, {
+        expectedActiveJobId: 'job-1',
+        expectedVersion: claimed.version,
+        snapshot: validatedTestContinuitySnapshot({
+          conversationRef: 'thread-racy',
+          resumable: true,
+          providerContinuity: { threadId: 'thread-racy' },
+        }),
+      }),
+    ).resolves.toEqual({ ok: false });
+
+    const current = managerA.readById(entry.sessionId, { forceFresh: true });
+    expect(current?.activeJobId).toBeUndefined();
+    expect(current?.conversationRef).toBeUndefined();
+    expect(current?.state).toBe('pending');
+  });
+
   it('recordArtifactHandleAtomic appends a lifecycle event and advances the expected version', async () => {
     const { db, mgr, workDir } = setupWithJournal('record-artifact-handle');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -690,7 +724,6 @@ describe('sessions shell store', () => {
         mgr.recordArtifactHandleAtomic(entry.sessionId, {
           expectedActiveJobId: 'job-1',
           expectedVersion: claimed.version,
-          provider: 'codex',
           handle: '/tmp/codex/rollout.jsonl',
           identity: { kind: 'test-artifact', path: '/tmp/codex/rollout.jsonl' },
           sourceJobId: 'job-1',
@@ -705,7 +738,6 @@ describe('sessions shell store', () => {
         version: claimed.version + 1,
         artifactHandles: [
           {
-            provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
             sourceJobId: 'job-1',
           },
@@ -735,7 +767,6 @@ describe('sessions shell store', () => {
         jobId: 'job-1',
       });
       expect(JSON.parse(new TextDecoder().decode(artifactRow.body))).toMatchObject({
-        provider: 'codex',
         handle: '/tmp/codex/rollout.jsonl',
         sourceJobId: 'job-1',
         entry: {
@@ -743,7 +774,6 @@ describe('sessions shell store', () => {
           retention: 'discard_provider_artifacts_on_terminal',
           artifactHandles: [
             {
-              provider: 'codex',
               handle: '/tmp/codex/rollout.jsonl',
               sourceJobId: 'job-1',
             },
@@ -835,7 +865,10 @@ describe('sessions shell store adversarial', () => {
   function setup(name: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, name);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb()), workDir };
+    return {
+      mgr: new SessionManager(workDir, runtime, undefined, undefined, openSessionDb(), permissiveProviderLookupPort),
+      workDir,
+    };
   }
 
   it('claimForJobSync returns false for a session that does not exist', () => {
@@ -865,8 +898,8 @@ describe('sessions shell store adversarial', () => {
     const codexSessions = mgr.list('codex');
     const claudeSessions = mgr.list('claude');
 
-    expect(codexSessions.every((s) => s.provider === 'codex')).toBe(true);
-    expect(claudeSessions.every((s) => s.provider === 'claude')).toBe(true);
+    expect(codexSessions.every((session) => session.binding.provider === 'codex')).toBe(true);
+    expect(claudeSessions.every((session) => session.binding.provider === 'claude')).toBe(true);
     expect(codexSessions).toHaveLength(1);
     expect(claudeSessions).toHaveLength(1);
   });

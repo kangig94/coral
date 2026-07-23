@@ -49,7 +49,9 @@ export const kbCapabilityNameSchema = z
     message:
       'Capability name must be lowercase, <=64 chars, and use dot-separated non-empty segments with optional hyphens or underscores.',
   })
-  .transform((value) => canonicalizeCapabilityName(value));
+  .describe('validate-kb-capability-name')
+  .transform((value) => canonicalizeCapabilityName(value))
+  .describe('brand-canonical-kb-capability-name');
 
 export interface KbCapabilityDescriptor {
   readonly name: KbCapabilityName;
@@ -77,17 +79,18 @@ const kbCapabilityDescriptorInputSchema = z
         message: `Capability namespace must be '${derivedNamespace}' for '${descriptor.name}'.`,
       });
     }
-  });
+  })
+  .describe('require-derived-kb-capability-namespace');
 
-export const kbCapabilityDescriptorSchema = kbCapabilityDescriptorInputSchema.transform<KbCapabilityDescriptor>(
-  (descriptor) => ({
+export const kbCapabilityDescriptorSchema = kbCapabilityDescriptorInputSchema
+  .transform<KbCapabilityDescriptor>((descriptor) => ({
     name: descriptor.name,
     ...(descriptor.typeTag === undefined ? {} : { typeTag: descriptor.typeTag }),
     ...(descriptor.label === undefined ? {} : { label: descriptor.label }),
     ...(descriptor.description === undefined ? {} : { description: descriptor.description }),
     namespace: capabilityNamespaceForName(descriptor.name),
-  }),
-);
+  }))
+  .describe('derive-kb-capability-namespace');
 
 export interface RegisteredKbCapability {
   readonly descriptor: KbCapabilityDescriptor;

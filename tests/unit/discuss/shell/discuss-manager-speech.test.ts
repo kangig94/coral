@@ -34,7 +34,7 @@ async function recoverSessions(harness: DiscussHarness) {
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
-      providerCredentials: snapshot.providerCredentials ?? harness.ctx.providerCredentials,
+      providerScope: snapshot.providerScope ?? harness.ctx.providerScope,
     }),
   );
 }
@@ -47,7 +47,9 @@ function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSes
 
 describe('Discuss speech collection', () => {
   it('records a successful speech and emits a derived speech_done watch event', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Pedestrianization should start with the transit-heavy core and freight exemptions.',
       continuity: null,
@@ -113,8 +115,12 @@ describe('Discuss speech collection', () => {
   });
 
   it('retries an empty speech once and persists only the accepted content', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({
@@ -179,6 +185,7 @@ describe('Discuss speech collection', () => {
       expect.objectContaining({
         sessionId: 'exec-alpha',
         pool: 'discuss',
+        owner: { kind: 'discussion', id: 'discuss-empty-retry' },
       }),
       harness.ctx,
     );
@@ -195,8 +202,12 @@ describe('Discuss speech collection', () => {
   });
 
   it('times out the speaking turn after repeated empty speech responses', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-2', session: 'exec-alpha' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({
@@ -270,8 +281,8 @@ describe('Discuss speech collection', () => {
   it('passes prior speech only to listeners during the next bid collection', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
-      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({ content: '{"score": 44, "thought": "alpha"}', continuity: null })
@@ -354,9 +365,10 @@ describe('Discuss speech collection', () => {
 
   it('after recovery attach, resumeLoop resumes a persisted speech job before reopening bidding', async () => {
     const resume = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
       status: 'running',
-      job: 'job-2',
-      session: 'exec-alpha',
+      jobId: 'job-2',
+      sessionId: 'exec-alpha',
     });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Start with the transit-heavy core.',
@@ -435,6 +447,7 @@ describe('Discuss speech collection', () => {
       expect.objectContaining({
         sessionId: 'exec-alpha',
         pool: 'discuss',
+        owner: { kind: 'discussion', id: 'discuss-1' },
       }),
       harness.ctx,
     );

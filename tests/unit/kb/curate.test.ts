@@ -1,12 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -297,6 +289,7 @@ function useScheduler(
     processPort: gitSyncRuntime.process,
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
+    usageBudget: { isExhausted: async () => false },
     scheduleDebounceMs,
     ...(runCommunitySummaryJob === undefined ? {} : { runCommunitySummaryJob }),
   });
@@ -2319,6 +2312,7 @@ describe('curate', () => {
         processPort: gitSyncRuntime.process,
         storagePort: gitSyncRuntime.storage,
         envPort: gitSyncRuntime.env,
+        usageBudget: { isExhausted: async () => false },
         scheduleDebounceMs: 0,
       });
       await secondScheduler.start();
@@ -2901,7 +2895,9 @@ describe('curate', () => {
       expect(communityDocs.length).toBeGreaterThan(0);
       expect(communityDocs.every((record) => !record.content.includes('## Summary'))).toBe(true);
       expect(
-        communityDocs.every((record) => parseCommunityFrontmatter(record.content).summaryInputFingerprint === undefined),
+        communityDocs.every(
+          (record) => parseCommunityFrontmatter(record.content).summaryInputFingerprint === undefined,
+        ),
       ).toBe(true);
     });
 

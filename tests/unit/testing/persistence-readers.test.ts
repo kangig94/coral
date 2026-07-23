@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,7 @@ const nodeStoreStorage = createRealRuntime('prod').storage;
 
 function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths(resolveBuildFlavor(process.env)).dbFile,
     storage: nodeStoreStorage,
   });
@@ -38,6 +40,7 @@ function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => 
 
 function makeLaunchBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    owner: { kind: 'provider-session', id: 's1' },
     sessionId: 's1',
     provider: 'codex',
     projectRoot: '/tmp/project',
@@ -82,9 +85,8 @@ function insertJobEvent(
          namespace,
          project,
          refs,
-         body_version,
          body
-       ) VALUES (?, ?, 'job', ?, 'ns', '/tmp/project', ?, 1, ?)`,
+       ) VALUES (?, ?, 'job', ?, 'ns', '/tmp/project', ?, ?)`,
     )
     .run(ts, type, jobId, JSON.stringify({ jobId }), payload);
   return Number(result.lastInsertRowid);
@@ -121,6 +123,7 @@ function seedJobProjection(
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id,
+         execution_owner,
          phase,
          terminal,
          diagnostics,
@@ -134,9 +137,14 @@ function seedJobProjection(
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       jobId,
+      JSON.stringify(
+        options.jobKind === 'workflow'
+          ? { kind: 'workflow', id: jobId }
+          : { kind: 'provider-session', id: options.sessionId ?? 's1' },
+      ),
       options.phase ?? 'running',
       options.sessionId ?? 's1',
       options.provider ?? 'codex',
@@ -170,6 +178,7 @@ describe('readStatusRecord', () => {
     const result = readStatusRecord(testJobId);
     expect(result).not.toBeNull();
     expect(result!.jobId).toBe(testJobId);
+    expect(result!.owner).toEqual({ kind: 'provider-session', id: 's1' });
     expect(result!.sessionId).toBe('s1');
     expect(result!.provider).toBe('codex');
     expect(result!.projectRoot).toBe('/tmp/project');
@@ -196,6 +205,7 @@ describe('readStatusRecord', () => {
     seedJobProjection({ launchBody: null });
     expect(readStatusRecord(testJobId)).toEqual({
       jobId: testJobId,
+      owner: { kind: 'provider-session', id: 's1' },
       sessionId: 's1',
       provider: 'codex',
       projectRoot: '/tmp/project',
@@ -304,7 +314,6 @@ describe('readProgressLog', () => {
           durationMs: 1,
           outcome: { kind: 'completed' },
         },
-        continuity: null,
       },
     ]);
   });

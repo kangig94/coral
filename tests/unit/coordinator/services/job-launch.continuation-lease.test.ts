@@ -1,28 +1,29 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { none } from '#src/providers/capability.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider, ProviderRegistry } from '#src/providers/registry.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { JobLaunchService } from '#src/coordinator/services/job-launch.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING, TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 
 const ctx: InvocationContext = {
   projectRoot: '/tmp/coral-project',
   pluginRoot: '/tmp/coral-plugin',
   coralEnv: {},
   principal: testProjectPrincipal('/tmp/coral-project'),
-  providerCredentials: TEST_PROVIDER_CREDENTIALS,
+  providerScope: TEST_CODEX_SCOPE,
 };
 
-function sessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
+function sessionEntry(overrides: Partial<ProviderSession> = {}): ProviderSession {
   return {
     sessionId: 'session-retention-lock',
-    provider: 'codex',
-    sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+    binding: TEST_CODEX_BINDING,
     name: 'session-retention-lock',
     state: 'ready',
     retention: 'discard_provider_artifacts_on_terminal',
@@ -52,31 +53,38 @@ describe('JobLaunchService continuation lease admission', () => {
   it('rejects resume when retention discard request is in flight', async () => {
     const runtime = new SimulationRuntime();
     const launchOrchestrator = {
-      claimAndAdmitJob: vi.fn(),
-      launchProviderJob: vi.fn(),
+      launchResumedProviderJob: vi.fn(),
     };
-    const provider = defineProvider({ name: 'codex', run: async function* noopProvider() {} })
+    const provider = defineProvider({
+      name: 'codex',
+      transport: 'standalone',
+      run: async function* noopProvider() {},
+      prepareExecutionPlan: prepareFixtureExecutionPlan,
+    })
+      .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(none('test provider has no artifacts'))
       .build();
+    const providerRegistry = new ProviderRegistry();
+    providerRegistry.register(provider);
     const service = new JobLaunchService({
       runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
       sessionManager: {
+        prepare: vi.fn(),
+        appendPreparedClaim: vi.fn(),
+        appendJobClaim: vi.fn(),
+        appendContinuationReplacementClaim: vi.fn(),
+        observeCommittedEntry: vi.fn(),
         allocate: vi.fn(),
         get: vi.fn(() => sessionEntry()),
         list: vi.fn(() => []),
         releaseJob: vi.fn(),
-        claimForJobAtomic: vi.fn(),
         recordContinuationLease: vi.fn(),
-        claimContinuationLease: vi.fn(),
         clearContinuationLease: vi.fn(),
       },
       backendNamespace: 'test-ns',
       bundleHash: 'test-bundle',
-      providerRegistry: {
-        get: vi.fn(() => provider),
-        getAll: vi.fn(() => [provider]),
-      },
+      providerRegistry,
       pluginRegistry: { discoverPluginRoot: vi.fn(() => null) },
       progressStore: {} as never,
       launchOrchestrator: launchOrchestrator as never,
@@ -88,7 +96,6 @@ describe('JobLaunchService continuation lease admission', () => {
       status: 'rejected',
       code: 'retention_discard_in_flight',
     });
-    expect(launchOrchestrator.claimAndAdmitJob).not.toHaveBeenCalled();
-    expect(launchOrchestrator.launchProviderJob).not.toHaveBeenCalled();
+    expect(launchOrchestrator.launchResumedProviderJob).not.toHaveBeenCalled();
   });
 });

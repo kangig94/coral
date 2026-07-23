@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 
 import type { StoragePort } from '#src/infra/port-types.js';
@@ -22,6 +23,7 @@ function withReadonlyStore<T>(read: (db: ReturnType<typeof openStoreDatabase>) =
   }
 
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: dbPath,
     storage: nodeStoreReaderStorage as StoragePort,
     readonly: true,

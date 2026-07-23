@@ -1,33 +1,77 @@
-import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput } from '../records.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminal, JobTerminalInput } from '../records.js';
 import type { JobPhase } from '../phase.js';
 import type { TerminalWriteOptions } from '../contracts/job-store.js';
-import type { ProviderArtifactHandleInput } from '../../providers/contract.js';
-import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
+import type { ProviderArtifactIdentity } from '../../providers/artifact-identity.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { LaunchPool } from '../contracts/admission.js';
+import type { BoundProvider } from '../../providers/bound-provider-contract.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../runtime/durable-runtime.js';
+import type { ProviderBindingFailure } from '../../providers/contracts/binding.js';
+
+export type ProviderRecoveryLaunch = JobLaunch & {
+  readonly sessionId: string;
+  readonly provider: string;
+  readonly jobKind: 'provider';
+};
+
+/** The minimal captured session facts required after recovery authority validation. */
+export type ProviderRecoverySession = Readonly<{
+  sessionId: string;
+  projectRoot: string;
+  conversationRef?: string;
+  providerContinuity: ProviderContinuityBlob | null;
+  artifactHandles: readonly Readonly<{
+    handle: string;
+    identity: ProviderArtifactIdentity;
+    sourceJobId: string;
+  }>[];
+  version: number;
+}>;
+
+export type ProviderRecoveryAuthority = Readonly<{
+  launchRecord: ProviderRecoveryLaunch;
+  session: ProviderRecoverySession;
+  boundProvider: BoundProvider;
+}>;
+
+export type RecoveryCommitFence = Readonly<{
+  signal: AbortSignal;
+  onCommitStart(): void;
+}>;
+
+export type ProviderRecoveryAuthorityCapture =
+  | Readonly<{ ok: true; authority: ProviderRecoveryAuthority }>
+  | Readonly<{ ok: false; failure: ProviderBindingFailure }>;
 
 export interface RecoveryCapableService {
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean;
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null;
+  captureProviderRecoveryAuthority(launchRecord: JobLaunch): Promise<ProviderRecoveryAuthorityCapture>;
+  finalizeProviderRecoveryBindingFailure(launchRecord: JobLaunch, failure: ProviderBindingFailure): void;
   finalizeInterruptedAppServerJob(
-    launchRecord: JobLaunch,
+    authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
-    context: { reason: 'restart' | 'handoff' },
+    context: { reason: 'restart' | 'handoff' } & RecoveryCommitFence,
   ): Promise<void>;
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void };
-  recoverQueuedJob(launchRecord: JobLaunch): string;
-  interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void>;
-  recordRecoveredArtifactHandles(
-    sessionId: string,
-    input: {
-      readonly jobId: string;
-      readonly provider: string;
-      readonly handles: readonly ProviderArtifactHandleInput[];
-    },
-  ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }>;
+  finalizeInterruptedDurableJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: DurableCliRuntimeRecord,
+    observation: Readonly<{
+      exit: DurableProcessExit | null;
+      terminal: JobTerminal | null;
+      cancelled: boolean;
+    }>,
+    fence: RecoveryCommitFence,
+  ): Promise<void>;
+  adoptRunningJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: JobRuntime,
+  ): Promise<{ adopted: boolean; cleanup: () => void }>;
+  recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string>;
+  interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void>;
   completeRecoveredJob(
     jobId: string,
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options?: TerminalWriteOptions,
+    options: TerminalWriteOptions & { pool: LaunchPool },
   ): void;
 }

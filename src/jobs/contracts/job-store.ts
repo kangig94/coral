@@ -1,11 +1,9 @@
 import type { Database } from '../../store/db.js';
 
 import type { AppendedEvent, CommitClosureResult, CommitContext } from '../../store/append.js';
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { JobProjectionDetail } from '../read-queries.js';
 import type { JobEventBus } from '../event-bus.js';
-import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus } from '../records.js';
-import type { ProviderCredentialSet } from '../../runtime/provider-credentials.js';
+import type { JobTerminalDiagnostics, JobLaunch, JobEvent, JobRuntime, JobStatus, JobTerminal } from '../records.js';
 
 type InitJobBase = {
   jobId: string;
@@ -17,14 +15,9 @@ type InitJobBase = {
   initialPhase?: JobStatus['phase'];
 };
 
-export type InitJobOptions = InitJobBase &
-  (
-    | { jobKind?: Exclude<JobStatus['jobKind'], 'workflow'> }
-    | { jobKind: 'workflow'; providerCredentials: ProviderCredentialSet }
-  );
+export type InitJobOptions = InitJobBase & { jobKind?: 'provider' };
 
 export type TerminalWriteOptions = {
-  continuity?: JobContinuitySnapshot | null;
   diagnostics?: JobTerminalDiagnostics;
 };
 
@@ -47,6 +40,7 @@ export interface JobProgressStore {
   readLaunchProjection(jobId: string): JobLaunch | null;
   appendRuntimeStarted(jobId: string, runtime: JobRuntime): void;
   readRuntimeProjection(jobId: string): JobRuntime | null;
+  readTerminalProjection(jobId: string): JobTerminal | null;
   rebindNamespace(jobId: string, newNamespace: string, newBundleHash?: string): void;
   listJobIds(): string[];
   liveJobCountByNamespace(namespace: string): number;

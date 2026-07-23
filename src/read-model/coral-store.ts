@@ -36,7 +36,7 @@ import {
   type DiscussReadRef,
 } from '../discuss/read-queries.js';
 import type { DiscussDomainEvent, PersistedDiscussSnapshot } from '../discuss/events.js';
-import { readSessionEntryById } from '../sessions/read-queries.js';
+import { readProviderSessionById } from '../sessions/read-queries.js';
 import {
   listWorkflowProjections,
   readWorkflowProjection,
@@ -59,7 +59,7 @@ import type {
   KbWikiListResult,
 } from '../kb/entry-types.js';
 import type { CommunitySummaryInput, StaleCommunity } from '../kb/curate/community/summary-surface.js';
-import type { SessionEntry } from '../sessions/entry.js';
+import type { ProviderSession } from '../sessions/entry.js';
 import type { DiscussDiscoveryData, DiscussSummaryIndexData } from '../discuss/persistence-types.js';
 
 export type CoralStoreRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
@@ -79,7 +79,8 @@ export type CoralStoreOptions = {
 
 export class CoralStore implements StoreReadContext {
   public readonly schemas: StoreReadContext['schemas'];
-  public readonly upcasters: StoreReadContext['upcasters'];
+  public readonly streamKinds: StoreReadContext['streamKinds'];
+  public readonly bodyCodec: StoreReadContext['bodyCodec'];
   private readonly runtime?: CoralStoreRuntime;
   private readonly namespace?: string;
   private readonly projectRoot?: string;
@@ -108,7 +109,7 @@ export class CoralStore implements StoreReadContext {
     summaryIndex: (source: string) => DiscussSummaryIndexData | null;
   };
   public readonly sessions: {
-    readEntry: (sessionId: string) => SessionEntry;
+    readEntry: (sessionId: string) => ProviderSession;
   };
   public readonly workflows: {
     projection: (workflowId: string) => WorkflowProjectionRow | null;
@@ -120,7 +121,8 @@ export class CoralStore implements StoreReadContext {
   constructor(db: Database, readCtx: StoreReadContext, options: CoralStoreOptions = {}) {
     this.db = db;
     this.schemas = readCtx.schemas;
-    this.upcasters = readCtx.upcasters;
+    this.streamKinds = readCtx.streamKinds;
+    this.bodyCodec = readCtx.bodyCodec;
     this.runtime = options.runtime;
     this.namespace = options.namespace;
     this.projectRoot = options.projectRoot;
@@ -181,7 +183,7 @@ export class CoralStore implements StoreReadContext {
     };
 
     this.sessions = {
-      readEntry: (sessionId) => readSessionEntryById(this.db, sessionId),
+      readEntry: (sessionId) => readProviderSessionById(this.db, sessionId),
     };
 
     this.workflows = {

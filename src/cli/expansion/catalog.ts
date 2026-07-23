@@ -6,8 +6,9 @@ import { serializeCoralSetupError } from '../../runtime/errors.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../../store/read-port.js';
+import { currentCoralStoreFormat } from '../../store-format.js';
 
-const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file|no such table:\s*expansion_manifest_catalog/i;
+const CATALOG_UNAVAILABLE_MESSAGE = /unable to open database file/i;
 
 function isCatalogUnavailableError(error: unknown): boolean {
   if (serializeCoralSetupError(error) !== null) {
@@ -19,7 +20,7 @@ function isCatalogUnavailableError(error: unknown): boolean {
 export function readExpansionCatalog(runtime: Runtime): readonly EngineManifest[] {
   let db: ReadonlyDatabase | null = null;
   try {
-    db = openReadOnlyStoreDatabase(runtime);
+    db = openReadOnlyStoreDatabase(runtime, { storeFormat: currentCoralStoreFormat() });
     return createExpansionManifestCatalog({ readDb: db }).listManifests();
   } catch (error) {
     if (isCatalogUnavailableError(error)) {

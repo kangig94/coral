@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -55,10 +56,15 @@ const EXPECTED_COORDINATOR_FILES = new Set([
   'src/coordinator/services/job-abort.ts',
   'src/coordinator/services/job-launch.ts',
   'src/coordinator/services/job-wait.ts',
+  'src/coordinator/services/kb-curate-assistant.ts',
   'src/coordinator/runtime-components/contract.ts',
   'src/coordinator/runtime-components/registry.ts',
   'src/coordinator/services/recovery/actions.ts',
+  'src/coordinator/services/recovery/authority-snapshot.ts',
   'src/coordinator/services/recovery/index.ts',
+  'src/coordinator/services/recovery/interrupted-finalizer.ts',
+  'src/coordinator/services/recovery/interrupted-performer.ts',
+  'src/coordinator/services/recovery/interrupted-plan.ts',
   'src/coordinator/services/recovery/service.ts',
   'src/coordinator/services/recovery/snapshot.ts',
   'src/coordinator/services/terminal-materializer.ts',
@@ -125,6 +131,7 @@ const KB_DAEMON_IMPLEMENTATION_TARGETS = new Set([
   'src/kb-daemon/runtime-host.ts',
 ]);
 const KB_DAEMON_IMPLEMENTATION_PREFIXES = ['src/kb-daemon/expansion/', 'src/kb-daemon/services/'] as const;
+const PROVIDER_IMPLEMENTATION_PREFIXES = ['src/providers/claude/', 'src/providers/codex/'] as const;
 
 function startsWithAny(value: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => value.startsWith(prefix));
@@ -215,5 +222,16 @@ describe('coordinator topology invariants', () => {
     }).map(({ source, target }) => `${source} -> ${target}`);
 
     expect(violations).toEqual([]);
+  });
+
+  it('keeps KB curation on the opaque bound-provider capability', () => {
+    const violations = COORDINATOR_EDGES.filter(({ source, target }) => {
+      if (source !== 'src/coordinator/services/kb-curate-assistant.ts') return false;
+      return target === 'src/providers/execution-plan.ts' || startsWithAny(target, PROVIDER_IMPLEMENTATION_PREFIXES);
+    }).map(({ source, target }) => `${source} -> ${target}`);
+
+    expect(violations).toEqual([]);
+    const source = readFileSync(join(REPO_ROOT, 'src/coordinator/services/kb-curate-assistant.ts'), 'utf8');
+    expect(source).not.toMatch(/\baccess\s*\(/u);
   });
 });

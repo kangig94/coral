@@ -7,7 +7,7 @@ type DirectJobTerminalInput = {
   outcome: ProviderTerminal['outcome'];
   model?: ProviderTerminal['model'];
   usage?: ProviderTerminal['usage'];
-  durationMs?: ProviderTerminal['durationMs'];
+  durationMs: ProviderTerminal['durationMs'];
   exitCode?: ProviderTerminal['exitCode'];
   warnings?: ProviderTerminal['warnings'];
 };
@@ -51,7 +51,7 @@ export function buildJobTerminal(input: BuildJobTerminalInput): ProviderTerminal
       outcome: input.outcome,
       ...(input.model === undefined ? {} : { model: input.model }),
       ...(input.usage === undefined ? {} : { usage: { ...input.usage } }),
-      ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
+      durationMs: input.durationMs,
       ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
       ...(input.warnings === undefined ? {} : { warnings: [...input.warnings] }),
     };

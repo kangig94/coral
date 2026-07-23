@@ -5,9 +5,10 @@
 // `kb/corpus/manifest-types.ts` and `jobs/event-bodies.ts`.
 
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 
 import { causeRefSchema } from '../causality/cause-ref.js';
-import { providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
+import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
 import { continuitySnapshotSchema } from './continuity.js';
 import {
   claimedContinuationLeaseSchema,
@@ -15,7 +16,9 @@ import {
   expiredContinuationLeaseSchema,
   pendingContinuationLeaseSchema,
   retentionDiscardCompletedOutcomeSchema,
-  sessionEntrySchema,
+  providerSessionSchema,
+  providerSessionProvider,
+  sessionControllerFromProfile,
 } from './entry.js';
 import {
   sessionAdapterUnparseableFaultSchema,
@@ -25,89 +28,169 @@ import {
 
 export const sessionOpenedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     controller: z.string().min(1),
-    provider: z.string().min(1),
     scope_key: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((body, ctx) => {
+    if (
+      body.entry.state !== 'pending' ||
+      body.entry.activeJobId !== undefined ||
+      body.entry.conversationRef !== undefined ||
+      body.entry.providerContinuity !== null
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['entry'],
+        message: 'A newly opened provider session must have empty pending continuity and no active job.',
+      });
+    }
+    if (body.controller !== sessionControllerFromProfile(body.entry.controllerProfile)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['controller'],
+        message: 'Session controller must be derived from entry.controllerProfile.',
+      });
+    }
+  })
+  .describe('validate-session-opened-authority');
 
 export const sessionContinuityCheckpointedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     snapshot: continuitySnapshotSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((body, ctx) => {
+    const expected = {
+      conversationRef: body.entry.conversationRef ?? null,
+      resumable: body.entry.state === 'ready',
+      providerContinuity: body.entry.providerContinuity ?? null,
+    };
+    if (!isDeepStrictEqual(body.snapshot, expected)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['snapshot'],
+        message: 'Continuity snapshot must exactly describe the persisted ProviderSession entry.',
+      });
+    }
+  })
+  .describe('validate-session-continuity-snapshot');
 
 export const sessionArtifactHandleRecordedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
-    provider: z.string().min(1),
+    entry: providerSessionSchema,
     handle: z.string().min(1),
-    identity: providerArtifactIdentitySchema.optional(),
-    identityKey: z.string().min(1).optional(),
-    sourceJobId: z.string().min(1).optional(),
+    identity: providerArtifactIdentitySchema,
+    identityKey: z.string().min(1),
+    sourceJobId: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((body, ctx) => {
+    const expectedIdentityKey = providerArtifactIdentityKey(providerSessionProvider(body.entry), body.identity);
+    if (body.identityKey !== expectedIdentityKey) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['identityKey'],
+        message: 'Artifact identityKey must be derived from entry.binding.provider and identity.',
+      });
+    }
+    const recorded = body.entry.artifactHandles.some(
+      (artifact) =>
+        artifact.handle === body.handle &&
+        artifact.identityKey === body.identityKey &&
+        artifact.sourceJobId === body.sourceJobId &&
+        JSON.stringify(artifact.identity) === JSON.stringify(body.identity),
+    );
+    if (!recorded) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['entry', 'artifactHandles'],
+        message: 'Artifact event detail must identify the handle embedded in the ProviderSession entry.',
+      });
+    }
+  })
+  .describe('validate-session-artifact-handle-recording');
 
-export const sessionInterruptedBodySchema = z.union([
-  sessionInterruptedFaultSchema,
-  z
-    .object({
-      entry: sessionEntrySchema.optional(),
-      fault: sessionInterruptedFaultSchema,
-    })
-    .strict(),
-]);
+export const sessionInterruptedBodySchema = sessionInterruptedFaultSchema;
 
 export const sessionProviderFailedBodySchema = sessionProviderFailedFaultSchema;
 export const sessionAdapterUnparseableBodySchema = sessionAdapterUnparseableFaultSchema;
 
 export const sessionClaimedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     jobId: z.string().min(1),
   })
   .strict();
 
 export const sessionClaimReleasedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     jobId: z.string().min(1),
   })
   .strict();
 
+function validateContinuationLeaseBody(
+  body: { entry: { sessionId: string; continuationLease?: unknown }; sessionId: string; lease: unknown },
+  ctx: z.RefinementCtx,
+): void {
+  if (body.sessionId !== body.entry.sessionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sessionId'],
+      message: 'Continuation lease sessionId must equal entry.sessionId.',
+    });
+  }
+  if (!isDeepStrictEqual(body.lease, body.entry.continuationLease)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['lease'],
+      message: 'Continuation lease detail must exactly equal entry.continuationLease.',
+    });
+  }
+}
+
 export const sessionContinuationLeaseRecordedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     sessionId: z.string().min(1),
     lease: pendingContinuationLeaseSchema,
   })
-  .strict();
+  .strict()
+  .superRefine(validateContinuationLeaseBody)
+  .describe('validate-recorded-continuation-lease-snapshot');
 
 export const sessionContinuationLeaseClaimedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     sessionId: z.string().min(1),
     lease: claimedContinuationLeaseSchema,
   })
-  .strict();
+  .strict()
+  .superRefine(validateContinuationLeaseBody)
+  .describe('validate-claimed-continuation-lease-snapshot');
 
 export const sessionContinuationLeaseClearedBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     sessionId: z.string().min(1),
     lease: clearedContinuationLeaseSchema,
   })
-  .strict();
+  .strict()
+  .superRefine(validateContinuationLeaseBody)
+  .describe('validate-cleared-continuation-lease-snapshot');
 
 export const sessionContinuationLeaseExpiredBodySchema = z
   .object({
-    entry: sessionEntrySchema,
+    entry: providerSessionSchema,
     sessionId: z.string().min(1),
     lease: expiredContinuationLeaseSchema,
   })
-  .strict();
+  .strict()
+  .superRefine(validateContinuationLeaseBody)
+  .describe('validate-expired-continuation-lease-snapshot');
 
 const retentionDiscardHandlesSchema = z.array(z.string()).readonly();
 const retentionDiscardAttemptSchema = z.number().int().nonnegative();

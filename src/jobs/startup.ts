@@ -26,8 +26,8 @@ type JobsStartupContext = {
    * - `'handoff'`: replacement daemon swap (set when `bindWithHandoff`
    *   observed and acquired the socket from an incumbent).
    *
-   * The reason is forwarded to `finalizeInterruptedAppServerJob`, which uses
-   * it for telemetry and the cross-version partial-state warn.
+   * The reason is forwarded to `finalizeInterruptedAppServerJob` and becomes
+   * the durable session interruption trigger.
    */
   interruptedAppServerReason?: InterruptedAppServerReason;
 };

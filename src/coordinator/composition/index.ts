@@ -13,6 +13,7 @@ import type { ServerResponse } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { formatError } from '../../infra/error-format.js';
+import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
@@ -74,7 +75,7 @@ import { AbortRegistry } from '../../jobs/shell/abort-registry.js';
 import { type KbDaemonHealthSnapshot, type KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
-import type { KbCorpusSnapshot } from '../../kb/contract.js';
+import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 
@@ -109,46 +110,6 @@ const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'err
 
 function isTerminalDiscussStatus(status: string): boolean {
   return TERMINAL_DISCUSS_STATUSES.has(status);
-}
-
-const EMPTY_CORPUS_SNAPSHOT: KbCorpusSnapshot = {
-  snapshotId: '',
-  contentSeq: 0,
-  metadataSeq: 0,
-  contentManifestHash: '',
-  metadataManifestHash: '',
-};
-
-type CorpusSnapshotCursorRow = {
-  snapshot_id: string | null;
-  content_seq: number | null;
-  metadata_seq: number | null;
-  content_manifest_hash: string | null;
-  metadata_manifest_hash: string | null;
-};
-
-function readPersistedCorpusSnapshot(db: {
-  prepare(sql: string): { get(): CorpusSnapshotCursorRow | undefined };
-}): KbCorpusSnapshot {
-  const row = db
-    .prepare(
-      `
-        SELECT snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash
-          FROM kb_corpus_state
-         WHERE id = 1
-      `,
-    )
-    .get();
-  if (row === undefined) {
-    return { ...EMPTY_CORPUS_SNAPSHOT };
-  }
-  return {
-    snapshotId: row.snapshot_id ?? '',
-    contentSeq: row.content_seq ?? 0,
-    metadataSeq: row.metadata_seq ?? 0,
-    contentManifestHash: row.content_manifest_hash ?? '',
-    metadataManifestHash: row.metadata_manifest_hash ?? '',
-  };
 }
 
 let eventLoopDelayMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -519,7 +480,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const readOnlyInvocationContext: InvocationContext = {
     projectRoot: '',
     pluginRoot: identity.pluginRoot,
-    coralEnv: { ...world.coralEnvSnapshot },
+    coralEnv: invocationCoralEnvSnapshot(world.coralEnvSnapshot),
     principal: {
       subject: 'system',
       transport: 'internal',
@@ -564,7 +525,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
   const notifyHostedCorpusMutation = (): void => {
     try {
       const storeServices = getStoreServices();
-      const snapshot = readPersistedCorpusSnapshot(storeServices.storeDb);
+      const snapshot = readCorpusState(storeServices.storeDb);
       storeServices.consumerDriver?.notifyCorpus(snapshot);
     } catch (error) {
       world.log(`[kb-daemon] failed to publish hosted corpus mutation: ${formatError(error)}\n`);
@@ -682,8 +643,12 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           cleanupDaemonJobAbortProxy(jobId);
           continue;
         }
-        markJobAsError(progressStore, status, { kind: 'wrapper_crashed', cause: { message } }, (line) =>
-          world.log(`${line}\n`),
+        markJobAsError(
+          progressStore,
+          status,
+          { kind: 'wrapper_crashed', cause: { message } },
+          runtime.time.now(),
+          (line) => world.log(`${line}\n`),
         );
         cleanupDaemonJobAbortProxy(jobId);
         failed.push(jobId);
@@ -848,8 +813,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     identity,
     time: runtime.time,
     coralEnvSnapshot: world.coralEnvSnapshot,
-    providerCredentialDefaults: world.providerCredentialDefaults,
-    ambientClaudeLocation: world.ambientClaudeLocation,
+    ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     remoteAccess: world.remoteAccess,
     childPrincipals: world.childPrincipalRegistry,
     admin: {
@@ -870,6 +834,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     health: {
       read: () => {
         const env = { ...world.coralEnvSnapshot };
+        delete env.CORAL_SYSTEM_PROVIDER_SCOPE;
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
         // Coarse `status` field for clients that validate the strict
@@ -890,6 +855,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
         // transport types use `string` because the brand is enforced producer-side.
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
+        const systemProviderScope = world.systemProviderScope;
 
         const consumerStuck: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']> =
           storeServices === null ? [] : (options.getConsumerStuck() ?? []);
@@ -932,6 +898,14 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
           kbDaemon,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
+          ...(systemProviderScope === undefined
+            ? {}
+            : {
+                systemProviderScope: {
+                  name: systemProviderScope.name,
+                  providers: systemProviderScope.profiles.map((profile) => profile.provider).sort(),
+                },
+              }),
         };
       },
     },
@@ -1001,6 +975,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
 
   const lifecycleDeps: LifecycleDeps = {
     identity,
+    storeFormat: options.storeFormat,
     runtime,
     backendPid: world.backendPid,
     runtimeState,
@@ -1012,6 +987,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     eventBus: world.eventBus,
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
+    ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     server,
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
@@ -1036,7 +1012,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
       services
         .listExecutionServices()
         .filter(
-          (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: (signal: AbortSignal) => Promise<void> } =>
+          (svc): svc is typeof svc & { quiesceAppServerJobsForHandoff: () => Promise<void> } =>
             typeof (svc as { quiesceAppServerJobsForHandoff?: unknown }).quiesceAppServerJobsForHandoff === 'function',
         ),
     createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisorWithTrackedShutdown),
@@ -1078,8 +1054,7 @@ export function createCoordinatorCore(options: CoordinatorCoreOptions): Coordina
     eventBus: world.eventBus,
     launchCoordinator: world.launchCoordinator,
     providerRegistry: world.providerRegistry,
-    providerHostManager: world.providerHostManager,
-    providerCredentialDefaults: world.providerCredentialDefaults,
+    ...(world.systemProviderScope === undefined ? {} : { systemProviderScope: world.systemProviderScope }),
     getExecutionService: services.getExecutionService,
     getRecoveryService: services.getRecoveryService,
     listExecutionServices: services.listExecutionServices,

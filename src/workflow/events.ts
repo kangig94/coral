@@ -8,6 +8,19 @@ import { CoralSetupError } from '../runtime/errors.js';
 import { CoralAppendError } from '../store/append-error.js';
 import { causeRefSchema, type CauseRef, type CauseRefToken } from '../causality/cause-ref.js';
 import { parseWorkflowSlotId, workflowPlanSchema, type WorkflowPlan } from './plan.js';
+import { providerScopeSchema, type ProviderScope } from '../infra/provider-scope.js';
+import {
+  transitionWorkflowLifecycle,
+  workflowLifecycleSchema,
+  type WorkflowLifecycle,
+  type WorkflowLifecycleEvent,
+} from './lifecycle.js';
+import { validateWorkflowJobAuthority } from './job-authority.js';
+
+export const workflowDeclaredBodySchema = z
+  .object({ plan: workflowPlanSchema, providerScope: providerScopeSchema })
+  .strict();
+export type WorkflowDeclaredBody = z.infer<typeof workflowDeclaredBodySchema>;
 
 const workflowStepDetailSchema = z
   .object({
@@ -112,14 +125,17 @@ export type WorkflowCompletedInputBody<Scope = never> =
     };
 export type WorkflowDrainEnteredBody = z.infer<typeof workflowDrainEnteredBodySchema>;
 
-function readProjectionWorkflow(db: Database, workflowId: string): { plan: WorkflowPlan; lastSeq: number } | null {
+function readProjectionWorkflow(
+  db: Database,
+  workflowId: string,
+): { plan: WorkflowPlan; providerScope: ProviderScope; lifecycle: WorkflowLifecycle; lastSeq: number } | null {
   const row = db
     .prepare(
-      `SELECT plan, last_seq
+      `SELECT plan, provider_scope, lifecycle, last_seq
          FROM projection_workflows
         WHERE workflow_id = ?`,
     )
-    .get(workflowId) as { plan: string; last_seq: number } | undefined;
+    .get(workflowId) as { plan: string; provider_scope: string; lifecycle: string; last_seq: number } | undefined;
 
   if (!row) {
     return null;
@@ -127,13 +143,28 @@ function readProjectionWorkflow(db: Database, workflowId: string): { plan: Workf
 
   return {
     plan: workflowPlanSchema.parse(JSON.parse(row.plan)),
+    providerScope: providerScopeSchema.parse(JSON.parse(row.provider_scope)),
+    lifecycle: workflowLifecycleSchema.parse(row.lifecycle),
     lastSeq: row.last_seq,
   };
 }
 
-function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: WorkflowPlan): void {
+function upsertProjectionWorkflow(db: Database, event: CoralEvent, declared?: WorkflowDeclaredBody): void {
   const previous = readProjectionWorkflow(db, event.stream.id);
-  const nextPlan = plan ?? previous?.plan ?? { slots: [] };
+  const nextPlan = declared?.plan ?? previous?.plan;
+  const providerScope = declared?.providerScope ?? previous?.providerScope;
+  if (nextPlan === undefined || providerScope === undefined) {
+    throw new CoralSetupError({
+      code: 'workflow_aggregate_missing',
+      userMessage: `Workflow '${event.stream.id}' was not declared.`,
+      remediation: 'Declare the workflow aggregate before lifecycle events.',
+    });
+  }
+  const lifecycleEvent = workflowLifecycleEvent(event.type, event.body);
+  const lifecycle = transitionWorkflowLifecycle(previous?.lifecycle ?? null, lifecycleEvent);
+  if (lifecycle === null) {
+    throw workflowLifecycleInvalid(event.stream.id, previous?.lifecycle ?? null, lifecycleEvent);
+  }
 
   upsertProjection(db, {
     table: 'projection_workflows',
@@ -141,8 +172,41 @@ function upsertProjectionWorkflow(db: Database, event: CoralEvent, plan?: Workfl
     pkValue: event.stream.id,
     columns: {
       plan: JSON.stringify(nextPlan),
+      provider_scope: JSON.stringify(providerScope),
+      lifecycle,
     },
     lastSeq: event.seq,
+  });
+}
+
+function workflowLifecycleEvent(type: string, body: unknown): WorkflowLifecycleEvent {
+  switch (type) {
+    case 'workflow.plan.declared':
+    case 'workflow.drain.entered':
+    case 'workflow.lifecycle_fault':
+      return { type };
+    case 'workflow.completed':
+      return { type, outcome: workflowCompletedBodySchema.parse(body).outcome };
+    default:
+      throw new Error(`Unsupported workflow lifecycle event '${type}'.`);
+  }
+}
+
+function workflowLifecycleInvalid(
+  workflowId: string,
+  current: WorkflowLifecycle | null,
+  event: WorkflowLifecycleEvent,
+): CoralSetupError {
+  return new CoralSetupError({
+    code: 'workflow_lifecycle_invalid',
+    userMessage: `Workflow '${workflowId}' cannot apply '${event.type}' from lifecycle '${current ?? 'none'}'.`,
+    remediation: 'Reload the workflow and issue only the next valid lifecycle transition.',
+    context: {
+      workflowId,
+      current,
+      eventType: event.type,
+      ...('outcome' in event ? { outcome: event.outcome } : {}),
+    },
   });
 }
 
@@ -153,6 +217,7 @@ type WorkflowPlanInvalidReason =
   | 'slot_id_format'
   | 'unknown_dependency'
   | 'unknown_slot'
+  | 'provider_mismatch'
   | 'unknown_provider';
 
 function workflowPlanInvalid(
@@ -280,15 +345,29 @@ function workflowIdForSlotRef(input: CoralEventInput, parsedWorkflowId: string):
 
 const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
   const declaredSlotIdsByWorkflow = new Map<string, ReadonlySet<string>>();
+  const declaredPlansByWorkflow = new Map<string, WorkflowPlan>();
   const storedSlotIdsByWorkflow = new Map<string, ReadonlySet<string> | null>();
+  const storedPlansByWorkflow = new Map<string, WorkflowPlan | null>();
 
   for (const input of inputs) {
     if (input.type !== 'workflow.plan.declared') continue;
 
     const workflowId = input.stream.id;
-    const slotIds = validateDeclaredWorkflowPlan(ctx, workflowId, input.body as WorkflowPlan);
+    const declared = workflowDeclaredBodySchema.parse(input.body);
+    const { plan, providerScope } = declared;
+    const slotIds = validateDeclaredWorkflowPlan(ctx, workflowId, plan);
+    const requiredProviders = [...new Set(plan.slots.map((slot) => slot.provider))];
+    const scopeValidation = ctx.providers.validatePersistedScope(providerScope, requiredProviders);
+    if (!scopeValidation.ok) {
+      throw workflowPlanInvalid('provider_mismatch', {
+        workflowId,
+        requiredProviders,
+        providerScopeError: scopeValidation.message,
+      });
+    }
     if (!declaredSlotIdsByWorkflow.has(workflowId)) {
       declaredSlotIdsByWorkflow.set(workflowId, slotIds);
+      declaredPlansByWorkflow.set(workflowId, plan);
     }
   }
 
@@ -302,6 +381,15 @@ const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
       storedSlotIdsByWorkflow.set(workflowId, slotIdsForStoredWorkflowPlan(ctx.db, workflowId));
     }
     return storedSlotIdsByWorkflow.get(workflowId) ?? null;
+  };
+
+  const readPlan = (workflowId: string): WorkflowPlan | null => {
+    const declared = declaredPlansByWorkflow.get(workflowId);
+    if (declared) return declared;
+    if (!storedPlansByWorkflow.has(workflowId)) {
+      storedPlansByWorkflow.set(workflowId, readProjectionWorkflow(ctx.db, workflowId)?.plan ?? null);
+    }
+    return storedPlansByWorkflow.get(workflowId) ?? null;
   };
 
   for (const input of inputs) {
@@ -336,6 +424,25 @@ const validateWorkflowPlanValidity: DomainAppendValidator = (ctx, inputs) => {
         slotId,
       });
     }
+
+    if (input.type === 'job.launch.requested') {
+      const provider =
+        typeof input.body === 'object' &&
+        input.body !== null &&
+        'provider' in input.body &&
+        typeof input.body.provider === 'string'
+          ? input.body.provider
+          : undefined;
+      const plannedProvider = readPlan(workflowId)?.slots.find((slot) => slot.slotId === slotId)?.provider;
+      if (provider !== plannedProvider) {
+        throw workflowPlanInvalid('provider_mismatch', {
+          workflowId,
+          slotId,
+          provider,
+          plannedProvider,
+        });
+      }
+    }
   }
 };
 
@@ -362,8 +469,7 @@ const validateWorkflowPlanDeclaredOnce: DomainAppendValidator = (ctx, inputs) =>
       .prepare(
         `SELECT seq
            FROM events
-          WHERE stream_kind = 'workflow'
-            AND stream_id = ?
+          WHERE stream_id = ?
             AND type = 'workflow.plan.declared'
           LIMIT 1`,
       )
@@ -408,8 +514,7 @@ const validateWorkflowCompletedOnce: DomainAppendValidator = (ctx, inputs) => {
       .prepare(
         `SELECT seq
            FROM events
-          WHERE stream_kind = 'workflow'
-            AND stream_id = ?
+          WHERE stream_id = ?
             AND type = 'workflow.completed'
           LIMIT 1`,
       )
@@ -418,6 +523,33 @@ const validateWorkflowCompletedOnce: DomainAppendValidator = (ctx, inputs) => {
     if (existing) {
       throw workflowCompletedDuplicate(workflowId, `existing (seq ${existing.seq})`);
     }
+  }
+};
+
+const validateWorkflowLifecycle: DomainAppendValidator = (ctx, inputs) => {
+  const lifecycleByWorkflow = new Map<string, WorkflowLifecycle | null>();
+
+  for (const input of inputs) {
+    if (
+      input.type !== 'workflow.plan.declared' &&
+      input.type !== 'workflow.drain.entered' &&
+      input.type !== 'workflow.lifecycle_fault' &&
+      input.type !== 'workflow.completed'
+    ) {
+      continue;
+    }
+
+    const workflowId = input.stream.id;
+    let current = lifecycleByWorkflow.get(workflowId);
+    if (current === undefined) {
+      current = readProjectionWorkflow(ctx.db, workflowId)?.lifecycle ?? null;
+    }
+    const event = workflowLifecycleEvent(input.type, input.body);
+    const next = transitionWorkflowLifecycle(current, event);
+    if (next === null) {
+      throw workflowLifecycleInvalid(workflowId, current, event);
+    }
+    lifecycleByWorkflow.set(workflowId, next);
   }
 };
 
@@ -435,35 +567,48 @@ export const workflowRegistry: DomainEventRegistry = {
   entries: [
     defineDomainEvent({
       type: 'workflow.plan.declared',
-      schema: workflowPlanSchema,
+      schema: workflowDeclaredBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event, event.body),
+      materializerContract: 'projection_workflows:initialize-declared-plan-and-scope',
     }),
     defineDomainEvent({
       type: 'workflow.drain.entered',
       schema: workflowDrainEnteredBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
+      materializerContract: 'projection_workflows:apply-draining-lifecycle',
     }),
     defineDomainEvent({
       type: 'workflow.completed',
       schema: workflowCompletedBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
+      materializerContract: 'projection_workflows:apply-completed-lifecycle',
     }),
     defineDomainEvent({
       type: 'workflow.lifecycle_fault',
       schema: workflowLifecycleFaultBodySchema,
       reducer: (db, event) => upsertProjectionWorkflow(db, event),
+      materializerContract: 'projection_workflows:apply-faulted-lifecycle',
     }),
   ],
-  appendValidators: [validateWorkflowPlanDeclaredOnce, validateWorkflowPlanValidity, validateWorkflowCompletedOnce],
+  appendValidators: [
+    { contract: 'workflow:plan-declared-once', validate: validateWorkflowPlanDeclaredOnce },
+    { contract: 'workflow:plan-structural-validity', validate: validateWorkflowPlanValidity },
+    { contract: 'workflow:completed-once', validate: validateWorkflowCompletedOnce },
+    { contract: 'workflow:lifecycle-transition-state-machine', validate: validateWorkflowLifecycle },
+    { contract: 'workflow:job-owner-slot-generation-authority', validate: validateWorkflowJobAuthority },
+  ],
 };
 
-export function workflowPlanDeclaredEvent(workflowId: string, plan: WorkflowPlan): CoralEventInput<WorkflowPlan> {
+export function workflowPlanDeclaredEvent(
+  workflowId: string,
+  plan: WorkflowPlan,
+  providerScope: ProviderScope,
+): CoralEventInput<WorkflowDeclaredBody> {
   return {
     type: 'workflow.plan.declared',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
-    body: plan,
+    body: { plan, providerScope },
   };
 }
 
@@ -475,7 +620,6 @@ export function workflowDrainEnteredEvent(
     type: 'workflow.drain.entered',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body,
   };
 }
@@ -496,7 +640,6 @@ export function workflowCompletedEvent<Scope>(
     type: 'workflow.completed',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body,
   };
 }
@@ -509,7 +652,6 @@ export function workflowLifecycleFaultEvent(
     type: 'workflow.lifecycle_fault',
     stream: { kind: 'workflow', id: workflowId },
     refs: { workflowId },
-    bodyVersion: 1,
     body,
   };
 }

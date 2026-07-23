@@ -9,9 +9,9 @@ import { decideBid, decideBidRoundClose, decideSessionCreate } from '#src/discus
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { JobStore } from '#src/jobs/store.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { nowIsoString } from '#src/infra/time.js';
 import {
   createDiscussContextRegistry,
@@ -25,8 +25,7 @@ import { readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { detachSession, getWatchState } from '#src/discuss/shell/registry.js';
 import { knownDiscussSources } from '#src/discuss/shell/session-read-service.js';
 import { DiscussSessionStore } from '#src/discuss/shell/session-store.js';
-import { toJournalInput } from '#src/discuss/event-registry.js';
-import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
+import { discussRegistry, toJournalInput } from '#src/discuss/event-registry.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import * as discussLoop from '#src/discuss/shell/loop.js';
 import type { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -35,6 +34,13 @@ import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { ScenarioHttpRequest, ScenarioHttpResponse } from '#tools/simulation/scenario-http.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
+import { composeReducers } from '#src/store/reducers.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { createInMemoryDiscussJournal } from '#tests/helpers/discuss-journal.js';
 
 const TOPIC = 'Should the city pedestrianize the downtown core?';
 const PROJECT_ROOT = '/virtual/ac7/project';
@@ -129,18 +135,19 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   const source = runtime.paths.projectSource(projectRoot);
-  const progressStore = new JobStore(
-    resolveBackendNamespace(runtime, pluginRoot),
-    runtime,
-    createDefaultUpcasterRegistry(),
-    { db: openTestStoreDb(runtime, ':memory:'), providers: permissiveProviderLookupPort },
-  );
+  const progressStore = new JobStore(resolveBackendNamespace(runtime, pluginRoot), runtime, createEventBodyCodec(), {
+    db: openTestStoreDb(runtime, ':memory:'),
+    reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
+    providers: permissiveProviderLookupPort,
+  });
   const store = new DiscussSessionStore(source, {
     journal: createInMemoryDiscussJournal(),
   });
   activeStores.push(store);
   const service = createExecutionServiceStub();
   const registry = createDiscussContextRegistry();
+  const providerRegistry = new ProviderRegistry();
+  registerBuiltInProviders(providerRegistry);
   const context = getOrCreateDiscussContext(registry, projectRoot, service, store, {
     runtime: {
       ids: runtime.ids,
@@ -152,14 +159,23 @@ function createHarness(options: { epochMs?: number; projectRoot?: string } = {})
     jobStatusReader: {
       read: (jobId) => progressStore.readStatus(jobId),
       readExit: () => null,
+      listOwned: (discussionId) =>
+        progressStore
+          .listJobProjections()
+          .filter(({ status }) => status.owner.kind === 'discussion' && status.owner.id === discussionId)
+          .flatMap(({ jobId, status }) => {
+            const launch = progressStore.loadJobProjectionDetail(jobId).launch;
+            return launch === null ? [] : [{ launch, status }];
+          }),
     },
+    providerRegistry,
   });
   const invocationCtx: InvocationContext = {
     projectRoot,
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_PROVIDER_SCOPE,
   };
   return { runtime, projectRoot, pluginRoot, source, store, progressStore, registry, context, invocationCtx, service };
 }
@@ -179,7 +195,11 @@ async function appendCreatedSession(
     null,
     unwrap(
       decideSessionCreate(input, { sessionId: sessionId, projectRoot: harness.projectRoot, topic: TOPIC }, 1, ts, {
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_PROVIDER_SCOPE,
+        agentExecution: {
+          bot: { manual: false, provider: 'codex', model: 'gpt-5' },
+          alpha: { manual: true },
+        },
       }),
     ),
   );
@@ -208,9 +228,10 @@ describe('runtime-sealed discuss behavior', () => {
     vi.spyOn(discussLoop, 'resumeLoop').mockImplementation(() => {});
     const harness = createHarness();
     vi.mocked(harness.service.start).mockResolvedValueOnce({
+      kind: 'provider-session',
       status: 'running',
-      job: 'job-bot-bid',
-      session: 'exec-bot',
+      jobId: 'job-bot-bid',
+      sessionId: 'exec-bot',
     });
     vi.mocked(harness.service.waitStreamOnce).mockResolvedValueOnce({
       content: '{"score": 12, "thought": "Let the manual observer lead."}',
@@ -366,7 +387,7 @@ describe('runtime-sealed discuss behavior', () => {
         { sessionId: 'backend-recovered-discuss', projectRoot: world.projectRoot, topic: TOPIC },
         1,
         '2035-04-15T01:02:03.000Z',
-        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { providerScope: { origin: 'caller', profiles: [] } },
       ),
     );
     const created = commitJobInputs(
@@ -419,6 +440,10 @@ describe('runtime-sealed discuss behavior', () => {
   it('recovers an active discuss executor job from runtime storage only', async () => {
     const harness = createHarness();
     const created = await appendCreatedSession(harness, 'executor-recovery');
+    commitJobInputs(
+      harness.progressStore,
+      readSessionEvents(harness.context, 'executor-recovery').map((event) => toJournalInput(event)),
+    );
     const jobId = 'runtime-only-job-ac7';
     const activeEvents: DiscussDomainEvent[] = [
       makeEvent(
@@ -429,7 +454,7 @@ describe('runtime-sealed discuss behavior', () => {
         'agent.job.started',
         '2035-04-15T01:02:04.000Z',
         {
-          agent: 'alpha',
+          agent: 'bot',
           jobId,
           purpose: 'bid',
           attempt: 1,
@@ -447,6 +472,8 @@ describe('runtime-sealed discuss behavior', () => {
     });
     harness.progressStore.appendLaunchRequested(jobId, {
       jobId,
+      owner: { kind: 'discussion', id: 'executor-recovery' },
+      discussionRun: { agent: 'bot', purpose: 'bid', attempt: 1 },
       sessionId: 'execution-session-1',
       provider: 'codex',
       projectRoot: harness.projectRoot,
@@ -465,15 +492,21 @@ describe('runtime-sealed discuss behavior', () => {
     });
     commitJobTerminal(harness.progressStore, jobId, 'execution-session-1', {
       content: 'Recovered content from runtime storage',
+      durationMs: 1_000,
       outcome: { kind: 'completed' },
     });
     expect(harness.progressStore.readStatus(jobId)).toMatchObject({
+      owner: { kind: 'discussion', id: 'executor-recovery' },
       phase: 'completed',
       result: { content: 'Recovered content from runtime storage' },
     });
+    vi.mocked(harness.service.waitStreamOnce).mockResolvedValueOnce({
+      content: 'Recovered content from runtime storage',
+      continuity: null,
+    });
 
     const result = await runPlainTurn(harness.context, {
-      agentName: 'alpha',
+      agentName: 'bot',
       sessionId: 'executor-recovery',
       provider: 'codex',
       model: 'gpt-5',
@@ -493,9 +526,10 @@ describe('runtime-sealed discuss behavior', () => {
     const epochMs = Date.parse('2044-05-06T07:08:09.000Z');
     const harness = createHarness({ epochMs });
     vi.mocked(harness.service.start).mockResolvedValueOnce({
+      kind: 'provider-session',
       status: 'running',
-      job: 'job-bot-bid',
-      session: 'exec-bot',
+      jobId: 'job-bot-bid',
+      sessionId: 'exec-bot',
     });
     vi.mocked(harness.service.waitStreamOnce).mockResolvedValueOnce({
       content: '{"score": 12, "thought": "Let the manual observer lead."}',

@@ -5,9 +5,9 @@ import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '../../workf
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
 
 export interface WorkflowFinalizationRecording {
-  readonly sessionId?: string | null;
   readonly namespace?: string;
   readonly project?: string;
+  readonly durationMs: number;
 }
 
 /**
@@ -38,14 +38,13 @@ export function composeWorkflowFinalization<Scope>(
     c.append(workflowCompletedEvent(workflowJobId, { outcome: 'completed', stepDetails: intent.stepDetails }));
     appendJobTerminalRecorded(c, {
       jobId: workflowJobId,
-      sessionId: recording.sessionId,
       namespace: recording.namespace,
       project: recording.project,
       terminal: {
         content: intent.finalOutput,
         outcome: { kind: 'completed' },
+        durationMs: recording.durationMs,
       },
-      continuity: null,
     });
     return;
   }
@@ -54,14 +53,13 @@ export function composeWorkflowFinalization<Scope>(
     c.append(workflowCompletedEvent(workflowJobId, { outcome: 'aborted', stepDetails: intent.stepDetails }));
     appendJobTerminalRecorded(c, {
       jobId: workflowJobId,
-      sessionId: recording.sessionId,
       namespace: recording.namespace,
       project: recording.project,
       terminal: {
         content: '',
         outcome: { kind: 'aborted', reason: intent.reason },
+        durationMs: recording.durationMs,
       },
-      continuity: null,
     });
     return;
   }
@@ -77,13 +75,12 @@ export function composeWorkflowFinalization<Scope>(
   );
   appendJobTerminalRecorded(c, {
     jobId: workflowJobId,
-    sessionId: recording.sessionId,
     namespace: recording.namespace,
     project: recording.project,
     terminal: {
       content: '',
       outcome: failedTerminalOutcome(workflowCompleted),
+      durationMs: recording.durationMs,
     },
-    continuity: null,
   });
 }

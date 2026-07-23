@@ -2,42 +2,53 @@ import { afterEach, vi } from 'vitest';
 import { createDeferred } from '#tools/testing/deferred.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProviderServerSpec } from '#src/providers/contract.js';
-import type { ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
-import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
+import type { DefaultProviderHostManager, ProviderHostEntry } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 
 export const runtime = createRealRuntime('prod');
 
-export function createSharedSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
+type SharedProviderServerSpec = Extract<ProviderServerSpec, { leaseMode: 'shared' }>;
+type ExclusiveProviderServerSpec = Extract<ProviderServerSpec, { leaseMode: 'job-exclusive' }>;
+
+export function createSharedSpec(overrides: Partial<SharedProviderServerSpec> = {}): SharedProviderServerSpec {
   return {
     provider: 'claude',
     command: process.execPath,
     args: ['broker.js'],
     cwd: process.cwd(),
-    shared: true,
+    leaseMode: 'shared',
+    idlePolicy: 'host-stats',
     ...overrides,
   };
 }
 
-export function createExclusiveSpec(overrides: Partial<ProviderServerSpec> = {}): ProviderServerSpec {
+export function createExclusiveSpec(overrides: Partial<ExclusiveProviderServerSpec> = {}): ExclusiveProviderServerSpec {
   return {
     provider: 'codex',
     command: 'codex',
     args: ['app-server'],
     cwd: '/workspace',
+    leaseMode: 'job-exclusive',
     ...overrides,
   };
+}
+
+export function createLaunch(spec: ProviderServerSpec): Parameters<DefaultProviderHostManager['openSession']>[0] {
+  return spec;
 }
 
 export function createEntry(overrides: Partial<ProviderHostEntry> = {}): ProviderHostEntry {
   return {
     hostKey: 'host-key',
+    identityKey: 'host-key',
     spec: createSharedSpec(),
+    exactEnv: {},
     handle: null,
+    instanceId: null,
     spawnPromise: null,
-    leaseHeld: false,
-    sharedLeaseCount: 0,
-    waiters: [],
+    pinCount: 0,
     closingError: null,
+    closePromise: null,
     hostStats: { liveControllers: 0, activeTurns: 0 },
     idleTimer: null,
     disposeHostNotifications: null,
@@ -49,6 +60,7 @@ export function createFakeProviderServerHandle(options?: {
   generation?: number;
   request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
 }) {
+  let isClosed = false;
   const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
   const closed = createDeferred<Error | void>();
   const request =
@@ -68,6 +80,7 @@ export function createFakeProviderServerHandle(options?: {
   );
   const markExpectedCloseMock = vi.fn();
   const closeMock = vi.fn(async () => {
+    isClosed = true;
     closed.resolve();
   });
 
@@ -82,6 +95,7 @@ export function createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise: closed.promise,
+      isClosed: () => isClosed,
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -94,6 +108,7 @@ export function createFakeProviderServerHandle(options?: {
       }
     },
     resolveClosed: () => {
+      isClosed = true;
       closed.resolve();
     },
   };
@@ -101,7 +116,7 @@ export function createFakeProviderServerHandle(options?: {
 
 export function createSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
   const fallback = handles.at(-1);
-  const spawnProviderServer = vi.fn(async () => {
+  const spawnProviderServer = vi.fn(async (_options: Parameters<SpawnProviderServerFn>[0]) => {
     if (!fallback) {
       throw new Error('No provider server handle configured');
     }

@@ -4,7 +4,6 @@ import type { ProviderTerminalEventBody } from '../../providers/contract.js';
 import type { ProviderFailureCause } from '../../providers/fault.js';
 import type { JobLifecycleFault, JobProgressFault, TerminalOutcome, TerminalOutcomeInput } from '../../jobs/outcome.js';
 import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
-import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import {
   appendJobTerminalRecorded,
@@ -95,7 +94,6 @@ function baseEvent(
     project: options.project,
     correlationId: options.correlationId,
     refs: baseRefs(options),
-    bodyVersion: 1,
     body,
   };
 }
@@ -113,7 +111,7 @@ function planJobRecoveryFault(fault: JobRecoveryFault, options: RuntimeIngestOpt
     case 'ghost_launch':
     case 'wrapper_lost':
     case 'wrapper_crashed':
-    case 'provider_credential_source':
+    case 'provider_binding':
       return {
         kind: 'immediate',
         domainEvents: [],
@@ -238,7 +236,7 @@ export function materializeProviderTerminal(
   return {
     terminal: {
       content: terminal.terminal.content,
-      ...(terminal.terminal.durationMs === undefined ? {} : { durationMs: terminal.terminal.durationMs }),
+      durationMs: terminal.terminal.durationMs,
     },
     outcomePlan: planProviderOutcome(terminal, options),
     diagnostics: {
@@ -272,7 +270,6 @@ function terminalRecordOptions<Scope>(
   terminal: JobTerminalInput<Scope>,
   record: {
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): JobTerminalRecordedOptions<Scope> {
   return {
@@ -286,24 +283,20 @@ function terminalRecordOptions<Scope>(
     workflowSlotId: options.workflowSlotId,
     terminal,
     diagnostics: record.diagnostics,
-    continuity: record.continuity ?? null,
   };
 }
 
-function recordProviderTerminalInCommit<Scope>(
+/** Materializes provider terminal evidence inside an existing atomic Journal commit. */
+export function appendProviderTerminalInCommit<Scope>(
   c: CommitContext<Scope>,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
-  record: {
-    readonly continuity?: JobContinuitySnapshot | null;
-  } = {},
 ): void {
   const materialized = materializeProviderTerminalInCommit(c, terminal, options);
   appendJobTerminalRecorded(
     c,
     terminalRecordOptions(options, materialized.terminal, {
       diagnostics: materialized.diagnostics,
-      continuity: record.continuity ?? null,
     }),
   );
 }
@@ -312,46 +305,66 @@ export function recordProviderTerminal(
   progressStore: RuntimeCommitStore,
   terminal: ProviderTerminalEventBody,
   options: RuntimeIngestOptions,
-  record: {
-    readonly continuity?: JobContinuitySnapshot | null;
-  } = {},
 ): void {
   progressStore.commit((c) => {
-    recordProviderTerminalInCommit(c, terminal, options, record);
+    appendProviderTerminalInCommit(c, terminal, options);
     return undefined;
   });
 }
 
-function recordTerminalWithOutcomePlan(
-  progressStore: RuntimeCommitStore,
+function appendTerminalWithOutcomePlan<Scope>(
+  c: CommitContext<Scope>,
   plan: RuntimeIngestPlan,
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
-    readonly durationMs?: number;
+    readonly durationMs: number;
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): void {
-  progressStore.commit((c) => {
-    const outcome = materializePlannedOutcomeInCommit(c, plan);
-    appendJobTerminalRecorded(
-      c,
-      terminalRecordOptions(
-        options,
-        {
-          content: record.content,
-          ...(record.durationMs === undefined ? {} : { durationMs: record.durationMs }),
-          outcome,
-        },
-        {
-          diagnostics: record.diagnostics,
-          continuity: record.continuity ?? null,
-        },
-      ),
-    );
-    return undefined;
-  });
+  const outcome = materializePlannedOutcomeInCommit(c, plan);
+  appendJobTerminalRecorded(
+    c,
+    terminalRecordOptions(
+      options,
+      {
+        content: record.content,
+        durationMs: record.durationMs,
+        outcome,
+      },
+      {
+        diagnostics: record.diagnostics,
+      },
+    ),
+  );
+}
+
+/** Appends interruption cause and terminal records to an existing atomic Journal commit. */
+export function appendSessionInterruptedTerminalInCommit<Scope>(
+  c: CommitContext<Scope>,
+  fault: SessionInterruptedFault,
+  options: RuntimeIngestOptions,
+  record: {
+    readonly content: string;
+    readonly durationMs: number;
+    readonly diagnostics?: JobTerminalDiagnostics;
+  },
+): void {
+  appendTerminalWithOutcomePlan(c, planSessionInterrupted(fault, options), options, record);
+}
+
+/** Appends a recovery fault and its terminal record to an existing atomic Journal commit. */
+export function appendJobRecoveryFaultTerminalInCommit<Scope>(
+  c: CommitContext<Scope>,
+  fault: JobRecoveryFault,
+  options: RuntimeIngestOptions,
+  record: {
+    readonly content: string;
+    readonly durationMs: number;
+    readonly diagnostics?: JobTerminalDiagnostics;
+  },
+): void {
+  appendTerminalWithOutcomePlan(c, planJobRecoveryFault(fault, options), options, record);
 }
 
 export function recordSessionInterruptedTerminal(
@@ -360,12 +373,14 @@ export function recordSessionInterruptedTerminal(
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
-    readonly durationMs?: number;
+    readonly durationMs: number;
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): void {
-  recordTerminalWithOutcomePlan(progressStore, planSessionInterrupted(fault, options), options, record);
+  progressStore.commit((c) => {
+    appendSessionInterruptedTerminalInCommit(c, fault, options, record);
+    return undefined;
+  });
 }
 
 export function recordJobRecoveryFaultTerminal(
@@ -374,10 +389,12 @@ export function recordJobRecoveryFaultTerminal(
   options: RuntimeIngestOptions,
   record: {
     readonly content: string;
-    readonly durationMs?: number;
+    readonly durationMs: number;
     readonly diagnostics?: JobTerminalDiagnostics;
-    readonly continuity?: JobContinuitySnapshot | null;
   },
 ): void {
-  recordTerminalWithOutcomePlan(progressStore, planJobRecoveryFault(fault, options), options, record);
+  progressStore.commit((c) => {
+    appendJobRecoveryFaultTerminalInCommit(c, fault, options, record);
+    return undefined;
+  });
 }

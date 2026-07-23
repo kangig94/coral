@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
@@ -123,6 +124,7 @@ describe('expansion RPC before store services exist', () => {
       },
     }));
     const core = createCoordinatorCore({
+      storeFormat: currentCoralStoreFormat(),
       runtime: makeRuntime(),
       bootSnapshot: {
         version: 'test-version',
@@ -197,6 +199,7 @@ describe('expansion RPC before store services exist', () => {
       detail: failure.detail,
     }));
     const core = createCoordinatorCore({
+      storeFormat: currentCoralStoreFormat(),
       runtime: makeRuntime(),
       bootSnapshot: {
         version: 'test-version',
@@ -239,6 +242,7 @@ describe('expansion RPC before store services exist', () => {
     const bootToken = 'test-boot-token';
     const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
     const core = createCoordinatorCore({
+      storeFormat: currentCoralStoreFormat(),
       runtime: makeRuntime(),
       bootSnapshot: {
         version: 'test-version',

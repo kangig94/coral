@@ -30,6 +30,17 @@ export function normalizeAst(ast: PipelineAST, defaultProviderName: string): Pip
   );
 }
 
+/** Return every provider a normalized workflow may launch, preserving first-use order. */
+export function workflowProviderNames(ast: PipelineAST, defaultProviderName: string): string[] {
+  const providers = new Set<string>();
+  for (const step of ast) {
+    for (const atom of step) {
+      providers.add(atom.provider ?? defaultProviderName);
+    }
+  }
+  return [...providers];
+}
+
 export function validateNamespaces(ast: PipelineAST): void {
   for (let stepIndex = 0; stepIndex < ast.length; stepIndex += 1) {
     for (const atom of ast[stepIndex]) {

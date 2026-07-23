@@ -2,17 +2,46 @@ import type { ProviderServerSpec } from '../../../providers/contract.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderServerHandle } from '../provider-server-transport.js';
 import type { ProviderHostEntry } from './state.js';
+import { AbortError } from '../../../runtime/abort.js';
+
+function waitForSpawn(
+  spawn: Promise<ProviderServerHandle>,
+  signal: AbortSignal | undefined,
+): Promise<ProviderServerHandle> {
+  if (signal === undefined) return spawn;
+  if (signal.aborted) {
+    return Promise.reject(new AbortError({ stage: 'provider_host_spawn_wait', reason: signal.reason }));
+  }
+  return new Promise<ProviderServerHandle>((resolve, reject) => {
+    const onAbort = () => reject(new AbortError({ stage: 'provider_host_spawn_wait', reason: signal.reason }));
+    signal.addEventListener('abort', onAbort, { once: true });
+    spawn.then(
+      (handle) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(handle);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error('Provider host spawn failed.', { cause: error }));
+      },
+    );
+  });
+}
 
 export function cloneSpec(spec: ProviderServerSpec): ProviderServerSpec {
-  return {
-    ...spec,
-    args: [...spec.args],
-    ...(spec.env ? { env: { ...spec.env } } : {}),
-    ...(spec.initializeRequest
-      ? { initializeRequest: { ...spec.initializeRequest, params: { ...spec.initializeRequest.params } } }
-      : {}),
-    ...(spec.shutdownCapability ? { shutdownCapability: { ...spec.shutdownCapability } } : {}),
-  };
+  return immutableSnapshot(spec);
+}
+
+function immutableSnapshot<Value>(value: Value): Value {
+  if (Array.isArray(value)) {
+    return Object.freeze(value.map((entry) => immutableSnapshot(entry))) as Value;
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.freeze(
+      Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, immutableSnapshot(entry)])),
+    ) as Value;
+  }
+  return value;
 }
 
 export async function ensureProviderServerHandle(
@@ -23,41 +52,65 @@ export async function ensureProviderServerHandle(
     shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
     attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
     clearIdleTimer: (entry: ProviderHostEntry) => void;
+    removeEntry: (entry: ProviderHostEntry) => void;
+    createInstanceId: () => string;
+    signal?: AbortSignal;
   },
 ): Promise<ProviderServerHandle> {
   if (entry.handle) {
-    return entry.handle;
+    return waitForSpawn(Promise.resolve(entry.handle), options.signal);
   }
   if (entry.closingError) {
     throw entry.closingError;
   }
-  if (entry.spawnPromise) {
-    return entry.spawnPromise;
+  if (entry.spawnPromise === null) {
+    const spawned = options.spawnProviderServer(entry.spec);
+    const initialization = initializeProviderServerHandle(entry, spawned, options);
+    entry.spawnPromise = initialization;
+    void initialization.then(
+      () => {
+        if (entry.spawnPromise === initialization) entry.spawnPromise = null;
+      },
+      () => {
+        if (entry.spawnPromise === initialization) entry.spawnPromise = null;
+      },
+    );
   }
+  return waitForSpawn(entry.spawnPromise, options.signal);
+}
 
-  entry.spawnPromise = options.spawnProviderServer(entry.spec);
-
-  try {
-    const handle = await entry.spawnPromise;
-    // The host can be marked closing while the spawn promise is pending.
-    const closingError = entry.closingError as Error | null;
-    if (closingError !== null) {
-      await options.shutdownHandle(handle, entry.spec).catch(() => {});
-      throw new Error(closingError.message, { cause: closingError });
+async function initializeProviderServerHandle(
+  entry: ProviderHostEntry,
+  spawned: Promise<ProviderServerHandle>,
+  options: {
+    shutdownHandle: (handle: ProviderServerHandle, spec: ProviderServerSpec) => Promise<void>;
+    attachHostNotificationListener: (entry: ProviderHostEntry, handle: ProviderServerHandle) => void;
+    clearIdleTimer: (entry: ProviderHostEntry) => void;
+    removeEntry: (entry: ProviderHostEntry) => void;
+    createInstanceId: () => string;
+  },
+): Promise<ProviderServerHandle> {
+  const handle = await spawned;
+  // The entry-owned close operation, not an acquisition caller, owns a spawn that completes during drain.
+  const closingError = entry.closingError;
+  if (closingError !== null) {
+    await options.shutdownHandle(handle, entry.spec).catch(() => {});
+    throw new Error(closingError.message, { cause: closingError });
+  }
+  entry.instanceId = options.createInstanceId();
+  entry.handle = handle;
+  options.attachHostNotificationListener(entry, handle);
+  const cleanup = () => {
+    if (entry.handle === handle) {
+      entry.handle = null;
+      entry.instanceId = null;
     }
-    entry.handle = handle;
-    options.attachHostNotificationListener(entry, handle);
-    void handle.closePromise.finally(() => {
-      if (entry.handle === handle) {
-        entry.handle = null;
-      }
-      options.clearIdleTimer(entry);
-      entry.disposeHostNotifications?.();
-      entry.disposeHostNotifications = null;
-      entry.hostStats = null;
-    });
-    return handle;
-  } finally {
-    entry.spawnPromise = null;
-  }
+    options.clearIdleTimer(entry);
+    options.removeEntry(entry);
+    entry.disposeHostNotifications?.();
+    entry.disposeHostNotifications = null;
+    entry.hostStats = null;
+  };
+  void handle.closePromise.then(cleanup, cleanup);
+  return handle;
 }

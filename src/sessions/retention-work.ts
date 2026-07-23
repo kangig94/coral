@@ -1,6 +1,9 @@
 import { sqlPlaceholders } from '../store/db.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
-import { hasUnterminalRetentionDiscardRequest, isProtectiveContinuationLease, type SessionEntry } from './entry.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeEventRefs } from '../store/envelope.js';
+import type { EventsRow } from '../store/schema.js';
+import { hasUnterminalRetentionDiscardRequest, isProtectiveContinuationLease, type ProviderSession } from './entry.js';
 import { readProjectionSessionEntriesById } from './projections.js';
 
 export type SessionRetentionPair = {
@@ -9,17 +12,7 @@ export type SessionRetentionPair = {
 };
 
 export type SessionRetentionWork = SessionRetentionPair & {
-  readonly entry: SessionEntry;
-};
-
-type TerminalReleaseRow = {
-  session_id: string | null;
-  job_id: string;
-  terminal_seq: number;
-};
-
-type TerminalOutcomeRow = {
-  session_id: string;
+  readonly entry: ProviderSession;
 };
 
 export type RetentionSelectionOptions = {
@@ -32,23 +25,25 @@ export function sessionRetentionWorkKey(sessionId: string, jobId: string): strin
 
 export function readSessionRetentionWorkForSessionIds(
   db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
   sessionIds: readonly string[],
   options: RetentionSelectionOptions = {},
 ): SessionRetentionWork[] {
   const entriesBySession = readProjectionSessionEntriesById(db, sessionIds);
-  const entries: SessionEntry[] = [];
+  const entries: ProviderSession[] = [];
   for (const sessionId of uniqueStrings(sessionIds)) {
     const entry = entriesBySession.get(sessionId);
     if (entry !== undefined) {
       entries.push(entry);
     }
   }
-  return readSessionRetentionWorkForEntries(db, entries, options);
+  return readSessionRetentionWorkForEntries(db, readCtx, entries, options);
 }
 
 export function readSessionRetentionWorkForEntries(
   db: ReadonlyDatabase,
-  entries: readonly SessionEntry[],
+  readCtx: StoreReadContext,
+  entries: readonly ProviderSession[],
   options: RetentionSelectionOptions = {},
 ): SessionRetentionWork[] {
   const retainedEntries = uniqueRetainedEntries(entries, retentionSelectionNow(options));
@@ -57,8 +52,8 @@ export function readSessionRetentionWorkForEntries(
   }
 
   const sessionIds = retainedEntries.map((entry) => entry.sessionId);
-  const terminalOutcomeSessions = readTerminalOutcomeSessions(db, sessionIds);
-  const terminalReleasePairs = readTerminalReleasePairsBySession(db, sessionIds);
+  const terminalOutcomeSessions = readTerminalOutcomeSessions(db, readCtx, sessionIds);
+  const terminalReleasePairs = readTerminalReleasePairsBySession(db, readCtx, sessionIds);
   const work: SessionRetentionWork[] = [];
   for (const entry of retainedEntries) {
     if (terminalOutcomeSessions.has(entry.sessionId)) {
@@ -77,6 +72,7 @@ export function readSessionRetentionWorkForEntries(
 
 export function readSessionRetentionWorkForPairs(
   db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
   pairs: readonly SessionRetentionPair[],
   options: RetentionSelectionOptions = {},
 ): Map<string, SessionRetentionWork> {
@@ -86,8 +82,8 @@ export function readSessionRetentionWorkForPairs(
   }
 
   const entriesBySession = readProjectionSessionEntriesById(db, sessionIds);
-  const terminalOutcomeSessions = readTerminalOutcomeSessions(db, sessionIds);
-  const terminalReleasePairs = readTerminalReleasePairsBySession(db, sessionIds);
+  const terminalOutcomeSessions = readTerminalOutcomeSessions(db, readCtx, sessionIds);
+  const terminalReleasePairs = readTerminalReleasePairsBySession(db, readCtx, sessionIds);
   const workByPair = new Map<string, SessionRetentionWork>();
   const nowMs = retentionSelectionNow(options);
   for (const pair of pairs) {
@@ -113,7 +109,7 @@ function retentionSelectionNow(options: RetentionSelectionOptions): number {
   return options.nowMs ?? Date.now();
 }
 
-function isRetentionEligibleEntry(entry: SessionEntry, nowMs: number): boolean {
+function isRetentionEligibleEntry(entry: ProviderSession, nowMs: number): boolean {
   return (
     entry.retention === 'discard_provider_artifacts_on_terminal' &&
     entry.activeJobId === undefined &&
@@ -122,8 +118,8 @@ function isRetentionEligibleEntry(entry: SessionEntry, nowMs: number): boolean {
   );
 }
 
-function uniqueRetainedEntries(entries: readonly SessionEntry[], nowMs: number): SessionEntry[] {
-  const retainedEntries: SessionEntry[] = [];
+function uniqueRetainedEntries(entries: readonly ProviderSession[], nowMs: number): ProviderSession[] {
+  const retainedEntries: ProviderSession[] = [];
   const seenSessionIds = new Set<string>();
   for (const entry of entries) {
     if (!isRetentionEligibleEntry(entry, nowMs) || seenSessionIds.has(entry.sessionId)) {
@@ -135,65 +131,87 @@ function uniqueRetainedEntries(entries: readonly SessionEntry[], nowMs: number):
   return retainedEntries;
 }
 
-function readTerminalOutcomeSessions(db: ReadonlyDatabase, sessionIds: readonly string[]): Set<string> {
+function readTerminalOutcomeSessions(
+  db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
+  sessionIds: readonly string[],
+): Set<string> {
   if (sessionIds.length === 0) {
     return new Set();
   }
 
   const rows = db
-    .prepare(
-      `SELECT DISTINCT stream_id AS session_id
+    .prepare<unknown[], EventsRow>(
+      `SELECT *
          FROM events
-        WHERE stream_kind = 'session'
-          AND (
-            type = 'session.retention.discard.failed'
-            OR (
-              type = 'session.retention.discard.completed'
-              AND COALESCE(json_extract(CAST(body AS TEXT), '$.outcome'), '') != 'skipped_protected'
-            )
-          )
+        WHERE type IN ('session.retention.discard.failed', 'session.retention.discard.completed')
           AND stream_id IN (${sqlPlaceholders(sessionIds.length)})`,
     )
-    .all(...sessionIds) as TerminalOutcomeRow[];
+    .all(...sessionIds);
 
-  return new Set(rows.map((row) => row.session_id));
+  const terminalSessionIds = new Set<string>();
+  for (const row of rows) {
+    const body = decodeStoredBody(row, readCtx) as { outcome?: unknown };
+    if (row.type === 'session.retention.discard.failed' || body.outcome !== 'skipped_protected') {
+      terminalSessionIds.add(row.stream_id);
+    }
+  }
+  return terminalSessionIds;
 }
 
 function readTerminalReleasePairsBySession(
   db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
   sessionIds: readonly string[],
 ): Map<string, Set<string>> {
   if (sessionIds.length === 0) {
     return new Map();
   }
 
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT
-              json_extract(t.refs, '$.sessionId') AS session_id,
-              t.stream_id AS job_id,
-              t.seq AS terminal_seq
-         FROM events AS t
-         JOIN events AS r
-           ON r.type = 'session.claim.released'
-          AND r.stream_kind = 'session'
-          AND COALESCE(json_extract(r.refs, '$.sessionId'), r.stream_id) = json_extract(t.refs, '$.sessionId')
-          AND COALESCE(json_extract(r.refs, '$.jobId'), json_extract(CAST(r.body AS TEXT), '$.jobId')) = t.stream_id
-        WHERE t.type = 'job.terminal.recorded'
-          AND t.stream_kind = 'job'
-          AND json_extract(t.refs, '$.sessionId') IN (${sqlPlaceholders(sessionIds.length)})
-        ORDER BY t.seq ASC, t.stream_id ASC`,
+  const sessionIdSet = new Set(sessionIds);
+  const releaseRows = db
+    .prepare<unknown[], EventsRow>(
+      `SELECT * FROM events
+        WHERE type = 'session.claim.released'
+          AND stream_id IN (${sqlPlaceholders(sessionIds.length)})
+        ORDER BY seq ASC`,
     )
-    .all(...sessionIds) as TerminalReleaseRow[];
+    .all(...sessionIds);
+  const releasedPairs = new Set<string>();
+  const releasedJobIds = new Set<string>();
+  for (const row of releaseRows) {
+    decodeStoredBody(row, readCtx);
+    const refs = decodeEventRefs(row);
+    const sessionId = refs?.sessionId ?? row.stream_id;
+    if (!sessionIdSet.has(sessionId)) continue;
+    if (refs?.jobId === undefined) {
+      throw new Error(`Stored session.claim.released event ${row.seq} has no refs.jobId.`);
+    }
+    releasedPairs.add(sessionRetentionWorkKey(sessionId, refs.jobId));
+    releasedJobIds.add(refs.jobId);
+  }
+
+  if (releasedJobIds.size === 0) return new Map();
+
+  const candidateJobIds = [...releasedJobIds];
+  const terminalRows = db
+    .prepare<unknown[], EventsRow>(
+      `SELECT * FROM events
+        WHERE type = 'job.terminal.recorded'
+          AND stream_id IN (${sqlPlaceholders(candidateJobIds.length)})
+        ORDER BY seq ASC`,
+    )
+    .all(...candidateJobIds);
 
   const pairsBySession = new Map<string, Set<string>>();
-  for (const row of rows) {
-    if (row.session_id === null) {
-      continue;
-    }
-    const jobIds = pairsBySession.get(row.session_id) ?? new Set<string>();
-    jobIds.add(row.job_id);
-    pairsBySession.set(row.session_id, jobIds);
+  for (const row of terminalRows) {
+    decodeStoredBody(row, readCtx);
+    const sessionId = decodeEventRefs(row)?.sessionId;
+    if (sessionId === undefined || !sessionIdSet.has(sessionId)) continue;
+    if (!releasedPairs.has(sessionRetentionWorkKey(sessionId, row.stream_id))) continue;
+    const jobIds = pairsBySession.get(sessionId) ?? new Set<string>();
+    jobIds.add(row.stream_id);
+    pairsBySession.set(sessionId, jobIds);
   }
   return pairsBySession;
 }

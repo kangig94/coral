@@ -1,19 +1,16 @@
 export interface DurableCliRuntimeRecord {
-  transport?: 'durable-cli';
+  transport: 'durable-cli';
   pid: number;
   stdoutPath: string;
   stderrPath: string;
   startTime: string;
-  providerMeta?: Record<string, unknown>;
   tailWatermark?: number;
 }
 
 export function isDurableCliRuntime(
   record: { transport?: string } | null | undefined,
 ): record is DurableCliRuntimeRecord {
-  return (
-    record !== null && record !== undefined && (record.transport === undefined || record.transport === 'durable-cli')
-  );
+  return record?.transport === 'durable-cli';
 }
 
 export interface DurableProcessExit {

@@ -278,7 +278,12 @@ export class OramaBaseProjection implements CorpusConsumerRegistration {
       this.searchPort.probeFreshness();
       return skipSnapshot;
     }
-    const metadata = await this.snapshotStore.persistAsync(snapshot, loaded.db, identityInput, generatedCommunityFreshness);
+    const metadata = await this.snapshotStore.persistAsync(
+      snapshot,
+      loaded.db,
+      identityInput,
+      generatedCommunityFreshness,
+    );
     this.snapshotStore.install({
       db: loaded.db,
       tokenizer: loaded.tokenizer,

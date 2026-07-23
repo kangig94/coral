@@ -104,15 +104,19 @@ function describeJobsMatch(filters: JobsListDisplayFilters): string {
 }
 
 export function formatLaunch(result: AcceptedLaunchResponse): string {
-  return `Job ${result.job} ${result.launchState} (session ${result.session})`;
+  return result.kind === 'provider-session'
+    ? `Provider job ${result.jobId} ${result.launchState} (provider session ${result.sessionId})`
+    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
 }
 
-export function formatDetachedLaunchStatus(result: Pick<AcceptedLaunchResponse, 'launchState' | 'session'>): string {
-  return `Job ${result.launchState} (session ${result.session})`;
+export function formatDetachedLaunchStatus(result: AcceptedLaunchResponse): string {
+  return result.kind === 'provider-session'
+    ? `Provider job ${result.launchState} (provider session ${result.sessionId})`
+    : `Workflow ${result.workflowId} ${result.launchState} (job ${result.jobId})`;
 }
 
-export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'job'>): string {
-  return `Run coral-cli wait jobs ${result.job} to wait for completion.`;
+export function formatLaunchWaitHint(result: Pick<AcceptedLaunchResponse, 'jobId'>): string {
+  return `Run coral-cli wait jobs ${result.jobId} to wait for completion.`;
 }
 
 export function formatAbortResult(result: AbortResult): string {
@@ -164,7 +168,8 @@ export function formatJobDetail(response: JobDetailResponse, describeCauseRef?: 
     `Readiness: ${response.readiness}`,
     status.provider === null ? undefined : `Provider: ${status.provider}`,
     `Kind: ${status.jobKind}`,
-    status.sessionId === null ? undefined : `Session: ${status.sessionId}`,
+    `Owner: ${status.owner.kind} ${status.owner.id}`,
+    status.sessionId === null ? undefined : `Provider session: ${status.sessionId}`,
     `Project: ${status.projectRoot}`,
     `Updated: ${status.updatedAt}`,
     status.lastSeq === undefined ? undefined : `Last seq: ${status.lastSeq}`,

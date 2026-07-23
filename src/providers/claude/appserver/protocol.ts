@@ -11,14 +11,17 @@ import {
 import { isRecord } from '../../../infra/json.js';
 import type { EffortLevel } from '../../contract.js';
 import {
-  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION as PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   turnFailureDiagnosticPhaseSchema as providerTurnFailureDiagnosticPhaseSchema,
   turnFailureDiagnosticReasonSchema as providerTurnFailureDiagnosticReasonSchema,
   type TurnFailureDiagnostic as ProviderTurnFailureDiagnostic,
   type TurnFailureDiagnosticPhase as ProviderTurnFailureDiagnosticPhase,
   type TurnFailureDiagnosticReason as ProviderTurnFailureDiagnosticReason,
 } from '../../turn-failure-diagnostic.js';
-import { permissionModeSchema, type ClaudeBootstrapSignature } from '../request-prep.js';
+import {
+  hashClaudeBootstrapConfiguration,
+  permissionModeSchema,
+  type ClaudeBootstrapSignature,
+} from '../request-prep.js';
 
 const AUTO_ALLOW_PERMISSION_MODES: ReadonlySet<string> = new Set(['bypassPermissions', 'dontAsk']);
 
@@ -91,7 +94,7 @@ export interface TurnStartResult {
 
 export interface TurnInterruptParams {
   brokerSessionKey: string;
-  brokerTurnId?: string;
+  brokerTurnId: string;
 }
 
 export interface TurnInterruptResult {
@@ -133,8 +136,6 @@ export interface TurnCompletedParams {
   subtype: string | null;
   errors?: string[];
 }
-
-export const TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION = PROVIDER_TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION;
 
 export const turnFailureDiagnosticReasonSchema = providerTurnFailureDiagnosticReasonSchema;
 export type TurnFailureDiagnosticReason = ProviderTurnFailureDiagnosticReason;
@@ -261,6 +262,7 @@ export function requireSessionEnsureParams(params: unknown): SessionEnsureParams
     !isRecord(params) ||
     !isNonEmptyString(params.cwd) ||
     !isNonEmptyString(params.systemPromptHash) ||
+    !isNonEmptyString(params.bootstrapConfigHash) ||
     !isNonEmptyString(params.projectsRoot) ||
     (params.resumeExisting !== undefined && typeof params.resumeExisting !== 'boolean') ||
     !permissionMode?.success
@@ -273,10 +275,11 @@ export function requireSessionEnsureParams(params: unknown): SessionEnsureParams
   const systemPrompt = typeof params.systemPrompt === 'string' ? params.systemPrompt : undefined;
   const model = typeof params.model === 'string' ? params.model : undefined;
   const effort = readEffortLevel(params.effort);
-  return {
+  const parsed: SessionEnsureParams = {
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
     permissionMode: permissionMode.data,
+    bootstrapConfigHash: params.bootstrapConfigHash,
     ...(brokerSessionKey !== undefined ? { brokerSessionKey } : {}),
     ...(conversationRef !== undefined ? { conversationRef } : {}),
     resumeExisting: params.resumeExisting ?? conversationRef !== undefined,
@@ -286,6 +289,10 @@ export function requireSessionEnsureParams(params: unknown): SessionEnsureParams
     ...(model !== undefined ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
   };
+  if (parsed.bootstrapConfigHash !== hashClaudeBootstrapConfiguration(parsed)) {
+    throw new ClaudeBrokerRpcError(-32602, 'Invalid bootstrap configuration hash for session/ensure.');
+  }
+  return parsed;
 }
 
 export function requireSessionProbeParams(params: unknown): SessionProbeParams {
@@ -328,14 +335,13 @@ export function requireTurnStartParams(params: unknown): TurnStartParams {
 }
 
 export function requireTurnInterruptParams(params: unknown): TurnInterruptParams {
-  if (!isRecord(params) || !isNonEmptyString(params.brokerSessionKey)) {
+  if (!isRecord(params) || !isNonEmptyString(params.brokerSessionKey) || !isNonEmptyString(params.brokerTurnId)) {
     throw new ClaudeBrokerRpcError(-32602, 'Invalid params for turn/interrupt.');
   }
 
-  const brokerTurnId = readOptionalNonEmptyString(params.brokerTurnId);
   return {
     brokerSessionKey: params.brokerSessionKey,
-    ...(brokerTurnId !== undefined ? { brokerTurnId } : {}),
+    brokerTurnId: params.brokerTurnId,
   };
 }
 
@@ -387,6 +393,7 @@ export function toBootstrapSignature(params: Omit<SessionEnsureParams, 'brokerSe
     cwd: params.cwd,
     systemPromptHash: params.systemPromptHash,
     permissionMode: params.permissionMode,
+    bootstrapConfigHash: hashClaudeBootstrapConfiguration(params),
   };
 }
 

@@ -2,10 +2,11 @@ import type { ServerResponse } from 'node:http';
 import type { TimePort } from '../infra/port-types.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
+import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';
 import type { RpcPorts } from './rpc/ports.js';
 import type { Principal } from '../security/principal.js';
 import type { IpcAuthMetadata } from './ipc/json-rpc.js';
-import type { AmbientClaudeLocationPort, ProviderCredentialSet } from '../runtime/provider-credentials.js';
+import type { ProviderScope } from '../infra/provider-scope.js';
 
 interface AdminControlPort {
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
@@ -137,6 +138,7 @@ export type HealthSnapshot = {
     fdCount?: number;
   };
   env: Record<string, string>;
+  systemProviderScope?: { name: string; providers: string[] };
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   /**
@@ -168,7 +170,7 @@ export type RemoteHttpAccessPolicy = {
 };
 
 export interface EventStreamHandlers {
-  onJobCreated: (payload: { jobId: string; sessionId: string; provider: string; projectRoot: string }) => void;
+  onJobCreated: (payload: JobCreatedEvent) => void;
   onPhaseChanged: (payload: { jobId: string; phase: JobPhase; previousPhase: JobPhase }) => void;
   onProgress: (payload: { jobId: string; seq: number; message: string }) => void;
   onCompleted: (payload: {
@@ -228,8 +230,7 @@ export interface HttpHandlerPorts extends RpcPorts {
   readonly identity: HandlerIdentity;
   readonly time?: Pick<TimePort, 'setTimeout' | 'clearTimeout'>;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
-  readonly providerCredentialDefaults: ProviderCredentialSet;
-  readonly ambientClaudeLocation: AmbientClaudeLocationPort;
+  readonly systemProviderScope?: Extract<ProviderScope, { origin: 'system' }>;
   readonly remoteAccess?: RemoteHttpAccessPolicy;
   readonly admin: AdminControlPort;
   readonly health: HealthSnapshotPort;

@@ -206,7 +206,9 @@ describe('Orama AC1 projection metadata', () => {
     const lag = detectProjectionArtifactLag(
       {
         getCorpusStateSnapshot: () => snapshot,
-        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore({ runtimeDir: allocateRoot('coral-generated-community-') }),
+        generatedCommunityProjectionStore: createEmptyGeneratedCommunityProjectionStore({
+          runtimeDir: allocateRoot('coral-generated-community-'),
+        }),
       },
       [{ ...descriptor, targetConsumerIds: [ORAMA_BASE_CONSUMER_ID] }],
     );

@@ -47,7 +47,7 @@ export interface BrokerSessionController {
     params: Omit<SessionProbeParams, 'brokerSessionKey'>,
   ): Promise<Omit<SessionProbeResult, 'brokerSessionKey'>>;
   turnStart(params: Omit<TurnStartParams, 'brokerSessionKey'>): Promise<Omit<TurnStartResult, 'brokerSessionKey'>>;
-  turnInterrupt(params?: Omit<TurnInterruptParams, 'brokerSessionKey'>): Promise<TurnInterruptResult>;
+  turnInterrupt(params: Omit<TurnInterruptParams, 'brokerSessionKey'>): Promise<TurnInterruptResult>;
   shutdown(): Promise<void>;
   subscribeNotifications(handler: (notification: ControllerNotification) => void): () => void;
   hasActiveTurn(): boolean;

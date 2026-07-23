@@ -6,6 +6,7 @@ import type {
   ProviderProgressEventBody,
   ProviderTerminalEventBody,
 } from './contract.js';
+import { commitContinuityEvent } from './internal/continuity-commit.js';
 
 type ProviderEventQueueEntry<TEvent> =
   | { kind: 'event'; event: TEvent }
@@ -124,7 +125,7 @@ export type ProviderTerminalInput = {
   content: string;
   outcome: ProviderTerminal['outcome'];
   model?: ProviderTerminal['model'];
-  durationMs?: ProviderTerminal['durationMs'];
+  durationMs: ProviderTerminal['durationMs'];
   exitCode?: ProviderTerminal['exitCode'];
   warnings?: ProviderTerminal['warnings'];
   usage?: ProviderTerminal['usage'];
@@ -176,7 +177,7 @@ export function providerTerminalEvent(
       content: event.content,
       outcome: event.outcome,
       ...(event.model === undefined ? {} : { model: event.model }),
-      ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+      durationMs: event.durationMs,
       ...(event.exitCode === undefined ? {} : { exitCode: event.exitCode }),
       ...(event.warnings === undefined ? {} : { warnings: [...event.warnings] }),
       ...(event.usage === undefined ? {} : { usage: { ...event.usage } }),
@@ -203,6 +204,7 @@ export async function collectProviderEvents(stream: AsyncIterable<ProviderEventB
   const events: ProviderEventBody[] = [];
   for await (const event of stream) {
     events.push(event);
+    if (event.kind === 'continuity') commitContinuityEvent(event);
   }
   return events;
 }

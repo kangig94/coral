@@ -11,8 +11,13 @@ import {
   type CoralEventInput,
   type ResolvableCoralEventInput,
 } from './envelope.js';
-import type { UpcasterRegistry } from './upcaster-registry.js';
-import { applyReducer, type ComposedReducers, type DomainAppendValidationContext } from './reducers.js';
+import type { EventBodyCodec } from './event-body-codec.js';
+import {
+  applyReducer,
+  assertRegisteredEventStream,
+  type ComposedReducers,
+  type DomainAppendValidationContext,
+} from './reducers.js';
 
 const COMMIT_CAUSE_REF_TOKEN: unique symbol = Symbol('CommitCauseRefToken');
 
@@ -25,7 +30,7 @@ type RuntimeCauseRefToken = {
 export interface AppendContext {
   now(): Date;
   reducers: ComposedReducers;
-  upcasters: UpcasterRegistry;
+  bodyCodec: EventBodyCodec;
   /**
    * Required. Production composes the port from `providers/catalog.ts`
    * (`providerLookupPortFromCatalog`). Tests that don't exercise provider
@@ -282,15 +287,13 @@ function prepareInput(
 } {
   const parsedInput = journalEventInputSchema.parse(input) as CoralEventInput;
   assertFiniteEventBodyNumbers(parsedInput.body);
+  assertRegisteredEventStream(parsedInput, ctx.reducers);
   const schema = ctx.reducers.schemas.get(parsedInput.type);
-  const parsedBody = schema
-    ? ctx.upcasters.parseBody(parsedInput.type, parsedInput.bodyVersion, parsedInput.body, schema)
-    : parsedInput.body;
-  // Persist RAW input bytes (not parsedBody): old events are never rewritten;
-  // only the in-memory interpretation evolves. Upcasters run on READ
-  // (rebuild/read paths) against the stored body_version. Storing parsedBody
-  // here would double-upcast on later rebuild.
-  const bodyBytes = encodeEventBody(parsedInput.body);
+  if (schema === undefined) {
+    throw new Error(`No registered event body codec for type '${parsedInput.type}'.`);
+  }
+  const parsedBody = ctx.bodyCodec.parse(parsedInput.body, schema);
+  const bodyBytes = encodeEventBody(parsedBody);
 
   return { input: parsedInput, parsedBody, bodyBytes };
 }
@@ -330,6 +333,11 @@ export function commit(
     const validationCtx: DomainAppendValidationContext = {
       db,
       providers: ctx.providers,
+      readCtx: {
+        schemas: ctx.reducers.schemas,
+        streamKinds: ctx.reducers.streamKinds,
+        bodyCodec: ctx.bodyCodec,
+      },
     };
 
     for (const validateAppend of ctx.reducers.appendValidators) {
@@ -348,13 +356,12 @@ export function commit(
         string | null,
         number | null,
         string | null,
-        number,
         Buffer,
       ],
       { seq: number }
     >(
-      `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING seq`,
     );
 
@@ -377,7 +384,6 @@ export function commit(
         input.correlationId ?? null,
         input.causationSeq ?? null,
         input.refs ? JSON.stringify(input.refs) : null,
-        input.bodyVersion,
         bodyBytes,
       );
 
@@ -395,7 +401,6 @@ export function commit(
         correlationId: input.correlationId,
         causationSeq: input.causationSeq,
         refs: input.refs,
-        bodyVersion: input.bodyVersion,
         body: parsedBody,
       };
 

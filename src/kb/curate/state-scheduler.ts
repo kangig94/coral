@@ -28,42 +28,34 @@ export type CurateSchedulerState = {
   initialized: boolean;
 };
 
-const schedulerRowSchema = z.object({
-  id: z.literal(1),
-  processed_through_seq: z.number().int().positive().nullable(),
-  processed_through_entry_id: kbEntryIdSchema.nullable(),
-  processed_through_entry_kind: z.enum(['note', 'source']).nullable(),
-  discovery_high_seq: z.number().int().nonnegative().nullable(),
-  discovery_offset: z.number().int().nonnegative().nullable(),
-  last_run_day: z.string().nullable(),
-  last_attempted_through_seq: z.number().int().positive().nullable(),
-  last_attempted_through_entry_id: kbEntryIdSchema.nullable(),
-  last_attempted_through_entry_kind: z.enum(['note', 'source']).nullable(),
-  retry_not_before: z.string().nullable(),
-  consecutive_claim_failures: z.number().int().nonnegative(),
-  consecutive_community_batch_failures: z.number().int().nonnegative(),
-  claim_lane_disabled_at: z.string().nullable(),
-  community_batch_lane_disabled_at: z.string().nullable(),
-  community_summary_topology_hash: z.string().nullable(),
-  initialized: z.union([z.literal(0), z.literal(1)]),
-});
+export const schedulerRowSchema = z
+  .object({
+    id: z.literal(1),
+    processed_through_seq: z.number().int().positive().nullable(),
+    processed_through_entry_id: kbEntryIdSchema.nullable(),
+    processed_through_entry_kind: z.enum(['note', 'source']).nullable(),
+    discovery_high_seq: z.number().int().nonnegative(),
+    discovery_offset: z.number().int().nonnegative(),
+    last_run_day: z.string().nullable(),
+    last_attempted_through_seq: z.number().int().positive().nullable(),
+    last_attempted_through_entry_id: kbEntryIdSchema.nullable(),
+    last_attempted_through_entry_kind: z.enum(['note', 'source']).nullable(),
+    retry_not_before: z.string().nullable(),
+    consecutive_claim_failures: z.number().int().nonnegative(),
+    consecutive_community_batch_failures: z.number().int().nonnegative(),
+    claim_lane_disabled_at: z.string().nullable(),
+    community_batch_lane_disabled_at: z.string().nullable(),
+    community_summary_topology_hash: z.string().nullable(),
+    initialized: z.union([z.literal(0), z.literal(1)]),
+  })
+  .strict();
 
-function defaultCurateSchedulerState(): CurateSchedulerState {
-  return {
-    processedThrough: null,
-    discoveryHighSeq: 0,
-    discoveryOffset: 0,
-    lastRunDay: null,
-    lastAttemptedThrough: null,
-    retryNotBefore: null,
-    consecutiveClaimFailures: 0,
-    consecutiveCommunityBatchFailures: 0,
-    claimLaneDisabledAt: null,
-    communityBatchLaneDisabledAt: null,
-    communitySummaryTopologyHash: undefined,
-    initialized: false,
-  };
-}
+export const schedulerDecoderContract = {
+  singleton: 'row id 1 must exist',
+  cursorColumns: 'sequence, entry id, and entry kind are all null or all populated',
+  cursorIdentity: 'entry kind derived from entry id equals stored entry kind',
+  discoveryCounters: 'non-null nonnegative integers',
+} as const;
 
 function parseStoredCursor(
   label: string,
@@ -92,7 +84,7 @@ function parseStoredCursor(
 
 function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): CurateSchedulerState {
   if (row === undefined) {
-    return defaultCurateSchedulerState();
+    throw new Error('kb_curate_scheduler singleton row id=1 is missing');
   }
 
   const parsed = schedulerRowSchema.parse(row);
@@ -104,8 +96,8 @@ function rowToCurateSchedulerState(row: KbCurateSchedulerRow | undefined): Curat
       parsed.processed_through_entry_id,
       parsed.processed_through_entry_kind,
     ),
-    discoveryHighSeq: parsed.discovery_high_seq ?? 0,
-    discoveryOffset: parsed.discovery_offset ?? 0,
+    discoveryHighSeq: parsed.discovery_high_seq,
+    discoveryOffset: parsed.discovery_offset,
     lastRunDay: parsed.last_run_day,
     lastAttemptedThrough: parseStoredCursor(
       'last_attempted_through',

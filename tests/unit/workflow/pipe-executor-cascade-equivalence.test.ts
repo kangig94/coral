@@ -34,17 +34,18 @@ function makeMonotonicTime() {
   };
 }
 
-function running(job: string, session: string) {
+function running(jobId: string, sessionId: string) {
   return {
+    kind: 'provider-session' as const,
     status: 'running' as const,
-    job,
-    session,
+    jobId,
+    sessionId,
   };
 }
 
 function terminal(
   jobId: string,
-  result: Omit<JobTerminal, 'outcome'> & { outcome?: JobTerminal['outcome'] },
+  result: Omit<JobTerminal, 'outcome' | 'durationMs'> & { outcome?: JobTerminal['outcome'] },
 ): WaitStreamEvent {
   return {
     type: 'terminal',
@@ -54,8 +55,8 @@ function terminal(
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result:
       result.outcome === undefined
-        ? { ...result, outcome: { kind: 'completed' } }
-        : ({ ...result, outcome: result.outcome } as JobTerminal),
+        ? { ...result, outcome: { kind: 'completed' }, durationMs: 0 }
+        : ({ ...result, outcome: result.outcome, durationMs: 0 } as JobTerminal),
   };
 }
 
@@ -77,7 +78,6 @@ function createExecutionService(): WorkflowExecutionPort & {
     }),
     resume: vi.fn(async () => running('job-resumed', 'session-resumed')),
     recordContinuationLease: vi.fn(async () => {}),
-    claimContinuationLease: vi.fn(async () => true),
     clearContinuationLease: vi.fn(async () => true),
     abort: vi.fn(() => ({ aborted: [], notFound: [] })),
     awaitLaunch: vi.fn(async (): Promise<'ready'> => 'ready'),
@@ -113,7 +113,7 @@ describe('workflow cascade equivalence golden master', () => {
       ctx,
       {
         context: 'SHARED',
-        ids: { uuid: () => 'workflow-test-uuid' },
+        workflowJobId: 'workflow-test-uuid',
         time: makeMonotonicTime(),
       },
     );

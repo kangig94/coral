@@ -10,28 +10,28 @@ Codex delegation is a normal CLI-to-backend provider launch.
 
 ## Routing Rules
 
-| User request | Routing | Reason |
-| --- | --- | --- |
-| "review with architect" | Self-execute `architect` on current host | Default read-only reviewer |
-| "review with the other host's architect" | `coral-cli <other-host> architect -i ...` | Explicit cross-host delegation |
-| "review with critic" | Self-execute `critic` on current host | Default critical reviewer |
-| "run ralph on this task" | `/coral:ralph` | Skill-owned execution protocol |
-| "delegate ralph this task" | `/coral:ralph --delegate` | Cross-host execution through CLI launch + wait |
+| User request                             | Routing                                   | Reason                                         |
+| ---------------------------------------- | ----------------------------------------- | ---------------------------------------------- |
+| "review with architect"                  | Self-execute `architect` on current host  | Default read-only reviewer                     |
+| "review with the other host's architect" | `coral-cli <other-host> architect -i ...` | Explicit cross-host delegation                 |
+| "review with critic"                     | Self-execute `critic` on current host     | Default critical reviewer                      |
+| "run ralph on this task"                 | `/coral:ralph`                            | Skill-owned execution protocol                 |
+| "delegate ralph this task"               | `/coral:ralph --delegate`                 | Cross-host execution through CLI launch + wait |
 
 ## Claude-native Agents
 
-| Agent | File | Role |
-| --- | --- | --- |
-| `architect` | `clients/agents/architect.md` | Architecture analysis and plan review |
-| `critic` | `clients/agents/critic.md` | Code and plan review |
-| `debugger` | `clients/agents/debugger.md` | Root-cause diagnosis |
-| `scanner` | `clients/agents/scanner.md` | Project scanning and process investigation |
-| `gap-finder` | `clients/agents/gap-finder.md` | Requirement and scope gap analysis |
-| `resolver` | `clients/agents/resolver.md` | Review synthesis and contradiction resolution |
-| `red-attacker` | `clients/agents/red-attacker.md` | Adversarial test generation |
-| `pioneer` | `clients/agents/pioneer.md` | Most-elegant-design exploration, cost-blind |
-| `persona-generator` | `clients/agents/persona-generator.md` | Discuss persona generation |
-| `workflow-literal` | `clients/agents/workflow-literal.md` | Pipeline step processor for workflow DSL inline prompts |
+| Agent               | File                                  | Role                                                    |
+| ------------------- | ------------------------------------- | ------------------------------------------------------- |
+| `architect`         | `clients/agents/architect.md`         | Architecture analysis and plan review                   |
+| `critic`            | `clients/agents/critic.md`            | Code and plan review                                    |
+| `debugger`          | `clients/agents/debugger.md`          | Root-cause diagnosis                                    |
+| `scanner`           | `clients/agents/scanner.md`           | Project scanning and process investigation              |
+| `gap-finder`        | `clients/agents/gap-finder.md`        | Requirement and scope gap analysis                      |
+| `resolver`          | `clients/agents/resolver.md`          | Review synthesis and contradiction resolution           |
+| `red-attacker`      | `clients/agents/red-attacker.md`      | Adversarial test generation                             |
+| `pioneer`           | `clients/agents/pioneer.md`           | Most-elegant-design exploration, cost-blind             |
+| `persona-generator` | `clients/agents/persona-generator.md` | Discuss persona generation                              |
+| `workflow-literal`  | `clients/agents/workflow-literal.md`  | Pipeline step processor for workflow DSL inline prompts |
 
 These agents use Claude Code's native tools. Read-only agents declare `disallowedTools`; execution-oriented agents do not.
 
@@ -41,11 +41,11 @@ Agent bodies may say `read CORAL_METHODS/HOW-….md`. That alias resolves from i
 
 ## Skill-owned Protocols
 
-| Skill | Surface | Role |
-| --- | --- | --- |
-| `ralph` | `clients/skills/ralph/SKILL.md` | Persistent task execution with verification |
-| `plan` | `clients/skills/plan/SKILL.md` | Multi-round planning and review orchestration |
-| `init-project` | `clients/skills/init-project/SKILL.md` | Project initialization orchestration |
+| Skill          | Surface                                | Role                                          |
+| -------------- | -------------------------------------- | --------------------------------------------- |
+| `ralph`        | `clients/skills/ralph/SKILL.md`        | Persistent task execution with verification   |
+| `plan`         | `clients/skills/plan/SKILL.md`         | Multi-round planning and review orchestration |
+| `init-project` | `clients/skills/init-project/SKILL.md` | Project initialization orchestration          |
 
 These are protocols, not standalone agent files.
 
@@ -66,14 +66,14 @@ Behavior:
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
    - Codex: single turn text ordered `systemPrompt` → `instruction` → `prompt` (order is presentation only)
-4. Detached launches print `Job <job> <launchState> (session <session>)`, and `wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for durable artifact recovery.
+4. Detached provider launches print `Provider job <jobId> <launchState> (provider session <sessionId>)`. Detached workflows identify both `workflowId` and `jobId`. `wait --embed` prints the terminal line, any available usage diagnostics, and `Result path: <path>` for durable artifact recovery.
 5. The job is persisted like any other provider execution. Workflow atoms and discuss workers use the same job shell path.
 
 Unknown agent names fail through the normal provider/domain error path.
 
 ## Discuss Agents
 
-Discuss participants are coordinator-managed provider sessions, not Agent Teams and not protocol clients. The normal entrypoints are:
+Discuss participants run through coordinator-managed provider conversations (`ProviderSession`), while the discussion aggregate—not the provider session—owns each participant job. They are not Agent Teams or protocol clients. The normal entrypoints are:
 
 - `coral-cli discuss seed`
 - `coral-cli discuss start`

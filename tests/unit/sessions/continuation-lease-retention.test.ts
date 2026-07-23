@@ -1,21 +1,30 @@
 import { describe, expect, it } from 'vitest';
 
 import { appendJobTerminalRecorded } from '#src/jobs/terminal/recording.js';
+import { jobTerminalRecordedBodySchema } from '#src/jobs/terminal/result.js';
 import { managed } from '#src/providers/capability.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider } from '#src/providers/registry.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { commit, type CommitEventsFn } from '#src/store/append.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_CLAUDE_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CLAUDE_BINDING } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 
 async function* noopProvider() {}
+
+const terminalCodecRegistry: DomainEventRegistry = {
+  streamKind: 'job',
+  entries: [defineDomainEvent({ type: 'job.terminal.recorded', schema: jobTerminalRecordedBodySchema })],
+};
 
 function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
   db.exec(`
@@ -30,7 +39,6 @@ function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
       correlation_id TEXT,
       causation_seq INTEGER,
       refs TEXT,
-      body_version INTEGER NOT NULL DEFAULT 1,
       body BLOB NOT NULL
     );
     CREATE INDEX events_stream ON events(stream_kind, stream_id, seq);
@@ -54,7 +62,6 @@ function applyMinimalSchema(db: ReturnType<typeof newRawDatabase>): void {
     CREATE TABLE projection_sessions (
       session_id TEXT PRIMARY KEY,
       controller TEXT NOT NULL,
-      provider TEXT NOT NULL,
       resumable INTEGER NOT NULL,
       conversation_ref TEXT,
       scope_key TEXT NOT NULL,
@@ -78,7 +85,13 @@ function createHarness(): {
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
   providerRegistry.register(
-    defineProvider({ name: 'claude', run: noopProvider })
+    defineProvider({
+      name: 'claude',
+      transport: 'standalone',
+      run: noopProvider,
+      prepareExecutionPlan: prepareFixtureExecutionPlan,
+    })
+      .binding(fixtureProviderBindingCodec('claude'))
       .artifacts(
         managed({
           discardArtifacts: async ({ handles }) => {
@@ -89,14 +102,14 @@ function createHarness(): {
       )
       .build(),
   );
-  const reducers = composeReducers(sessionsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const reducers = composeReducers(terminalCodecRegistry, sessionsRegistry);
+  const bodyCodec = createEventBodyCodec();
   const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const appended = commit(db, cb, {
       now: () => new Date(runtime.time.now()),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     reactorRef.current?.observe(appended);
@@ -104,6 +117,7 @@ function createHarness(): {
   };
   const reactor = createLifecycleReactor({
     db: () => db,
+    readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     providers: providerRegistry,
     runtime,
     time: runtime.time,
@@ -125,8 +139,7 @@ async function openClaimedSession(
   jobId: string,
 ): Promise<{ readonly sessionId: string; readonly version: number }> {
   const session = sessionManager.allocate({
-    provider: 'claude',
-    sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
+    binding: TEST_CLAUDE_BINDING,
     name: 'claude-session',
     cwd: '/tmp/project',
     projectRoot: '/tmp/project',
@@ -146,7 +159,6 @@ async function recordArtifact(sessionManager: SessionManager, sessionId: string,
     sessionManager.recordArtifactHandleAtomic(sessionId, {
       expectedActiveJobId: jobId,
       expectedVersion: claimed.version,
-      provider: 'claude',
       handle: `/tmp/${jobId}.jsonl`,
       identity: { kind: 'test-artifact', jobId },
       sourceJobId: jobId,
@@ -161,8 +173,7 @@ function appendTerminal(commitEvents: CommitEventsFn, jobId: string, sessionId: 
       sessionId,
       namespace: 'test-ns',
       project: '/tmp/project',
-      terminal: { content: 'done', outcome: { kind: 'completed' } },
-      continuity: null,
+      terminal: { content: 'done', durationMs: 0, outcome: { kind: 'completed' } },
     });
     return undefined;
   });
@@ -178,6 +189,9 @@ describe('continuation lease retention integration', () => {
       sessionManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-stale',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
@@ -189,17 +203,31 @@ describe('continuation lease retention integration', () => {
 
       const afterStaleRelease = sessionManager.get('claude', session.sessionId);
       if (afterStaleRelease === null) throw new Error('expected released session');
-      await expect(
-        sessionManager.claimForJobAtomic(session.sessionId, 'job-resumed', afterStaleRelease.version),
-      ).resolves.toBe(true);
+      const claimedEntries: ProviderSession[] = [];
+      coordinatorCommit((c) => {
+        claimedEntries.push(
+          sessionManager.appendContinuationReplacementClaim(c, {
+            sessionId: session.sessionId,
+            staleJobId: 'job-stale',
+            resumedJobId: 'job-resumed',
+            workflowId: 'workflow-1',
+            workflowSlotId: 'workflow-1:0:0',
+            replacementGeneration: 1,
+            expectedVersion: afterStaleRelease.version,
+          }),
+        );
+        return undefined;
+      });
+      const claimedEntry = claimedEntries[0];
+      if (claimedEntry === undefined) throw new Error('expected committed replacement claim');
+      sessionManager.observeCommittedEntry(claimedEntry);
       coordinatorCommit((c) => {
         appendJobTerminalRecorded(c, {
           jobId: 'job-resumed',
           sessionId: session.sessionId,
           namespace: 'test-ns',
           project: '/tmp/project',
-          terminal: { content: 'done', outcome: { kind: 'completed' } },
-          continuity: null,
+          terminal: { content: 'done', durationMs: 0, outcome: { kind: 'completed' } },
         });
         return undefined;
       });
@@ -222,6 +250,9 @@ describe('continuation lease retention integration', () => {
       sessionManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-rejected-resume',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
@@ -255,6 +286,9 @@ describe('continuation lease retention integration', () => {
       sessionManager.recordContinuationLease({
         sessionId: session.sessionId,
         jobId: 'job-launch-failure-stale',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
       });
@@ -265,9 +299,24 @@ describe('continuation lease retention integration', () => {
 
       const afterStaleRelease = sessionManager.get('claude', session.sessionId);
       if (afterStaleRelease === null) throw new Error('expected released session');
-      await expect(
-        sessionManager.claimForJobAtomic(session.sessionId, 'job-launch-failed-resume', afterStaleRelease.version),
-      ).resolves.toBe(true);
+      const claimedEntries: ProviderSession[] = [];
+      coordinatorCommit((c) => {
+        claimedEntries.push(
+          sessionManager.appendContinuationReplacementClaim(c, {
+            sessionId: session.sessionId,
+            staleJobId: 'job-launch-failure-stale',
+            resumedJobId: 'job-launch-failed-resume',
+            workflowId: 'workflow-1',
+            workflowSlotId: 'workflow-1:0:0',
+            replacementGeneration: 1,
+            expectedVersion: afterStaleRelease.version,
+          }),
+        );
+        return undefined;
+      });
+      const claimedEntry = claimedEntries[0];
+      if (claimedEntry === undefined) throw new Error('expected committed replacement claim');
+      sessionManager.observeCommittedEntry(claimedEntry);
       await expect(
         sessionManager.clearContinuationLease({
           sessionId: session.sessionId,

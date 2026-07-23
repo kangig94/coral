@@ -77,9 +77,7 @@ export class CorpusAuthorityBaselineRefresh {
     }
 
     const upserts = [...current.values()].filter((record) => targets.has(record.entryId));
-    const deletes = [...targets.values()]
-      .map((target) => target.entryId)
-      .filter((entryId) => !current.has(entryId));
+    const deletes = [...targets.values()].map((target) => target.entryId).filter((entryId) => !current.has(entryId));
     this.options.corpusAuthorityBaseline.applyDelta({ upserts, deletes });
   }
 

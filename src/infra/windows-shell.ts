@@ -8,11 +8,7 @@ export function windowsCommandName(command: string, platform: string = process.p
     return command;
   }
 
-  const normalized = trimmed.toLowerCase();
-  if (normalized === 'codex' || normalized === 'claude') {
-    return `${trimmed}.cmd`;
-  }
-  return trimmed;
+  return trimmed.toLowerCase().endsWith('.cmd') ? trimmed : `${trimmed}.cmd`;
 }
 
 export function shouldUseWindowsCommandShell(command: string, platform: string = process.platform): boolean {

@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { nonEmptyStringSchema } from '../infra/identifiers.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ExecResult, IdPort, Runtime } from '../runtime/ports.js';
+import type { JsonValue } from '../infra/json-value.js';
+import type { ProviderExecutionPlan } from './execution-plan.js';
 import type { ProviderContinuityBlob } from '../sessions/continuity.js';
 import {
   SESSION_ADAPTER_UNPARSEABLE_EVENT,
@@ -15,14 +17,15 @@ import { providerArtifactIdentitySchema, type ProviderArtifactIdentity } from '.
 import { sessionProviderFailureDiagnosticSchema } from '../sessions/fault.js';
 import type {
   AppServerNotificationMessage,
-  AppServerSubscriptionPhase,
+  ProviderCliRequest,
   ProviderCliRunner,
   ProviderTransportClose,
 } from './protocol.js';
-import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 export type ProviderAction = 'exec' | 'resume';
+/** Provider-private account authority represented as canonical snapshot-safe data. */
+export type ProviderAccess = JsonValue;
 
 export const providerInstructionSchema = z
   .object({
@@ -73,17 +76,12 @@ export interface ProviderRequest {
   instruction?: ProviderInstruction;
 }
 
-interface ProviderRecoveryMeta {
-  [key: string]: unknown;
-}
-
-export interface ProviderServerSpec {
+interface ProviderServerSpecBase {
   provider: string;
   command: string;
   args: string[];
   cwd: string;
   env?: Record<string, string>;
-  shared?: boolean;
   initializeRequest?: {
     method: string;
     params: Record<string, unknown>;
@@ -95,12 +93,77 @@ export interface ProviderServerSpec {
   };
 }
 
-export interface ProviderServerLease {
+export type ProviderServerSpec = ProviderServerSpecBase &
+  (
+    | {
+        leaseMode: 'shared';
+        /** Evidence required before the manager may retire an unpinned shared host. */
+        idlePolicy: 'host-stats' | 'daemon';
+      }
+    | {
+        leaseMode: 'job-exclusive';
+        idlePolicy?: never;
+      }
+  );
+
+/** Persistable, non-secret reference to one concrete managed app-server host. */
+export type HostRef =
+  | Readonly<{
+      provider: string;
+      fingerprint: string;
+      instanceId: string;
+      leaseMode: 'shared';
+    }>
+  | Readonly<{
+      provider: string;
+      fingerprint: string;
+      instanceId: string;
+      leaseMode: 'job-exclusive';
+      ownerJobId: string;
+    }>;
+
+/** Provider-facing session. Process ownership and release remain capability-private. */
+export interface AppServerTransport {
   rpc<R = unknown>(method: string, params: Record<string, unknown>): Promise<R>;
   subscribe(handler: (msg: { method: string; params?: Record<string, unknown> }) => void): () => void;
-  release(): void;
-  closed: Promise<Error | void>;
-  generation?: number;
+  readonly closed: Promise<Error | void>;
+}
+
+export interface AppServerSession extends AppServerTransport {
+  interrupt(continuity: ProviderContinuityBlob): Promise<boolean>;
+}
+
+export type ProviderCurationRequest = {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly model?: string;
+  readonly permissionMode?: 'default' | 'auto' | 'bypassPermissions';
+  readonly signal?: AbortSignal;
+};
+
+export type ProviderCurationPreparationRuntime = {
+  readonly storage: Pick<StoragePort, 'existsSync' | 'readdirSync' | 'unlinkSync'>;
+  readonly ids: Pick<IdPort, 'uuid' | 'sha256'>;
+  readonly baseEnv: Readonly<Record<string, string>>;
+  readonly platform: string;
+};
+
+export type ProviderPreparedCuration = Readonly<{
+  complete(runtime: { readonly appServerSession: AppServerSession }): Promise<string>;
+}>;
+
+export type ProviderCurationUsageRuntime = {
+  readonly storage: Pick<StoragePort, 'readFileSync'>;
+  readonly now: () => number;
+};
+
+/** Provider-owned daemon-internal assistant work exposed only through a bound provider. */
+export interface ProviderCurationCapability<Access extends ProviderAccess> {
+  prepare(
+    request: ProviderCurationRequest,
+    runtime: ProviderCurationPreparationRuntime & { readonly access: Access },
+  ): ProviderPreparedCuration;
+  isUsageBudgetExhausted(runtime: ProviderCurationUsageRuntime & { readonly access: Access }): boolean;
 }
 
 // Provider-side terminal outcome: the slice of `TerminalOutcome` that the
@@ -117,7 +180,7 @@ export interface ProviderTerminal {
   content: string;
   model?: string;
   outcome: ProviderTerminalOutcome;
-  durationMs?: number;
+  durationMs: number;
   /** @wire node:child_process — provider exit code; mirrors child_process exit semantics. */
   exitCode?: number | null;
   usage?: UsageSummary;
@@ -161,10 +224,16 @@ export type ProviderArtifactHandleEventBody = {
   identity: ProviderArtifactIdentity;
 };
 
+export type ProviderSuspendedEventBody = {
+  kind: 'suspended';
+  reason: 'interrupt_unconfirmed';
+};
+
 export type ProviderEventBody =
   | ProviderProgressEventBody
   | ProviderContinuityEventBody
   | ProviderArtifactHandleEventBody
+  | ProviderSuspendedEventBody
   | ProviderTerminalEventBody;
 
 const abortReasons = ['signal_abort', 'user_abort', 'queue_shutdown'] as const satisfies readonly AbortReason[];
@@ -225,7 +294,7 @@ export const providerJobTerminalSchema = z
     content: z.string(),
     model: z.string().optional(),
     outcome: providerTerminalOutcomeSchema,
-    durationMs: z.number().optional(),
+    durationMs: z.number().nonnegative(),
     exitCode: z.number().nullable().optional(),
     usage: usageSummarySchema.optional(),
     warnings: z.array(z.string()).optional(),
@@ -266,6 +335,13 @@ export const providerArtifactHandleEventBodySchema = z
   })
   .strict();
 
+export const providerSuspendedEventBodySchema = z
+  .object({
+    kind: z.literal('suspended'),
+    reason: z.literal('interrupt_unconfirmed'),
+  })
+  .strict();
+
 export const providerTerminalEventBodySchema = z
   .object({
     kind: z.literal('terminal'),
@@ -289,7 +365,8 @@ export const providerTerminalEventBodySchema = z
         message: 'non-failed provider terminals must not carry failureCause',
       });
     }
-  });
+  })
+  .describe('couple-provider-terminal-failure-cause');
 
 export type ProviderContinuityUpdate = {
   conversationRef?: string | null;
@@ -299,7 +376,7 @@ export type ProviderContinuityUpdate = {
 };
 
 interface ProviderContinuityBridge {
-  checkpoint(update: ProviderContinuityUpdate): void;
+  checkpoint(update: ProviderContinuityUpdate): Promise<void> | void;
   transportClosed(closed: ProviderTransportClose): void;
 }
 
@@ -309,14 +386,12 @@ export interface ProviderEquippedToolSummary {
   readonly guidance?: readonly string[];
 }
 
-export interface ProviderRuntime {
+interface ProviderRuntimeCommon<Plan extends ProviderExecutionPlan> {
   signal: AbortSignal;
-  runCli: ProviderCliRunner;
   time: Pick<Runtime['time'], 'now' | 'setTimeout' | 'clearTimeout'>;
   storage: Pick<Runtime['storage'], 'readFileSync' | 'statSync' | 'existsSync' | 'readdirSync'>;
-  env?: Pick<Runtime['env'], 'homedir' | 'claudeConfigDir' | 'fullSnapshot' | 'get'>;
+  env?: Pick<Runtime['env'], 'homedir' | 'fullSnapshot' | 'get'>;
   ids: Pick<IdPort, 'uuid' | 'sha256'>;
-  acquireServer: (spec: ProviderServerSpec) => Promise<ProviderServerLease>;
   persistedContinuity?: ProviderContinuityBlob;
   continuityBridge: ProviderContinuityBridge;
   /**
@@ -332,56 +407,99 @@ export interface ProviderRuntime {
   projectSource?: string;
   /** Installed /equip tools that should be advertised in provider system prompts. */
   equippedTools?: readonly ProviderEquippedToolSummary[];
-  providerContext: ProviderExecutionContext;
+  /** Provider-private lifetime-scoped plan. Generic execution code never inspects its payloads. */
+  executionPlan: Plan;
 }
 
-export type ProviderExecutionContext =
-  | {
-      provider: 'codex';
-      source: Extract<ProviderCredentialSourceRef, { provider: 'codex' }>;
-      appServerEnv: Readonly<Record<string, string>>;
-    }
-  | {
-      provider: 'claude';
-      source: Extract<ProviderCredentialSourceRef, { provider: 'claude' }>;
-      brokerEnv: Readonly<Record<string, string>>;
-      controllerEnv: Readonly<Record<string, string>>;
-      projectsRoot: string;
-    };
+export type ProviderAppServerRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> =
+  ProviderRuntimeCommon<Plan> & {
+    readonly transport: 'app-server';
+    readonly appServerSession: AppServerSession;
+  };
 
-export type Provider = (request: ProviderRequest, runtime: ProviderRuntime) => AsyncIterable<ProviderEventBody>;
-export type ProviderMiddleware = (next: Provider) => Provider;
+export type ProviderStandaloneRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> =
+  ProviderRuntimeCommon<Plan> & {
+    readonly transport: 'standalone';
+    readonly runCli: ProviderCliRunner;
+  };
 
-export interface ProviderAppServerContract {
+export type ProviderRuntime<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> =
+  | ProviderAppServerRuntime<Plan>
+  | ProviderStandaloneRuntime<Plan>;
+
+export type Provider<
+  Plan extends ProviderExecutionPlan = ProviderExecutionPlan,
+  ExecutionRuntime extends ProviderRuntime<Plan> = ProviderRuntime<Plan>,
+> = (request: ProviderRequest, runtime: ExecutionRuntime) => AsyncIterable<ProviderEventBody>;
+export type ProviderAppServer<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> = Provider<
+  Plan,
+  ProviderAppServerRuntime<Plan>
+>;
+export type ProviderStandalone<Plan extends ProviderExecutionPlan = ProviderExecutionPlan> = Provider<
+  Plan,
+  ProviderStandaloneRuntime<Plan>
+>;
+export type ProviderMiddleware<
+  Plan extends ProviderExecutionPlan = ProviderExecutionPlan,
+  ExecutionRuntime extends ProviderRuntime<Plan> = ProviderRuntime<Plan>,
+> = (next: Provider<Plan, ExecutionRuntime>) => Provider<Plan, ExecutionRuntime>;
+
+type ProviderHostPlanningContext<Access extends ProviderAccess> = Readonly<{
+  access: Access;
+  baseEnv: Readonly<Record<string, string>>;
+  platform: string;
+  storage: Pick<StoragePort, 'existsSync'>;
+}>;
+
+export type ProviderHostPlanningInput<Access extends ProviderAccess = ProviderAccess> =
+  | (ProviderHostPlanningContext<Access> &
+      Readonly<{
+        purpose: 'execution';
+        request: ProviderRequest;
+        persistedContinuity?: ProviderContinuityBlob;
+      }>)
+  | (ProviderHostPlanningContext<Access> &
+      Readonly<{
+        purpose: 'curation';
+        request: ProviderCurationRequest;
+      }>);
+
+export interface ProviderAppServerCapability<
+  Plan extends ProviderExecutionPlan = ProviderExecutionPlan,
+  Access extends ProviderAccess = ProviderAccess,
+> {
   readonly name: string;
-  readonly subscriptionPhase: AppServerSubscriptionPhase;
-  buildServerSpec(
-    request: ProviderRequest,
-    persistedContinuity: ProviderContinuityBlob | undefined,
-    ports: { storage: Pick<StoragePort, 'existsSync'> },
-    providerContext: ProviderExecutionContext,
-  ): ProviderServerSpec;
-  interrupt?(lease: ProviderServerLease, continuity: ProviderContinuityBlob): Promise<void>;
+  planHost(input: ProviderHostPlanningInput<Access>): Plan['host'];
+  compileStableHost(host: Plan['host']): ProviderServerSpec;
+  interrupt?(session: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean>;
+  probe?(
+    session: AppServerTransport,
+    continuity: ProviderContinuityBlob,
+    context: Readonly<{ request: Pick<ProviderRequest, 'cwd'> }>,
+  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
   onNotification?(message: AppServerNotificationMessage): void;
 }
 
-export interface ProviderRecoveryContract {
-  probe?(
-    lease: ProviderServerLease,
-    continuity: ProviderContinuityBlob,
-  ): Promise<{ resumable: boolean; updatedContinuity?: ProviderContinuityBlob }>;
-  finalizeInterrupted?(
+export interface ProviderRecoveryContract<Access extends ProviderAccess = ProviderAccess> {
+  /**
+   * Provider-owned interpretation of an interrupted app-server turn.
+   *
+   * The coordinator supplies observations only. It must never invent provider
+   * continuity semantics when the provider cannot be probed or no continuity
+   * blob has been checkpointed yet.
+   */
+  finalizeInterrupted(
     probeResult: { resumable: boolean; updatedContinuity?: ProviderContinuityBlob },
-    continuity: ProviderContinuityBlob,
+    continuity: ProviderContinuityBlob | undefined,
     context: { preservedConversationRef?: string },
   ): SessionContinuityMutation;
   finalizeFromArtifacts(options: {
-    source: ProviderCredentialSourceRef;
+    access: Access;
     stdoutPath: string;
     stderrPath: string;
     exitCode: number | null;
     signal: string | null;
-    providerMeta?: Record<string, unknown>;
+    durationMs: number;
     fallbackConversationRef?: string;
     knownArtifactHandles?: readonly ProviderArtifactHandleInput[];
     storage: Pick<StoragePort, 'readFileSync' | 'existsSync' | 'readdirSync' | 'statSync'>;
@@ -394,18 +512,24 @@ export interface ProviderRecoveryContract {
       providerContinuity?: ProviderContinuityBlob;
     };
   }>;
-  buildRecoveryMeta?(request: ProviderRequest): ProviderRecoveryMeta;
-  extractProgress?(options: { stdoutPath: string; fromOffset: number; providerMeta?: Record<string, unknown> }): {
+  extractProgress?(options: { stdoutPath: string; fromOffset: number }): {
     messages: string[];
     newOffset: number;
   };
 }
 
 export type PreflightRuntime = Pick<Runtime, 'process' | 'storage' | 'env' | 'time'>;
-export type ProviderPreflightRuntime = PreflightRuntime & {
-  credentialSource: ProviderCredentialSourceRef;
+export type ProviderPreflightRuntime<Access extends ProviderAccess = ProviderAccess> = PreflightRuntime & {
+  access: Access;
   cwd: string;
   runExact(command: string, args: string[], options?: { timeout?: number; encoding?: 'utf-8' }): Promise<ExecResult>;
+};
+export type ProviderPreflightInput<Access extends ProviderAccess = ProviderAccess> = PreflightRuntime & {
+  access: Access;
+  cwd: string;
+  baseEnv: Readonly<Record<string, string>>;
+  requestEnv: Readonly<Record<string, string>>;
+  platform: string;
 };
 export type ArtifactCleanupRuntime = Pick<Runtime, 'storage' | 'env' | 'paths' | 'time'>;
 
@@ -422,11 +546,11 @@ export type DiscardOutcome =
   | { readonly kind: 'skipped_no_handles'; readonly details?: Record<string, unknown> }
   | { readonly kind: 'provider_declares_none'; readonly details?: Record<string, unknown> };
 
-export interface ProviderManagedArtifactCapability {
+export interface ProviderManagedArtifactCapability<Access extends ProviderAccess = ProviderAccess> {
   readonly kind: 'managed';
   discardArtifacts(options: {
     handles: readonly ProviderArtifactHandle[];
-    source: ProviderCredentialSourceRef;
+    access: Access;
     runtime: ArtifactCleanupRuntime;
   }): Promise<DiscardOutcome>;
   /**
@@ -438,7 +562,7 @@ export interface ProviderManagedArtifactCapability {
    */
   locateArtifact?(options: {
     conversationRef: string;
-    source: ProviderCredentialSourceRef;
+    access: Access;
     runtime: ArtifactCleanupRuntime;
   }): ProviderArtifactHandle | null;
 }
@@ -448,33 +572,93 @@ export interface ProviderNoArtifactCapability {
   readonly reason: string;
 }
 
-export type ProviderArtifactCapability = ProviderManagedArtifactCapability | ProviderNoArtifactCapability;
+export type ProviderArtifactCapability<Access extends ProviderAccess = ProviderAccess> =
+  | ProviderManagedArtifactCapability<Access>
+  | ProviderNoArtifactCapability;
 
-export interface ProviderSpec {
+type ProviderExecutionPreparationContext<Access extends ProviderAccess> = {
+  access: Access;
+  request: ProviderRequest;
+  persistedContinuity?: ProviderContinuityBlob;
+  baseEnv: Readonly<Record<string, string>>;
+  protectedEnv?: Readonly<Record<string, string>>;
+  platform: string;
+  storage: Pick<StoragePort, 'existsSync'>;
+};
+
+type ProviderAppServerPlanPreparation<Plan extends ProviderExecutionPlan, Access extends ProviderAccess> = (
+  input: ProviderExecutionPreparationContext<Access> & { hostPlan: Plan['host'] },
+) => {
+  readonly session: Plan['session'];
+  readonly turn: Plan['turn'];
+};
+
+type ProviderStandalonePlanPreparation<Plan extends ProviderExecutionPlan, Access extends ProviderAccess> = (
+  input: ProviderExecutionPreparationContext<Access>,
+) => {
+  readonly plan: Plan;
+  prepareCliRequest(request: ProviderCliRequest): ProviderCliRequest;
+};
+
+type ProviderImplementationCommon<Access extends ProviderAccess> = {
   readonly name: string;
-  readonly run: Provider;
-  readonly preflight?: (runtime: ProviderPreflightRuntime) => Promise<void>;
-  readonly appServer?: ProviderAppServerContract;
-  readonly recovery?: ProviderRecoveryContract;
-}
+  readonly preflight?: (input: ProviderPreflightInput<Access>) => Promise<void>;
+  readonly recovery?: ProviderRecoveryContract<Access>;
+};
 
-export function compose(middleware: readonly ProviderMiddleware[], provider: Provider): Provider;
-export function compose(...parts: readonly [...ProviderMiddleware[], Provider]): Provider;
-export function compose(
-  ...parts: readonly [readonly ProviderMiddleware[], Provider] | readonly [...ProviderMiddleware[], Provider]
-): Provider {
+export type ProviderAppServerImplementation<
+  Plan extends ProviderExecutionPlan,
+  Access extends ProviderAccess = ProviderAccess,
+> = ProviderImplementationCommon<Access> & {
+  readonly transport: 'app-server';
+  readonly run: ProviderAppServer<Plan>;
+  readonly appServer: ProviderAppServerCapability<Plan, Access>;
+  readonly prepareExecutionPlan: ProviderAppServerPlanPreparation<Plan, Access>;
+  readonly curation?: ProviderCurationCapability<Access>;
+};
+
+export type ProviderStandaloneImplementation<
+  Plan extends ProviderExecutionPlan,
+  Access extends ProviderAccess = ProviderAccess,
+> = ProviderImplementationCommon<Access> & {
+  readonly transport: 'standalone';
+  readonly run: ProviderStandalone<Plan>;
+  readonly prepareExecutionPlan: ProviderStandalonePlanPreparation<Plan, Access>;
+};
+
+export type ProviderImplementation<
+  Plan extends ProviderExecutionPlan,
+  Access extends ProviderAccess = ProviderAccess,
+> = ProviderAppServerImplementation<Plan, Access> | ProviderStandaloneImplementation<Plan, Access>;
+
+export function compose<Plan extends ProviderExecutionPlan, ExecutionRuntime extends ProviderRuntime<Plan>>(
+  middleware: readonly ProviderMiddleware<Plan, ExecutionRuntime>[],
+  provider: Provider<Plan, ExecutionRuntime>,
+): Provider<Plan, ExecutionRuntime>;
+export function compose<Plan extends ProviderExecutionPlan, ExecutionRuntime extends ProviderRuntime<Plan>>(
+  ...parts: readonly [...ProviderMiddleware<Plan, ExecutionRuntime>[], Provider<Plan, ExecutionRuntime>]
+): Provider<Plan, ExecutionRuntime>;
+export function compose<Plan extends ProviderExecutionPlan, ExecutionRuntime extends ProviderRuntime<Plan>>(
+  ...parts:
+    | readonly [readonly ProviderMiddleware<Plan, ExecutionRuntime>[], Provider<Plan, ExecutionRuntime>]
+    | readonly [...ProviderMiddleware<Plan, ExecutionRuntime>[], Provider<Plan, ExecutionRuntime>]
+): Provider<Plan, ExecutionRuntime> {
   const [middleware, provider] =
     parts.length === 2 && Array.isArray(parts[0])
       ? [parts[0], parts[1]]
-      : [parts.slice(0, -1) as readonly ProviderMiddleware[], parts[parts.length - 1] as Provider];
+      : [
+          parts.slice(0, -1) as readonly ProviderMiddleware<Plan, ExecutionRuntime>[],
+          parts[parts.length - 1] as Provider<Plan, ExecutionRuntime>,
+        ];
 
   const composed = middleware.reduceRight((next, layer) => layer(next), provider);
 
-  // §8.3 #1: compose() owns the terminalOnce invariant for every provider
-  // stream. Per-middleware defensive checks are not the right home; the
-  // composition root sees the full chain end-to-end.
-  return async function* terminalOnceProvider(request, runtime) {
-    let seenTerminal = false;
+  // The composition root owns the single final-disposition invariant for
+  // every provider stream. A confirmed outcome is terminal; an interruption
+  // whose exact provider turn remains live is suspended for durable recovery.
+  return async function* finalDispositionProvider(request, runtime) {
+    const startedAt = runtime.time.now();
+    let seenFinal = false;
     let naturalCompletion = false;
     const inner = composed(request, runtime);
     const iterator = inner[Symbol.asyncIterator]();
@@ -487,28 +671,25 @@ export function compose(
           break;
         }
         const event = result.value;
-        if (seenTerminal) {
-          // Stream already terminated; drop further yields. A well-behaved
-          // kernel should not emit after terminal, but if it does, dropping
-          // here keeps downstream projections from seeing two terminals.
-          continue;
-        }
         yield event;
-        if (event.kind === 'terminal') {
-          seenTerminal = true;
+        if (event.kind === 'terminal' || event.kind === 'suspended') {
+          seenFinal = true;
+          return;
         }
       }
     } finally {
+      if (!naturalCompletion && typeof iterator.return === 'function') {
+        await iterator.return().catch(() => undefined);
+      }
       // Synthesize wrapper_lost only when the inner iterator returned of its
-      // own accord without ever yielding a terminal. Consumer-driven .return()
-      // and propagating exceptions are intentional close signals — let them
-      // pass through unchanged. §7.2: wrapper_lost is the JobLifecycleFault
-      // for "kernel closed without reporting an outcome."
-      if (naturalCompletion && !seenTerminal) {
+      // own accord without a terminal or suspension. Consumer-driven .return()
+      // and propagating exceptions are intentional close signals.
+      if (naturalCompletion && !seenFinal) {
         yield {
           kind: 'terminal',
           terminal: {
             content: '',
+            durationMs: Math.max(0, runtime.time.now() - startedAt),
             outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
           },
           diagnostics: {},

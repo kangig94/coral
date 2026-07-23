@@ -402,6 +402,7 @@ export class MockProcessSpawner {
 
     const runtimeRecord: DurableCliRuntimeRecord = {
       ...script.runtimeRecord,
+      transport: 'durable-cli',
       startTime: script.runtimeRecord?.startTime ?? nowIsoString(this.time),
       pid,
       stdoutPath,

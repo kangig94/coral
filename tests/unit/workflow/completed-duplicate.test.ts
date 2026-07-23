@@ -1,14 +1,16 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowCompletedEvent, workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 // Spec §6.5: workflow stream identity is the truth — a workflow has exactly
 // one completion. The append validator rejects a second `workflow.completed`
@@ -19,7 +21,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -27,7 +29,7 @@ function ctx(): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(workflowRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   };
 }
@@ -50,7 +52,7 @@ describe('workflow.completed duplicate validator', () => {
       commit(
         db,
         (c) => {
-          c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:0'])));
+          c.append(workflowPlanDeclaredEvent('workflow-1', plan(['workflow-1:0:0']), TEST_PROVIDER_SCOPE));
           c.append(workflowCompletedEvent('workflow-1', { outcome: 'completed', stepDetails: [] }));
           return undefined;
         },
@@ -79,7 +81,7 @@ describe('workflow.completed duplicate validator', () => {
         commit(
           db,
           (c) => {
-            c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:0'])));
+            c.append(workflowPlanDeclaredEvent('workflow-2', plan(['workflow-2:0:0']), TEST_PROVIDER_SCOPE));
             c.append(workflowCompletedEvent('workflow-2', { outcome: 'completed', stepDetails: [] }));
             c.append(workflowCompletedEvent('workflow-2', { outcome: 'aborted', stepDetails: [] }));
             return undefined;
@@ -98,8 +100,8 @@ describe('workflow.completed duplicate validator', () => {
       const appended = commit(
         db,
         (c) => {
-          c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0'])));
-          c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0'])));
+          c.append(workflowPlanDeclaredEvent('workflow-a', plan(['workflow-a:0:0']), TEST_PROVIDER_SCOPE));
+          c.append(workflowPlanDeclaredEvent('workflow-b', plan(['workflow-b:0:0']), TEST_PROVIDER_SCOPE));
           c.append(workflowCompletedEvent('workflow-a', { outcome: 'completed', stepDetails: [] }));
           c.append(workflowCompletedEvent('workflow-b', { outcome: 'aborted', stepDetails: [] }));
           return undefined;

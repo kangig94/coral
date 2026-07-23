@@ -1,7 +1,6 @@
 import type { CauseRefToken } from '../../causality/cause-ref.js';
 import type { CommitContext } from '../../store/append.js';
 import type { ResolvableCoralEventInput } from '../../store/envelope.js';
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { TerminalOutcomeInput } from '../outcome.js';
 import { buildJobEventRefs } from '../refs.js';
 import { normalizeJobTerminal, type JobTerminalRecordedInputBody } from './result.js';
@@ -22,7 +21,6 @@ export interface JobTerminalRecordedOptions<Scope = never> {
   readonly workflowSlotId?: string;
   readonly terminal: JobTerminalInput<Scope> | JobTerminalInput;
   readonly diagnostics?: JobTerminalDiagnostics;
-  readonly continuity?: JobContinuitySnapshot | null;
 }
 
 function jobTerminalRecordedEvent<Scope = never>(
@@ -30,11 +28,9 @@ function jobTerminalRecordedEvent<Scope = never>(
 ): ResolvableCoralEventInput<Scope, JobTerminalRecordedInputBody<Scope>> {
   return {
     type: 'job.terminal.recorded',
-    bodyVersion: 1,
     body: {
       terminal: normalizeJobTerminal(options.terminal as JobTerminalInput<Scope>),
       diagnostics: options.diagnostics,
-      continuity: options.continuity ?? null,
     },
     stream: { kind: 'job', id: options.jobId },
     namespace: options.namespace,

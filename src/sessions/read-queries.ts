@@ -1,10 +1,10 @@
 import type { Database } from '../store/db.js';
 
-import type { SessionEntry } from './entry.js';
-import { readProjectionSessionEntry } from './projections.js';
+import type { ProviderSession } from './entry.js';
+import { readProjectionProviderSession } from './projections.js';
 
-export function readSessionEntryById(db: Database, sessionId: string): SessionEntry {
-  const entry = readProjectionSessionEntry(db, sessionId);
+export function readProviderSessionById(db: Database, sessionId: string): ProviderSession {
+  const entry = readProjectionProviderSession(db, sessionId);
 
   if (entry === null) {
     throw new Error(`Session not found: ${sessionId}`);

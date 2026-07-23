@@ -1,16 +1,46 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { getEvent, getEventsSince } from '#src/store/event-queries.js';
-import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
-import type { StoreReadContext } from '#src/store/body-codec.js';
-import { composeReducers } from '#src/store/reducers.js';
+import {
+  applyTestCounterSchema,
+  TEST_COUNTER_SCHEMA,
+  testCounterRegistry,
+} from '#tests/unit/store/fixtures/test-counter-registry.js';
+import { decodeBody, type StoreReadContext } from '#src/store/body-codec.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { z } from 'zod';
+import type { EventsRow } from '#src/store/schema.js';
+
+const sessionQueryRegistry: DomainEventRegistry = {
+  streamKind: 'session',
+  entries: [defineDomainEvent({ type: 'test.counter.reset', schema: TEST_COUNTER_SCHEMA })],
+};
+
+const discussQueryRegistry: DomainEventRegistry = {
+  streamKind: 'discuss',
+  entries: [defineDomainEvent({ type: 'discuss.message.recorded', schema: TEST_COUNTER_SCHEMA })],
+};
+
+const workflowQueryRegistry: DomainEventRegistry = {
+  streamKind: 'workflow',
+  entries: [defineDomainEvent({ type: 'workflow.step.completed', schema: TEST_COUNTER_SCHEMA })],
+};
+
+const queryReducers = composeReducers(
+  testCounterRegistry,
+  sessionQueryRegistry,
+  discussQueryRegistry,
+  workflowQueryRegistry,
+);
+
 describe('events queries', () => {
   let db: Database;
   let appended: ReturnType<typeof commitInputs>;
@@ -18,17 +48,16 @@ describe('events queries', () => {
 
   beforeEach(() => {
     db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db);
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
     applyTestCounterSchema(db);
 
     const inputs: CoralEventInput[] = [
       {
         type: 'test.counter.ticked',
-        stream: { kind: 'session', id: 'session-1' },
+        stream: { kind: 'job', id: 'job-0' },
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -37,7 +66,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-b',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -46,7 +74,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -55,7 +82,6 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-c',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
@@ -64,29 +90,28 @@ describe('events queries', () => {
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
       {
         type: 'test.counter.ticked',
-        stream: { kind: 'session', id: 'session-1' },
+        stream: { kind: 'job', id: 'job-0' },
         namespace: 'tests',
         project: 'coral',
         correlationId: 'cor-a',
-        bodyVersion: 1,
         body: { id: 'x', delta: 1 },
       },
     ];
 
     appended = commitInputs(db, inputs, {
       now: () => new Date(Date.UTC(2026, 3, 18, 0, 0, 0)),
-      reducers: composeReducers(testCounterRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
+      reducers: queryReducers,
+      bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     });
     readCtx = {
-      schemas: composeReducers(testCounterRegistry).schemas,
-      upcasters: createDefaultUpcasterRegistry(),
+      schemas: queryReducers.schemas,
+      streamKinds: queryReducers.streamKinds,
+      bodyCodec: createEventBodyCodec(),
     };
   });
 
@@ -113,9 +138,9 @@ describe('events queries', () => {
   it('filters by stream kind', () => {
     const page = getEventsSince(db, 0, { streamKind: 'session' }, 1000, readCtx);
 
-    expect(page.events.map((event) => event.seq)).toEqual([1, 3, 6]);
-    expect(page.events.map((event) => event.stream.kind)).toEqual(['session', 'session', 'session']);
-    expect(page.nextCursor).toBe(6);
+    expect(page.events.map((event) => event.seq)).toEqual([3]);
+    expect(page.events.map((event) => event.stream.kind)).toEqual(['session']);
+    expect(page.nextCursor).toBe(3);
   });
 
   it('filters by type', () => {
@@ -153,7 +178,66 @@ describe('events queries', () => {
   });
 
   it('looks up a single event by stream and seq or returns undefined', () => {
-    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 1, readCtx)).toEqual(appended[0]);
-    expect(getEvent(db, { kind: 'session', id: 'session-1' }, 99, readCtx)).toBeUndefined();
+    expect(getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toEqual(appended[0]);
+    expect(getEvent(db, { kind: 'job', id: 'job-0' }, 99, readCtx)).toBeUndefined();
+  });
+
+  it('rejects a stored event type outside the current codec registry', () => {
+    db.prepare(
+      `INSERT INTO events (
+         seq, ts, type, stream_kind, stream_id, body
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(7, '2026-04-18T00:00:01.000Z', 'test.unknown', 'job', 'job-unknown', Buffer.from('{}'));
+
+    expect(() => getEvent(db, { kind: 'job', id: 'job-unknown' }, 7, readCtx)).toThrow(
+      "No registered event body codec for stored type 'test.unknown'",
+    );
+  });
+
+  it('rejects a registered stored event body that violates the current codec', () => {
+    db.prepare('UPDATE events SET body = ? WHERE seq = 1').run(Buffer.from(JSON.stringify({ id: 'x', delta: 'bad' })));
+
+    expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow(
+      "Current codec rejected stored event type 'test.counter.ticked'",
+    );
+  });
+
+  it('rejects a registered event type stored under a different valid stream kind', () => {
+    db.prepare("UPDATE events SET stream_kind = 'session' WHERE seq = 1").run();
+
+    expect(() => getEvent(db, { kind: 'session', id: 'job-0' }, 1, readCtx)).toThrow(
+      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'session'",
+    );
+    expect(() => getEventsSince(db, 0, {}, 1000, readCtx)).toThrow(
+      "Stored event type 'test.counter.ticked' belongs to stream kind 'job', not 'session'",
+    );
+  });
+
+  it.each([
+    ['ts', 'not-an-iso-timestamp'],
+    ['stream_id', ''],
+    ['causation_seq', -1],
+  ] as const)('rejects a corrupted persisted envelope scalar %s', (column, value) => {
+    db.prepare(`UPDATE events SET ${column} = ? WHERE seq = 1`).run(value);
+
+    expect(() => getEvent(db, { kind: 'job', id: 'job-0' }, 1, readCtx)).toThrow();
+    expect(() => getEventsSince(db, 0, {}, 1000, readCtx)).toThrow();
+  });
+
+  it('does not let a stream-kind filter hide a corrupted physical stream kind', () => {
+    db.prepare("UPDATE events SET stream_kind = 'job' WHERE seq = 3").run();
+
+    expect(() => getEventsSince(db, 0, { streamKind: 'session' }, 1000, readCtx)).toThrow(
+      "Stored event type 'test.counter.reset' belongs to stream kind 'session', not 'job'",
+    );
+  });
+
+  it('rejects a read schema that differs from the registered current codec', () => {
+    const row = db.prepare<[], EventsRow>('SELECT * FROM events WHERE seq = 1').get();
+    if (row === undefined) throw new Error('Expected seeded event row.');
+
+    expect(() => decodeBody(row, z.object({}).passthrough(), readCtx)).toThrow(
+      "Read schema for stored event type 'test.counter.ticked' is not its registered current codec",
+    );
   });
 });

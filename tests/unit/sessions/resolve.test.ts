@@ -1,5 +1,6 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { allocateTestSession } from '../../helpers/session.js';
+import { allocateTestSession, seedTestSessionContinuity } from '../../helpers/session.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,8 @@ import { storePaths } from '#src/infra/path/store.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
 import { getSessionById, resolveSession } from '#src/sessions/resolve.js';
 import { SessionManager } from '#src/sessions/shell.js';
+import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 let db: ReturnType<typeof openStoreDatabase>;
@@ -42,11 +45,15 @@ describe('sessions shell resolve', () => {
   function setup(projectName: string): { mgr: SessionManager; workDir: string } {
     const workDir = join(tmpHome, projectName);
     mkdirSync(workDir, { recursive: true });
-    return { mgr: new SessionManager(workDir, runtime, undefined, undefined, db), workDir };
+    return {
+      mgr: new SessionManager(workDir, runtime, undefined, undefined, db, permissiveProviderLookupPort),
+      workDir,
+    };
   }
 
   function createSessionDb() {
     return openStoreDatabase({
+      storeFormat: currentCoralStoreFormat(),
       path: storePaths(resolveBuildFlavor(process.env)).dbFile,
       storage: runtime.storage,
     });
@@ -63,20 +70,19 @@ describe('sessions shell resolve', () => {
         provider: 'codex',
       }),
     );
-    expect(lookup.readSessionEntry(entry.sessionId)).toMatchObject({
+    expect(lookup.readProviderSession(entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
       name: 'alpha',
     });
   });
 
-  it('getSessionById finds a session across shards and refreshes cached reads after writes', () => {
+  it('getSessionById finds a session across shards and refreshes cached reads after writes', async () => {
     const alpha = setup('lookup-shard-a');
     const beta = setup('lookup-shard-b');
     const sessionLookup = createProjectionSessionLookup(db);
     const sessionA = alpha.mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: alpha.workDir,
@@ -84,8 +90,7 @@ describe('sessions shell resolve', () => {
       backendNamespace: 'ns-a',
     });
     const sessionB = beta.mgr.allocate({
-      provider: 'claude',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CLAUDE_BINDING,
       name: 'beta',
       model: 'sonnet',
       cwd: beta.workDir,
@@ -95,16 +100,20 @@ describe('sessions shell resolve', () => {
 
     expect(getSessionById(sessionA.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionA.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
       backendNamespace: 'ns-a',
     });
     expect(getSessionById(sessionB.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
-      provider: 'claude',
+      binding: { provider: 'claude' },
       backendNamespace: 'ns-b',
     });
 
-    beta.mgr.setConversationRef(sessionB.sessionId, 'thread-2');
+    await seedTestSessionContinuity(beta.mgr, sessionB.sessionId, {
+      conversationRef: 'thread-2',
+      resumable: true,
+      providerContinuity: null,
+    });
 
     expect(getSessionById(sessionB.sessionId, sessionLookup)).toMatchObject({
       sessionId: sessionB.sessionId,
@@ -117,15 +126,14 @@ describe('sessions shell resolve', () => {
   it('getSessionById reads projection entries directly when the lookup owns them', () => {
     const alpha = setup('projection-entry-owner');
     const entry = alpha.mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: alpha.workDir,
       projectRoot: alpha.workDir,
       backendNamespace: 'ns-a',
     });
-    const readSessionEntry = vi.fn((sessionId: string) =>
+    const readProviderSession = vi.fn((sessionId: string) =>
       sessionId === entry.sessionId
         ? {
             ...entry,
@@ -135,13 +143,13 @@ describe('sessions shell resolve', () => {
         : null,
     );
 
-    expect(getSessionById(entry.sessionId, { readSessionEntry })).toMatchObject({
+    expect(getSessionById(entry.sessionId, { readProviderSession })).toMatchObject({
       sessionId: entry.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
       state: 'ready',
       conversationRef: 'projection-thread',
     });
-    expect(readSessionEntry).toHaveBeenCalledWith(entry.sessionId);
+    expect(readProviderSession).toHaveBeenCalledWith(entry.sessionId);
   });
 
   it('resolveSession supports provider filtering', () => {
@@ -161,7 +169,7 @@ describe('sessions shell resolve', () => {
       ),
     ).toMatchObject({
       sessionId: sessionA.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
     });
     expect(
       resolveSession(
@@ -182,15 +190,14 @@ describe('sessions shell resolve', () => {
       ),
     ).toMatchObject({
       sessionId: sessionB.sessionId,
-      provider: 'claude',
+      binding: { provider: 'claude' },
     });
   });
 
   it('projection lookup reads the canonical session.opened scope mapping deterministically', () => {
     const { mgr, workDir } = setup('canonical-lookup');
     const entry = mgr.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'orchestration' },
+      binding: TEST_CODEX_BINDING,
       name: 'alpha',
       model: 'gpt-5',
       cwd: workDir,
@@ -198,9 +205,9 @@ describe('sessions shell resolve', () => {
       backendNamespace: 'ns-a',
     });
     const sessionLookup = createProjectionSessionLookup(db);
-    expect(sessionLookup.readSessionEntry(entry.sessionId)).toMatchObject({
+    expect(sessionLookup.readProviderSession(entry.sessionId)).toMatchObject({
       sessionId: entry.sessionId,
-      provider: 'codex',
+      binding: { provider: 'codex' },
     });
   });
 });

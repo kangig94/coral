@@ -1,5 +1,8 @@
 import type { AppendedEvent, CommitEventsFn } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
+import { rowToCoralEvent, type CoralEvent } from '../store/envelope.js';
+import type { EventsRow } from '../store/schema.js';
 import { isRetentionDiscardDuplicateAttemptError } from './events.js';
 import type {
   SessionRetentionDiscardCompletedBody,
@@ -17,42 +20,46 @@ export type RetentionDiscardTerminalAppendResult = {
   readonly appended: readonly AppendedEvent[];
 };
 
-export function readNextRetentionDiscardAttempt(db: ReadonlyDatabase, sessionId: string, minimumExclusive = 0): number {
-  const row = db
-    .prepare(
-      `SELECT COALESCE(MAX(json_extract(CAST(body AS TEXT), '$.attempt')), 0) AS max_attempt
-         FROM events
-        WHERE stream_kind = 'session'
-          AND stream_id = ?
+function readRetentionDiscardEvents(db: ReadonlyDatabase, readCtx: StoreReadContext, sessionId: string): CoralEvent[] {
+  return db
+    .prepare<[string], EventsRow>(
+      `SELECT * FROM events
+        WHERE stream_id = ?
           AND type IN (
             'session.retention.discard.requested',
             'session.retention.discard.completed',
             'session.retention.discard.failed'
-          )`,
+          )
+        ORDER BY seq ASC`,
     )
-    .get(sessionId) as { max_attempt: number | null } | undefined;
-  const durableMax = row?.max_attempt ?? 0;
+    .all(sessionId)
+    .map((row) => rowToCoralEvent(row, decodeStoredBody(row, readCtx)));
+}
+
+export function readNextRetentionDiscardAttempt(
+  db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
+  sessionId: string,
+  minimumExclusive = 0,
+): number {
+  const durableMax = readRetentionDiscardEvents(db, readCtx, sessionId).reduce((maximum, event) => {
+    const attempt = (event.body as { attempt: number }).attempt;
+    return Math.max(maximum, attempt);
+  }, 0);
   return Math.max(durableMax, minimumExclusive) + 1;
 }
 
-export function hasTerminalRetentionDiscardOutcome(db: ReadonlyDatabase, sessionId: string): boolean {
-  const row = db
-    .prepare(
-      `SELECT seq
-         FROM events
-        WHERE stream_kind = 'session'
-          AND stream_id = ?
-          AND (
-            type = 'session.retention.discard.failed'
-            OR (
-              type = 'session.retention.discard.completed'
-              AND COALESCE(json_extract(CAST(body AS TEXT), '$.outcome'), '') != 'skipped_protected'
-            )
-          )
-        LIMIT 1`,
-    )
-    .get(sessionId) as { seq: number } | undefined;
-  return row !== undefined;
+export function hasTerminalRetentionDiscardOutcome(
+  db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
+  sessionId: string,
+): boolean {
+  return readRetentionDiscardEvents(db, readCtx, sessionId).some(
+    (event) =>
+      event.type === 'session.retention.discard.failed' ||
+      (event.type === 'session.retention.discard.completed' &&
+        (event.body as SessionRetentionDiscardCompletedBody).outcome !== 'skipped_protected'),
+  );
 }
 
 export function appendRetentionDiscardRequested(
@@ -66,7 +73,6 @@ export function appendRetentionDiscardRequested(
           type: 'session.retention.discard.requested',
           stream: { kind: 'session', id: body.sessionId },
           refs: { sessionId: body.sessionId },
-          bodyVersion: 1,
           body: {
             sessionId: body.sessionId,
             attempt: body.attempt,
@@ -96,7 +102,6 @@ export function appendRetentionDiscardCompleted(
         type: 'session.retention.discard.completed',
         stream: { kind: 'session', id: body.sessionId },
         refs: { sessionId: body.sessionId },
-        bodyVersion: 1,
         body: {
           sessionId: body.sessionId,
           attempt: body.attempt,
@@ -119,7 +124,6 @@ export function appendRetentionDiscardFailed(
         type: 'session.retention.discard.failed',
         stream: { kind: 'session', id: body.sessionId },
         refs: { sessionId: body.sessionId },
-        bodyVersion: 1,
         body: {
           sessionId: body.sessionId,
           attempt: body.attempt,

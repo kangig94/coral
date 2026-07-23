@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
 import type { DiscussDomainEvent, PersistedDiscussSnapshot, SessionCreatedEvent } from '#src/discuss/events.js';
 import { replayDiscussEvents } from '#src/discuss/reducer.js';
@@ -44,7 +44,7 @@ function createBiddingSnapshot(): PersistedDiscussSnapshot {
         { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'Should the city pedestrianize the downtown core?' },
         1,
         NOW,
-        { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+        { providerScope: TEST_PROVIDER_SCOPE },
       ),
     ),
   );
@@ -71,7 +71,7 @@ describe('state-machine deciders', () => {
       { sessionId: SESSION_ID, projectRoot: PROJECT_ROOT, topic: 'Should the city pedestrianize the downtown core?' },
       1,
       NOW,
-      { providerCredentials: TEST_PROVIDER_CREDENTIALS },
+      { providerScope: TEST_PROVIDER_SCOPE },
     );
 
     expect(result).toEqual({
@@ -220,7 +220,7 @@ describe('state-machine deciders', () => {
         bidThreshold: 30,
         maxEpochs: 2,
         quotaPerEpoch: 3,
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_PROVIDER_SCOPE,
         agentExecution: { alpha: { manual: false, provider: 'codex', model: 'gpt-5' } },
       }),
     );

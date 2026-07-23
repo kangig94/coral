@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import type { ControversyAxis } from './session-types.js';
 
+export const DEFAULT_DISCUSS_PROVIDER = 'claude';
+
 const ControversyAxisSchema = z.object({
   axis: z.string(),
   positions: z.array(z.string()),
@@ -34,7 +36,8 @@ const DiscussAgentsSchema = z
   .min(2)
   .refine((agents) => agents.some((agent) => (agent.participation ?? 'required') === 'required'), {
     message: 'At least one required agent is needed to run a discussion.',
-  });
+  })
+  .describe('require-discussion-participating-agent');
 
 export const discussStartSchema = z.object({
   topic: z.string().min(1),

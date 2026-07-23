@@ -101,6 +101,8 @@ describe('Claude turn failure diagnostics', () => {
         cwd: '/workspace',
         projectsRoot: fixture.projectsRoot,
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
       child.emitData('API Error: upstream overloaded\n');
@@ -119,7 +121,6 @@ describe('Claude turn failure diagnostics', () => {
       expect(failed?.params.diagnostic.childOutputTail).toContain('API Error: upstream overloaded');
       expect(failed?.params.diagnostic.transcriptTail).toContain('transcript tail sentinel');
       expect(failed?.params.diagnostic).toMatchObject({
-        schemaVersion: 1,
         reason: 'api-error',
         phase: 'sent',
         attempts: 3,
@@ -151,6 +152,8 @@ describe('Claude turn failure diagnostics', () => {
         cwd: '/workspace',
         projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
       await controller.turnStart({ brokerTurnId: 'turn-child-exit', prompt: 'hello' });
@@ -184,6 +187,8 @@ describe('Claude turn failure diagnostics', () => {
         cwd: '/workspace',
         projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
       });
       await controller.turnStart({ brokerTurnId: 'turn-finalization', prompt: 'hello' });

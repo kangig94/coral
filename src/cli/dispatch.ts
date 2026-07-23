@@ -1,9 +1,9 @@
 import type { Command } from 'commander';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 
 import { resolvePluginRoot } from './plugin-root.js';
 
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import { captureProviderCredentialSetInput } from '../runtime/provider-credentials.js';
 import { resolveUserHomeDir } from '../infra/path/index.js';
 import type { DiscussAbortResponse, DiscussStartResponse } from '../discuss/read-contract.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '../discuss/session-types.js';
@@ -58,6 +58,9 @@ import type {
   KbWikiUnlinkInput,
 } from '../kb/entry-types.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import { createBuiltInProviderRegistry } from '../providers/bootstrap.js';
+import { providerBindingFailureCode } from '../providers/contracts/binding.js';
+import { discussProviderNames } from '../discuss/execution-policy.js';
 import { getSharedReadCoralStore } from './read-store.js';
 import { CONTEXT_ENV_KEY, TRANSPORT_CONTEXT_FIELDS } from '../transport/context-profile.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
@@ -70,6 +73,9 @@ import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
 import { collectForwardedNetworkEnv } from '../infra/network-env.js';
 import type { Principal } from '../security/principal.js';
 import { classifyCommand, commandPath } from './classify.js';
+import { ProviderSelectionError } from './errors.js';
+import { parseExpression } from '../workflow/parser.js';
+import { normalizeAst, workflowProviderNames } from '../workflow/normalize.js';
 
 type SessionRequestOptions = {
   provider?: string;
@@ -132,7 +138,13 @@ export type CliCommandClient = AbortCapableClient & {
   detailJob(jobId: string): Promise<JobDetailResponse>;
   discussSeed(args: DiscussSeedArgs): Promise<PersonaSeedOutput>;
   discussStart(args: {
-    agents: Array<{ name: string; persona: string }>;
+    agents: Array<{
+      name: string;
+      persona: string;
+      participation?: 'required' | 'observer';
+      provider?: string;
+      model?: string;
+    }>;
     topic?: string;
     config?: { min_bid_delay_ms?: number };
   }): Promise<DiscussStartResponse>;
@@ -354,11 +366,7 @@ function createDefaultInvocationContext(projectRoot: string): InvocationContext 
   };
 }
 
-function buildTransportContextBody(
-  args: Record<string, unknown>,
-  context: InvocationContext,
-  options: { providerCredentials?: boolean } = {},
-): Record<string, unknown> {
+function buildTransportContextBody(args: Record<string, unknown>, context: InvocationContext): Record<string, unknown> {
   const body: Record<string, unknown> = {
     ...args,
     projectRoot: context.projectRoot,
@@ -394,13 +402,33 @@ function buildTransportContextBody(
   // their last CORAL_* var.
   body.coralEnv = filterForwardableCoralEnv(context.coralEnv);
 
-  if (options.providerCredentials) {
-    body.providerCredentials = captureProviderCredentialSetInput(
-      process.env,
-      resolveUserHomeDir(process.env.HOME ?? process.env.USERPROFILE),
+  return body;
+}
+
+async function buildProviderTransportContextBody(
+  args: Record<string, unknown>,
+  context: InvocationContext,
+  registry: ProviderRegistry,
+  providerNames: readonly string[],
+): Promise<Record<string, unknown>> {
+  const body = buildTransportContextBody(args, context);
+  const captured = await registry.captureScope(
+    { origin: 'caller' },
+    providerNames,
+    {
+      env: { ...process.env },
+      homeDir: resolveUserHomeDir(process.env.HOME ?? process.env.USERPROFILE),
+    },
+    { readFileSync, readdirSync, realpathSync, statSync },
+  );
+  if (!captured.ok) {
+    throw new ProviderSelectionError(
+      providerBindingFailureCode(captured.failure),
+      registry.renderBindingFailure(captured.failure),
+      'Remove unsupported credential overrides, select an absolute authenticated provider profile, and retry.',
     );
   }
-
+  body.providerScope = captured.value;
   return body;
 }
 
@@ -456,6 +484,7 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
 
   const commandClass = resolution.commandClass;
   const defaultContext = createDefaultInvocationContext(projectRoot);
+  const providerRegistry = createBuiltInProviderRegistry();
   const ipcAuth = childPrincipalAuthFromEnv();
   const ipcAuthOptions = (): { auth: NonNullable<typeof ipcAuth> } | undefined => {
     if (ipcAuth === null) {
@@ -526,13 +555,22 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     createSession: async (provider, prompt, options = {}) => {
       return request<AcceptedLaunchResponse>(
         'sessions.create',
-        buildTransportContextBody({ provider, prompt, ...options }, defaultContext, { providerCredentials: true }),
+        await buildProviderTransportContextBody({ provider, prompt, ...options }, defaultContext, providerRegistry, [
+          provider,
+        ]),
       );
     },
     workflow: async (expression, options) => {
+      const provider = options.provider ?? 'claude';
+      const providers = workflowProviderNames(normalizeAst(parseExpression(expression), provider), provider);
       return request<AcceptedLaunchResponse>(
         'workflow.run',
-        buildTransportContextBody({ expression, ...options }, defaultContext, { providerCredentials: true }),
+        await buildProviderTransportContextBody(
+          { expression, ...options },
+          defaultContext,
+          providerRegistry,
+          providers,
+        ),
       );
     },
     listJobs: async (options = {}) => {
@@ -555,7 +593,12 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     discussStart: async (args) =>
       request<DiscussStartResponse>(
         'discuss.session.create',
-        buildTransportContextBody(args, defaultContext, { providerCredentials: true }),
+        await buildProviderTransportContextBody(
+          args,
+          defaultContext,
+          providerRegistry,
+          discussProviderNames(args.agents),
+        ),
       ),
     discussWatch: async (session, cursor) => {
       if (commandClass === 'directRead') {

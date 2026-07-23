@@ -11,6 +11,11 @@ import { createCoordinatorServer } from '#src/coordinator/index.js';
 import type { KbCorpusSnapshot as CorpusSnapshot } from '#src/kb/contract.js';
 import { workflowRecover } from '#src/workflow/recover.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { LifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
+import { sessionContinuationLeaseRecordedEvent } from '#src/sessions/continuation-lease-events.js';
+import { providerSessionSchema } from '#src/sessions/entry.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import type { Database } from '#src/store/db.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -67,7 +72,6 @@ describe('coordinator startup ordering', () => {
       createServerFn: (handler) => createServer(handler),
       listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: () => {},
     });
 
     try {
@@ -164,7 +168,6 @@ describe('coordinator startup ordering', () => {
         return { port: 0, host: '127.0.0.1' };
       },
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: () => {},
     });
 
     try {
@@ -214,6 +217,116 @@ describe('coordinator startup ordering', () => {
     }
   });
 
+  it('recovers a journal-written pending workflow replacement intent before lease expiry scanning', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'coral-startup-replacement-home-'));
+    const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-replacement-plugin-'));
+    tempRoots.push(home, pluginRoot);
+    mkdirSync(join(pluginRoot, 'bridge'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'startup-ordering-bundle', flavor: 'prod' }) + '\n',
+      'utf-8',
+    );
+    vi.stubEnv('HOME', home);
+
+    const runtime = createRealRuntime('prod');
+    const order: string[] = [];
+    let startupDb: Database | null = null;
+    let recoveryObservedPending = false;
+    const runStartup = vi.spyOn(jobsReconcile, 'runStartup').mockImplementation(async (options) => {
+      order.push('jobsReconcile.runStartup');
+      startupDb = options.progressStore.getDb();
+      const opened = providerSessionSchema.parse({
+        sessionId: 'pending-replacement-session',
+        binding: TEST_CODEX_BINDING,
+        name: 'pending-replacement-session',
+        state: 'pending',
+        retention: 'retain',
+        artifactHandles: [],
+        retentionDiscard: { attempts: [] },
+        cwd: home,
+        projectRoot: home,
+        backendNamespace: 'startup-ordering',
+        providerContinuity: null,
+        createdAt: '2026-07-22T00:00:00.000Z',
+        lastUsedAt: '2026-07-22T00:00:00.000Z',
+        version: 1,
+      });
+      options.coordinatorCommit((c) => {
+        c.append({
+          type: 'session.opened',
+          stream: { kind: 'session', id: opened.sessionId },
+          refs: { sessionId: opened.sessionId },
+          body: { entry: opened, controller: 'default', scope_key: 'startup-ordering' },
+        });
+        return undefined;
+      });
+      const lease = {
+        status: 'pending' as const,
+        staleJobId: 'workflow-pending:0:0',
+        workflowId: 'workflow-pending',
+        workflowSlotId: 'workflow-pending:0:0',
+        replacementGeneration: 1,
+        reason: 'stale_recovery' as const,
+        expiresAt: new Date(runtime.time.now() + 60_000).toISOString(),
+        recordedAt: new Date(runtime.time.now()).toISOString(),
+      };
+      const pending = providerSessionSchema.parse({
+        ...opened,
+        continuationLease: lease,
+        lastUsedAt: lease.recordedAt,
+        version: 2,
+      });
+      options.coordinatorCommit((c) => {
+        c.append(sessionContinuationLeaseRecordedEvent(pending, lease));
+        return undefined;
+      });
+    });
+    const resumeAll = vi.spyOn(workflowRecover, 'resumeAll').mockImplementation(async (options) => {
+      order.push('workflowRecover.resumeAll');
+      const row = options.db
+        .prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+        .get('pending-replacement-session');
+      const entry = providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null'));
+      expect(entry.continuationLease).toMatchObject({
+        status: 'pending',
+        workflowId: 'workflow-pending',
+        replacementGeneration: 1,
+      });
+      recoveryObservedPending = true;
+      return [];
+    });
+    const scanStartup = vi.spyOn(LifecycleReactor.prototype, 'scanStartup').mockImplementation(async () => {
+      order.push('lifecycleReactor.scanStartup');
+      expect(recoveryObservedPending).toBe(true);
+      const row = startupDb
+        ?.prepare<[string], { entry: string }>('SELECT entry FROM projection_sessions WHERE session_id = ?')
+        .get('pending-replacement-session');
+      expect(providerSessionSchema.parse(JSON.parse(row?.entry ?? 'null')).continuationLease?.status).toBe('pending');
+    });
+    const kbDaemonSupervisor = createMockKbDaemonSupervisor();
+    const coordinator = createCoordinatorServer({
+      runtime,
+      pluginRoot,
+      kbDaemonSupervisor,
+      recoverPersistedDiscussFn: async () => [],
+      createServerFn: (handler) => createServer(handler),
+      listenFn: async () => ({ port: 0, host: '127.0.0.1' }),
+      closeServerFn: async () => {},
+    });
+
+    try {
+      await coordinator.start();
+      expect(order).toEqual(['jobsReconcile.runStartup', 'workflowRecover.resumeAll', 'lifecycleReactor.scanStartup']);
+    } finally {
+      runStartup.mockRestore();
+      resumeAll.mockRestore();
+      scanStartup.mockRestore();
+      await coordinator.shutdown('test-cleanup');
+      await coordinator.waitForShutdown();
+    }
+  });
+
   it('starts the KB daemon without coordinator-side corpus replay', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-home-'));
     const pluginRoot = mkdtempSync(join(tmpdir(), 'coral-startup-ordering-plugin-'));
@@ -258,7 +371,6 @@ describe('coordinator startup ordering', () => {
         return { port: 0, host: '127.0.0.1' };
       },
       closeServerFn: async () => {},
-      registerBuiltInProvidersFn: () => {},
     });
 
     try {

@@ -4,6 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
+  CoralSetupError,
   documentedCoralSetupError,
   serializeCoralSetupError,
   type DocumentedCoralSetupErrorCode,
@@ -14,7 +15,7 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import { createHttpHandler, sendJson } from '#src/transport/http/handler.js';
 import { requestIpcMethod } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
-import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
+import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
 const httpServers: Server[] = [];
@@ -76,10 +77,7 @@ function createPorts(failWith: () => Error): HttpHandlerPorts {
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
-    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
-    ambientClaudeLocation: {
-      locate: () => ({ configDirLocator: '/home/user/.claude', projectsRoot: '/home/user/.claude/projects' }),
-    },
+    systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,
@@ -267,6 +265,23 @@ async function requestHttpErrorPayload(
 }
 
 describe('coral setup error parity', () => {
+  it('serializes workflow lifecycle conflicts as a safe HTTP 409 response', () => {
+    const response = buildTransportErrorResponse(
+      new CoralSetupError({
+        code: 'workflow_lifecycle_invalid',
+        userMessage: "Workflow 'workflow-1' is already terminal.",
+        remediation: 'Reload the workflow before retrying.',
+        context: { workflowId: 'workflow-1', current: 'completed' },
+      }),
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toMatchObject({
+      code: 'workflow_lifecycle_invalid',
+      message: "Workflow 'workflow-1' is already terminal.",
+      remediation: 'Reload the workflow before retrying.',
+    });
+  });
   it.each(ADDED_DOCUMENTED_SETUP_ERRORS)(
     'surfaces $code through IPC and HTTP with matching setup payloads',
     async ({ code, context }) => {

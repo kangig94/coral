@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
 
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { ProviderArtifactHandle, SessionEntry } from './entry.js';
+import type { ProviderArtifactHandle, ProviderSession } from './entry.js';
+import { providerSessionProvider } from './entry.js';
 
 const ARCHIVE_SCHEMA_VERSION = 1;
 const ARTIFACT_DIR_NAME = 'provider-artifacts';
@@ -19,7 +20,7 @@ type ArchiveArtifactRecord = {
   readonly status: ArchiveArtifactStatus;
   readonly error?: string;
   readonly identity?: ProviderArtifactHandle['identity'];
-  readonly sourceJobId?: string;
+  readonly sourceJobId: string;
 };
 
 type ArchiveManifest = {
@@ -38,13 +39,13 @@ export type ProviderArtifactArchiveResult = {
 
 export async function archiveProviderArtifactsForJob(options: {
   readonly runtime: ArtifactCleanupRuntime;
-  readonly entry: SessionEntry;
-  readonly provider: string;
+  readonly entry: ProviderSession;
   readonly jobId: string;
   readonly handles: readonly string[];
   readonly archivedAt: string;
 }): Promise<ProviderArtifactArchiveResult> {
-  const { runtime, entry, provider, jobId, handles, archivedAt } = options;
+  const { runtime, entry, jobId, handles, archivedAt } = options;
+  const provider = providerSessionProvider(entry);
   const archiveDir = join(
     runtime.paths.coral.exports.jobsRoot,
     jobId,
@@ -53,7 +54,11 @@ export async function archiveProviderArtifactsForJob(options: {
   );
   runtime.storage.mkdirSync(archiveDir, { recursive: true });
 
-  const metadataByHandle = new Map(entry.artifactHandles.map((artifact) => [artifact.handle, artifact]));
+  const metadataByHandle = new Map(
+    entry.artifactHandles
+      .filter((artifact) => artifact.sourceJobId === jobId)
+      .map((artifact) => [artifact.handle, artifact]),
+  );
   const artifacts = await Promise.all(
     handles.map((handle, index) =>
       archiveOneProviderArtifact({
@@ -61,6 +66,7 @@ export async function archiveProviderArtifactsForJob(options: {
         archiveDir,
         handle,
         index,
+        jobId,
         metadata: metadataByHandle.get(handle),
       }),
     ),
@@ -89,13 +95,14 @@ async function archiveOneProviderArtifact(options: {
   readonly archiveDir: string;
   readonly handle: string;
   readonly index: number;
+  readonly jobId: string;
   readonly metadata: ProviderArtifactHandle | undefined;
 }): Promise<ArchiveArtifactRecord> {
-  const { runtime, archiveDir, handle, index, metadata } = options;
+  const { runtime, archiveDir, handle, index, jobId, metadata } = options;
   const source = {
     sourceHandle: handle,
     ...(metadata?.identity === undefined ? {} : { identity: metadata.identity }),
-    ...(metadata?.sourceJobId === undefined ? {} : { sourceJobId: metadata.sourceJobId }),
+    sourceJobId: metadata?.sourceJobId ?? jobId,
   };
 
   try {

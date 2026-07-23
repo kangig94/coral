@@ -1,9 +1,11 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
+import { sessionsRegistry } from '#src/sessions/events.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
@@ -17,16 +19,53 @@ import {
 import { buildWorkflowPlan, compileWorkflowPlan } from '#src/workflow/plan.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
+import type { CoralEventInput } from '#src/store/envelope.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
+
+function providerSessionInputs(sessionId: string, jobId: string): CoralEventInput[] {
+  const opened: ProviderSession = {
+    sessionId,
+    binding: TEST_CODEX_BINDING,
+    name: sessionId,
+    state: 'pending',
+    retention: 'retain',
+    artifactHandles: [],
+    retentionDiscard: { attempts: [] },
+    providerContinuity: null,
+    cwd: '/workspace/coral',
+    projectRoot: '/workspace/coral',
+    backendNamespace: 'tests',
+    createdAt: NOW.toISOString(),
+    lastUsedAt: NOW.toISOString(),
+    version: 1,
+  };
+  const claimed: ProviderSession = { ...opened, activeJobId: jobId, version: 2 };
+  return [
+    {
+      type: 'session.opened',
+      stream: { kind: 'session', id: sessionId },
+      refs: { sessionId },
+      body: { entry: opened, controller: 'default', scope_key: `${sessionId}-scope` },
+    },
+    {
+      type: 'session.claimed',
+      stream: { kind: 'session', id: sessionId },
+      refs: { sessionId, jobId },
+      body: { entry: claimed, jobId },
+    },
+  ];
+}
 
 describe('workflow reducer equivalence', () => {
   it('rebuilds projection_workflows.plan rows byte-identically from workflow domain events', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const declaredPlan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
@@ -35,7 +74,7 @@ describe('workflow reducer equivalence', () => {
       const appended = commitInputs(
         db,
         [
-          workflowPlanDeclaredEvent('workflow-1', declaredPlan),
+          workflowPlanDeclaredEvent('workflow-1', declaredPlan, TEST_PROVIDER_SCOPE),
           // drain.entered is projection-only state: replay must preserve the drain window
           // without reviving the deleted workflow checkpoint persistence layer.
           workflowDrainEnteredEvent('workflow-1', {
@@ -48,7 +87,7 @@ describe('workflow reducer equivalence', () => {
             stepDetails: [],
           }),
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const before = db
@@ -70,7 +109,7 @@ describe('workflow reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
@@ -91,9 +130,9 @@ describe('workflow reducer equivalence', () => {
   it('builds WorkflowView slot outcomes from child job projections', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
-      const reducers = composeReducers(jobsRegistry, workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+      const bodyCodec = createEventBodyCodec();
       const plan = buildWorkflowPlan('workflow-1', parseExpression('architect -> resolver'), {
         defaultProvider: 'codex',
       });
@@ -104,39 +143,53 @@ describe('workflow reducer equivalence', () => {
         ]),
       });
       const causeRef = { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 };
+      commitInputs(
+        db,
+        [
+          workflowPlanDeclaredEvent('workflow-1', plan, TEST_PROVIDER_SCOPE),
+          ...plannedSlots.flatMap((slot) => [
+            ...providerSessionInputs(`session-${slot.jobId}`, slot.jobId),
+            {
+              type: 'job.launch.requested' as const,
+              stream: { kind: 'job' as const, id: slot.jobId },
+              refs: {
+                sessionId: `session-${slot.jobId}`,
+                parentJobId: 'workflow-1',
+                workflowId: 'workflow-1',
+                workflowSlotId: slot.slotId,
+              },
+              body: {
+                owner: { kind: 'workflow' as const, id: 'workflow-1' },
+                sessionId: `session-${slot.jobId}`,
+                provider: slot.provider,
+                providerAction: 'exec' as const,
+                projectRoot: '/workspace/coral',
+                backendNamespace: 'tests',
+                jobKind: 'provider' as const,
+                workflowSlotGeneration: 0,
+                pool: 'default',
+                enqueueSequence: slot.stepIndex + 1,
+                request: {
+                  prompt: slot.instruction,
+                  cwd: '/workspace/coral',
+                  bypassPermissions: false,
+                  coralEnv: {},
+                },
+                createdAt: '2026-04-19T00:00:00.000Z',
+              },
+            },
+          ]),
+        ],
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
+      );
 
       commitInputs(
         db,
         [
-          workflowPlanDeclaredEvent('workflow-1', plan),
-          ...plannedSlots.map((slot) => ({
-            type: 'job.launch.requested' as const,
-            stream: { kind: 'job' as const, id: slot.jobId },
-            refs: { sessionId: `session-${slot.jobId}`, parentJobId: 'workflow-1', workflowSlotId: slot.slotId },
-            bodyVersion: 1,
-            body: {
-              sessionId: `session-${slot.jobId}`,
-              provider: slot.provider,
-              providerAction: 'exec' as const,
-              projectRoot: '/workspace/coral',
-              backendNamespace: 'tests',
-              jobKind: 'provider' as const,
-              pool: 'default',
-              enqueueSequence: slot.stepIndex + 1,
-              request: {
-                prompt: slot.instruction,
-                cwd: '/workspace/coral',
-                bypassPermissions: false,
-                coralEnv: {},
-              },
-              createdAt: '2026-04-19T00:00:00.000Z',
-            },
-          })),
           {
             type: 'job.terminal.recorded',
             stream: { kind: 'job' as const, id: 'job-1' },
             refs: { sessionId: 'session-job-1', parentJobId: 'workflow-1', workflowSlotId: plan.slots[0].slotId },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'completed' as const },
@@ -149,7 +202,6 @@ describe('workflow reducer equivalence', () => {
             type: 'job.terminal.recorded',
             stream: { kind: 'job' as const, id: 'job-2' },
             refs: { sessionId: 'session-job-2', parentJobId: 'workflow-1', workflowSlotId: plan.slots[1].slotId },
-            bodyVersion: 1,
             body: {
               terminal: {
                 outcome: { kind: 'failed' as const, causeRef },
@@ -160,10 +212,16 @@ describe('workflow reducer equivalence', () => {
           },
           workflowCompletedEvent('workflow-1', { outcome: 'failed', causeRef, stepDetails: [] }),
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
-      expect(readWorkflowView(db, 'workflow-1', { schemas: reducers.schemas, upcasters })).toMatchObject({
+      expect(
+        readWorkflowView(db, 'workflow-1', {
+          schemas: reducers.schemas,
+          streamKinds: reducers.streamKinds,
+          bodyCodec,
+        }),
+      ).toMatchObject({
         workflowId: 'workflow-1',
         outcome: 'failed',
         causeRef,

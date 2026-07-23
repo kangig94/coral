@@ -9,12 +9,9 @@ import type { LaunchReadiness } from '../jobs/records.js';
 import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
-import type {
-  ClaimContinuationLeaseInput,
-  ClearContinuationLeaseInput,
-  RecordContinuationLeaseInput,
-  RetentionPolicy,
-} from '../sessions/entry.js';
+import type { ExecutionOwner } from '../runtime/execution-owner.js';
+import type { ProviderSessionLaunchDecision } from '../jobs/launch.js';
+import type { ClearContinuationLeaseInput, RecordContinuationLeaseInput, RetentionPolicy } from '../sessions/entry.js';
 
 export type StepDetail = {
   stepIndex: number;
@@ -33,12 +30,15 @@ interface CoralDispatchInput {
   sessionId?: string;
   jobId?: string;
   workflowSlotId?: string;
+  workflowSlotGeneration?: number;
+  replacesWorkflowJobId?: string;
   cwd?: string;
   effort?: string;
   bypassPermissions?: boolean;
   systemPrompt?: string;
   parentWorkflowJobId?: string;
   retention?: RetentionPolicy;
+  owner: Extract<ExecutionOwner, { kind: 'workflow' }>;
 }
 
 interface ResumeInput {
@@ -46,6 +46,8 @@ interface ResumeInput {
   prompt: string;
   jobId?: string;
   workflowSlotId?: string;
+  workflowSlotGeneration?: number;
+  replacesWorkflowJobId?: string;
   name?: string;
   model?: string;
   pool?: string;
@@ -58,6 +60,7 @@ interface ResumeInput {
     channel: 'prompt' | 'system';
   };
   parentWorkflowJobId?: string;
+  owner: Extract<ExecutionOwner, { kind: 'workflow' }>;
 }
 
 export interface WorkflowExecutionPort {
@@ -66,28 +69,9 @@ export interface WorkflowExecutionPort {
     coralName: string,
     input: CoralDispatchInput,
     ctx: InvocationContext,
-  ): Promise<{
-    status: 'running' | 'queued' | 'rejected';
-    job?: string;
-    session?: string;
-    phase?: 'preflight';
-    code?: string;
-    message?: string;
-  }>;
-  resume(
-    providerName: string,
-    input: ResumeInput,
-    ctx: InvocationContext,
-  ): Promise<{
-    status: 'running' | 'queued' | 'rejected';
-    job?: string;
-    session?: string;
-    phase?: 'preflight';
-    code?: string;
-    message?: string;
-  }>;
+  ): Promise<ProviderSessionLaunchDecision>;
+  resume(providerName: string, input: ResumeInput, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
   recordContinuationLease(input: RecordContinuationLeaseInput): Promise<void>;
-  claimContinuationLease(input: ClaimContinuationLeaseInput): Promise<boolean>;
   clearContinuationLease(input: ClearContinuationLeaseInput): Promise<boolean>;
   abort(jobIds: string[]): AbortResult;
   awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness>;
@@ -105,6 +89,7 @@ export type LaunchedAtom = {
   stepIndex: number;
   atomIndex: number;
   atomKey: string;
+  generation: number;
 };
 
 export type WaitFailure = {

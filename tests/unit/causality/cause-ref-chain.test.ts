@@ -1,26 +1,50 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
-import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
+import { z } from 'zod';
 
 const renderer = createCauseRefRenderer(defaultEventDescribers);
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
-const RAW_EVENT_READ_CTX: StoreReadContext = {
-  schemas: new Map(),
-  upcasters: createDefaultUpcasterRegistry(),
-};
+const causeFixtureBodySchema = z.object({}).passthrough();
+const causeFixtureRegistry = composeReducers(
+  {
+    streamKind: 'job',
+    entries: ['job.progress.emitted', 'job.terminal.recorded'].map((type) =>
+      defineDomainEvent({ type, schema: causeFixtureBodySchema }),
+    ),
+  },
+  {
+    streamKind: 'session',
+    entries: [defineDomainEvent({ type: 'session.provider_failed', schema: causeFixtureBodySchema })],
+  },
+  {
+    streamKind: 'workflow',
+    entries: ['workflow.lifecycle_fault', 'workflow.completed'].map((type) =>
+      defineDomainEvent({ type, schema: causeFixtureBodySchema }),
+    ),
+  },
+);
 
 function createStore(): { db: Database; store: CoralStore } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
-  return { db, store: new CoralStore(db, RAW_EVENT_READ_CTX) };
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  return {
+    db,
+    store: new CoralStore(db, {
+      schemas: causeFixtureRegistry.schemas,
+      streamKinds: causeFixtureRegistry.streamKinds,
+      bodyCodec: createEventBodyCodec(),
+    }),
+  };
 }
 
 function insertEvent(
@@ -34,15 +58,14 @@ function insertEvent(
 ): void {
   db.prepare(
     `INSERT INTO events (
-      seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body
-    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body
+    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
   ).run(
     input.seq,
     NOW.toISOString(),
     input.type,
     input.stream.kind,
     input.stream.id,
-    1,
     Buffer.from(JSON.stringify(input.body), 'utf-8'),
   );
 }

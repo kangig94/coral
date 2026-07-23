@@ -16,7 +16,6 @@ import {
   CLAUDE_BROKER_CHILD_EXIT_RPC_CODE,
   CLAUDE_BROKER_STATE_RPC_CODE,
   ClaudeBrokerRpcError,
-  TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
   readSessionId,
   systemProgressMessage,
   toBootstrapSignature,
@@ -123,6 +122,11 @@ type ActiveTurnState = {
   continuationPhase: 'registered' | 'responding' | null;
 };
 
+type ReservedTurnState = {
+  readonly brokerTurnId: string;
+  interruptRequested: boolean;
+};
+
 type ControllerSessionEnsureResult = Omit<SessionEnsureResult, 'brokerSessionKey'>;
 type ControllerSessionProbeResult = Omit<SessionProbeResult, 'brokerSessionKey'>;
 type ControllerTurnStartResult = Omit<TurnStartResult, 'brokerSessionKey'>;
@@ -162,6 +166,7 @@ export class SingleSessionController {
   private latestSessionId: string | null = null;
   private transcriptPath: string | null = null;
   private resumeExistingConversation = false;
+  private reservedTurn: ReservedTurnState | null = null;
   private activeTurn: ActiveTurnState | null = null;
   private lastTerminalTurnId: string | null = null;
   private outputRing = '';
@@ -226,7 +231,7 @@ export class SingleSessionController {
         bootstrapSignature: this.bootstrapSignature,
         sessionId: this.latestSessionId,
         conversationRef,
-        activeTurnId: this.activeTurn?.brokerTurnId ?? null,
+        activeTurnId: this.currentTurnId(),
       };
     }
 
@@ -235,7 +240,7 @@ export class SingleSessionController {
       bootstrapSignature: this.bootstrapSignature,
       sessionId: this.latestSessionId,
       conversationRef,
-      activeTurnId: this.activeTurn?.brokerTurnId ?? null,
+      activeTurnId: this.currentTurnId(),
     };
   }
 
@@ -247,12 +252,35 @@ export class SingleSessionController {
         this.errorData(),
       );
     }
-    if (this.activeTurn !== null) {
+    if (this.reservedTurn !== null || this.activeTurn !== null) {
       throw new ClaudeBrokerRpcError(CLAUDE_BROKER_BUSY_RPC_CODE, 'Claude broker is busy.', this.errorData());
     }
 
     const now = Date.now();
-    const transcriptCursor = await this.readTranscriptCursorBeforeTurn();
+    const reservation: ReservedTurnState = {
+      brokerTurnId: params.brokerTurnId,
+      interruptRequested: false,
+    };
+    this.reservedTurn = reservation;
+
+    let transcriptCursor: TranscriptCursor;
+    try {
+      transcriptCursor = await this.readTranscriptCursorBeforeTurn();
+    } catch (error) {
+      if (this.reservedTurn === reservation) this.reservedTurn = null;
+      throw this.asRpcError(error, 'Failed to prepare Claude turn.');
+    }
+
+    if (reservation.interruptRequested) {
+      if (this.reservedTurn === reservation) this.reservedTurn = null;
+      this.lastTerminalTurnId = reservation.brokerTurnId;
+      return {
+        brokerTurnId: params.brokerTurnId,
+        sessionId: this.latestSessionId,
+        conversationRef: this.currentConversationRef(),
+      };
+    }
+
     const turn: ActiveTurnState = {
       brokerTurnId: params.brokerTurnId,
       startedAt: now,
@@ -284,6 +312,7 @@ export class SingleSessionController {
       continuationSentAt: null,
       continuationPhase: null,
     };
+    this.reservedTurn = null;
     this.activeTurn = turn;
 
     try {
@@ -328,15 +357,24 @@ export class SingleSessionController {
     }
   }
 
-  async turnInterrupt(params: ControllerTurnInterruptParams = {}): Promise<TurnInterruptResult> {
+  async turnInterrupt(params: ControllerTurnInterruptParams): Promise<TurnInterruptResult> {
+    const reservation = this.reservedTurn;
+    if (reservation !== null && params.brokerTurnId === reservation.brokerTurnId) {
+      reservation.interruptRequested = true;
+      return {
+        brokerTurnId: reservation.brokerTurnId,
+        interrupted: true,
+      };
+    }
+
     const turn = this.activeTurn;
     if (turn === null) {
       return {
-        brokerTurnId: params.brokerTurnId ?? this.lastTerminalTurnId,
+        brokerTurnId: params.brokerTurnId,
         interrupted: false,
       };
     }
-    if (params.brokerTurnId !== undefined && params.brokerTurnId !== turn.brokerTurnId) {
+    if (params.brokerTurnId !== turn.brokerTurnId) {
       return {
         brokerTurnId: turn.brokerTurnId,
         interrupted: false,
@@ -355,7 +393,11 @@ export class SingleSessionController {
   }
 
   hasActiveTurn(): boolean {
-    return this.activeTurn !== null;
+    return this.reservedTurn !== null || this.activeTurn !== null;
+  }
+
+  private currentTurnId(): string | null {
+    return this.reservedTurn?.brokerTurnId ?? this.activeTurn?.brokerTurnId ?? null;
   }
 
   hasLiveController(): boolean {
@@ -1246,7 +1288,7 @@ export class SingleSessionController {
       bootstrapSignature: this.bootstrapSignature,
       sessionId: this.latestSessionId,
       conversationRef: this.currentConversationRef(),
-      activeTurnId: this.activeTurn?.brokerTurnId ?? null,
+      activeTurnId: this.currentTurnId(),
       initialized: this.initialized,
     };
   }
@@ -1342,7 +1384,6 @@ export class SingleSessionController {
   ): TurnFailureDiagnostic {
     const childOutputTail = this.outputRing;
     return {
-      schemaVersion: TURN_FAILURE_DIAGNOSTIC_SCHEMA_VERSION,
       reason: this.turnFailureReason(message, phase, childOutputTail),
       phase,
       idleMs: this.turnFailureIdleMs(turn, phase, failedAt),
@@ -1445,7 +1486,7 @@ export class SingleSessionController {
       sessionId: this.latestSessionId,
       conversationRef: this.currentConversationRef(),
       initialized: this.initialized,
-      activeTurnId: this.activeTurn?.brokerTurnId ?? null,
+      activeTurnId: this.currentTurnId(),
       ...(extra ?? {}),
     };
   }

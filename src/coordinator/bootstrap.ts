@@ -8,10 +8,9 @@ import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
-import { nowDate } from '../infra/time.js';
-import { noProviderLookupPort } from '../providers/catalog.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
@@ -23,40 +22,20 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   try {
     const storePath = argv[pathIdx + 1];
     const { openWritableStoreDbNoReset } = await import('../store/db.js');
-    const { commit } = await import('../store/append.js');
-    const { composeReducers } = await import('../store/reducers.js');
-    const { createDefaultUpcasterRegistry } = await import('../store/upcaster-registry.js');
-    const { getEvent } = await import('../store/event-queries.js');
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
     const db = openWritableStoreDbNoReset(runtime, {
       path: storePath,
+      storeFormat: currentCoralStoreFormat(),
     });
 
     try {
-      const reducers = composeReducers();
-      const upcasters = createDefaultUpcasterRegistry();
-      const readCtx = { schemas: reducers.schemas, upcasters };
-      const [event] = commit(
-        db,
-        (c) => {
-          c.append({
-            type: 'smoke.ping',
-            stream: { kind: 'job', id: 'smoke' },
-            bodyVersion: 1,
-            body: { ok: true },
-          });
-          return undefined;
-        },
-        { now: () => nowDate(runtime.time), reducers, upcasters, providers: noProviderLookupPort },
-      );
-
-      if (!event) {
-        backendLog.error('smoke append failed');
-        return 1;
-      }
-
-      const readBack = getEvent(db, { kind: 'job', id: 'smoke' }, event.seq, readCtx);
-      if (!readBack || (readBack.body as { ok?: boolean }).ok !== true) {
+      db.exec('BEGIN IMMEDIATE');
+      db.exec('CREATE TEMP TABLE coral_smoke_open_store (ok INTEGER NOT NULL CHECK (ok = 1))');
+      db.exec('INSERT INTO coral_smoke_open_store (ok) VALUES (1)');
+      const readBack = db.prepare<[], { ok: number }>('SELECT ok FROM coral_smoke_open_store').get();
+      db.exec('DROP TABLE coral_smoke_open_store');
+      db.exec('COMMIT');
+      if (readBack?.ok !== 1) {
         backendLog.error('smoke read-back failed');
         return 1;
       }
@@ -76,6 +55,11 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 export async function main(): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
+
+  if (process.argv.includes('--print-store-format-fingerprint')) {
+    process.stdout.write(`${currentCoralStoreFormat().fingerprint}\n`);
+    return 0;
+  }
 
   if (process.env.CORAL_KB_DAEMON === '1') {
     return runKbDaemonMain({

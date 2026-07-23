@@ -3,17 +3,7 @@ declare const __VERSION__: string;
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
 import { ProviderRegistry } from '../../providers/registry.js';
-import {
-  ambientClaudeLocation,
-  canonicalizeProviderCredentialSet,
-  captureProviderCredentialSetInput,
-  filesystemProviderCredentialSourceAvailability,
-} from '../../runtime/provider-credentials.js';
-import type {
-  ProviderCredentialSet,
-  ProviderCredentialSourceAvailabilityPort,
-} from '../../runtime/provider-credentials.js';
-import type { AmbientClaudeLocationPort } from '../../runtime/provider-credentials.js';
+import { providerScopeSchema, type ProviderScope } from '../../infra/provider-scope.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { readBuildFlavor, readBundleHash } from '../../infra/bundle-manifest.js';
@@ -36,6 +26,7 @@ import { ChildPrincipalRegistry } from '../child-principal-registry.js';
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
 const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
+const SYSTEM_PROVIDER_SCOPE_ENV = 'CORAL_SYSTEM_PROVIDER_SCOPE';
 
 function isLoopbackBindHost(bindHost: string): boolean {
   const host = bindHost.trim().toLowerCase();
@@ -130,6 +121,24 @@ function resolveRemoteAccessPolicy(params: {
   });
 }
 
+function readConfiguredSystemProviderScope(
+  raw: string | undefined,
+): Extract<ProviderScope, { origin: 'system' }> | undefined {
+  if (raw === undefined || raw.trim().length === 0) return undefined;
+  try {
+    const scope = providerScopeSchema.parse(JSON.parse(raw) as unknown);
+    if (scope.origin !== 'system') throw new Error('origin must be system');
+    return scope;
+  } catch (error) {
+    throw new CoralSetupError({
+      code: 'system_provider_scope_invalid',
+      userMessage: `${SYSTEM_PROVIDER_SCOPE_ENV} is not a valid named system provider scope.`,
+      remediation: `Set ${SYSTEM_PROVIDER_SCOPE_ENV} to a strict JSON object with origin "system", a non-empty name, and canonical provider profiles, or unset it to disable HTTP/internal provider execution.`,
+      context: { detail: error instanceof Error ? error.message : String(error) },
+    });
+  }
+}
+
 export interface CoordinatorWorld {
   readonly identity: CoordinatorIdentity;
   readonly namespace: string;
@@ -138,8 +147,7 @@ export interface CoordinatorWorld {
   readonly remoteAccess: RemoteHttpAccessPolicy;
   readonly backendPid: number;
   readonly coralEnvSnapshot: Readonly<Record<string, string>>;
-  readonly providerCredentialDefaults: ProviderCredentialSet;
-  readonly ambientClaudeLocation: AmbientClaudeLocationPort;
+  readonly systemProviderScope?: Extract<ProviderScope, { origin: 'system' }>;
   readonly resolveProjectSource: (projectRoot: string) => string;
   readonly idleTimer: IdleTimer;
   readonly launchCoordinator: LaunchCoordinator;
@@ -147,7 +155,6 @@ export interface CoordinatorWorld {
   readonly providerRegistry: ProviderRegistry;
   readonly pluginRegistry: PluginRegistry;
   readonly childPrincipalRegistry: ChildPrincipalRegistry;
-  readonly providerCredentialSourceAvailability: ProviderCredentialSourceAvailabilityPort;
   readonly discussRegistry: DiscussContextRegistry;
   readonly storeServicesRef: StoreServicesRef;
   readonly providerHostManager: ProviderHostManager;
@@ -197,11 +204,8 @@ export function createCoordinatorWorld(
   }
   const backendPid = bootSnapshot.pid ?? runtime.env.pid();
   const coralEnvSnapshot = runtime.env.coralSnapshot();
-  const ambientClaudeLocationPort = ambientClaudeLocation(runtime.env.homedir());
-  const providerCredentialDefaults = canonicalizeProviderCredentialSet(
-    captureProviderCredentialSetInput(runtime.env.fullSnapshot(), runtime.env.homedir()),
-    ambientClaudeLocationPort,
-  );
+  const configuredSystemScope =
+    options.systemProviderScope ?? readConfiguredSystemProviderScope(runtime.env.get(SYSTEM_PROVIDER_SCOPE_ENV));
   const now = bootSnapshot.now ?? (() => runtime.time.now());
   const log =
     bootSnapshot.log ??
@@ -215,7 +219,6 @@ export function createCoordinatorWorld(
   const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
   const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
-  const providerCredentialSourceAvailability = filesystemProviderCredentialSourceAvailability(runtime.storage);
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
     env: runtime.env,
@@ -229,6 +232,7 @@ export function createCoordinatorWorld(
       runtime,
       spawnProviderServer: launchCoordinator.spawnProviderServer.bind(launchCoordinator),
     });
+  providerRegistry.connectAppServerHost(providerHostManager);
 
   const identity: CoordinatorIdentity = {
     pluginRoot,
@@ -252,15 +256,13 @@ export function createCoordinatorWorld(
     remoteAccess,
     backendPid,
     coralEnvSnapshot,
-    providerCredentialDefaults,
-    ambientClaudeLocation: ambientClaudeLocationPort,
+    ...(configuredSystemScope === undefined ? {} : { systemProviderScope: configuredSystemScope }),
     resolveProjectSource,
     idleTimer,
     launchCoordinator,
     eventBus,
     providerRegistry,
     childPrincipalRegistry,
-    providerCredentialSourceAvailability,
     pluginRegistry,
     discussRegistry,
     storeServicesRef,

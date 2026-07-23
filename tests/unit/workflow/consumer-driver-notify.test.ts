@@ -1,9 +1,10 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commit } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -15,9 +16,10 @@ import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/event
 import { readWorkflowProjection } from '#src/workflow/read-queries.js';
 import { createWorkflowJournal } from '#src/workflow/projections.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -35,12 +37,12 @@ describe('workflow consumer-driver notify', () => {
 
     try {
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
         const appended = commit(db, cb, {
           now: () => new Date('2026-04-19T00:00:00.000Z'),
           reducers,
-          upcasters,
+          bodyCodec,
           providers: permissiveProviderLookupPort,
         });
         if (appended.length > 0) {
@@ -51,17 +53,21 @@ describe('workflow consumer-driver notify', () => {
       const journal = createWorkflowJournal({ commit: coordinatorCommit });
       journal.commit((c) => {
         c.append(
-          workflowPlanDeclaredEvent('workflow-1', {
-            slots: [
-              {
-                slotId: 'workflow-1:0:0',
-                dependencies: [],
-                provider: 'codex',
-                instruction: 'architect',
-                agent: 'architect',
-              },
-            ],
-          }),
+          workflowPlanDeclaredEvent(
+            'workflow-1',
+            {
+              slots: [
+                {
+                  slotId: 'workflow-1:0:0',
+                  dependencies: [],
+                  provider: 'codex',
+                  instruction: 'architect',
+                  agent: 'architect',
+                },
+              ],
+            },
+            TEST_PROVIDER_SCOPE,
+          ),
         );
         return undefined;
       });

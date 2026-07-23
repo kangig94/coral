@@ -1,9 +1,11 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { CoralSetupError } from '#src/runtime/errors.js';
+import { StoreCodecError } from '#src/store/body-codec.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent } from '#src/store/reducers.js';
 import { z } from 'zod';
@@ -15,23 +17,22 @@ describe('rebuildProjections replay identity', () => {
   it('1000-event sequence produces byte-identical projection after rebuild', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       applyTestCounterSchema(db);
       const reducers = composeReducers(testCounterRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
 
       const ids = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
       const inputs = Array.from({ length: 1000 }, (_, i) => ({
         type: 'test.counter.ticked' as const,
         stream: { kind: 'job' as const, id: `stream-${i % 3}` },
-        bodyVersion: 1,
         body: { id: ids[i % ids.length], delta: (i % 7) + 1 },
       }));
 
       commitInputs(db, inputs, {
         now: () => new Date(0),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
 
@@ -42,7 +43,7 @@ describe('rebuildProjections replay identity', () => {
         db,
         cutoffSeq: 1000,
         reducers,
-        upcasters,
+        bodyCodec,
         extraProjectionTables: ['projection_test_counter'],
       });
 
@@ -64,9 +65,12 @@ describe('rebuildProjections replay identity', () => {
   it('does NOT touch kb_corpus_state (Corpus control state)', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
-      const reducers = composeReducers();
-      const upcasters = createDefaultUpcasterRegistry();
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      const reducers = composeReducers({
+        streamKind: 'job',
+        entries: [defineDomainEvent({ type: 'test.invalid-stream-kind', schema: z.object({}).strict() })],
+      });
+      const bodyCodec = createEventBodyCodec();
 
       db.prepare(
         `UPDATE kb_corpus_state
@@ -77,7 +81,7 @@ describe('rebuildProjections replay identity', () => {
                 metadata_manifest_hash = ?`,
       ).run('snapshot-before-rebuild', 5, 6, 'content-hash-before', 'metadata-hash-before');
 
-      rebuildProjections({ db, cutoffSeq: 0, reducers, upcasters });
+      rebuildProjections({ db, cutoffSeq: 0, reducers, bodyCodec });
 
       const corpusState = db
         .prepare(
@@ -124,10 +128,10 @@ describe('rebuildProjections replay identity', () => {
     expect((thrown as CoralSetupError).code).toBe('reducer_duplicate');
   });
 
-  it('throws CoralSetupError(event_stream_kind_invalid) when an events row has an unknown stream kind', () => {
+  it('rejects an events row whose stream kind does not match its registered type', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
 
       db.prepare(
         `INSERT INTO events (
@@ -136,13 +140,15 @@ describe('rebuildProjections replay identity', () => {
            type,
            stream_kind,
            stream_id,
-           body_version,
            body
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', 1, Buffer.from('{}'));
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(1, '2026-04-19T00:00:00.000Z', 'test.invalid-stream-kind', 'bogus', 'stream-1', Buffer.from('{}'));
 
-      const reducers = composeReducers();
-      const upcasters = createDefaultUpcasterRegistry();
+      const reducers = composeReducers({
+        streamKind: 'job',
+        entries: [defineDomainEvent({ type: 'test.invalid-stream-kind', schema: z.object({}).strict() })],
+      });
+      const bodyCodec = createEventBodyCodec();
 
       let thrown: unknown;
       try {
@@ -150,14 +156,57 @@ describe('rebuildProjections replay identity', () => {
           db,
           cutoffSeq: 1,
           reducers,
-          upcasters,
+          bodyCodec,
         });
       } catch (error) {
         thrown = error;
       }
 
-      expect(thrown).toBeInstanceOf(CoralSetupError);
-      expect((thrown as CoralSetupError).code).toBe('event_stream_kind_invalid');
+      expect(thrown).toBeInstanceOf(StoreCodecError);
+      expect((thrown as StoreCodecError).code).toBe('store_codec_rejected');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rolls back projection rebuild when a registered stored body violates the current codec', () => {
+    const db = newRawDatabase(':memory:');
+    try {
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
+      applyTestCounterSchema(db);
+      const reducers = composeReducers(testCounterRegistry);
+      const bodyCodec = createEventBodyCodec();
+      commitInputs(
+        db,
+        [
+          {
+            type: 'test.counter.ticked',
+            stream: { kind: 'job', id: 'job-invalid-body' },
+            body: { id: 'preserved', delta: 3 },
+          },
+        ],
+        {
+          now: () => new Date(0),
+          reducers,
+          bodyCodec,
+          providers: permissiveProviderLookupPort,
+        },
+      );
+      const before = db.prepare('SELECT * FROM projection_test_counter').all();
+      db.prepare('UPDATE events SET body = ? WHERE seq = 1').run(
+        Buffer.from(JSON.stringify({ id: 'preserved', delta: 'bad' })),
+      );
+
+      expect(() =>
+        rebuildProjections({
+          db,
+          cutoffSeq: 1,
+          reducers,
+          bodyCodec,
+          extraProjectionTables: ['projection_test_counter'],
+        }),
+      ).toThrow("Current codec rejected stored event type 'test.counter.ticked'");
+      expect(db.prepare('SELECT * FROM projection_test_counter').all()).toEqual(before);
     } finally {
       db.close();
     }

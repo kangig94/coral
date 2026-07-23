@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -20,6 +21,7 @@ import { sessionsRegistry } from '#src/sessions/events.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 const tempRoots: string[] = [];
 let previousHome: string | undefined;
 
@@ -42,7 +44,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -59,12 +61,12 @@ describe('sessions consumer-driver notify', () => {
     });
 
     const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
-    const upcasters = createDefaultUpcasterRegistry();
+    const bodyCodec = createEventBodyCodec();
     const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
       const appended = commit(db, cb, {
         now: () => new Date('2026-04-19T00:00:00.000Z'),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
       if (appended.length > 0) {
@@ -84,8 +86,7 @@ describe('sessions consumer-driver notify', () => {
 
     try {
       const entry = manager.allocate({
-        provider: 'codex',
-        sessionAuthority: { kind: 'orchestration' },
+        binding: TEST_CODEX_BINDING,
         name: 'alpha',
         model: 'gpt-5',
         cwd: workDir,
@@ -96,17 +97,16 @@ describe('sessions consumer-driver notify', () => {
       await driver.drainAll();
       const row = db
         .prepare(
-          `SELECT controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT controller, resumable, conversation_ref, scope_key, last_seq
              FROM projection_sessions
             WHERE session_id = ?`,
         )
         .get(entry.sessionId) as
-        | { controller: string; provider: string; resumable: number; conversation_ref: string | null; last_seq: number }
+        | { controller: string; resumable: number; conversation_ref: string | null; last_seq: number }
         | undefined;
 
       expect(row).toEqual({
         controller: 'default',
-        provider: 'codex',
         resumable: 0,
         conversation_ref: null,
         scope_key: resolveScopeKey(workDir),

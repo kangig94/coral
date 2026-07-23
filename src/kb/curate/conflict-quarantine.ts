@@ -17,14 +17,16 @@ export type CurateConflictQuarantineEntry = {
   detectedAt: string;
 };
 
-const quarantineRowSchema = z.object({
-  entry_id: kbEntryIdSchema,
-  entry_kind: z.enum(['note', 'source', 'community', 'wiki']),
-  slug: z.string().min(1),
-  path: z.string().min(1),
-  recovery_ref: z.string().min(1),
-  detected_at: z.string().datetime({ offset: true }),
-});
+export const quarantineRowSchema = z
+  .object({
+    entry_id: kbEntryIdSchema,
+    entry_kind: z.enum(['note', 'source', 'community', 'wiki']),
+    slug: z.string().min(1),
+    path: z.string().min(1),
+    recovery_ref: z.string().min(1),
+    detected_at: z.string().datetime({ offset: true }),
+  })
+  .strict();
 
 function rowToConflictQuarantine(row: KbCurateConflictQuarantineRow): CurateConflictQuarantineEntry {
   const parsed = quarantineRowSchema.parse(row);

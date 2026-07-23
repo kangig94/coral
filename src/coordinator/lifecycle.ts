@@ -46,6 +46,9 @@ import type { IpcListener } from '../transport/ipc/server.js';
 import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
+import type { SystemProviderScope } from '../infra/provider-scope.js';
+import { CoralSetupError } from '../runtime/errors.js';
+import type { StoreFormatDescription } from '../store/format-fingerprint.js';
 
 export type LifecycleState = 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
 
@@ -238,6 +241,7 @@ export function markJobsAsError(
   message: string,
   storage: Pick<Runtime['storage'], 'mkdirSync' | 'writeAtomicSync'>,
   jobsRoot: string,
+  endTimeMs: number,
 ): void {
   for (const status of listLiveJobs(progressStore, namespace)) {
     try {
@@ -248,6 +252,7 @@ export function markJobsAsError(
           kind: 'wrapper_crashed',
           cause: { message },
         },
+        endTimeMs,
         () => {},
       );
       if (status.jobKind === 'workflow') {
@@ -334,6 +339,7 @@ export type RunStartupRecoveryFn = (deps: StartupRecoveryDeps) => Promise<Recove
 export type LifecycleDeps = {
   readonly identity: CoordinatorIdentity;
   readonly runtime: Runtime;
+  readonly storeFormat: StoreFormatDescription;
   readonly backendPid: number;
   readonly runtimeState: MutableRuntimeState;
   readonly idleTimer: IdleTimer;
@@ -344,6 +350,7 @@ export type LifecycleDeps = {
   readonly eventBus: TypedEventBus;
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
+  readonly systemProviderScope?: SystemProviderScope;
   readonly server: Server;
   readonly getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   readonly getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -356,7 +363,7 @@ export type LifecycleDeps = {
   readonly cleanupStaleJobsFn: (currentBundleHash: string) => void;
   readonly markJobsAsErrorFn: (namespace: string, message: string) => void;
   readonly terminateAllFn: () => void;
-  readonly providerHostManager: ProviderHostManager;
+  readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
   readonly disposeLifecycleReactor?: () => void;
@@ -520,14 +527,32 @@ async function runLifecycleStartup({
     }
     signal.throwIfAborted();
 
+    // Provider configuration is side-effect-free validation and must complete
+    // before this process receives authority to quarantine/reset persisted
+    // state. A bad system scope must never destroy a usable older store.
+    registerBuiltInProvidersFn(providerRegistry);
+    if (deps.systemProviderScope !== undefined) {
+      const decodedScope = providerRegistry.decodeScope(deps.systemProviderScope);
+      if (!decodedScope.ok) {
+        throw new CoralSetupError({
+          code: 'system_provider_scope_invalid',
+          userMessage: `Named system provider scope '${deps.systemProviderScope.name}' is invalid.`,
+          remediation:
+            'Edit CORAL_SYSTEM_PROVIDER_SCOPE, remove the duplicate or invalid provider entry, and restart Coral.',
+          context: { scopeName: deps.systemProviderScope.name, reason: decodedScope.failure.reason },
+        });
+      }
+    }
+
     const resetAuthority = createBackendStoreResetAuthority(
       runtime,
       { acquiredViaHandoff: socketAuthorityAcquired },
-      { bundleHash, namespace },
+      { bundleHash, namespace, storeFormat: deps.storeFormat },
     );
     const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
       bundleHash,
       namespace,
+      storeFormat: deps.storeFormat,
       startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
     });
     let storeServices: CoordinatorStoreServices;
@@ -549,15 +574,12 @@ async function runLifecycleStartup({
       runtime,
       runtimeState,
       eventBus: deps.eventBus,
-      providerRegistry,
       getRecoveryService,
       createInvocationContext,
       log: identity.log,
     });
     state.recoveryCoordinator = recoveryCoordinator;
     signal.throwIfAborted();
-
-    registerBuiltInProvidersFn(providerRegistry);
 
     // Bind the HTTP listener and signal kernel-ready BEFORE Era II's
     // recovery work. KB daemon startup cannot gate daemon liveness. The CLI's
@@ -796,7 +818,9 @@ export function createLifecycle(deps: LifecycleDeps): LifecycleController {
       await runShutdownSequence({
         reason,
         state,
-        teardownRecoveryCoordinator: () => state.recoveryCoordinator?.teardown(),
+        teardownRecoveryCoordinator: async () => {
+          await state.recoveryCoordinator?.teardown();
+        },
         runtimeState,
         idleTimer,
         closeServerFn,

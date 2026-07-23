@@ -21,7 +21,7 @@ import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/r
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
+import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
   AgentNamespaceNotFoundError as _AgentNamespaceNotFoundError,
@@ -31,24 +31,25 @@ import {
 } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { PreflightRuntime } from '#src/providers/contract.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 type ProviderTurnContinuity = {
   conversationRef: string | null;
@@ -77,7 +78,8 @@ vi.mock('node:os', async () => {
   };
 });
 
-vi.mock('#src/providers/registry.js', () => ({
+vi.mock('#src/providers/registry.js', async () => ({
+  ...(await vi.importActual('#src/providers/registry.js')),
   getNewProvider: mockState.getNewProvider,
 }));
 
@@ -93,12 +95,11 @@ const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
 let eventBus: TypedEventBus;
 let launchCoordinator: LaunchCoordinator;
-let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  return new JobStore(namespace, runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime),
     eventBus,
     providers: permissiveProviderLookupPort,
@@ -129,10 +130,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
   launchCoordinator.releaseLaunch(jobId, pool);
 }
 
-function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
 function createService(
   ctx: InvocationContext,
   options: {
@@ -143,22 +140,20 @@ function createService(
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
+  const providerRegistry = new ProviderRegistry();
+  const provider = resolveProvider('codex');
+  if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
   return new ExecutionService(ctx, {
     childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
-    providerRegistry: {
-      get: resolveProvider,
-      getAll: () => [],
-    } as never,
+    providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     ...createTestJobJournalDeps(progressStore, runtime),
   });
@@ -184,7 +179,6 @@ function _setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
   for (const handle of handles) {
     mock.mockResolvedValueOnce(handle);
   }
-  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
   return mock;
 }
 
@@ -250,6 +244,7 @@ function _createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
+      isClosed: () => false,
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -277,7 +272,7 @@ function completedOutcome() {
 }
 
 function toCompletedResult(
-  result: TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity },
+  result: TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ): TestProviderTurnResult {
   if ('outcome' in result) {
     return result;
@@ -285,7 +280,9 @@ function toCompletedResult(
   return { ...result, outcome: completedOutcome() };
 }
 
-function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): NonNullable<JobStatus['result']> {
+function toCompletedJobTerminal(
+  result: TestJobTerminal | { content: string; durationMs: number },
+): NonNullable<JobStatus['result']> {
   if ('outcome' in result && result.outcome !== undefined) {
     return result as NonNullable<JobStatus['result']>;
   }
@@ -295,8 +292,8 @@ function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): 
 function streamCompletedResult(
   result:
     | TestProviderTurnResult
-    | Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>
-    | { content: string; continuity?: ProviderTurnContinuity },
+    | Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>
+    | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ) {
   return streamProviderEvents(async (emit) => {
     const completed = toCompletedResult(await result);
@@ -315,33 +312,35 @@ function streamCompletedResult(
 
 function makeProvider(options?: {
   execute?: (
-    ...args: Parameters<Provider['execute']>
-  ) => Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>;
+    ...args: Parameters<StandaloneTestProvider['execute']>
+  ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
+  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })),
+  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute: execute as unknown as Provider['execute'],
+    execute: execute as unknown as StandaloneTestProvider['execute'],
     ...(preflight ? { preflight } : {}),
   };
-  return { provider: toProviderSpec(provider)!, execute, preflight };
+  return { provider: toProviderDefinition(provider)!, execute, preflight };
 }
 
 function _makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() =>
+      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
+    ),
     appServerLifecycle: {
-      buildServerSpec: (_continuity, request) =>
-        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      host: (_continuity, request) =>
+        prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
       interrupt: async (lease, continuity) => {
         const threadId = continuity.threadId;
         const turnId = continuity.turnId;
@@ -381,7 +380,7 @@ function _makeCodexAppServerProvider(): Provider {
       },
       finalizeInterrupted: (probeResult, continuity, context) => {
         const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
@@ -416,13 +415,16 @@ function _makeSharedClaudeAppServerProvider(spec: {
   command: string;
   args: string[];
   cwd: string;
-  shared: true;
+  leaseMode: 'shared';
+  idlePolicy: 'host-stats' | 'daemon';
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() =>
+      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
+    ),
     appServerLifecycle: {
-      buildServerSpec: () => spec,
+      host: spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -440,7 +442,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       }),
       finalizeInterrupted: (probeResult, continuity, context) => {
         const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
@@ -478,8 +480,8 @@ async function occupyProviderSlots(
     if (decision.status !== 'running') {
       throw new Error('expected running launch while occupying capacity');
     }
-    trackJob(decision.job);
-    jobIds.push(decision.job);
+    trackJob(decision.jobId);
+    jobIds.push(decision.jobId);
   }
 
   return jobIds;
@@ -553,7 +555,7 @@ function _createScopedContext(name: string): InvocationContext {
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_CODEX_SCOPE,
   };
 }
 
@@ -578,6 +580,7 @@ function _makeStatusRecord(
 ): JobStatus {
   return {
     jobId,
+    owner: { kind: 'provider-session', id: options.sessionId ?? `${jobId}-session` },
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
@@ -604,8 +607,7 @@ function _makeTerminalReplay(
     seq: options.seq ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
-    continuity: null,
+    result: toCompletedJobTerminal(options.result ?? { content: 'done', durationMs: 0 }),
   };
 }
 
@@ -623,14 +625,13 @@ describe('ExecutionService abort', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
   });
@@ -669,19 +670,19 @@ describe('ExecutionService abort', () => {
       throw new Error('expected running jobs');
     }
 
-    trackJob(first.job);
-    trackJob(second.job);
-    const result = service.abort([first.job, 'missing-job']);
+    trackJob(first.jobId);
+    trackJob(second.jobId);
+    const result = service.abort([first.jobId, 'missing-job']);
     const { abortRegistry } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
 
     expect(result).toEqual({
-      aborted: [first.job],
+      aborted: [first.jobId],
       notFound: ['missing-job'],
     });
-    expect(abortRegistry.getSignal(first.job)?.aborted).toBe(true);
-    expect(abortRegistry.getSignal(second.job)?.aborted).toBe(false);
+    expect(abortRegistry.getSignal(first.jobId)?.aborted).toBe(true);
+    expect(abortRegistry.getSignal(second.jobId)?.aborted).toBe(false);
   });
 
   it('abort persists queued jobs as aborted instead of error', async () => {
@@ -695,18 +696,18 @@ describe('ExecutionService abort', () => {
 
     expect(decision.status).toBe('queued');
     if (decision.status !== 'queued') throw new Error('expected queued launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
-    const abortResult = service.abort([decision.job]);
+    const abortResult = service.abort([decision.jobId]);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
 
     expect(abortResult).toEqual({
-      aborted: [decision.job],
+      aborted: [decision.jobId],
       notFound: [],
     });
-    expect(progressStore.readStatus(decision.job)).toMatchObject({
+    expect(progressStore.readStatus(decision.jobId)).toMatchObject({
       phase: 'aborted',
       result: {
         outcome: { kind: 'aborted', reason: 'queue_shutdown' },

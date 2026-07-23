@@ -1,4 +1,4 @@
-type ProviderCliRequest = {
+export type ProviderCliRequest = {
   command: string;
   args: string[];
   prompt?: string;
@@ -17,8 +17,6 @@ type ProviderCliResult = {
 };
 
 export type ProviderCliRunner = (request: ProviderCliRequest) => Promise<ProviderCliResult>;
-
-export type AppServerSubscriptionPhase = 'beforeInitialize' | 'afterInitialize';
 
 export type AppServerNotificationMessage = {
   method: string;

@@ -11,7 +11,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { registerBuiltInProviders } from '#src/providers/bootstrap.js';
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition } from '#tests/helpers/scripted-provider.js';
 import type { JobTerminal } from '#src/jobs/records.js';
 
 const terminalResult: JobTerminal = { content: '', durationMs: 100, outcome: { kind: 'completed' } };
@@ -21,8 +21,8 @@ describe('backend isolation', () => {
     const coordA = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
     const coordB = new LaunchCoordinator({ runtime: createRealRuntime('prod') });
 
-    const admitA = coordA.requestLaunch('job-a1', 'codex');
-    const admitB = coordB.requestLaunch('job-b1', 'codex');
+    const admitA = coordA.requestLaunch('job-a1', 'codex', { kind: 'provider-session', id: 'session-a1' });
+    const admitB = coordB.requestLaunch('job-b1', 'codex', { kind: 'provider-session', id: 'session-b1' });
     expect(admitA).toMatchObject({ type: 'immediate' });
     expect(admitB).toMatchObject({ type: 'immediate' });
 
@@ -88,15 +88,15 @@ describe('backend isolation', () => {
     const regB = new ProviderRegistry();
 
     regA.register(
-      toProviderSpec({
+      toProviderDefinition({
         name: 'provider-a',
-        execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
+        execute: () => streamProviderTerminal({ content: '', durationMs: 0, outcome: { kind: 'completed' } }),
       })!,
     );
     regB.register(
-      toProviderSpec({
+      toProviderDefinition({
         name: 'provider-b',
-        execute: () => streamProviderTerminal({ content: '', outcome: { kind: 'completed' } }),
+        execute: () => streamProviderTerminal({ content: '', durationMs: 0, outcome: { kind: 'completed' } }),
       })!,
     );
 
@@ -121,8 +121,8 @@ describe('backend isolation', () => {
     const regB = createDiscussContextRegistry();
 
     // Both backends active
-    coordA.requestLaunch('job-a', 'codex');
-    coordB.requestLaunch('job-b', 'codex');
+    coordA.requestLaunch('job-a', 'codex', { kind: 'provider-session', id: 'session-a' });
+    coordB.requestLaunch('job-b', 'codex', { kind: 'provider-session', id: 'session-b' });
 
     const createdJobIdsB: string[] = [];
     busB.on('job:created', (e) => createdJobIdsB.push(e.jobId));
@@ -141,6 +141,7 @@ describe('backend isolation', () => {
     expect(regB.contexts.has('proj')).toBe(true);
 
     busB.emit('job:created', {
+      kind: 'provider',
       jobId: 'job-b2',
       sessionId: 's1',
       provider: 'codex',

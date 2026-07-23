@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Sequential dual-core handoff harness for cross-domain integration tests.
 //
 // Composes two `createCoordinatorCore` instances against a SHARED real-fs runtime
@@ -31,7 +32,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -52,6 +53,7 @@ export interface HandoffCoresHarness {
 export interface BootCoreOptions {
   instanceId: string;
   bundleHash?: string;
+  backendNamespace?: string;
   createExecutionService?: CoordinatorCoreOptions['createExecutionService'];
   /**
    * Override the post-discuss-recovery startup phase. Called with the same
@@ -72,7 +74,7 @@ export interface BootedCore {
 function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: string): CoordinatorStoreServices {
   return {
     storeDb: db,
-    progressStore: new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+    progressStore: new JobStore(namespace, runtime, createEventBodyCodec(), {
       db,
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,
@@ -100,6 +102,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   }
 
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
   });
@@ -108,11 +111,13 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   const liveCores: BootedCore[] = [];
 
   async function bootCore(opts: BootCoreOptions): Promise<BootedCore> {
-    const storeServices = createHarnessStoreServices(runtime, db, backendNamespace);
+    const coreNamespace = opts.backendNamespace ?? backendNamespace;
+    const storeServices = createHarnessStoreServices(runtime, db, coreNamespace);
 
     const core = createCoordinatorCore({
+      storeFormat: currentCoralStoreFormat(),
       runtime,
-      backendNamespace,
+      backendNamespace: coreNamespace,
       bootSnapshot: {
         version: 'test-version',
         bundleHash: opts.bundleHash ?? 'test-bundle',

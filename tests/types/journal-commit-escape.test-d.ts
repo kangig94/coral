@@ -37,12 +37,12 @@ _innerContext.append({
   type: 'job.terminal.recorded',
   stream: { kind: 'job', id: 'job-raw-reintro' },
   refs: { jobId: 'job-raw-reintro' },
-  bodyVersion: 1,
   // @ts-expect-error raw object literals cannot reintroduce a token from another commit scope.
   body: {
     terminal: {
       content: '',
       outcome: { kind: 'failed', causeRef: _outerToken },
+      durationMs: 0,
     },
   },
 });
@@ -51,7 +51,6 @@ _innerContext.append({
   type: 'job.progress.emitted',
   stream: { kind: 'job', id: 'job-unknown-body' },
   refs: { jobId: 'job-unknown-body' },
-  bodyVersion: 1,
   // @ts-expect-error whole-body unknown payloads cannot enter the token-accepting append boundary.
   body: _unknownBody,
 });
@@ -60,6 +59,5 @@ _innerContext.append({
   type: 'job.progress.emitted',
   stream: { kind: 'job', id: 'job-any-body' },
   refs: { jobId: 'job-any-body' },
-  bodyVersion: 1,
   body: _anyBody,
 });

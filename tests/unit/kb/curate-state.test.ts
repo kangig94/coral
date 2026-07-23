@@ -227,6 +227,7 @@ beforeEach(() => {
     processPort: gitSyncRuntime.process,
     storagePort: gitSyncRuntime.storage,
     envPort: gitSyncRuntime.env,
+    usageBudget: { isExhausted: async () => false },
   });
   internals = createCurateTestHandle({
     kb: runtime,
@@ -345,6 +346,14 @@ describe('curate state', () => {
     });
     expect(readCurateDiscoveryBacklog(curateDb(runtime))).toEqual(state.pendingDiscoveries);
     expect(readCurateRetryQueue(curateDb(runtime))).toEqual([]);
+  });
+
+  it('rejects a missing seeded scheduler singleton instead of inventing a default frontier', () => {
+    curateDb(runtime).prepare('DELETE FROM kb_curate_scheduler WHERE id = 1').run();
+
+    expect(() => readCurateSchedulerState(curateDb(runtime))).toThrow(
+      'kb_curate_scheduler singleton row id=1 is missing',
+    );
   });
 
   it('touches at most one row when only discovery progress advances', () => {

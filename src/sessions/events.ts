@@ -1,5 +1,9 @@
 import { CoralSetupError } from '../runtime/errors.js';
+import { isDeepStrictEqual } from 'node:util';
 import type { CoralEventInput } from '../store/envelope.js';
+import { rowToCoralEvent } from '../store/envelope.js';
+import { decodeStoredBody } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 import { defineDomainEvent, type DomainAppendValidator, type DomainEventRegistry } from '../store/reducers.js';
 import {
   sessionAdapterUnparseableBodySchema,
@@ -37,8 +41,9 @@ import {
   reduceSessionRetentionDiscardCompleted,
   reduceSessionRetentionDiscardFailed,
   reduceSessionRetentionDiscardRequested,
+  readProjectionSessionEntriesById,
 } from './projections.js';
-import { sessionEntrySchema, type SessionEntry } from './entry.js';
+import { providerSessionSchema, type ProviderSession } from './entry.js';
 
 const RETENTION_DISCARD_DUPLICATE_ATTEMPT_CODE = 'session_retention_discard_duplicate_attempt';
 
@@ -72,29 +77,8 @@ type RetentionDiscardAttemptState = {
   terminal: RetentionDiscardKind | null;
 };
 
-type ExistingRetentionDiscardRow = {
-  readonly seq: number;
-  readonly type: string;
-  readonly stream_id: string;
-  readonly session_id: string | null;
-  readonly attempt: number | null;
-};
-
 function retentionDiscardKey(sessionId: string, attempt: number): string {
   return `${sessionId}\u0000${attempt}`;
-}
-
-function retentionDiscardKindForType(type: string): RetentionDiscardKind | null {
-  switch (type) {
-    case 'session.retention.discard.requested':
-      return 'requested';
-    case 'session.retention.discard.completed':
-      return 'completed';
-    case 'session.retention.discard.failed':
-      return 'failed';
-    default:
-      return null;
-  }
 }
 
 function retentionDiscardAttemptState(
@@ -208,15 +192,10 @@ function readExistingRetentionDiscardState(
 
   const placeholders = sessionIds.map(() => '?').join(', ');
   const rows = ctx.db
-    .prepare(
-      `SELECT seq,
-              type,
-              stream_id,
-              json_extract(CAST(body AS TEXT), '$.sessionId') AS session_id,
-              json_extract(CAST(body AS TEXT), '$.attempt') AS attempt
+    .prepare<unknown[], EventsRow>(
+      `SELECT *
          FROM events
-        WHERE stream_kind = 'session'
-          AND type IN (
+        WHERE type IN (
             'session.retention.discard.requested',
             'session.retention.discard.completed',
             'session.retention.discard.failed'
@@ -224,21 +203,18 @@ function readExistingRetentionDiscardState(
           AND stream_id IN (${placeholders})
         ORDER BY seq ASC`,
     )
-    .all(...sessionIds) as ExistingRetentionDiscardRow[];
+    .all(...sessionIds);
 
   for (const row of rows) {
-    const kind = retentionDiscardKindForType(row.type);
-    const sessionId = row.session_id ?? row.stream_id;
-    if (kind === null || row.attempt === null || !Number.isInteger(row.attempt)) {
-      continue;
-    }
+    const event = parseRetentionDiscardInput(rowToCoralEvent(row, decodeStoredBody(row, ctx.readCtx)));
+    if (event === null) throw new Error(`Unexpected retention discard event type '${row.type}'.`);
 
-    const key = retentionDiscardKey(sessionId, row.attempt);
+    const key = retentionDiscardKey(event.sessionId, event.attempt);
     const current = retentionDiscardAttemptState(state, key);
-    if (kind === 'requested') {
+    if (event.kind === 'requested') {
       current.requested = true;
     } else {
-      current.terminal = kind;
+      current.terminal = event.kind;
     }
     state.set(key, current);
   }
@@ -295,33 +271,167 @@ const validateRetentionDiscardStateMachine: DomainAppendValidator = (ctx, inputs
   }
 };
 
-function authorityIdentity(entry: SessionEntry): string {
-  return JSON.stringify({ provider: entry.provider, authority: entry.sessionAuthority });
+function bindingIdentity(entry: ProviderSession): string {
+  return JSON.stringify(entry.binding);
 }
 
-const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
+function withoutClaimTransitionFields(
+  entry: ProviderSession,
+): Omit<ProviderSession, 'activeJobId' | 'lastUsedAt' | 'version' | 'continuationLease'> {
+  const {
+    activeJobId: _activeJobId,
+    lastUsedAt: _lastUsedAt,
+    version: _version,
+    continuationLease: _continuationLease,
+    ...unchanged
+  } = entry;
+  return unchanged;
+}
+
+function claimTransitionViolation(input: CoralEventInput, jobId: string, message: string): never {
+  throw new CoralSetupError({
+    code: 'provider_session_claim_transition_invalid',
+    userMessage: `Session '${input.stream.id}' ${message}.`,
+    remediation: 'Append a complete next ProviderSession snapshot for exactly one claim transition.',
+    context: { sessionId: input.stream.id, jobId, eventType: input.type },
+  });
+}
+
+function validateClaimAuthority(
+  input: CoralEventInput,
+  prior: ProviderSession | undefined,
+  next: ProviderSession,
+): void {
+  if (input.type === 'session.opened') {
+    if (next.activeJobId !== undefined) {
+      claimTransitionViolation(input, next.activeJobId, 'cannot open with an active job claim');
+    }
+    if (next.version !== 1) {
+      claimTransitionViolation(input, '<none>', 'must open at durable version one');
+    }
+    return;
+  }
+  if (
+    input.type === 'session.claimed' ||
+    input.type === 'session.claim.released' ||
+    input.type === 'session.continuation_lease.claimed' ||
+    prior === undefined
+  )
+    return;
+  if (prior.activeJobId !== next.activeJobId) {
+    claimTransitionViolation(
+      input,
+      next.activeJobId ?? prior.activeJobId ?? '<none>',
+      `cannot change its active job claim through '${input.type}'`,
+    );
+  }
+}
+
+function sameContinuationLeaseForClaim(prior: ProviderSession, next: ProviderSession, jobId: string): boolean {
+  if (isDeepStrictEqual(prior.continuationLease, next.continuationLease)) return true;
+  const before = prior.continuationLease;
+  const after = next.continuationLease;
+  if (before?.status !== 'pending' || after?.status !== 'claimed' || after.resumedJobId !== jobId) return false;
+  const { status: _beforeStatus, ...beforeBase } = before;
+  const { status: _afterStatus, resumedJobId: _resumedJobId, claimedAt: _claimedAt, ...afterBase } = after;
+  return isDeepStrictEqual(beforeBase, afterBase);
+}
+
+function sameContinuationLeaseForRelease(prior: ProviderSession, next: ProviderSession, jobId: string): boolean {
+  if (isDeepStrictEqual(prior.continuationLease, next.continuationLease)) return true;
+  const before = prior.continuationLease;
+  const after = next.continuationLease;
+  if (
+    before?.status !== 'claimed' ||
+    before.resumedJobId !== jobId ||
+    after?.status !== 'cleared' ||
+    after.clearedByJobId !== jobId ||
+    after.outcome !== 'resumed_released'
+  ) {
+    return false;
+  }
+  const { status: _beforeStatus, resumedJobId: _beforeResumed, claimedAt: _beforeClaimedAt, ...beforeBase } = before;
+  const {
+    status: _afterStatus,
+    resumedJobId: _afterResumed,
+    claimedAt: _afterClaimedAt,
+    clearedAt: _clearedAt,
+    clearedByJobId: _clearedByJobId,
+    outcome: _outcome,
+    ...afterBase
+  } = after;
+  return isDeepStrictEqual(beforeBase, afterBase);
+}
+
+function validateClaimTransition(input: CoralEventInput, prior: ProviderSession, next: ProviderSession): void {
+  const body = sessionClaimedBodySchema.parse(input.body);
+  if (
+    input.refs?.sessionId !== next.sessionId ||
+    input.refs.jobId !== body.jobId ||
+    prior.activeJobId !== undefined ||
+    next.activeJobId !== body.jobId ||
+    next.version !== prior.version + 1 ||
+    !isDeepStrictEqual(withoutClaimTransitionFields(prior), withoutClaimTransitionFields(next)) ||
+    !sameContinuationLeaseForClaim(prior, next, body.jobId)
+  ) {
+    claimTransitionViolation(input, body.jobId, 'has an invalid claim transition');
+  }
+}
+
+function validateClaimReleaseTransition(input: CoralEventInput, prior: ProviderSession, next: ProviderSession): void {
+  const body = sessionClaimReleasedBodySchema.parse(input.body);
+  if (
+    input.refs?.sessionId !== next.sessionId ||
+    input.refs.jobId !== body.jobId ||
+    prior.activeJobId !== body.jobId ||
+    next.activeJobId !== undefined ||
+    next.version !== prior.version + 1 ||
+    !isDeepStrictEqual(withoutClaimTransitionFields(prior), withoutClaimTransitionFields(next)) ||
+    !sameContinuationLeaseForRelease(prior, next, body.jobId)
+  ) {
+    claimTransitionViolation(input, body.jobId, 'has an invalid claim release transition');
+  }
+}
+
+function validateContinuationLeaseClaimTransition(
+  input: CoralEventInput,
+  prior: ProviderSession,
+  next: ProviderSession,
+): void {
+  const body = sessionContinuationLeaseClaimedBodySchema.parse(input.body);
+  const jobId = body.lease.resumedJobId;
+  if (
+    input.refs?.sessionId !== next.sessionId ||
+    input.refs.jobId !== jobId ||
+    prior.activeJobId !== undefined ||
+    next.activeJobId !== jobId ||
+    next.version !== prior.version + 1 ||
+    !isDeepStrictEqual(withoutClaimTransitionFields(prior), withoutClaimTransitionFields(next)) ||
+    !sameContinuationLeaseForClaim(prior, next, jobId)
+  ) {
+    claimTransitionViolation(input, jobId, 'has an invalid continuation replacement claim transition');
+  }
+}
+
+const validateProviderSessionBinding: DomainAppendValidator = (ctx, inputs) => {
   const entries = inputs.flatMap((input) => {
     if (input.stream.kind !== 'session' || typeof input.body !== 'object' || input.body === null) return [];
     const rawEntry = (input.body as { entry?: unknown }).entry;
-    const parsed = sessionEntrySchema.safeParse(rawEntry);
+    const parsed = providerSessionSchema.safeParse(rawEntry);
     return parsed.success ? [{ input, entry: parsed.data }] : [];
   });
   if (entries.length === 0) return;
 
   const ids = [...new Set(entries.map(({ entry }) => entry.sessionId))];
-  const existing = new Map<string, SessionEntry>();
+  const existing = new Map<string, ProviderSession>();
   if (ids.length > 0) {
-    const placeholders = ids.map(() => '?').join(', ');
-    const rows = ctx.db
-      .prepare(`SELECT session_id, entry FROM projection_sessions WHERE session_id IN (${placeholders})`)
-      .all(...ids) as Array<{ session_id: string; entry: string }>;
-    for (const row of rows) existing.set(row.session_id, sessionEntrySchema.parse(JSON.parse(row.entry)));
+    for (const [sessionId, entry] of readProjectionSessionEntriesById(ctx.db, ids)) existing.set(sessionId, entry);
   }
 
   for (const { input, entry } of entries) {
     if (input.stream.id !== entry.sessionId) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_invalid',
+        code: 'provider_session_stream_mismatch',
         userMessage: `Session event stream does not match entry '${entry.sessionId}'.`,
         remediation: 'Write the session entry to its own session stream.',
       });
@@ -330,33 +440,61 @@ const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
     if (prior === undefined) {
       if (input.type !== 'session.opened') {
         throw new CoralSetupError({
-          code: 'provider_credential_source_missing',
+          code: 'provider_session_missing',
           userMessage: `Session '${entry.sessionId}' must be opened before later events.`,
           remediation: 'Append session.opened first in the same batch.',
         });
       }
-      if (entry.sessionAuthority.kind === 'provider' && entry.sessionAuthority.source.provider !== entry.provider) {
+      const provider = entry.binding.provider;
+      if (!ctx.providers.hasProvider(provider)) {
         throw new CoralSetupError({
-          code: 'provider_credential_source_mismatch',
-          userMessage: `Session '${entry.sessionId}' provider does not match its credential source.`,
-          remediation: 'Use the credential source projected for the selected provider.',
+          code: 'provider_session_provider_unregistered',
+          userMessage: `Provider session '${entry.sessionId}' names unregistered provider '${provider}'.`,
+          remediation: 'Register the provider and append a binding produced by its current binding codec.',
+          context: { sessionId: entry.sessionId, provider },
         });
       }
+      const bindingValidation = ctx.providers.validatePersistedBinding(entry.binding);
+      if (!bindingValidation.ok) {
+        throw new CoralSetupError({
+          code: 'provider_session_binding_invalid',
+          userMessage: `Provider session '${entry.sessionId}' binding was rejected by provider '${provider}'.`,
+          remediation: bindingValidation.message,
+          context: { sessionId: entry.sessionId, provider },
+        });
+      }
+      validateClaimAuthority(input, undefined, entry);
       existing.set(entry.sessionId, entry);
       continue;
     }
     if (input.type === 'session.opened') {
       throw new CoralSetupError({
-        code: 'provider_credential_source_invalid',
+        code: 'provider_session_already_open',
         userMessage: `Session '${entry.sessionId}' is already open.`,
         remediation: 'Do not append a second session.opened event.',
       });
     }
-    if (authorityIdentity(prior) !== authorityIdentity(entry)) {
+    if (entry.version !== prior.version + 1) {
+      claimTransitionViolation(
+        input,
+        entry.activeJobId ?? prior.activeJobId ?? '<none>',
+        `must advance its durable version by exactly one through '${input.type}' (prior ${prior.version}, next ${entry.version})`,
+      );
+    }
+    if (input.type === 'session.claimed') {
+      validateClaimTransition(input, prior, entry);
+    } else if (input.type === 'session.claim.released') {
+      validateClaimReleaseTransition(input, prior, entry);
+    } else if (input.type === 'session.continuation_lease.claimed') {
+      validateContinuationLeaseClaimTransition(input, prior, entry);
+    } else {
+      validateClaimAuthority(input, prior, entry);
+    }
+    if (bindingIdentity(prior) !== bindingIdentity(entry)) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_mismatch',
-        userMessage: `Session '${entry.sessionId}' authority is immutable.`,
-        remediation: 'Resume with the original credential source or start a new session.',
+        code: 'provider_session_binding_mismatch',
+        userMessage: `Provider session '${entry.sessionId}' binding is immutable.`,
+        remediation: 'Resume with the original provider binding or start a new session.',
       });
     }
     existing.set(entry.sessionId, entry);
@@ -366,73 +504,102 @@ const validateSessionAuthority: DomainAppendValidator = (ctx, inputs) => {
 export const sessionsRegistry: DomainEventRegistry = {
   streamKind: 'session',
   entries: [
-    defineDomainEvent({ type: 'session.opened', schema: sessionOpenedBodySchema, reducer: reduceSessionOpened }),
+    defineDomainEvent({
+      type: 'session.opened',
+      schema: sessionOpenedBodySchema,
+      reducer: reduceSessionOpened,
+      materializerContract: 'projection_sessions:insert-opened-provider-session',
+    }),
     defineDomainEvent({
       type: 'session.continuity.checkpointed',
       schema: sessionContinuityCheckpointedBodySchema,
       reducer: reduceSessionContinuityCheckpointed,
+      materializerContract: 'projection_sessions:replace-continuity-snapshot',
     }),
     defineDomainEvent({
       type: 'session.artifact.handle.recorded',
       schema: sessionArtifactHandleRecordedBodySchema,
       reducer: reduceSessionArtifactHandleRecorded,
+      materializerContract: 'projection_sessions:append-artifact-handle',
     }),
-    defineDomainEvent({ type: 'session.claimed', schema: sessionClaimedBodySchema, reducer: reduceSessionClaimed }),
+    defineDomainEvent({
+      type: 'session.claimed',
+      schema: sessionClaimedBodySchema,
+      reducer: reduceSessionClaimed,
+      materializerContract: 'projection_sessions:acquire-active-job-claim',
+    }),
     defineDomainEvent({
       type: 'session.claim.released',
       schema: sessionClaimReleasedBodySchema,
       reducer: reduceSessionClaimReleased,
+      materializerContract: 'projection_sessions:release-active-job-claim',
     }),
     defineDomainEvent({
       type: 'session.continuation_lease.recorded',
       schema: sessionContinuationLeaseRecordedBodySchema,
       reducer: reduceSessionContinuationLeaseRecorded,
+      materializerContract: 'projection_sessions:record-pending-continuation-lease',
     }),
     defineDomainEvent({
       type: 'session.continuation_lease.claimed',
       schema: sessionContinuationLeaseClaimedBodySchema,
       reducer: reduceSessionContinuationLeaseClaimed,
+      materializerContract: 'projection_sessions:claim-continuation-lease',
     }),
     defineDomainEvent({
       type: 'session.continuation_lease.cleared',
       schema: sessionContinuationLeaseClearedBodySchema,
       reducer: reduceSessionContinuationLeaseCleared,
+      materializerContract: 'projection_sessions:clear-continuation-lease',
     }),
     defineDomainEvent({
       type: 'session.continuation_lease.expired',
       schema: sessionContinuationLeaseExpiredBodySchema,
       reducer: reduceSessionContinuationLeaseExpired,
+      materializerContract: 'projection_sessions:expire-continuation-lease',
     }),
     defineDomainEvent({
       type: 'session.retention.discard.requested',
       schema: sessionRetentionDiscardRequestedBodySchema,
       reducer: reduceSessionRetentionDiscardRequested,
+      materializerContract: 'projection_sessions:record-retention-discard-request',
     }),
     defineDomainEvent({
       type: 'session.retention.discard.completed',
       schema: sessionRetentionDiscardCompletedBodySchema,
       reducer: reduceSessionRetentionDiscardCompleted,
+      materializerContract: 'projection_sessions:complete-retention-discard',
     }),
     defineDomainEvent({
       type: 'session.retention.discard.failed',
       schema: sessionRetentionDiscardFailedBodySchema,
       reducer: reduceSessionRetentionDiscardFailed,
+      materializerContract: 'projection_sessions:fail-retention-discard',
     }),
     defineDomainEvent({
       type: 'session.interrupted',
       schema: sessionInterruptedBodySchema,
       reducer: reduceSessionInterrupted,
+      materializerContract: 'projection_sessions:record-interruption-fault',
     }),
     defineDomainEvent({
       type: 'session.provider_failed',
       schema: sessionProviderFailedBodySchema,
       reducer: reduceSessionProviderFailed,
+      materializerContract: 'projection_sessions:record-provider-fault',
     }),
     defineDomainEvent({
       type: 'session.adapter_unparseable',
       schema: sessionAdapterUnparseableBodySchema,
       reducer: reduceSessionAdapterUnparseable,
+      materializerContract: 'projection_sessions:record-adapter-fault',
     }),
   ],
-  appendValidators: [validateRetentionDiscardStateMachine, validateSessionAuthority],
+  appendValidators: [
+    { contract: 'sessions:retention-discard-state-machine', validate: validateRetentionDiscardStateMachine },
+    {
+      contract: 'sessions:binding-immutability-provider-codec-exact-single-event-claim-and-version-transitions',
+      validate: validateProviderSessionBinding,
+    },
+  ],
 };

@@ -20,6 +20,7 @@ export const testCounterRegistry: DomainEventRegistry = {
            ON CONFLICT(id) DO UPDATE SET count = count + excluded.count, last_seq = excluded.last_seq`,
         ).run(event.body.id, event.body.delta, event.seq);
       },
+      materializerContract: 'test:increment-projection-counter',
     }),
   ],
 };

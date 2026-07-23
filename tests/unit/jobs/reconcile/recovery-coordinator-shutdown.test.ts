@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -11,11 +12,12 @@ import { jobsDir } from '#src/jobs/paths.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import type { JobLaunch } from '#src/jobs/records.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { RecoveryCommitFence } from '#src/jobs/reconcile/contracts.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -124,8 +126,8 @@ function createLaunchCoordinator(
 
 function createFakeProviderHostManager() {
   return {
-    acquireServer: vi.fn(),
-    borrowLiveServer: vi.fn(),
+    openSession: vi.fn(),
+    attachSession: vi.fn(async () => null),
     drainForHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
   };
@@ -185,13 +187,20 @@ function createRuntimeStateMock() {
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: vi.fn() })),
-    validateProviderRecoveryAuthority: vi.fn(() => true),
-    providerCredentialSourceForRecovery: vi.fn(() => TEST_CODEX_SOURCE),
+    captureProviderRecoveryAuthority: vi.fn((launchRecord: JobLaunch) => ({
+      ok: true,
+      authority: {
+        launchRecord,
+        session: { sessionId: launchRecord.sessionId },
+        boundProvider: { name: launchRecord.provider },
+      },
+    })),
+    finalizeProviderRecoveryBindingFailure: vi.fn(),
     recoverQueuedJob: vi.fn(() => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+    finalizeInterruptedDurableJob: vi.fn(async () => {}),
     interruptAppServerJob: vi.fn(async () => {}),
-    recordRecoveredArtifactHandles: vi.fn(async () => ({ ok: true as const, nextVersion: 1 })),
     ...overrides,
   };
 }
@@ -205,11 +214,12 @@ function stubLaunchRecord(
     projectRoot: string;
     backendNamespace: string;
     enqueueSequence?: number;
-    pool?: string;
+    pool?: LaunchPool;
   },
 ): void {
   const record: JobLaunch = {
     jobId: overrides.jobId,
+    owner: { kind: 'provider-session', id: overrides.sessionId },
     sessionId: overrides.sessionId,
     provider: overrides.provider,
     projectRoot: overrides.projectRoot,
@@ -239,6 +249,7 @@ function stubRuntimeRecord(
   },
 ): void {
   progressStore.appendRuntimeStarted(options.jobId, {
+    transport: 'durable-cli',
     pid: options.pid,
     stdoutPath: join(jobsDir(runtime.env), options.jobId, 'stdout'),
     stderrPath: join(jobsDir(runtime.env), options.jobId, 'stderr'),
@@ -266,7 +277,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const { modules, runtime, pluginRoot, projectRoot } = options;
   const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
   const eventBus = new modules.eventBusModule.TypedEventBus();
-  const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime, ':memory:'),
     eventBus,
     providers: permissiveProviderLookupPort,
@@ -292,6 +303,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
   const controller = modules.lifecycleModule.createLifecycle({
+    storeFormat: currentCoralStoreFormat(),
     identity: {
       pluginRoot,
       namespace,
@@ -345,7 +357,6 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       identity,
       runtime,
       progressStore,
-      providerRegistry,
       getRecoveryService,
       createInvocationContext,
       recoveryCoordinator,
@@ -357,7 +368,6 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
         bundleHash: identity.bundleHash,
         runtime,
         progressStore,
-        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         signal,
@@ -476,6 +486,45 @@ describe('recovery coordinator shutdown', () => {
     }
   });
 
+  it('bars a late binding-failure commit when authority capture returns after shutdown', async () => {
+    const modules = await loadModules();
+    const runtime = createRealRuntime('prod');
+    const pluginRoot = createProjectRoot('plugin-late-authority');
+    const projectRoot = createProjectRoot('project-late-authority');
+    let releaseCapture!: (value: { ok: false; failure: { reason: 'subject-mismatch'; provider: string } }) => void;
+    const captureBlocked = new Promise<{
+      ok: false;
+      failure: { reason: 'subject-mismatch'; provider: string };
+    }>((resolve) => {
+      releaseCapture = resolve;
+    });
+
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot,
+      serviceOverrides: {
+        captureProviderRecoveryAuthority: vi.fn(async () => captureBlocked),
+      },
+    });
+    harness.progressStore.appendRuntimeStarted('running-adoption-job', {
+      transport: 'app-server',
+      startTime: '2026-04-17T00:00:00.000Z',
+      providerMeta: { provider: 'codex', leaseState: 'waiting' },
+    });
+
+    const startup = harness.controller.start().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(harness.fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1));
+
+    await harness.controller.shutdown('handoff');
+    releaseCapture({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
+
+    expect(((await startup) as Error).name).toBe('AbortError');
+    expect(harness.fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
+    expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('running');
+  });
+
   it('cleans up an adopted running job on shutdown after the recovery poller is live and suppresses late completion', async () => {
     const modules = await loadModules();
     const virtualRuntime = new SimulationRuntime();
@@ -548,6 +597,191 @@ describe('recovery coordinator shutdown', () => {
     } finally {
       await stopLifecycleController(controller);
     }
+  });
+
+  it('re-fences and retains adopted ownership when durable finalization fails', async () => {
+    const modules = await loadModules();
+    const virtualRuntime = new SimulationRuntime();
+    const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
+    const pluginRoot = createProjectRoot('plugin-finalization-failure');
+    const projectRoot = createProjectRoot('project-finalization-failure');
+    const cleanupSpy = vi.fn();
+    const pid = 51_515;
+    let pidAlive = true;
+    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot,
+      serviceOverrides: {
+        adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: cleanupSpy })),
+        finalizeInterruptedDurableJob: vi.fn(async () => {
+          throw new Error('stale durable artifact CAS');
+        }),
+      },
+    });
+    stubRuntimeRecord(harness.progressStore, runtime, {
+      jobId: 'running-adoption-job',
+      pid,
+    });
+
+    try {
+      await harness.controller.start();
+      expect(harness.runtimeState.getLaunchFenceActive()).toBe(false);
+
+      pidAlive = false;
+      virtualRuntime.time.tick(501);
+
+      await vi.waitFor(() => {
+        expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1);
+        expect(harness.runtimeState.getLaunchFenceActive()).toBe(true);
+      });
+      expect(cleanupSpy).not.toHaveBeenCalled();
+      expect(harness.controller.getRecoveryRegistry()?.has('running-adoption-job')).toBe(true);
+      expect(harness.progressStore.readStatus('running-adoption-job')?.phase).toBe('running');
+    } finally {
+      await stopLifecycleController(harness.controller);
+    }
+  });
+
+  it('does not wait for provider work that remains pre-commit when shutdown aborts recovery', async () => {
+    const modules = await loadModules();
+    const virtualRuntime = new SimulationRuntime();
+    const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
+    const pluginRoot = createProjectRoot('plugin-precommit-finalization');
+    const projectRoot = createProjectRoot('project-precommit-finalization');
+    const pid = 60_606;
+    let pidAlive = true;
+    let providerSignal: AbortSignal | null = null;
+    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot,
+      serviceOverrides: {
+        finalizeInterruptedDurableJob: vi.fn(
+          async (_authority, _runtimeRecord, _observation, fence: RecoveryCommitFence) => {
+            providerSignal = fence.signal;
+            return new Promise<void>(() => {});
+          },
+        ),
+      },
+    });
+    stubRuntimeRecord(harness.progressStore, runtime, {
+      jobId: 'running-adoption-job',
+      pid,
+    });
+
+    await harness.controller.start();
+    pidAlive = false;
+    virtualRuntime.time.tick(501);
+    await vi.waitFor(() => expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1));
+
+    await harness.controller.shutdown('handoff');
+    expect(providerSignal).not.toBeNull();
+    expect((providerSignal as unknown as AbortSignal).aborted).toBe(true);
+  });
+
+  it('waits for in-flight durable finalization before shutdown releases daemon authority', async () => {
+    const modules = await loadModules();
+    const virtualRuntime = new SimulationRuntime();
+    const runtime: Runtime = { ...createRealRuntime('prod'), time: virtualRuntime.time };
+    const pluginRoot = createProjectRoot('plugin-finalization-drain');
+    const projectRoot = createProjectRoot('project-finalization-drain');
+    const pid = 61_616;
+    let pidAlive = true;
+    let releaseFinalizer!: () => void;
+    const finalizerBlocked = new Promise<void>((resolve) => {
+      releaseFinalizer = resolve;
+    });
+    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid: number) => candidatePid === pid && pidAlive);
+
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot,
+      serviceOverrides: {
+        finalizeInterruptedDurableJob: vi.fn(
+          async (_authority, _runtimeRecord, _observation, fence: RecoveryCommitFence) => {
+            fence.onCommitStart();
+            return finalizerBlocked;
+          },
+        ),
+      },
+    });
+    stubRuntimeRecord(harness.progressStore, runtime, {
+      jobId: 'running-adoption-job',
+      pid,
+    });
+
+    await harness.controller.start();
+    pidAlive = false;
+    virtualRuntime.time.tick(501);
+    await vi.waitFor(() => expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1));
+
+    let shutdownSettled = false;
+    const shutdown = harness.controller.shutdown('handoff').finally(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+
+    releaseFinalizer();
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
+  });
+
+  it('waits for startup app-server finalization before shutdown releases daemon authority', async () => {
+    const modules = await loadModules();
+    const runtime = createRealRuntime('prod');
+    const pluginRoot = createProjectRoot('plugin-app-finalization-drain');
+    const projectRoot = createProjectRoot('project-app-finalization-drain');
+    let releaseFinalizer!: () => void;
+    const finalizerBlocked = new Promise<void>((resolve) => {
+      releaseFinalizer = resolve;
+    });
+    const harness = createCoordinatorShutdownHarness({
+      modules,
+      runtime,
+      pluginRoot,
+      projectRoot,
+      serviceOverrides: {
+        finalizeInterruptedAppServerJob: vi.fn(async (_authority, _runtimeRecord, fence: RecoveryCommitFence) => {
+          fence.onCommitStart();
+          return finalizerBlocked;
+        }),
+      },
+    });
+    harness.progressStore.appendRuntimeStarted('running-adoption-job', {
+      transport: 'app-server',
+      startTime: '2026-04-17T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'waiting',
+      },
+    });
+
+    const startup = harness.controller.start().catch((error: unknown) => error);
+    await vi.waitFor(() => expect(harness.fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledTimes(1));
+
+    let shutdownSettled = false;
+    const shutdown = harness.controller.shutdown('handoff').finally(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+
+    releaseFinalizer();
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
+    expect(((await startup) as Error).name).toBe('AbortError');
   });
 });
 import { seedTestJobSession } from '#tests/helpers/session.js';

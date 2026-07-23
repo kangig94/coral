@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TEST_CLAUDE_SOURCE } from '../../../helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS } from '../../../helpers/provider-credentials.js';
 
 import type { DirentLike, StoragePort } from '#src/infra/port-types.js';
 import { claudePreflight, claudeRecoveryLifecycle } from '#src/providers/claude/provider-facets.js';
@@ -9,22 +9,25 @@ import {
   locateClaudeJsonlArtifact,
 } from '#src/providers/claude/artifacts.js';
 import type { ArtifactCleanupRuntime, ProviderPreflightRuntime } from '#src/providers/contract.js';
+import type { ClaudeProviderAccess } from '#src/providers/claude/execution-plan.js';
 
-function claudePreflightRuntime(files: Readonly<Record<string, string>>): ProviderPreflightRuntime {
+function claudePreflightRuntime(
+  files: Readonly<Record<string, string>>,
+): ProviderPreflightRuntime<ClaudeProviderAccess> {
   const runExact = vi.fn(async (_command: string, args: string[]) =>
     args[0] === '--version'
       ? { stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null }
       : { stdout: JSON.stringify({ authenticated: true }), stderr: '', status: 0, signal: null },
   );
   return {
-    credentialSource: TEST_CLAUDE_SOURCE,
+    access: TEST_CLAUDE_ACCESS,
     cwd: '/workspace/project',
     storage: {
       existsSync: (path: string) => Object.hasOwn(files, path),
       readFileSync: (path: string) => files[path] ?? '',
     },
     runExact,
-  } as unknown as ProviderPreflightRuntime;
+  } as unknown as ProviderPreflightRuntime<ClaudeProviderAccess>;
 }
 
 function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
@@ -44,6 +47,33 @@ function storageForTree(tree: Record<string, DirentLike[]>): Pick<StoragePort, '
 
 describe('claudePreflight', () => {
   it.each([
+    {
+      layer: 'selected-profile',
+      settingsPath: '/home/user/.claude/settings.json',
+      contents: '{invalid',
+      problem: 'contain invalid JSON',
+    },
+    {
+      layer: 'project',
+      settingsPath: '/workspace/project/.claude/settings.json',
+      contents: '[]',
+      problem: 'are not a JSON object',
+    },
+  ])('identifies the $layer settings layer and gives path-safe recovery for malformed JSON', async (fixture) => {
+    const runtime = claudePreflightRuntime({ [fixture.settingsPath]: fixture.contents });
+
+    const failure = await claudePreflight(runtime).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain(`the ${fixture.layer} settings ${fixture.problem}`);
+    expect(message).toContain('Repair or remove that settings file, then retry.');
+    expect(message).toContain('docs/configuration.md#multi-account-provider-routing');
+    expect(message).not.toContain(fixture.settingsPath);
+    expect(runtime.runExact).not.toHaveBeenCalled();
+  });
+
+  it.each([
     ['account settings', '/home/user/.claude/settings.json'],
     ['project settings', '/workspace/project/.claude/settings.json'],
     ['local project settings', '/workspace/project/.claude/settings.local.json'],
@@ -54,7 +84,7 @@ describe('claudePreflight', () => {
     });
 
     await expect(claudePreflight(runtime)).rejects.toThrow(
-      `Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK' in '${settingsPath}'`,
+      "Unsupported Claude credential selector 'CLAUDE_CODE_USE_BEDROCK'",
     );
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
@@ -66,20 +96,18 @@ describe('claudePreflight', () => {
     });
 
     await expect(claudePreflight(runtime)).rejects.toThrow(
-      `Unsupported Claude credential selector 'claude_code_use_bedrock' in '${settingsPath}'`,
+      "Unsupported Claude credential selector 'claude_code_use_bedrock'",
     );
     expect(runtime.runExact).not.toHaveBeenCalled();
   });
 
   it.each(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport'])(
-    'rejects the %s credential helper from the selected source',
+    'rejects the %s credential helper from the selected access',
     async (helper) => {
       const settingsPath = '/home/user/.claude/settings.json';
       const runtime = claudePreflightRuntime({ [settingsPath]: JSON.stringify({ [helper]: '/usr/bin/helper' }) });
 
-      await expect(claudePreflight(runtime)).rejects.toThrow(
-        `Unsupported Claude credential helper '${helper}' in '${settingsPath}'`,
-      );
+      await expect(claudePreflight(runtime)).rejects.toThrow(`Unsupported Claude credential helper '${helper}'`);
       expect(runtime.runExact).not.toHaveBeenCalled();
     },
   );
@@ -92,32 +120,38 @@ describe('claudePreflight', () => {
     await expect(claudePreflight(runtime)).resolves.toBeUndefined();
     expect(runtime.runExact).toHaveBeenCalledTimes(2);
   });
+
+  it('surfaces the detector authentication recovery message without a redundant prefix', async () => {
+    const runtime = claudePreflightRuntime({});
+    runtime.runExact = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: 'claude 1.0.0', stderr: '', status: 0, signal: null })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({ authenticated: false }),
+        stderr: '',
+        status: 0,
+        signal: null,
+      });
+
+    await expect(claudePreflight(runtime)).rejects.toThrow(
+      'Claude CLI is not authenticated. Run "claude auth login" with the same CLAUDE_CONFIG_DIR, then retry.',
+    );
+  });
 });
 
 describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
-  it('preassigns a fresh conversation reference from the durable Coral session id', () => {
-    expect(
-      claudeRecoveryLifecycle.buildRecoveryMeta({
-        action: 'exec',
-        sessionId: 'coral-session-1',
-        prompt: 'hello',
-        cwd: '/workspace',
-        bypassPermissions: false,
-        coralEnv: {},
-      }),
-    ).toEqual({ conversationRef: 'coral-session-1' });
-  });
-
   it('uses the preserved conversation ref when the session is resumable without a bootstrap signature', () => {
     const mutation = claudeRecoveryLifecycle.finalizeInterrupted(
       {
         resumable: true,
         updatedContinuity: {
           brokerSessionKey: 'broker-1',
+          brokerTurnId: 'turn-1',
         },
       },
       {
         brokerSessionKey: 'broker-1',
+        brokerTurnId: 'turn-1',
       },
       { preservedConversationRef: 'ref-x' },
     );
@@ -134,10 +168,12 @@ describe('claudeRecoveryLifecycle.finalizeInterrupted', () => {
         resumable: true,
         updatedContinuity: {
           brokerSessionKey: 'broker-1',
+          brokerTurnId: 'turn-1',
         },
       },
       {
         brokerSessionKey: 'broker-1',
+        brokerTurnId: 'turn-1',
       },
       {},
     );
@@ -201,16 +237,16 @@ describe('claudeArtifactCapability', () => {
         [root]: [dirent('-workspace-a', 'dir')],
         [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
       }),
-      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      env: { homedir: () => '/home/user' },
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
-      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', source: TEST_CLAUDE_SOURCE, runtime }),
+      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', access: TEST_CLAUDE_ACCESS, runtime }),
     ).toBe(`${root}/-workspace-a/session-1.jsonl`);
     expect(
       claudeArtifactCapability.locateArtifact?.({
         conversationRef: 'missing-session',
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
     ).toBeNull();
@@ -224,11 +260,11 @@ describe('claudeArtifactCapability', () => {
         [`${root}/-workspace-a`]: [dirent('session-1.jsonl', 'file')],
         [`${root}/-workspace-b`]: [dirent('session-1.jsonl', 'file')],
       }),
-      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      env: { homedir: () => '/home/user' },
     } as unknown as ArtifactCleanupRuntime;
 
     expect(
-      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', source: TEST_CLAUDE_SOURCE, runtime }),
+      claudeArtifactCapability.locateArtifact?.({ conversationRef: 'session-1', access: TEST_CLAUDE_ACCESS, runtime }),
     ).toBeNull();
   });
 });
@@ -270,14 +306,14 @@ describe('claudeArtifactCapability', () => {
     const unlinkSync = vi.fn();
     const runtime = {
       storage: { unlinkSync, existsSync: () => false },
-      env: { homedir: () => '/home/user', claudeConfigDir: () => '/home/user/.claude' },
+      env: { homedir: () => '/home/user' },
       time: { sleep: async () => {} },
     } as unknown as ArtifactCleanupRuntime;
 
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/session-a.jsonl', '/tmp/session-b.jsonl'],
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
     ).resolves.toEqual({ kind: 'discarded' });

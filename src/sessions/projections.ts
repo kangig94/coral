@@ -2,14 +2,15 @@ import { sqlPlaceholders, type Database } from '../store/db.js';
 
 import type { ReadonlyDatabase } from '../store/read-port.js';
 import { CoralSetupError } from '../runtime/errors.js';
-import { sameProviderCredentialSource } from '../runtime/provider-credentials.js';
+import { isDeepStrictEqual } from 'node:util';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { Reducer } from '../store/reducers.js';
 import {
   type RetentionDiscardAttempt,
   sessionControllerFromProfile,
-  sessionEntrySchema,
-  type SessionEntry,
+  providerSessionSchema,
+  providerSessionProvider,
+  type ProviderSession,
 } from './entry.js';
 import type {
   SessionArtifactHandleRecordedBody,
@@ -27,6 +28,31 @@ import type {
   SessionOpenedBody,
 } from './event-bodies.js';
 import type { SessionAdapterUnparseableFault, SessionProviderFailedFault } from './fault.js';
+import { z } from 'zod';
+
+export const projectionSessionStoredRowSchema = z
+  .object({
+    session_id: z.string().min(1),
+    controller: z.string().min(1),
+    resumable: z.union([z.literal(0), z.literal(1)]),
+    conversation_ref: z.string().min(1).nullable(),
+    scope_key: z.string().min(1),
+    entry: z.string(),
+    last_seq: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const projectionSessionDecoderContract = {
+  entry: 'strict ProviderSession JSON',
+  authority: [
+    'entry.sessionId equals row.session_id',
+    'controller equals controller derived from entry.controllerProfile',
+    'resumable equals whether entry.state is ready',
+    'conversation_ref equals entry.conversationRef or null',
+  ],
+} as const;
+
+type ProjectionSessionStoredRow = z.infer<typeof projectionSessionStoredRowSchema>;
 
 export type ProjectionSessionRow = {
   controller: string;
@@ -34,62 +60,81 @@ export type ProjectionSessionRow = {
   resumable: boolean;
   conversationRef: string | null;
   scopeKey: string;
-  entry: SessionEntry;
+  entry: ProviderSession;
   lastSeq: number;
 };
 
-type SessionProjectionPatch = Partial<Omit<ProjectionSessionRow, 'lastSeq'>>;
+type SessionProjectionPatch = Partial<Omit<ProjectionSessionRow, 'provider' | 'lastSeq'>>;
+
+type SessionProjectionAuthority = {
+  allowClaimTransition?: boolean;
+};
 
 export function readProjectionSession(db: ReadonlyDatabase, sessionId: string): ProjectionSessionRow | null {
-  const row = db
+  const rawRow = db
     .prepare(
-      `SELECT controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
+      `SELECT controller, resumable, conversation_ref, scope_key, entry, last_seq
          FROM projection_sessions
         WHERE session_id = ?`,
     )
-    .get(sessionId) as
-    | {
-        controller: string;
-        provider: string;
-        resumable: number;
-        conversation_ref: string | null;
-        scope_key: string;
-        entry: string;
-        last_seq: number;
-      }
-    | undefined;
+    .get(sessionId);
 
-  if (!row) {
+  if (rawRow === undefined) {
     return null;
   }
-
-  const parsed = parseProjectionSessionEntry(sessionId, row.entry);
+  const { row, entry } = decodeProjectionSessionAuthorityRow({ session_id: sessionId, ...(rawRow as object) });
 
   return {
     controller: row.controller,
-    provider: row.provider,
+    provider: providerSessionProvider(entry),
     resumable: row.resumable === 1,
     conversationRef: row.conversation_ref,
     scopeKey: row.scope_key,
-    entry: parsed,
+    entry,
     lastSeq: row.last_seq,
   };
 }
 
-function parseProjectionSessionEntry(sessionId: string, rawEntry: string): SessionEntry {
+function decodeProjectionSessionStoredRow(raw: unknown): ProjectionSessionStoredRow {
+  return projectionSessionStoredRowSchema.parse(raw);
+}
+
+function decodeProjectionSessionAuthorityRow(raw: unknown): {
+  row: ProjectionSessionStoredRow;
+  entry: ProviderSession;
+} {
+  const row = decodeProjectionSessionStoredRow(raw);
+  const entry = parseProjectionProviderSession(row.session_id, row.entry);
+  const expectedController = sessionControllerFromProfile(entry.controllerProfile);
+  const expectedResumable = entry.state === 'ready' ? 1 : 0;
+  const expectedConversationRef = entry.conversationRef ?? null;
+  if (
+    row.controller !== expectedController ||
+    row.resumable !== expectedResumable ||
+    row.conversation_ref !== expectedConversationRef
+  ) {
+    throw invalidProjectionProviderSession(
+      row.session_id,
+      new Error('Denormalized projection_sessions columns do not match the persisted ProviderSession entry.'),
+    );
+  }
+  return { row, entry };
+}
+
+function parseProjectionProviderSession(sessionId: string, rawEntry: string): ProviderSession {
   let parsed: unknown;
   try {
     parsed = JSON.parse(rawEntry) as unknown;
   } catch (error: unknown) {
-    throw invalidProjectionSessionEntry(sessionId, error);
+    throw invalidProjectionProviderSession(sessionId, error);
   }
 
-  const result = sessionEntrySchema.safeParse(parsed);
+  const result = providerSessionSchema.safeParse(parsed);
   if (!result.success) {
-    throw invalidProjectionSessionEntry(sessionId, result.error);
+    throw invalidProjectionProviderSession(sessionId, result.error);
   }
   if (result.data.sessionId !== sessionId) {
-    throw invalidProjectionSessionEntry(
+    throw invalidProjectionProviderSession(
       sessionId,
       new Error(`Projection entry sessionId '${result.data.sessionId}' does not match '${sessionId}'.`),
     );
@@ -113,10 +158,10 @@ function prematureProjectionSessionEvent(sessionId: string): CoralSetupError {
   });
 }
 
-function invalidProjectionSessionEntry(sessionId: string, cause: unknown): CoralSetupError {
+function invalidProjectionProviderSession(sessionId: string, cause: unknown): CoralSetupError {
   return new CoralSetupError({
     code: 'projection_sessions_invalid_entry',
-    userMessage: `Session projection stored an invalid SessionEntry for ${sessionId}.`,
+    userMessage: `Session projection stored an invalid ProviderSession for ${sessionId}.`,
     remediation: 'Rebuild projection_sessions from Journal events after fixing the session reducer input.',
     context: {
       sessionId,
@@ -125,7 +170,7 @@ function invalidProjectionSessionEntry(sessionId: string, cause: unknown): Coral
   });
 }
 
-function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry: SessionEntry): void {
+function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry: ProviderSession): void {
   if (entry.sessionId === event.stream.id) {
     return;
   }
@@ -133,7 +178,7 @@ function assertEventEntryMatchesStream(event: { stream: { id: string } }, entry:
   throw new CoralSetupError({
     code: 'projection_sessions_entry_stream_mismatch',
     userMessage: `Session event body entry ${entry.sessionId} does not match stream ${event.stream.id}.`,
-    remediation: 'Append session events with the SessionEntry for the same stream id.',
+    remediation: 'Append session events with the ProviderSession for the same stream id.',
     context: { streamId: event.stream.id, entrySessionId: entry.sessionId },
   });
 }
@@ -153,8 +198,9 @@ function assertEventSessionIdMatchesStream(event: { stream: { id: string } }, se
 
 function upsertProjectionSession(
   db: Database,
-  event: { stream: { id: string }; seq: number },
+  event: { type: string; stream: { id: string }; seq: number },
   patch: SessionProjectionPatch,
+  authority: SessionProjectionAuthority = {},
 ): void {
   const previous = readProjectionSession(db, event.stream.id);
   const entry = patch.entry ?? previous?.entry;
@@ -162,17 +208,30 @@ function upsertProjectionSession(
     throw prematureProjectionSessionEvent(event.stream.id);
   }
   assertEventEntryMatchesStream(event, entry);
+  if (
+    patch.entry !== undefined &&
+    !authority.allowClaimTransition &&
+    previous?.entry.activeJobId !== entry.activeJobId
+  ) {
+    throw new CoralSetupError({
+      code: 'provider_session_claim_transition_invalid',
+      userMessage: `Session '${event.stream.id}' cannot change its active job claim through '${event.type}'.`,
+      remediation:
+        'Use only an exact session.claimed, session.claim.released, or continuation replacement claim transition to change activeJobId.',
+      context: {
+        sessionId: event.stream.id,
+        eventType: event.type,
+        priorActiveJobId: previous?.entry.activeJobId,
+        nextActiveJobId: entry.activeJobId,
+      },
+    });
+  }
   if (previous !== null) {
-    const sameAuthority =
-      previous.entry.sessionAuthority.kind === entry.sessionAuthority.kind &&
-      (previous.entry.sessionAuthority.kind === 'orchestration' ||
-        (entry.sessionAuthority.kind === 'provider' &&
-          sameProviderCredentialSource(previous.entry.sessionAuthority.source, entry.sessionAuthority.source)));
-    if (previous.entry.provider !== entry.provider || !sameAuthority) {
+    if (!isDeepStrictEqual(previous.entry.binding, entry.binding)) {
       throw new CoralSetupError({
-        code: 'provider_credential_source_mismatch',
-        userMessage: `Session projection authority changed for ${event.stream.id}.`,
-        remediation: 'Keep provider and credential source immutable after session.opened.',
+        code: 'provider_session_binding_mismatch',
+        userMessage: `Provider session projection binding changed for ${event.stream.id}.`,
+        remediation: 'Keep the provider binding immutable after session.opened.',
         context: { sessionId: event.stream.id },
       });
     }
@@ -184,7 +243,6 @@ function upsertProjectionSession(
   }
   const next = {
     controller: patch.controller ?? previous?.controller ?? sessionControllerFromProfile(entry.controllerProfile),
-    provider: patch.provider ?? previous?.provider ?? entry.provider,
     resumable: patch.resumable ?? previous?.resumable ?? entry.state === 'ready',
     conversationRef: hasConversationRefPatch(patch)
       ? patch.conversationRef
@@ -193,13 +251,22 @@ function upsertProjectionSession(
     entry,
   };
 
+  decodeProjectionSessionAuthorityRow({
+    session_id: event.stream.id,
+    controller: next.controller,
+    resumable: next.resumable ? 1 : 0,
+    conversation_ref: next.conversationRef,
+    scope_key: next.scopeKey,
+    entry: JSON.stringify(next.entry),
+    last_seq: event.seq,
+  });
+
   upsertProjection(db, {
     table: 'projection_sessions',
     pkColumn: 'session_id',
     pkValue: event.stream.id,
     columns: {
       controller: next.controller,
-      provider: next.provider,
       resumable: next.resumable ? 1 : 0,
       conversation_ref: next.conversationRef,
       scope_key: next.scopeKey,
@@ -216,7 +283,6 @@ export const reduceSessionOpened: Reducer<SessionOpenedBody> = (db, event) => {
   upsertProjectionSession(db, event, {
     entry: event.body.entry,
     controller: event.body.controller,
-    provider: event.body.provider,
     resumable: false,
     conversationRef: null,
     scopeKey: event.body.scope_key,
@@ -238,27 +304,43 @@ export const reduceSessionArtifactHandleRecorded: Reducer<SessionArtifactHandleR
 };
 
 export const reduceSessionClaimed: Reducer<SessionClaimedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    entry: event.body.entry,
-  });
+  upsertProjectionSession(
+    db,
+    event,
+    {
+      entry: event.body.entry,
+    },
+    { allowClaimTransition: true },
+  );
 };
 
 export const reduceSessionClaimReleased: Reducer<SessionClaimReleasedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    entry: event.body.entry,
-  });
+  upsertProjectionSession(
+    db,
+    event,
+    {
+      entry: event.body.entry,
+    },
+    { allowClaimTransition: true },
+  );
 };
 
 function upsertContinuationLease(
   db: Database,
-  event: { stream: { id: string }; seq: number },
+  event: { type: string; stream: { id: string }; seq: number },
   sessionId: string,
-  entry: SessionEntry,
+  entry: ProviderSession,
+  authority: SessionProjectionAuthority = {},
 ): void {
   assertEventSessionIdMatchesStream(event, sessionId);
-  upsertProjectionSession(db, event, {
-    entry,
-  });
+  upsertProjectionSession(
+    db,
+    event,
+    {
+      entry,
+    },
+    authority,
+  );
 }
 
 export const reduceSessionContinuationLeaseRecorded: Reducer<SessionContinuationLeaseRecordedBody> = (db, event) => {
@@ -266,7 +348,7 @@ export const reduceSessionContinuationLeaseRecorded: Reducer<SessionContinuation
 };
 
 export const reduceSessionContinuationLeaseClaimed: Reducer<SessionContinuationLeaseClaimedBody> = (db, event) => {
-  upsertContinuationLease(db, event, event.body.sessionId, event.body.entry);
+  upsertContinuationLease(db, event, event.body.sessionId, event.body.entry, { allowClaimTransition: true });
 };
 
 export const reduceSessionContinuationLeaseCleared: Reducer<SessionContinuationLeaseClearedBody> = (db, event) => {
@@ -279,7 +361,7 @@ export const reduceSessionContinuationLeaseExpired: Reducer<SessionContinuationL
 
 function upsertRetentionDiscardAttempt(
   db: Database,
-  event: { stream: { id: string }; seq: number },
+  event: { type: string; stream: { id: string }; seq: number },
   attempt: RetentionDiscardAttempt,
 ): void {
   const previous = readProjectionSession(db, event.stream.id);
@@ -327,31 +409,25 @@ export const reduceSessionRetentionDiscardFailed: Reducer<SessionRetentionDiscar
 };
 
 export const reduceSessionInterrupted: Reducer<SessionInterruptedBody> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    ...('fault' in event.body && event.body.entry !== undefined ? { entry: event.body.entry } : {}),
-  });
+  upsertProjectionSession(db, event, {});
 };
 
 export const reduceSessionProviderFailed: Reducer<SessionProviderFailedFault> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    provider: event.body.provider,
-  });
+  upsertProjectionSession(db, event, {});
 };
 
 export const reduceSessionAdapterUnparseable: Reducer<SessionAdapterUnparseableFault> = (db, event) => {
-  upsertProjectionSession(db, event, {
-    provider: event.body.provider,
-  });
+  upsertProjectionSession(db, event, {});
 };
 
-export function readProjectionSessionEntry(db: ReadonlyDatabase, sessionId: string): SessionEntry | null {
+export function readProjectionProviderSession(db: ReadonlyDatabase, sessionId: string): ProviderSession | null {
   return readProjectionSession(db, sessionId)?.entry ?? null;
 }
 
 export function readProjectionSessionEntriesById(
   db: ReadonlyDatabase,
   sessionIds: readonly string[],
-): Map<string, SessionEntry> {
+): Map<string, ProviderSession> {
   const uniqueSessionIds = [...new Set(sessionIds)];
   if (uniqueSessionIds.length === 0) {
     return new Map();
@@ -359,15 +435,16 @@ export function readProjectionSessionEntriesById(
 
   const rows = db
     .prepare(
-      `SELECT session_id, entry
+      `SELECT session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
          FROM projection_sessions
         WHERE session_id IN (${sqlPlaceholders(uniqueSessionIds.length)})`,
     )
-    .all(...uniqueSessionIds) as Array<{ session_id: string; entry: string }>;
+    .all(...uniqueSessionIds);
 
-  const entries = new Map<string, SessionEntry>();
-  for (const row of rows) {
-    entries.set(row.session_id, parseProjectionSessionEntry(row.session_id, row.entry));
+  const entries = new Map<string, ProviderSession>();
+  for (const rawRow of rows) {
+    const { row, entry } = decodeProjectionSessionAuthorityRow(rawRow);
+    entries.set(row.session_id, entry);
   }
   return entries;
 }
@@ -376,26 +453,17 @@ export function listProjectionSessionEntries(
   db: ReadonlyDatabase,
   provider?: string,
   scopeKey?: string,
-): SessionEntry[] {
-  const clauses: string[] = [];
-  const params: string[] = [];
-  if (provider !== undefined) {
-    clauses.push('provider = ?');
-    params.push(provider);
-  }
-  if (scopeKey !== undefined) {
-    clauses.push('scope_key = ?');
-    params.push(scopeKey);
-  }
-
+): ProviderSession[] {
   const rows = db
     .prepare(
-      `SELECT session_id, entry
+      `SELECT session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
          FROM projection_sessions
-        ${clauses.length === 0 ? '' : `WHERE ${clauses.join(' AND ')}`}
         ORDER BY session_id ASC`,
     )
-    .all(...params) as Array<{ session_id: string; entry: string }>;
+    .all();
 
-  return rows.map((row) => parseProjectionSessionEntry(row.session_id, row.entry));
+  const decoded = rows.map(decodeProjectionSessionAuthorityRow);
+  const scoped = scopeKey === undefined ? decoded : decoded.filter(({ row }) => row.scope_key === scopeKey);
+  const entries = scoped.map(({ entry }) => entry);
+  return provider === undefined ? entries : entries.filter((entry) => providerSessionProvider(entry) === provider);
 }

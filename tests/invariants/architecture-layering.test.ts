@@ -30,6 +30,7 @@ const SECURITY_ALLOWED_TARGETS = new Set(['src/infra/port-types.ts', 'src/runtim
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
   'src/jobs/contracts/abort-registry.ts',
+  'src/jobs/contracts/event-stream.ts',
   'src/jobs/launch.ts',
   'src/jobs/phase.ts',
   'src/jobs/records.ts',

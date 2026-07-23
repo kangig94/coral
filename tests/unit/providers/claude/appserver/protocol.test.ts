@@ -16,6 +16,16 @@ import {
   toBootstrapSignature,
   withBrokerSessionKey,
 } from '#src/providers/claude/appserver/protocol.js';
+import { hashClaudeBootstrapConfiguration } from '#src/providers/claude/request-prep.js';
+
+const TEST_BOOTSTRAP_CONFIGURATION = {
+  projectsRoot: '/home/user/.claude/projects',
+  conversationRef: 'conversation-1',
+  resumeExisting: true,
+  model: 'claude-sonnet-4-6',
+  effort: 'high',
+} as const;
+const TEST_BOOTSTRAP_CONFIG_HASH = hashClaudeBootstrapConfiguration(TEST_BOOTSTRAP_CONFIGURATION);
 
 describe('claude appserver protocol helpers', () => {
   it('parses inbound JSON-RPC requests and notifications', () => {
@@ -79,6 +89,7 @@ describe('claude appserver protocol helpers', () => {
       cwd: '/workspace',
       projectsRoot: '/home/user/.claude/projects',
       systemPromptHash: 'sha256:abc123',
+      bootstrapConfigHash: TEST_BOOTSTRAP_CONFIG_HASH,
       permissionMode: 'bypassPermissions',
       brokerSessionKey: 'broker-1',
       conversationRef: 'conversation-1',
@@ -95,6 +106,7 @@ describe('claude appserver protocol helpers', () => {
       cwd: '/workspace',
       projectsRoot: '/home/user/.claude/projects',
       systemPromptHash: 'sha256:abc123',
+      bootstrapConfigHash: TEST_BOOTSTRAP_CONFIG_HASH,
       permissionMode: 'bypassPermissions',
       brokerSessionKey: 'broker-1',
       conversationRef: 'conversation-1',
@@ -110,6 +122,7 @@ describe('claude appserver protocol helpers', () => {
       cwd: '/workspace',
       projectsRoot: '/home/user/.claude/projects',
       systemPromptHash: 'sha256:abc123',
+      bootstrapConfigHash: TEST_BOOTSTRAP_CONFIG_HASH,
       permissionMode: 'bypassPermissions',
       conversationRef: 'conversation-1',
       resumeExisting: true,
@@ -123,6 +136,7 @@ describe('claude appserver protocol helpers', () => {
     expect(toBootstrapSignature(stripBrokerSessionKey(ensure))).toEqual({
       cwd: '/workspace',
       systemPromptHash: 'sha256:abc123',
+      bootstrapConfigHash: TEST_BOOTSTRAP_CONFIG_HASH,
       permissionMode: 'bypassPermissions',
     });
     expect(
@@ -130,10 +144,22 @@ describe('claude appserver protocol helpers', () => {
         cwd: '/workspace',
         projectsRoot: '/home/user/.claude/projects',
         systemPromptHash: 'sha256:abc123',
+        bootstrapConfigHash: hashClaudeBootstrapConfiguration({
+          projectsRoot: '/home/user/.claude/projects',
+        }),
         permissionMode: 'bypassPermissions',
         conversationRef: '',
       }),
     ).not.toHaveProperty('conversationRef');
+    expect(() =>
+      requireSessionEnsureParams({
+        cwd: '/workspace',
+        projectsRoot: '/home/user/.claude/projects',
+        systemPromptHash: 'sha256:abc123',
+        bootstrapConfigHash: 'sha256:tampered',
+        permissionMode: 'bypassPermissions',
+      }),
+    ).toThrow('Invalid bootstrap configuration hash');
     expect(() =>
       requireSessionEnsureParams({
         cwd: '',

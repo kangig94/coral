@@ -3,10 +3,7 @@ import { z } from 'zod';
 import { causeRefSchema } from '../causality/cause-ref.js';
 import { providerInstructionSchema, type ProviderInstruction } from '../providers/contract.js';
 import { providerArtifactIdentityKey, providerArtifactIdentitySchema } from '../providers/artifact-identity.js';
-import {
-  providerCredentialSourceRefSchema,
-  type ProviderCredentialSourceRef,
-} from '../runtime/provider-credentials.js';
+import { providerBindingEnvelopeSchema, type ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
 import { continuityRefSchema, type ProviderContinuityBlob } from './continuity.js';
 
 const sessionStateSchema = z.enum(['pending', 'ready', 'non_resumable']);
@@ -23,22 +20,14 @@ export type RetentionPolicy = z.infer<typeof retentionPolicySchema>;
 
 const providerArtifactHandleSchema = z
   .object({
-    provider: z.string().min(1),
     handle: z.string().min(1),
     identity: providerArtifactIdentitySchema,
-    identityKey: z.string().min(1).optional(),
-    sourceJobId: z.string().min(1).optional(),
+    identityKey: z.string().min(1),
+    sourceJobId: z.string().min(1),
     recordedAt: z.string().datetime(),
   })
   .strict()
-  .transform((artifact) => {
-    const identity = artifact.identity;
-    return {
-      ...artifact,
-      identity,
-      identityKey: artifact.identityKey ?? providerArtifactIdentityKey(artifact.provider, identity),
-    };
-  });
+  .describe('provider-artifact-handle');
 
 export type ProviderArtifactHandle = z.infer<typeof providerArtifactHandleSchema>;
 
@@ -66,7 +55,7 @@ export type RetentionDiscardAttempt = z.infer<typeof retentionDiscardAttemptSche
 
 const retentionDiscardStateSchema = z
   .object({
-    attempts: z.array(retentionDiscardAttemptSchema).default([]).readonly(),
+    attempts: z.array(retentionDiscardAttemptSchema).readonly(),
   })
   .strict();
 
@@ -84,6 +73,9 @@ const continuationLeaseClearOutcomeSchema = z.enum([
 const continuationLeaseBaseSchema = z
   .object({
     staleJobId: z.string().min(1),
+    workflowId: z.string().min(1),
+    workflowSlotId: z.string().min(1),
+    replacementGeneration: z.number().int().positive(),
     reason: continuationLeaseReasonSchema,
     expiresAt: z.string().datetime(),
     recordedAt: z.string().datetime(),
@@ -131,22 +123,15 @@ export const recordContinuationLeaseInputSchema = z
   .object({
     sessionId: z.string().min(1),
     jobId: z.string().min(1),
+    workflowId: z.string().min(1),
+    workflowSlotId: z.string().min(1),
+    replacementGeneration: z.number().int().positive(),
     reason: continuationLeaseReasonSchema,
     expiresAt: z.string().datetime(),
   })
   .strict();
 
 export type RecordContinuationLeaseInput = z.infer<typeof recordContinuationLeaseInputSchema>;
-
-export const claimContinuationLeaseInputSchema = z
-  .object({
-    sessionId: z.string().min(1),
-    staleJobId: z.string().min(1),
-    resumedJobId: z.string().min(1),
-  })
-  .strict();
-
-export type ClaimContinuationLeaseInput = z.infer<typeof claimContinuationLeaseInputSchema>;
 
 export const clearContinuationLeaseInputSchema = z
   .object({
@@ -174,26 +159,13 @@ const sessionControllerProfileSchema = z
     effort: z.string().optional(),
     claudeModelCap: z.string().optional(),
   })
-  .passthrough()
-  .transform((profile) => ({
-    ...(profile.owner !== undefined ? { owner: profile.owner } : {}),
-    ...(profile.effort !== undefined ? { effort: profile.effort } : {}),
-    ...(profile.claudeModelCap !== undefined ? { claudeModelCap: profile.claudeModelCap } : {}),
-  }));
+  .strict();
 
 export type SessionControllerProfile = z.infer<typeof sessionControllerProfileSchema>;
 
-export type SessionAuthority = { kind: 'provider'; source: ProviderCredentialSourceRef } | { kind: 'orchestration' };
-
-export const sessionAuthoritySchema = z.union([
-  z.object({ kind: z.literal('provider'), source: providerCredentialSourceRefSchema }).strict(),
-  z.object({ kind: z.literal('orchestration') }).strict(),
-]);
-
-export interface SessionEntry {
+export interface ProviderSession {
   sessionId: string;
-  provider: string;
-  sessionAuthority: SessionAuthority;
+  binding: ProviderBindingEnvelope;
   name: string;
   state: SessionState;
   retention: RetentionPolicy;
@@ -217,16 +189,15 @@ export interface SessionEntry {
   version: number;
 }
 
-export const sessionEntrySchema = z
+export const providerSessionSchema = z
   .object({
     sessionId: z.string().min(1),
-    provider: z.string().min(1),
-    sessionAuthority: sessionAuthoritySchema,
+    binding: providerBindingEnvelopeSchema,
     name: z.string().min(1),
     state: sessionStateSchema,
-    retention: retentionPolicySchema.default('retain'),
-    artifactHandles: z.array(providerArtifactHandleSchema).default([]).readonly(),
-    retentionDiscard: retentionDiscardStateSchema.default({ attempts: [] }),
+    retention: retentionPolicySchema,
+    artifactHandles: z.array(providerArtifactHandleSchema).readonly(),
+    retentionDiscard: retentionDiscardStateSchema,
     continuationLease: sessionContinuationLeaseSchema.optional(),
     activeJobId: z.string().min(1).optional(),
     conversationRef: continuityRefSchema.optional(),
@@ -244,7 +215,25 @@ export const sessionEntrySchema = z
     lastUsedAt: z.string(),
     version: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  .superRefine((session, ctx) => {
+    for (const [index, artifact] of session.artifactHandles.entries()) {
+      const expected = providerArtifactIdentityKey(session.binding.provider, artifact.identity);
+      if (artifact.identityKey !== expected) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['artifactHandles', index, 'identityKey'],
+          message: 'Artifact identityKey must be derived from binding.provider and identity.',
+        });
+      }
+    }
+  })
+  .describe('validate-provider-session-artifact-identity-keys');
+
+/** The provider owning a conversation is defined solely by its durable binding. */
+export function providerSessionProvider(session: Pick<ProviderSession, 'binding'>): string {
+  return session.binding.provider;
+}
 
 export function sessionControllerFromProfile(profile?: SessionControllerProfile): SessionControllerId {
   if (typeof profile?.owner === 'string' && profile.owner.length > 0) {
@@ -268,6 +257,6 @@ export function isProtectiveContinuationLease(lease: SessionContinuationLease | 
   }
 }
 
-export function hasUnterminalRetentionDiscardRequest(entry: Pick<SessionEntry, 'retentionDiscard'>): boolean {
+export function hasUnterminalRetentionDiscardRequest(entry: Pick<ProviderSession, 'retentionDiscard'>): boolean {
   return entry.retentionDiscard.attempts.some((attempt) => attempt.status === 'requested');
 }

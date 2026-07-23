@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import * as fs from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +31,7 @@ describe('discuss session-store golden master', () => {
     const db = newRawDatabase(':memory:');
 
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
 
       for (const [index, domainEvent] of events.entries()) {
         const input = toJournalInput(domainEvent);
@@ -44,7 +45,6 @@ describe('discuss session-store golden master', () => {
           correlationId: input.correlationId,
           causationSeq: input.causationSeq,
           refs: input.refs,
-          bodyVersion: input.bodyVersion,
           body: input.body,
         };
         reduceDiscussProjection(db, event);

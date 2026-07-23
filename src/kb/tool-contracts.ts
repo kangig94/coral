@@ -162,13 +162,9 @@ export const kbWikiRewriteSchema = z
   })
   .strict();
 
-export const kbWikiLinkSchema = z
-  .object(kbWikiRefMutationShape)
-  .strict();
+export const kbWikiLinkSchema = z.object(kbWikiRefMutationShape).strict();
 
-export const kbWikiUnlinkSchema = z
-  .object(kbWikiRefMutationShape)
-  .strict();
+export const kbWikiUnlinkSchema = z.object(kbWikiRefMutationShape).strict();
 
 export const kbWikiCiteSchema = z
   .object({

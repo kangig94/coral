@@ -18,6 +18,7 @@ import type { CurateAssistantPort } from '../kb/curate/assistant.js';
 import type { KbReadPathResolver, KbReadStorage } from '../kb/read.js';
 import type { KbQueryHost } from '../kb/queries.js';
 import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;
 
@@ -50,7 +51,12 @@ export class KbQueryRegistry {
   getDb(flavor: BuildFlavor): ReadonlyDatabase {
     if (this.cachedDb?.flavor !== flavor) {
       this.cachedDb?.db.close();
-      this.cachedDb = { flavor, db: openReadOnlyStoreDatabase(this.getRuntime(flavor)) };
+      this.cachedDb = {
+        flavor,
+        db: openReadOnlyStoreDatabase(this.getRuntime(flavor), {
+          storeFormat: currentCoralStoreFormat(),
+        }),
+      };
     }
     return this.cachedDb.db;
   }
@@ -61,7 +67,7 @@ export class KbQueryRegistry {
       return cached;
     }
 
-    const db = openReadOnlyStoreDatabase(runtime);
+    const db = openReadOnlyStoreDatabase(runtime, { storeFormat: currentCoralStoreFormat() });
     this.cachedRuntimeDbs.set(runtime, db);
     return db;
   }

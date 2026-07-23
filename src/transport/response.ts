@@ -5,14 +5,23 @@ export function launchToHttp(
   decision: LaunchDecision,
   acceptedStatusCode: 201 | 202,
 ): { statusCode: number; body: unknown } {
-  if (decision.status === 'running' || decision.status === 'queued') {
+  if (decision.status !== 'rejected') {
     return {
       statusCode: acceptedStatusCode,
-      body: {
-        session: decision.session,
-        job: decision.job,
-        launchState: decision.status,
-      },
+      body:
+        decision.kind === 'provider-session'
+          ? {
+              kind: decision.kind,
+              sessionId: decision.sessionId,
+              jobId: decision.jobId,
+              launchState: decision.status,
+            }
+          : {
+              kind: decision.kind,
+              workflowId: decision.workflowId,
+              jobId: decision.jobId,
+              launchState: decision.status,
+            },
     };
   }
 
@@ -37,6 +46,13 @@ export function launchToHttp(
     case 'session_busy':
     case 'non_resumable':
     case 'provider_mismatch':
+    case 'job_owner_mismatch':
+    case 'job_owner_missing':
+    case 'job_provider_session_missing':
+    case 'job_binding_owner_mismatch':
+    case 'discussion_job_launch_conflict':
+    case 'workflow_owner_terminal':
+    case 'workflow_slot_chain_invalid':
       statusCode = 409;
       break;
   }
@@ -58,7 +74,7 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
   let statusCode = 500;
   switch (result.code) {
     case 'invalid_request':
-    case 'provider_credential_source_missing':
+    case 'provider_scope_missing':
       statusCode = 400;
       break;
     case 'not_found':
@@ -83,6 +99,9 @@ export function domainResultToHttp(result: ToolDomainResult): { statusCode: numb
       break;
     case 'kb_daemon_protocol_error':
       statusCode = 502;
+      break;
+    default:
+      if (result.code.startsWith('provider_binding_')) statusCode = 400;
       break;
   }
   const body = {

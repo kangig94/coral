@@ -359,7 +359,6 @@ describe('entity graph merge driver', () => {
       storagePort: runtime.storage,
       envPort: {
         get: (key: string) => (key === 'CLAUDE_PLUGIN_ROOT' ? pluginRoot : undefined),
-        claudeConfigDir: () => join(root, '.claude-test'),
       },
     });
 

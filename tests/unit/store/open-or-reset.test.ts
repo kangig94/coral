@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import {
@@ -34,6 +35,7 @@ import { pragmaSimple } from '#tests/helpers/test-db.js';
 const REPO_ROOT = process.cwd();
 const BUNDLE_HASH = 'test-bundle';
 const NAMESPACE = 'test-namespace';
+const STORE_FORMAT = currentCoralStoreFormat();
 
 const tempRoots: string[] = [];
 
@@ -76,16 +78,6 @@ function createRuntime(home = makeTempRoot('coral-store-open-reset-home-')): Run
   return withEnv({ HOME: home, CLAUDE_PLUGIN_ROOT: REPO_ROOT }, () => createRealRuntime('prod'));
 }
 
-function readUserVersion(dbPath: string): number {
-  const db = new DatabaseSync(dbPath);
-  try {
-    const row = db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined;
-    return row?.user_version ?? 0;
-  } finally {
-    db.close();
-  }
-}
-
 function tableExists(dbPath: string, name: string): boolean {
   const db = new DatabaseSync(dbPath);
   try {
@@ -95,10 +87,10 @@ function tableExists(dbPath: string, name: string): boolean {
   }
 }
 
-function retiredSchemaVersionRow(dbPath: string): string | null {
+function readFormatFingerprint(dbPath: string): string | null {
   const db = new DatabaseSync(dbPath);
   try {
-    const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1").get() as
+    const row = db.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint' LIMIT 1").get() as
       | { value?: string }
       | undefined;
     return row?.value ?? null;
@@ -107,30 +99,32 @@ function retiredSchemaVersionRow(dbPath: string): string | null {
   }
 }
 
-function createRetiredStore(dbPath: string): void {
+function createMissingFingerprintStore(dbPath: string): void {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
     db.exec(`
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+      INSERT INTO meta (key, value) VALUES ('coordinator_id', 'old');
       CREATE TABLE events (seq INTEGER PRIMARY KEY, type TEXT NOT NULL);
-      PRAGMA user_version = 0;
+      CREATE TABLE sentinel_before_reset (id INTEGER PRIMARY KEY);
+      INSERT INTO sentinel_before_reset (id) VALUES (1);
     `);
   } finally {
     db.close();
   }
 }
 
-function createMismatchStore(dbPath: string, marker = 1): void {
+function createMismatchStore(dbPath: string, fingerprint = 'sha256:obsolete'): void {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
     db.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE sentinel_before_reset (id INTEGER PRIMARY KEY);
       INSERT INTO sentinel_before_reset (id) VALUES (1);
-      PRAGMA user_version = ${marker};
     `);
+    db.prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)").run(fingerprint);
   } finally {
     db.close();
   }
@@ -153,6 +147,7 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
       path: dbPath,
       bundleHash: BUNDLE_HASH,
       namespace: NAMESPACE,
+      storeFormat: STORE_FORMAT,
     },
   );
 }
@@ -162,6 +157,7 @@ function openReset(runtime: Runtime, dbPath: string) {
     path: dbPath,
     bundleHash: BUNDLE_HASH,
     namespace: NAMESPACE,
+    storeFormat: STORE_FORMAT,
   });
 }
 
@@ -194,7 +190,8 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     expect(existsSync(dbPath)).toBe(true);
-    expect(readUserVersion(dbPath)).not.toBe(0);
+    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
+    expect(readFileSync(`${dbPath}.format`, 'utf8')).toBe(`${STORE_FORMAT.fingerprint}\n`);
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
@@ -208,7 +205,7 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     expect(existsSync(dbDir)).toBe(true);
-    expect(readUserVersion(dbPath)).not.toBe(0);
+    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
     expect(existsSync(join(dbDir, 'store.db.reset.lock'))).toBe(false);
   });
 
@@ -220,6 +217,7 @@ describe('openOrResetBackendStoreDb', () => {
       path: dbPath,
       bundleHash: BUNDLE_HASH,
       namespace: NAMESPACE,
+      storeFormat: STORE_FORMAT,
       startupBusyTimeoutMs: 1,
       steadyStateBusyTimeoutMs: 12_345,
     });
@@ -230,19 +228,42 @@ describe('openOrResetBackendStoreDb', () => {
     }
   });
 
-  it('resets a retired v0.6.2 store, warns, and removes the old meta schema marker', () => {
+  it('resets a store with no format fingerprint', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-retired-'), 'store.db');
-    createRetiredStore(dbPath);
+    const dbPath = join(makeTempRoot('coral-store-missing-fingerprint-'), 'store.db');
+    createMissingFingerprintStore(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     const db = openReset(runtime, dbPath);
     db.close();
 
-    expect(readUserVersion(dbPath)).not.toBe(0);
-    expect(retiredSchemaVersionRow(dbPath)).toBeNull();
+    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
+    const eventColumns = (() => {
+      const current = new DatabaseSync(dbPath);
+      try {
+        return current
+          .prepare('PRAGMA table_info(events)')
+          .all()
+          .map((row) => (row as { name: string }).name);
+      } finally {
+        current.close();
+      }
+    })();
+    expect(eventColumns).toEqual(
+      expect.arrayContaining(['seq', 'ts', 'type', 'stream_kind', 'stream_id', 'namespace', 'project', 'refs', 'body']),
+    );
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const quarantineDir = join(quarantineRoot, readdirSync(quarantineRoot)[0]);
+    expect(tableExists(join(quarantineDir, 'store.db'), 'sentinel_before_reset')).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(quarantineDir, 'reset-manifest.json'), 'utf-8')) as Record<
+      string,
+      unknown
+    >;
+    expect(manifest).toMatchObject({ reason: 'missing', storedFingerprint: null });
     const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
-    expect(messages.some((message) => message.includes('will be lost'))).toBe(true);
+    expect(messages.some((message) => message.includes('will be unavailable'))).toBe(true);
     expect(
       messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
     ).toBe(true);
@@ -253,13 +274,13 @@ describe('openOrResetBackendStoreDb', () => {
     const dbPath = join(makeTempRoot('coral-store-current-'), 'store.db');
     const first = openReset(runtime, dbPath);
     first.close();
-    const marker = readUserVersion(dbPath);
+    const marker = readFormatFingerprint(dbPath);
     const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     const second = openReset(runtime, dbPath);
     second.close();
 
-    expect(readUserVersion(dbPath)).toBe(marker);
+    expect(readFormatFingerprint(dbPath)).toBe(marker);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
@@ -271,7 +292,7 @@ describe('openOrResetBackendStoreDb', () => {
     const db = openReset(runtime, dbPath);
     db.close();
 
-    expect(readUserVersion(dbPath)).not.toBe(1);
+    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
@@ -297,9 +318,8 @@ describe('openOrResetBackendStoreDb', () => {
     const manifest = JSON.parse(readFileSync(join(quarantineDir, 'reset-manifest.json'), 'utf-8')) as {
       schemaVersion?: unknown;
       reason?: unknown;
-      userVersion?: unknown;
-      storedVersion?: unknown;
-      expectedVersion?: unknown;
+      storedFingerprint?: unknown;
+      expectedFingerprint?: unknown;
       dbFile?: unknown;
       quarantineDir?: unknown;
       files?: Array<{
@@ -313,12 +333,11 @@ describe('openOrResetBackendStoreDb', () => {
     expect(manifest).toMatchObject({
       schemaVersion: 1,
       reason: 'mismatch',
-      userVersion: 1,
-      storedVersion: 1,
+      storedFingerprint: 'sha256:obsolete',
+      expectedFingerprint: STORE_FORMAT.fingerprint,
       dbFile: dbPath,
       quarantineDir,
     });
-    expect(typeof manifest.expectedVersion).toBe('number');
     expect(manifest.files).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -365,10 +384,10 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('resets a retired store on cold start without handoff authority', () => {
+  it('resets a missing-fingerprint store on cold start without handoff authority', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-cold-retired-'), 'store.db');
-    createRetiredStore(dbPath);
+    const dbPath = join(makeTempRoot('coral-store-cold-missing-fingerprint-'), 'store.db');
+    createMissingFingerprintStore(dbPath);
     const authority = createBackendStoreResetAuthority(
       runtime,
       { acquiredViaHandoff: false },
@@ -376,6 +395,7 @@ describe('openOrResetBackendStoreDb', () => {
         path: dbPath,
         bundleHash: BUNDLE_HASH,
         namespace: NAMESPACE,
+        storeFormat: STORE_FORMAT,
       },
     );
 
@@ -383,11 +403,11 @@ describe('openOrResetBackendStoreDb', () => {
       path: dbPath,
       bundleHash: BUNDLE_HASH,
       namespace: NAMESPACE,
+      storeFormat: STORE_FORMAT,
     });
     db.close();
 
-    expect(readUserVersion(dbPath)).not.toBe(0);
-    expect(retiredSchemaVersionRow(dbPath)).toBeNull();
+    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
   });
 
   it('logs the live-work-loss warning for mismatched stores', () => {
@@ -401,7 +421,9 @@ describe('openOrResetBackendStoreDb', () => {
 
     const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
     expect(
-      messages.some((message) => message.includes('resetting backend store') && message.includes('will be lost')),
+      messages.some(
+        (message) => message.includes('resetting backend store') && message.includes('will be unavailable'),
+      ),
     ).toBe(true);
     expect(
       messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
@@ -455,7 +477,7 @@ describe('openOrResetBackendStoreDb', () => {
     const db = openReset(runtime, dbPath);
     db.close();
 
-    expect(readUserVersion(dbPath)).not.toBe(0);
+    expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
     expect(existsSync(lockDir)).toBe(false);
   });
 
@@ -494,6 +516,7 @@ describe('openOrResetBackendStoreDb', () => {
         path: dbPath,
         bundleHash: 'stale-bundle-hash',
         namespace: NAMESPACE,
+        storeFormat: STORE_FORMAT,
       },
     );
 
@@ -502,6 +525,7 @@ describe('openOrResetBackendStoreDb', () => {
         path: dbPath,
         bundleHash: BUNDLE_HASH,
         namespace: NAMESPACE,
+        storeFormat: STORE_FORMAT,
       }),
     );
 
@@ -510,24 +534,63 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(existsSync(`${dbPath}-shm`)).toBe(false);
   });
+
+  it('rejects reset authority minted for a different store fingerprint without touching DB siblings', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-authority-format-mismatch-'), 'store.db');
+    createMismatchStore(dbPath);
+    writeFileSync(`${dbPath}-wal`, 'authority wal', 'utf-8');
+    writeFileSync(`${dbPath}-shm`, 'authority shm', 'utf-8');
+    writeFileSync(`${dbPath}.format`, 'sha256:authority-sidecar\n', 'utf-8');
+    const before = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`].map((path) => readFileSync(path));
+    const otherFormat = {
+      ...STORE_FORMAT,
+      fingerprint: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' as const,
+    };
+    const authority = createBackendStoreResetAuthority(
+      runtime,
+      { acquiredViaHandoff: true },
+      { path: dbPath, bundleHash: BUNDLE_HASH, namespace: NAMESPACE, storeFormat: STORE_FORMAT },
+    );
+
+    const error = captureError(() =>
+      openOrResetBackendStoreDb(runtime, authority, {
+        path: dbPath,
+        bundleHash: BUNDLE_HASH,
+        namespace: NAMESPACE,
+        storeFormat: otherFormat,
+      }),
+    );
+
+    expectSetupCode(error, 'store_schema_outdated');
+    const serialized = serializeCoralSetupError(error);
+    expect(serialized?.context).toMatchObject({ mismatches: ['storeFormatFingerprint'] });
+    for (const [index, path] of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`].entries()) {
+      expect(readFileSync(path)).toEqual(before[index]);
+    }
+  });
 });
 
 describe('read-only store access', () => {
-  it('throws store_schema_outdated for retired and mismatched stores without changing the file', () => {
+  it('throws store_schema_outdated for missing-fingerprint and mismatched stores without changing the file', () => {
     const runtime = createRuntime();
-    const retiredPath = join(makeTempRoot('coral-store-readonly-retired-'), 'store.db');
+    const missingPath = join(makeTempRoot('coral-store-readonly-missing-fingerprint-'), 'store.db');
     const mismatchPath = join(makeTempRoot('coral-store-readonly-mismatch-'), 'store.db');
-    createRetiredStore(retiredPath);
+    createMissingFingerprintStore(missingPath);
     createMismatchStore(mismatchPath);
-    const retiredBefore = readFileSync(retiredPath);
+    const missingBefore = readFileSync(missingPath);
     const mismatchBefore = readFileSync(mismatchPath);
 
-    const retiredError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: retiredPath }));
-    const mismatchError = captureError(() => openReadOnlyStoreDatabase(runtime, { path: mismatchPath }));
+    const missingError = captureError(() =>
+      openReadOnlyStoreDatabase(runtime, { storeFormat: STORE_FORMAT, path: missingPath }),
+    );
+    const mismatchError = captureError(() =>
+      openReadOnlyStoreDatabase(runtime, { storeFormat: STORE_FORMAT, path: mismatchPath }),
+    );
 
-    expectSetupCode(retiredError, 'store_schema_outdated');
+    expectSetupCode(missingError, 'store_schema_outdated');
     expectSetupCode(mismatchError, 'store_schema_outdated');
-    expect(readFileSync(retiredPath)).toEqual(retiredBefore);
+    expect(readFileSync(missingPath)).toEqual(missingBefore);
     expect(readFileSync(mismatchPath)).toEqual(mismatchBefore);
   });
 
@@ -595,33 +658,33 @@ describe('openWritableStoreDbNoReset', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-no-reset-current-'), 'store.db');
 
-    const fresh = openWritableStoreDbNoReset(runtime, { path: dbPath });
+    const fresh = openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath });
     fresh.close();
-    const marker = readUserVersion(dbPath);
-    const current = openWritableStoreDbNoReset(runtime, { path: dbPath });
+    const marker = readFormatFingerprint(dbPath);
+    const current = openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath });
     current.close();
 
-    expect(marker).not.toBe(0);
-    expect(readUserVersion(dbPath)).toBe(marker);
+    expect(marker).toBe(STORE_FORMAT.fingerprint);
+    expect(readFormatFingerprint(dbPath)).toBe(marker);
   });
 
-  it('never unlinks retired or mismatched stores and surfaces store_schema_outdated', () => {
+  it('never unlinks missing-fingerprint or mismatched stores and surfaces store_schema_outdated', () => {
     const runtime = createRuntime();
-    const retiredPath = join(makeTempRoot('coral-store-no-reset-retired-'), 'store.db');
+    const missingPath = join(makeTempRoot('coral-store-no-reset-missing-fingerprint-'), 'store.db');
     const mismatchPath = join(makeTempRoot('coral-store-no-reset-mismatch-'), 'store.db');
-    createRetiredStore(retiredPath);
+    createMissingFingerprintStore(missingPath);
     createMismatchStore(mismatchPath);
 
     expectSetupCode(
-      captureError(() => openWritableStoreDbNoReset(runtime, { path: retiredPath })),
+      captureError(() => openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: missingPath })),
       'store_schema_outdated',
     );
     expectSetupCode(
-      captureError(() => openWritableStoreDbNoReset(runtime, { path: mismatchPath })),
+      captureError(() => openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: mismatchPath })),
       'store_schema_outdated',
     );
 
-    expect(retiredSchemaVersionRow(retiredPath)).toBe('1');
+    expect(readFormatFingerprint(missingPath)).toBeNull();
     expect(tableExists(mismatchPath, 'sentinel_before_reset')).toBe(true);
   });
 
@@ -631,7 +694,7 @@ describe('openWritableStoreDbNoReset', () => {
     createCorruptStore(dbPath);
     const before = readFileSync(dbPath, 'utf-8');
 
-    const error = captureError(() => openWritableStoreDbNoReset(runtime, { path: dbPath }));
+    const error = captureError(() => openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath }));
 
     expect(error).toBeInstanceOf(Error);
     expect(readFileSync(dbPath, 'utf-8')).toBe(before);
@@ -641,7 +704,7 @@ describe('openWritableStoreDbNoReset', () => {
 describe('KbQueryRegistry', () => {
   it('reuses runtime-owned read-only DB handles until the registry is closed', () => {
     const runtime = createRuntime();
-    const writable = openWritableStoreDbNoReset(runtime);
+    const writable = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
     writable.close();
 
     const registry = new KbQueryRegistry();

@@ -4,22 +4,22 @@ TypeScript compilation plus esbuild bundling for the current Coral runtime, with
 
 ## Build Commands
 
-| Command | Description |
-| --- | --- |
-| `npm run clean:dist` | Remove `dist/` so deleted source paths cannot survive in package output |
-| `npm run build` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `clients/build/` (prod flavor) |
-| `npm run build:dev` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `clients/build/` (dev flavor) |
-| `npm run build:release` | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle (prod), then copy `clients/build/` to `clients/bridge/` |
-| `npm run check:simulation` | Typecheck `tools/simulation` against `src` and verify sealing |
-| `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` | Run the debug-only simulation harness |
-| `npm run dev` | TypeScript watch mode |
-| `npm test` | Run the test suite |
+| Command                                                          | Description                                                                                                                                    |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run clean:dist`                                             | Remove `dist/` so deleted source paths cannot survive in package output                                                                        |
+| `npm run build`                                                  | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `clients/build/` (prod flavor)                       |
+| `npm run build:dev`                                              | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle to `clients/build/` (dev flavor)                        |
+| `npm run build:release`                                          | Clean `dist/`, TypeScript compile, simulation compatibility check, plus esbuild bundle (prod), then copy `clients/build/` to `clients/bridge/` |
+| `npm run check:simulation`                                       | Typecheck `tools/simulation` against `src` and verify sealing                                                                                  |
+| `npm run simulate -- tools/simulation/scenarios/<scenario.yaml>` | Run the debug-only simulation harness                                                                                                          |
+| `npm run dev`                                                    | TypeScript watch mode                                                                                                                          |
+| `npm test`                                                       | Run the test suite                                                                                                                             |
 
 ## Build Flavors
 
 `scripts/build-server.mjs` accepts `--flavor prod|dev` and `--release`. `npm run build` passes `--flavor prod`, `npm run build:dev` passes `--flavor dev`, and `npm run build:release` passes `--flavor prod --release`. Omitting `--flavor` defaults to `prod`. Flavor is selected explicitly by the build command, not inferred from `NODE_ENV`.
 
-The bundle code is identical across flavors; the distinction lives in `manifest.json`, which carries both `bundleHash` and `flavor`. See `docs/dev-setup.md` for parallel dev/prod daemon usage.
+The bundle code is identical across flavors; the distinction lives in `manifest.json`, which carries `bundleHash`, `flavor`, and the canonical `storeFormatFingerprint` reported by the built backend. See `docs/dev-setup.md` for parallel dev/prod daemon usage.
 
 ## Build Output and Bridge
 
@@ -49,7 +49,7 @@ dist/**/*.js + dist/**/*.d.ts
 clients/build/coral-backend.cjs
 clients/build/coral-cli.cjs
 clients/build/coral-claude-appserver.cjs
-clients/build/manifest.json (`{ "bundleHash", "flavor" }`)
+clients/build/manifest.json (`{ "bundleHash", "flavor", "storeFormatFingerprint" }`)
   │
   ▼  --release (copy to clients/bridge/)
 clients/bridge/*
@@ -57,10 +57,10 @@ clients/bridge/*
 
 The runtime is anchored by two primary entry points:
 
-| Entry point | Output | Role |
-| --- | --- | --- |
+| Entry point                    | Output                            | Role           |
+| ------------------------------ | --------------------------------- | -------------- |
 | `src/coordinator/bootstrap.ts` | `clients/build/coral-backend.cjs` | Backend daemon |
-| `src/cli/bootstrap.ts` | `clients/build/coral-cli.cjs` | CLI entrypoint |
+| `src/cli/bootstrap.ts`         | `clients/build/coral-cli.cjs`     | CLI entrypoint |
 
 The build script also emits `clients/build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude broker helper runtime. The filename is retained for bridge compatibility; the helper defaults to `claude -p` stream-json and can use the PTY TUI transport when `CORAL_CLAUDE_TRANSPORT=tui`.
 
@@ -77,7 +77,7 @@ the current `src/` tree.
 2. Reads `package.json` as the single source of truth for the version.
 3. Syncs that version into `clients/.claude-plugin/plugin.json`, `clients/.codex-plugin/plugin.json`, and the root `.claude-plugin/marketplace.json`.
 4. Bundles the backend, CLI, and Claude broker helper to `clients/build/`.
-5. Rewrites `clients/build/manifest.json` atomically with `{ bundleHash, flavor }` for change detection and flavor identity.
+5. Asks the built backend for its canonical store-format fingerprint, then rewrites `clients/build/manifest.json` atomically with `{ bundleHash, flavor, storeFormatFingerprint }` for change detection, flavor identity, and independent hook read validation.
 
 When `--release` is passed, it additionally copies all artifacts from `clients/build/` to `clients/bridge/`.
 
@@ -85,26 +85,26 @@ When `--release` is passed, it additionally copies all artifacts from `clients/b
 
 ## esbuild Settings
 
-| Setting | Value | Reason |
-| --- | --- | --- |
-| `bundle` | `true` | Single-file deployable bundles |
-| `platform` | `node` | Node.js runtime target |
-| `target` | `node22` | Matches the supported runtime floor |
-| `format` | `cjs` | Bundles are committed as `.cjs` |
-| `external` | `['node:*', '@lydell/node-pty']` | Keep Node built-ins and native modules external (the store uses the built-in `node:sqlite`, so no `better-sqlite3`) |
-| `minify` | `true` | Smaller committed bundles |
-| `banner` | `var __PLUGIN_ROOT__=...` | Runtime plugin-root discovery |
-| `define.__VERSION__` | `package.json` version | Shared build-time version injection |
-| `define.__IS_CORAL_BACKEND_MAIN__` | backend bundle only | Guards backend auto-start behavior |
+| Setting                            | Value                            | Reason                                                                                                              |
+| ---------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `bundle`                           | `true`                           | Single-file deployable bundles                                                                                      |
+| `platform`                         | `node`                           | Node.js runtime target                                                                                              |
+| `target`                           | `node22`                         | Matches the supported runtime floor                                                                                 |
+| `format`                           | `cjs`                            | Bundles are committed as `.cjs`                                                                                     |
+| `external`                         | `['node:*', '@lydell/node-pty']` | Keep Node built-ins and native modules external (the store uses the built-in `node:sqlite`, so no `better-sqlite3`) |
+| `minify`                           | `true`                           | Smaller committed bundles                                                                                           |
+| `banner`                           | `var __PLUGIN_ROOT__=...`        | Runtime plugin-root discovery                                                                                       |
+| `define.__VERSION__`               | `package.json` version           | Shared build-time version injection                                                                                 |
+| `define.__IS_CORAL_BACKEND_MAIN__` | backend bundle only              | Guards backend auto-start behavior                                                                                  |
 
 ## Build-time Injections
 
-| Constant | Source | Usage |
-| --- | --- | --- |
-| `__VERSION__` | `package.json` | Backend health/version output and CLI version reporting |
-| `__PLUGIN_ROOT__` | CJS banner using `__dirname` | Resolve plugin-relative assets at runtime |
-| `__IS_CORAL_BACKEND_MAIN__` | build script | Backend main-entry guard |
-| `CORAL_VEC_ADDON_VERSION` | coral-needle release metadata | KB addon reporting |
+| Constant                    | Source                        | Usage                                                   |
+| --------------------------- | ----------------------------- | ------------------------------------------------------- |
+| `__VERSION__`               | `package.json`                | Backend health/version output and CLI version reporting |
+| `__PLUGIN_ROOT__`           | CJS banner using `__dirname`  | Resolve plugin-relative assets at runtime               |
+| `__IS_CORAL_BACKEND_MAIN__` | build script                  | Backend main-entry guard                                |
+| `CORAL_VEC_ADDON_VERSION`   | coral-needle release metadata | KB addon reporting                                      |
 
 Build flavor is intentionally not injected through an esbuild define. Hooks are unbundled ESM files, so the shared carrier is `clients/bridge/manifest.json`.
 

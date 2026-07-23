@@ -1,25 +1,24 @@
-import type { JobContinuitySnapshot } from '../continuity.js';
 import type { ProviderEventBody, ProviderTerminalEventBody } from '../../providers/contract.js';
+import type { ProviderBindingResult } from '../../providers/contracts/binding.js';
+import type { ProviderValidatedContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionJobClaimPort } from '../../sessions/contracts.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { isRecord } from '../../infra/json.js';
+import { commitContinuityEvent, rejectContinuityEvent } from '../../providers/internal/continuity-commit.js';
 
 export async function consumeJobStream(options: {
   jobId: string;
-  providerName: string;
   sessionId: string;
   initialVersion: number;
   stream: AsyncIterable<ProviderEventBody>;
+  decodeContinuity(rawContinuity: unknown): ProviderBindingResult<ProviderValidatedContinuityBlob | undefined>;
   sessionApi: Pick<SessionJobClaimPort, 'checkpointJobContinuityAtomic' | 'recordArtifactHandleAtomic'>;
   appendProgress(message: string): void;
-  recordTerminal(event: ProviderTerminalEventBody): void;
-}): Promise<{
-  terminal: ProviderTerminalEventBody['terminal'];
-  diagnostics: ProviderTerminalEventBody['diagnostics'];
-  finalContinuity: JobContinuitySnapshot | null;
-}> {
+}): Promise<
+  | { kind: 'terminal'; event: ProviderTerminalEventBody; claimVersion: number }
+  | { kind: 'suspended'; reason: 'interrupt_unconfirmed' | 'durable_state_uncommitted' }
+> {
   const { sessionId, stream, sessionApi } = options;
-  let finalContinuity: JobContinuitySnapshot | null = null;
   let expectedVersion = options.initialVersion;
 
   for await (const event of stream) {
@@ -29,67 +28,78 @@ export async function consumeJobStream(options: {
     }
 
     if (event.kind === 'continuity') {
-      const continuity = toJobContinuitySnapshot(event.providerContinuity, event.conversationRef, event.resumable);
-      const result = await sessionApi.checkpointJobContinuityAtomic(sessionId, {
-        expectedActiveJobId: options.jobId,
-        expectedVersion,
-        snapshot: {
-          conversationRef: continuity.conversationRef,
-          resumable: continuity.resumable,
-          providerContinuity: continuity.providerContinuity ?? null,
-        },
-      });
-      if (!result.ok) {
+      const continuity = options.decodeContinuity(event.providerContinuity);
+      if (!continuity.ok) {
+        const error = new Error(`Provider emitted invalid continuity for claimed job ${options.jobId}.`);
+        rejectContinuityEvent(event, error);
         backendLog.warn(
-          `Continuity checkpoint went stale for claimed job ${options.jobId} on session ${sessionId}; draining terminal.`,
+          `Provider continuity validation failed for claimed job ${options.jobId} on session ${sessionId}; preserving durable ownership.`,
         );
-        continue;
+        return { kind: 'suspended', reason: 'durable_state_uncommitted' };
+      }
+      let result: Awaited<ReturnType<SessionJobClaimPort['checkpointJobContinuityAtomic']>>;
+      try {
+        result = await sessionApi.checkpointJobContinuityAtomic(sessionId, {
+          expectedActiveJobId: options.jobId,
+          expectedVersion,
+          snapshot: {
+            conversationRef: event.conversationRef,
+            resumable: event.resumable,
+            providerContinuity: isRecord(continuity.value) ? continuity.value : null,
+          },
+        });
+      } catch (error) {
+        rejectContinuityEvent(event, error);
+        backendLog.warn(
+          `Continuity checkpoint failed for claimed job ${options.jobId} on session ${sessionId}; preserving durable ownership.`,
+        );
+        return { kind: 'suspended', reason: 'durable_state_uncommitted' };
+      }
+      if (!result.ok) {
+        const error = new Error(
+          `Continuity checkpoint lost the active claim for job ${options.jobId} on session ${sessionId}.`,
+        );
+        rejectContinuityEvent(event, error);
+        backendLog.warn(`Continuity checkpoint went stale for claimed job ${options.jobId} on session ${sessionId}.`);
+        return { kind: 'suspended', reason: 'durable_state_uncommitted' };
       }
 
       expectedVersion = result.nextVersion;
-      finalContinuity = continuity;
+      commitContinuityEvent(event);
       continue;
     }
 
     if (event.kind === 'artifact_handle') {
-      const result = await sessionApi.recordArtifactHandleAtomic(sessionId, {
-        expectedActiveJobId: options.jobId,
-        expectedVersion,
-        provider: options.providerName,
-        handle: event.handle,
-        identity: event.identity,
-        sourceJobId: options.jobId,
-      });
+      let result: Awaited<ReturnType<SessionJobClaimPort['recordArtifactHandleAtomic']>>;
+      try {
+        result = await sessionApi.recordArtifactHandleAtomic(sessionId, {
+          expectedActiveJobId: options.jobId,
+          expectedVersion,
+          handle: event.handle,
+          identity: event.identity,
+          sourceJobId: options.jobId,
+        });
+      } catch {
+        backendLog.warn(
+          `Artifact handle recording failed for claimed job ${options.jobId} on session ${sessionId}; preserving durable ownership.`,
+        );
+        return { kind: 'suspended', reason: 'durable_state_uncommitted' };
+      }
       if (!result.ok) {
         backendLog.warn(
-          `Artifact handle recording went stale for claimed job ${options.jobId} on session ${sessionId}; draining terminal.`,
+          `Artifact handle recording went stale for claimed job ${options.jobId} on session ${sessionId}.`,
         );
-        continue;
+        return { kind: 'suspended', reason: 'durable_state_uncommitted' };
       }
 
       expectedVersion = result.nextVersion;
       continue;
     }
 
-    options.recordTerminal(event);
-    return {
-      terminal: event.terminal,
-      diagnostics: event.diagnostics,
-      finalContinuity,
-    };
+    if (event.kind === 'suspended') return event;
+
+    return { kind: 'terminal', event, claimVersion: expectedVersion };
   }
 
   throw new Error(`Provider stream for ${options.jobId} completed without a terminal event.`);
-}
-
-function toJobContinuitySnapshot(
-  providerContinuity: unknown,
-  conversationRef: string | null,
-  resumable: boolean,
-): JobContinuitySnapshot {
-  return {
-    conversationRef,
-    resumable,
-    ...(isRecord(providerContinuity) ? { providerContinuity } : {}),
-  };
 }

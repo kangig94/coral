@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -238,6 +239,7 @@ function makeJobsListResponse(jobIds: string[], overrides: { phase?: string; pro
       jobId,
       status: {
         jobId,
+        owner: { kind: 'provider-session', id: `session-${jobId}` },
         sessionId: `session-${jobId}`,
         provider,
         projectRoot: process.cwd(),
@@ -254,6 +256,7 @@ function makeJobDetailResponse(): JobDetailResponse {
   return {
     status: {
       jobId: 'job-1',
+      owner: { kind: 'provider-session', id: 'session-1' },
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: process.cwd(),
@@ -267,6 +270,7 @@ function makeJobDetailResponse(): JobDetailResponse {
     readiness: 'ready',
     exit: {
       content: 'Workflow summary',
+      durationMs: 60_000,
       outcome: { kind: 'completed' },
       diagnostics: {
         progressFaults: [],
@@ -287,6 +291,7 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,
   });
@@ -294,8 +299,8 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   try {
     const insertEvent = db.prepare(
       `INSERT INTO events (
-        seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body_version, body
-      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?)`,
     );
     insertEvent.run(
       1,
@@ -303,7 +308,6 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
       'workflow.completed',
       'workflow',
       'workflow-1',
-      1,
       Buffer.from(
         JSON.stringify({
           outcome: 'failed',
@@ -319,7 +323,6 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
       'workflow.lifecycle_fault',
       'workflow',
       'workflow-1',
-      1,
       Buffer.from(JSON.stringify({ kind: 'unknown', message: 'workflow failure' }), 'utf-8'),
     );
   } finally {
@@ -1001,13 +1004,21 @@ describe('cli main routing', () => {
     const program = buildProgram();
     const codex = program.commands.find((command) => command.name() === 'codex');
     const workflow = program.commands.find((command) => command.name() === 'workflow');
+    const codexHelp = codex?.helpInformation().replace(/\s+/g, ' ');
+    const claudeHelp = findCommand(program, 'claude').helpInformation().replace(/\s+/g, ' ');
 
     expect(codex?.commands).toHaveLength(0);
     expect(codex?.helpInformation()).toContain('-i, --input');
     expect(codex?.helpInformation()).toContain('-b, --bypass-permissions');
     expect(codex?.helpInformation()).toContain('-d, --detach');
+    expect(codexHelp).toContain('provider profile selected in the invoking shell');
+    expect(codexHelp).toContain('CODEX_HOME, default ~/.codex');
+    expect(codexHelp).toContain('CLAUDE_CONFIG_DIR, default ~/.claude');
+    expect(claudeHelp).toContain('CODEX_HOME, default ~/.codex');
+    expect(claudeHelp).toContain('CLAUDE_CONFIG_DIR, default ~/.claude');
     expect(workflow?.helpInformation()).toContain('--detach');
     expect(workflow?.helpInformation()).toContain('-s, --start-prompt');
+    expect(workflow?.helpInformation()).toContain('binds every provider profile referenced by the workflow');
   });
 
   it('passes unified flags through raw provider launches and resolves -i file input', async () => {
@@ -1018,9 +1029,10 @@ describe('cli main routing', () => {
     writeFileSync(inputFile, 'prompt from file');
     try {
       mockState.createSession.mockResolvedValueOnce({
+        kind: 'provider-session',
         launchState: 'running',
-        job: 'job-1',
-        session: 'session-1',
+        jobId: 'job-1',
+        sessionId: 'session-1',
       });
       mockState.launchAndFollow.mockResolvedValueOnce(7);
 
@@ -1048,9 +1060,10 @@ describe('cli main routing', () => {
       });
       expect(mockState.launchAndFollow).toHaveBeenCalledWith({
         launchResult: {
+          kind: 'provider-session',
           launchState: 'running',
-          job: 'job-1',
-          session: 'session-1',
+          jobId: 'job-1',
+          sessionId: 'session-1',
         },
         abortJob: expect.any(Function),
         pluginRoot: expect.any(String),
@@ -1073,9 +1086,10 @@ describe('cli main routing', () => {
     const missingInput = join(tmpdir(), `coral-missing-input-${Date.now()}-${Math.random().toString(16).slice(2)}.md`);
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-raw-text',
-      session: 'session-raw-text',
+      jobId: 'job-raw-text',
+      sessionId: 'session-raw-text',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1091,9 +1105,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-create-raw',
-      session: 'session-create-raw',
+      jobId: 'job-create-raw',
+      sessionId: 'session-create-raw',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1114,9 +1129,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      jobId: 'job-1',
+      sessionId: 'session-1',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1151,9 +1167,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-coral-architect',
-      session: 'session-coral-architect',
+      jobId: 'job-coral-architect',
+      sessionId: 'session-coral-architect',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1170,9 +1187,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-coral-debugger',
-      session: 'session-coral-debugger',
+      jobId: 'job-coral-debugger',
+      sessionId: 'session-coral-debugger',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1189,9 +1207,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-claude',
-      session: 'session-claude',
+      jobId: 'job-claude',
+      sessionId: 'session-claude',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1208,17 +1227,19 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-1',
-      session: 'session-1',
+      jobId: 'job-1',
+      sessionId: 'session-1',
     });
 
     await program.parseAsync(['node', 'coral-cli', 'codex', '-i', 'hi', '--detach']);
 
     const launchResult = {
+      kind: 'provider-session' as const,
       launchState: 'running' as const,
-      job: 'job-1',
-      session: 'session-1',
+      jobId: 'job-1',
+      sessionId: 'session-1',
     };
     expect(stdout).toBe(`${formatDetachedLaunchStatus(launchResult)}\n${formatLaunchWaitHint(launchResult)}\n`);
     expect(stderr).toBe('');
@@ -1258,9 +1279,10 @@ describe('cli main routing', () => {
     writeFileSync(contextFile, 'workflow context');
     try {
       mockState.workflow.mockResolvedValueOnce({
+        kind: 'workflow',
         launchState: 'queued',
-        job: 'job-2',
-        session: 'session-2',
+        workflowId: 'job-2',
+        jobId: 'job-2',
       });
       mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1291,9 +1313,10 @@ describe('cli main routing', () => {
       });
       expect(mockState.launchAndFollow).toHaveBeenCalledWith({
         launchResult: {
+          kind: 'workflow',
           launchState: 'queued',
-          job: 'job-2',
-          session: 'session-2',
+          workflowId: 'job-2',
+          jobId: 'job-2',
         },
         abortJob: expect.any(Function),
         pluginRoot: expect.any(String),
@@ -1314,9 +1337,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.createSession.mockResolvedValueOnce({
+      kind: 'provider-session',
       launchState: 'running',
-      job: 'job-variadic',
-      session: 'session-variadic',
+      jobId: 'job-variadic',
+      sessionId: 'session-variadic',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1339,9 +1363,10 @@ describe('cli main routing', () => {
     writeFileSync(secondFile, 'second content');
     try {
       mockState.createSession.mockResolvedValueOnce({
+        kind: 'provider-session',
         launchState: 'running',
-        job: 'job-multi-file',
-        session: 'session-multi-file',
+        jobId: 'job-multi-file',
+        sessionId: 'session-multi-file',
       });
       mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1368,9 +1393,10 @@ describe('cli main routing', () => {
     writeFileSync(materializedPromptFile, 'hello');
     try {
       mockState.createSession.mockResolvedValueOnce({
+        kind: 'provider-session',
         launchState: 'running',
-        job: 'job-mixed',
-        session: 'session-mixed',
+        jobId: 'job-mixed',
+        sessionId: 'session-mixed',
       });
       mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1390,9 +1416,10 @@ describe('cli main routing', () => {
     const program = buildProgram();
 
     mockState.workflow.mockResolvedValueOnce({
+      kind: 'workflow',
       launchState: 'queued',
-      job: 'job-workflow-variadic',
-      session: 'session-workflow-variadic',
+      workflowId: 'job-workflow-variadic',
+      jobId: 'job-workflow-variadic',
     });
     mockState.launchAndFollow.mockResolvedValueOnce(0);
 
@@ -1439,7 +1466,7 @@ describe('cli main routing', () => {
       seq: 2,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: 'done', outcome: { kind: 'completed' as const } },
+      result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' as const } },
     };
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield progressEvent;
@@ -1495,7 +1522,7 @@ describe('cli main routing', () => {
       seq: 1,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: 'done', outcome: { kind: 'completed' as const } },
+      result: { content: 'done', durationMs: 1_000, outcome: { kind: 'completed' as const } },
       usage: {
         inputTokens: 1_400_000,
         cacheReadTokens: 16_740_000,
@@ -1555,6 +1582,7 @@ describe('cli main routing', () => {
         resultPath: '/tmp/result.md',
         result: {
           content: '',
+          durationMs: 1_000,
           outcome: {
             kind: 'failed' as const,
             causeRef: { stream: { kind: 'workflow' as const, id: 'workflow-1' }, seq: 1 },
@@ -1599,7 +1627,7 @@ describe('cli main routing', () => {
       seq: 1,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: 'preview text', outcome: { kind: 'completed' as const } },
+      result: { content: 'preview text', durationMs: 1_000, outcome: { kind: 'completed' as const } },
     };
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield terminalEvent;
@@ -1622,7 +1650,7 @@ describe('cli main routing', () => {
       seq: 1,
       remainingJobIds: [] as string[],
       resultPath: '/tmp/result.md',
-      result: { content: '', outcome: { kind: 'completed' as const } },
+      result: { content: '', durationMs: 1_000, outcome: { kind: 'completed' as const } },
     };
     mockState.streamWait.mockImplementationOnce(async function* () {
       yield terminalEvent;

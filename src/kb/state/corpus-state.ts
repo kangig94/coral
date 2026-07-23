@@ -1,7 +1,34 @@
 import { withImmediate, type Database } from '../../store/db.js';
 
 import type { KbCorpusPublication, KbCorpusSnapshot, KbPersistCorpusStateResult } from '../contract.js';
-import type { KbCorpusStateRow } from './schema.js';
+import { z } from 'zod';
+
+const corpusStateTimestampSchema = z.string().datetime();
+const emptyCorpusStateRowSchema = z
+  .object({
+    id: z.literal(1),
+    snapshot_id: z.null(),
+    content_seq: z.literal(0),
+    metadata_seq: z.literal(0),
+    content_manifest_hash: z.null(),
+    metadata_manifest_hash: z.null(),
+    last_mutation: corpusStateTimestampSchema,
+  })
+  .strict();
+const populatedCorpusStateRowSchema = z
+  .object({
+    id: z.literal(1),
+    snapshot_id: z.string().min(1),
+    content_seq: z.number().int().nonnegative(),
+    metadata_seq: z.number().int().nonnegative(),
+    content_manifest_hash: z.string().min(1),
+    metadata_manifest_hash: z.string().min(1),
+    last_mutation: corpusStateTimestampSchema,
+  })
+  .strict();
+
+export const corpusStateRowSchema = z.union([emptyCorpusStateRowSchema, populatedCorpusStateRowSchema]);
+type CorpusStateRow = z.infer<typeof corpusStateRowSchema>;
 
 export interface CorpusSnapshotCursorRow {
   snapshot_id: string | null;
@@ -23,25 +50,8 @@ export interface PersistCorpusStateOptions {
   now: () => Date;
 }
 
-function ensureCorpusStateRow(db: Database): void {
-  db.prepare(
-    `
-      INSERT OR IGNORE INTO kb_corpus_state (
-        id,
-        snapshot_id,
-        content_seq,
-        metadata_seq,
-        content_manifest_hash,
-        metadata_manifest_hash,
-        last_mutation
-      ) VALUES (1, NULL, 0, 0, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-    `,
-  ).run();
-}
-
-function readCorpusStateRow(db: Database): KbCorpusStateRow {
-  ensureCorpusStateRow(db);
-  return db
+function readCorpusStateRow(db: Database): CorpusStateRow {
+  const row = db
     .prepare(
       `
         SELECT id, snapshot_id, content_seq, metadata_seq, content_manifest_hash, metadata_manifest_hash, last_mutation
@@ -49,7 +59,19 @@ function readCorpusStateRow(db: Database): KbCorpusStateRow {
          WHERE id = 1
       `,
     )
-    .get() as KbCorpusStateRow;
+    .get();
+  return corpusStateRowSchema.parse(row);
+}
+
+function stateRowToSnapshot(row: CorpusStateRow): KbCorpusSnapshot {
+  if (row.snapshot_id === null) return { ...EMPTY_CORPUS_SNAPSHOT };
+  return {
+    snapshotId: row.snapshot_id,
+    contentSeq: row.content_seq,
+    metadataSeq: row.metadata_seq,
+    contentManifestHash: row.content_manifest_hash,
+    metadataManifestHash: row.metadata_manifest_hash,
+  };
 }
 
 function toSnapshot(row: CorpusSnapshotCursorRow): KbCorpusSnapshot {
@@ -129,7 +151,7 @@ export function isSnapshotFresherForInterest(
 }
 
 export function readCorpusState(db: Database): KbCorpusSnapshot {
-  return normalizeCorpusCursor(readCorpusStateRow(db));
+  return stateRowToSnapshot(readCorpusStateRow(db));
 }
 
 export function persistCorpusState(

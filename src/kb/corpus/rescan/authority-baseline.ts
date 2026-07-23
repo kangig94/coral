@@ -1,4 +1,5 @@
 import { withImmediate, type Database } from '../../../store/db.js';
+import type { PersistedDdlFragment } from '../../../store/format-fingerprint.js';
 import { buildCorpusSurface } from '../surface.js';
 import type { CorpusScanView } from './scan.js';
 import type {
@@ -22,40 +23,34 @@ type ActiveGenerationRow = {
   generation_id: string;
 };
 
+export const corpusAuthorityBaselineDdl: PersistedDdlFragment = {
+  name: 'kb.corpus.authority-baseline',
+  ddl: `
+CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_generations (
+  generation_id  TEXT PRIMARY KEY,
+  committed      INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_records (
+  generation_id  TEXT NOT NULL,
+  entry_id       TEXT NOT NULL,
+  content_hash   TEXT NOT NULL,
+  metadata_hash  TEXT NOT NULL,
+  PRIMARY KEY (generation_id, entry_id),
+  FOREIGN KEY (generation_id)
+    REFERENCES kb_corpus_authority_baseline_generations (generation_id)
+    ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_active (
+  singleton      INTEGER PRIMARY KEY CHECK (singleton = 1),
+  generation_id  TEXT NOT NULL,
+  FOREIGN KEY (generation_id)
+    REFERENCES kb_corpus_authority_baseline_generations (generation_id)
+    ON DELETE RESTRICT
+);`,
+};
+
 function ensureCorpusAuthorityBaselineTable(db: Database): void {
-  db.prepare(
-    `
-      CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_generations (
-        generation_id  TEXT PRIMARY KEY,
-        committed      INTEGER NOT NULL DEFAULT 0
-      )
-    `,
-  ).run();
-  db.prepare(
-    `
-      CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_records (
-        generation_id  TEXT NOT NULL,
-        entry_id       TEXT NOT NULL,
-        content_hash   TEXT NOT NULL,
-        metadata_hash  TEXT NOT NULL,
-        PRIMARY KEY (generation_id, entry_id),
-        FOREIGN KEY (generation_id)
-          REFERENCES kb_corpus_authority_baseline_generations (generation_id)
-          ON DELETE CASCADE
-      )
-    `,
-  ).run();
-  db.prepare(
-    `
-      CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline_active (
-        singleton      INTEGER PRIMARY KEY CHECK (singleton = 1),
-        generation_id  TEXT NOT NULL,
-        FOREIGN KEY (generation_id)
-          REFERENCES kb_corpus_authority_baseline_generations (generation_id)
-          ON DELETE RESTRICT
-      )
-    `,
-  ).run();
+  db.exec(corpusAuthorityBaselineDdl.ddl);
   ensureActiveBaselineGeneration(db);
 }
 

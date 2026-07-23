@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { execFileSync } from 'node:child_process';
 import {
   copyFileSync,
@@ -14,6 +15,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BackendHealth } from '#src/transport/http/backend/health.js';
 import { readBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
@@ -23,7 +25,7 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ensure } from '#src/transport/ipc/ensure.js';
@@ -32,7 +34,9 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
 const sourceManifest = JSON.parse(readFileSync(join(process.cwd(), 'clients', 'build', 'manifest.json'), 'utf-8')) as {
   bundleHash: string;
+  storeFormatFingerprint: string;
 };
+const sourcePackage = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version: string };
 
 const tempRoots: string[] = [];
 const startedPluginRoots: string[] = [];
@@ -84,9 +88,14 @@ function createPluginFixture(flavor: 'prod' | 'dev'): {
   copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
   writeFileSync(
     join(root, 'bridge', 'manifest.json'),
-    JSON.stringify({ bundleHash: sourceManifest.bundleHash, flavor }) + '\n',
+    JSON.stringify({
+      bundleHash: sourceManifest.bundleHash,
+      flavor,
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+    }) + '\n',
     'utf-8',
   );
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version: sourcePackage.version }) + '\n', 'utf-8');
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(
     join(process.cwd(), 'node_modules', 'better-sqlite3'),
@@ -123,6 +132,7 @@ function seedCompletedJob(
   mkdirSync(projectRoot, { recursive: true });
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: storePaths(flavor).dbFile,
     storage: runtime.storage,
   });
@@ -139,8 +149,8 @@ function seedCompletedJob(
           namespace,
           project: projectRoot,
           refs: { jobId, sessionId },
-          bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session', id: sessionId },
             sessionId,
             provider: 'codex',
             projectRoot,
@@ -165,7 +175,6 @@ function seedCompletedJob(
           namespace,
           project: projectRoot,
           refs: { jobId, sessionId },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'completed' },
@@ -178,7 +187,7 @@ function seedCompletedJob(
       {
         now: () => new Date(),
         reducers: composeReducers(jobsRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     );
@@ -200,6 +209,20 @@ async function requireBackendInfo(pluginRoot: string): Promise<BackendInfo> {
     throw new Error(`Expected backend info for ${pluginRoot}`);
   }
   return info;
+}
+
+async function ensureFixtureBackend(pluginRoot: string): Promise<void> {
+  try {
+    await ensure(pluginRoot);
+  } catch (error: unknown) {
+    const flavor = readBuildFlavor(pluginRoot);
+    const paths = coordinatorPaths(flavor);
+    const diagnostics = [join(paths.runDir, 'coordinator.log'), paths.startupErrorFile, paths.startupDiagnosticFile]
+      .filter((path) => existsSync(path))
+      .map((path) => `${path}:\n${readFileSync(path, 'utf-8')}`)
+      .join('\n');
+    throw new Error(`Failed to start ${flavor} fixture backend.\n${diagnostics}`, { cause: error });
+  }
 }
 
 async function fetchJson<T>(info: BackendInfo, path: string, expectedStatus = 200): Promise<T> {
@@ -255,14 +278,24 @@ describe('flavor coexistence integration', () => {
     const prodManifest = JSON.parse(readFileSync(join(prodFixture.root, 'bridge', 'manifest.json'), 'utf-8')) as {
       bundleHash: string;
       flavor: 'prod' | 'dev';
+      storeFormatFingerprint: string;
     };
     const devManifest = JSON.parse(readFileSync(join(devFixture.root, 'bridge', 'manifest.json'), 'utf-8')) as {
       bundleHash: string;
       flavor: 'prod' | 'dev';
+      storeFormatFingerprint: string;
     };
 
-    expect(prodManifest).toEqual({ bundleHash: sourceManifest.bundleHash, flavor: 'prod' });
-    expect(devManifest).toEqual({ bundleHash: sourceManifest.bundleHash, flavor: 'dev' });
+    expect(prodManifest).toEqual({
+      bundleHash: sourceManifest.bundleHash,
+      flavor: 'prod',
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+    });
+    expect(devManifest).toEqual({
+      bundleHash: sourceManifest.bundleHash,
+      flavor: 'dev',
+      storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+    });
 
     const prodNamespace = pluginRootNamespace(prodFixture.root);
     const devNamespace = pluginRootNamespace(devFixture.root);
@@ -276,8 +309,8 @@ describe('flavor coexistence integration', () => {
     seedCompletedJob(devJobId, devNamespace, devProjectRoot, devFixture.bundleHash, 'dev');
 
     startedPluginRoots.push(prodFixture.root, devFixture.root);
-    await ensure(prodFixture.root);
-    await ensure(devFixture.root);
+    await ensureFixtureBackend(prodFixture.root);
+    await ensureFixtureBackend(devFixture.root);
 
     const prodInfo = await requireBackendInfo(prodFixture.root);
     const devInfo = await requireBackendInfo(devFixture.root);

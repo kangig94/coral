@@ -34,7 +34,6 @@ const workflowTime = {
     return workflowClock;
   },
 };
-const workflowIds = { uuid: () => 'workflow-test-uuid' };
 const waitTiming = {
   origin: 'queued',
   originAt: '2026-07-03T08:00:00.000Z',
@@ -42,23 +41,24 @@ const waitTiming = {
   elapsedMs: 2_000,
 } as const;
 
-function running(job: string, session: string) {
+function running(jobId: string, sessionId: string) {
   return {
+    kind: 'provider-session' as const,
     status: 'running' as const,
-    job,
-    session,
+    jobId,
+    sessionId,
   };
 }
 
 function terminal(
   jobId: string,
   _sessionId: string,
-  result: Omit<JobTerminal, 'outcome'> & { outcome?: JobTerminal['outcome'] },
+  result: Omit<JobTerminal, 'outcome' | 'durationMs'> & { outcome?: JobTerminal['outcome'] },
 ): WaitStreamEvent {
   const terminalResult: JobTerminal =
     result.outcome !== undefined
-      ? ({ ...result, outcome: result.outcome } as JobTerminal)
-      : { ...result, outcome: { kind: 'completed' } };
+      ? ({ ...result, outcome: result.outcome, durationMs: 0 } as JobTerminal)
+      : { ...result, outcome: { kind: 'completed' }, durationMs: 0 };
   return {
     type: 'terminal',
     jobId,
@@ -86,7 +86,6 @@ type MockExecutionService = WorkflowExecutionPort & {
   coralDispatch: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
   recordContinuationLease: ReturnType<typeof vi.fn>;
-  claimContinuationLease: ReturnType<typeof vi.fn>;
   clearContinuationLease: ReturnType<typeof vi.fn>;
   abort: ReturnType<typeof vi.fn>;
   awaitLaunch: ReturnType<typeof vi.fn>;
@@ -99,7 +98,6 @@ function createExecutionService(overrides: Partial<MockExecutionService> = {}): 
     coralDispatch: vi.fn(async () => running('job-1', 'session-1')),
     resume: vi.fn(async () => running('job-resumed', 'session-1')),
     recordContinuationLease: vi.fn(async () => {}),
-    claimContinuationLease: vi.fn(async () => true),
     clearContinuationLease: vi.fn(async () => true),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     awaitLaunch: vi.fn(async () => 'ready'),
@@ -120,6 +118,7 @@ function launchedAtom(overrides: Partial<LaunchedAtom> = {}): LaunchedAtom {
     stepIndex: 0,
     atomIndex: 0,
     atomKey: '0:0',
+    generation: 0,
     ...overrides,
   };
 }
@@ -188,7 +187,7 @@ describe('workflow pipe executor', () => {
     });
 
     const result = await executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
-      ids: workflowIds,
+      workflowJobId: 'workflow-test-uuid',
       time: workflowTime,
     });
 
@@ -239,7 +238,7 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-      { context: 'SHARED', ids: workflowIds, time: workflowTime },
+      { context: 'SHARED', workflowJobId: 'workflow-test-uuid', time: workflowTime },
     );
 
     expect(dispatched).toEqual([
@@ -282,7 +281,7 @@ describe('workflow pipe executor', () => {
       'codex',
       executionSvc,
       ctx,
-      { ids: workflowIds, time: workflowTime },
+      { workflowJobId: 'workflow-test-uuid', time: workflowTime },
     );
 
     expect(prompts).toEqual(['Use A', 'Use B']);
@@ -353,6 +352,7 @@ describe('workflow pipe executor', () => {
           staleTimeoutMs: 1,
           staleCheckIntervalMs: 1,
           staleAbortTimeoutMs: 30_000,
+          workflowJobId: 'workflow-1',
           drainDeadlineMs: 15_000,
           workDir: '/tmp/coral-workflow-cwd',
           onProgress: vi.fn(),
@@ -364,6 +364,9 @@ describe('workflow pipe executor', () => {
       expect(executionSvc.recordContinuationLease).toHaveBeenCalledWith({
         sessionId: 'session-codex',
         jobId: 'job-codex',
+        workflowId: 'workflow-1',
+        workflowSlotId: 'workflow-1:0:0',
+        replacementGeneration: 1,
         reason: 'stale_recovery',
         expiresAt: expect.any(String),
       });
@@ -379,20 +382,17 @@ describe('workflow pipe executor', () => {
       expect(executionSvc.waitForJobTerminal.mock.invocationCallOrder[0]).toBeLessThan(
         executionSvc.resume.mock.invocationCallOrder[0],
       );
-      expect(executionSvc.claimContinuationLease).toHaveBeenCalledWith({
-        sessionId: 'session-codex',
-        staleJobId: 'job-codex',
-        resumedJobId: 'job-codex-resumed',
-      });
-      expect(executionSvc.resume.mock.invocationCallOrder[0]).toBeLessThan(
-        executionSvc.claimContinuationLease.mock.invocationCallOrder[0],
-      );
       expect(executionSvc.resume).toHaveBeenCalledWith(
         'codex',
         {
           sessionId: 'session-codex',
           prompt: 'Your previous execution timed out due to inactivity. Continue where you left off.',
           cwd: '/tmp/coral-workflow-cwd',
+          parentWorkflowJobId: 'workflow-1',
+          workflowSlotId: 'workflow-1:0:0',
+          workflowSlotGeneration: 1,
+          replacesWorkflowJobId: 'job-codex',
+          owner: { kind: 'workflow', id: 'workflow-1' },
         },
         ctx,
       );
@@ -426,6 +426,7 @@ describe('workflow pipe executor', () => {
           staleCheckIntervalMs: 1,
           staleAbortTimeoutMs: 30_000,
           drainDeadlineMs: 15_000,
+          workflowJobId: 'workflow-1',
           onProgress: vi.fn(),
           recoverStaleAtom,
           time: workflowTime,
@@ -459,6 +460,7 @@ describe('workflow pipe executor', () => {
         staleCheckIntervalMs: 1,
         staleAbortTimeoutMs: 30_000,
         drainDeadlineMs: 15_000,
+        workflowJobId: 'workflow-1',
         onProgress: vi.fn(),
         recoverStaleAtom,
         time: workflowTime,
@@ -472,6 +474,9 @@ describe('workflow pipe executor', () => {
     expect(executionSvc.recordContinuationLease).toHaveBeenCalledWith({
       sessionId: 'session-1',
       jobId: 'job-1',
+      workflowId: 'workflow-1',
+      workflowSlotId: 'workflow-1:0:0',
+      replacementGeneration: 1,
       reason: 'stale_recovery',
       expiresAt: expect.any(String),
     });
@@ -499,7 +504,7 @@ describe('workflow pipe executor', () => {
     });
 
     const result = await executePipeline(parseExpression('(architect, critic)'), 'seed', 'claude', executionSvc, ctx, {
-      ids: workflowIds,
+      workflowJobId: 'workflow-test-uuid',
       time: workflowTime,
     });
 
@@ -539,7 +544,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         signal: controller.signal,
-        ids: workflowIds,
+        workflowJobId: 'workflow-test-uuid',
 
         time: workflowTime,
       }),
@@ -575,7 +580,7 @@ describe('workflow pipe executor', () => {
 
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
-        ids: workflowIds,
+        workflowJobId: 'workflow-test-uuid',
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -593,7 +598,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('architect'), 'seed', 'claude', executionSvc, ctx, {
         signal: controller.signal,
-        ids: workflowIds,
+        workflowJobId: 'workflow-test-uuid',
 
         time: workflowTime,
       }),
@@ -614,7 +619,7 @@ describe('workflow pipe executor', () => {
     });
 
     const result = await executePipeline(parseExpression('architect'), 'seed', 'codex', executionSvc, ctx, {
-      ids: workflowIds,
+      workflowJobId: 'workflow-test-uuid',
       time: workflowTime,
     });
 
@@ -646,7 +651,6 @@ describe('workflow pipe executor', () => {
         staleTimeoutMs: 1,
         staleCheckIntervalMs: 1,
         workflowJobId: 'workflow-1',
-        ids: workflowIds,
 
         time: workflowTime,
       });
@@ -660,6 +664,9 @@ describe('workflow pipe executor', () => {
           cwd: ctx.projectRoot,
           parentWorkflowJobId: 'workflow-1',
           workflowSlotId: 'workflow-1:0:0',
+          workflowSlotGeneration: 1,
+          replacesWorkflowJobId: 'job-1',
+          owner: { kind: 'workflow', id: 'workflow-1' },
         },
         ctx,
       );
@@ -689,7 +696,7 @@ describe('workflow pipe executor', () => {
 
     await expect(
       executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
-        ids: workflowIds,
+        workflowJobId: 'workflow-test-uuid',
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -736,7 +743,7 @@ describe('workflow pipe executor', () => {
 
     await expect(
       executePipeline(parseExpression('(architect, critic)'), 'seed', 'codex', executionSvc, ctx, {
-        ids: workflowIds,
+        workflowJobId: 'workflow-test-uuid',
         time: workflowTime,
       }),
     ).rejects.toMatchObject({
@@ -779,7 +786,7 @@ describe('workflow pipe executor', () => {
     await expect(
       executePipeline(parseExpression('architect -> resolver'), 'seed', 'codex', executionSvc, ctx, {
         signal: controller.signal,
-        ids: workflowIds,
+        workflowJobId: 'workflow-test-uuid',
 
         time: workflowTime,
       }),
@@ -817,7 +824,7 @@ describe('workflow pipe executor', () => {
     });
 
     await executePipeline(parseExpression('architect -> "Apply this fixup"'), 'seed', 'codex', executionSvc, ctx, {
-      ids: workflowIds,
+      workflowJobId: 'workflow-test-uuid',
       time: workflowTime,
     });
 
@@ -853,9 +860,10 @@ describe('launchAtomWithRetry', () => {
   it('accepts queued launches as valid bootstrap outcomes', async () => {
     const executionSvc = createExecutionService({
       coralDispatch: vi.fn(async () => ({
+        kind: 'provider-session' as const,
         status: 'queued' as const,
-        job: 'job-queued',
-        session: 'session-queued',
+        jobId: 'job-queued',
+        sessionId: 'session-queued',
       })),
       awaitLaunch: vi.fn(async (): Promise<'queued'> => 'queued'),
     });
@@ -867,6 +875,7 @@ describe('launchAtomWithRetry', () => {
       executionSvc,
       ctx,
       completedStepDetails: [],
+      workflowJobId: 'workflow-1',
     });
 
     expect(launched).toEqual({
@@ -879,6 +888,7 @@ describe('launchAtomWithRetry', () => {
       stepIndex: 0,
       atomIndex: 0,
       atomKey: '0:0',
+      generation: 0,
     });
     expect(executionSvc.coralDispatch).toHaveBeenCalledTimes(1);
     expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
@@ -889,6 +899,8 @@ describe('launchAtomWithRetry', () => {
         jobId: 'planned-job-1',
         workflowSlotId: 'workflow-1:0:0',
         cwd: ctx.projectRoot,
+        parentWorkflowJobId: 'workflow-1',
+        owner: { kind: 'workflow', id: 'workflow-1' },
       }),
       ctx,
     );
@@ -906,6 +918,7 @@ describe('launchAtomWithRetry', () => {
       executionSvc,
       ctx,
       completedStepDetails: [],
+      workflowJobId: 'workflow-1',
     });
 
     expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
@@ -928,6 +941,7 @@ describe('launchAtomWithRetry', () => {
       executionSvc,
       ctx,
       completedStepDetails: [],
+      workflowJobId: 'workflow-1',
     });
 
     expect(executionSvc.coralDispatch).toHaveBeenCalledWith(
@@ -958,6 +972,7 @@ describe('launchAtomWithRetry', () => {
         executionSvc,
         ctx,
         completedStepDetails: [],
+        workflowJobId: 'workflow-1',
       }),
     ).rejects.toThrow("Step 0, atom 'architect' launch failed: Unknown provider: ghost");
   });
@@ -982,6 +997,7 @@ describe('launchAtomWithRetry', () => {
         jobId: 'planned-job-9',
         workflowSlotId: 'workflow-9:2:4',
         parentWorkflowJobId: 'workflow-9',
+        owner: { kind: 'workflow', id: 'workflow-9' },
       }),
       ctx,
     );
@@ -996,6 +1012,7 @@ describe('waitForAtoms', () => {
         emit([
           {
             type: 'queued',
+            jobKind: 'provider',
             jobId: 'job-1',
             sessionId: 'session-1',
             queuePosition: 2,
@@ -1012,6 +1029,7 @@ describe('waitForAtoms', () => {
       staleCheckIntervalMs: 500,
       staleAbortTimeoutMs: 30_000,
       drainDeadlineMs: 15_000,
+      workflowJobId: 'workflow-1',
       onProgress: progress,
       time: workflowTime,
     });
@@ -1053,6 +1071,7 @@ describe('waitForAtoms', () => {
       staleCheckIntervalMs: 1,
       staleAbortTimeoutMs: 30_000,
       drainDeadlineMs: 15_000,
+      workflowJobId: 'workflow-1',
       onProgress: vi.fn(),
       recoverStaleAtom,
       time: workflowTime,

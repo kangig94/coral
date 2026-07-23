@@ -8,7 +8,7 @@ import { resolveInput } from '../flags.js';
 export function registerWorkflowCommands(program: Command): void {
   const workflowCommand = program.command('workflow');
   workflowCommand
-    .description('Execute a workflow; captures CODEX_HOME and CLAUDE_CONFIG_DIR for its full lifetime')
+    .description('Execute a workflow; binds every provider profile referenced by the workflow for its full lifetime')
     .option('-e, --expression <expr>', 'Pipeline DSL expression')
     .option(
       '-s, --start-prompt <text-or-file...>',

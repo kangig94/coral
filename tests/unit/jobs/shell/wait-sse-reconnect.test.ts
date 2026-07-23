@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { UsageSummary } from '#src/providers/contract.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -11,13 +12,18 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { readJobEvents, loadJobProjectionDetail } from '#src/jobs/read-queries.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
 import { WaitCoordinator } from '#src/jobs/shell/wait.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
+import type { SessionJobReadPort } from '#src/sessions/contracts.js';
 const runtimes = new Set<ReturnType<typeof createRealRuntime>>();
+
+const missingSessionManager = {
+  get: () => null,
+} satisfies SessionJobReadPort;
 
 const waitUsage = {
   inputTokens: 11,
@@ -33,19 +39,19 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
 function createJournalAppender(db: Database) {
   const reducers = composeReducers(jobsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
 
   return (inputs: Parameters<typeof commitInputs>[1]) => {
     const appended = commitInputs(db, inputs, {
       now: () => new Date('2026-04-19T00:00:00.000Z'),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     publishJobEvents(appended);
@@ -59,7 +65,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-sse-ns', runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore('wait-sse-ns', runtime, createEventBodyCodec(), {
       db,
       eventBus,
       providers: permissiveProviderLookupPort,
@@ -79,8 +85,8 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session', id: sessionId },
             sessionId,
             provider: 'codex',
             providerAction: 'exec',
@@ -110,7 +116,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             transport: 'durable-cli',
             pid: 123,
@@ -130,7 +135,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             kind: 'message',
             message,
@@ -153,7 +157,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-sse-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'completed' },
@@ -172,7 +175,7 @@ describe('wait SSE reconnect', () => {
     appendProgress('progress-1');
 
     const coordinator = new WaitCoordinator({
-      sessionManager: {} as never,
+      sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
       jobPools: new Map(),
@@ -251,7 +254,7 @@ describe('wait SSE reconnect', () => {
     runtimes.add(runtime);
 
     const eventBus = new TypedEventBus();
-    const progressStore = new JobStore('wait-race-ns', runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore('wait-race-ns', runtime, createEventBodyCodec(), {
       db,
       eventBus,
       providers: permissiveProviderLookupPort,
@@ -271,8 +274,8 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
+            owner: { kind: 'provider-session', id: sessionId },
             sessionId,
             provider: 'codex',
             providerAction: 'exec',
@@ -302,7 +305,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             transport: 'durable-cli',
             pid: 123,
@@ -322,7 +324,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             kind: 'message',
             message: 'progress-before-race',
@@ -345,7 +346,6 @@ describe('wait SSE reconnect', () => {
           project: projectRoot,
           correlationId: 'wait-race-correlation',
           refs: { sessionId },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'completed' },
@@ -362,7 +362,7 @@ describe('wait SSE reconnect', () => {
 
     let terminalInjected = false;
     const coordinator = new WaitCoordinator({
-      sessionManager: {} as never,
+      sessionManager: missingSessionManager,
       launchQueue: launchCoordinator,
       eventBus,
       jobPools: new Map(),

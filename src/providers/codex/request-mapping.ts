@@ -1,25 +1,32 @@
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import type {
-  EffortLevel,
-  ProviderContinuityUpdate,
-  ProviderRequest,
-  ProviderRuntime,
-  ProviderServerSpec,
-} from '../contract.js';
+import { z } from 'zod';
+import type { EffortLevel, ProviderContinuityUpdate, ProviderRequest, ProviderRuntime } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { pickProviderContinuityKeys } from '../middleware/session-continuity.js';
 import { resolveModelTier, resolveProviderEffort } from '../request-policy.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { isRecord, readString } from '../../infra/json.js';
+import { readString } from '../../infra/json.js';
 import type { ProviderTransportClose } from '../protocol.js';
 import type { ThreadResumeParams, ThreadStartParams, TurnStartParams, UserInput } from './protocol.js';
 import type { RecoverableTurnFailure } from './turn-recovery.js';
+import type { CodexExecutionPlan } from './execution-plan.js';
+import { zodPersistedParser } from '../binding-parser.js';
 
-type CodexServerSpecRequest = Pick<ProviderRequest, 'cwd' | 'coralEnv'>;
+const codexPersistedContinuitySchema = z
+  .object({
+    cwd: z.string().min(1).optional(),
+    threadId: z.string().min(1).optional(),
+    turnId: z.string().min(1).optional(),
+  })
+  .strict()
+  .refine(
+    (continuity) =>
+      continuity.cwd !== undefined || continuity.threadId !== undefined || continuity.turnId !== undefined,
+    'Codex persisted continuity must contain at least one provider field.',
+  )
+  .describe('non-empty-codex-persisted-continuity');
 
-const CODEX_CONTINUITY_KEYS = ['cwd', 'threadId', 'turnId'] as const;
-const codexContinuityCwdScopes = new WeakMap<Record<string, unknown>, string>();
+export const codexPersistedContinuityParser = zodPersistedParser(() => codexPersistedContinuitySchema);
 
 export interface CodexPersistedContinuity extends ProviderContinuityBlob {
   cwd?: string;
@@ -28,7 +35,6 @@ export interface CodexPersistedContinuity extends ProviderContinuityBlob {
 }
 
 type CodexContinuityReadOptions = {
-  allowUnscopedCwd?: boolean;
   cwdScope?: string;
 };
 
@@ -131,24 +137,17 @@ export function readCodexPersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
   options: CodexContinuityReadOptions = {},
 ): CodexPersistedContinuity {
-  if (!isRecord(persistedContinuity)) {
-    return {};
-  }
-
-  const continuity = pickProviderContinuityKeys(persistedContinuity, CODEX_CONTINUITY_KEYS);
-  const cwdScope = readString(options.cwdScope) ?? codexContinuityCwdScopes.get(persistedContinuity);
+  if (persistedContinuity === undefined) return {};
+  const decoded = codexPersistedContinuityParser.parse(persistedContinuity);
+  if (!decoded.success) throw new TypeError('Invalid persisted Codex continuity.');
+  const continuity = decoded.data;
+  const cwdScope = readString(options.cwdScope);
   const cwd = readString(continuity.cwd);
   const parsed = {
-    cwd:
-      cwdScope === undefined && options.allowUnscopedCwd !== false
-        ? cwd === undefined
-          ? undefined
-          : resolve(cwd)
-        : scopedCodexCwd(cwd, cwdScope),
+    cwd: cwdScope === undefined ? (cwd === undefined ? undefined : resolve(cwd)) : scopedCodexCwd(cwd, cwdScope),
     threadId: readString(continuity.threadId),
     turnId: readString(continuity.turnId),
   };
-  rememberCodexContinuityCwdScope(parsed, parsed.cwd);
   return parsed;
 }
 
@@ -165,7 +164,6 @@ export function buildCodexContinuity(update: {
     ...(threadId !== undefined ? { threadId } : {}),
     ...(turnId !== undefined ? { turnId } : {}),
   };
-  rememberCodexContinuityCwdScope(continuity, continuity.cwd);
   return continuity;
 }
 
@@ -205,12 +203,16 @@ export function hasCodexContinuity(continuity: CodexPersistedContinuity): boolea
   return continuity.cwd !== undefined || continuity.threadId !== undefined || continuity.turnId !== undefined;
 }
 
-export function snapshotCodexPersistedContinuity(persistedContinuity: ProviderContinuityBlob | undefined): {
+export function snapshotCodexPersistedContinuity(persistedContinuity: CodexPersistedContinuity | undefined): {
   conversationRef: string | null;
   resumable: boolean;
   providerContinuity: CodexPersistedContinuity | null;
 } {
-  const continuity = readCodexPersistedContinuity(persistedContinuity);
+  const continuity = buildCodexContinuity({
+    cwd: persistedContinuity?.cwd,
+    threadId: persistedContinuity?.threadId,
+    turnId: persistedContinuity?.turnId,
+  });
   return {
     conversationRef: continuity.threadId ?? null,
     resumable: Boolean(continuity.threadId),
@@ -235,14 +237,14 @@ export function applyCodexContinuityUpdate(
     return withCodexContinuity(persistedContinuity, { threadId: conversationRef });
   }
 
-  return readCodexPersistedContinuity(persistedContinuity);
+  return persistedContinuity;
 }
 
 export function applyCodexTransportClosed(
   persistedContinuity: CodexPersistedContinuity,
   _closed: ProviderTransportClose,
 ): CodexPersistedContinuity {
-  return readCodexPersistedContinuity(persistedContinuity);
+  return persistedContinuity;
 }
 
 export function isCodexSessionUnavailable(error: unknown): boolean {
@@ -255,39 +257,6 @@ export function isCodexSessionUnavailable(error: unknown): boolean {
     message.includes('no such thread') ||
     message.includes('no longer resumable because the saved thread is missing or invalid')
   );
-}
-
-function createCodexProviderServerSpec(
-  projectRoot: string,
-  env?: Record<string, string>,
-  clientVersion?: string,
-): ProviderServerSpec {
-  return {
-    provider: 'codex',
-    command: 'codex',
-    args: ['app-server'],
-    cwd: projectRoot,
-    env,
-    // codex app-server handles concurrent threads per process — each turn carries its own
-    // threadId, so a shared lease (many concurrent leases on one host) matches reality.
-    // Without this, host-manager forces exclusive leases and serializes concurrent codex jobs.
-    shared: true,
-    initializeRequest: {
-      method: 'initialize',
-      params: { clientInfo: { name: 'coral', version: clientVersion ?? 'unknown' } },
-    },
-  };
-}
-
-function rememberCodexContinuityCwdScope(
-  persistedContinuity: ProviderContinuityBlob | undefined,
-  cwdScope: string | undefined,
-): void {
-  const normalizedScope = readString(cwdScope);
-  if (!normalizedScope || !isRecord(persistedContinuity)) {
-    return;
-  }
-  codexContinuityCwdScopes.set(persistedContinuity, resolve(normalizedScope));
 }
 
 function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): string | undefined {
@@ -307,37 +276,11 @@ function scopedCodexCwd(cwd: string | undefined, cwdScope: string | undefined): 
   return undefined;
 }
 
-export function buildCodexProviderServerSpec(
-  projectRoot: string,
-  env?: Record<string, string>,
-  clientVersion?: string,
-): ProviderServerSpec;
-export function buildCodexProviderServerSpec(
-  request: CodexServerSpecRequest,
-  persistedContinuity?: ProviderContinuityBlob,
-  clientVersion?: string,
-): ProviderServerSpec;
-export function buildCodexProviderServerSpec(
-  projectRootOrRequest: string | CodexServerSpecRequest,
-  envOrPersisted?: Record<string, string> | ProviderContinuityBlob,
-  clientVersion?: string,
-): ProviderServerSpec {
-  if (typeof projectRootOrRequest !== 'string') {
-    const persistedContinuity = envOrPersisted as ProviderContinuityBlob | undefined;
-    rememberCodexContinuityCwdScope(persistedContinuity, projectRootOrRequest.cwd);
-    const continuity = readCodexPersistedContinuity(persistedContinuity, { cwdScope: projectRootOrRequest.cwd });
-    return createCodexProviderServerSpec(
-      continuity.cwd ?? projectRootOrRequest.cwd,
-      projectRootOrRequest.coralEnv,
-      clientVersion,
-    );
-  }
-
-  return createCodexProviderServerSpec(
-    projectRootOrRequest,
-    envOrPersisted as Record<string, string> | undefined,
-    clientVersion,
-  );
+export function resolveCodexHostCwd(
+  requestCwd: string,
+  persistedContinuity: ProviderContinuityBlob | undefined,
+): string {
+  return readCodexPersistedContinuity(persistedContinuity, { cwdScope: requestCwd }).cwd ?? requestCwd;
 }
 
 function buildCodexTurnInput(prompt: string): UserInput[] {
@@ -402,14 +345,12 @@ function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | 
  * the scan halts at the first section header.
  */
 function readCodexConfigServiceTier(
-  runtime: Pick<ProviderRuntime, 'providerContext' | 'storage'>,
+  runtime: Pick<ProviderRuntime<CodexExecutionPlan>, 'executionPlan' | 'storage'>,
 ): CodexServiceTier | undefined {
   if (!runtime.storage) {
     return undefined;
   }
-  if (runtime.providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
-
-  const configPath = join(runtime.providerContext.source.home, 'config.toml');
+  const configPath = join(runtime.executionPlan.host.access.home, 'config.toml');
   // Set only when statSync succeeds; stays undefined when stat throws a
   // non-ENOENT/EACCES error but readFileSync still works, so both cache-write
   // sites below fall back to `?? 0` (treated as always-stale).
@@ -461,7 +402,7 @@ function readCodexConfigServiceTier(
 
 export function resolveCodexServiceTier(
   request: ProviderRequest,
-  runtime?: Pick<ProviderRuntime, 'providerContext' | 'storage'>,
+  runtime?: Pick<ProviderRuntime<CodexExecutionPlan>, 'executionPlan' | 'storage'>,
 ): CodexServiceTier | undefined {
   const rawEnvTier = request.coralEnv['CORAL_CODEX_FAST'];
   // Blank env = unset; fall through to config.toml. Non-blank but unrecognized = explicit rejection (no fallback).
@@ -507,13 +448,19 @@ function resolveCodexModel(request: ProviderRequest): string {
   return resolveModelTier(request.model) ?? baseline;
 }
 
-export function mapThreadStartParams(request: ProviderRequest, serviceTier?: CodexServiceTier): ThreadStartParams {
+export function mapThreadStartParams(
+  request: ProviderRequest,
+  threadConfig: Readonly<Record<string, unknown>>,
+  serviceTier?: CodexServiceTier,
+): ThreadStartParams {
   return {
     cwd: request.cwd,
     model: resolveCodexModel(request),
+    modelProvider: 'openai',
     approvalPolicy: 'never',
     sandbox: resolveCodexSandbox(request.bypassPermissions),
     ephemeral: false,
+    config: threadConfig,
     ...(serviceTier && { serviceTier }),
   };
 }
@@ -521,16 +468,19 @@ export function mapThreadStartParams(request: ProviderRequest, serviceTier?: Cod
 export function mapThreadResumeParams(
   request: ProviderRequest,
   threadId: string,
+  threadConfig: Readonly<Record<string, unknown>>,
   serviceTier?: CodexServiceTier,
 ): ThreadResumeParams {
   return {
     threadId,
     cwd: request.cwd,
     model: resolveCodexModel(request),
+    modelProvider: 'openai',
     approvalPolicy: 'never',
     // Codex merge_persisted_resume_metadata() does not restore sandbox from stored
     // ThreadMetadata — omitting sandbox causes a downgrade to the config default (read-only).
     sandbox: resolveCodexSandbox(request.bypassPermissions),
+    config: threadConfig,
     ...(serviceTier && { serviceTier }),
   };
 }

@@ -7,7 +7,11 @@ import {
   type ProviderRequest,
   type ProviderRuntime,
 } from '#src/providers/contract.js';
-import { TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../helpers/provider-credentials.js';
+
+type TestProviderContext = typeof TEST_CODEX_PLAN;
+type TestProvider = Provider<TestProviderContext>;
+type TestRuntime = ProviderRuntime<TestProviderContext>;
 
 const BASE_REQUEST: ProviderRequest = {
   action: 'exec',
@@ -18,31 +22,30 @@ const BASE_REQUEST: ProviderRequest = {
   coralEnv: {},
 };
 
-const BASE_RUNTIME: ProviderRuntime = {
+const BASE_RUNTIME: TestRuntime = {
+  transport: 'standalone',
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
     now: () => 0,
     setTimeout: () => ({ unref: () => {} }),
     clearTimeout: () => {},
-  } as ProviderRuntime['time'],
+  } as TestRuntime['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquireServer: async () => {
-    throw new Error('not used in compose tests');
-  },
-  storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+  storage: { existsSync: () => true } as unknown as TestRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
-  providerContext: TEST_CODEX_CONTEXT,
+  executionPlan: TEST_CODEX_PLAN,
 };
 
 const COMPLETED_TERMINAL: ProviderEventBody = {
   kind: 'terminal',
   terminal: {
     content: 'done',
+    durationMs: 0,
     outcome: { kind: 'completed' },
   },
   diagnostics: {},
@@ -55,17 +58,19 @@ const CONTINUITY: ProviderEventBody = {
   resumable: true,
   providerContinuity: {},
 };
+const SUSPENDED: ProviderEventBody = { kind: 'suspended', reason: 'interrupt_unconfirmed' };
 
 const WRAPPER_LOST_TERMINAL: ProviderEventBody = {
   kind: 'terminal',
   terminal: {
     content: '',
+    durationMs: 0,
     outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } },
   },
   diagnostics: {},
 };
 
-function fromEvents(events: readonly ProviderEventBody[]): Provider {
+function fromEvents(events: readonly ProviderEventBody[]): TestProvider {
   return async function* eventsProvider() {
     for (const event of events) {
       yield event;
@@ -96,10 +101,19 @@ describe('compose() terminalOnce guard', () => {
     expect(collected).toEqual([PROGRESS, WRAPPER_LOST_TERMINAL]);
   });
 
+  it('accepts suspension as a final disposition without synthesizing a terminal', async () => {
+    const stream = compose([], fromEvents([PROGRESS, SUSPENDED, COMPLETED_TERMINAL]))(BASE_REQUEST, BASE_RUNTIME);
+
+    const collected: ProviderEventBody[] = [];
+    for await (const event of stream) collected.push(event);
+
+    expect(collected).toEqual([PROGRESS, SUSPENDED]);
+  });
+
   it('drops a second terminal yielded by a misbehaving inner stream', async () => {
     const second: ProviderEventBody = {
       kind: 'terminal',
-      terminal: { content: 'second', outcome: { kind: 'failed' } },
+      terminal: { content: 'second', durationMs: 0, outcome: { kind: 'failed' } },
       diagnostics: {},
       failureCause: {
         type: 'session.provider_failed',
@@ -129,7 +143,7 @@ describe('compose() terminalOnce guard', () => {
 
   it('does not synthesize wrapper_lost when the consumer returns early', async () => {
     let yieldedAfterReturn = false;
-    const provider: Provider = async function* slowProvider() {
+    const provider: TestProvider = async function* slowProvider() {
       yield PROGRESS;
       // Inner provider continues — but consumer will .return() before this runs.
       yield PROGRESS;
@@ -147,9 +161,28 @@ describe('compose() terminalOnce guard', () => {
     expect(yieldedAfterReturn).toBe(false);
   });
 
+  it('closes the owned inner iterator when a consumer returns after the terminal', async () => {
+    let cleanedUp = false;
+    const never = new Promise<void>(() => {});
+    const provider: TestProvider = async function* terminalThenWaitProvider() {
+      try {
+        yield COMPLETED_TERMINAL;
+        await never;
+      } finally {
+        cleanedUp = true;
+      }
+    };
+    const iterator = compose([], provider)(BASE_REQUEST, BASE_RUNTIME)[Symbol.asyncIterator]();
+
+    await expect(iterator.next()).resolves.toEqual({ done: false, value: COMPLETED_TERMINAL });
+    await iterator.return?.();
+
+    expect(cleanedUp).toBe(true);
+  });
+
   it('does not synthesize wrapper_lost when the inner stream throws', async () => {
     const failure = new Error('inner blew up');
-    const provider: Provider = async function* throwingProvider() {
+    const provider: TestProvider = async function* throwingProvider() {
       yield PROGRESS;
       throw failure;
     };

@@ -1,26 +1,23 @@
 import { currentEventMetadata, withInvocationScope } from './invocation-scope.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
-import type { ProviderCredentialSourceRef } from '../runtime/provider-credentials.js';
 import type { ExecutionServiceDeps, ListResult, ProjectRequestPort } from './contracts.js';
 import type { LaunchPool } from '../jobs/contracts/admission.js';
-import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
-import type { LaunchDecision, JobLaunchRequest, JobResumeRequest } from '../jobs/launch.js';
+import type { ProviderRecoveryAuthority, RecoveryCapableService } from '../jobs/reconcile/contracts.js';
+import type {
+  JobLaunchRequest,
+  JobResumeRequest,
+  ProviderSessionLaunchDecision,
+  WorkflowLaunchDecision,
+} from '../jobs/launch.js';
 import type { AbortReason } from '../jobs/outcome.js';
 import type { JobPhase } from '../jobs/phase.js';
-import type {
-  AppServerRuntime,
-  JobLaunch,
-  JobRuntime,
-  JobTerminalDiagnostics,
-  JobTerminalInput,
-  LaunchReadiness,
-} from '../jobs/records.js';
+import type { AppServerRuntime, JobLaunch, JobRuntime, JobTerminalInput, LaunchReadiness } from '../jobs/records.js';
 import type { TerminalWriteOptions } from '../jobs/contracts/job-store.js';
+import type { DurableCliRuntimeRecord } from '../runtime/durable-runtime.js';
 import type { WaitStreamEvent, WaitStreamOnceResult, WaitStreamRequest } from '../jobs/wait.js';
 import type { PipelineAST } from '../workflow/ast.js';
 import type { WorkflowCommand } from '../workflow/input.js';
 import type { AbortResult } from '../jobs/contracts/abort-registry.js';
-import type { ProviderServerLease, ProviderServerSpec } from '../providers/contract.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import { SessionManager } from '../sessions/shell.js';
 import { LaunchOrchestrator } from '../jobs/shell/launch.js';
@@ -39,12 +36,12 @@ import { recordProviderTerminal } from './services/terminal-materializer.js';
  * provider-host drain, so subsequent transport closure cannot record provider
  * terminals or release admission/session claim for active app-server jobs.
  *
- * Implementations MUST NOT contain awaits-that-can-hang — the contract is
- * synchronous-in-spirit so AC4's atomicity argument holds: detach must already
- * have completed before the budget timer fires.
+ * Implementations synchronously close admission, then may await only durability
+ * operations already admitted to the handoff fence. They never await provider
+ * work or start new persistence after the fence.
  */
 export interface HandoffQuiescePort {
-  quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void>;
+  quiesceAppServerJobsForHandoff(): Promise<void>;
 }
 
 export class ExecutionService implements RecoveryCapableService, ProjectRequestPort, HandoffQuiescePort {
@@ -69,7 +66,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.projectRoot = ctx.projectRoot;
     this.runtime = deps.runtime;
     this.eventBus = deps.eventBus;
-    const coordinatorCommit = deps.coordinatorCommit ?? ((cb) => deps.progressStore.commit(cb));
+    const coordinatorCommit = deps.coordinatorCommit;
     this.sessionManager = SessionManager.forProduction(
       ctx.projectRoot,
       deps.runtime,
@@ -85,12 +82,14 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     this.progressStore = deps.progressStore;
 
     this.launchOrchestrator = new LaunchOrchestrator({
+      sessionManager: this.sessionManager,
       abortRegistry: this.abortRegistry,
       progressStore: this.progressStore,
-      sessionManager: this.sessionManager,
       launchAdmission: deps.launchCoordinator,
       durableSpawner: deps.launchCoordinator,
+      providerRegistry: deps.providerRegistry,
       runtime: this.runtime,
+      coordinatorCommit,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       jobPools: this.jobPools,
@@ -102,7 +101,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
         }
       },
       terminalMaterializer: { recordProviderTerminal },
-      acquireServer: (spec, options) => this.recoveryService.acquireServer(spec, options),
     });
     const waitCoordinator = new WaitCoordinator({
       sessionManager: this.sessionManager,
@@ -126,7 +124,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
       progressStore: this.progressStore,
-      providerHostManager: deps.providerHostManager,
       launchAdmission: deps.launchCoordinator,
       launchRecovery: deps.launchCoordinator,
       providerRegistry: deps.providerRegistry,
@@ -134,8 +131,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       launchOrchestrator: this.launchOrchestrator,
       childPrincipalRegistry: deps.childPrincipalRegistry,
       parentPrincipal: ctx.principal,
-      providerCredentialSourceAvailability: deps.providerCredentialSourceAvailability,
-      acquireServer: (spec, options) => this.acquireServer(spec, options),
     });
     this.launchService = new JobLaunchService({
       runtime: this.runtime,
@@ -157,7 +152,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     });
     this.workflowService = new WorkflowExecutionService({
       runtime: this.runtime,
-      sessionManager: this.sessionManager,
       abortRegistry: this.abortRegistry,
       backendNamespace: this.backendNamespace,
       bundleHash: this.bundleHash,
@@ -178,8 +172,6 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
           this.runWithInvocationScope(ctx, async () => {
             this.sessionManager.recordContinuationLease(input);
           }),
-        claimContinuationLease: (input) =>
-          this.runWithInvocationScope(ctx, () => this.sessionManager.claimContinuationLease(input)),
         clearContinuationLease: (input) =>
           this.runWithInvocationScope(ctx, () => this.sessionManager.clearContinuationLease(input)),
         abort: (jobIds) => this.abortService.abort(jobIds),
@@ -213,17 +205,25 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<LaunchDecision> {
+  ): Promise<ProviderSessionLaunchDecision> {
     const normalized = normalizeCoralIntent(input);
     if ('status' in normalized) return normalized;
     return this.launchService.coralDispatch(providerName, coralName, normalized, ctx);
   }
 
-  async start(providerName: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<LaunchDecision> {
+  async start(
+    providerName: string,
+    input: JobLaunchRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderSessionLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.start(providerName, input, ctx));
   }
 
-  async resume(providerName: string, input: JobResumeRequest, ctx: InvocationContext): Promise<LaunchDecision> {
+  async resume(
+    providerName: string,
+    input: JobResumeRequest,
+    ctx: InvocationContext,
+  ): Promise<ProviderSessionLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.launchService.resume(providerName, input, ctx));
   }
 
@@ -232,7 +232,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     coralName: string,
     input: CoralIntent,
     ctx: InvocationContext,
-  ): Promise<LaunchDecision> {
+  ): Promise<ProviderSessionLaunchDecision> {
     return this.runWithInvocationScope(ctx, async () => this.dispatchCoralIntent(providerName, coralName, input, ctx));
   }
 
@@ -242,7 +242,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     input: WorkflowCommand,
     ctx: InvocationContext,
     workDir?: string,
-  ): Promise<LaunchDecision> {
+  ): Promise<WorkflowLaunchDecision> {
     return this.workflowService.executeWorkflow(providerName, ast, input, ctx, workDir);
   }
 
@@ -258,20 +258,28 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     return this.waitService.waitForJobTerminal(jobId, timeoutMs);
   }
 
-  recoverQueuedJob(launchRecord: JobLaunch): string {
-    return this.recoveryService.recoverQueuedJob(launchRecord);
+  recoverQueuedJob(authority: ProviderRecoveryAuthority): Promise<string> {
+    return this.recoveryService.recoverQueuedJob(authority);
   }
 
-  validateProviderRecoveryAuthority(launchRecord: JobLaunch): boolean {
-    return this.recoveryService.validateProviderRecoveryAuthority(launchRecord);
+  captureProviderRecoveryAuthority(
+    launchRecord: JobLaunch,
+  ): ReturnType<RecoveryService['captureProviderRecoveryAuthority']> {
+    return this.recoveryService.captureProviderRecoveryAuthority(launchRecord);
   }
 
-  providerCredentialSourceForRecovery(launchRecord: JobLaunch): ProviderCredentialSourceRef | null {
-    return this.recoveryService.providerCredentialSourceForRecovery(launchRecord);
+  finalizeProviderRecoveryBindingFailure(
+    launchRecord: JobLaunch,
+    failure: Parameters<RecoveryService['finalizeProviderRecoveryBindingFailure']>[1],
+  ): void {
+    this.recoveryService.finalizeProviderRecoveryBindingFailure(launchRecord, failure);
   }
 
-  adoptRunningJob(launchRecord: JobLaunch, runtimeRecord: JobRuntime): { adopted: boolean; cleanup: () => void } {
-    return this.recoveryService.adoptRunningJob(launchRecord, runtimeRecord);
+  adoptRunningJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: JobRuntime,
+  ): Promise<{ adopted: boolean; cleanup: () => void }> {
+    return this.recoveryService.adoptRunningJob(authority, runtimeRecord);
   }
 
   completeRecoveredJob(
@@ -279,54 +287,38 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
     sessionId: string,
     result: JobTerminalInput,
     phase: JobPhase,
-    options?: TerminalWriteOptions,
+    options: TerminalWriteOptions & { pool: LaunchPool },
   ): void {
     this.recoveryService.completeRecoveredJob(jobId, sessionId, result, phase, options);
   }
 
-  async recordRecoveredArtifactHandles(
-    sessionId: string,
-    input: Parameters<RecoveryCapableService['recordRecoveredArtifactHandles']>[1],
-  ): Promise<{ readonly ok: true; readonly nextVersion: number } | { readonly ok: false }> {
-    return this.recoveryService.recordRecoveredArtifactHandles(sessionId, input);
+  async finalizeInterruptedDurableJob(
+    authority: ProviderRecoveryAuthority,
+    runtimeRecord: DurableCliRuntimeRecord,
+    observation: Parameters<RecoveryCapableService['finalizeInterruptedDurableJob']>[2],
+    fence: Parameters<RecoveryCapableService['finalizeInterruptedDurableJob']>[3],
+  ): Promise<void> {
+    return this.recoveryService.finalizeInterruptedDurableJob(authority, runtimeRecord, observation, fence);
   }
 
-  async interruptAppServerJob(launchRecord: JobLaunch, runtimeRecord: AppServerRuntime): Promise<void> {
-    return this.recoveryService.interruptAppServerJob(launchRecord, runtimeRecord);
-  }
-
-  async acquireServer(
-    spec: ProviderServerSpec,
-    options?: { jobId?: string; signal?: AbortSignal; providerMeta?: Record<string, unknown> },
-  ): Promise<ProviderServerLease> {
-    return this.recoveryService.acquireServer(spec, options);
+  async interruptAppServerJob(authority: ProviderRecoveryAuthority, runtimeRecord: AppServerRuntime): Promise<void> {
+    return this.recoveryService.interruptAppServerJob(authority, runtimeRecord);
   }
 
   private finishQueuedAbort(jobId: string, sessionId: string, reason: AbortReason): void {
     this.abortService.finishQueuedAbort(jobId, sessionId, reason);
   }
 
-  private finishWorkflowJob(
-    sessionId: string,
-    jobId: string,
-    phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: JobTerminalInput,
-    markdown: string,
-    diagnostics?: JobTerminalDiagnostics,
-  ): void {
-    this.workflowService.finishWorkflowJob(sessionId, jobId, phase, result, markdown, diagnostics);
-  }
-
   async finalizeInterruptedAppServerJob(
-    launchRecord: JobLaunch,
+    authority: ProviderRecoveryAuthority,
     runtimeRecord: AppServerRuntime,
-    context: { reason: 'restart' | 'handoff' },
+    context: Parameters<RecoveryCapableService['finalizeInterruptedAppServerJob']>[2],
   ): Promise<void> {
-    return this.recoveryService.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, context);
+    return this.recoveryService.finalizeInterruptedAppServerJob(authority, runtimeRecord, context);
   }
 
-  quiesceAppServerJobsForHandoff(signal: AbortSignal): Promise<void> {
-    return this.launchOrchestrator.quiesceAppServerJobsForHandoff(signal);
+  quiesceAppServerJobsForHandoff(): Promise<void> {
+    return this.launchOrchestrator.quiesceAppServerJobsForHandoff();
   }
 
   async awaitLaunch(jobId: string, timeoutMs: number): Promise<LaunchReadiness> {

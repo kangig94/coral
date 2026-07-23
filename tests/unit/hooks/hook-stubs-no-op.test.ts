@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 function hookEnv(projectDir: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PROJECT_DIR: projectDir };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: projectDir,
+    USERPROFILE: projectDir,
+    CLAUDE_PROJECT_DIR: projectDir,
+  };
   delete env['CORAL_CHILD'];
   return env;
 }

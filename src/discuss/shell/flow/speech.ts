@@ -1,9 +1,9 @@
 import { decideSpeech, decideSpeechTimeout } from '../../state-machine.js';
 import type { InvocationContext } from '../../../runtime/invocation-context.js';
 import { buildSpeechPrompt } from '../prompts.js';
+import { DEFAULT_DISCUSS_PROVIDER } from '../../command-schemas.js';
 import {
   CONTINUE_TURN_INSTRUCTION,
-  DEFAULT_DISCUSS_PROVIDER,
   PURPOSE_SPEECH,
   currentAgentRun,
   executeAgentAttempt,

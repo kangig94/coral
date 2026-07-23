@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
-import { TEST_CLAUDE_SOURCE } from '../../helpers/provider-credentials.js';
+import { TEST_CLAUDE_ACCESS } from '../../helpers/provider-credentials.js';
 
 const immediateTime = {
   sleep: async () => {},
@@ -40,7 +40,7 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     const { runtime, unlinkSync } = makeRuntime();
 
     await expect(
-      claudeArtifactCapability.discardArtifacts({ handles: [], source: TEST_CLAUDE_SOURCE, runtime }),
+      claudeArtifactCapability.discardArtifacts({ handles: [], access: TEST_CLAUDE_ACCESS, runtime }),
     ).resolves.toEqual({
       kind: 'skipped_no_handles',
     });
@@ -54,7 +54,7 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
     ).resolves.toEqual({ kind: 'discarded' });
@@ -71,7 +71,7 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
     await expect(
       claudeArtifactCapability.discardArtifacts({
         handles: ['/tmp/ref-a.jsonl', '/tmp/ref-b.jsonl'],
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       }),
     ).resolves.toEqual({ kind: 'discarded' });
@@ -99,7 +99,7 @@ describe('claudeArtifactCapability.discardArtifacts', () => {
       }, 250);
       const discard = claudeArtifactCapability.discardArtifacts({
         handles: [handle],
-        source: TEST_CLAUDE_SOURCE,
+        access: TEST_CLAUDE_ACCESS,
         runtime,
       });
       await vi.advanceTimersByTimeAsync(500);

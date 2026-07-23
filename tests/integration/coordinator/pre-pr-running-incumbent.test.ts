@@ -290,26 +290,26 @@ describe('pre-PR running incumbent (R6)', () => {
 
       const service = new RecoveryService(deps);
 
-      const launchRecord = {
-        jobId: 'j1',
-        sessionId: 's1',
-        provider: 'codex',
-        projectRoot: '/p',
-        pool: 'default',
-        request: { conversationRef: undefined },
-        jobKind: 'session',
+      const authority = {
+        launchRecord: { jobId: 'j1' },
+        session: {},
+        boundProvider: {},
       } as unknown as Parameters<typeof service.finalizeInterruptedAppServerJob>[0];
       const runtimeRecord = {
         kind: 'app-server' as const,
         providerMeta: { leaseState: 'acquired' },
       } as unknown as Parameters<typeof service.finalizeInterruptedAppServerJob>[1];
 
-      await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'handoff' });
+      await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+        reason: 'handoff',
+        signal: new AbortController().signal,
+        onCommitStart: vi.fn(),
+      });
 
       expect(warnSpy).toHaveBeenCalledTimes(1);
       const warnArg = warnSpy.mock.calls[0][0];
       expect(warnArg).toContain('skipping finalize for already-terminal job j1');
-      expect(warnArg).toContain('cross-version partial-state');
+      expect(warnArg).toContain('during handoff recovery');
     } finally {
       warnSpy.mockRestore();
     }
@@ -331,21 +331,21 @@ describe('pre-PR running incumbent (R6)', () => {
 
       const service = new RecoveryService(deps);
 
-      const launchRecord = {
-        jobId: 'j1',
-        sessionId: 's1',
-        provider: 'codex',
-        projectRoot: '/p',
-        pool: 'default',
-        request: { conversationRef: undefined },
-        jobKind: 'session',
+      const authority = {
+        launchRecord: { jobId: 'j1' },
+        session: {},
+        boundProvider: {},
       } as unknown as Parameters<typeof service.finalizeInterruptedAppServerJob>[0];
       const runtimeRecord = {
         kind: 'app-server' as const,
         providerMeta: { leaseState: 'acquired' },
       } as unknown as Parameters<typeof service.finalizeInterruptedAppServerJob>[1];
 
-      await service.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
+      await service.finalizeInterruptedAppServerJob(authority, runtimeRecord, {
+        reason: 'restart',
+        signal: new AbortController().signal,
+        onCommitStart: vi.fn(),
+      });
       expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();

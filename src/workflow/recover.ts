@@ -3,12 +3,13 @@ import type { Database } from '../store/db.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { TimePort } from '../infra/port-types.js';
+import { nowIsoString } from '../infra/time.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import { phaseForOutcome, type TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStore } from '../jobs/store.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
-import { readLatestEvent } from '../store/event-queries.js';
+import { getEvent, readLatestEvent } from '../store/event-queries.js';
 import type { JobProjectionDetail } from '../jobs/read-queries.js';
 import { readProjectionJob, readWorkflowProjection } from './read-queries.js';
 import {
@@ -24,23 +25,22 @@ import {
 import { describeTerminalFailure, formatStepOutput } from './command.js';
 import { workflowCompletedBodySchema, workflowDrainEnteredBodySchema } from './events.js';
 import { executePlannedSteps } from './executor.js';
-import { handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
+import { BOOTSTRAP_TIMEOUT_MS, handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
 import {
   DEFAULT_DRAIN_DEADLINE_MS,
   DEFAULT_STALE_CHECK_INTERVAL_MS,
   DEFAULT_STALE_TIMEOUT_MS,
 } from './execution-constants.js';
 import { compileWorkflowPlan, maxStepIndex, type CompiledPlanSlot, type WorkflowPlan } from './plan.js';
-import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom } from './stale-recovery.js';
+import { DEFAULT_STALE_ABORT_TIMEOUT_MS, recoverStaleAtom, STALE_RESUME_PROMPT } from './stale-recovery.js';
 
 import { waitForAtoms } from './wait.js';
 import type { WorkflowFinalizationIntent } from './finalization.js';
+import { providerSessionProvider } from '../sessions/entry.js';
+import { readProviderSessionById } from '../sessions/read-queries.js';
+import { readProjectionJobRows, type ProjectionJobStoredRow } from '../jobs/projection-row.js';
 
-type WorkflowSlotJobRow = {
-  job_id: string;
-  workflow_slot: string;
-  last_seq: number;
-};
+type WorkflowSlotJobRow = ProjectionJobStoredRow & { workflow_slot: string };
 
 type RecoveredWorkflowFinalization = {
   intent: WorkflowFinalizationIntent;
@@ -114,25 +114,145 @@ function readSlotJobIds(db: Database, workflowId: string, plan: WorkflowPlan): M
   for (const slot of plan.slots) {
     slotIds.add(slot.slotId);
   }
-  const rows = db
-    .prepare(
-      `SELECT job_id, workflow_slot, last_seq
-         FROM projection_jobs
-        WHERE parent_workflow_job_id = ?
-          AND workflow_slot IS NOT NULL
-        ORDER BY workflow_slot ASC, last_seq DESC`,
-    )
-    .all(workflowId) as WorkflowSlotJobRow[];
+  const rows = readProjectionJobRows(db)
+    .filter((row): row is WorkflowSlotJobRow => row.parent_workflow_job_id === workflowId && row.workflow_slot !== null)
+    .sort(
+      (left, right) =>
+        left.workflow_slot.localeCompare(right.workflow_slot) ||
+        (left.workflow_slot_generation ?? 0) - (right.workflow_slot_generation ?? 0),
+    );
   const selected = new Map<string, string>();
+  const expectedGeneration = new Map<string, number>();
+  const previousJob = new Map<string, string>();
+  const nonterminalBySlot = new Set<string>();
 
   for (const row of rows) {
-    if (!slotIds.has(row.workflow_slot) || selected.has(row.workflow_slot)) {
-      continue;
+    if (!slotIds.has(row.workflow_slot)) continue;
+    const expected = expectedGeneration.get(row.workflow_slot) ?? 0;
+    const predecessor = previousJob.get(row.workflow_slot);
+    if (
+      row.workflow_slot_generation !== expected ||
+      (expected === 0 ? row.replaces_workflow_job_id !== null : row.replaces_workflow_job_id !== predecessor)
+    ) {
+      throw new Error(
+        `Workflow recovery rejected invalid child chain for slot '${row.workflow_slot}' at job '${row.job_id}'.`,
+      );
+    }
+    if (row.terminal === null) {
+      if (nonterminalBySlot.has(row.workflow_slot)) {
+        throw new Error(`Workflow recovery rejected duplicate nonterminal children for slot '${row.workflow_slot}'.`);
+      }
+      nonterminalBySlot.add(row.workflow_slot);
+    } else if (nonterminalBySlot.has(row.workflow_slot)) {
+      throw new Error(
+        `Workflow recovery rejected a terminal child after the current child for slot '${row.workflow_slot}'.`,
+      );
     }
     selected.set(row.workflow_slot, row.job_id);
+    previousJob.set(row.workflow_slot, row.job_id);
+    expectedGeneration.set(row.workflow_slot, expected + 1);
   }
 
   return selected;
+}
+
+async function resumePendingReplacementIntents(deps: ResumeWorkflowDeps): Promise<void> {
+  const slotJobs = readSlotJobIds(deps.db, deps.workflowId, deps.plan);
+  const details = deps.loadJobDetails(deps.db, [...slotJobs.values()], deps.progressStore);
+  for (const slot of deps.plan.slots) {
+    const jobId = slotJobs.get(slot.slotId);
+    if (jobId === undefined) continue;
+    const detail = details.get(jobId);
+    const launch = detail?.launch;
+    if (
+      launch === null ||
+      launch === undefined ||
+      launch.sessionId === null ||
+      launch.workflowSlotGeneration === undefined ||
+      detail?.exit === null ||
+      detail?.exit === undefined ||
+      !isRecoverableReplacementCrash(deps, detail.exit.outcome)
+    ) {
+      continue;
+    }
+    const session = readProviderSessionById(deps.db, launch.sessionId);
+    const intent = session.continuationLease;
+    const nextGeneration = launch.workflowSlotGeneration + 1;
+    const pendingForCurrent =
+      intent?.status === 'pending' &&
+      intent.staleJobId === jobId &&
+      intent.workflowId === deps.workflowId &&
+      intent.workflowSlotId === slot.slotId &&
+      intent.replacementGeneration === nextGeneration;
+    const priorReplacementForCurrent =
+      (intent?.status === 'claimed' || intent?.status === 'cleared') &&
+      intent.resumedJobId === jobId &&
+      intent.workflowId === deps.workflowId &&
+      intent.workflowSlotId === slot.slotId &&
+      intent.replacementGeneration === launch.workflowSlotGeneration;
+    if (!pendingForCurrent && !priorReplacementForCurrent) {
+      continue;
+    }
+
+    // A daemon can die either after recording the pending intent or immediately
+    // after the atomic claim+launch transaction. Re-recording an expired intent,
+    // or advancing a released claimed intent, gives the new atomic replacement
+    // transaction a live lease without guessing from ambient daemon state.
+    if (
+      priorReplacementForCurrent ||
+      (pendingForCurrent && intent.status === 'pending' && Date.parse(intent.expiresAt) <= deps.time.now())
+    ) {
+      await deps.executionSvc.recordContinuationLease({
+        sessionId: launch.sessionId,
+        jobId,
+        workflowId: deps.workflowId,
+        workflowSlotId: slot.slotId,
+        replacementGeneration: nextGeneration,
+        reason: 'stale_recovery',
+        expiresAt: replacementRecoveryLeaseExpiresAt(deps),
+      });
+    }
+    deps.onProgress(deps.workflowId, `completing replacement intent for slot ${slot.slotId}`);
+    const resumed = await deps.executionSvc.resume(
+      slot.provider,
+      {
+        sessionId: launch.sessionId,
+        prompt: STALE_RESUME_PROMPT,
+        cwd: launch.request.cwd ?? deps.ctx.projectRoot,
+        parentWorkflowJobId: deps.workflowId,
+        workflowSlotId: slot.slotId,
+        workflowSlotGeneration: nextGeneration,
+        replacesWorkflowJobId: jobId,
+        owner: { kind: 'workflow', id: deps.workflowId },
+      },
+      deps.ctx,
+    );
+    if (resumed.status === 'rejected') {
+      throw new Error(
+        `Workflow recovery could not complete replacement intent for slot '${slot.slotId}': ${resumed.message ?? 'unknown error'}.`,
+      );
+    }
+    const readiness = await deps.executionSvc.awaitLaunch(resumed.jobId, BOOTSTRAP_TIMEOUT_MS);
+    if (readiness === 'error') {
+      throw new Error(`Workflow recovery replacement '${resumed.jobId}' failed to launch for slot '${slot.slotId}'.`);
+    }
+  }
+}
+
+function replacementRecoveryLeaseExpiresAt(deps: ResumeWorkflowDeps): string {
+  const minimumTtlMs = 60_000;
+  return nowIsoString(deps.time.now() + Math.max(minimumTtlMs, deps.staleAbortTimeoutMs + BOOTSTRAP_TIMEOUT_MS));
+}
+
+function isRecoverableReplacementCrash(deps: ResumeWorkflowDeps, outcome: TerminalOutcome): boolean {
+  if (outcome.kind === 'aborted') return true;
+  if (outcome.kind === 'job_fault') {
+    return outcome.fault.kind === 'ghost_launch' || outcome.fault.kind === 'wrapper_lost';
+  }
+  if (outcome.kind !== 'failed') return false;
+
+  const cause = getEvent(deps.db, outcome.causeRef.stream, outcome.causeRef.seq, deps.progressStore);
+  return cause?.type === 'session.interrupted';
 }
 
 function compileSlotsForRecovery(db: Database, workflowId: string, plan: WorkflowPlan): CompiledPlanSlot[] {
@@ -156,20 +276,68 @@ function buildLaunchedAtomsForStep(
   detailsByJob: Map<string, JobProjectionDetail>,
 ): LaunchedAtom[] {
   const stepSlots = slots.filter((slot) => slot.stepIndex === stepIndex);
-  return stepSlots.map((slot, atomIndex) => {
+  return stepSlots.flatMap((slot, atomIndex) => {
     const detail = detailForJob(detailsByJob, slot.jobId);
-    return {
-      slotId: slot.slotId,
-      jobId: slot.jobId,
-      sessionId: detail.launch?.sessionId ?? `unknown-session:${slot.slotId}`,
-      providerName: slot.provider,
-      agent: slot.label,
-      tagName: slot.tagName,
-      stepIndex: slot.stepIndex,
-      atomIndex,
-      atomKey: slot.atomKey,
-    };
+    if (detail.launch === null || detail.launch.sessionId === null) {
+      return [];
+    }
+    if (detail.launch.workflowSlotGeneration === undefined) {
+      throw new Error(`Workflow child '${slot.jobId}' has no slot generation.`);
+    }
+    return [
+      {
+        slotId: slot.slotId,
+        jobId: slot.jobId,
+        sessionId: detail.launch.sessionId,
+        providerName: slot.provider,
+        agent: slot.label,
+        tagName: slot.tagName,
+        stepIndex: slot.stepIndex,
+        atomIndex,
+        atomKey: slot.atomKey,
+        generation: detail.launch.workflowSlotGeneration,
+      },
+    ];
   });
+}
+
+function validateDurableSlotRelations(
+  deps: ResumeWorkflowDeps,
+  slots: readonly CompiledPlanSlot[],
+  detailsByJob: ReadonlyMap<string, JobProjectionDetail>,
+): void {
+  for (const slot of slots) {
+    if (readProjectionJob(deps.db, slot.jobId) === null) continue;
+
+    const launch = detailsByJob.get(slot.jobId)?.launch ?? null;
+    const validWorkflowRelation =
+      launch?.jobKind === 'provider' &&
+      launch.owner.kind === 'workflow' &&
+      launch.owner.id === deps.workflowId &&
+      launch.parentWorkflowJobId === deps.workflowId &&
+      launch.workflowSlotId === slot.slotId &&
+      launch.provider === slot.provider &&
+      launch.sessionId !== null;
+    if (!validWorkflowRelation || launch === null || launch.sessionId === null || launch.provider === null) {
+      throw new Error(
+        `Workflow recovery rejected invalid durable relation for slot '${slot.slotId}' and job '${slot.jobId}'.`,
+      );
+    }
+
+    let session;
+    try {
+      session = readProviderSessionById(deps.db, launch.sessionId);
+    } catch {
+      throw new Error(
+        `Workflow recovery could not find provider session '${launch.sessionId}' for slot '${slot.slotId}'.`,
+      );
+    }
+    if (providerSessionProvider(session) !== slot.provider) {
+      throw new Error(
+        `Workflow recovery rejected provider session '${launch.sessionId}' for slot '${slot.slotId}': expected '${slot.provider}'.`,
+      );
+    }
+  }
 }
 
 function completedOutputForSlot(slot: CompiledPlanSlot, detailsByJob: Map<string, JobProjectionDetail>): string | null {
@@ -342,7 +510,7 @@ function recoveryIntentFromError(workflowId: string, error: unknown): WorkflowFi
 }
 
 function detectExistingCompletion(deps: ResumeWorkflowDeps): boolean {
-  const completionRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.completed');
+  const completionRow = readLatestEvent(deps.db, deps.workflowId, 'workflow.completed');
   const completion = completionRow ? decodeBody(completionRow, workflowCompletedBodySchema, deps.progressStore) : null;
   return completion !== null;
 }
@@ -355,6 +523,7 @@ function loadRecoverySnapshot(deps: ResumeWorkflowDeps): RecoverySnapshot {
     compiledSlots.map((slot) => slot.jobId),
     readCtx,
   );
+  validateDurableSlotRelations(deps, compiledSlots, slotDetailsByJob);
   const summary = summarizeCompletedSteps(compiledSlots, slotDetailsByJob);
   const stepSlots = compiledSlots.filter((slot) => slot.stepIndex === summary.activeStepIndex);
   const activeAtoms = buildLaunchedAtomsForStep(compiledSlots, summary.activeStepIndex, slotDetailsByJob);
@@ -388,7 +557,11 @@ function classifyActiveStepLaunchState(deps: ResumeWorkflowDeps, snapshot: Recov
 }
 
 function atomIndexForSlot(snapshot: RecoverySnapshot, slot: CompiledPlanSlot): number {
-  return snapshot.activeAtoms.find((atom) => atom.slotId === slot.slotId)?.atomIndex ?? 0;
+  const atomIndex = snapshot.stepSlots.findIndex((candidate) => candidate.slotId === slot.slotId);
+  if (atomIndex < 0) {
+    throw new Error(`Workflow recovery could not place slot '${slot.slotId}' in its active step.`);
+  }
+  return atomIndex;
 }
 
 function runRecoveryWaitForAtoms(
@@ -426,14 +599,18 @@ async function drainLaunchedRecoveryAtoms(deps: ResumeWorkflowDeps, atoms: Launc
 }
 
 function mergeActiveAtomsWithLaunched(
+  stepSlots: readonly CompiledPlanSlot[],
   activeAtoms: LaunchedAtom[],
   launchedAtoms: LaunchedAtom[],
-  launchedSlotIds: ReadonlySet<string>,
 ): LaunchedAtom[] {
-  const launchedBySlot = new Map(launchedAtoms.map((atom) => [atom.slotId, atom]));
-  return activeAtoms.map((atom) =>
-    launchedSlotIds.has(atom.slotId) ? (launchedBySlot.get(atom.slotId) ?? atom) : atom,
-  );
+  const atomsBySlot = new Map([...activeAtoms, ...launchedAtoms].map((atom) => [atom.slotId, atom]));
+  return stepSlots.map((slot) => {
+    const atom = atomsBySlot.get(slot.slotId);
+    if (atom === undefined) {
+      throw new Error(`Workflow recovery has no launched atom for slot '${slot.slotId}'.`);
+    }
+    return atom;
+  });
 }
 
 async function recoverPartiallyLaunchedStep(
@@ -468,12 +645,9 @@ async function recoverPartiallyLaunchedStep(
     });
   }
 
-  const launchedSlotIds = new Set(launchedAtoms.map((atom) => atom.slotId));
   const hybridPlan: WaitRecoveryPlan = {
     ...waitPlan,
-    // The initial snapshot uses unknown-session stubs for missing slots; replace
-    // them after launch so recovery diagnostics report the actual session.
-    activeAtoms: mergeActiveAtomsWithLaunched(waitPlan.activeAtoms, launchedAtoms, launchedSlotIds),
+    activeAtoms: mergeActiveAtomsWithLaunched(snapshot.stepSlots, waitPlan.activeAtoms, launchedAtoms),
   };
   const stepResults = await runRecoveryWaitForAtoms(deps, hybridPlan.activeAtoms, {
     initialState: hybridPlan.initialState,
@@ -513,7 +687,7 @@ async function assembleRelaunch(
 function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnapshot): WaitRecoveryPlan {
   const completedOutputs = new Map<string, string>();
   let pendingCursorSeq: number | null = null;
-  const drainRow = readLatestEvent(deps.db, 'workflow', deps.workflowId, 'workflow.drain.entered');
+  const drainRow = readLatestEvent(deps.db, deps.workflowId, 'workflow.drain.entered');
   const drain = drainRow ? decodeBody(drainRow, workflowDrainEnteredBodySchema, snapshot.readCtx) : null;
 
   for (const slot of snapshot.stepSlots) {
@@ -619,6 +793,8 @@ async function resumeWorkflow(deps: ResumeWorkflowDeps): Promise<RecoveredWorkfl
     return null;
   }
 
+  await resumePendingReplacementIntents(deps);
+
   const snapshot = loadRecoverySnapshot(deps);
   if (snapshot.summary.activeStepIndex > maxStepIndex(deps.plan)) {
     return completedFinalization(deps, snapshot.summary);
@@ -678,26 +854,10 @@ export async function resumeAll(options: {
       continue;
     }
 
-    const launch = options.progressStore.readLaunchProjection(jobId);
-    const persistedCredentials = launch?.jobKind === 'workflow' ? launch.request.providerCredentials : undefined;
-    if (persistedCredentials === undefined) {
-      options.finalizeWorkflow({
-        outcome: 'failed',
-        workflowJobId: jobId,
-        lifecycleFault: {
-          kind: 'recovery_failed',
-          message:
-            'Workflow recovery found no valid stored provider account bindings and stopped before launching work. Start a new workflow with the current Coral CLI after selecting and authenticating the intended provider accounts.',
-        },
-        stepDetails: [],
-      });
-      resumedWorkflowIds.push(jobId);
-      continue;
-    }
     const baseCtx = options.createInvocationContext(status.projectRoot);
     const ctx: InvocationContext = {
       ...baseCtx,
-      providerCredentials: persistedCredentials,
+      providerScope: projection.providerScope,
     };
     let recovered: RecoveredWorkflowFinalization | null;
     try {

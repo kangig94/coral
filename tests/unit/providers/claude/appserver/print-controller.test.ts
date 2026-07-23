@@ -141,6 +141,8 @@ async function ensureController(
     cwd: '/workspace',
     projectsRoot: '/tmp/coral-test-home/.claude/projects',
     systemPromptHash: 'sha256:test',
+
+    bootstrapConfigHash: 'sha256:test-bootstrap',
     permissionMode,
     systemPrompt: 'system',
     model: 'claude-sonnet-test',
@@ -343,6 +345,8 @@ describe('PrintSessionController', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
       systemPrompt: 'system',
       effort: 'high',
@@ -396,6 +400,8 @@ describe('PrintSessionController', () => {
         cwd: '/workspace',
         projectsRoot: '/tmp/coral-test-home/.claude/projects',
         systemPromptHash: 'sha256:test',
+
+        bootstrapConfigHash: 'sha256:test-bootstrap',
         permissionMode: 'default',
         systemPrompt: 'system',
         effort: 'high',
@@ -429,6 +435,8 @@ describe('PrintSessionController', () => {
       cwd: '/workspace',
       projectsRoot: '/tmp/coral-test-home/.claude/projects',
       systemPromptHash: 'sha256:test',
+
+      bootstrapConfigHash: 'sha256:test-bootstrap',
       permissionMode: 'default',
       systemPrompt: 'system',
       model: 'claude-sonnet-test',

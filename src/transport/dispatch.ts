@@ -13,10 +13,7 @@ import type { HttpHandlerPorts } from './server-ports.js';
 import type { RequestBindingRule, RpcMethodSpec } from './rpc/catalog.js';
 import type { JobListFilters, WorkflowPortInput } from './rpc/ports.js';
 import { buildInvocationContext, buildInvocationContextFromQuery } from './invocation-context.js';
-import {
-  canonicalizeProviderCredentialSet,
-  providerCredentialSetInputSchema,
-} from '../runtime/provider-credentials.js';
+import { callerProviderScopeSchema } from '../infra/provider-scope.js';
 
 type RetentionPolicy = NonNullable<JobLaunchRequest['retention']>;
 
@@ -56,21 +53,22 @@ function buildBodyInvocationContext(
   rpcPorts: HttpHandlerPorts,
   principal: Principal,
 ): InvocationContext | null {
-  const providerCredentials =
-    principal.transport === 'http'
-      ? rpcPorts.providerCredentialDefaults
-      : request.providerCredentials === undefined
-        ? undefined
-        : canonicalizeProviderCredentialSet(
-            providerCredentialSetInputSchema.parse(request.providerCredentials),
-            rpcPorts.ambientClaudeLocation,
-          );
+  let providerScope: InvocationContext['providerScope'] = rpcPorts.systemProviderScope;
+  if (principal.transport !== 'http') {
+    if (request.providerScope === undefined) {
+      providerScope = undefined;
+    } else {
+      const callerScope = callerProviderScopeSchema.safeParse(request.providerScope);
+      if (!callerScope.success) return null;
+      providerScope = callerScope.data;
+    }
+  }
   return buildInvocationContext(
     request,
     rpcPorts.identity.pluginRoot,
     rpcPorts.coralEnvSnapshot,
     principal,
-    providerCredentials,
+    providerScope,
   );
 }
 
@@ -100,7 +98,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
   | 'sessionId'
   | 'networkEnv'
   | 'coralEnv'
-  | 'providerCredentials'
+  | 'providerScope'
 > {
   const {
     projectRoot: _projectRoot,
@@ -112,7 +110,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     sessionId: _sessionId,
     networkEnv: _networkEnv,
     coralEnv: _coralEnv,
-    providerCredentials: _providerCredentials,
+    providerScope: _providerScope,
     ...args
   } = parsed as T & {
     projectRoot?: unknown;
@@ -124,7 +122,7 @@ function stripTransportContextKeys<T extends Record<string, unknown>>(
     sessionId?: unknown;
     networkEnv?: unknown;
     coralEnv?: unknown;
-    providerCredentials?: unknown;
+    providerScope?: unknown;
   };
   return args;
 }
@@ -145,6 +143,21 @@ function ensureLaunchFenceInactive(rpcPorts: HttpHandlerPorts): { statusCode: nu
     return null;
   }
   return domainResultToHttp(domainError('backend_recovering', BACKEND_RECOVERING_MESSAGE));
+}
+
+function ensureProviderScopeConfigured(
+  rpcPorts: HttpHandlerPorts,
+  principal: Principal,
+): { statusCode: number; body: unknown } | null {
+  if (principal.transport !== 'http' || rpcPorts.systemProviderScope !== undefined) return null;
+  return {
+    statusCode: 503,
+    body: {
+      code: 'system_provider_scope_unconfigured',
+      message: 'Provider execution is disabled because this Coral daemon has no named system provider scope.',
+      remediation: 'Configure CORAL_SYSTEM_PROVIDER_SCOPE on the daemon and restart it.',
+    },
+  };
 }
 
 type CommonSessionInput = {
@@ -260,6 +273,8 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown> & { provider: string; prompt: string };
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
+      const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
+      if (unconfigured) return unaryHttp(unconfigured);
       const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
@@ -279,6 +294,8 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
+      const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
+      if (unconfigured) return unaryHttp(unconfigured);
       const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
@@ -292,7 +309,7 @@ export async function executeCatalogRequest(
         claudeTransport: _claudeTransport,
         networkEnv: _networkEnv,
         coralEnv: _coralEnv,
-        providerCredentials: _providerCredentials,
+        providerScope: _providerScope,
         ...workflowCommand
       } = parsed;
       const result = await rpcPorts.workflows.execute(workflowCommand as WorkflowPortInput, ctx);
@@ -431,6 +448,8 @@ export async function executeCatalogRequest(
       const parsed = request as Record<string, unknown>;
       const recovering = ensureLaunchFenceInactive(rpcPorts);
       if (recovering) return unaryHttp(recovering);
+      const unconfigured = ensureProviderScopeConfigured(rpcPorts, principal);
+      if (unconfigured) return unaryHttp(unconfigured);
       const ctx = buildBodyInvocationContext(parsed, rpcPorts, principal);
       if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 

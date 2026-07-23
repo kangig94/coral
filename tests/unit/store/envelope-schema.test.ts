@@ -24,7 +24,6 @@ describe('journalEventEnvelopeSchema', () => {
         workflowSlotId: 'slot-7',
         discussSessionId: 'discuss-1',
       },
-      bodyVersion: 2,
       body: {
         status: 'ok',
       },
@@ -50,39 +49,13 @@ describe('journalEventEnvelopeSchema', () => {
         workflowSlotId: 'slot-7',
         discussSessionId: 'discuss-1',
       },
-      bodyVersion: 2,
       body: {
         status: 'ok',
       },
     });
   });
 
-  it('rejects missing bodyVersion', () => {
-    const parsed = journalEventEnvelopeSchema.safeParse({
-      seq: 1,
-      ts: '2026-04-18T00:00:00.000Z',
-      type: 'job.created',
-      stream: { kind: 'job', id: 'job-1' },
-      body: {},
-    });
-
-    expect(parsed.success).toBe(false);
-  });
-
-  it('rejects bodyVersion = 0', () => {
-    const parsed = journalEventEnvelopeSchema.safeParse({
-      seq: 1,
-      ts: '2026-04-18T00:00:00.000Z',
-      type: 'job.created',
-      stream: { kind: 'job', id: 'job-1' },
-      bodyVersion: 0,
-      body: {},
-    });
-
-    expect(parsed.success).toBe(false);
-  });
-
-  it('rejects bodyVersion = -1', () => {
+  it('rejects the removed bodyVersion surface', () => {
     const parsed = journalEventEnvelopeSchema.safeParse({
       seq: 1,
       ts: '2026-04-18T00:00:00.000Z',
@@ -101,7 +74,6 @@ describe('journalEventEnvelopeSchema', () => {
       ts: '2026-04-18T00:00:00.000Z',
       type: 'job.created',
       stream: { kind: 'kb', id: 'job-1' },
-      bodyVersion: 1,
       body: {},
     });
 
@@ -114,7 +86,6 @@ describe('journalEventEnvelopeSchema', () => {
       ts: '2026-04-18T00:00:00.000Z',
       type: 'job.created',
       stream: { kind: 'unknown', id: 'job-1' },
-      bodyVersion: 1,
       body: {},
     });
 
@@ -127,7 +98,6 @@ describe('journalEventEnvelopeSchema', () => {
       ts: '2026-04-18T00:00:00.000Z',
       type: 'job.created',
       stream: { kind: 'job', id: 'job-1' },
-      bodyVersion: 1,
       body: {},
     });
 
@@ -140,7 +110,6 @@ describe('journalEventEnvelopeSchema', () => {
       ts: '2026-04-18T00:00:00.000Z',
       type: 'job.created',
       stream: { kind: 'job', id: 'job-1' },
-      bodyVersion: 1,
       body: {},
     });
 
@@ -161,7 +130,6 @@ describe('journalEventEnvelopeSchema', () => {
       correlationId: undefined,
       causationSeq: undefined,
       refs: undefined,
-      bodyVersion: 1,
       body: {
         ok: true,
       },
@@ -180,7 +148,6 @@ describe('journalEventEnvelopeSchema', () => {
       correlationId: undefined,
       causationSeq: undefined,
       refs: undefined,
-      bodyVersion: 1,
       body: {
         ok: true,
       },

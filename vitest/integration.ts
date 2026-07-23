@@ -14,6 +14,7 @@ export default defineConfig({
   resolve: { alias },
   test: {
     include: ['tests/integration/**/*.test.ts'],
+    setupFiles: ['vitest/setup.ts'],
     testTimeout: 120_000,
     hookTimeout: 30_000,
     pool: 'forks',

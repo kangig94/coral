@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -65,6 +66,7 @@ Make the contract explicit first.
 function seedStore(projectRoot: string): void {
   const runtime = createRealRuntime('prod');
   const db = openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
   });
@@ -73,6 +75,7 @@ function seedStore(projectRoot: string): void {
     db.prepare(
       `INSERT INTO projection_jobs (
          job_id,
+         execution_owner,
          phase,
          terminal,
          diagnostics,
@@ -86,9 +89,10 @@ function seedStore(projectRoot: string): void {
          workflow_slot,
          created_at,
          last_seq
-       ) VALUES (?, ?, NULL, NULL, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
+       ) VALUES (?, ?, ?, NULL, '{"progressFaults":[]}', ?, ?, ?, ?, NULL, ?, NULL, NULL, ?, ?)`,
     ).run(
       'job-store-read-1',
+      JSON.stringify({ kind: 'provider-session', id: 'session-store-read-1' }),
       'running',
       'session-store-read-1',
       'codex',

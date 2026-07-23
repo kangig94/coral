@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -5,12 +6,15 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
-import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import type { StoreReadContext } from '#src/store/body-codec.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
-import type { RetentionPolicy, SessionEntry } from '#src/sessions/entry.js';
+import type { RetentionPolicy, ProviderSession } from '#src/sessions/entry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { readProjectionSessionEntry } from '#src/sessions/projections.js';
+import { z } from 'zod';
+import { readProjectionProviderSession } from '#src/sessions/projections.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 import {
   readSessionRetentionWorkForEntries,
   readSessionRetentionWorkForPairs,
@@ -20,12 +24,20 @@ import {
 
 const NOW = new Date('2026-06-11T00:00:00.000Z');
 const DISCARD: RetentionPolicy = 'discard_provider_artifacts_on_terminal';
+const retentionQueryEventRegistry: DomainEventRegistry = {
+  streamKind: 'job',
+  entries: [
+    defineDomainEvent({
+      type: 'job.terminal.recorded',
+      schema: z.object({ jobId: z.string() }).strict(),
+    }),
+  ],
+};
 
-function sessionEntry(sessionId: string, retention: RetentionPolicy = DISCARD): SessionEntry {
+function sessionEntry(sessionId: string, retention: RetentionPolicy = DISCARD): ProviderSession {
   return {
     sessionId,
-    provider: 'codex',
-    sessionAuthority: { kind: 'orchestration' },
+    binding: TEST_CODEX_BINDING,
     name: sessionId,
     state: 'pending',
     retention,
@@ -43,52 +55,82 @@ function sessionEntry(sessionId: string, retention: RetentionPolicy = DISCARD): 
 
 type Harness = {
   db: Database;
+  readCtx: StoreReadContext;
   commit: (inputs: readonly CoralEventInput[]) => void;
   close: () => void;
 };
 
 function newHarness(): Harness {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
-  const reducers = composeReducers(sessionsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
+  const reducers = composeReducers(retentionQueryEventRegistry, sessionsRegistry);
+  const bodyCodec = createEventBodyCodec();
   return {
     db,
+    readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     commit: (inputs) => {
-      commitInputs(db, inputs, { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort });
+      commitInputs(db, inputs, { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort });
     },
     close: () => db.close(),
   };
 }
 
-function openedInput(entry: SessionEntry): CoralEventInput {
+function openedInput(entry: ProviderSession): CoralEventInput {
   return {
     type: 'session.opened',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
-    body: { entry, controller: 'default', provider: entry.provider, scope_key: `scope-${entry.sessionId}` },
+    body: { entry, controller: 'default', scope_key: `scope-${entry.sessionId}` },
   };
 }
 
-function claimReleasedInput(entry: SessionEntry, jobId: string): CoralEventInput {
+function claimedEntry(entry: ProviderSession, jobId: string): ProviderSession {
+  return {
+    ...entry,
+    activeJobId: jobId,
+    lastUsedAt: NOW.toISOString(),
+    version: entry.version + 1,
+  };
+}
+
+function claimInput(entry: ProviderSession, jobId: string): CoralEventInput {
+  const nextEntry = claimedEntry(entry, jobId);
+  return {
+    type: 'session.claimed',
+    stream: { kind: 'session', id: entry.sessionId },
+    refs: { sessionId: entry.sessionId, jobId },
+    body: { entry: nextEntry, jobId },
+  };
+}
+
+function releasedEntry(entry: ProviderSession, jobId: string): ProviderSession {
+  if (entry.activeJobId !== jobId) {
+    throw new Error(`Cannot release '${jobId}' from session '${entry.sessionId}' claimed by '${entry.activeJobId}'.`);
+  }
+  const { activeJobId: _activeJobId, ...withoutActiveJob } = entry;
+  return {
+    ...withoutActiveJob,
+    lastUsedAt: NOW.toISOString(),
+    version: entry.version + 1,
+  };
+}
+
+function claimReleasedInput(entry: ProviderSession, jobId: string): CoralEventInput {
+  const nextEntry = releasedEntry(entry, jobId);
   return {
     type: 'session.claim.released',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId, jobId },
-    bodyVersion: 1,
-    body: { entry, jobId },
+    body: { entry: nextEntry, jobId },
   };
 }
 
-// `job.terminal.recorded` belongs to the jobs domain; only its refs matter to
-// retention-work queries, so the body stays minimal and unregistered here.
+// This query fixture registers the minimal body contract it writes explicitly.
 function jobTerminalInput(jobId: string, sessionId: string): CoralEventInput {
   return {
     type: 'job.terminal.recorded',
     stream: { kind: 'job', id: jobId },
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: { jobId },
   };
 }
@@ -100,7 +142,6 @@ function discardOutcomeInputs(sessionId: string, outcome: 'completed' | 'failed'
       type: 'session.retention.discard.requested',
       stream: { kind: 'session', id: sessionId },
       refs: { sessionId },
-      bodyVersion: 1,
       body: base,
     },
     outcome === 'completed'
@@ -108,28 +149,29 @@ function discardOutcomeInputs(sessionId: string, outcome: 'completed' | 'failed'
           type: 'session.retention.discard.completed',
           stream: { kind: 'session', id: sessionId },
           refs: { sessionId },
-          bodyVersion: 1,
           body: { ...base, outcome: 'discarded' },
         }
       : {
           type: 'session.retention.discard.failed',
           stream: { kind: 'session', id: sessionId },
           refs: { sessionId },
-          bodyVersion: 1,
           body: { ...base, reason: 'provider unreachable' },
         },
   ];
 }
 
-function continuationLeaseRecordedInput(entry: SessionEntry, expiresAt: string): CoralEventInput {
+function continuationLeaseRecordedInput(entry: ProviderSession, expiresAt: string): CoralEventInput {
   const lease = {
     status: 'pending' as const,
     staleJobId: 'job-stale',
+    workflowId: 'workflow-1',
+    workflowSlotId: 'workflow-1:0:0',
+    replacementGeneration: 1,
     reason: 'stale_recovery' as const,
     expiresAt,
     recordedAt: NOW.toISOString(),
   };
-  const nextEntry: SessionEntry = {
+  const nextEntry: ProviderSession = {
     ...entry,
     continuationLease: lease,
     version: entry.version + 1,
@@ -138,18 +180,21 @@ function continuationLeaseRecordedInput(entry: SessionEntry, expiresAt: string):
     type: 'session.continuation_lease.recorded',
     stream: { kind: 'session', id: entry.sessionId },
     refs: { sessionId: entry.sessionId, jobId: 'job-stale' },
-    bodyVersion: 1,
     body: { entry: nextEntry, sessionId: entry.sessionId, lease },
   };
 }
 
 /** Open a retained session, release `jobIds` claims, and record their terminals. */
-function seedRetainedSession(h: Harness, sessionId: string, jobIds: readonly string[]): SessionEntry {
-  const entry = sessionEntry(sessionId);
-  h.commit([
-    openedInput(entry),
-    ...jobIds.flatMap((jobId) => [claimReleasedInput(entry, jobId), jobTerminalInput(jobId, sessionId)]),
-  ]);
+function seedRetainedSession(h: Harness, sessionId: string, jobIds: readonly string[]): ProviderSession {
+  const opened = sessionEntry(sessionId);
+  const inputs: CoralEventInput[] = [openedInput(opened)];
+  let entry = opened;
+  for (const jobId of jobIds) {
+    const claimed = claimedEntry(entry, jobId);
+    inputs.push(claimInput(entry, jobId), claimReleasedInput(claimed, jobId), jobTerminalInput(jobId, sessionId));
+    entry = releasedEntry(claimed, jobId);
+  }
+  h.commit(inputs);
   return entry;
 }
 
@@ -164,7 +209,7 @@ describe('sessions retention-work', () => {
     it('should return empty work for an empty session id batch', () => {
       const h = newHarness();
       try {
-        expect(readSessionRetentionWorkForSessionIds(h.db, [])).toEqual([]);
+        expect(readSessionRetentionWorkForSessionIds(h.db, h.readCtx, [])).toEqual([]);
       } finally {
         h.close();
       }
@@ -175,10 +220,10 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-1', ['job-1']);
 
-        const work = readSessionRetentionWorkForSessionIds(h.db, ['session-1']);
+        const work = readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-1']);
         expect(work).toHaveLength(1);
         expect(work[0]).toMatchObject({ sessionId: 'session-1', jobId: 'job-1' });
-        expect(work[0].entry).toEqual(readProjectionSessionEntry(h.db, 'session-1'));
+        expect(work[0].entry).toEqual(readProjectionProviderSession(h.db, 'session-1'));
       } finally {
         h.close();
       }
@@ -189,7 +234,7 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-1', ['job-1']);
 
-        expect(readSessionRetentionWorkForSessionIds(h.db, ['session-1', 'session-1'])).toHaveLength(1);
+        expect(readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-1', 'session-1'])).toHaveLength(1);
       } finally {
         h.close();
       }
@@ -200,7 +245,7 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-1', ['job-1']);
 
-        const work = readSessionRetentionWorkForSessionIds(h.db, ['missing', 'session-1']);
+        const work = readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['missing', 'session-1']);
         expect(work.map((item) => item.sessionId)).toEqual(['session-1']);
       } finally {
         h.close();
@@ -211,9 +256,15 @@ describe('sessions retention-work', () => {
       const h = newHarness();
       try {
         const entry = sessionEntry('session-retain', 'retain');
-        h.commit([openedInput(entry), claimReleasedInput(entry, 'job-1'), jobTerminalInput('job-1', 'session-retain')]);
+        const claimed = claimedEntry(entry, 'job-1');
+        h.commit([
+          openedInput(entry),
+          claimInput(entry, 'job-1'),
+          claimReleasedInput(claimed, 'job-1'),
+          jobTerminalInput('job-1', 'session-retain'),
+        ]);
 
-        expect(readSessionRetentionWorkForSessionIds(h.db, ['session-retain'])).toEqual([]);
+        expect(readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-retain'])).toEqual([]);
       } finally {
         h.close();
       }
@@ -227,7 +278,7 @@ describe('sessions retention-work', () => {
           seedRetainedSession(h, 'session-done', ['job-1']);
           h.commit(discardOutcomeInputs('session-done', outcome));
 
-          expect(readSessionRetentionWorkForSessionIds(h.db, ['session-done'])).toEqual([]);
+          expect(readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-done'])).toEqual([]);
         } finally {
           h.close();
         }
@@ -240,7 +291,7 @@ describe('sessions retention-work', () => {
         const entry = sessionEntry('session-unreleased');
         h.commit([openedInput(entry), jobTerminalInput('job-1', 'session-unreleased')]);
 
-        expect(readSessionRetentionWorkForSessionIds(h.db, ['session-unreleased'])).toEqual([]);
+        expect(readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-unreleased'])).toEqual([]);
       } finally {
         h.close();
       }
@@ -249,13 +300,8 @@ describe('sessions retention-work', () => {
     it('should exclude sessions with active jobs, protective leases, or in-flight discard requests', () => {
       const h = newHarness();
       try {
-        const active = sessionEntry('session-active');
-        const activeWithJob = { ...active, activeJobId: 'job-active' };
-        h.commit([
-          openedInput(activeWithJob),
-          claimReleasedInput(activeWithJob, 'job-active'),
-          jobTerminalInput('job-active', 'session-active'),
-        ]);
+        const active = seedRetainedSession(h, 'session-active', ['job-released']);
+        h.commit([claimInput(active, 'job-active')]);
 
         const leased = seedRetainedSession(h, 'session-leased', ['job-1']);
         h.commit([continuationLeaseRecordedInput(leased, new Date(NOW.getTime() + 60_000).toISOString())]);
@@ -266,15 +312,19 @@ describe('sessions retention-work', () => {
             type: 'session.retention.discard.requested',
             stream: { kind: 'session', id: 'session-requested' },
             refs: { sessionId: 'session-requested' },
-            bodyVersion: 1,
             body: { sessionId: 'session-requested', attempt: 1, handles: [] },
           },
         ]);
 
         expect(
-          readSessionRetentionWorkForSessionIds(h.db, ['session-active', 'session-leased', 'session-requested'], {
-            nowMs: NOW.getTime(),
-          }),
+          readSessionRetentionWorkForSessionIds(
+            h.db,
+            h.readCtx,
+            ['session-active', 'session-leased', 'session-requested'],
+            {
+              nowMs: NOW.getTime(),
+            },
+          ),
         ).toEqual([]);
       } finally {
         h.close();
@@ -288,7 +338,7 @@ describe('sessions retention-work', () => {
         h.commit([continuationLeaseRecordedInput(leased, new Date(NOW.getTime() + 60_000).toISOString())]);
 
         expect(
-          readSessionRetentionWorkForSessionIds(h.db, ['session-expired-lease'], {
+          readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-expired-lease'], {
             nowMs: NOW.getTime() + 60_001,
           }).map((item) => item.sessionId),
         ).toEqual(['session-expired-lease']);
@@ -301,9 +351,10 @@ describe('sessions retention-work', () => {
       const h = newHarness();
       try {
         const entry = sessionEntry('session-running');
-        h.commit([openedInput(entry), claimReleasedInput(entry, 'job-1')]);
+        const claimed = claimedEntry(entry, 'job-1');
+        h.commit([openedInput(entry), claimInput(entry, 'job-1'), claimReleasedInput(claimed, 'job-1')]);
 
-        expect(readSessionRetentionWorkForSessionIds(h.db, ['session-running'])).toEqual([]);
+        expect(readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-running'])).toEqual([]);
       } finally {
         h.close();
       }
@@ -314,7 +365,7 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-multi', ['job-a', 'job-b']);
 
-        const work = readSessionRetentionWorkForSessionIds(h.db, ['session-multi']);
+        const work = readSessionRetentionWorkForSessionIds(h.db, h.readCtx, ['session-multi']);
         expect(work.map((item) => item.jobId).sort()).toEqual(['job-a', 'job-b']);
         expect(work.every((item) => item.sessionId === 'session-multi')).toBe(true);
       } finally {
@@ -329,13 +380,15 @@ describe('sessions retention-work', () => {
       try {
         const retained = seedRetainedSession(h, 'session-1', ['job-1']);
         const retain = sessionEntry('session-retain', 'retain');
+        const claimedRetain = claimedEntry(retain, 'job-r');
         h.commit([
           openedInput(retain),
-          claimReleasedInput(retain, 'job-r'),
+          claimInput(retain, 'job-r'),
+          claimReleasedInput(claimedRetain, 'job-r'),
           jobTerminalInput('job-r', 'session-retain'),
         ]);
 
-        const work = readSessionRetentionWorkForEntries(h.db, [retain, retained, retained]);
+        const work = readSessionRetentionWorkForEntries(h.db, h.readCtx, [retain, retained, retained]);
         expect(work).toHaveLength(1);
         expect(work[0]).toMatchObject({ sessionId: 'session-1', jobId: 'job-1' });
       } finally {
@@ -346,8 +399,8 @@ describe('sessions retention-work', () => {
     it('should return empty work when no entry is retained for discard', () => {
       const h = newHarness();
       try {
-        expect(readSessionRetentionWorkForEntries(h.db, [sessionEntry('session-x', 'retain')])).toEqual([]);
-        expect(readSessionRetentionWorkForEntries(h.db, [])).toEqual([]);
+        expect(readSessionRetentionWorkForEntries(h.db, h.readCtx, [sessionEntry('session-x', 'retain')])).toEqual([]);
+        expect(readSessionRetentionWorkForEntries(h.db, h.readCtx, [])).toEqual([]);
       } finally {
         h.close();
       }
@@ -358,7 +411,7 @@ describe('sessions retention-work', () => {
     it('should return an empty map for empty pairs', () => {
       const h = newHarness();
       try {
-        expect(readSessionRetentionWorkForPairs(h.db, []).size).toBe(0);
+        expect(readSessionRetentionWorkForPairs(h.db, h.readCtx, []).size).toBe(0);
       } finally {
         h.close();
       }
@@ -369,11 +422,11 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-1', ['job-1']);
 
-        const work = readSessionRetentionWorkForPairs(h.db, [{ sessionId: 'session-1', jobId: 'job-1' }]);
+        const work = readSessionRetentionWorkForPairs(h.db, h.readCtx, [{ sessionId: 'session-1', jobId: 'job-1' }]);
         expect(work.size).toBe(1);
         const item = work.get(sessionRetentionWorkKey('session-1', 'job-1'));
         expect(item).toMatchObject({ sessionId: 'session-1', jobId: 'job-1' });
-        expect(item?.entry).toEqual(readProjectionSessionEntry(h.db, 'session-1'));
+        expect(item?.entry).toEqual(readProjectionProviderSession(h.db, 'session-1'));
       } finally {
         h.close();
       }
@@ -384,7 +437,9 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-1', ['job-1']);
 
-        expect(readSessionRetentionWorkForPairs(h.db, [{ sessionId: 'session-1', jobId: 'job-other' }]).size).toBe(0);
+        expect(
+          readSessionRetentionWorkForPairs(h.db, h.readCtx, [{ sessionId: 'session-1', jobId: 'job-other' }]).size,
+        ).toBe(0);
       } finally {
         h.close();
       }
@@ -394,15 +449,17 @@ describe('sessions retention-work', () => {
       const h = newHarness();
       try {
         const retain = sessionEntry('session-retain', 'retain');
+        const claimedRetain = claimedEntry(retain, 'job-r');
         h.commit([
           openedInput(retain),
-          claimReleasedInput(retain, 'job-r'),
+          claimInput(retain, 'job-r'),
+          claimReleasedInput(claimedRetain, 'job-r'),
           jobTerminalInput('job-r', 'session-retain'),
         ]);
         seedRetainedSession(h, 'session-done', ['job-d']);
         h.commit(discardOutcomeInputs('session-done', 'completed'));
 
-        const work = readSessionRetentionWorkForPairs(h.db, [
+        const work = readSessionRetentionWorkForPairs(h.db, h.readCtx, [
           { sessionId: 'missing', jobId: 'job-x' },
           { sessionId: 'session-retain', jobId: 'job-r' },
           { sessionId: 'session-done', jobId: 'job-d' },
@@ -418,7 +475,7 @@ describe('sessions retention-work', () => {
       try {
         seedRetainedSession(h, 'session-multi', ['job-a', 'job-b']);
 
-        const work = readSessionRetentionWorkForPairs(h.db, [
+        const work = readSessionRetentionWorkForPairs(h.db, h.readCtx, [
           { sessionId: 'session-multi', jobId: 'job-a' },
           { sessionId: 'session-multi', jobId: 'job-missing' },
         ]);

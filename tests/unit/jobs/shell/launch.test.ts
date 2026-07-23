@@ -1,21 +1,19 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { allocateTestSession, initTestJob, seedTestJobSession } from '../../../helpers/session.js';
+import { allocateTestSession, initTestJob } from '../../../helpers/session.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
-import { createDeferred } from '#tools/testing/deferred.js';
 import type { JobPhase } from '#src/jobs/phase.js';
-import type { AppServerRuntime, JobLaunch, JobEvent, JobStatus } from '#src/jobs/records.js';
+import type { JobEvent, JobStatus } from '#src/jobs/records.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import {
   providerContinuityEvent,
   providerProgressEvent,
   providerTerminalEvent,
   streamProviderEvents,
-  streamProviderTerminal,
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
 import type { ProviderEventBody, ProviderRequest } from '#src/providers/contract.js';
@@ -23,7 +21,6 @@ import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/r
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
   AgentNamespaceNotFoundError,
@@ -34,16 +31,17 @@ import {
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import type { CommitEventsFn } from '#src/store/append.js';
+import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
@@ -51,13 +49,12 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { executeCatalogRequest } from '#src/transport/dispatch.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
-import { CONTEXT_ENV_KEY } from '#src/transport/context-profile.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import {
-  TEST_CLAUDE_SOURCE,
-  TEST_CODEX_SOURCE,
-  TEST_PROVIDER_CREDENTIAL_INPUT,
-  TEST_PROVIDER_CREDENTIALS,
+  TEST_CODEX_SCOPE,
+  TEST_CODEX_SCOPE_INPUT,
+  TEST_SYSTEM_PROVIDER_SCOPE,
+  withTestProfileLocation,
 } from '#tests/helpers/provider-credentials.js';
 
 type ProviderTurnContinuity = {
@@ -72,7 +69,7 @@ type ProviderTurnResult = ProviderTerminalInput & {
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-launch-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-launch-test-tmp-${process.pid}`,
   getNewProvider: vi.fn(),
   resolveAgent: vi.fn(),
 }));
@@ -87,7 +84,8 @@ vi.mock('node:os', async () => {
   };
 });
 
-vi.mock('#src/providers/registry.js', () => ({
+vi.mock('#src/providers/registry.js', async () => ({
+  ...(await vi.importActual('#src/providers/registry.js')),
   getNewProvider: mockState.getNewProvider,
 }));
 
@@ -103,12 +101,11 @@ const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
 let eventBus: TypedEventBus;
 let launchCoordinator: LaunchCoordinator;
-let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  return new JobStore(namespace, runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime),
     eventBus,
     providers: permissiveProviderLookupPort,
@@ -139,10 +136,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
   launchCoordinator.releaseLaunch(jobId, pool);
 }
 
-function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
 function createService(
   ctx: InvocationContext,
   options: {
@@ -151,9 +144,13 @@ function createService(
     backendNamespace?: string;
     providerHostManager?: ProviderHostManager;
     pluginRegistry?: { discoverPluginRoot: (namespace: string) => string | null };
+    coordinatorCommit?: CommitEventsFn;
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
+  const providerRegistry = new ProviderRegistry();
+  const provider = resolveProvider('codex');
+  if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -199,25 +196,20 @@ function createService(
   };
   return new ExecutionService(ctx, {
     childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
-    providerRegistry: {
-      get: resolveProvider,
-      getAll: () => [],
-    } as never,
+    providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
     aggregateWorkflowUsage: createTestJobJournalDeps(progressStore, runtime).aggregateWorkflowUsage,
     subscribeJobEvents,
     getCurrentJournalSeq,
-    coordinatorCommit: createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+    coordinatorCommit: options.coordinatorCommit ?? createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
   });
 }
 
@@ -228,21 +220,6 @@ function createResolvedAgent(ref: AgentRef, content: string) {
     content,
     path: `/tmp/${ref.name}.md`,
   };
-}
-
-function setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
-  const fallback = handles.at(-1);
-  const mock = vi.fn(async () => {
-    if (!fallback) {
-      throw new Error('No provider server handle configured');
-    }
-    return fallback;
-  });
-  for (const handle of handles) {
-    mock.mockResolvedValueOnce(handle);
-  }
-  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
-  return mock;
 }
 
 function trackJob(jobId: string): void {
@@ -272,57 +249,6 @@ function trackAllJobDirs(): void {
   }
 }
 
-function createFakeProviderServerHandle(options?: {
-  generation?: number;
-  request?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
-}) {
-  const handlers = new Set<(message: { method: string; params?: Record<string, unknown> }) => void>();
-  const request =
-    options?.request ??
-    (async (_method: string, _params: Record<string, unknown>) => {
-      return {};
-    });
-  const requestMock = vi.fn((method: string, params: Record<string, unknown> = {}) => request(method, params));
-  const notifyMock = vi.fn();
-  const onNotificationMock = vi.fn(
-    (handler: (message: { method: string; params?: Record<string, unknown> }) => void) => {
-      handlers.add(handler);
-      return () => {
-        handlers.delete(handler);
-      };
-    },
-  );
-  const markExpectedCloseMock = vi.fn();
-  const closeMock = vi.fn(async () => {});
-  const closePromise = new Promise<Error | void>(() => {});
-
-  return {
-    handle: {
-      pid: 43210,
-      child: {} as never,
-      generation: options?.generation ?? 7,
-      rpc: {
-        request: requestMock as unknown as ProviderServerHandle['rpc']['request'],
-        notify: notifyMock,
-      },
-      onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
-      closePromise,
-      markExpectedClose: markExpectedCloseMock,
-      close: closeMock,
-    } satisfies ProviderServerHandle,
-    requestMock,
-    notifyMock,
-    onNotificationMock,
-    markExpectedCloseMock,
-    closeMock,
-    emit(message: { method: string; params?: Record<string, unknown> }) {
-      for (const handler of handlers) {
-        handler(message);
-      }
-    },
-  };
-}
-
 type TestProviderTurnResult = ProviderTurnResult;
 
 type TestJobTerminal = Omit<NonNullable<JobStatus['result']>, 'outcome'> & {
@@ -334,7 +260,7 @@ function completedOutcome() {
 }
 
 function toCompletedResult(
-  result: TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity },
+  result: TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ): TestProviderTurnResult {
   if ('outcome' in result) {
     return result;
@@ -342,7 +268,9 @@ function toCompletedResult(
   return { ...result, outcome: completedOutcome() };
 }
 
-function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): NonNullable<JobStatus['result']> {
+function toCompletedJobTerminal(
+  result: TestJobTerminal | { content: string; durationMs: number },
+): NonNullable<JobStatus['result']> {
   if ('outcome' in result && result.outcome !== undefined) {
     return result as NonNullable<JobStatus['result']>;
   }
@@ -352,8 +280,8 @@ function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): 
 function streamCompletedResult(
   result:
     | TestProviderTurnResult
-    | Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>
-    | { content: string; continuity?: ProviderTurnContinuity },
+    | Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>
+    | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ) {
   return streamProviderEvents(async (emit) => {
     const completed = toCompletedResult(await result);
@@ -372,91 +300,24 @@ function streamCompletedResult(
 
 function makeProvider(options?: {
   execute?: (
-    ...args: Parameters<Provider['execute']>
-  ) => Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>;
+    ...args: Parameters<StandaloneTestProvider['execute']>
+  ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
+  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })),
+  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute: execute as unknown as Provider['execute'],
+    execute: execute as unknown as StandaloneTestProvider['execute'],
     ...(preflight ? { preflight } : {}),
   };
-  return { provider: toProviderSpec(provider)!, execute, preflight };
-}
-
-function makeCodexAppServerProvider(): NonNullable<ReturnType<typeof toProviderSpec>> {
-  return toProviderSpec({
-    name: 'codex',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
-    appServerLifecycle: {
-      buildServerSpec: (_continuity, request) =>
-        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
-      interrupt: async (lease, continuity) => {
-        const threadId = continuity.threadId;
-        const turnId = continuity.turnId;
-        if (typeof threadId !== 'string' || typeof turnId !== 'string') {
-          return;
-        }
-        await lease.rpc('turn/interrupt', { threadId, turnId });
-      },
-      probe: async (lease, continuity) => {
-        const threadId = continuity.threadId;
-        if (typeof threadId !== 'string') {
-          return { resumable: false, updatedContinuity: continuity };
-        }
-        const cwd = typeof continuity.cwd === 'string' ? continuity.cwd : process.cwd();
-        try {
-          await lease.rpc('thread/resume', {
-            threadId,
-            cwd,
-            model: null,
-            approvalPolicy: 'never',
-            sandbox: 'workspace-write',
-          });
-          return { resumable: true, updatedContinuity: continuity };
-        } catch (error) {
-          const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-          if (
-            message.includes('not found') ||
-            message.includes('missing thread') ||
-            message.includes('unknown thread') ||
-            message.includes('does not exist') ||
-            message.includes('no such thread')
-          ) {
-            return { resumable: false, updatedContinuity: continuity };
-          }
-          throw error;
-        }
-      },
-      finalizeInterrupted: (probeResult, continuity, context) => {
-        const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
-        return probeResult.resumable
-          ? effectiveConversationRef
-            ? {
-                kind: 'set_resumable' as const,
-                conversationRef: effectiveConversationRef,
-                providerContinuity: continuity,
-              }
-            : {
-                kind: 'preserve' as const,
-                providerContinuity: continuity,
-              }
-          : {
-              kind: 'clear_non_resumable' as const,
-              providerContinuity: continuity,
-            };
-      },
-    },
-  })!;
+  return { provider: toProviderDefinition(provider)!, execute, preflight };
 }
 
 function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
@@ -466,61 +327,12 @@ function expectRuntimePreflightArg(preflight: ReturnType<typeof vi.fn>): void {
       storage: runtime.storage,
       env: runtime.env,
       time: runtime.time,
-      credentialSource: TEST_CODEX_SOURCE,
       cwd: expect.any(String),
-      runExact: expect.any(Function),
+      baseEnv: expect.any(Object),
+      requestEnv: expect.any(Object),
+      platform: expect.any(String),
     }),
   );
-}
-
-function makeSharedClaudeAppServerProvider(spec: {
-  provider: string;
-  command: string;
-  args: string[];
-  cwd: string;
-  shared: true;
-}): NonNullable<ReturnType<typeof toProviderSpec>> {
-  return toProviderSpec({
-    name: 'claude',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
-    appServerLifecycle: {
-      buildServerSpec: () => spec,
-      interrupt: async (lease, continuity) => {
-        const brokerSessionKey =
-          typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
-        if (!brokerSessionKey) {
-          return;
-        }
-        await lease.rpc('turn/interrupt', {
-          brokerSessionKey,
-          ...(typeof continuity.brokerTurnId === 'string' ? { brokerTurnId: continuity.brokerTurnId } : {}),
-        });
-      },
-      probe: async (_lease, continuity) => ({
-        resumable: true,
-        updatedContinuity: continuity,
-      }),
-      finalizeInterrupted: (probeResult, continuity, context) => {
-        const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
-        return probeResult.resumable
-          ? effectiveConversationRef
-            ? {
-                kind: 'set_resumable' as const,
-                conversationRef: effectiveConversationRef,
-                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-              }
-            : {
-                kind: 'preserve' as const,
-                ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-              }
-          : {
-              kind: 'clear_non_resumable' as const,
-              ...(probeResult.updatedContinuity ? { providerContinuity: probeResult.updatedContinuity } : {}),
-            };
-      },
-    },
-  })!;
 }
 
 async function occupyProviderSlots(
@@ -540,8 +352,8 @@ async function occupyProviderSlots(
     if (decision.status !== 'running') {
       throw new Error('expected running launch while occupying capacity');
     }
-    trackJob(decision.job);
-    jobIds.push(decision.job);
+    trackJob(decision.jobId);
+    jobIds.push(decision.jobId);
   }
 
   return jobIds;
@@ -615,7 +427,7 @@ function _createScopedContext(name: string): InvocationContext {
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_CODEX_SCOPE,
   };
 }
 
@@ -653,7 +465,7 @@ function createSessionTransportPorts(service: ExecutionService, pluginRoot: stri
       log: vi.fn(),
     },
     coralEnvSnapshot: {},
-    providerCredentialDefaults: TEST_PROVIDER_CREDENTIALS,
+    systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
       isLifecycleRunning: () => true,
       isDrainRequested: () => false,
@@ -679,6 +491,7 @@ function _makeStatusRecord(
 ): JobStatus {
   return {
     jobId,
+    owner: { kind: 'provider-session', id: options.sessionId ?? `${jobId}-session` },
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
@@ -705,8 +518,7 @@ function _makeTerminalReplay(
     seq: options.seq ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
-    continuity: null,
+    result: toCompletedJobTerminal(options.result ?? { content: 'done', durationMs: 0 }),
   };
 }
 
@@ -724,14 +536,13 @@ describe('ExecutionService launch', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
   });
@@ -765,43 +576,110 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status === 'running') {
-      trackJob(decision.job);
-      expect(decision.job).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
-      expect(decision.session).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      trackJob(decision.jobId);
+      expect(decision.jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+      expect(decision.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     }
+  });
+
+  it('prepares and executes the same provider request after generic inject is applied', async () => {
+    const { provider, execute } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+
+    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    await waitForTerminalEvent(service, decision.jobId);
+
+    expect(execute).toHaveBeenCalledOnce();
+    const executedRequest = execute.mock.calls[0]?.[0] as ProviderRequest | undefined;
+    expect(executedRequest?.systemPrompt).toContain('# Coral Guidelines');
+    expect(Object.isFrozen(executedRequest)).toBe(true);
+    expect(Object.isFrozen(executedRequest?.coralEnv)).toBe(true);
+  });
+
+  it('terminalizes and releases a committed initial launch when synchronous runtime setup fails', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider, execute } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore, sessionManager } = getInternals(service);
+    const jobId = `setup-failure-${randomUUID()}`;
+    trackJob(jobId);
+    const failedJobDir = progressStore.jobDir(jobId);
+    const mkdir = runtime.storage.mkdirSync.bind(runtime.storage);
+    vi.spyOn(runtime.storage, 'mkdirSync').mockImplementation((path, options) => {
+      if (path === failedJobDir) throw new Error('mkdir failed after commit');
+      mkdir(path, options);
+    });
+
+    await expect(service.start('codex', { prompt: 'hello', jobId }, ctx)).rejects.toThrow('mkdir failed after commit');
+
+    const launch = progressStore.readLaunchProjection(jobId);
+    expect(launch?.sessionId).toEqual(expect.any(String));
+    if (launch?.sessionId === null || launch?.sessionId === undefined) throw new Error('expected provider session');
+    expect(progressStore.readStatus(jobId)).toMatchObject({
+      phase: 'error',
+      result: {
+        outcome: {
+          kind: 'job_fault',
+          fault: { kind: 'wrapper_crashed', cause: { message: 'mkdir failed after commit' } },
+        },
+      },
+    });
+    expect(sessionManager.get('codex', launch.sessionId)?.activeJobId).toBeUndefined();
+    expect(abortRegistry.has(jobId)).toBe(false);
+    expect(launchCoordinator.getActiveJobIds()).not.toContain(jobId);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('removes the workflow abort registration when its atomic launch commit fails', async () => {
+    const { provider } = makeProvider();
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore } = getInternals(service);
+    vi.spyOn(progressStore, 'commit').mockImplementationOnce(() => {
+      throw new Error('workflow launch commit failed');
+    });
+
+    await expect(
+      service.executeWorkflow(
+        'codex',
+        _parseExpression('architect'),
+        { expression: 'architect', startPrompt: 'seed', provider: 'codex' },
+        ctx,
+      ),
+    ).rejects.toThrow('workflow launch commit failed');
+
+    expect(abortRegistry.listActive()).toEqual([]);
   });
 
   it('one execution service keeps consecutive account contexts isolated', async () => {
     const seenHomes: string[] = [];
     const { provider } = makeProvider({
       execute: async (_request, providerRuntime) => {
-        if (providerRuntime.providerContext.provider !== 'codex') throw new Error('expected Codex context');
-        seenHomes.push(providerRuntime.providerContext.source.home);
-        return { content: 'ok' };
+        seenHomes.push(providerRuntime.executionPlan.host.access.root);
+        return { content: 'ok', durationMs: 0 };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
     const service = createService(ctx);
     const contextA = {
       ...ctx,
-      providerCredentials: {
-        ...TEST_PROVIDER_CREDENTIALS,
-        codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/accounts/codex-a' },
-      },
+      providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/accounts/codex-a'),
     };
     const contextB = {
       ...ctx,
-      providerCredentials: {
-        ...TEST_PROVIDER_CREDENTIALS,
-        codex: { ...TEST_PROVIDER_CREDENTIALS.codex, home: '/accounts/codex-b' },
-      },
+      providerScope: withTestProfileLocation(TEST_CODEX_SCOPE, 'codex', '/accounts/codex-b'),
     };
 
     const first = await service.start('codex', { prompt: 'account A' }, contextA);
     const second = await service.start('codex', { prompt: 'account B' }, contextB);
     if (first.status !== 'running' || second.status !== 'running') throw new Error('expected both launches to run');
-    trackJob(first.job);
-    trackJob(second.job);
+    trackJob(first.jobId);
+    trackJob(second.jobId);
 
     await vi.waitFor(() => expect(seenHomes).toEqual(['/accounts/codex-a', '/accounts/codex-b']));
   });
@@ -822,13 +700,15 @@ describe('ExecutionService launch', () => {
     if (decision.status !== 'running') {
       throw new Error('expected running launch');
     }
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const { progressStore, sessionManager } =
       /* @intentional-private-access — inspect launch retention persistence */
       getInternals(service);
-    expect(sessionManager.get('codex', decision.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
-    expect(progressStore.readLaunchProjection(decision.job)?.request.retention).toBe(
+    expect(sessionManager.get('codex', decision.sessionId)?.retention).toBe('discard_provider_artifacts_on_terminal');
+    const launch = progressStore.readLaunchProjection(decision.jobId);
+    expect(launch?.jobKind).toBe('provider');
+    expect(launch?.jobKind === 'provider' ? launch.request.retention : undefined).toBe(
       'discard_provider_artifacts_on_terminal',
     );
   });
@@ -843,7 +723,7 @@ describe('ExecutionService launch', () => {
       provider: 'codex',
       prompt: 'hello',
       projectRoot: ctx.projectRoot,
-      providerCredentials: TEST_PROVIDER_CREDENTIAL_INPUT,
+      providerScope: TEST_CODEX_SCOPE_INPUT,
       retention: 'discard_provider_artifacts_on_terminal',
     });
 
@@ -860,13 +740,13 @@ describe('ExecutionService launch', () => {
     }
     expect(response.statusCode).toBe(201);
     expect(response.body).toMatchObject({ launchState: 'running' });
-    const body = response.body as { session: string; job: string };
-    trackJob(body.job);
+    const body = response.body as { sessionId: string; jobId: string };
+    trackJob(body.jobId);
 
     const { sessionManager } =
       /* @intentional-private-access — inspect transport-created session entry */
       getInternals(service);
-    expect(sessionManager.get('codex', body.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
+    expect(sessionManager.get('codex', body.sessionId)?.retention).toBe('discard_provider_artifacts_on_terminal');
   });
 
   it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
@@ -896,7 +776,9 @@ describe('ExecutionService launch', () => {
             },
           });
 
-          emit(providerTerminalEvent({ content: result.stdout, outcome: { kind: 'completed' as const } }));
+          emit(
+            providerTerminalEvent({ content: result.stdout, outcome: { kind: 'completed' as const }, durationMs: 0 }),
+          );
         }),
     };
     mockState.getNewProvider.mockReturnValue(provider);
@@ -908,15 +790,15 @@ describe('ExecutionService launch', () => {
     if (decision.status !== 'running') {
       throw new Error('expected running launch');
     }
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
-    const terminal = await waitForTerminalEvent(service, decision.job);
+    const terminal = await waitForTerminalEvent(service, decision.jobId);
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    const jobDir = join(JOBS_DIR, decision.job);
-    const runtimeRecord = progressStore.readRuntimeProjection(decision.job) as _DurableCliRuntimeRecord | null;
-    const history = progressStore.readJobEvents(decision.job);
+    const jobDir = join(JOBS_DIR, decision.jobId);
+    const runtimeRecord = progressStore.readRuntimeProjection(decision.jobId) as _DurableCliRuntimeRecord | null;
+    const history = progressStore.readJobEvents(decision.jobId);
 
     expect(terminal.result.content).toContain('final output');
     expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
@@ -925,42 +807,6 @@ describe('ExecutionService launch', () => {
     expect(runtimeRecord?.tailWatermark).toBeGreaterThan(0);
     expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-1'))).toBe(true);
     expect(history.some((event) => event.type === 'progress' && event.message?.includes('step-2'))).toBe(true);
-  });
-
-  it('releases the session claim when provider session finalization throws after completion', async () => {
-    const { provider } = makeProvider({
-      execute: async (): Promise<ProviderTurnResult> => ({
-        content: 'ok',
-        continuity: {
-          conversationRef: 'thread-1',
-          resumable: true,
-        },
-        outcome: { kind: 'completed' },
-      }),
-    });
-    mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-    const { progressStore, sessionManager } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    vi.spyOn(sessionManager, 'setConversationRef').mockImplementation(() => {
-      throw new Error('finalize failed');
-    });
-
-    const decision = await service.start('codex', { prompt: 'hello' }, ctx);
-
-    expect(decision.status).toBe('running');
-    if (decision.status !== 'running') {
-      throw new Error('expected running launch');
-    }
-    trackJob(decision.job);
-
-    const terminal = await waitForTerminalEvent(service, decision.job);
-    expect(terminal.result.content).toBe('ok');
-    expect(progressStore.readStatus(decision.job)).toMatchObject({ phase: 'completed' });
-    await vi.waitFor(() => {
-      expect(sessionManager.get('codex', decision.session)?.activeJobId).toBeUndefined();
-    });
   });
 
   it('records provider artifact handle events through the launch session API before continuity checkpoints', async () => {
@@ -978,11 +824,11 @@ describe('ExecutionService launch', () => {
             providerContinuity: { threadId: 'thread-1' },
           }),
         );
-        emit(providerTerminalEvent({ content: 'ok', outcome: { kind: 'completed' as const } }));
+        emit(providerTerminalEvent({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }));
       }),
     );
     mockState.getNewProvider.mockReturnValue(
-      toProviderSpec({
+      toProviderDefinition({
         name: 'codex',
         execute,
       })!,
@@ -995,421 +841,21 @@ describe('ExecutionService launch', () => {
     if (decision.status !== 'running') {
       throw new Error('expected running launch');
     }
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
-    await waitForTerminalEvent(service, decision.job);
+    await waitForTerminalEvent(service, decision.jobId);
     const { sessionManager } =
       /* @intentional-private-access — inspect launch-session recording integration */
       getInternals(service);
-    const session = sessionManager.get('codex', decision.session);
+    const session = sessionManager.get('codex', decision.sessionId);
 
     expect(session?.conversationRef).toBe('thread-1');
     expect(session?.artifactHandles).toMatchObject([
       {
-        provider: 'codex',
         handle: '/home/user/.codex/sessions/2026/05/04/rollout-a-thread-1.jsonl',
-        sourceJobId: decision.job,
+        sourceJobId: decision.jobId,
       },
     ]);
-  });
-
-  it('writes app-server runtime waiting before lease grant and upgrades the same record on acquisition', async () => {
-    const spec = buildCodexProviderServerSpec(ctx.projectRoot);
-    const server = createFakeProviderServerHandle({ generation: 41 });
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const jobId1 = `app-server-runtime-${randomUUID()}`;
-    const jobId2 = `app-server-runtime-${randomUUID()}`;
-    trackJob(jobId1);
-    trackJob(jobId2);
-
-    seedTestJobSession(progressStore, {
-      jobId: jobId1,
-      sessionId: 'session-1',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId1, {
-      jobId: jobId1,
-      sessionId: 'session-1',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'acquire first lease',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-    seedTestJobSession(progressStore, {
-      jobId: jobId2,
-      sessionId: 'session-2',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId2, {
-      jobId: jobId2,
-      sessionId: 'session-2',
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'acquire second lease',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-
-    const firstLease = await service.acquireServer(spec, {
-      jobId: jobId1,
-      providerMeta: { conversationRef: 'preassigned-session-ref' },
-    });
-    const firstRuntime = progressStore.readRuntimeProjection(jobId1) as AppServerRuntime;
-    expect(firstRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 41,
-        conversationRef: 'preassigned-session-ref',
-      },
-    });
-    expect(firstRuntime.startTime).toEqual(expect.any(String));
-    expect(firstRuntime.providerMeta.providerContinuity).toBeUndefined();
-
-    let secondSettled = false;
-    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
-      secondSettled = true;
-      return lease;
-    });
-
-    await Promise.resolve();
-
-    const waitingRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
-    expect(waitingRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        leaseState: 'waiting',
-      },
-    });
-    expect(waitingRuntime.startTime).toEqual(expect.any(String));
-    expect(waitingRuntime.providerMeta.serverGeneration).toBeUndefined();
-    expect(waitingRuntime.providerMeta.providerContinuity).toBeUndefined();
-    expect(secondSettled).toBe(false);
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-
-    firstLease.release();
-    const secondLease = await secondLeasePromise;
-
-    const acquiredRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
-    expect(acquiredRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 41,
-      },
-    });
-    expect(acquiredRuntime.startTime).toEqual(expect.any(String));
-    expect(acquiredRuntime.providerMeta.providerContinuity).toBeUndefined();
-
-    secondLease.release();
-  });
-
-  it('allows shared app-server leases to overlap on the same handle', async () => {
-    const spec = {
-      provider: 'claude',
-      command: process.execPath,
-      args: ['broker.js'],
-      cwd: process.cwd(),
-      env: { [CONTEXT_ENV_KEY.claudeTransport]: 'print' },
-      shared: true as const,
-    };
-    const requestGate = createDeferred<void>();
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const server = createFakeProviderServerHandle({
-      generation: 41,
-      request: async (_method, params) => {
-        inFlight += 1;
-        maxInFlight = Math.max(maxInFlight, inFlight);
-        await requestGate.promise;
-        inFlight -= 1;
-        return params;
-      },
-    });
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { progressStore } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const jobId1 = `shared-app-server-${randomUUID()}`;
-    const jobId2 = `shared-app-server-${randomUUID()}`;
-    trackJob(jobId1);
-    trackJob(jobId2);
-
-    seedTestJobSession(progressStore, {
-      jobId: jobId1,
-      sessionId: 'session-1',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId1, {
-      jobId: jobId1,
-      sessionId: 'session-1',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'shared lease first',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-    seedTestJobSession(progressStore, {
-      jobId: jobId2,
-      sessionId: 'session-2',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId2, {
-      jobId: jobId2,
-      sessionId: 'session-2',
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'shared lease second',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-
-    const firstLease = await service.acquireServer(spec, { jobId: jobId1 });
-
-    let secondSettled = false;
-    const secondLeasePromise = service.acquireServer(spec, { jobId: jobId2 }).then((lease) => {
-      secondSettled = true;
-      return lease;
-    });
-    await vi.waitFor(() => {
-      expect(secondSettled).toBe(true);
-    });
-    const secondLease = await secondLeasePromise;
-
-    const secondRuntime = progressStore.readRuntimeProjection(jobId2) as AppServerRuntime;
-    expect(secondRuntime).toMatchObject({
-      transport: 'app-server',
-      providerMeta: {
-        provider: 'claude',
-        leaseState: 'acquired',
-        serverGeneration: 41,
-        claudeTransport: 'print',
-      },
-    });
-
-    const firstRpc = firstLease.rpc('turn/start', { brokerSessionKey: 'broker-1', brokerTurnId: 'turn-1' });
-    const secondRpc = secondLease.rpc('turn/start', { brokerSessionKey: 'broker-2', brokerTurnId: 'turn-2' });
-    await Promise.resolve();
-
-    expect(maxInFlight).toBe(2);
-    requestGate.resolve();
-    await Promise.all([firstRpc, secondRpc]);
-
-    firstLease.release();
-    secondLease.release();
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('abort does not reacquire a provider server from durable metadata', async () => {
-    const jobId = `app-server-abort-${randomUUID()}`;
-    const server = createFakeProviderServerHandle({
-      request: async (method, params) => {
-        if (method === 'turn/interrupt') {
-          return {
-            threadId: params.threadId,
-            turnId: params.turnId,
-          };
-        }
-        return {};
-      },
-    });
-    setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { progressStore, abortRegistry, sessionManager } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const session = sessionManager.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
-      name: 'abort-session',
-      cwd: ctx.projectRoot,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-    });
-    trackJob(jobId);
-    mockState.getNewProvider.mockReturnValue(makeCodexAppServerProvider());
-
-    seedTestJobSession(progressStore, {
-      jobId,
-      sessionId: session.sessionId,
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      initialPhase: 'running',
-    });
-    progressStore.appendLaunchRequested(jobId, {
-      jobId,
-      sessionId: session.sessionId,
-      provider: 'codex',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'abort me',
-        cwd: ctx.projectRoot,
-        bypassPermissions: false,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    });
-    progressStore.appendRuntimeStarted(jobId, {
-      transport: 'app-server',
-      startTime: new Date().toISOString(),
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 7,
-        providerContinuity: {
-          threadId: 'thread-1',
-          turnId: 'turn-1',
-        },
-      },
-    });
-    abortRegistry.register(jobId);
-
-    expect(service.abort([jobId])).toEqual({
-      aborted: [jobId],
-      notFound: [],
-    });
-
-    expect(server.requestMock).not.toHaveBeenCalledWith('turn/interrupt', expect.anything());
-  });
-
-  it('routes shared app-server interrupts through the bound live server without reacquiring', async () => {
-    const spec = {
-      provider: 'claude',
-      command: process.execPath,
-      args: ['broker.js'],
-      cwd: process.cwd(),
-      shared: true as const,
-    };
-    const server = createFakeProviderServerHandle();
-    const spawnProviderServerMock = setSpawnProviderServerMock(server.handle);
-    const service = createService(ctx);
-    const { sessionManager } =
-      /* @intentional-private-access — seed or inspect execution internals with no public test seam */
-      getInternals(service);
-    const session = sessionManager.allocate({
-      provider: 'claude',
-      sessionAuthority: { kind: 'provider', source: TEST_CLAUDE_SOURCE },
-      name: 'shared-interrupt-session',
-      cwd: ctx.projectRoot,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-    });
-    mockState.getNewProvider.mockReturnValue(makeSharedClaudeAppServerProvider(spec));
-
-    const firstLease = await service.acquireServer(spec);
-    const acquireServerSpy = vi.spyOn(service, 'acquireServer');
-
-    const launchRecord: JobLaunch = {
-      jobId: `shared-interrupt-${randomUUID()}`,
-      sessionId: session.sessionId,
-      provider: 'claude',
-      projectRoot: ctx.projectRoot,
-      backendNamespace: TEST_BACKEND_NAMESPACE,
-      jobKind: 'provider',
-      pool: 'default',
-      enqueueSequence: 0,
-      providerAction: 'exec',
-      request: {
-        prompt: 'interrupt me',
-        cwd: ctx.projectRoot,
-        bypassPermissions: true,
-        coralEnv: {},
-      },
-      createdAt: new Date().toISOString(),
-    };
-    const runtimeRecord: AppServerRuntime = {
-      transport: 'app-server',
-      startTime: new Date().toISOString(),
-      providerMeta: {
-        provider: 'codex',
-        leaseState: 'acquired',
-        serverGeneration: 7,
-        providerContinuity: {
-          brokerSessionKey: 'broker-session-1',
-          brokerTurnId: 'broker-turn-1',
-          bootstrapSignature: {
-            cwd: '/workspace',
-            systemPromptHash: 'sha256:bootstrap',
-            permissionMode: 'bypassPermissions',
-          },
-          envHash: 'sha256:env',
-        },
-      },
-    };
-
-    await service.interruptAppServerJob(launchRecord, runtimeRecord);
-
-    expect(acquireServerSpy).not.toHaveBeenCalled();
-    expect(server.requestMock).toHaveBeenCalledWith('turn/interrupt', {
-      brokerSessionKey: 'broker-session-1',
-      brokerTurnId: 'broker-turn-1',
-    });
-    expect(spawnProviderServerMock).toHaveBeenCalledTimes(1);
-
-    acquireServerSpy.mockRestore();
-    firstLease.release();
   });
 
   it('start rejects unknown providers', async () => {
@@ -1442,7 +888,7 @@ describe('ExecutionService launch', () => {
     expect(decision).toEqual({
       status: 'rejected',
       phase: 'preflight',
-      code: 'provider_credential_source_unavailable',
+      code: 'provider_preflight_failed',
       message: 'not ready',
     });
   });
@@ -1520,14 +966,14 @@ describe('ExecutionService launch', () => {
     if (decision.status !== 'running') {
       throw new Error('expected running launch');
     }
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     expect(mockState.resolveAgent).toHaveBeenCalledWith(
       expect.objectContaining({ namespace: null, name: 'architect' }),
       expect.anything(),
     );
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-    const session = getInternals(service).sessionManager.get('codex', decision.session);
+    const session = getInternals(service).sessionManager.get('codex', decision.sessionId);
 
     expect(request).toMatchObject({
       action: 'exec',
@@ -1565,10 +1011,10 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') throw new Error('expected running launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-    const session = getInternals(service).sessionManager.get('codex', decision.session);
+    const session = getInternals(service).sessionManager.get('codex', decision.sessionId);
 
     expect(request.bypassPermissions).toBe(true);
     expect(session!.bypassPermissions).toBe(true);
@@ -1592,7 +1038,7 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') throw new Error('expected running launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
     expect(request.bypassPermissions).toBe(false);
@@ -1608,7 +1054,7 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') throw new Error('expected running launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
     expect(request.bypassPermissions).toBe(false);
@@ -1622,7 +1068,7 @@ describe('ExecutionService launch', () => {
     const { provider, execute } = makeProvider({
       execute: async (_request, providerRuntime) => {
         equippedTools = providerRuntime.equippedTools;
-        return { content: 'ok' };
+        return { content: 'ok', durationMs: 0 };
       },
     });
     mockState.getNewProvider.mockReturnValue(provider);
@@ -1632,8 +1078,8 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') throw new Error('expected running launch');
-    trackJob(decision.job);
-    await waitForTerminalEvent(service, decision.job);
+    trackJob(decision.jobId);
+    await waitForTerminalEvent(service, decision.jobId);
 
     expect(execute).toHaveBeenCalledTimes(1);
     expect(equippedTools?.map((tool) => tool.id)).toEqual(['codebase-memory']);
@@ -1652,17 +1098,154 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('queued');
     if (decision.status !== 'queued') throw new Error('expected queued launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const { progressStore } =
       /* @intentional-private-access — seed or inspect execution internals with no public test seam */
       getInternals(service);
-    expect(progressStore.readStatus(decision.job)).toMatchObject({
-      jobId: decision.job,
-      sessionId: decision.session,
+    expect(progressStore.readStatus(decision.jobId)).toMatchObject({
+      jobId: decision.jobId,
+      sessionId: decision.sessionId,
       provider: 'codex',
       phase: 'queued',
     });
+  });
+
+  it('does not open a provider session when the admission queue is full', async () => {
+    terminateAll();
+    const previousMaxQueueSize = process.env.CORAL_MAX_QUEUE_SIZE;
+    process.env.CORAL_MAX_QUEUE_SIZE = '1';
+    runtime = createRealRuntime('prod');
+    if (previousMaxQueueSize === undefined) {
+      delete process.env.CORAL_MAX_QUEUE_SIZE;
+    } else {
+      process.env.CORAL_MAX_QUEUE_SIZE = previousMaxQueueSize;
+    }
+    JOBS_DIR = jobsDir(runtime.env);
+    launchCoordinator = new LaunchCoordinator({ runtime });
+
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    await occupyProviderSlots(service, ctx, 'codex');
+    const queued = await service.start('codex', { prompt: 'fills queue' }, ctx);
+    expect(queued.status).toBe('queued');
+    if (queued.status !== 'queued') throw new Error('expected queued launch');
+    trackJob(queued.jobId);
+    const sessionsBeforeRejection = service.list('codex').sessions;
+
+    const rejectedJobId = `full-queue-${randomUUID()}`;
+    const rejected = await service.start('codex', { prompt: 'must reject', jobId: rejectedJobId }, ctx);
+
+    expect(rejected).toMatchObject({ status: 'rejected', code: 'busy' });
+    expect(service.list('codex').sessions).toEqual(sessionsBeforeRejection);
+    expect(sessionsBeforeRejection.every((session) => session.activeJobId !== undefined)).toBe(true);
+    expect(getInternals(service).progressStore.readStatus(rejectedJobId)).toBeNull();
+    expect(launchCoordinator.queueDepth()).toBe(1);
+  });
+
+  it('rolls back the prepared session and job when the atomic launch commit crashes', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const progressStore = createProgressStore();
+    const baseCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
+    const crash = new Error('simulated crash during initial launch commit');
+    const crashingCommit: CommitEventsFn = (callback) =>
+      baseCommit((commit) => {
+        let appendCount = 0;
+        const append = ((input: unknown) => {
+          const token = (commit.append as unknown as (next: unknown) => unknown)(input);
+          appendCount += 1;
+          if (appendCount === 2) throw crash;
+          return token;
+        }) as unknown as typeof commit.append;
+        return callback({ append } as typeof commit);
+      });
+    const service = createService(ctx, { progressStore, coordinatorCommit: crashingCommit });
+    const jobId = `commit-crash-${randomUUID()}`;
+
+    await expect(service.start('codex', { prompt: 'crash atomically', jobId }, ctx)).rejects.toBe(crash);
+
+    expect(service.list('codex').sessions).toEqual([]);
+    expect(progressStore.readStatus(jobId)).toBeNull();
+    expect(progressStore.readJobEvents(jobId)).toEqual([]);
+    expect(launchCoordinator.getActiveJobIds()).toEqual([]);
+    expect(launchCoordinator.queueDepth()).toBe(0);
+  });
+
+  it.each([
+    {
+      name: 'ordinary',
+      pool: 'default' as const,
+      launch: {},
+    },
+    {
+      name: 'discussion',
+      pool: 'discuss' as const,
+      launch: {
+        owner: { kind: 'discussion' as const, id: 'discussion-atomic-resume' },
+        discussionRun: { agent: 'reviewer', purpose: 'speech' as const, attempt: 1 },
+        pool: 'discuss' as const,
+      },
+    },
+  ])('rolls back the session claim and job when an atomic $name resume commit crashes', async ({ pool, launch }) => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const progressStore = createProgressStore();
+    const baseCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
+    const crash = new Error('simulated crash during resume launch commit');
+    const crashingCommit: CommitEventsFn = (callback) =>
+      baseCommit((commit) => {
+        let appendCount = 0;
+        const append = ((input: unknown) => {
+          const token = (commit.append as unknown as (next: unknown) => unknown)(input);
+          appendCount += 1;
+          if (appendCount === 2) throw crash;
+          return token;
+        }) as unknown as typeof commit.append;
+        return callback({ append } as typeof commit);
+      });
+    const service = createService(ctx, { progressStore, coordinatorCommit: crashingCommit });
+    const { sessionManager } =
+      /* @intentional-private-access — establish and inspect the durable resume boundary */
+      getInternals(service);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      `${pool}-atomic-resume`,
+      'test-model',
+      ctx.projectRoot,
+    );
+    const jobId = `${pool}-resume-crash-${randomUUID()}`;
+
+    await expect(
+      service.resume('codex', { sessionId: session.sessionId, prompt: 'resume atomically', jobId, ...launch }, ctx),
+    ).rejects.toBe(crash);
+
+    expect(sessionManager.get('codex', session.sessionId)).toMatchObject({
+      sessionId: session.sessionId,
+      version: session.version,
+    });
+    expect(sessionManager.get('codex', session.sessionId)?.activeJobId).toBeUndefined();
+    expect(
+      (
+        progressStore
+          .getDb()
+          .prepare<[string], { count: number }>(
+            `SELECT COUNT(*) AS count
+               FROM events
+              WHERE stream_kind = 'session' AND stream_id = ? AND type = 'session.claimed'`,
+          )
+          .get(session.sessionId) ?? { count: 0 }
+      ).count,
+    ).toBe(0);
+    expect(progressStore.readStatus(jobId)).toBeNull();
+    expect(progressStore.readJobEvents(jobId)).toEqual([]);
+    expect(launchCoordinator.getActiveJobIds(pool)).toEqual([]);
+    expect(launchCoordinator.queueDepth(pool)).toBe(0);
   });
 
   it('coralDispatch resolves coral agent content and injects a system instruction', async () => {
@@ -1677,7 +1260,7 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status === 'running') {
-      trackJob(decision.job);
+      trackJob(decision.jobId);
     }
     expect(mockState.resolveAgent).toHaveBeenCalledWith(
       expect.objectContaining({ namespace: 'coral', name: 'sample' }),
@@ -1698,6 +1281,7 @@ describe('ExecutionService launch', () => {
 
   it('coralDispatch rejects an empty sessionId before launch resolution', async () => {
     const service = createService(ctx);
+    mockState.getNewProvider.mockClear();
 
     const decision = await service.coralDispatch('codex', 'sample', { prompt: 'hello', sessionId: '' }, ctx);
 
@@ -1731,12 +1315,12 @@ describe('ExecutionService launch', () => {
     if (decision.status !== 'running') {
       throw new Error('expected running launch');
     }
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const { sessionManager } =
       /* @intentional-private-access — inspect workflow atom retention persistence */
       getInternals(service);
-    expect(sessionManager.get('codex', decision.session)?.retention).toBe('discard_provider_artifacts_on_terminal');
+    expect(sessionManager.get('codex', decision.sessionId)?.retention).toBe('discard_provider_artifacts_on_terminal');
   });
 
   it('coralDispatch forces the coral namespace for bare workflow atoms', async () => {
@@ -1751,7 +1335,7 @@ describe('ExecutionService launch', () => {
 
     expect(decision.status).toBe('running');
     if (decision.status === 'running') {
-      trackJob(decision.job);
+      trackJob(decision.jobId);
     }
     expect(mockState.resolveAgent).toHaveBeenCalledWith(
       expect.objectContaining({ namespace: 'coral', name: 'architect' }),

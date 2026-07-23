@@ -25,10 +25,13 @@ import {
   type ProviderTerminalInput,
 } from '#src/providers/stream.js';
 import type { DurableCliRuntimeRecord as _DurableCliRuntimeRecord } from '#src/runtime/durable-runtime.js';
+import { jobsRegistry } from '#src/jobs/events.js';
+import { workflowRegistry } from '#src/workflow/events.js';
+import { composeReducers } from '#src/store/reducers.js';
 
 import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import { buildCodexProviderServerSpec } from '#src/providers/codex/request-mapping.js';
+import { prepareTestCodexAppServer } from '#tests/helpers/provider-credentials.js';
 import { parseExpression as _parseExpression } from '#src/workflow/parser.js';
 import {
   AgentNamespaceNotFoundError as _AgentNamespaceNotFoundError,
@@ -39,24 +42,29 @@ import {
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { getMaxWorkers } from '#src/coordinator/live/worker-limits.js';
-import type { ProviderServerHandle, SpawnProviderServerFn } from '#src/coordinator/live/provider-server-transport.js';
+import type { ProviderServerHandle } from '#src/coordinator/live/provider-server-transport.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { JobStore } from '#src/jobs/store.js';
-import { createProviderHostManager, type ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { ProviderRegistry } from '#src/providers/registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { PreflightRuntime, UsageSummary } from '#src/providers/contract.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider, type StandaloneTestProvider } from '#tests/helpers/scripted-provider.js';
 import { getInternals } from '#tests/unit/jobs/shell/__helpers__/service-fixture.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '#src/jobs/terminal/recording.js';
-import { workflowCompletedEvent, workflowLifecycleFaultEvent } from '#src/workflow/events.js';
+import {
+  workflowCompletedEvent,
+  workflowLifecycleFaultEvent,
+  workflowPlanDeclaredEvent,
+} from '#src/workflow/events.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
@@ -87,7 +95,7 @@ type ProviderTurnResult = ProviderTerminalInput & {
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
-  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-wait-test-tmp`,
+  tmpRoot: `${process.env.TMPDIR ?? '/tmp'}/coral-execution-wait-test-tmp-${process.pid}`,
   getNewProvider: vi.fn(),
   resolveAgent: vi.fn(),
 }));
@@ -102,7 +110,8 @@ vi.mock('node:os', async () => {
   };
 });
 
-vi.mock('#src/providers/registry.js', () => ({
+vi.mock('#src/providers/registry.js', async () => ({
+  ...(await vi.importActual('#src/providers/registry.js')),
   getNewProvider: mockState.getNewProvider,
 }));
 
@@ -118,15 +127,15 @@ const createdJobIds = new Set<string>();
 let baselineJobIds = new Set<string>();
 let eventBus: TypedEventBus;
 let launchCoordinator: LaunchCoordinator;
-let spawnProviderServer: SpawnProviderServerFn;
 let runtime: ReturnType<typeof createRealRuntime>;
 let JOBS_DIR = '';
 
 function createProgressStore(namespace = 'test-ns'): JobStore {
-  return new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  return new JobStore(namespace, runtime, createEventBodyCodec(), {
     db: openTestStoreDb(runtime),
     eventBus,
     providers: permissiveProviderLookupPort,
+    reducers: composeReducers(jobsRegistry, workflowRegistry),
   });
 }
 
@@ -154,10 +163,6 @@ function releaseLaunch(jobId: string, pool?: 'default' | 'discuss' | 'curate'): 
   launchCoordinator.releaseLaunch(jobId, pool);
 }
 
-function _restoreActiveLaunch(jobId: string, provider: string, pool?: 'default' | 'discuss' | 'curate'): void {
-  launchCoordinator.restoreActiveLaunch(jobId, provider, pool);
-}
-
 function createService(
   ctx: InvocationContext,
   options: {
@@ -173,7 +178,10 @@ function createService(
     }) => AsyncIterable<JobEvent>;
   } = {},
 ): ExecutionService {
-  const resolveProvider = (name: string) => toProviderSpec(mockState.getNewProvider(name));
+  const resolveProvider = (name: string) => toProviderDefinition(mockState.getNewProvider(name));
+  const providerRegistry = new ProviderRegistry();
+  const provider = resolveProvider('codex');
+  if (provider !== undefined) providerRegistry.register(provider);
   const progressStore = options.progressStore ?? createProgressStore();
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
@@ -219,18 +227,13 @@ function createService(
   };
   return new ExecutionService(ctx, {
     childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-    providerCredentialSourceAvailability: { isAvailable: () => true },
     runtime,
     progressStore,
     bundleHash: options.bundleHash,
     backendNamespace: options.backendNamespace ?? TEST_BACKEND_NAMESPACE,
-    providerHostManager: options.providerHostManager ?? createProviderHostManager({ runtime, spawnProviderServer }),
     launchCoordinator,
     eventBus,
-    providerRegistry: {
-      get: resolveProvider,
-      getAll: () => [],
-    } as never,
+    providerRegistry,
     pluginRegistry: options.pluginRegistry ?? { discoverPluginRoot: () => null },
     loadJobProjectionDetail: (jobId) => progressStore.loadJobProjectionDetail(jobId),
     readJobEvents: (jobId) => progressStore.readJobEvents(jobId),
@@ -261,7 +264,6 @@ function _setSpawnProviderServerMock(...handles: ProviderServerHandle[]) {
   for (const handle of handles) {
     mock.mockResolvedValueOnce(handle);
   }
-  spawnProviderServer = mock as unknown as SpawnProviderServerFn;
   return mock;
 }
 
@@ -327,6 +329,7 @@ function _createFakeProviderServerHandle(options?: {
       },
       onNotification: onNotificationMock as unknown as ProviderServerHandle['onNotification'],
       closePromise,
+      isClosed: () => false,
       markExpectedClose: markExpectedCloseMock,
       close: closeMock,
     } satisfies ProviderServerHandle,
@@ -354,7 +357,7 @@ function completedOutcome() {
 }
 
 function toCompletedResult(
-  result: TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity },
+  result: TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ): TestProviderTurnResult {
   if ('outcome' in result) {
     return result;
@@ -362,7 +365,9 @@ function toCompletedResult(
   return { ...result, outcome: completedOutcome() };
 }
 
-function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): NonNullable<JobStatus['result']> {
+function toCompletedJobTerminal(
+  result: TestJobTerminal | { content: string; durationMs: number },
+): NonNullable<JobStatus['result']> {
   if ('outcome' in result && result.outcome !== undefined) {
     return result as NonNullable<JobStatus['result']>;
   }
@@ -372,8 +377,8 @@ function toCompletedJobTerminal(result: TestJobTerminal | { content: string }): 
 function streamCompletedResult(
   result:
     | TestProviderTurnResult
-    | Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>
-    | { content: string; continuity?: ProviderTurnContinuity },
+    | Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>
+    | { content: string; durationMs: number; continuity?: ProviderTurnContinuity },
 ) {
   return streamProviderEvents(async (emit) => {
     const completed = toCompletedResult(await result);
@@ -392,33 +397,35 @@ function streamCompletedResult(
 
 function makeProvider(options?: {
   execute?: (
-    ...args: Parameters<Provider['execute']>
-  ) => Promise<TestProviderTurnResult | { content: string; continuity?: ProviderTurnContinuity }>;
+    ...args: Parameters<StandaloneTestProvider['execute']>
+  ) => Promise<TestProviderTurnResult | { content: string; durationMs: number; continuity?: ProviderTurnContinuity }>;
   preflight?: Provider['preflight'];
 }): {
-  provider: NonNullable<ReturnType<typeof toProviderSpec>>;
+  provider: NonNullable<ReturnType<typeof toProviderDefinition>>;
   execute: ReturnType<typeof vi.fn>;
   preflight?: ReturnType<typeof vi.fn>;
 } {
-  const execute = vi.fn((...args: Parameters<Provider['execute']>) =>
-    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok' })),
+  const execute = vi.fn((...args: Parameters<StandaloneTestProvider['execute']>) =>
+    streamCompletedResult(options?.execute?.(...args) ?? Promise.resolve({ content: 'ok', durationMs: 0 })),
   );
   const preflight = options?.preflight ? vi.fn(options.preflight) : undefined;
   const provider: Provider = {
     name: 'codex',
-    execute: execute as unknown as Provider['execute'],
+    execute: execute as unknown as StandaloneTestProvider['execute'],
     ...(preflight ? { preflight } : {}),
   };
-  return { provider: toProviderSpec(provider)!, execute, preflight };
+  return { provider: toProviderDefinition(provider)!, execute, preflight };
 }
 
 function _makeCodexAppServerProvider(): Provider {
   return {
     name: 'codex',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() =>
+      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
+    ),
     appServerLifecycle: {
-      buildServerSpec: (_continuity, request) =>
-        buildCodexProviderServerSpec(request.cwd ?? process.cwd(), request.coralEnv),
+      host: (_continuity, request) =>
+        prepareTestCodexAppServer({ cwd: request.cwd ?? process.cwd(), coralEnv: request.coralEnv }),
       interrupt: async (lease, continuity) => {
         const threadId = continuity.threadId;
         const turnId = continuity.turnId;
@@ -458,7 +465,7 @@ function _makeCodexAppServerProvider(): Provider {
       },
       finalizeInterrupted: (probeResult, continuity, context) => {
         const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
@@ -493,13 +500,16 @@ function _makeSharedClaudeAppServerProvider(spec: {
   command: string;
   args: string[];
   cwd: string;
-  shared: true;
+  leaseMode: 'shared';
+  idlePolicy: 'host-stats' | 'daemon';
 }): Provider {
   return {
     name: 'claude',
-    execute: vi.fn(() => streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const } })),
+    execute: vi.fn(() =>
+      streamProviderTerminal({ content: 'ok', outcome: { kind: 'completed' as const }, durationMs: 0 }),
+    ),
     appServerLifecycle: {
-      buildServerSpec: () => spec,
+      host: spec,
       interrupt: async (lease, continuity) => {
         const brokerSessionKey =
           typeof continuity.brokerSessionKey === 'string' ? continuity.brokerSessionKey : undefined;
@@ -517,7 +527,7 @@ function _makeSharedClaudeAppServerProvider(spec: {
       }),
       finalizeInterrupted: (probeResult, continuity, context) => {
         const effectiveConversationRef =
-          typeof continuity.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
+          typeof continuity?.threadId === 'string' ? continuity.threadId : context.preservedConversationRef;
         return probeResult.resumable
           ? effectiveConversationRef
             ? {
@@ -555,8 +565,8 @@ async function occupyProviderSlots(
     if (decision.status !== 'running') {
       throw new Error('expected running launch while occupying capacity');
     }
-    trackJob(decision.job);
-    jobIds.push(decision.job);
+    trackJob(decision.jobId);
+    jobIds.push(decision.jobId);
   }
 
   return jobIds;
@@ -588,6 +598,7 @@ function createClaimedJob(
   const { progressStore, sessionManager } =
     /* @intentional-private-access — seed or inspect execution internals with no public test seam */
     getInternals(service);
+  const jobId = `wait-job-${randomUUID()}`;
   const session = allocateTestSession(
     sessionManager,
     'codex',
@@ -595,9 +606,10 @@ function createClaimedJob(
     'test-model',
     ctx.projectRoot,
     ctx.projectRoot,
+    TEST_BACKEND_NAMESPACE,
   );
-  const jobId = `wait-job-${randomUUID()}`;
   trackJob(jobId);
+  expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
   initTestJob(progressStore, {
     jobId,
     sessionId: session.sessionId,
@@ -606,7 +618,6 @@ function createClaimedJob(
     backendNamespace: TEST_BACKEND_NAMESPACE,
     initialPhase: options.initialPhase ?? 'running',
   });
-  expect(sessionManager.claimForJobSync(session.sessionId, jobId)).toBe(true);
   return {
     jobId,
     sessionId: session.sessionId,
@@ -630,7 +641,7 @@ function _createScopedContext(name: string): InvocationContext {
     pluginRoot,
     coralEnv: {},
     principal: testProjectPrincipal(projectRoot),
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
+    providerScope: TEST_CODEX_SCOPE,
   };
 }
 
@@ -655,6 +666,7 @@ function makeStatusRecord(
 ): JobStatus {
   return {
     jobId,
+    owner: { kind: 'provider-session', id: options.sessionId ?? `${jobId}-session` },
     sessionId: options.sessionId ?? `${jobId}-session`,
     provider: 'codex',
     projectRoot: ctx.projectRoot,
@@ -682,8 +694,7 @@ function makeTerminalReplay(
     seq: options.seq ?? 1,
     type: 'terminal',
     ts: options.ts ?? '2026-03-06T00:00:00.000Z',
-    result: toCompletedJobTerminal(options.result ?? { content: 'done' }),
-    continuity: null,
+    result: toCompletedJobTerminal(options.result ?? { content: 'done', durationMs: 0 }),
     ...(options.usage ? { usage: options.usage } : {}),
   };
 }
@@ -702,14 +713,13 @@ describe('ExecutionService wait', () => {
       pluginRoot: join(projectRoot, 'plugin'),
       coralEnv: {},
       principal: testProjectPrincipal(projectRoot),
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_CODEX_SCOPE,
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
     runtime = createRealRuntime('prod');
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
-    spawnProviderServer = launchCoordinator.spawnProviderServer.bind(launchCoordinator);
     mockState.getNewProvider.mockReset();
     mockState.resolveAgent.mockReset();
   });
@@ -778,7 +788,7 @@ describe('ExecutionService wait', () => {
         progressStore,
         jobId,
         sessionId,
-        { content: 'done', outcome: { kind: 'completed' } },
+        { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         'completed',
       );
       await flushMicrotasks();
@@ -823,7 +833,7 @@ describe('ExecutionService wait', () => {
             progressStore,
             jobId,
             sessionId,
-            { content: 'done', outcome: { kind: 'completed' } },
+            { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
             'completed',
           );
           sessionManager.releaseJob(sessionId, jobId);
@@ -874,6 +884,7 @@ describe('ExecutionService wait', () => {
       getInternals(service);
     const status: JobStatus = {
       jobId: 'job-1',
+      owner: { kind: 'provider-session', id: 'session-1' },
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
@@ -898,8 +909,7 @@ describe('ExecutionService wait', () => {
         seq: 2,
         type: 'terminal',
         ts: '2026-03-06T00:00:02.000Z',
-        result: { content: 'done', outcome: { kind: 'completed' } },
-        continuity: null,
+        result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         usage: waitUsage,
       },
     ];
@@ -926,7 +936,7 @@ describe('ExecutionService wait', () => {
         seq: 2,
         remainingJobIds: [],
         resultPath: `${runtime.paths.coral.exports.jobsRoot}/job-1/result.md`,
-        result: { content: 'done', outcome: { kind: 'completed' } },
+        result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         continuity: null,
         usage: waitUsage,
       },
@@ -942,7 +952,7 @@ describe('ExecutionService wait', () => {
       progressStore,
       jobId,
       sessionId,
-      { content: 'rebuild me', outcome: { kind: 'completed' } },
+      { content: 'rebuild me', outcome: { kind: 'completed' }, durationMs: 0 },
       'completed',
     );
     rmSync(resultPath, { force: true });
@@ -971,6 +981,22 @@ describe('ExecutionService wait', () => {
     const status = progressStore.readStatus(jobId);
 
     progressStore.commit((c) => {
+      c.append(
+        workflowPlanDeclaredEvent(
+          workflowId,
+          {
+            slots: [
+              {
+                slotId: `${workflowId}:0:0`,
+                dependencies: [],
+                provider: 'codex',
+                instruction: 'test workflow failure',
+              },
+            ],
+          },
+          TEST_PROVIDER_SCOPE,
+        ),
+      );
       const fault = c.append(
         workflowLifecycleFaultEvent(workflowId, {
           kind: 'unknown',
@@ -992,6 +1018,7 @@ describe('ExecutionService wait', () => {
         terminal: {
           content: '',
           outcome: failedTerminalOutcome(completed),
+          durationMs: 0,
         },
       });
       return undefined;
@@ -1051,7 +1078,7 @@ describe('ExecutionService wait', () => {
         progressStore,
         jobId,
         sessionId,
-        { content: 'done', outcome: { kind: 'completed' } },
+        { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         'completed',
         { diagnostics: { usage: waitUsage } },
       );
@@ -1083,6 +1110,7 @@ describe('ExecutionService wait', () => {
       getInternals(service);
     vi.spyOn(progressStore, 'readStatus').mockReturnValue({
       jobId: 'job-1',
+      owner: { kind: 'provider-session', id: 'session-1' },
       sessionId: 'session-1',
       provider: 'codex',
       projectRoot: ctx.projectRoot,
@@ -1090,7 +1118,7 @@ describe('ExecutionService wait', () => {
       jobKind: 'provider',
       phase: 'completed',
       updatedAt: '2026-03-06T00:00:00.000Z',
-      result: { content: 'done', outcome: { kind: 'completed' } },
+      result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
     });
     vi.spyOn(progressStore, 'readJobEvents').mockReturnValue([]);
 
@@ -1137,7 +1165,7 @@ describe('ExecutionService wait', () => {
           seq: 1,
           remainingJobIds: [],
           resultPath: jobResultPath('job-1'),
-          result: { content: 'done', outcome: { kind: 'completed' } },
+          result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
           continuity: null,
         },
       ]);
@@ -1160,7 +1188,7 @@ describe('ExecutionService wait', () => {
           progressStore,
           jobId,
           sessionId,
-          { content: 'done', outcome: { kind: 'completed' } },
+          { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
           'completed',
         );
       }, timeoutMs);
@@ -1244,7 +1272,9 @@ describe('ExecutionService wait', () => {
         /* @intentional-private-access — seed or inspect execution internals with no public test seam */
         getInternals(service);
       const runningStatus = makeStatusRecord(ctx, 'job-1', 'running');
-      const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', { result: { content: 'done' } });
+      const terminalStatus = makeStatusRecord(ctx, 'job-1', 'completed', {
+        result: { content: 'done', durationMs: 0 },
+      });
 
       vi.spyOn(progressStore, 'readStatus').mockImplementation(() => {
         return runtime.time.now() > deadlineMs ? terminalStatus : runningStatus;
@@ -1307,7 +1337,7 @@ describe('ExecutionService wait', () => {
         seq: 1,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
-        result: { content: 'done', outcome: { kind: 'completed' } },
+        result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         continuity: null,
       },
     ]);
@@ -1400,7 +1430,7 @@ describe('ExecutionService wait', () => {
         seq: 1,
         remainingJobIds: [],
         resultPath: jobResultPath('job-1'),
-        result: { content: 'done', outcome: { kind: 'completed' } },
+        result: { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
         continuity: null,
       },
     ]);
@@ -1420,7 +1450,7 @@ describe('ExecutionService wait', () => {
           progressStore,
           jobId,
           sessionId,
-          { content: 'done', outcome: { kind: 'completed' } },
+          { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
           'completed',
         );
       }, timeoutMs);
@@ -1449,10 +1479,10 @@ describe('ExecutionService wait', () => {
 
     expect(decision.status).toBe('queued');
     if (decision.status !== 'queued') throw new Error('expected queued launch');
-    trackJob(decision.job);
+    trackJob(decision.jobId);
 
     const events: WaitStreamEvent[] = [];
-    for await (const event of service.waitStream({ jobIds: [decision.job], timeoutSeconds: 1 })) {
+    for await (const event of service.waitStream({ jobIds: [decision.jobId], timeoutSeconds: 1 })) {
       events.push(event);
       if (events.length === 2) break;
     }
@@ -1460,8 +1490,9 @@ describe('ExecutionService wait', () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({
       type: 'queued',
-      jobId: decision.job,
-      sessionId: decision.session,
+      jobKind: 'provider',
+      jobId: decision.jobId,
+      sessionId: decision.sessionId,
       queuePosition: 1,
       runningJobIds,
       timing: expect.objectContaining({
@@ -1473,7 +1504,7 @@ describe('ExecutionService wait', () => {
     });
     expect(events[1]).toMatchObject({
       type: 'progress',
-      jobId: decision.job,
+      jobId: decision.jobId,
       seq: expect.any(Number),
     });
     if (events[1]?.type === 'progress') {
@@ -1498,6 +1529,7 @@ describe('ExecutionService wait', () => {
         if (jobId === jobIdA) {
           return {
             jobId: jobIdA,
+            owner: { kind: 'provider-session', id: 'session-a' },
             sessionId: 'session-a',
             provider: 'codex',
             projectRoot: ctx.projectRoot,
@@ -1510,6 +1542,7 @@ describe('ExecutionService wait', () => {
         if (jobId === jobIdB) {
           return {
             jobId: jobIdB,
+            owner: { kind: 'provider-session', id: 'session-b' },
             sessionId: 'session-b',
             provider: 'codex',
             projectRoot: ctx.projectRoot,
@@ -1606,6 +1639,7 @@ describe('ExecutionService wait', () => {
         if (jid !== jobId) return null;
         return {
           jobId,
+          owner: { kind: 'provider-session', id: 'session-1' },
           sessionId: 'session-1',
           provider: 'codex',
           projectRoot: ctx.projectRoot,
@@ -1643,7 +1677,7 @@ describe('ExecutionService wait', () => {
             seq: 3,
             type: 'terminal' as const,
             ts: '',
-            result: { content: 'done', outcome: { kind: 'completed' as const } },
+            result: { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 0 },
             continuity: null,
             usage: waitUsage,
           },

@@ -25,6 +25,7 @@ import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { AbortError } from '../runtime/abort.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { authorize } from '../security/policy/authorize.js';
 import type { ResourceBinding } from '../security/principal.js';
@@ -169,13 +170,13 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     writeControlMessage({
       type: KB_DAEMON_PARENT_REQUEST_MESSAGE,
       id: `parent:${nextParentRequestSeq++}`,
-      method: 'curate.assistant.cancel',
+      method: 'curate.request.cancel',
       params: { requestId, reason },
     });
   };
   const sendParentRequest = (
-    method: 'curate.assistant.complete',
-    params: KbDaemonCurateAssistantCompleteRequest,
+    method: 'curate.assistant.complete' | 'curate.usage-budget.exhausted',
+    params: KbDaemonCurateAssistantCompleteRequest | undefined,
     signal: AbortSignal | undefined,
   ): Promise<KbDaemonParentResponseMessage> => {
     const id = `parent:${nextParentRequestSeq++}`;
@@ -237,6 +238,16 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
       return response.result;
     },
   };
+  const parentCurateUsageBudget: CurateUsageBudgetPort = {
+    async isExhausted(signal) {
+      const response = await sendParentRequest('curate.usage-budget.exhausted', undefined, signal);
+      if (!response.ok) throw new Error(response.error.message);
+      if (typeof response.result !== 'boolean') {
+        throw new Error('KB daemon parent returned malformed curate usage budget result.');
+      }
+      return response.result;
+    },
+  };
   const settleParentResponse = (response: KbDaemonParentResponseMessage): void => {
     const pending = pendingParentRequests.get(response.id);
     if (pending === undefined) {
@@ -253,6 +264,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
   const kbWriteHost = createKbDaemonWriteRuntimeHost({
     pluginRoot,
     curateAssistant: parentCurateAssistant,
+    curateUsageBudget: parentCurateUsageBudget,
     backendNamespace: process.env.CORAL_KB_DAEMON_BACKEND_NAMESPACE,
     bundleHash: process.env.CORAL_KB_DAEMON_BUNDLE_HASH,
     onJournalEvents: (appended) =>

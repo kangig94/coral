@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import {
   buildFlavor,
   coralStateRoot,
+  currentStoreFormatFingerprint,
   exitIfChildProcess,
   exitIfWrongFlavor,
   failOpen,
@@ -33,15 +34,50 @@ function logNoRelevantJobs(projectDir, extra = {}) {
   logHookLine('pre-compact', 'no relevant jobs to snapshot', { projectDir, ...extra });
 }
 
+function logSnapshotSkipped(projectDir, reason, remediation) {
+  logHookLine('pre-compact', 'compact snapshot skipped', { projectDir, reason, remediation });
+}
+
+const SAFE_JOB_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
 await failOpen(async () => {
   const input = JSON.parse((await readStdin()) || '{}');
-  const projectDir = projectDirFromInput(input, process.cwd());
+  const projectDir = resolve(projectDirFromInput(input, process.cwd()));
   const snapshotDir = snapshotDirForProject(projectDir);
   sweepStale(snapshotDir, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS);
 
   const dbPath = storeDbPath();
   if (!existsSync(dbPath)) {
     logNoRelevantJobs(projectDir);
+    return;
+  }
+  const expectedFingerprint = currentStoreFormatFingerprint();
+  if (expectedFingerprint === null) {
+    logSnapshotSkipped(
+      projectDir,
+      'installed plugin manifest has no valid store format fingerprint',
+      'Rebuild or reinstall the Coral plugin before relying on compact recovery.',
+    );
+    return;
+  }
+  const sidecarPath = `${dbPath}.format`;
+  let publishedFingerprint;
+  try {
+    publishedFingerprint = readFileSync(sidecarPath, 'utf8').trim();
+  } catch {
+    logSnapshotSkipped(
+      projectDir,
+      'store format sidecar is missing or unreadable',
+      'Restart Coral through a normal provider launch so the writable daemon can publish the current store marker.',
+    );
+    return;
+  }
+  if (publishedFingerprint !== expectedFingerprint) {
+    logSnapshotSkipped(
+      projectDir,
+      'store format sidecar does not match the installed plugin',
+      'Let the next writable Coral daemon startup quarantine and reinitialize the store, then retry compaction.',
+    );
     return;
   }
 
@@ -51,6 +87,24 @@ await failOpen(async () => {
     // read throw immediately and silently skip the snapshot. Give the lock a
     // moment to clear while staying well inside the PreCompact hook budget.
     db.exec('PRAGMA busy_timeout = 1000;');
+    try {
+      const storedFingerprint = db
+        .prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint' LIMIT 1")
+        .get()?.value;
+      if (storedFingerprint !== expectedFingerprint) {
+        logSnapshotSkipped(
+          projectDir,
+          'store format fingerprint mismatch',
+          'Let the next writable Coral daemon startup quarantine and reinitialize the store, then retry compaction.',
+        );
+        return;
+      }
+    } catch (error) {
+      logNoRelevantJobs(projectDir, {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     let rows;
     try {
       rows = db
@@ -70,7 +124,12 @@ await failOpen(async () => {
     }
 
     const jobs = rows.flatMap((row) => {
-      if (typeof row.jobId !== 'string' || typeof row.phase !== 'string') {
+      if (typeof row.jobId !== 'string' || !SAFE_JOB_ID.test(row.jobId) || typeof row.phase !== 'string') {
+        logSnapshotSkipped(
+          projectDir,
+          'projection_jobs contains an unsafe job identifier',
+          'Restart Coral with a current-format store; inspect the quarantined store if history must be recovered.',
+        );
         return [];
       }
 
@@ -84,7 +143,7 @@ await failOpen(async () => {
         {
           jobId: row.jobId,
           phase: row.phase,
-          ...(hasArtifact ? { resultPath } : {}),
+          hasResult: hasArtifact,
         },
       ];
     });

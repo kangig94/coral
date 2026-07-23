@@ -5,6 +5,7 @@ import { sessionContinuityMutationSchema, type SessionContinuityMutation } from 
 import {
   compose,
   providerArtifactHandleEventBodySchema,
+  providerSuspendedEventBodySchema,
   providerFailureCauseSchema,
   providerContinuityEventBodySchema,
   providerTerminalEventBodySchema,
@@ -21,7 +22,12 @@ import {
   usageSummarySchema,
 } from '#src/providers/contract.js';
 import type { ProviderFailureCause } from '#src/providers/fault.js';
-import { TEST_CODEX_CONTEXT } from '../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../helpers/provider-credentials.js';
+
+type TestProviderContext = typeof TEST_CODEX_PLAN;
+type TestProvider = Provider<TestProviderContext>;
+type TestProviderMiddleware = ProviderMiddleware<TestProviderContext>;
+type TestRuntime = ProviderRuntime<TestProviderContext>;
 
 type IsEqual<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -53,25 +59,23 @@ const BASE_REQUEST: ProviderRequest = {
   coralEnv: {},
 };
 
-const BASE_RUNTIME: ProviderRuntime = {
+const BASE_RUNTIME: TestRuntime = {
+  transport: 'standalone',
   signal: new AbortController().signal,
   runCli: async () => ({ stdout: '', stderr: '', code: 0, aborted: false }),
   time: {
     now: () => 0,
     setTimeout: () => ({ unref: () => {} }),
     clearTimeout: () => {},
-  } as ProviderRuntime['time'],
+  } as TestRuntime['time'],
   ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-  acquireServer: async () => {
-    throw new Error('not used in contract tests');
-  },
-  storage: { existsSync: () => true } as unknown as ProviderRuntime['storage'],
+  storage: { existsSync: () => true } as unknown as TestRuntime['storage'],
   continuityBridge: {
     checkpoint: () => {},
     transportClosed: () => {},
   },
   kbRoot: '/mock/kb',
-  providerContext: TEST_CODEX_CONTEXT,
+  executionPlan: TEST_CODEX_PLAN,
 };
 
 function terminal(content: string): ProviderEventBody {
@@ -79,6 +83,7 @@ function terminal(content: string): ProviderEventBody {
     kind: 'terminal',
     terminal: {
       content,
+      durationMs: 0,
       outcome: { kind: 'completed' },
     },
     diagnostics: {},
@@ -94,14 +99,14 @@ async function collect(stream: AsyncIterable<ProviderEventBody>): Promise<Provid
 }
 
 describe('compose', () => {
-  it('wraps middleware outermost-first and preserves next() semantics', async () => {
+  it('wraps middleware outermost-first and closes the chain at the first terminal', async () => {
     const calls: string[] = [];
-    const provider: Provider = async function* leaf() {
+    const provider: TestProvider = async function* leaf() {
       calls.push('leaf');
       yield { kind: 'progress', message: 'leaf-progress' };
       yield terminal('leaf-terminal');
     };
-    const outer: ProviderMiddleware = (next) =>
+    const outer: TestProviderMiddleware = (next) =>
       async function* outerLayer(request, runtime) {
         calls.push(`outer:before:${request.sessionId}`);
         for await (const event of next(request, runtime)) {
@@ -110,7 +115,7 @@ describe('compose', () => {
         }
         calls.push('outer:after');
       };
-    const inner: ProviderMiddleware = (next) =>
+    const inner: TestProviderMiddleware = (next) =>
       async function* innerLayer(request, runtime) {
         calls.push(`inner:before:${request.sessionId}`);
         for await (const event of next(request, runtime)) {
@@ -131,8 +136,6 @@ describe('compose', () => {
       'outer:event:progress',
       'inner:event:terminal',
       'outer:event:terminal',
-      'inner:after',
-      'outer:after',
     ]);
   });
 
@@ -140,7 +143,7 @@ describe('compose', () => {
     const leaf = async function* (): AsyncIterable<ProviderEventBody> {
       throw new Error('leaf should not run');
     };
-    const shortCircuit: ProviderMiddleware = (_next) =>
+    const shortCircuit: TestProviderMiddleware = (_next) =>
       async function* shortCircuitLayer() {
         yield terminal('short-circuit');
       };
@@ -151,11 +154,11 @@ describe('compose', () => {
   });
 
   it('type-checks the array and variadic compose forms and narrows by event kind', async () => {
-    const provider: Provider = async function* typedLeaf() {
+    const provider: TestProvider = async function* typedLeaf() {
       yield { kind: 'continuity', conversationRef: 'conversation-1', resumable: true, providerContinuity: {} };
       yield terminal('typed');
     };
-    const passthrough: ProviderMiddleware = (next) => next;
+    const passthrough: TestProviderMiddleware = (next) => next;
 
     const fromArray = compose([], provider);
     const fromVariadic = compose(passthrough, provider);
@@ -169,6 +172,8 @@ describe('compose', () => {
           return event.conversationRef ?? 'none';
         case 'artifact_handle':
           return event.handle;
+        case 'suspended':
+          return event.reason;
         case 'terminal':
           return event.terminal.content;
       }
@@ -259,6 +264,10 @@ describe('contract schemas', () => {
       handle: '/tmp/provider.jsonl',
       identity: { kind: 'test-artifact', path: '/tmp/provider.jsonl' },
     });
+    const suspended = providerSuspendedEventBodySchema.parse({
+      kind: 'suspended',
+      reason: 'interrupt_unconfirmed',
+    });
     const continuityMutation = sessionContinuityMutationSchema.parse({
       kind: 'set_resumable',
       conversationRef: 'conversation-1',
@@ -291,6 +300,7 @@ describe('contract schemas', () => {
       handle: '/tmp/provider.jsonl',
       identity: { kind: 'test-artifact', path: '/tmp/provider.jsonl' },
     });
+    expect(suspended).toEqual({ kind: 'suspended', reason: 'interrupt_unconfirmed' });
     expect(continuityMutation).toEqual({
       kind: 'set_resumable',
       conversationRef: 'conversation-1',

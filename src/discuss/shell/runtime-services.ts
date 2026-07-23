@@ -4,7 +4,7 @@ import type { Database } from '../../store/db.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
-import type { JobExit, JobStatus } from '../../jobs/records.js';
+import type { JobExit, JobLaunch, JobStatus } from '../../jobs/records.js';
 import type { DiscussContext, DiscussLaunchDecision, DiscussService, DiscussWaitResult } from './types.js';
 import { clearAllDiscuss, getOrCreate as getOrCreateDiscussContext, hasRunningSessions } from './live-registry.js';
 import * as discussLoop from './loop.js';
@@ -12,12 +12,15 @@ import * as discussRecovery from './recovery.js';
 import type { RecoveredDiscussResume } from './recovery.js';
 import { knownDiscussSources, type DiscussReadHelpersDeps } from './session-read-service.js';
 import { DiscussSessionStore, type DiscussSessionJournal } from './session-store.js';
-import { toJournalInput } from '../event-registry.js';
+import { discussRegistry, toJournalInput } from '../event-registry.js';
 import { listProjectionDiscussSnapshots, readProjectionDiscuss } from '../projections.js';
 import { readDiscussEventLog } from '../read-queries.js';
 import type { StoreReadContext } from '../../store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '../../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../../store/event-body-codec.js';
+import { composeReducers } from '../../store/reducers.js';
 import type { CommitClosureResult, CommitContext } from '../../store/append.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
+import type { JobLaunchRequest, JobResumeRequest, ProviderSessionLaunchDecision } from '../../jobs/launch.js';
 
 type CreateDiscussRuntimeDeps = {
   world: {
@@ -26,6 +29,7 @@ type CreateDiscussRuntimeDeps = {
       contexts: Map<string, DiscussContext>;
     };
     resolveProjectSource: (projectRoot: string) => string;
+    providerRegistry: ProviderBindingCatalog;
     eventBus: {
       emit(
         event: 'discuss:updated',
@@ -36,14 +40,15 @@ type CreateDiscussRuntimeDeps = {
   runtime: Runtime;
   getProgressStore: () => {
     readStatus(jobId: string): JobStatus | null;
-    loadJobProjectionDetail(jobId: string): { exit: JobExit | null };
+    loadJobProjectionDetail(jobId: string): { exit: JobExit | null; launch: JobLaunch | null };
+    listJobProjections(): Array<{ jobId: string; status: JobStatus }>;
     getDb(): Database;
     commit(cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult): unknown;
   };
   getExecutionService: (ctx: InvocationContext) => {
-    start(...args: unknown[]): Promise<DiscussLaunchDecision>;
-    resume(...args: unknown[]): Promise<DiscussLaunchDecision>;
-    waitStreamOnce(...args: unknown[]): Promise<DiscussWaitResult>;
+    start(provider: string, input: JobLaunchRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+    resume(provider: string, input: JobResumeRequest, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
+    waitStreamOnce(jobId: string, timeoutMs?: number): Promise<DiscussWaitResult>;
   };
   discardSessionArtifacts?: (sessionId: string) => Promise<void>;
 };
@@ -66,9 +71,11 @@ export function createDiscussRuntime({
   discussStores: Map<string, DiscussSessionStore>;
 } {
   const discussStores = new Map<string, DiscussSessionStore>();
+  const discussReducers = composeReducers(discussRegistry);
   const readCtx: StoreReadContext = {
-    schemas: new Map(),
-    upcasters: createDefaultUpcasterRegistry(),
+    schemas: discussReducers.schemas,
+    streamKinds: discussReducers.streamKinds,
+    bodyCodec: createEventBodyCodec(),
   };
 
   function snapshotBelongsToSource(snapshot: { projectRoot: string }, source: string): boolean {
@@ -135,13 +142,28 @@ export function createDiscussRuntime({
   function getDiscussContext(ctx: InvocationContext): DiscussContext {
     const store = getDiscussStore(ctx.projectRoot);
     const executionService = getExecutionService(ctx);
+    const requireProviderLaunch = async (
+      decision: ReturnType<typeof executionService.start>,
+    ): Promise<DiscussLaunchDecision> => {
+      const resolved = await decision;
+      return resolved;
+    };
     const jobStatusReader = {
       read: (jobId: string) => getProgressStore().readStatus(jobId),
       readExit: (jobId: string) => getProgressStore().loadJobProjectionDetail(jobId).exit,
+      listOwned: (discussionId: string) => {
+        const owned: Array<{ launch: JobLaunch; status: JobStatus }> = [];
+        for (const { jobId, status } of getProgressStore().listJobProjections()) {
+          if (status.owner.kind !== 'discussion' || status.owner.id !== discussionId) continue;
+          const launch = getProgressStore().loadJobProjectionDetail(jobId).launch;
+          if (launch !== null) owned.push({ launch, status });
+        }
+        return owned;
+      },
     };
     const discussService: DiscussService = {
-      start: (...args) => executionService.start(...args),
-      resume: (...args) => executionService.resume(...args),
+      start: (...args) => requireProviderLaunch(executionService.start(...args)),
+      resume: (...args) => requireProviderLaunch(executionService.resume(...args)),
       waitStreamOnce: (...args) => executionService.waitStreamOnce(...args),
     };
     return getOrCreateDiscussContext(world.discussRegistry, ctx.projectRoot, discussService, store, {
@@ -153,6 +175,7 @@ export function createDiscussRuntime({
         projectData: (projectRoot: string) => runtime.paths.projectData(projectRoot),
       },
       jobStatusReader,
+      providerRegistry: world.providerRegistry,
       ...(discardSessionArtifacts !== undefined ? { discardSessionArtifacts } : {}),
     });
   }

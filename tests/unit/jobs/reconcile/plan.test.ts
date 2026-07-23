@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { JobLaunch, JobRuntime, JobStatus, JobTerminal } from '#src/jobs/records.js';
-import type { DurableProcessExit } from '#src/runtime/durable-runtime.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type {
+  JobLaunch,
+  JobRuntime,
+  JobStatus,
+  JobTerminal,
+  ProviderJobLaunch,
+  WorkflowJobLaunch,
+} from '#src/jobs/records.js';
+import type { DurableCliRuntimeRecord, DurableProcessExit } from '#src/runtime/durable-runtime.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import {
   type RecoveryProjectionSnapshot,
   type RecoveryAction,
@@ -31,7 +38,7 @@ type SessionFixture = {
   sessionId: string;
   provider: string;
   activeJobId?: string;
-  entry?: SessionEntry | null;
+  entry?: ProviderSession | null;
 };
 
 type StoredJob = {
@@ -50,7 +57,7 @@ class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
   readonly currentNamespace: string;
   private readonly jobs = new Map<string, StoredJob>();
   private readonly sessionRefs: Array<{ sessionId: string; provider: string }> = [];
-  private readonly sessions = new Map<string, SessionEntry | null>();
+  private readonly sessions = new Map<string, ProviderSession | null>();
   private readonly deadPids = new Set<number>();
 
   constructor(currentNamespace = CURRENT_NAMESPACE) {
@@ -95,7 +102,11 @@ class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
       fixture.entry === undefined
         ? makeSession({
             sessionId: fixture.sessionId,
-            provider: fixture.provider,
+            binding: {
+              provider: fixture.provider,
+              kind: 'account',
+              binding: { fixture: fixture.provider },
+            },
             activeJobId: fixture.activeJobId,
           })
         : fixture.entry;
@@ -121,7 +132,7 @@ class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
     return this.sessionRefs.map((ref) => ({ ...ref }));
   }
 
-  readSession(sessionId: string): SessionEntry | null {
+  readSession(sessionId: string): ProviderSession | null {
     return this.sessions.get(sessionId) ?? null;
   }
 }
@@ -129,6 +140,7 @@ class InMemoryRecoverySnapshot implements RecoveryProjectionSnapshot {
 function makeStatus(jobId: string, phase: JobStatus['phase'], overrides: Partial<JobStatus> = {}): JobStatus {
   const base: JobStatus = {
     jobId,
+    owner: { kind: 'provider-session', id: `${jobId}-session` },
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
@@ -146,12 +158,13 @@ function makeStatus(jobId: string, phase: JobStatus['phase'], overrides: Partial
 
 function makeLaunch(
   jobId: string,
-  overrides: Partial<JobLaunch> & {
-    request?: Partial<JobLaunch['request']>;
+  overrides: Partial<ProviderJobLaunch> & {
+    request?: Partial<ProviderJobLaunch['request']>;
   } = {},
-): JobLaunch {
-  const base: JobLaunch = {
+): ProviderJobLaunch {
+  const base: ProviderJobLaunch = {
     jobId,
+    owner: { kind: 'provider-session', id: `${jobId}-session` },
     sessionId: `${jobId}-session`,
     provider: 'fakeprovider',
     projectRoot: `/projects/${jobId}`,
@@ -183,14 +196,36 @@ function makeLaunch(
   };
 }
 
-function makeRuntime(jobId: string, overrides: Partial<JobRuntime> = {}): JobRuntime {
+function makeWorkflowLaunch(jobId: string): WorkflowJobLaunch {
   return {
+    jobId,
+    owner: { kind: 'workflow', id: jobId },
+    sessionId: null,
+    provider: null,
+    projectRoot: `/projects/${jobId}`,
+    backendNamespace: CURRENT_NAMESPACE,
+    jobKind: 'workflow',
+    pool: 'default',
+    enqueueSequence: 0,
+    request: {
+      prompt: `workflow-${jobId}`,
+      cwd: `/projects/${jobId}`,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: NOW,
+  };
+}
+
+function makeRuntime(jobId: string, overrides: Partial<DurableCliRuntimeRecord> = {}): DurableCliRuntimeRecord {
+  return {
+    transport: 'durable-cli',
     pid: 1000,
     stdoutPath: `/tmp/${jobId}.stdout`,
     stderrPath: `/tmp/${jobId}.stderr`,
     startTime: NOW,
     ...overrides,
-  } as JobRuntime;
+  };
 }
 
 function makeAppServerRuntime(overrides: Partial<JobRuntime> = {}): JobRuntime {
@@ -214,15 +249,17 @@ function makeExit(overrides: Partial<DurableProcessExit> = {}): DurableProcessEx
   };
 }
 
-function makeSession(overrides: Partial<SessionEntry> = {}): SessionEntry {
+function makeSession(overrides: Partial<ProviderSession> = {}): ProviderSession {
   const sessionId = overrides.sessionId ?? 'session';
-  const provider = overrides.provider ?? 'fakeprovider';
 
   return {
     ...overrides,
     sessionId,
-    provider,
-    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
+    binding: overrides.binding ?? {
+      provider: 'fakeprovider',
+      kind: 'account',
+      binding: { fixture: 'fakeprovider' },
+    },
     name: overrides.name ?? `${sessionId}-name`,
     state: overrides.state ?? 'ready',
     retention: overrides.retention ?? 'retain',
@@ -377,15 +414,15 @@ describe('planRecovery', () => {
       .addJob({
         jobId: 'workflow-running',
         status: runningStatus,
-        launch: makeLaunch('workflow-running', { jobKind: 'workflow' }),
-        runtime: makeRuntime('workflow-running'),
+        launch: makeWorkflowLaunch('workflow-running'),
+        runtime: { transport: 'workflow', startTime: NOW },
         hasLaunchRequest: true,
         hasRuntimeStart: true,
       })
       .addJob({
         jobId: 'workflow-queued',
         status: queuedStatus,
-        launch: makeLaunch('workflow-queued', { jobKind: 'workflow' }),
+        launch: makeWorkflowLaunch('workflow-queued'),
         hasLaunchRequest: true,
         hasRuntimeStart: false,
       });
@@ -440,7 +477,7 @@ describe('planRecovery', () => {
     expect(plan.cleanup).toEqual([]);
   });
 
-  it('marks same-namespace running jobs with dead pids as wrapper_lost', () => {
+  it('routes same-namespace provider jobs with dead pids through provider recovery', () => {
     const status = makeStatus('dead-pid-job', 'running');
     const launchRecord = makeLaunch('dead-pid-job');
     const runtimeRecord = makeRuntime('dead-pid-job', { pid: 9001 });
@@ -456,18 +493,18 @@ describe('planRecovery', () => {
       .markPidDead(9001);
 
     const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
+    expect(plan.register).toEqual([
       {
-        type: 'markError',
+        type: 'registerRunning',
         jobId: 'dead-pid-job',
-        fault: { kind: 'wrapper_lost' },
-        status,
+        launchRecord,
+        runtimeRecord,
       },
     ]);
+    expect(plan.cleanup).toEqual([]);
   });
 
-  it('marks same-namespace launching jobs with dead pids as wrapper_lost', () => {
+  it('routes same-namespace launching provider jobs with dead pids through provider recovery', () => {
     const status = makeStatus('dead-pid-launching', 'launching');
     const launchRecord = makeLaunch('dead-pid-launching');
     const runtimeRecord = makeRuntime('dead-pid-launching', { pid: 9002 });
@@ -483,15 +520,15 @@ describe('planRecovery', () => {
       .markPidDead(9002);
 
     const plan = planRecovery(snapshot);
-    expect(plan.register).toEqual([]);
-    expect(plan.cleanup).toEqual([
+    expect(plan.register).toEqual([
       {
-        type: 'markError',
+        type: 'registerRunning',
         jobId: 'dead-pid-launching',
-        fault: { kind: 'wrapper_lost' },
-        status,
+        launchRecord,
+        runtimeRecord,
       },
     ]);
+    expect(plan.cleanup).toEqual([]);
   });
 
   it('still registers app-server runtimes (no pid) without probing liveness', () => {

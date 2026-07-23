@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
@@ -6,7 +7,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openStoreDatabase, type Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyTestCounterSchema, testCounterRegistry } from '#tests/unit/store/fixtures/test-counter-registry.js';
@@ -39,6 +40,7 @@ interface Snapshot {
 
 function openMemoryDatabase(runtime: Pick<Runtime, 'storage'>): Database {
   return openStoreDatabase({
+    storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
   });
@@ -78,7 +80,6 @@ function buildPlannedEvent(
     namespace: 'simulation',
     project: 'simulation',
     correlationId: runtime.ids.sha256(`correlation-${index % 2}`),
-    bodyVersion: 1,
     body: {
       id: counterIds[index % counterIds.length] ?? counterIds[0],
       delta: (runtime.ids.randomBytes(1)[0] % 7) + 1,
@@ -91,7 +92,7 @@ function captureSnapshot(db: Database): Snapshot {
   const counters = db.prepare('SELECT id, count, last_seq FROM projection_test_counter ORDER BY id').all();
   const events = db
     .prepare(
-      `SELECT seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, body_version, hex(body) AS body_hex
+      `SELECT seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, hex(body) AS body_hex
        FROM events
        ORDER BY seq`,
     )
@@ -109,7 +110,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
   const db = openMemoryDatabase(runtime);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(runtime.time.now()) });
   const reducers = composeReducers(testCounterRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
   const streamIds = Array.from({ length: 3 }, () => runtime.ids.uuid());
   const counterIds = Array.from({ length: 5 }, () => runtime.ids.uuid());
 
@@ -124,7 +125,7 @@ async function runSimulationSequence(): Promise<Snapshot> {
       const appended = commitInputs(db, [input], {
         now: () => new Date(runtime.time.now()),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
 
@@ -166,7 +167,7 @@ async function runPlannedSequence(runtime: Pick<Runtime, 'storage'>, plan: Seque
   const db = openMemoryDatabase(runtime);
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => new Date(plan.equippedAt) });
   const reducers = composeReducers(testCounterRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
 
   try {
     applyTestCounterSchema(db);
@@ -179,7 +180,7 @@ async function runPlannedSequence(runtime: Pick<Runtime, 'storage'>, plan: Seque
       const appended = commitInputs(db, [{ ...input, tsOverride: ts }], {
         now: () => new Date(0),
         reducers,
-        upcasters,
+        bodyCodec,
         providers: permissiveProviderLookupPort,
       });
 

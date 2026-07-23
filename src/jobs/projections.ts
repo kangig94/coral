@@ -6,18 +6,16 @@
 import type { Database } from '../store/db.js';
 
 import { CoralSetupError } from '../runtime/errors.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import type { CoralEvent, CoralEventInput } from '../store/envelope.js';
+import type { EventsRow } from '../store/schema.js';
 import { upsertProjection } from '../store/projection-upsert.js';
 import type { DomainAppendValidator, Reducer } from '../store/reducers.js';
 import type { JobLaunchRequestBody } from './launch.js';
+import type { ExecutionOwner } from '../runtime/execution-owner.js';
 import type { JobPhase } from './phase.js';
 import { phaseForOutcome, type JobAbortedBody, type JobLaunchRejected, type JobProgressFault } from './outcome.js';
-import {
-  jobDiagnosticsSchema,
-  jobTerminalSchema,
-  normalizeJobTerminal,
-  type JobTerminaledBody,
-} from './terminal/result.js';
+import { jobDiagnosticsSchema, normalizeJobTerminal, type JobTerminaledBody } from './terminal/result.js';
 import { emptyJobDiagnostics, type JobDiagnostics, type JobTerminal, type JobTerminalDiagnostics } from './records.js';
 import type {
   JobProgressBody,
@@ -25,8 +23,15 @@ import type {
   JobQueueQueuedBody,
   JobRuntimeStartedBody,
 } from './event-bodies.js';
+import {
+  decodeProjectionJobExecutionOwner,
+  decodeProjectionJobStoredRow,
+  decodeProjectionJobTerminal,
+  readProjectionJobRow,
+} from './projection-row.js';
 
 type ProjectedJobState = {
+  owner: ExecutionOwner;
   phase: JobPhase;
   terminal: JobTerminal | null;
   diagnostics: JobDiagnostics;
@@ -38,6 +43,8 @@ type ProjectedJobState = {
   jobKind: 'provider' | 'workflow' | 'kb';
   parentWorkflowJobId: string | null;
   workflowSlot: string | null;
+  workflowSlotGeneration: number | null;
+  replacesWorkflowJobId: string | null;
   createdAt: string;
 };
 
@@ -90,20 +97,21 @@ function jobTerminalOrderViolation(input: CoralEventInput, state: JobTerminalOrd
   });
 }
 
-function readLatestTerminalSeq(db: Database, jobId: string): number | null {
+function readLatestTerminalSeq(db: Database, jobId: string, readCtx: StoreReadContext): number | null {
   const row = db
-    .prepare(
-      `SELECT seq
+    .prepare<[string], EventsRow>(
+      `SELECT *
          FROM events
-        WHERE stream_kind = 'job'
-          AND stream_id = ?
+        WHERE stream_id = ?
           AND type = 'job.terminal.recorded'
         ORDER BY seq DESC
         LIMIT 1`,
     )
-    .get(jobId) as { seq: number } | undefined;
+    .get(jobId);
 
-  return row?.seq ?? null;
+  if (row === undefined) return null;
+  decodeStoredBody(row, readCtx);
+  return row.seq;
 }
 
 export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => {
@@ -117,7 +125,7 @@ export const validateJobTerminalOrder: DomainAppendValidator = (ctx, inputs) => 
     const jobId = input.stream.id;
     let terminalState = terminalByJob.get(jobId);
     if (terminalState === undefined) {
-      const seq = readLatestTerminalSeq(ctx.db, jobId);
+      const seq = readLatestTerminalSeq(ctx.db, jobId, ctx.readCtx);
       terminalState = seq === null ? null : { kind: 'existing', seq };
       terminalByJob.set(jobId, terminalState);
     }
@@ -137,12 +145,14 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
     patch.projectRoot === undefined ||
     patch.backendNamespace === undefined ||
     patch.jobKind === undefined ||
-    patch.createdAt === undefined
+    patch.createdAt === undefined ||
+    patch.owner === undefined
   ) {
     throw prematureProjectionJobEvent(event);
   }
 
   return {
+    owner: patch.owner,
     phase: patch.phase ?? 'launching',
     terminal: patch.terminal ?? null,
     diagnostics: patch.diagnostics ?? emptyJobDiagnostics(),
@@ -154,53 +164,33 @@ function createInitialProjectionJobState(event: CoralEvent, patch: Partial<Proje
     jobKind: patch.jobKind,
     parentWorkflowJobId: patch.parentWorkflowJobId ?? event.refs?.parentJobId ?? null,
     workflowSlot: patch.workflowSlot ?? event.refs?.workflowSlotId ?? null,
+    workflowSlotGeneration: patch.workflowSlotGeneration ?? null,
+    replacesWorkflowJobId: patch.replacesWorkflowJobId ?? null,
     createdAt: patch.createdAt,
   };
 }
 
 function readProjectionJob(db: Database, jobId: string): ProjectedJobState | null {
-  const row = db
-    .prepare(
-      `SELECT phase, terminal, diagnostics,
-              session_id, provider, project_root, backend_namespace, bundle_hash,
-              job_kind, parent_workflow_job_id, workflow_slot, created_at
-         FROM projection_jobs
-        WHERE job_id = ?`,
-    )
-    .get(jobId) as
-    | {
-        phase: string;
-        terminal: string | null;
-        diagnostics: string | null;
-        session_id: string | null;
-        provider: string | null;
-        project_root: string;
-        backend_namespace: string;
-        bundle_hash: string | null;
-        job_kind: string;
-        parent_workflow_job_id: string | null;
-        workflow_slot: string | null;
-        created_at: string;
-      }
-    | undefined;
-
-  if (!row) {
+  const row = readProjectionJobRow(db, jobId);
+  if (row === null) {
     return null;
   }
 
   return {
-    phase: row.phase as JobPhase,
-    terminal: row.terminal === null ? null : jobTerminalSchema.parse(JSON.parse(row.terminal)),
-    diagnostics:
-      row.diagnostics === null ? emptyJobDiagnostics() : jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
+    owner: decodeProjectionJobExecutionOwner(row),
+    phase: row.phase,
+    terminal: decodeProjectionJobTerminal(row),
+    diagnostics: jobDiagnosticsSchema.parse(JSON.parse(row.diagnostics)),
     sessionId: row.session_id,
     provider: row.provider,
     projectRoot: row.project_root,
     backendNamespace: row.backend_namespace,
     bundleHash: row.bundle_hash,
-    jobKind: row.job_kind as 'provider' | 'workflow' | 'kb',
+    jobKind: row.job_kind,
     parentWorkflowJobId: row.parent_workflow_job_id,
     workflowSlot: row.workflow_slot,
+    workflowSlotGeneration: row.workflow_slot_generation,
+    replacesWorkflowJobId: row.replaces_workflow_job_id,
     createdAt: row.created_at,
   };
 }
@@ -213,13 +203,14 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
   if (previous && event.type === 'job.launch.requested') {
     throw new CoralSetupError({
       code: 'job_launch_duplicate',
-      userMessage: `Job '${event.stream.id}' already has a launch authority.`,
+      userMessage: `Job '${event.stream.id}' already has a launch declaration.`,
       remediation: 'A job stream must contain exactly one job.launch.requested event.',
     });
   }
 
   const base = previous ?? createInitialProjectionJobState(event, patch);
   const next: ProjectedJobState = {
+    owner: patch.owner ?? base.owner,
     phase: patch.phase ?? base.phase,
     terminal: patch.terminal ?? base.terminal,
     diagnostics: patch.diagnostics ?? base.diagnostics,
@@ -231,14 +222,37 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
     jobKind: patch.jobKind ?? base.jobKind,
     parentWorkflowJobId: patch.parentWorkflowJobId ?? base.parentWorkflowJobId,
     workflowSlot: patch.workflowSlot ?? base.workflowSlot,
+    workflowSlotGeneration: patch.workflowSlotGeneration ?? base.workflowSlotGeneration,
+    replacesWorkflowJobId: patch.replacesWorkflowJobId ?? base.replacesWorkflowJobId,
     createdAt: patch.createdAt ?? base.createdAt,
   };
+
+  decodeProjectionJobStoredRow({
+    job_id: event.stream.id,
+    execution_owner: JSON.stringify(next.owner),
+    phase: next.phase,
+    terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
+    diagnostics: JSON.stringify(next.diagnostics),
+    session_id: next.sessionId,
+    provider: next.provider,
+    project_root: next.projectRoot,
+    backend_namespace: next.backendNamespace,
+    bundle_hash: next.bundleHash,
+    job_kind: next.jobKind,
+    parent_workflow_job_id: next.parentWorkflowJobId,
+    workflow_slot: next.workflowSlot,
+    workflow_slot_generation: next.workflowSlotGeneration,
+    replaces_workflow_job_id: next.replacesWorkflowJobId,
+    created_at: next.createdAt,
+    last_seq: event.seq,
+  });
 
   upsertProjection(db, {
     table: 'projection_jobs',
     pkColumn: 'job_id',
     pkValue: event.stream.id,
     columns: {
+      execution_owner: JSON.stringify(next.owner),
       phase: next.phase,
       terminal: next.terminal === null ? null : JSON.stringify(next.terminal),
       diagnostics: JSON.stringify(next.diagnostics),
@@ -250,6 +264,8 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
       job_kind: next.jobKind,
       parent_workflow_job_id: next.parentWorkflowJobId,
       workflow_slot: next.workflowSlot,
+      workflow_slot_generation: next.workflowSlotGeneration,
+      replaces_workflow_job_id: next.replacesWorkflowJobId,
       created_at: next.createdAt,
     },
     lastSeq: event.seq,
@@ -257,9 +273,10 @@ function upsertProjectionJob(db: Database, event: CoralEvent, patch: Partial<Pro
 }
 
 export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, event) => {
-  const sessionId = event.body.jobKind === 'kb' ? null : event.body.sessionId;
-  const provider = event.body.jobKind === 'kb' ? null : event.body.provider;
+  const sessionId = event.body.jobKind === 'provider' ? event.body.sessionId : null;
+  const provider = event.body.jobKind === 'provider' ? event.body.provider : null;
   upsertProjectionJob(db, event, {
+    owner: event.body.owner,
     phase: 'launching',
     sessionId,
     provider,
@@ -269,6 +286,8 @@ export const reduceJobLaunchRequested: Reducer<JobLaunchRequestBody> = (db, even
     jobKind: event.body.jobKind,
     parentWorkflowJobId: event.refs?.parentJobId ?? null,
     workflowSlot: event.refs?.workflowSlotId ?? null,
+    workflowSlotGeneration: event.body.jobKind === 'provider' ? (event.body.workflowSlotGeneration ?? null) : null,
+    replacesWorkflowJobId: event.body.jobKind === 'provider' ? (event.body.replacesWorkflowJobId ?? null) : null,
     createdAt: event.body.createdAt,
   });
 };

@@ -21,10 +21,11 @@ import type { CoordinatorServerInfo, LifecycleState } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
-import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { createProjectionSessionLookup } from '../sessions/lookup.js';
 import { composeReducers } from '../store/reducers.js';
+import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
 import { jobsReconcile } from '../jobs/startup.js';
 import { jobsRegistry } from '../jobs/events.js';
@@ -47,16 +48,19 @@ import type { TextProjectionHealthState } from '../transport/server-ports.js';
 import {
   createDefaultKbDaemonSupervisor,
   createDisabledKbDaemonSupervisor,
-  type KbDaemonCurateAssistantHandler,
   type KbDaemonSupervisor,
 } from './live/kb-daemon-supervisor.js';
 import type { KbDaemonEventMessage } from '../kb-daemon/protocol.js';
-import { runClaudeOneShotTurn } from '../providers/claude/one-shot.js';
-import { buildExactProviderEnv } from '../providers/execution-context.js';
+import { createKbCurateAssistantHandler, createKbCurateUsageBudgetHandler } from './services/kb-curate-assistant.js';
 
 export type CoordinatorServerOptions = Omit<
   CoordinatorCoreOptions,
-  'runtime' | 'runStartupRecoveryFn' | 'getConsumerStuck' | 'createStoreServicesFromDbFn' | 'kbDaemonSupervisor'
+  | 'runtime'
+  | 'storeFormat'
+  | 'runStartupRecoveryFn'
+  | 'getConsumerStuck'
+  | 'createStoreServicesFromDbFn'
+  | 'kbDaemonSupervisor'
 > & {
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
@@ -220,52 +224,42 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const providerRegistry = coreOptions.providerRegistry ?? new ProviderRegistry();
+  (registerBuiltInProvidersFn ?? registerBuiltInProviders)(providerRegistry);
+  const storeFormat = sealCoralStoreFormat(providerRegistry);
   const eventBus = coreOptions.eventBus ?? new TypedEventBus();
   // Spec §7.1: every Journal event type can be a causeRef target. Verify
   // describer coverage at boot so missing describers fail loudly instead of
   // rendering causeRef chains as bare type names.
   assertDescriberCoverage(reducers.describerKeys);
-  const upcasters = createDefaultUpcasterRegistry();
-  const readCtx = { schemas: reducers.schemas, upcasters };
+  const bodyCodec = createEventBodyCodec();
+  const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
   let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
   const explicitPluginRoot = coreOptions.pluginRoot ?? options.pluginRoot;
   let handleKbDaemonEvent: ((message: KbDaemonEventMessage) => void) | null = null;
-  const completeKbDaemonCurateAssistant: KbDaemonCurateAssistantHandler = (request, { signal }) => {
+  const completeKbDaemonCurateAssistant = createKbCurateAssistantHandler({
+    runtime,
+    providerRegistry,
+    readActiveRuntime: () => {
+      const activeCore = core;
+      return activeCore === null
+        ? null
+        : {
+            systemProviderScope: activeCore.systemProviderScope,
+          };
+    },
+  });
+  const readActiveSystemProviderRuntime = () => {
     const activeCore = core;
-    if (activeCore === null) {
-      throw documentedCoralSetupError('startup_not_ready');
-    }
-    return runClaudeOneShotTurn(
-      {
-        storage: runtime.storage,
-        ids: runtime.ids,
-        providerContext: {
-          source: activeCore.providerCredentialDefaults.claude,
-          brokerEnv: buildExactProviderEnv({
-            baseEnv: runtime.env.fullSnapshot(),
-            platform: runtime.env.platform(),
-          }),
-          controllerEnv: buildExactProviderEnv({
-            baseEnv: runtime.env.fullSnapshot(),
-            source: activeCore.providerCredentialDefaults.claude,
-            platform: runtime.env.platform(),
-          }),
-          projectsRoot: activeCore.providerCredentialDefaults.claude.projectsRoot,
-        },
-        acquireServer: (spec, options) => activeCore.providerHostManager.acquireServer(spec, options),
-      },
-      {
-        cwd: runtime.env.cwd(),
-        prompt: request.prompt,
-        ...(request.model === undefined ? {} : { model: request.model }),
-        ...(request.permissionMode === undefined ? {} : { permissionMode: request.permissionMode }),
-        signal,
-      },
-    );
+    return activeCore === null ? null : { systemProviderScope: activeCore.systemProviderScope };
   };
+  const checkKbDaemonCurateUsageBudget = createKbCurateUsageBudgetHandler({
+    runtime,
+    providerRegistry,
+    readActiveRuntime: readActiveSystemProviderRuntime,
+  });
   const kbDaemonSupervisor = (() => {
     if (coreOptions.kbDaemonSupervisor) {
       return coreOptions.kbDaemonSupervisor;
@@ -287,6 +281,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
         ? {}
         : { bundleHash: coreOptions.bootSnapshot.bundleHash }),
       curateAssistant: completeKbDaemonCurateAssistant,
+      curateUsageBudget: checkKbDaemonCurateUsageBudget,
       onEvent: (message) => handleKbDaemonEvent?.(message),
       log: (message) => backendLog.warn(message),
     });
@@ -316,7 +311,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     if (core === null) {
       throw documentedCoralSetupError('startup_not_ready');
     }
-    const progressStore = new JobStore(core.identity.namespace, runtime, upcasters, {
+    const progressStore = new JobStore(core.identity.namespace, runtime, bodyCodec, {
       db: storeDb,
       eventBus,
       reducers,
@@ -346,7 +341,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     const appended = commitJournalEvents(db, cb, {
       now: () => nowDate(runtime.time),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: providerLookupPortFromCatalog(providerRegistry),
     });
     if (appended.length === 0) {
@@ -360,6 +355,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   };
   const lifecycleReactor = createLifecycleReactor({
     db: getQueryDb,
+    readCtx,
     providers: providerRegistry,
     runtime,
     time: runtime.time,
@@ -398,6 +394,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     providerRegistry,
     eventBus,
     runtime,
+    storeFormat,
     discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
     disposeLifecycleReactor: () => lifecycleReactor.dispose(),
     createStoreServicesFromDbFn,
@@ -493,9 +490,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       });
       signal.throwIfAborted();
 
-      await lifecycleReactor.scanStartup();
-      signal.throwIfAborted();
-
       const recoveredDiscussResumes = await recoverPersistedDiscussFn({
         knownDiscussSources,
         getDiscussStoreForSource,
@@ -523,9 +517,15 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       });
       signal.throwIfAborted();
 
+      // Pending workflow replacement intents must be examined before the
+      // retention reactor can expire them. Workflow recovery renews or consumes
+      // the intent deterministically; only the remainder is eligible for expiry.
+      await lifecycleReactor.scanStartup();
+      signal.throwIfAborted();
+
       return recoveredDiscussResumes;
     },
-    registerBuiltInProvidersFn: registerBuiltInProvidersFn ?? registerBuiltInProviders,
+    registerBuiltInProvidersFn: () => {},
   });
   const coordinatorCore = core;
   // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.

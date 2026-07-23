@@ -1,20 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
-import { isUsageBudgetExhausted } from '#src/kb/curate/usage-budget.js';
+import { isClaudeCurationUsageBudgetExhausted } from '#src/providers/claude/usage-budget.js';
 
 describe('curate usage budget runtime isolation', () => {
   const usageBudgetExhausted = (data: { fiveHour?: number; weekly?: number }): boolean =>
-    isUsageBudgetExhausted({
-      claudeConfigDir: '/isolated-home/.claude',
-      now: () => 1_000,
-      storage: {
-        readFileSync() {
-          return JSON.stringify({
-            claude: {
-              ts: 900,
-              data,
-            },
-          });
+    isClaudeCurationUsageBudgetExhausted({
+      configDir: '/isolated-home/.claude',
+      runtime: {
+        now: () => 1_000,
+        storage: {
+          readFileSync() {
+            return JSON.stringify({
+              claude: {
+                ts: 900,
+                data,
+              },
+            });
+          },
         },
       },
     });
@@ -22,18 +24,20 @@ describe('curate usage budget runtime isolation', () => {
   it('reads the usage cache from the injected home only', () => {
     let observedPath = '';
 
-    const exhausted = isUsageBudgetExhausted({
-      claudeConfigDir: '/isolated-home/.claude',
-      now: () => 1_000,
-      storage: {
-        readFileSync(path) {
-          observedPath = path;
-          return JSON.stringify({
-            claude: {
-              ts: 900,
-              data: { fiveHour: 91, weekly: 10 },
-            },
-          });
+    const exhausted = isClaudeCurationUsageBudgetExhausted({
+      configDir: '/isolated-home/.claude',
+      runtime: {
+        now: () => 1_000,
+        storage: {
+          readFileSync(path) {
+            observedPath = path;
+            return JSON.stringify({
+              claude: {
+                ts: 900,
+                data: { fiveHour: 91, weekly: 10 },
+              },
+            });
+          },
         },
       },
     });
@@ -52,18 +56,5 @@ describe('curate usage budget runtime isolation', () => {
 
   it('blocks curate at the weekly guardrail', () => {
     expect(usageBudgetExhausted({ fiveHour: 10, weekly: 70 })).toBe(true);
-  });
-
-  it('does not read ambient home when no home is injected', () => {
-    const exhausted = isUsageBudgetExhausted({
-      now: () => 1_000,
-      storage: {
-        readFileSync() {
-          throw new Error('storage should not be read without an injected home');
-        },
-      },
-    });
-
-    expect(exhausted).toBe(false);
   });
 });

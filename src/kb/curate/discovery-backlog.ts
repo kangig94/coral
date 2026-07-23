@@ -6,18 +6,22 @@ import type { PendingDiscovery } from './state/model.js';
 import { prepareCached, type Database } from '../../store/db.js';
 import type { ReadonlyDatabase } from '../../store/read-port.js';
 
-const backlogRowSchema = z.object({
-  entry_id: z.string().min(1),
-  principle_slug: z.string().min(1),
-  statement: z.string().min(1),
-  queued_at: z.string().datetime({ offset: true }),
-  reason: z.string().nullable(),
-});
+export const backlogRowSchema = z
+  .object({
+    entry_id: z.string().min(1),
+    principle_slug: z.string().min(1),
+    statement: z.string().min(1),
+    queued_at: z.string().datetime({ offset: true }),
+    reason: z.string().nullable(),
+  })
+  .strict();
 
-const backlogNoteRowSchema = z.object({
-  backlog_entry_id: z.string().min(1),
-  note_id: z.string().min(1),
-});
+export const backlogNoteRowSchema = z
+  .object({
+    backlog_entry_id: z.string().min(1),
+    note_id: z.string().min(1),
+  })
+  .strict();
 
 function backlogEntryId(entry: Pick<PendingDiscovery, 'principle' | 'statement'>): string {
   return createHash('sha256').update(`${entry.principle}\u0000${entry.statement}`, 'utf8').digest('hex');

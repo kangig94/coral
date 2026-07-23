@@ -6,11 +6,11 @@ Coral's product identity is a coding-assistant plugin for Claude Code and Codex.
 
 ## Composition Roots
 
-| Entry                    | Bundle                              | Role                                                                                                                                                                                                  |
-| ------------------------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Entry                    | Bundle                                      | Role                                                                                                                                                                                                  |
+| ------------------------ | ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Backend composition root | `clients/bridge/coral-backend.cjs`          | Backend daemon bootstrap. Wires runtime ports, identity metadata, domain owner modules/contracts, lifecycle, and IPC/HTTP transport routes.                                                           |
 | CLI entrypoint           | `clients/bridge/coral-cli.cjs`              | Commander-based CLI client that uses IPC for mutating/live work, reads `read-model/CoralStore` directly for no-coordinator paths, and retains HTTP for the remote gateway plus operational carveouts. |
-| Claude broker helper     | `clients/bridge/coral-claude-appserver.cjs` | Provider helper that accepts broker RPC and runs Claude through the default `claude -p` stream-json transport or the opt-in PTY TUI transport.                                                         |
+| Claude broker helper     | `clients/bridge/coral-claude-appserver.cjs` | Provider helper that accepts broker RPC and runs Claude through the default `claude -p` stream-json transport or the opt-in PTY TUI transport.                                                        |
 
 ## CLI and Client
 
@@ -26,7 +26,7 @@ The backend uses a **single Runtime world** pattern: one interface with a fixed 
 
 ## Journal
 
-The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, envelope + upcaster, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. Upcasters run on read, not on write — stored bytes are raw input bytes at their declared body version.
+The Journal is the event-sourced truth spine for all domain state. It provides append, rebuild, strict envelope decoding, domain append-validator, and projection-reducer dispatch primitives backed by SQLite in WAL mode. `store/` exports the SQL/Journal substrate; product read APIs live in `read-model/CoralStore` and domain-owned read query modules. There are no body versions, upcasters, or old-format readers: the application-wide store format covers every persisted codec and executable DDL fragment, and startup destructively resets incompatible durable state.
 
 ## Causality
 
@@ -45,7 +45,7 @@ Each domain is self-contained: its own contract (events, projection, read-models
 
 ## Provider Adapters
 
-Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters normalize provider usage at this boundary to the canonical additive `UsageSummary` (`inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, optional `costUsd`) before it reaches jobs. Adapters stay on canonical domain types; event body evolution is handled by domain upcasters at Journal read boundaries.
+Provider adapters translate between the domain contract and external CLIs. Codex uses the Codex app-server surface; Claude uses a broker helper around Claude CLI, defaulting to `claude -p` stream-json and retaining an opt-in PTY TUI transport. Adapter-level changes must preserve wire-compatibility with the adapted provider. Adapters normalize provider usage at this boundary to the canonical additive `UsageSummary` (`inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, optional `costUsd`) before it reaches jobs. Provider-owned profile, binding, and continuity parsers contribute their exact persisted contracts to the application-wide store format.
 
 ## Expansion
 
@@ -75,14 +75,14 @@ Orama projection sidecars carry identity metadata in addition to snapshot metada
 
 Jobs are not an async wrapper for every command. They are durable work ledgers for long-running, observable, or recovery-relevant attempts.
 
-| Class                    | Examples                                   | Owner                                                       |
-| ------------------------ | ------------------------------------------ | ----------------------------------------------------------- |
-| Direct read              | KB read/list, `jobs`, discuss watch        | Read model or KB query helpers; no durable artifact rebuild |
-| Served read              | KB search                                  | KB daemon search runtime; no durable job ledger             |
-| Direct mutation          | KB note write/delete; memo write/delete    | Corpus lock for KB notes; project data dir for memos        |
-| Provider/session job     | Codex/Claude launches, workflow atoms      | Jobs + sessions + provider adapters                         |
-| Internal coordinator job | KB source import, KB reindex               | Coordinator service over jobs + KB                          |
-| Projection freshness     | Orama/Needle catch-up                      | ConsumerDriver cursor wait                                  |
+| Class                    | Examples                                | Owner                                                       |
+| ------------------------ | --------------------------------------- | ----------------------------------------------------------- |
+| Direct read              | KB read/list, `jobs`, discuss watch     | Read model or KB query helpers; no durable artifact rebuild |
+| Served read              | KB search                               | KB daemon search runtime; no durable job ledger             |
+| Direct mutation          | KB note write/delete; memo write/delete | Corpus lock for KB notes; project data dir for memos        |
+| Provider/session job     | Codex/Claude launches, workflow atoms   | Jobs + sessions + provider adapters                         |
+| Internal coordinator job | KB source import, KB reindex            | Coordinator service over jobs + KB                          |
+| Projection freshness     | Orama/Needle catch-up                   | ConsumerDriver cursor wait                                  |
 
 Direct KB reads are coordinator-free, not context-free. CLI/bootstrap adapters resolve plugin root, build flavor, project root, Corpus root, and KB runtime root before invoking KB query helpers or `read-model/CoralStore`; lower KB path helpers do not choose `cwd`, `HOME`, or `CORAL_KB_PATH` on their own. KB search is a served read: it uses the KB daemon's search runtime instead of the direct read model.
 
@@ -108,24 +108,24 @@ Workflow plans persist only semantic slots: slot id, dependencies, provider, ins
 
 ## Infrastructure
 
-Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, child-env construction, and upcaster assembly. Infrastructure resolves canonical paths, build flavor, backend connection info, and expansion paths without becoming a generic domain dumping ground.
+Infrastructure helpers sit below every domain: schemas, small utilities, SSE parsing, cross-process locking, file tailing, and child-env construction. Infrastructure resolves canonical paths, build flavor, backend connection info, and expansion paths without becoming a generic domain dumping ground.
 
 ## Ownership Matrix
 
-| Area                  | Owns                                             | Does not own                       |
-| --------------------- | ------------------------------------------------ | ---------------------------------- |
-| `store/`              | SQL schema, Journal append/reducer substrate     | Product read facade, domain policy |
-| `read-model/`         | Composed read API                                | Writes, recovery, domain truth     |
-| `jobs/`               | Job lifecycle and terminal vocabulary            | Provider process mechanics         |
-| `sessions/`           | Continuity and scope                             | Job terminal policy                |
-| `workflow/`           | Plan and slot semantics                          | Provider/session persistence       |
-| `discuss/`            | Discussion state and shell loop                  | Coordinator lifecycle              |
-| `kb/`                 | Corpus authority and query semantics             | Expansion lifecycle ownership      |
-| `coordinator/`        | Live state, startup order, cross-domain assembly | Domain vocabulary                  |
-| `transport/`          | Wire parsing and response mapping                | Business behavior                  |
-| `cli/`                | User command surface and local startup glue      | Backend/domain truth               |
-| `infra/` / `runtime/` | Low-level paths, flavor, I/O ports               | Domain concepts                    |
-| `causality/`          | Cross-stream event-reference vocabulary          | Store/database access              |
+| Area                  | Owns                                             | Does not own                              |
+| --------------------- | ------------------------------------------------ | ----------------------------------------- |
+| `store/`              | SQL schema, Journal append/reducer substrate     | Product read facade, domain policy        |
+| `read-model/`         | Composed read API                                | Writes, recovery, domain truth            |
+| `jobs/`               | Job lifecycle and terminal vocabulary            | Provider process mechanics                |
+| `sessions/`           | Immutable provider binding and continuity        | Multi-provider scope, job terminal policy |
+| `workflow/`           | Plan and slot semantics                          | Provider/session persistence              |
+| `discuss/`            | Discussion state and shell loop                  | Coordinator lifecycle                     |
+| `kb/`                 | Corpus authority and query semantics             | Expansion lifecycle ownership             |
+| `coordinator/`        | Live state, startup order, cross-domain assembly | Domain vocabulary                         |
+| `transport/`          | Wire parsing and response mapping                | Business behavior                         |
+| `cli/`                | User command surface and local startup glue      | Backend/domain truth                      |
+| `infra/` / `runtime/` | Low-level paths, flavor, I/O ports               | Domain concepts                           |
+| `causality/`          | Cross-stream event-reference vocabulary          | Store/database access                     |
 
 ## Dependency Outline
 
@@ -180,4 +180,4 @@ These are the load-bearing boundaries that must not leak:
 - KB source import/reindex failure facts are recorded by coordinator-owned KB job recording glue as job progress cause events; the KB domain remains Corpus authority only.
 - Compatibility shims are not stable seams on the rewrite branch; retired owner paths stay deleted once responsibility moves.
 - Hooks never import from `src/`; shared hook logic lives alongside the hooks themselves.
-- Runtime ingestion emits canonical domain events; historical body evolution is isolated to domain upcasters.
+- Runtime ingestion emits canonical domain events; incompatible historical bodies are rejected and the store-format reset boundary handles adoption.

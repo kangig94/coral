@@ -4,14 +4,15 @@ import type {
   ProviderArtifactHandle,
   ProviderManagedArtifactCapability,
   ProviderNoArtifactCapability,
+  ProviderAccess,
 } from './contract.js';
 
 const FINAL_UNLINK_ATTEMPTS = 6;
 const FINAL_UNLINK_SETTLE_MS = 500;
 
-export function managed(
-  impl: Pick<ProviderManagedArtifactCapability, 'discardArtifacts' | 'locateArtifact'>,
-): ProviderManagedArtifactCapability {
+export function managed<Access extends ProviderAccess>(
+  impl: Pick<ProviderManagedArtifactCapability<Access>, 'discardArtifacts' | 'locateArtifact'>,
+): ProviderManagedArtifactCapability<Access> {
   return {
     kind: 'managed',
     discardArtifacts: impl.discardArtifacts,

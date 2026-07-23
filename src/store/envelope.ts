@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
 import { CoralSetupError } from '../runtime/errors.js';
-import { decodeEventBody, decodeEventJson } from './body-codec.js';
+import { decodeEventJson } from './body-codec.js';
 import type { EventsRow } from './schema.js';
 import type { CauseRefToken } from '../causality/cause-ref.js';
 
 declare const RESOLVABLE_INPUT_SCOPE: unique symbol;
 
-const journalEventRefsSchema = z
+export const journalEventRefsSchema = z
   .object({
     jobId: z.string().optional(),
     sessionId: z.string().optional(),
@@ -32,9 +32,8 @@ export const journalEventEnvelopeSchema = z
     namespace: z.string().optional(),
     project: z.string().optional(),
     correlationId: z.string().optional(),
-    causationSeq: z.number().optional(),
+    causationSeq: z.number().int().positive().optional(),
     refs: journalEventRefsSchema.optional(),
-    bodyVersion: z.number().int().positive(),
     body: z.unknown(),
   })
   .strict();
@@ -80,51 +79,37 @@ export type ResolvableCoralEventInput<Scope, T = never> = CoralEventInput<T> & {
   };
 };
 
-const STREAM_KINDS: ReadonlySet<StreamKind> = new Set(['job', 'session', 'discuss', 'workflow']);
-
-function assertStreamKind(value: string): StreamKind {
-  if (!STREAM_KINDS.has(value as StreamKind)) {
-    throw new CoralSetupError({
-      code: 'event_stream_kind_invalid',
-      userMessage: `Unknown stream.kind in events row: '${value}'`,
-      remediation:
-        'A schema update likely introduced a new stream kind. Update the enum in src/store/envelope.ts and the assertStreamKind guard.',
-      context: { streamKind: value },
-    });
-  }
-
-  return value as StreamKind;
-}
-
-function decodeEventRefs(row: Pick<EventsRow, 'seq' | 'refs'>): CoralEvent['refs'] {
+export function decodeEventRefs(row: Pick<EventsRow, 'seq' | 'refs'>): CoralEvent['refs'] {
   if (!row.refs) {
     return undefined;
   }
 
-  return decodeEventJson(row.refs, { seq: row.seq, column: 'refs' }) as CoralEvent['refs'];
+  return journalEventRefsSchema.parse(decodeEventJson(row.refs, { seq: row.seq, column: 'refs' }));
 }
 
-export function rowToCoralEvent<T = unknown>(
-  row: EventsRow,
-  body: T = decodeEventBody(row.body, {
-    seq: row.seq,
-    type: row.type,
-    streamKind: row.stream_kind,
-    streamId: row.stream_id,
-    bodyVersion: row.body_version,
-  }) as T,
-): CoralEvent<T> {
-  return {
+export function rowToCoralEvent<T = unknown>(row: EventsRow, body: T): CoralEvent<T> {
+  const decoded = journalEventEnvelopeSchema.safeParse({
     seq: row.seq,
     ts: row.ts,
     type: row.type,
-    stream: { kind: assertStreamKind(row.stream_kind), id: row.stream_id },
+    stream: { kind: row.stream_kind, id: row.stream_id },
     namespace: row.namespace ?? undefined,
     project: row.project ?? undefined,
     correlationId: row.correlation_id ?? undefined,
     causationSeq: row.causation_seq ?? undefined,
     refs: decodeEventRefs(row),
-    bodyVersion: row.body_version,
     body,
-  };
+  });
+  if (!decoded.success) {
+    if (decoded.error.issues.some((issue) => issue.path[0] === 'stream' && issue.path[1] === 'kind')) {
+      throw new CoralSetupError({
+        code: 'event_stream_kind_invalid',
+        userMessage: `Unknown stream.kind in events row: '${row.stream_kind}'`,
+        remediation: 'The persisted event envelope does not match this Coral store format.',
+        context: { streamKind: row.stream_kind },
+      });
+    }
+    throw decoded.error;
+  }
+  return decoded.data as CoralEvent<T>;
 }

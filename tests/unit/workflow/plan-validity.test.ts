@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
@@ -7,18 +8,19 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import type { ProviderLookupPort } from '#src/providers/catalog.js';
 import { CoralAppendError } from '#src/store/append-error.js';
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { workflowPlanDeclaredEvent, workflowRegistry } from '#src/workflow/events.js';
 import type { PlanSlot, WorkflowPlan } from '#src/workflow/plan.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-30T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -26,6 +28,8 @@ function providers(names: readonly string[]): ProviderLookupPort {
   const known = new Set(names);
   return {
     hasProvider: (name) => known.has(name),
+    validatePersistedBinding: () => ({ ok: true }),
+    validatePersistedScope: () => ({ ok: true }),
   };
 }
 
@@ -33,7 +37,7 @@ function ctx(knownProviders: readonly string[] = ['codex']): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(jobsRegistry, workflowRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: providers(knownProviders),
   };
 }
@@ -57,12 +61,14 @@ function launchInput(workflowId: string, slotId: string) {
   const jobId = `${slotId}:job`;
   const sessionId = `${jobId}:session`;
   const body: JobLaunchRequestBody = {
+    owner: { kind: 'workflow', id: workflowId },
     sessionId,
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: '/workspace/coral',
     backendNamespace: 'tests',
     jobKind: 'provider',
+    workflowSlotGeneration: 0,
     pool: 'default',
     enqueueSequence: 1,
     request: {
@@ -78,7 +84,6 @@ function launchInput(workflowId: string, slotId: string) {
     type: 'job.launch.requested' as const,
     stream: { kind: 'job' as const, id: jobId },
     refs: { jobId, sessionId, parentJobId: workflowId, workflowId, workflowSlotId: slotId },
-    bodyVersion: 1,
     body,
   };
 }
@@ -112,7 +117,9 @@ describe('workflow plan validity append validator', () => {
           commit(
             db,
             (c) => {
-              c.append(workflowPlanDeclaredEvent('wf-duplicate', plan([duplicate, { ...duplicate }])));
+              c.append(
+                workflowPlanDeclaredEvent('wf-duplicate', plan([duplicate, { ...duplicate }]), TEST_PROVIDER_SCOPE),
+              );
               return undefined;
             },
             ctx(),
@@ -138,7 +145,7 @@ describe('workflow plan validity append validator', () => {
           commit(
             db,
             (c) => {
-              c.append(workflowPlanDeclaredEvent('wf-cycle', plan([first, second])));
+              c.append(workflowPlanDeclaredEvent('wf-cycle', plan([first, second]), TEST_PROVIDER_SCOPE));
               return undefined;
             },
             ctx(),
@@ -161,7 +168,7 @@ describe('workflow plan validity append validator', () => {
           commit(
             db,
             (c) => {
-              c.append(workflowPlanDeclaredEvent('wf-empty', { slots: [] }));
+              c.append(workflowPlanDeclaredEvent('wf-empty', { slots: [] }, TEST_PROVIDER_SCOPE));
               return undefined;
             },
             ctx(),
@@ -183,7 +190,9 @@ describe('workflow plan validity append validator', () => {
           commit(
             db,
             (c) => {
-              c.append(workflowPlanDeclaredEvent('wf-bound', plan([slot('other-workflow', 0, 0)])));
+              c.append(
+                workflowPlanDeclaredEvent('wf-bound', plan([slot('other-workflow', 0, 0)]), TEST_PROVIDER_SCOPE),
+              );
               return undefined;
             },
             ctx(),
@@ -203,7 +212,7 @@ describe('workflow plan validity append validator', () => {
       commit(
         db,
         (c) => {
-          c.append(workflowPlanDeclaredEvent('wf-ref', plan([slot('wf-ref', 0, 0)])));
+          c.append(workflowPlanDeclaredEvent('wf-ref', plan([slot('wf-ref', 0, 0)]), TEST_PROVIDER_SCOPE));
           return undefined;
         },
         ctx(),
@@ -212,6 +221,7 @@ describe('workflow plan validity append validator', () => {
         sessionId: 'wf-ref:0:1:job:session',
         provider: 'codex',
         projectRoot: '/workspace/coral',
+        activeJobId: 'wf-ref:0:1:job',
       });
 
       expectWorkflowPlanInvalid(
@@ -245,6 +255,7 @@ describe('workflow plan validity append validator', () => {
                 workflowPlanDeclaredEvent(
                   'wf-provider',
                   plan([slot('wf-provider', 0, 0, { provider: 'missing-provider' })]),
+                  TEST_PROVIDER_SCOPE,
                 ),
               );
               return undefined;
@@ -260,6 +271,34 @@ describe('workflow plan validity append validator', () => {
     }
   });
 
+  it('rejects a persisted provider scope that is not exactly complete for the plan', () => {
+    const db = createDb();
+    try {
+      const appendContext = ctx();
+      expectWorkflowPlanInvalid(
+        () =>
+          commit(
+            db,
+            (c) => {
+              c.append(workflowPlanDeclaredEvent('wf-scope', plan([slot('wf-scope', 0, 0)]), TEST_PROVIDER_SCOPE));
+              return undefined;
+            },
+            {
+              ...appendContext,
+              providers: {
+                ...appendContext.providers,
+                validatePersistedScope: () => ({ ok: false, message: 'scope contains an undeclared profile' }),
+              },
+            },
+          ),
+        'provider_mismatch',
+      );
+      expect(eventCount(db)).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
   it('accepts a valid plan and later child launch referencing a declared slot', () => {
     const db = createDb();
     try {
@@ -269,7 +308,7 @@ describe('workflow plan validity append validator', () => {
       commit(
         db,
         (c) => {
-          c.append(workflowPlanDeclaredEvent(workflowId, plan([slot(workflowId, 0, 0)])));
+          c.append(workflowPlanDeclaredEvent(workflowId, plan([slot(workflowId, 0, 0)]), TEST_PROVIDER_SCOPE));
           return undefined;
         },
         ctx(),
@@ -278,6 +317,7 @@ describe('workflow plan validity append validator', () => {
         sessionId: `${slotId}:job:session`,
         provider: 'codex',
         projectRoot: '/workspace/coral',
+        activeJobId: `${slotId}:job`,
       });
 
       const appended = commit(

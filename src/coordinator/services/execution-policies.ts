@@ -1,16 +1,9 @@
 import { resolve } from 'node:path';
 
-import type {
-  EffortLevel,
-  ProviderInstruction,
-  ProviderPreflightRuntime,
-  ProviderSpec,
-} from '../../providers/contract.js';
-import type { ProviderCredentialSourceRef } from '../../runtime/provider-credentials.js';
-import { buildExactProviderEnv } from '../../providers/execution-context.js';
-import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import type { EffortLevel, ProviderInstruction, ProviderPreflightInput } from '../../providers/contract.js';
+import type { BoundProvider } from '../../providers/bound-provider-contract.js';
 import { errorMessage } from '../../infra/error-format.js';
-import { type JobLaunchRequest, type LaunchDecision, rejectLaunch } from '../../jobs/launch.js';
+import { type JobLaunchRequest, type RejectedLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
@@ -21,12 +14,11 @@ import {
   stripAgentMetadata,
   type AgentResolutionContext,
 } from '../../jobs/agent-resolution.js';
-import type { SessionAllocateOptions, SessionClaimAtomicPort } from '../../sessions/contracts.js';
+import type { SessionAllocateOptions } from '../../sessions/contracts.js';
 import { describeSessionInterrupted, type SessionInterruptedFault } from '../../sessions/fault.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { StepDetail } from '../../workflow/execution-contract.js';
-import { SessionClaimError, type ClaimJobOptions } from '../../jobs/session-claim.js';
-import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy, type SessionEntry } from '../../sessions/entry.js';
+import { SESSION_CONTROLLER_PROFILE_FIELDS, type RetentionPolicy } from '../../sessions/entry.js';
 import { CONTEXT_ENV_KEY } from '../../transport/context-profile.js';
 
 export type CoralIntent = Omit<JobLaunchRequest, 'effort' | 'agent' | 'pool' | 'retention'> & {
@@ -79,14 +71,14 @@ export function buildSessionControllerProfile(
   return profile;
 }
 
-export function mapResolverError(err: unknown): LaunchDecision | null {
+export function mapResolverError(err: unknown): RejectedLaunchDecision | null {
   if (err instanceof InvalidAgentRefError) return rejectLaunch('invalid_agent', err.message);
   if (err instanceof AgentNotFoundError) return rejectLaunch('agent_not_found', err.message);
   if (err instanceof AgentNamespaceNotFoundError) return rejectLaunch('agent_namespace_not_found', err.message);
   return null;
 }
 
-export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | LaunchDecision {
+export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent | RejectedLaunchDecision {
   const { sessionId, ...rest } = input;
   if (sessionId === undefined) {
     return rest;
@@ -175,10 +167,6 @@ export function buildInterruptedAppServerReport(fault: SessionInterruptedFault, 
   return lines.join('\n');
 }
 
-export function isProviderContinuityBlob(value: unknown): value is ProviderContinuityBlob {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
 export function serializeWorkflowResult(details: StepDetail[]): {
   markdown: string;
 } {
@@ -199,38 +187,29 @@ export function serializeWorkflowResult(details: StepDetail[]): {
 
 export function toPreflightRuntime(
   runtime: Runtime,
-  credentialSource: ProviderCredentialSourceRef,
   cwd: string,
   requestEnv: Readonly<Record<string, string>>,
-): ProviderPreflightRuntime {
+): Omit<ProviderPreflightInput, 'access'> {
   const absoluteCwd = resolve(runtime.env.cwd(), cwd || '.');
-  const exactEnv = buildExactProviderEnv({
-    baseEnv: runtime.env.fullSnapshot(),
-    requestEnv,
-    source: credentialSource,
-    platform: runtime.env.platform(),
-  });
   return {
     process: runtime.process,
     storage: runtime.storage,
     env: runtime.env,
     time: runtime.time,
-    credentialSource,
     cwd: absoluteCwd,
-    runExact: (command, args, options = {}) =>
-      runtime.process.exec(command, args, { ...options, cwd: absoluteCwd, env: { ...exactEnv } }),
+    baseEnv: runtime.env.fullSnapshot(),
+    requestEnv: Object.freeze({ ...requestEnv }),
+    platform: runtime.env.platform(),
   };
 }
 
 export const PROVIDER_PREFLIGHT_TIMEOUT_MS = 30_000;
 
-function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPreflightRuntime): Promise<void> {
+function runPreflightWithTimeout(
+  provider: BoundProvider,
+  runtime: Omit<ProviderPreflightInput, 'access'>,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    if (!provider.preflight) {
-      resolve();
-      return;
-    }
-
     let settled = false;
     const timeout = runtime.time.setTimeout(() => {
       if (settled) {
@@ -242,7 +221,7 @@ function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPrefli
     timeout.unref?.();
 
     Promise.resolve()
-      .then(() => provider.preflight?.(runtime))
+      .then(() => provider.preflight(runtime))
       .then(
         () => {
           if (settled) {
@@ -265,40 +244,13 @@ function runPreflightWithTimeout(provider: ProviderSpec, runtime: ProviderPrefli
 }
 
 export async function runProviderPreflight(
-  provider: ProviderSpec,
-  runtime: ProviderPreflightRuntime,
+  provider: BoundProvider,
+  runtime: Omit<ProviderPreflightInput, 'access'>,
 ): Promise<string | null> {
-  if (!provider.preflight) return null;
   try {
     await runPreflightWithTimeout(provider, runtime);
     return null;
   } catch (error: unknown) {
     return errorMessage(error);
   }
-}
-
-export async function claimJobAtomic(
-  deps: {
-    sessionManager: SessionClaimAtomicPort;
-  },
-  session: SessionEntry,
-  jobId: string,
-  providerName: string,
-  projectRoot: string,
-  options: ClaimJobOptions = {},
-): Promise<SessionEntry> {
-  void providerName;
-  void projectRoot;
-  void options.jobKind;
-  void options.initialPhase;
-
-  const claimed = await deps.sessionManager.claimForJobAtomic(
-    session.sessionId,
-    jobId,
-    options.expectedVersion ?? session.version,
-  );
-  if (!claimed) {
-    throw new SessionClaimError();
-  }
-  return session;
 }

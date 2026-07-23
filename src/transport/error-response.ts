@@ -11,6 +11,17 @@ function setupErrorStatusCode(code: string): number {
   switch (code) {
     case 'invalid_request':
       return 400;
+    case 'job_launch_duplicate':
+    case 'job_owner_mismatch':
+    case 'job_owner_missing':
+    case 'job_provider_session_missing':
+    case 'job_binding_owner_mismatch':
+    case 'discussion_job_launch_conflict':
+    case 'workflow_owner_terminal':
+    case 'workflow_slot_chain_invalid':
+    case 'workflow_completed_duplicate':
+    case 'workflow_lifecycle_invalid':
+      return 409;
     case 'kb_disabled':
     case 'kb_initializing':
     case 'kb_offline':

@@ -9,8 +9,7 @@
  * - `'restart'`: ordinary process restart recovery (default).
  * - `'handoff'`: replacement daemon swap; the new daemon's startup recovery
  *   finalizes interrupted app-server jobs after the bind-with-handoff loop
- *   acquires the socket. The recovery service uses this to surface the
- *   cross-version partial-state warn for already-terminal jobs.
+ *   acquires the socket.
  */
 export type InterruptedAppServerReason = 'restart' | 'handoff';
 

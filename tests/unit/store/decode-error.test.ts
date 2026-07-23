@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { StoreDecodeError } from '#src/store/body-codec.js';
+import { decodeEventBody, StoreDecodeError } from '#src/store/body-codec.js';
 import { rowToCoralEvent } from '#src/store/envelope.js';
 import type { EventsRow } from '#src/store/schema.js';
 
@@ -16,7 +16,6 @@ function eventRow(overrides: Partial<EventsRow> = {}): EventsRow {
     correlation_id: null,
     causation_seq: null,
     refs: null,
-    body_version: 1,
     body: Buffer.from('{}', 'utf-8'),
     ...overrides,
   };
@@ -34,7 +33,15 @@ function thrownBy(run: () => unknown): unknown {
 
 describe('store decode errors', () => {
   it('wraps corrupt body JSON with the offending seq and raw body', () => {
-    const error = thrownBy(() => rowToCoralEvent(eventRow({ body: Buffer.from('{"truncated"', 'utf-8') })));
+    const row = eventRow({ body: Buffer.from('{"truncated"', 'utf-8') });
+    const error = thrownBy(() =>
+      decodeEventBody(row.body, {
+        seq: row.seq,
+        type: row.type,
+        streamKind: row.stream_kind,
+        streamId: row.stream_id,
+      }),
+    );
 
     expect(error).toBeInstanceOf(StoreDecodeError);
     expect(error).toMatchObject({
@@ -47,7 +54,6 @@ describe('store decode errors', () => {
         type: 'test.event',
         streamKind: 'job',
         streamId: 'job-1',
-        bodyVersion: 1,
       }),
     });
   });

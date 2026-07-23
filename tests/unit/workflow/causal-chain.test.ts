@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Pinning regression test for the canonical worked example
 // "[A] | [B, C] where C fails" — the demonstration that the causal-graph
 // fault model replaces wrapped fault unions: a child job exits non-zero,
@@ -17,11 +18,12 @@
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
-import { TEST_PROVIDER_CREDENTIALS } from '../../helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
 
 import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { REAL_CONSUMER_DRIVER_TIMERS } from '#tests/helpers/consumer-driver-defaults.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { createCauseRefRenderer } from '#src/causality/render.js';
 import { defaultEventDescribers } from '#src/read-model/event-describers.js';
 
@@ -34,15 +36,15 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import type { StoreReadContext } from '#src/store/body-codec.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { readWorkflowView } from '#src/workflow/read-queries.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 const PROJECT_ROOT = '/workspace/coral';
 const NAMESPACE = 'wf-namespace';
 const BUNDLE_HASH = 'wf-bundle';
 const WORKFLOW_ID = 'wf-1';
-const WORKFLOW_SESSION_ID = 'wf-session-1';
 const SLOT_A = `${WORKFLOW_ID}:0:0`;
 const SLOT_B = `${WORKFLOW_ID}:1:0`;
 const SLOT_C = `${WORKFLOW_ID}:1:1`;
@@ -64,19 +66,16 @@ function workflowPlan(): {
   };
 }
 
-function providerLaunchBody(args: {
-  jobKind: 'provider' | 'workflow';
-  sessionId: string;
-  enqueueSequence: number;
-}): Record<string, unknown> {
+function providerLaunchBody(args: { sessionId: string; enqueueSequence: number }): Record<string, unknown> {
   return {
+    owner: { kind: 'workflow', id: WORKFLOW_ID },
     sessionId: args.sessionId,
     provider: 'codex',
     providerAction: 'exec',
     projectRoot: PROJECT_ROOT,
     backendNamespace: NAMESPACE,
     bundleHash: BUNDLE_HASH,
-    jobKind: args.jobKind,
+    jobKind: 'provider',
     pool: 'default',
     enqueueSequence: args.enqueueSequence,
     request: {
@@ -84,7 +83,6 @@ function providerLaunchBody(args: {
       cwd: PROJECT_ROOT,
       bypassPermissions: false,
       coralEnv: {},
-      ...(args.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
     },
     createdAt: NOW.toISOString(),
   };
@@ -107,26 +105,70 @@ function transactionLaunchAndStart(args: {
       type: 'job.launch.requested',
       stream: { kind: 'job', id: args.jobId },
       refs,
-      bodyVersion: 1,
-      body: providerLaunchBody({
-        jobKind: args.parentJobId ? 'workflow' : 'workflow',
-        sessionId: args.sessionId,
-        enqueueSequence: args.enqueueSequence,
-      }),
+      body: {
+        ...providerLaunchBody({
+          sessionId: args.sessionId,
+          enqueueSequence: args.enqueueSequence,
+        }),
+        ...(args.workflowSlotId === undefined ? {} : { workflowSlotGeneration: 0 }),
+      },
     },
     {
       type: 'job.queue.admitted',
       stream: { kind: 'job', id: args.jobId },
       refs,
-      bodyVersion: 1,
       body: { queuePosition: 0 },
     },
     {
       type: 'job.runtime.started',
       stream: { kind: 'job', id: args.jobId },
       refs,
-      bodyVersion: 1,
-      body: { transport: 'durable-cli', startedAt: NOW.toISOString() },
+      body: {
+        transport: 'durable-cli',
+        pid: 1234,
+        stdoutPath: `/tmp/${args.jobId}.stdout`,
+        stderrPath: `/tmp/${args.jobId}.stderr`,
+        startedAt: NOW.toISOString(),
+      },
+    },
+  ];
+}
+
+function workflowLaunchAndStart(): CoralEventInput[] {
+  const refs = { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID };
+  return [
+    {
+      type: 'job.launch.requested',
+      stream: { kind: 'job', id: WORKFLOW_ID },
+      refs,
+      body: {
+        owner: { kind: 'workflow', id: WORKFLOW_ID },
+        projectRoot: PROJECT_ROOT,
+        backendNamespace: NAMESPACE,
+        bundleHash: BUNDLE_HASH,
+        jobKind: 'workflow',
+        pool: 'default',
+        enqueueSequence: 0,
+        request: {
+          prompt: 'go',
+          cwd: PROJECT_ROOT,
+          bypassPermissions: false,
+          coralEnv: {},
+        },
+        createdAt: NOW.toISOString(),
+      },
+    },
+    {
+      type: 'job.queue.admitted',
+      stream: { kind: 'job', id: WORKFLOW_ID },
+      refs,
+      body: { queuePosition: 0 },
+    },
+    {
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: WORKFLOW_ID },
+      refs,
+      body: { transport: 'workflow', startedAt: NOW.toISOString() },
     },
   ];
 }
@@ -137,25 +179,30 @@ function setup(): {
   store: CoralStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const driver = new ConsumerDriver({ db, time: REAL_CONSUMER_DRIVER_TIMERS, now: () => NOW });
   // Cursor-only base consumers; commit-time reducer writes projections.
   driver.register({ id: 'jobs', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
   driver.register({ id: 'workflow', authority: 'journal', kind: 'cursor', registrationKind: 'base' });
-  const readCtx: StoreReadContext = {
-    schemas: new Map(),
-    upcasters: createDefaultUpcasterRegistry(),
-  };
+  const readCtx: StoreReadContext = createDefaultStoreReadContext();
   const store = new CoralStore(db, readCtx);
   return { db, driver, store };
 }
 
 async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
+  for (const sessionId of ['session-a-1', 'session-b-1', 'session-c-1']) {
+    seedTestSessionProjection(db, {
+      sessionId,
+      provider: 'codex',
+      projectRoot: PROJECT_ROOT,
+      backendNamespace: NAMESPACE,
+    });
+  }
   const append = (events: CoralEventInput[]): number => {
     const result = commitInputs(db, events, {
       now: () => NOW,
       reducers: composeReducers(jobsRegistry, workflowRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
+      bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     });
     return result.at(-1)?.seq ?? 0;
@@ -167,14 +214,9 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       type: 'workflow.plan.declared',
       stream: { kind: 'workflow', id: WORKFLOW_ID },
       refs: { workflowId: WORKFLOW_ID },
-      bodyVersion: 1,
-      body: workflowPlan(),
+      body: { plan: workflowPlan(), providerScope: TEST_PROVIDER_SCOPE },
     },
-    ...transactionLaunchAndStart({
-      jobId: WORKFLOW_ID,
-      sessionId: WORKFLOW_SESSION_ID,
-      enqueueSequence: 0,
-    }),
+    ...workflowLaunchAndStart(),
   ]);
 
   // Transaction 2 — slot A launched and completed.
@@ -190,7 +232,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: 'a-1' },
       refs: { sessionId: 'session-a-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_A },
-      bodyVersion: 1,
       body: {
         terminal: {
           outcome: { kind: 'completed' },
@@ -225,7 +266,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       type: 'job.terminal.recorded',
       stream: { kind: 'job', id: 'b-1' },
       refs: { sessionId: 'session-b-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_B },
-      bodyVersion: 1,
       body: {
         terminal: {
           outcome: { kind: 'completed' },
@@ -246,7 +286,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: 'c-1' },
           refs: { sessionId: 'session-c-1', parentJobId: WORKFLOW_ID, workflowId: WORKFLOW_ID, workflowSlotId: SLOT_C },
-          bodyVersion: 1,
           body: {
             terminal: {
               outcome: { kind: 'provider_exit', code: 1 },
@@ -259,7 +298,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
@@ -271,7 +310,6 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
           type: 'workflow.completed',
           stream: { kind: 'workflow', id: WORKFLOW_ID },
           refs: { workflowId: WORKFLOW_ID },
-          bodyVersion: 1,
           body: {
             outcome: 'failed',
             causeRef: { stream: { kind: 'job', id: 'c-1' }, seq: cTerminalSeq },
@@ -282,7 +320,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;
@@ -293,8 +331,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
         {
           type: 'job.terminal.recorded',
           stream: { kind: 'job', id: WORKFLOW_ID },
-          refs: { sessionId: WORKFLOW_SESSION_ID, workflowId: WORKFLOW_ID },
-          bodyVersion: 1,
+          refs: { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID },
           body: {
             terminal: {
               outcome: {
@@ -310,7 +347,7 @@ async function runChain(db: Database, driver: ConsumerDriver): Promise<number> {
       {
         now: () => NOW,
         reducers: composeReducers(jobsRegistry, workflowRegistry),
-        upcasters: createDefaultUpcasterRegistry(),
+        bodyCodec: createEventBodyCodec(),
         providers: permissiveProviderLookupPort,
       },
     ).at(-1)?.seq ?? 0;

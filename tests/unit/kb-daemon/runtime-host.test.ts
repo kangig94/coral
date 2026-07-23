@@ -126,6 +126,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
       db,
     });
@@ -155,6 +156,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
     });
     const mutationEntered = deferred();
@@ -224,6 +226,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
       db,
     });
@@ -278,6 +281,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
       db,
     });
@@ -333,6 +337,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
       db,
     });
@@ -376,6 +381,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
       db,
     });
@@ -474,6 +480,7 @@ describe('KB daemon runtime host', () => {
       pluginRoot,
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
       runtime,
       db,
     });
@@ -499,6 +506,7 @@ describe('KB daemon runtime host', () => {
         pluginRoot,
         backendNamespace: 'test-namespace',
         bundleHash: 'test-bundle',
+        curateUsageBudget: { isExhausted: async () => false },
         runtime,
         db,
       });

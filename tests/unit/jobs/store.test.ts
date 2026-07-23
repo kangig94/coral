@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -5,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { isLivePhase } from '#src/jobs/phase.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus, JobTerminal } from '#src/jobs/records.js';
@@ -23,7 +24,7 @@ afterEach(() => {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   openDbs.add(db);
   return db;
 }
@@ -57,7 +58,7 @@ function createStore(db: Database = createDb()): {
   const runtime = new SimulationRuntime();
   return {
     runtime,
-    store: new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    store: new JobStore('test-ns', runtime, createEventBodyCodec(), {
       eventBus: new TypedEventBus(),
       db,
       providers: permissiveProviderLookupPort,
@@ -99,11 +100,11 @@ function terminalInput(jobId: string, sessionId: string): CoralEventInput {
     namespace: 'test-ns',
     project: `/workspace/${jobId}`,
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: {
       terminal: {
         content: 'done',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       },
     },
   };
@@ -116,7 +117,6 @@ function progressInput(jobId: string, sessionId: string): CoralEventInput {
     namespace: 'test-ns',
     project: `/workspace/${jobId}`,
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: {
       kind: 'message',
       message: 'late progress',
@@ -165,7 +165,6 @@ describe('JobStore', () => {
       namespace: 'test-ns',
       project: '/workspace/progress-tail',
       refs: { jobId, sessionId },
-      bodyVersion: 1,
       body: {
         kind: 'recovery_parse_failed',
         cause: { message: 'partial stderr' },
@@ -175,6 +174,7 @@ describe('JobStore', () => {
     const terminalResult: JobTerminal = {
       content: 'done',
       outcome: { kind: 'completed' },
+      durationMs: 0,
     };
 
     expect(tails).toEqual([2, 3, 4, 5, 6]);
@@ -219,7 +219,11 @@ describe('JobStore', () => {
       backendNamespace: 'alpha',
       bundleHash: 'bundle-a',
     });
-    commitJobTerminal(store, 'job-done', 'session-done', { content: 'done', outcome: { kind: 'completed' } });
+    commitJobTerminal(store, 'job-done', 'session-done', {
+      content: 'done',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
 
     initTestJob(store, {
       jobId: 'job-draft',
@@ -248,10 +252,19 @@ describe('JobStore', () => {
     const sessionId = 'session-duplicate-terminal';
     initProviderJob(store, jobId, sessionId);
 
-    commitJobTerminal(store, jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } });
+    commitJobTerminal(store, jobId, sessionId, {
+      content: 'done',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
 
     expectTerminalOrderViolation(
-      () => commitJobTerminal(store, jobId, sessionId, { content: 'again', outcome: { kind: 'completed' } }),
+      () =>
+        commitJobTerminal(store, jobId, sessionId, {
+          content: 'again',
+          outcome: { kind: 'completed' },
+          durationMs: 0,
+        }),
       jobId,
       'job.terminal.recorded',
     );
@@ -267,7 +280,7 @@ describe('JobStore', () => {
       store,
       jobId,
       sessionId,
-      { content: 'done', outcome: { kind: 'completed' } },
+      { content: 'done', outcome: { kind: 'completed' }, durationMs: 0 },
       { diagnostics: { byteCounts: { stdout: 123, stderr: 45 } } },
     );
 
@@ -280,7 +293,11 @@ describe('JobStore', () => {
     const sessionId = 'session-late-progress';
     initProviderJob(store, jobId, sessionId);
 
-    commitJobTerminal(store, jobId, sessionId, { content: 'done', outcome: { kind: 'completed' } });
+    commitJobTerminal(store, jobId, sessionId, {
+      content: 'done',
+      outcome: { kind: 'completed' },
+      durationMs: 0,
+    });
 
     expectTerminalOrderViolation(
       () => store.appendProgress(jobId, sessionId, 'too late'),
@@ -328,7 +345,6 @@ describe('JobStore', () => {
         namespace: 'test-ns',
         project: `/workspace/${jobId}`,
         refs: { jobId, sessionId },
-        bodyVersion: 1,
         body: {
           reason: 'busy',
           message: 'busy',
@@ -345,6 +361,7 @@ describe('JobStore', () => {
     expect(
       commitJobTerminal(store, jobId, sessionId, {
         content: 'failed',
+        durationMs: 0,
         outcome: {
           kind: 'failed',
           causeRef: {
@@ -369,7 +386,6 @@ describe('JobStore', () => {
         namespace: 'test-ns',
         project: `/workspace/${jobId}`,
         refs: { jobId, sessionId },
-        bodyVersion: 1,
         body: { reason: 'user_abort' },
       },
     ]);
@@ -377,7 +393,11 @@ describe('JobStore', () => {
     expect(aborted?.type).toBe('job.aborted');
     expect(store.readStatus(jobId)?.phase).toBe('aborted');
     expect(
-      commitJobTerminal(store, jobId, sessionId, { content: '', outcome: { kind: 'aborted', reason: 'user_abort' } }),
+      commitJobTerminal(store, jobId, sessionId, {
+        content: '',
+        outcome: { kind: 'aborted', reason: 'user_abort' },
+        durationMs: 0,
+      }),
     ).toBeGreaterThan(aborted.seq);
   });
 });

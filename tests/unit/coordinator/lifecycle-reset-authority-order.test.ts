@@ -10,6 +10,7 @@ import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js
 import type { Runtime } from '#src/runtime/ports.js';
 import type * as HandoffMod from '#src/coordinator/handoff.js';
 import type * as StoreDbMod from '#src/store/db.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const mockState = vi.hoisted(() => {
   const events: string[] = [];
@@ -163,6 +164,7 @@ function makeLifecycleDeps(): { deps: LifecycleDeps; servicesRef: ReturnType<typ
   return {
     servicesRef,
     deps: {
+      storeFormat: currentCoralStoreFormat(),
       identity: {
         pluginRoot: '/tmp/plugin',
         namespace: 'test-ns',
@@ -283,6 +285,30 @@ afterEach(() => {
 });
 
 describe('lifecycle reset authority and finalizer order', () => {
+  it('rejects an invalid system provider scope before creating destructive store authority', async () => {
+    const { deps: baseDeps } = makeLifecycleDeps();
+    const deps: LifecycleDeps = {
+      ...baseDeps,
+      systemProviderScope: { name: 'invalid-system', profiles: [] } as never,
+      providerRegistry: {
+        decodeScope: () => ({
+          ok: false,
+          failure: { reason: 'duplicate-provider-profile', provider: 'codex' },
+        }),
+      } as never,
+      registerBuiltInProvidersFn: vi.fn(() => {
+        mockState.events.push('providers:register');
+      }),
+    };
+    const lifecycle = createLifecycle(deps);
+
+    await expect(lifecycle.start()).rejects.toMatchObject({ code: 'system_provider_scope_invalid' });
+
+    expect(mockState.events).toContain('providers:register');
+    expect(mockState.events).not.toContain('resetAuthority:create');
+    expect(mockState.events).not.toContain('storeDb:openOrReset');
+  });
+
   it('creates reset authority only after bindWithHandoff returns', async () => {
     const { deps } = makeLifecycleDeps();
     const lifecycle = createLifecycle(deps);

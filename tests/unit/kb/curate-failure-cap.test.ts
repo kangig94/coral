@@ -49,6 +49,7 @@ describe('curate scheduler failure cap (S2)', () => {
       processPort: gitSyncRuntime.process,
       storagePort: gitSyncRuntime.storage,
       envPort: gitSyncRuntime.env,
+      usageBudget: { isExhausted: async () => false },
       // Bypass the 60s production debounce so the launch is observable in-test;
       // the cap-trip warning we want to assert fires inside launchQueuedRun.
       scheduleDebounceMs: 0,

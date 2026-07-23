@@ -31,7 +31,7 @@ async function recoverSessions(harness: DiscussHarness) {
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
-      providerCredentials: snapshot.providerCredentials ?? harness.ctx.providerCredentials,
+      providerScope: snapshot.providerScope ?? harness.ctx.providerScope,
     }),
   );
 }
@@ -44,7 +44,9 @@ function resumeRecoveredSessions(recovered: Awaited<ReturnType<typeof recoverSes
 
 describe('Discuss synthesis', () => {
   it('records a single synthesis entry from a terminal session', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'The panel supported a phased pedestrianization plan centered on transit access.',
       continuity: null,
@@ -77,8 +79,12 @@ describe('Discuss synthesis', () => {
   });
 
   it('discards every bound agent session log once the discussion is fully synthesized', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-r', session: 'synth-session' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-r', sessionId: 'alpha-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'Final synthesis.', continuity: null });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
     // Unit shim for the lifecycle-reactor.discardSessionArtifacts that
@@ -103,6 +109,24 @@ describe('Discuss synthesis', () => {
           harness.projectRoot,
           snapshot.state.topic,
           snapshot.lastAppliedSeq + 2,
+          'agent.job.started',
+          '2026-03-10T00:00:58.100Z',
+          { agent: 'alpha', jobId: 'alpha-prior-job', purpose: 'bid', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'agent.job.finished',
+          '2026-03-10T00:00:58.200Z',
+          { agent: 'alpha', jobId: 'alpha-prior-job', outcome: 'completed', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 4,
           'agent.run.bound',
           '2026-03-10T00:00:59.000Z',
           { agent: 'beta', executionSessionId: 'beta-session' },
@@ -111,7 +135,25 @@ describe('Discuss synthesis', () => {
           snapshot.sessionId,
           harness.projectRoot,
           snapshot.state.topic,
-          snapshot.lastAppliedSeq + 3,
+          snapshot.lastAppliedSeq + 5,
+          'agent.job.started',
+          '2026-03-10T00:00:59.100Z',
+          { agent: 'beta', jobId: 'beta-prior-job', purpose: 'bid', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 6,
+          'agent.job.finished',
+          '2026-03-10T00:00:59.200Z',
+          { agent: 'beta', jobId: 'beta-prior-job', outcome: 'completed', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 7,
           'session.ended',
           '2026-03-10T00:01:00.000Z',
           { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
@@ -126,8 +168,12 @@ describe('Discuss synthesis', () => {
   });
 
   it('retains bound agent session logs when completed-discussion export fails', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
-    const resume = vi.fn().mockResolvedValue({ status: 'running', job: 'job-r', session: 'alpha-session' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-r', sessionId: 'alpha-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'Final synthesis.', continuity: null });
     const harness = createDiscussHarness(createExecutionServiceStub({ start, resume, waitStreamOnce }));
     const discardSessionArtifacts = vi.fn().mockResolvedValue(undefined);
@@ -151,6 +197,24 @@ describe('Discuss synthesis', () => {
           harness.projectRoot,
           snapshot.state.topic,
           snapshot.lastAppliedSeq + 2,
+          'agent.job.started',
+          '2026-03-10T00:00:58.100Z',
+          { agent: 'alpha', jobId: 'alpha-export-prior-job', purpose: 'bid', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'agent.job.finished',
+          '2026-03-10T00:00:58.200Z',
+          { agent: 'alpha', jobId: 'alpha-export-prior-job', outcome: 'completed', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 4,
           'session.ended',
           '2026-03-10T00:01:00.000Z',
           { endReason: 'all_blocked', endReasonContent: 'All blocked.' },
@@ -172,7 +236,9 @@ describe('Discuss synthesis', () => {
   });
 
   it('after recovery attach, resumeLoop resumes synthesis for ended sessions that have not been synthesized yet', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'synth-session' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'synth-session' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'Recovered synthesis text.',
       continuity: null,

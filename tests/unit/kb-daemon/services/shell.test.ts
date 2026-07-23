@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -7,7 +8,7 @@ import { JobStore } from '#src/jobs/store.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { throwIfAborted } from '#src/runtime/abort.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 function createShell(): {
@@ -16,9 +17,9 @@ function createShell(): {
   progressStore: JobStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
   });

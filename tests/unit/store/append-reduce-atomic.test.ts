@@ -1,9 +1,10 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers, defineDomainEvent, type DomainEventRegistry } from '#src/store/reducers.js';
 import {
@@ -15,7 +16,7 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 
 function setupDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   applyTestCounterSchema(db);
   return db;
 }
@@ -31,14 +32,13 @@ describe('commitInputs + in-transaction projection reduction', () => {
           {
             type: 'test.counter.ticked',
             stream: { kind: 'job', id: 'a' },
-            bodyVersion: 1,
             body: { id: 'a', delta: 5 },
           },
         ],
         {
           now: () => new Date(0),
           reducers: composeReducers(testCounterRegistry),
-          upcasters: createDefaultUpcasterRegistry(),
+          bodyCodec: createEventBodyCodec(),
           providers: permissiveProviderLookupPort,
         },
       );
@@ -70,6 +70,7 @@ describe('commitInputs + in-transaction projection reduction', () => {
             reducer: () => {
               throw new Error('reducer failure');
             },
+            materializerContract: 'projection_test_counter:throw-for-atomic-rollback-test',
           }),
         ],
       });
@@ -81,14 +82,13 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'test.counter.ticked',
               stream: { kind: 'job', id: 'a' },
-              bodyVersion: 1,
               body: { id: 'a', delta: 5 },
             },
           ],
           {
             now: () => new Date(0),
             reducers: throwingReducers,
-            upcasters: createDefaultUpcasterRegistry(),
+            bodyCodec: createEventBodyCodec(),
             providers: permissiveProviderLookupPort,
           },
         ),
@@ -121,11 +121,15 @@ describe('commitInputs + in-transaction projection reduction', () => {
                 )
                 .run(event.body.id, event.body.delta, event.seq);
             },
+            materializerContract: 'test:increment-projection-counter',
           }),
         ],
         appendValidators: [
-          () => {
-            throw new Error('append validator failure');
+          {
+            contract: 'test:always-reject',
+            validate: () => {
+              throw new Error('append validator failure');
+            },
           },
         ],
       };
@@ -137,14 +141,13 @@ describe('commitInputs + in-transaction projection reduction', () => {
             {
               type: 'test.counter.ticked',
               stream: { kind: 'job', id: 'a' },
-              bodyVersion: 1,
               body: { id: 'a', delta: 5 },
             },
           ],
           {
             now: () => new Date(0),
             reducers: composeReducers(registry),
-            upcasters: createDefaultUpcasterRegistry(),
+            bodyCodec: createEventBodyCodec(),
             providers: permissiveProviderLookupPort,
           },
         ),
@@ -158,35 +161,98 @@ describe('commitInputs + in-transaction projection reduction', () => {
     }
   });
 
-  it('keeps the store substrate domain-free when no registry validator is composed', () => {
+  it('rejects a registered event on the wrong stream kind atomically', () => {
     const db = setupDb();
 
     try {
-      commitInputs(
-        db,
-        [
+      expect(() =>
+        commitInputs(
+          db,
+          [
+            {
+              type: 'test.counter.ticked',
+              stream: { kind: 'job', id: 'valid-first' },
+              body: { id: 'valid-first', delta: 1 },
+            },
+            {
+              type: 'test.counter.ticked',
+              stream: { kind: 'session', id: 'wrong-kind' },
+              body: { id: 'wrong-kind', delta: 1 },
+            },
+          ],
           {
-            type: 'job.terminal.recorded',
-            stream: { kind: 'job', id: 'domain-free' },
-            bodyVersion: 1,
-            body: { intentionally: 'not a job terminal body' },
+            now: () => new Date(0),
+            reducers: composeReducers(testCounterRegistry),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
           },
-          {
-            type: 'job.progress.emitted',
-            stream: { kind: 'job', id: 'domain-free' },
-            bodyVersion: 1,
-            body: { intentionally: 'not a job progress body' },
-          },
-        ],
-        {
-          now: () => new Date(0),
-          reducers: composeReducers(),
-          upcasters: createDefaultUpcasterRegistry(),
-          providers: permissiveProviderLookupPort,
-        },
+        ),
+      ).toThrowError(
+        expect.objectContaining({
+          code: 'event_stream_kind_mismatch',
+          context: expect.objectContaining({ expectedStreamKind: 'job', actualStreamKind: 'session' }),
+        }),
       );
 
-      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(2);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM projection_test_counter').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects event bodies when no registry codec is composed', () => {
+    const db = setupDb();
+
+    try {
+      expect(() =>
+        commitInputs(
+          db,
+          [
+            {
+              type: 'job.terminal.recorded',
+              stream: { kind: 'job', id: 'closed-registry' },
+              body: { intentionally: 'not a job terminal body' },
+            },
+          ],
+          {
+            now: () => new Date(0),
+            reducers: composeReducers(),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
+          },
+        ),
+      ).toThrow("No registered event body codec for type 'job.terminal.recorded'");
+      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects invalid current-codec bodies before inserting an event or projection', () => {
+    const db = setupDb();
+
+    try {
+      expect(() =>
+        commitInputs(
+          db,
+          [
+            {
+              type: 'test.counter.ticked',
+              stream: { kind: 'job', id: 'invalid-current-body' },
+              body: { id: 'invalid-current-body', delta: 'bad' },
+            },
+          ],
+          {
+            now: () => new Date(0),
+            reducers: composeReducers(testCounterRegistry),
+            bodyCodec: createEventBodyCodec(),
+            providers: permissiveProviderLookupPort,
+          },
+        ),
+      ).toThrow('Expected number, received string');
+      expect((db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number }).n).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM projection_test_counter').get() as { n: number }).n).toBe(0);
     } finally {
       db.close();
     }

@@ -1,3 +1,4 @@
+import { describeCoralStoreFormat } from '#src/store-format.js';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,11 +11,26 @@ import {
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
 import { none } from '../../../src/providers/capability.js';
-import type { ProviderTerminal, PreflightRuntime, ProviderSpec } from '../../../src/providers/contract.js';
-import { defineProvider, type ProviderDefinition } from '../../../src/providers/define.js';
+import type {
+  ProviderRecoveryContract,
+  ProviderStandalone,
+  ProviderTerminal,
+} from '../../../src/providers/contract.js';
+import { defineProvider, type ProviderDefinition } from '../../../src/providers/registry.js';
+import {
+  allExecutionLifetimes,
+  compileEnvironmentLayers,
+  CORAL_PROCESS_ENV_KEYS,
+  CORAL_TURN_ENV_KEYS,
+  environmentLayer,
+  EXECUTION_ENV_ALLOWLIST,
+  filterEnvironmentValues,
+  type EnvironmentLayer,
+  type ProviderExecutionPlan,
+} from '../../../src/providers/execution-plan.js';
 import { readAppendedLines } from '../../../src/infra/file-tail.js';
 import type { InvocationContext } from '../../../src/runtime/invocation-context.js';
-import type { ProviderCredentialSet } from '../../../src/runtime/provider-credentials.js';
+import type { ProviderScope } from '../../../src/infra/provider-scope.js';
 import type { Principal } from '../../../src/security/principal.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '../../../src/providers/stream.js';
 import { providerRequestFailed } from '../../../src/providers/fault.js';
@@ -27,7 +43,7 @@ import { LaunchCoordinator } from '../../../src/coordinator/live/admission.js';
 import { createProviderHostManager } from '../../../src/coordinator/live/provider-hosts/index.js';
 import { JobStore } from '../../../src/jobs/store.js';
 import { loadJobProjectionDetails } from '../../../src/jobs/read-queries.js';
-import { noProviderLookupPort } from '../../../src/providers/catalog.js';
+import { providerLookupPortFromCatalog } from '../../../src/providers/catalog.js';
 import { jobsRegistry } from '../../../src/jobs/events.js';
 import { sessionsRegistry } from '../../../src/sessions/events.js';
 import { discussRegistry as discussStoreRegistry } from '../../../src/discuss/event-registry.js';
@@ -43,7 +59,7 @@ import { ExecutionService } from '../../../src/coordinator/execution-service.js'
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { jobsReconcile } from '../../../src/jobs/startup.js';
 import { openWritableStoreDbNoReset } from '../../../src/store/db.js';
-import { createDefaultUpcasterRegistry } from '../../../src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { createProjectionSessionLookup } from '../../../src/sessions/lookup.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
@@ -51,9 +67,100 @@ import { setStoreServicesForTest } from '../../testing/store-services.js';
 import type { MockDurableScript, MockSpawnScript } from './mock-script-types.js';
 import { flushMicrotasks } from './virtual-time.js';
 import { toError } from './constants.js';
+import { z } from 'zod';
+import {
+  bindingFailure,
+  bindingSuccess,
+  type AccountSubject,
+  type ProviderBindingCodec,
+} from '../../../src/providers/contracts/binding.js';
+import type { JsonValue } from '../../../src/infra/json-value.js';
+import { zodPersistedParser, zodValueParser } from '../../../src/providers/binding-parser.js';
 
 type SimulationFaultProviderName = 'claude' | 'codex';
 type SimulationTerminalOutcome = ProviderTerminal['outcome'];
+
+function createSimulationSelectionSchema() {
+  return z.object({ key: z.string() }).strict();
+}
+
+function createSimulationProfileSchema() {
+  return z
+    .object({
+      canonicalLocation: z.string(),
+      routing: z.union([
+        z.object({ kind: z.literal('home') }).strict(),
+        z.object({ kind: z.literal('config-dir'), emitConfigDir: z.literal(true) }).strict(),
+      ]),
+    })
+    .strict();
+}
+
+function createSimulationBindingSchema() {
+  return z.object({ profile: createSimulationProfileSchema(), guarantee: z.literal('profile-only') }).strict();
+}
+
+type SimulationSelection = z.infer<ReturnType<typeof createSimulationSelectionSchema>>;
+type SimulationProfile = z.infer<ReturnType<typeof createSimulationProfileSchema>>;
+
+type SimulationProviderAccess = {
+  readonly profileRoot: string;
+  readonly routingEnv: Readonly<Record<string, string>>;
+};
+
+type SimulationExecutionPlan = ProviderExecutionPlan<
+  Readonly<{ access: SimulationProviderAccess; platform: string; environment: readonly EnvironmentLayer[] }>,
+  Readonly<{ sessionId: string }>,
+  Readonly<{ environment: readonly EnvironmentLayer[] }>
+>;
+
+type SimulationBindingCodec = Extract<
+  ProviderBindingCodec<SimulationSelection, SimulationProfile, AccountSubject & JsonValue, SimulationProviderAccess>,
+  { readonly bindingKind: 'profile' }
+>;
+
+function simulationBindingCodec(provider: string): SimulationBindingCodec {
+  return {
+    parseSelection: zodValueParser(createSimulationSelectionSchema),
+    persistedProfile: zodPersistedParser(createSimulationProfileSchema),
+    persistedContinuity: zodPersistedParser(() => z.record(z.string(), z.unknown())),
+    persistedBinding: zodPersistedParser(createSimulationBindingSchema),
+    bindingKind: 'profile',
+    captureSelection: () => bindingSuccess({ key: provider }),
+    async canonicalizeProfile(selection) {
+      return bindingSuccess({
+        canonicalLocation: `/${selection.key}`,
+        routing:
+          provider === 'claude'
+            ? { kind: 'config-dir' as const, emitConfigDir: true as const }
+            : { kind: 'home' as const },
+      });
+    },
+    selectorLabel: () => `${provider} simulation selector`,
+    renderFailure: (failure) => `${provider} simulation binding failed: ${failure.reason}`,
+    async bindProfile(profile) {
+      return bindingSuccess({ profile, guarantee: 'profile-only' });
+    },
+    async readiness(_binding, use) {
+      return bindingSuccess({ ready: true, use });
+    },
+    access(binding) {
+      const routingEnv: Record<string, string> =
+        provider === 'claude'
+          ? { CLAUDE_CONFIG_DIR: binding.profile.canonicalLocation }
+          : { CODEX_HOME: binding.profile.canonicalLocation };
+      return {
+        profileRoot: binding.profile.canonicalLocation,
+        routingEnv,
+      };
+    },
+    compareBinding: (left, right) =>
+      left.profile.canonicalLocation === right.profile.canonicalLocation
+        ? bindingSuccess(true)
+        : bindingFailure({ reason: 'profile-mismatch', provider }),
+    presentBinding: () => `${provider} simulation profile`,
+  };
+}
 
 export type FakeProviderScenario = {
   name?: string;
@@ -85,17 +192,23 @@ const DEFAULT_BUNDLE_HASH = 'sim-bundle';
 const DEFAULT_FAKE_PROVIDER = 'codex';
 const DEFAULT_LISTEN_HOST = '127.0.0.1';
 const DEFAULT_LISTEN_PORT = 4_100;
-const SIMULATION_PROVIDER_CREDENTIALS = {
-  version: 1,
-  codex: { version: 1, provider: 'codex', kind: 'home', home: '/tmp/sim/accounts/codex' },
-  claude: {
-    version: 1,
-    provider: 'claude',
-    kind: 'config-dir',
-    configDir: '/tmp/sim/accounts/claude',
-    projectsRoot: '/tmp/sim/accounts/claude/projects',
-  },
-} as const satisfies ProviderCredentialSet;
+function simulationProviderScope(provider: string): ProviderScope {
+  return {
+    origin: 'caller',
+    profiles: [
+      {
+        provider,
+        profile: {
+          canonicalLocation: `/tmp/sim/accounts/${provider}`,
+          routing:
+            provider === 'claude'
+              ? { kind: 'config-dir' as const, emitConfigDir: true as const }
+              : { kind: 'home' as const },
+        },
+      },
+    ],
+  };
+}
 
 export type SimulationScenario = {
   epochMs?: number;
@@ -218,73 +331,154 @@ export function createFakeProvider(
 ): ProviderDefinition {
   const providerName = scenario?.name ?? DEFAULT_FAKE_PROVIDER;
   const preflightError = scenario?.preflightError;
-  return defineProvider({
+  const run: ProviderStandalone<SimulationExecutionPlan> = (request, providerRuntime) =>
+    streamProviderEvents(async (emit) => {
+      const startedAt = runtime.time.now();
+
+      for (const progress of scenario?.progress ?? []) {
+        if ((progress.delayMs ?? 0) > 0) {
+          await runtime.time.sleep(progress.delayMs ?? 0);
+        }
+        emit(providerProgressEvent(progress.message, nowIsoString(runtime.time)));
+      }
+
+      const cli = await providerRuntime.runCli({
+        command: scenario?.cli?.command ?? providerName,
+        args: scenario?.cli?.args ?? [`--${request.action}`],
+        prompt: request.prompt,
+        cwd: request.cwd,
+      });
+
+      const exitCode = scenario?.result?.exitCode ?? cli.code;
+      const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(scenario, cli.aborted, exitCode);
+      const failureCause = failureCauseForSimulationOutcome(
+        scenario,
+        outcome,
+        typeof exitCode === 'number' && exitCode !== 0
+          ? `Fake provider exited with code ${exitCode}.`
+          : 'Fake provider failed.',
+      );
+      if (scenario?.result?.conversationRef !== undefined || scenario?.result?.resumable !== undefined) {
+        emit({
+          kind: 'continuity',
+          conversationRef: scenario.result?.conversationRef ?? null,
+          resumable: scenario.result?.resumable ?? true,
+          providerContinuity: null,
+        });
+      }
+      emit(
+        providerTerminalEvent({
+          ...scenario?.result,
+          content: scenario?.result?.content ?? cli.stdout.trimEnd(),
+          exitCode,
+          durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
+          outcome,
+          failureCause,
+        }),
+      );
+    });
+  return defineProvider<SimulationExecutionPlan, SimulationProviderAccess>({
     name: providerName,
+    transport: 'standalone',
+    run,
+    prepareExecutionPlan: ({ access, request, baseEnv, protectedEnv, platform }) => {
+      const authority = { CORAL_CHILD: '1', CORAL_SESSION_ID: request.sessionId, ...(protectedEnv ?? {}) };
+      const hostEnvironment = [
+        environmentLayer(
+          {
+            name: 'simulation-base',
+            lifetime: 'host',
+            provenance: 'simulation-runtime',
+            values: filterEnvironmentValues(baseEnv, EXECUTION_ENV_ALLOWLIST, platform),
+            writes: EXECUTION_ENV_ALLOWLIST,
+            protects: new Set(),
+          },
+          platform,
+        ),
+        environmentLayer(
+          {
+            name: 'simulation-routing',
+            lifetime: 'host',
+            provenance: 'simulation-binding',
+            values: access.routingEnv,
+            writes: new Set(Object.keys(access.routingEnv)),
+            protects: new Set(Object.keys(access.routingEnv)),
+          },
+          platform,
+        ),
+        environmentLayer(
+          {
+            name: 'simulation-process-settings',
+            lifetime: 'host',
+            provenance: 'simulation-request-process',
+            values: filterEnvironmentValues(
+              request.coralEnv,
+              new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+              platform,
+            ),
+            writes: new Set([...EXECUTION_ENV_ALLOWLIST, ...CORAL_PROCESS_ENV_KEYS]),
+            protects: new Set(),
+          },
+          platform,
+        ),
+      ];
+      const turnEnvironment = [
+        environmentLayer(
+          {
+            name: 'simulation-turn',
+            lifetime: 'turn',
+            provenance: 'simulation',
+            values: filterEnvironmentValues(
+              { ...request.coralEnv, ...authority, ...(scenario?.cli?.extraEnv ?? {}) },
+              new Set([
+                ...CORAL_TURN_ENV_KEYS,
+                ...Object.keys(authority),
+                ...Object.keys(scenario?.cli?.extraEnv ?? {}),
+              ]),
+              platform,
+            ),
+            writes: new Set([
+              ...CORAL_TURN_ENV_KEYS,
+              ...Object.keys(authority),
+              ...Object.keys(scenario?.cli?.extraEnv ?? {}),
+            ]),
+            protects: new Set(Object.keys(authority)),
+          },
+          platform,
+        ),
+      ];
+      const plan: SimulationExecutionPlan = Object.freeze({
+        host: Object.freeze({ access, platform, environment: Object.freeze(hostEnvironment) }),
+        session: Object.freeze({ sessionId: request.sessionId }),
+        turn: Object.freeze({ environment: Object.freeze(turnEnvironment) }),
+      });
+      const exactEnv = compileEnvironmentLayers([...hostEnvironment, ...turnEnvironment], {
+        platform,
+        lifetimes: allExecutionLifetimes(),
+      });
+      return {
+        plan,
+        prepareCliRequest: (cliRequest) => ({ ...cliRequest, exactEnv: { ...exactEnv }, extraEnv: undefined }),
+      };
+    },
     ...(preflightError
       ? {
-          preflight: async (_runtime: PreflightRuntime) => {
+          preflight: async () => {
             throw toError(preflightError);
           },
         }
       : {}),
-    run: (request: Parameters<ProviderSpec['run']>[0], providerRuntime: Parameters<ProviderSpec['run']>[1]) =>
-      streamProviderEvents(async (emit) => {
-        const startedAt = runtime.time.now();
-
-        for (const progress of scenario?.progress ?? []) {
-          if ((progress.delayMs ?? 0) > 0) {
-            await runtime.time.sleep(progress.delayMs ?? 0);
-          }
-          emit(providerProgressEvent(progress.message, nowIsoString(runtime.time)));
-        }
-
-        const cli = await providerRuntime.runCli({
-          command: scenario?.cli?.command ?? providerName,
-          args: scenario?.cli?.args ?? [`--${request.action}`],
-          prompt: request.prompt,
-          cwd: request.cwd,
-          extraEnv: {
-            ...request.coralEnv,
-            ...(scenario?.cli?.extraEnv ?? {}),
-          },
-        });
-
-        const exitCode = scenario?.result?.exitCode ?? cli.code;
-        const outcome = scenario?.result?.outcome ?? buildDefaultExecutionOutcome(scenario, cli.aborted, exitCode);
-        const failureCause = failureCauseForSimulationOutcome(
-          scenario,
-          outcome,
-          typeof exitCode === 'number' && exitCode !== 0
-            ? `Fake provider exited with code ${exitCode}.`
-            : 'Fake provider failed.',
-        );
-        if (scenario?.result?.conversationRef !== undefined || scenario?.result?.resumable !== undefined) {
-          emit({
-            kind: 'continuity',
-            conversationRef: scenario.result?.conversationRef ?? null,
-            resumable: scenario.result?.resumable ?? true,
-            providerContinuity: null,
-          });
-        }
-        emit(
-          providerTerminalEvent({
-            ...scenario?.result,
-            content: scenario?.result?.content ?? cli.stdout.trimEnd(),
-            exitCode,
-            durationMs: scenario?.result?.durationMs ?? runtime.time.now() - startedAt,
-            outcome,
-            failureCause,
-          }),
-        );
-      }),
     recovery: {
-      buildRecoveryMeta: () => ({ provider: providerName }),
+      finalizeInterrupted: () => {
+        throw new Error(`Simulation provider '${providerName}' does not support app-server recovery.`);
+      },
       finalizeFromArtifacts: async ({
         stdoutPath,
         stderrPath,
         exitCode,
         signal,
-      }: Parameters<NonNullable<ProviderSpec['recovery']>['finalizeFromArtifacts']>[0]) => {
+        durationMs,
+      }: Parameters<ProviderRecoveryContract['finalizeFromArtifacts']>[0]) => {
         const stdout = readFileIfPresent(runtime.storage, stdoutPath).trimEnd();
         const stderr = readFileIfPresent(runtime.storage, stderrPath).trimEnd();
         const recoveredArtifactFailed = scenario?.result?.outcome === undefined && stderr.length > 0;
@@ -307,6 +501,7 @@ export function createFakeProvider(
             ...scenario?.result,
             content: scenario?.result?.content ?? stdout,
             exitCode: scenario?.result?.exitCode ?? exitCode,
+            durationMs,
             outcome,
             failureCause,
           }),
@@ -322,7 +517,7 @@ export function createFakeProvider(
       extractProgress: ({
         stdoutPath,
         fromOffset,
-      }: Parameters<NonNullable<NonNullable<ProviderSpec['recovery']>['extractProgress']>>[0]) => {
+      }: Parameters<NonNullable<ProviderRecoveryContract['extractProgress']>>[0]) => {
         const { lines, newOffset } = readAppendedLines(stdoutPath, fromOffset, runtime.storage);
         return {
           messages: lines,
@@ -331,6 +526,7 @@ export function createFakeProvider(
       },
     },
   })
+    .binding(simulationBindingCodec(providerName))
     .artifacts(none(`Simulation provider ${providerName} declares no provider artifacts.`))
     .build();
 }
@@ -389,12 +585,20 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   const projectRoot = scenario.projectRoot ?? DEFAULT_PROJECT_ROOT;
   const namespace = runtime.paths.pluginRootNamespace(pluginRoot);
   const eventBus = new TypedEventBus();
-  const storeDb = openWritableStoreDbNoReset(runtime, { path: ':memory:' });
-  const progressStore = new JobStore(namespace, runtime, createDefaultUpcasterRegistry(), {
+  const providerRegistry = new ProviderRegistry();
+  const fakeProvider = createFakeProvider(runtime, scenario.fakeProvider);
+  providerRegistry.register(fakeProvider);
+  const storeFormat = describeCoralStoreFormat(providerRegistry);
+  const providerScope = simulationProviderScope(fakeProvider.name);
+  const storeDb = openWritableStoreDbNoReset(runtime, {
+    path: ':memory:',
+    storeFormat,
+  });
+  const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
     reducers: composeReducers(jobsRegistry, sessionsRegistry, discussStoreRegistry, workflowRegistry),
-    providers: noProviderLookupPort,
+    providers: providerLookupPortFromCatalog(providerRegistry),
   });
   const storeServices: CoordinatorStoreServices = {
     storeDb,
@@ -402,9 +606,6 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
     consumerDriver: null,
   };
   const launchCoordinator = new LaunchCoordinator({ runtime });
-  const providerRegistry = new ProviderRegistry();
-  providerRegistry.register(createFakeProvider(runtime, scenario.fakeProvider));
-
   runtime.storage.mkdirSync(pluginRoot, { recursive: true });
   runtime.storage.mkdirSync(projectRoot, { recursive: true });
 
@@ -438,7 +639,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       pluginRoot,
       coralEnv: { ...coralEnv },
       principal,
-      providerCredentials: SIMULATION_PROVIDER_CREDENTIALS,
+      providerScope,
     };
   };
 
@@ -489,6 +690,7 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
   };
 
   const core = createCoordinatorCore({
+    storeFormat,
     runtime,
     pluginRoot,
     backendNamespace: namespace,
@@ -507,7 +709,11 @@ export function createSimulationBackend(scenario: SimulationScenario = {}): Simu
       bindHost: listenHost,
       advertiseHost: listenHost,
     },
-    createExecutionService: (ctx, deps) => new ExecutionService(ctx, deps),
+    createExecutionService: (ctx, deps) =>
+      new ExecutionService(ctx, {
+        ...deps,
+        coordinatorCommit: (cb) => progressStore.commit(cb),
+      }),
     createStoreServicesFromDbFn: (openedStoreDb) => {
       if (openedStoreDb !== storeDb) {
         openedStoreDb.close();

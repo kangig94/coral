@@ -16,7 +16,7 @@ const RESULT_PATH = join(JOBS_ROOT, 'terminal', 'result.ts');
 const TERMINAL_METADATA_FIELDS = ['exitCode', 'warnings', 'usage', 'workflow'] as const;
 
 describe('job terminal shape invariant', () => {
-  it('keeps JobTerminal as terminal content/outcome only', () => {
+  it('keeps JobTerminal limited to content, outcome, and duration', () => {
     const recordsContent = readFileSync(RECORDS_PATH, 'utf-8');
     const resultContent = readFileSync(RESULT_PATH, 'utf-8');
     const interfaceMatch = recordsContent.match(/export interface JobTerminal \{(?<body>[\s\S]*?)\n\}/);

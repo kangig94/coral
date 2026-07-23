@@ -21,7 +21,10 @@ export interface CorpusAuthorityBaselineStore {
   read(): CorpusAuthorityBaselineMap;
   replace(records: readonly CorpusAuthorityBaselineRecord[]): void;
   readActiveGenerationId(): string;
-  stageReplacement(records: readonly CorpusAuthorityBaselineRecord[], generationId?: string): CorpusAuthorityBaselineGeneration;
+  stageReplacement(
+    records: readonly CorpusAuthorityBaselineRecord[],
+    generationId?: string,
+  ): CorpusAuthorityBaselineGeneration;
   adoptStagedGeneration(generationId: string): void;
   discardStagedGeneration(generationId: string): void;
   applyDelta(delta: CorpusAuthorityBaselineDelta): void;

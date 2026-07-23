@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 
@@ -25,7 +26,7 @@ describe('events.seq schema (S3)', () => {
   it('does not create a sqlite_sequence row for events on an initialized journal', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       // SQLite only creates `sqlite_sequence` when at least one table uses
       // AUTOINCREMENT. Absence of the row for `events` proves the column has
       // no SQLite-side counter that could drift from coordinator-reserved seq.

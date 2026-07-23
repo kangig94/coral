@@ -1,19 +1,17 @@
-import { appServerSession } from '../middleware/app-server-session.js';
 import { sessionContinuity, type SessionContinuityContract } from '../middleware/session-continuity.js';
-import { compose, type ProviderRequest } from '../contract.js';
+import { compose, type ProviderAppServerRuntime, type ProviderRequest } from '../contract.js';
 import { readString } from '../../infra/json.js';
-import type { AppServerContract } from '../app-server.js';
 import {
   applyCodexContinuityUpdate,
   applyCodexTransportClosed,
-  buildCodexProviderServerSpec,
   isCodexSessionUnavailable,
   readCodexPersistedContinuity,
   snapshotCodexPersistedContinuity,
   withCodexContinuity,
   type CodexPersistedContinuity,
 } from './request-mapping.js';
-import { codexTurnKernel, mapCodexInterrupt } from './thread-kernel.js';
+import { codexTurnKernel } from './thread-kernel.js';
+import type { CodexExecutionPlan } from './execution-plan.js';
 
 function readOpeningContinuity(
   persistedContinuity: CodexPersistedContinuity | undefined,
@@ -45,18 +43,10 @@ const codexThreadContinuity: SessionContinuityContract<CodexPersistedContinuity>
   isSessionUnavailable: isCodexSessionUnavailable,
 };
 
-const codexAppServerContract = {
-  name: 'codex',
-  buildServerSpec(request, persistedContinuity, _ports, providerContext) {
-    if (providerContext.provider !== 'codex') throw new Error('Codex provider context required.');
-    return { ...buildCodexProviderServerSpec(request, persistedContinuity), env: { ...providerContext.appServerEnv } };
-  },
-  interrupt: mapCodexInterrupt,
-  subscriptionPhase: 'afterInitialize',
-} satisfies AppServerContract;
-
 export const codexThreadProvider = compose(
-  sessionContinuity('codex', codexThreadContinuity),
-  appServerSession(codexAppServerContract),
+  sessionContinuity<CodexPersistedContinuity, CodexExecutionPlan, ProviderAppServerRuntime<CodexExecutionPlan>>(
+    'codex',
+    codexThreadContinuity,
+  ),
   codexTurnKernel,
 );

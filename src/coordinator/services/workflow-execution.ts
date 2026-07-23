@@ -1,11 +1,10 @@
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { nowIsoString } from '../../infra/time.js';
-import { hasProviderCredentials, type InvocationContext } from '../../runtime/invocation-context.js';
+import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { ProviderCatalog } from '../../providers/catalog.js';
+import type { ProviderBindingCatalog } from '../../providers/catalog.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
-import type { SessionWorkflowPort } from '../../sessions/contracts.js';
 import type { CommitEventsFn } from '../../store/append.js';
 import { type WorkflowCommand } from '../../workflow/input.js';
 import type { PipelineAST } from '../../workflow/ast.js';
@@ -19,27 +18,27 @@ import {
   type WorkflowExecutionPort,
 } from '../../workflow/execution-contract.js';
 import { createWorkflowJournal } from '../../workflow/projections.js';
-import type { JobTerminalDiagnostics, JobTerminalInput } from '../../jobs/records.js';
-import type { JobPhase } from '../../jobs/phase.js';
-import { type LaunchDecision, rejectLaunch } from '../../jobs/launch.js';
+import { type WorkflowLaunchDecision, rejectLaunch } from '../../jobs/launch.js';
 import type { AbortReason } from '../../jobs/outcome.js';
 import { writeResultArtifact } from '../../jobs/terminal/export.js';
 import type { JobAbortRegistryPort } from '../../jobs/contracts/abort-registry.js';
 import type { WorkflowJobLifecyclePort } from '../../jobs/contracts/job-runner.js';
 import { TerminalWriteError } from '../../jobs/terminal/write-error.js';
-import { SessionClaimError } from '../../jobs/session-claim.js';
-import { buildSessionControllerProfile, claimJobAtomic, serializeWorkflowResult } from './execution-policies.js';
+import { serializeWorkflowResult } from './execution-policies.js';
 import { composeWorkflowFinalization } from './workflow-finalization.js';
 import type { WorkflowFinalizationIntent } from '../../workflow/finalization.js';
+import { workflowProviderNames } from '../../workflow/normalize.js';
+import { buildWorkflowPlan } from '../../workflow/plan.js';
+import { workflowPlanDeclaredEvent } from '../../workflow/events.js';
+import { providerBindingFailureCode } from '../../providers/contracts/binding.js';
 
 export interface WorkflowExecutionServiceDeps {
   runtime: Runtime;
-  sessionManager: SessionWorkflowPort;
   abortRegistry: JobAbortRegistryPort;
   backendNamespace: string;
   bundleHash: string;
   progressStore: JobProgressStore;
-  providerRegistry: ProviderCatalog;
+  providerRegistry: ProviderBindingCatalog;
   coordinatorCommit: CommitEventsFn;
   launchOrchestrator: WorkflowJobLifecyclePort;
   executionPort: WorkflowExecutionPort;
@@ -57,137 +56,117 @@ export class WorkflowExecutionService {
     input: WorkflowCommand,
     ctx: InvocationContext,
     workDir?: string,
-  ): Promise<LaunchDecision> {
+  ): Promise<WorkflowLaunchDecision> {
     if (!this.deps.providerRegistry.get(providerName)) {
       return rejectLaunch('unknown_provider', `Unknown provider: ${providerName}`);
     }
-    if (!hasProviderCredentials(ctx)) {
+    if (!hasProviderScope(ctx)) {
       return rejectLaunch(
-        'provider_credential_source_missing',
-        'This workflow request has no provider account bindings. Re-run it with the current Coral CLI after selecting and authenticating CODEX_HOME and CLAUDE_CONFIG_DIR.',
+        'provider_scope_missing',
+        'This workflow request has no provider scope. Start it again from a launch-capable client with the selected provider profile.',
       );
     }
-
-    const controllerProfile = buildSessionControllerProfile(ctx.coralEnv);
-    // The workflow-level session uses model='workflow' and owns no provider artifact,
-    // so the SessionManager default retention='retain' is intentional here.
-    const session = this.deps.sessionManager.allocate({
-      provider: providerName,
-      sessionAuthority: { kind: 'orchestration' },
-      name: `workflow-${this.deps.runtime.time.now()}`,
-      model: 'workflow',
-      cwd: ctx.projectRoot,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: this.deps.backendNamespace,
-      ...(controllerProfile !== undefined ? { controllerProfile } : {}),
-    });
-    const jobId = this.deps.abortRegistry.register();
-
-    try {
-      await claimJobAtomic(
-        {
-          sessionManager: this.deps.sessionManager,
-        },
-        session,
-        jobId,
-        providerName,
-        ctx.projectRoot,
-        {
-          expectedVersion: session.version,
-          jobKind: 'workflow',
-        },
+    const decodedScope = this.deps.providerRegistry.decodeCompleteScope(
+      ctx.providerScope,
+      workflowProviderNames(ast, providerName),
+    );
+    if (!decodedScope.ok) {
+      return rejectLaunch(
+        providerBindingFailureCode(decodedScope.failure),
+        this.deps.providerRegistry.renderBindingFailure(decodedScope.failure),
       );
+    }
+    const boundCtx: InvocationContext = { ...ctx, providerScope: decodedScope.value };
+
+    const jobId = this.deps.abortRegistry.register();
+    let plan: ReturnType<typeof buildWorkflowPlan>;
+    try {
+      plan = buildWorkflowPlan(jobId, ast, { defaultProvider: providerName });
+      const workflowLaunchCwd = workDir ?? boundCtx.projectRoot;
+      this.deps.progressStore.commit((c) => {
+        c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));
+        c.append({
+          type: 'job.launch.requested',
+          stream: { kind: 'job', id: jobId },
+          namespace: this.deps.backendNamespace,
+          project: ctx.projectRoot,
+          refs: { jobId, workflowId: jobId },
+          body: {
+            owner: { kind: 'workflow', id: jobId },
+            projectRoot: boundCtx.projectRoot,
+            backendNamespace: this.deps.backendNamespace,
+            bundleHash: this.deps.bundleHash,
+            jobKind: 'workflow',
+            pool: 'default',
+            enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
+            request: {
+              prompt: input.startPrompt,
+              cwd: workflowLaunchCwd,
+              bypassPermissions: false,
+              coralEnv: { ...boundCtx.coralEnv },
+            },
+            createdAt: nowIsoString(this.deps.runtime.time),
+          },
+        });
+        c.append({
+          type: 'job.runtime.started',
+          stream: { kind: 'job', id: jobId },
+          namespace: this.deps.backendNamespace,
+          project: ctx.projectRoot,
+          refs: { jobId, workflowId: jobId },
+          body: {
+            transport: 'workflow',
+            startedAt: nowIsoString(this.deps.runtime.time),
+          },
+        });
+        return undefined;
+      });
     } catch (error: unknown) {
       this.deps.abortRegistry.remove(jobId);
-      if (error instanceof SessionClaimError) {
-        return rejectLaunch('session_busy', 'Session is already running a job');
-      }
       throw error;
     }
-
-    const workflowLaunchCwd = workDir ?? ctx.projectRoot;
-    this.deps.progressStore.appendLaunchRequested(jobId, {
-      jobId,
-      sessionId: session.sessionId,
-      provider: providerName,
-      projectRoot: ctx.projectRoot,
-      backendNamespace: this.deps.backendNamespace,
-      bundleHash: this.deps.bundleHash,
-      jobKind: 'workflow',
-      pool: 'default',
-      enqueueSequence: this.deps.progressStore.nextEnqueueSequence(),
-      providerAction: 'exec',
-      request: {
-        prompt: input.startPrompt,
-        cwd: workflowLaunchCwd,
-        bypassPermissions: false,
-        coralEnv: { ...ctx.coralEnv },
-        providerCredentials: ctx.providerCredentials,
-      },
-      createdAt: nowIsoString(this.deps.runtime.time),
-    });
-    this.deps.progressStore.commit((c) => {
-      c.append({
-        type: 'job.runtime.started',
-        stream: { kind: 'job', id: jobId },
-        namespace: this.deps.backendNamespace,
-        project: ctx.projectRoot,
-        refs: { jobId, sessionId: session.sessionId },
-        bodyVersion: 1,
-        body: {
-          startedAt: nowIsoString(this.deps.runtime.time),
-        },
-      });
-      return undefined;
-    });
     this.deps.launchOrchestrator.markJobRunning(jobId);
 
-    this.runWorkflowAsync(session.sessionId, jobId, providerName, ast, input, ctx, workDir);
-    return { status: 'running', job: jobId, session: session.sessionId };
+    this.runWorkflowAsync(jobId, providerName, ast, input, boundCtx, plan, workDir);
+    return { kind: 'workflow', status: 'running', jobId, workflowId: jobId };
   }
 
-  private commitWorkflowJobTerminal(sessionId: string, jobId: string, intent: WorkflowFinalizationIntent): void {
+  private commitWorkflowJobTerminal(jobId: string, intent: WorkflowFinalizationIntent): void {
     const status = this.deps.progressStore.readStatus(jobId);
     const namespace = status?.backendNamespace ?? this.deps.backendNamespace;
     const project = status?.projectRoot;
+    const runtime = this.deps.progressStore.readRuntimeProjection(jobId);
+    if (runtime?.transport !== 'workflow') {
+      throw new Error(`Workflow '${jobId}' has no workflow runtime start.`);
+    }
+    const startedAt = Date.parse(runtime.startTime);
+    if (!Number.isFinite(startedAt)) {
+      throw new Error(`Workflow '${jobId}' has an invalid runtime start timestamp.`);
+    }
+    const durationMs = Math.max(0, this.deps.runtime.time.now() - startedAt);
 
     this.deps.coordinatorCommit((c) => {
-      composeWorkflowFinalization(c, jobId, intent, { sessionId, namespace, project });
+      composeWorkflowFinalization(c, jobId, intent, { namespace, project, durationMs });
       return undefined;
     });
   }
 
-  private finishWorkflowJobPostCommit(sessionId: string, jobId: string, markdown: string): void {
+  private finishWorkflowJobPostCommit(jobId: string, markdown: string): void {
     try {
       writeResultArtifact(this.deps.runtime.storage, this.deps.runtime.paths.coral.exports.jobsRoot, jobId, markdown);
     } catch (error: unknown) {
       backendLog.warn(`Writing terminal artifact failed for ${jobId}: ${errorMessage(error)}`);
     }
-    this.deps.sessionManager.setNonResumable(sessionId);
     this.deps.abortRegistry.remove(jobId);
-    this.deps.sessionManager.releaseJob(sessionId, jobId);
-  }
-
-  finishWorkflowJob(
-    sessionId: string,
-    jobId: string,
-    _phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'>,
-    result: JobTerminalInput,
-    markdown: string,
-    _diagnostics: JobTerminalDiagnostics = {},
-  ): void {
-    const intent = this.intentFromTerminalResult(jobId, result);
-    this.commitWorkflowJobTerminal(sessionId, jobId, intent);
-    this.finishWorkflowJobPostCommit(sessionId, jobId, markdown);
   }
 
   private runWorkflowAsync(
-    sessionId: string,
     jobId: string,
     providerName: string,
     ast: PipelineAST,
     input: WorkflowCommand,
     ctx: InvocationContext,
+    declaredPlan: ReturnType<typeof buildWorkflowPlan>,
     workDir?: string,
   ): void {
     const signal = this.deps.abortRegistry.getSignal(jobId);
@@ -198,32 +177,32 @@ export class WorkflowExecutionService {
       workDir,
       signal,
       onProgress: (message: string) => {
-        this.deps.progressStore.appendProgress(jobId, sessionId, message);
+        this.deps.progressStore.appendProgress(jobId, null, message);
       },
       workflowJobId: jobId,
+      declaredPlan,
       journal: createWorkflowJournal({ commit: this.deps.coordinatorCommit }),
       time: this.deps.runtime.time,
-      ids: this.deps.runtime.ids,
       drainDeadlineMs: resolveDrainDeadlineMs(this.deps.runtime.env),
       staleAbortTimeoutMs: resolveStaleAbortTimeoutMs(this.deps.runtime.env),
     }).then(
       (result: PipelineResult) => {
         const serialized = serializeWorkflowResult(result.stepDetails);
         try {
-          this.commitWorkflowJobTerminal(sessionId, jobId, {
+          this.commitWorkflowJobTerminal(jobId, {
             outcome: 'completed',
             workflowJobId: jobId,
             finalOutput: result.finalOutput,
             stepDetails: result.stepDetails,
           });
-          this.finishWorkflowJobPostCommit(sessionId, jobId, serialized.markdown);
+          this.finishWorkflowJobPostCommit(jobId, serialized.markdown);
         } catch (error: unknown) {
           this.handleWorkflowFinalizationError(jobId, error);
         }
       },
       (err: unknown) => {
         try {
-          this.handleWorkflowError(err, sessionId, jobId);
+          this.handleWorkflowError(err, jobId);
         } catch (error: unknown) {
           this.handleWorkflowFinalizationError(jobId, error);
         }
@@ -231,7 +210,7 @@ export class WorkflowExecutionService {
     );
   }
 
-  private handleWorkflowError(err: unknown, sessionId: string, jobId: string): void {
+  private handleWorkflowError(err: unknown, jobId: string): void {
     const message = errorMessage(err);
     const workflowError = err instanceof WorkflowExecutionError ? err : null;
     const stepDetails: StepDetail[] = err instanceof WorkflowExecutionError ? err.stepDetails : [];
@@ -271,49 +250,8 @@ export class WorkflowExecutionService {
     }
 
     const serialized = serializeWorkflowResult(stepDetails);
-    this.commitWorkflowJobTerminal(sessionId, jobId, intent);
-    this.finishWorkflowJobPostCommit(sessionId, jobId, serialized.markdown);
-  }
-
-  private intentFromTerminalResult(jobId: string, result: JobTerminalInput): WorkflowFinalizationIntent {
-    switch (result.outcome.kind) {
-      case 'completed':
-        return {
-          outcome: 'completed',
-          workflowJobId: jobId,
-          finalOutput: result.content,
-          stepDetails: [],
-        };
-      case 'aborted':
-        return {
-          outcome: 'aborted',
-          workflowJobId: jobId,
-          reason: result.outcome.reason,
-          stepDetails: [],
-        };
-      case 'failed':
-        return {
-          outcome: 'failed',
-          workflowJobId: jobId,
-          causeRef: result.outcome.causeRef,
-          lifecycleFault: {
-            kind: 'wrapper_crashed',
-            message: 'Workflow failed.',
-          },
-          stepDetails: [],
-        };
-      case 'job_fault':
-      case 'provider_exit':
-        return {
-          outcome: 'failed',
-          workflowJobId: jobId,
-          lifecycleFault: {
-            kind: 'unknown',
-            message: 'Workflow terminal outcome could not be classified.',
-          },
-          stepDetails: [],
-        };
-    }
+    this.commitWorkflowJobTerminal(jobId, intent);
+    this.finishWorkflowJobPostCommit(jobId, serialized.markdown);
   }
 
   private abortReasonForWorkflowError(error: WorkflowExecutionError): AbortReason {

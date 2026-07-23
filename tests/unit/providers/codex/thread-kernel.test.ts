@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ProviderEventBody, ProviderRequest, ProviderRuntime } from '#src/providers/contract.js';
+import type {
+  AppServerSession,
+  ProviderAppServerRuntime,
+  ProviderEventBody,
+  ProviderRequest,
+} from '#src/providers/contract.js';
+import type { CodexExecutionPlan } from '#src/providers/codex/execution-plan.js';
 import type { AppServerNotificationMessage } from '#src/providers/protocol.js';
 import type { DirentLike, EnvPort, StoragePort } from '#src/infra/port-types.js';
 import {
@@ -12,7 +18,7 @@ import {
   createCodexTurnStateForTest,
   finishCodexCompletedForTest,
 } from '#src/providers/codex/thread-kernel.js';
-import { TEST_CODEX_CONTEXT } from '../../../helpers/provider-credentials.js';
+import { TEST_CODEX_PLAN } from '../../../helpers/provider-credentials.js';
 
 function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest {
   return {
@@ -28,14 +34,24 @@ function makeRequest(overrides: Partial<ProviderRequest> = {}): ProviderRequest 
   };
 }
 
+type CodexRuntime = ProviderAppServerRuntime<CodexExecutionPlan>;
+
+const APP_SERVER_SESSION: AppServerSession = {
+  rpc: async <Result>() => ({}) as Result,
+  subscribe: () => () => {},
+  closed: new Promise<Error | void>(() => {}),
+  interrupt: async () => false,
+};
+
 function makeRuntime(
-  persistedContinuity: ProviderRuntime['persistedContinuity'] = {
+  persistedContinuity: CodexRuntime['persistedContinuity'] = {
     cwd: '/workspace/persisted',
     threadId: 'persisted-thread',
   },
-  overrides: Partial<Pick<ProviderRuntime, 'env' | 'storage'>> = {},
-): ProviderRuntime {
+  overrides: Partial<Pick<CodexRuntime, 'env' | 'storage'>> = {},
+): CodexRuntime {
   return {
+    transport: 'app-server',
     signal: new AbortController().signal,
     time: {
       now: () => Date.now(),
@@ -45,11 +61,8 @@ function makeRuntime(
       },
     },
     ids: { uuid: () => 'test-uuid', sha256: () => 'sha256:fake' },
-    runCli: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, aborted: false })),
-    acquireServer: vi.fn(async () => {
-      throw new Error('acquireServer should not be called in thread-kernel mailbox tests.');
-    }),
-    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as ProviderRuntime['storage']),
+    appServerSession: APP_SERVER_SESSION,
+    storage: overrides.storage ?? ({ existsSync: () => true } as unknown as CodexRuntime['storage']),
     ...(overrides.env ? { env: overrides.env } : {}),
     persistedContinuity,
     continuityBridge: {
@@ -57,7 +70,7 @@ function makeRuntime(
       transportClosed: () => {},
     },
     kbRoot: '/mock/kb',
-    providerContext: TEST_CODEX_CONTEXT,
+    executionPlan: TEST_CODEX_PLAN,
   };
 }
 
@@ -69,7 +82,7 @@ function dirent(name: string, kind: 'file' | 'dir'): DirentLike {
   };
 }
 
-function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[] = []): ProviderRuntime['storage'] {
+function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[] = []): CodexRuntime['storage'] {
   return {
     existsSync: (path) => {
       operations.push(`exists:${path}`);
@@ -89,10 +102,9 @@ function artifactStorage(tree: Record<string, DirentLike[]>, operations: string[
   };
 }
 
-function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'claudeConfigDir' | 'get' | 'fullSnapshot'> {
+function env(homedir = '/home/user'): Pick<EnvPort, 'homedir' | 'get' | 'fullSnapshot'> {
   return {
     homedir: () => homedir,
-    claudeConfigDir: () => `${homedir}/.claude`,
     get: () => undefined,
     fullSnapshot: () => ({}),
   };
@@ -330,7 +342,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     expect(state.activeAttempt.activeSubagentTurns.has('subagent-thread')).toBe(true);
   });
 
-  it('emits the rollout artifact handle at the first turn-completed notification after storage discovery', () => {
+  it('emits the rollout artifact handle at the first turn-completed notification after storage discovery', async () => {
     const root = '/home/user/.codex/sessions';
     const day = `${root}/2026/05/04`;
     const operations: string[] = [];
@@ -362,7 +374,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
       events.push(event);
     };
 
-    finishCodexCompletedForTest(state, { id: 'turn-1', status: 'completed' }, emit);
+    await finishCodexCompletedForTest(state, { id: 'turn-1', status: 'completed' }, emit);
 
     expect(events).toContainEqual({
       kind: 'artifact_handle',
@@ -373,7 +385,7 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     expect(operations.indexOf(`exists:${root}`)).toBeLessThan(operations.indexOf('emit:artifact_handle'));
   });
 
-  it('does not emit a rollout artifact handle when the JSONL is not on disk at turn completion', () => {
+  it('does not emit a rollout artifact handle when the JSONL is not on disk at turn completion', async () => {
     const root = '/home/user/.codex/sessions';
     const day = `${root}/2026/05/04`;
     const runtime = makeRuntime(
@@ -400,12 +412,12 @@ describe('codexTurnKernel pre-turn mailbox', () => {
       events.push(event);
     };
 
-    finishCodexCompletedForTest(state, { id: 'turn-1', status: 'completed' }, emit);
+    await finishCodexCompletedForTest(state, { id: 'turn-1', status: 'completed' }, emit);
 
     expect(events.filter((event) => event.kind === 'artifact_handle')).toEqual([]);
   });
 
-  it('does not re-emit the fixed rollout artifact handle on later turn completions', () => {
+  it('does not re-emit the fixed rollout artifact handle on later turn completions', async () => {
     const root = '/home/user/.codex/sessions';
     const day = `${root}/2026/05/04`;
     const operations: string[] = [];
@@ -440,8 +452,8 @@ describe('codexTurnKernel pre-turn mailbox', () => {
     };
     const completed = { id: 'turn-1', status: 'completed' };
 
-    const firstTerminal = finishCodexCompletedForTest(state, completed, emit);
-    const repeatedTerminal = finishCodexCompletedForTest(state, completed, emit);
+    const firstTerminal = await finishCodexCompletedForTest(state, completed, emit);
+    const repeatedTerminal = await finishCodexCompletedForTest(state, completed, emit);
     applyCodexNotificationForTest(
       state,
       {

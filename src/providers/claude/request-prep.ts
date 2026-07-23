@@ -19,11 +19,23 @@ export type PreparedClaudeRequest = {
 export const permissionModeSchema = z.enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'auto', 'dontAsk']);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
 
-export interface ClaudeBootstrapSignature {
-  cwd: string;
-  systemPromptHash: string;
-  permissionMode: PermissionMode;
-}
+export const claudeBootstrapSignatureSchema = z
+  .object({
+    cwd: z.string(),
+    systemPromptHash: z.string(),
+    permissionMode: permissionModeSchema,
+    bootstrapConfigHash: z.string(),
+  })
+  .strict();
+export type ClaudeBootstrapSignature = z.infer<typeof claudeBootstrapSignatureSchema>;
+
+export type ClaudeBootstrapConfiguration = Readonly<{
+  conversationRef?: string;
+  resumeExisting?: boolean;
+  projectsRoot: string;
+  model?: string;
+  effort?: EffortLevel;
+}>;
 
 const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
 const DEFAULT_CLAUDE_MODEL_CAP = 'opus';
@@ -58,25 +70,28 @@ export function readTurnConversationRef(value: unknown): string | undefined {
 }
 
 export function readBootstrapSignature(value: unknown): ClaudeBootstrapSignature | undefined {
-  const permissionMode = isRecord(value) ? permissionModeSchema.safeParse(value.permissionMode) : null;
-  if (
-    !isRecord(value) ||
-    typeof value.cwd !== 'string' ||
-    typeof value.systemPromptHash !== 'string' ||
-    !permissionMode?.success
-  ) {
-    return undefined;
-  }
-
-  return {
-    cwd: value.cwd,
-    systemPromptHash: value.systemPromptHash,
-    permissionMode: permissionMode.data,
-  };
+  const parsed = claudeBootstrapSignatureSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function sameBootstrapSignature(a: ClaudeBootstrapSignature, b: ClaudeBootstrapSignature): boolean {
-  return a.cwd === b.cwd && a.systemPromptHash === b.systemPromptHash && a.permissionMode === b.permissionMode;
+  return (
+    a.cwd === b.cwd &&
+    a.systemPromptHash === b.systemPromptHash &&
+    a.permissionMode === b.permissionMode &&
+    a.bootstrapConfigHash === b.bootstrapConfigHash
+  );
+}
+
+export function hashClaudeBootstrapConfiguration(configuration: ClaudeBootstrapConfiguration): string {
+  const normalized = {
+    conversationRef: configuration.conversationRef ?? null,
+    resumeExisting: configuration.resumeExisting ?? false,
+    projectsRoot: configuration.projectsRoot,
+    model: configuration.model ?? null,
+    effort: configuration.effort ?? null,
+  };
+  return `sha256:${createHash('sha256').update(JSON.stringify(normalized)).digest('hex')}`;
 }
 
 export function normalizeControllerEnv(env?: Record<string, string>): Record<string, string> {

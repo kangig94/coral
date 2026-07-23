@@ -2,6 +2,11 @@ import { formatError } from '../../infra/error-format.js';
 import type { TerminalOutcome } from '../outcome.js';
 import type { JobStore } from '../store.js';
 import { appendJobTerminalRecorded } from '../terminal/recording.js';
+import { elapsedDurationMs } from '../duration.js';
+import { isLivePhase } from '../phase.js';
+import { readProjectionJobRows } from '../projection-row.js';
+import { decodeStoredBody, type StoreReadContext } from '../../store/body-codec.js';
+import type { EventsRow } from '../../store/schema.js';
 
 /**
  * Finalize foreign-namespace live jobs by scanning projections plus the origin
@@ -15,32 +20,25 @@ import { appendJobTerminalRecorded } from '../terminal/recording.js';
  */
 export function adoptOrphanedCrossNamespaceJobs(
   currentNamespace: string,
-  progressStore: Pick<JobStore, 'commit' | 'getDb' | 'loadJobProjectionDetail'>,
+  progressStore: Pick<JobStore, 'commit' | 'getDb' | 'loadJobProjectionDetail'> & StoreReadContext,
+  endTimeMs: number,
   log: (message: string) => void,
 ): number {
   const db = progressStore.getDb();
-  const rows = db
-    .prepare(
-      `SELECT
-         pj.job_id AS job_id,
-         origin.namespace AS origin_namespace
-       FROM projection_jobs pj
-       JOIN events origin
-         ON origin.seq = (
-           SELECT MIN(seq)
-             FROM events
-            WHERE stream_kind = 'job'
-              AND stream_id = pj.job_id
-              AND type = 'job.launch.requested'
-         )
-      WHERE origin.namespace != ?
-        AND pj.phase IN ('queued', 'launching', 'running')
-      ORDER BY pj.job_id ASC`,
-    )
-    .all(currentNamespace) as Array<{
-    job_id: string;
-    origin_namespace: string;
-  }>;
+  const originNamespace = db.prepare<[string], EventsRow>(
+    `SELECT *
+       FROM events
+      WHERE stream_id = ? AND type = 'job.launch.requested'
+      ORDER BY seq ASC LIMIT 1`,
+  );
+  const rows = readProjectionJobRows(db).flatMap((row) => {
+    if (!isLivePhase(row.phase)) return [];
+    const originEvent = originNamespace.get(row.job_id);
+    if (originEvent !== undefined) decodeStoredBody(originEvent, progressStore);
+    const origin = originEvent?.namespace;
+    if (origin === null || origin === undefined || origin === currentNamespace) return [];
+    return [{ job_id: row.job_id, origin_namespace: origin }];
+  });
 
   let adopted = 0;
   for (const row of rows) {
@@ -64,10 +62,9 @@ export function adoptOrphanedCrossNamespaceJobs(
           project: status.projectRoot,
           terminal: {
             outcome,
-            durationMs: 0,
+            durationMs: elapsedDurationMs(launch.createdAt, endTimeMs, `job ${row.job_id}`),
             content: '',
           },
-          continuity: null,
         });
         return undefined;
       });

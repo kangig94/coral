@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { streamProviderTerminal } from '#src/providers/stream.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { toProviderSpec } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import type { WorkflowCommand } from '#src/workflow/input.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
@@ -16,7 +16,9 @@ const ctx: InvocationContext = {
   principal: testProjectPrincipal('/tmp/coral-workflow-project'),
 };
 
-function createExecutionService(result = { status: 'running', job: 'job-1', session: 'session-1' } as const) {
+function createExecutionService(
+  result = { kind: 'workflow', status: 'running', workflowId: 'job-1', jobId: 'job-1' } as const,
+) {
   return {
     executeWorkflow: vi.fn(async () => result),
   };
@@ -26,9 +28,14 @@ function createProviderRegistry(): ProviderRegistry {
   const registry = new ProviderRegistry();
   for (const name of ['claude', 'codex']) {
     registry.register(
-      toProviderSpec({
+      toProviderDefinition({
         name,
-        execute: () => streamProviderTerminal({ content: `${name} response`, outcome: { kind: 'completed' } }),
+        execute: () =>
+          streamProviderTerminal({
+            content: `${name} response`,
+            outcome: { kind: 'completed' },
+            durationMs: 0,
+          }),
       })!,
     );
   }
@@ -63,7 +70,7 @@ describe('workflow api', () => {
 
     const decision = await workflowCommands.execute(executionSvc, compiled, ctx);
 
-    expect(decision).toEqual({ status: 'running', job: 'job-1', session: 'session-1' });
+    expect(decision).toEqual({ kind: 'workflow', status: 'running', workflowId: 'job-1', jobId: 'job-1' });
     expect(executionSvc.executeWorkflow).toHaveBeenCalledWith(
       'claude',
       [

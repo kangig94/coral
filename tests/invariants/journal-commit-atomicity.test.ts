@@ -1,9 +1,10 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { describe, expect, it } from 'vitest';
 
 import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
@@ -18,7 +19,7 @@ import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { decodeEventBody, encodeEventBody } from '#src/store/body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { workflowRegistry, workflowPlanDeclaredEvent } from '#src/workflow/events.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
 import { parseExpression } from '#src/workflow/parser.js';
@@ -132,7 +133,7 @@ const FAILED_JOB_TERMINALS_WITHOUT_CAUSE_REF_SQL = `
 
 function createDb(): Db {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -186,8 +187,8 @@ function assertNoWorkflowAtomicityOrphans(db: Db): void {
 
 function insertOrphanKbOperationFailure(db: Db): void {
   db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     NOW,
     'job.progress.emitted',
@@ -196,7 +197,6 @@ function insertOrphanKbOperationFailure(db: Db): void {
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ jobId: 'job-orphan' }),
-    1,
     encodeEventBody({
       kind: 'domain',
       stage: 'kb_operation_failed',
@@ -209,8 +209,8 @@ function insertOrphanKbOperationFailure(db: Db): void {
 
 function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
   db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     NOW,
     'workflow.completed',
@@ -219,7 +219,6 @@ function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ workflowId: 'workflow-orphan' }),
-    1,
     encodeEventBody({
       outcome: 'failed',
       stepDetails: [],
@@ -229,8 +228,8 @@ function insertFailedWorkflowCompletedWithoutCauseRef(db: Db): void {
 
 function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db): void {
   const insert = db.prepare(
-    `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (seq, ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   insert.run(
     1,
@@ -241,14 +240,13 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ jobId: 'workflow-parent-orphan', sessionId: 'session-orphan' }),
-    1,
     encodeEventBody({
       sessionId: 'session-orphan',
       provider: 'codex',
       projectRoot: '/workspace/orphan',
       backendNamespace: 'test-ns',
       jobKind: 'workflow',
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
+      providerScope: TEST_PROVIDER_SCOPE,
       pool: 'default',
       enqueueSequence: 1,
       providerAction: 'exec',
@@ -270,7 +268,6 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
     'test-ns',
     '/workspace/orphan',
     JSON.stringify({ jobId: 'workflow-parent-orphan', sessionId: 'session-orphan' }),
-    1,
     encodeEventBody({
       terminal: {
         content: '',
@@ -280,15 +277,14 @@ function insertFailedWorkflowParentTerminalWithoutWorkflowCompletionCause(db: Db
           causeRef: { stream: { kind: 'job', id: 'not-workflow-completed' }, seq: 99 },
         },
       },
-      continuity: null,
     }),
   );
 }
 
 function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
   db.prepare(
-    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body_version, body)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (ts, type, stream_kind, stream_id, namespace, project, refs, body)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     NOW,
     'job.terminal.recorded',
@@ -297,7 +293,6 @@ function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
     TEST_NAMESPACE,
     PROJECT_ROOT,
     JSON.stringify({ jobId: 'job-terminal-without-cause' }),
-    1,
     encodeEventBody({
       terminal: {
         content: '',
@@ -306,13 +301,12 @@ function insertFailedJobTerminalWithoutCauseRef(db: Db): void {
           kind: 'failed',
         },
       },
-      continuity: null,
     }),
   );
 }
 
 function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobStore {
-  return new JobStore(TEST_NAMESPACE, runtime, createDefaultUpcasterRegistry(), {
+  return new JobStore(TEST_NAMESPACE, runtime, createEventBodyCodec(), {
     db,
     reducers: composeReducers(jobsRegistry, workflowRegistry),
     providers: permissiveProviderLookupPort,
@@ -320,15 +314,34 @@ function createWorkflowProgressStore(db: Db, runtime: SimulationRuntime): JobSto
 }
 
 function initWorkflowJob(progressStore: JobStore, jobId: string): void {
-  initTestJob(progressStore, {
+  progressStore.appendLaunchRequested(jobId, {
     jobId,
-    sessionId: `${jobId}-session`,
-    provider: 'codex',
+    owner: { kind: 'workflow', id: jobId },
+    sessionId: null,
+    provider: null,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
     jobKind: 'workflow',
-    providerCredentials: TEST_PROVIDER_CREDENTIALS,
-    initialPhase: 'running',
+    pool: 'default',
+    enqueueSequence: progressStore.nextEnqueueSequence(),
+    request: {
+      prompt: '',
+      cwd: PROJECT_ROOT,
+      bypassPermissions: false,
+      coralEnv: {},
+    },
+    createdAt: NOW,
+  });
+  progressStore.commit((c) => {
+    c.append({
+      type: 'job.runtime.started',
+      stream: { kind: 'job', id: jobId },
+      namespace: TEST_NAMESPACE,
+      project: PROJECT_ROOT,
+      refs: { jobId, workflowId: jobId },
+      body: { transport: 'workflow', startedAt: NOW },
+    });
+    return undefined;
   });
 }
 
@@ -369,18 +382,19 @@ function createWorkflowExecutionPort(
       const jobId = String(input.jobId ?? `${coralName}-job`);
       dispatches.push({ providerName, coralName, jobId, workflowSlotId: input.workflowSlotId });
       return {
+        kind: 'provider-session',
         status: 'running',
-        job: jobId,
-        session: `${jobId}-session`,
+        jobId: jobId,
+        sessionId: `${jobId}-session`,
       };
     },
     resume: async (_providerName, input) => ({
+      kind: 'provider-session',
       status: 'running',
-      job: input.jobId ?? 'resumed-job',
-      session: input.sessionId,
+      jobId: input.jobId ?? 'resumed-job',
+      sessionId: input.sessionId,
     }),
     recordContinuationLease: async () => {},
-    claimContinuationLease: async () => true,
     clearContinuationLease: async () => true,
     abort: (jobIds) => ({ aborted: [...jobIds], notFound: [] }),
     awaitLaunch: async () => 'ready',
@@ -403,6 +417,7 @@ function createWorkflowExecutionPort(
             result: {
               content: options.terminalContentByJob?.get(jobId) ?? `result:${jobId}`,
               outcome,
+              durationMs: 0,
             },
           };
         }),
@@ -418,11 +433,11 @@ function createWorkflowRecoveryHarness(db: Db, workflowId: string, expression = 
   const plan = buildWorkflowPlan(workflowId, parseExpression(expression), {
     defaultProvider: 'codex',
   });
-  initWorkflowJob(progressStore, workflowId);
   progressStore.commit((c) => {
-    c.append(workflowPlanDeclaredEvent(workflowId, plan));
+    c.append(workflowPlanDeclaredEvent(workflowId, plan, TEST_PROVIDER_SCOPE));
     return undefined;
   });
+  initWorkflowJob(progressStore, workflowId);
 
   return {
     db,
@@ -444,9 +459,11 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
     backendNamespace: TEST_NAMESPACE,
+    activeJobId: slot.slotId,
   });
   harness.progressStore.appendLaunchRequested(slot.slotId, {
     jobId: slot.slotId,
+    owner: { kind: 'workflow', id: harness.workflowId },
     sessionId: slotSessionId(slot),
     provider: slot.provider,
     projectRoot: PROJECT_ROOT,
@@ -457,6 +474,7 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
     providerAction: 'exec',
     parentWorkflowJobId: harness.workflowId,
     workflowSlotId: slot.slotId,
+    workflowSlotGeneration: 0,
     request: {
       prompt: '',
       cwd: PROJECT_ROOT,
@@ -477,7 +495,7 @@ function initWorkflowSlotJob(harness: WorkflowRecoveryHarness, slot: PlanSlot): 
 function appendWorkflowSlotTerminal(
   harness: WorkflowRecoveryHarness,
   slot: PlanSlot,
-  terminal: { content: string; outcome: WaitTerminalOutcome; durationMs?: number },
+  terminal: { content: string; outcome: WaitTerminalOutcome; durationMs: number },
 ): void {
   harness.progressStore.commit((c) => {
     appendJobTerminalRecorded(c, {
@@ -488,7 +506,6 @@ function appendWorkflowSlotTerminal(
       parentJobId: harness.workflowId,
       workflowSlotId: slot.slotId,
       terminal,
-      continuity: null,
     });
     return undefined;
   });
@@ -537,6 +554,11 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
   const runtime = new SimulationRuntime();
   const progressStore = createWorkflowProgressStore(db, runtime);
   const jobId = 'workflow-executor-path';
+  const plan = buildWorkflowPlan(jobId, parseExpression('architect'), { defaultProvider: 'codex' });
+  progressStore.commit((c) => {
+    c.append(workflowPlanDeclaredEvent(jobId, plan, TEST_PROVIDER_SCOPE));
+    return undefined;
+  });
   initWorkflowJob(progressStore, jobId);
 
   const service = new WorkflowExecutionService({
@@ -546,10 +568,6 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
     bundleHash: 'bundle-a',
     providerRegistry: { get: () => null, getAll: () => [] } as never,
     coordinatorCommit: (cb) => progressStore.commit(cb),
-    sessionManager: {
-      setNonResumable() {},
-      releaseJob() {},
-    } as never,
     abortRegistry: {
       remove() {},
     } as never,
@@ -561,9 +579,9 @@ function exerciseLaunchedWorkflowFailurePath(db: Db): void {
 
   (
     service as unknown as {
-      handleWorkflowError(error: unknown, sessionId: string, jobId: string): void;
+      handleWorkflowError(error: unknown, jobId: string): void;
     }
-  ).handleWorkflowError(new Error('wrapper exploded'), `${jobId}-session`, jobId);
+  ).handleWorkflowError(new Error('wrapper exploded'), jobId);
 }
 
 function readSource(path: string): string {
@@ -575,7 +593,7 @@ describe('journal commit atomicity invariant', () => {
     const db = createDb();
     try {
       const runtime = new SimulationRuntime();
-      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+      const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
         db,
         providers: permissiveProviderLookupPort,
       });
@@ -688,6 +706,7 @@ describe('journal commit atomicity invariant', () => {
       appendWorkflowSlotTerminal(harness, slot, {
         content: 'ARCH_DONE',
         outcome: { kind: 'completed' },
+        durationMs: 0,
       });
       const captured = captureWorkflowIntents();
 
@@ -807,6 +826,7 @@ describe('journal commit atomicity invariant', () => {
       appendWorkflowSlotTerminal(harness, failedSlot, {
         content: '',
         outcome: { kind: 'provider_exit', code: 1 },
+        durationMs: 0,
       });
       initWorkflowSlotJob(harness, pendingSlot);
       const realFinalizer = createWorkflowRecoveryFinalizer({
@@ -901,7 +921,6 @@ describe('journal commit atomicity invariant', () => {
             causeRef: { stream: { kind: 'workflow', id: harness.workflowId }, seq: completed.seq },
           },
         },
-        continuity: null,
       });
       expect(completed.seq).toBe(lifecycleFault.seq + 1);
       expect(terminal.seq).toBe(completed.seq + 1);
@@ -983,4 +1002,4 @@ describe('journal commit atomicity invariant', () => {
     );
   });
 });
-import { initTestJob, seedTestSessionProjection } from '#tests/helpers/session.js';
+import { seedTestSessionProjection } from '#tests/helpers/session.js';

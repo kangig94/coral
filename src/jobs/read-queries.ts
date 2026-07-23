@@ -1,11 +1,10 @@
 import type { Database } from '../store/db.js';
-import type { UsageSummary } from '../providers/contract.js';
+import type { HostRef, UsageSummary } from '../providers/contract.js';
 
-import type { JobContinuitySnapshot } from './continuity.js';
 import { jobTerminalRecordedBodySchema, jobDiagnosticsSchema, normalizeJobTerminal } from './terminal/result.js';
 import { jobProgressBodySchema, jobRuntimeStartedBodySchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
-import { type JobPhase } from './phase.js';
+import { isLivePhase, type JobPhase } from './phase.js';
 import {
   belongsToNamespace,
   emptyJobDiagnostics,
@@ -13,13 +12,18 @@ import {
   type JobDiagnostics,
   type JobEvent,
   type JobExit,
-  type JobKind,
   type JobLaunch,
   type JobRuntime,
   type JobStatus,
   type JobTerminal,
   type JobTerminalDiagnostics,
 } from './records.js';
+import {
+  decodeProjectionJobStoredRow,
+  decodeProjectionJobExecutionOwner,
+  PROJECTION_JOB_COLUMNS,
+  type ProjectionJobStoredRow,
+} from './projection-row.js';
 
 export type JobProjectionDetail = {
   status: JobStatus | null;
@@ -27,73 +31,42 @@ export type JobProjectionDetail = {
   runtime: JobRuntime | null;
   exit: JobExit | null;
 };
-import { decodeBody, decodeEventJson, type StoreReadContext } from '../store/body-codec.js';
+import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import { decodeEventRefs, rowToCoralEvent } from '../store/envelope.js';
 import { prepareCached, sqlPlaceholders } from '../store/db.js';
 import { readLatestEvent } from '../store/event-queries.js';
 import type { EventsRow } from '../store/schema.js';
 import { aggregateWorkflowUsage } from './workflow-usage.js';
 
-type JobLaunchProjection = {
-  jobId: string;
-  sessionId: string | null;
-  provider: string | null;
-  projectRoot: string;
-  backendNamespace: string;
-  bundleHash?: string;
-  jobKind: JobKind;
-  pool: string;
-  enqueueSequence: number;
-  providerAction?: 'exec' | 'resume';
-  operation?: 'kb.source_import' | 'kb.reindex' | 'kb.community_summary';
-  request:
-    | {
-        prompt: string;
-        name?: string;
-        model?: string;
-        cwd: string;
-        effort?: string;
-        bypassPermissions: boolean;
-        systemPrompt?: string;
-        conversationRef?: string;
-        instruction?: {
-          content: string;
-          channel: 'prompt' | 'system';
-        };
-        retention?: 'retain' | 'discard_provider_artifacts_on_terminal';
-        coralEnv: Record<string, string>;
-      }
-    | {
-        filePath: string;
-        slug?: string;
-        readiness: 'commit' | 'base-search' | 'active-vector' | 'all-equipped';
-      }
-    | Record<string, never>;
-  parentWorkflowJobId?: string;
-  workflowSlotId?: string;
-  createdAt: string;
-};
+type JobLaunchProjection = JobLaunch;
 
 type JobCliRuntimeProjection = {
-  transport?: 'durable-cli';
+  transport: 'durable-cli';
   pid: number;
   stdoutPath: string;
   stderrPath: string;
   startTime: string;
-  providerMeta?: Record<string, unknown>;
   tailWatermark?: number;
 };
 
-type JobAppServerRuntimeProjection = {
-  transport: 'app-server';
-  startTime: string;
-  providerMeta: {
-    provider: string;
-    leaseState: 'waiting' | 'acquired';
-    serverGeneration?: number;
-    providerContinuity?: Record<string, unknown>;
-    claudeTransport?: string;
-  };
-};
+type JobAppServerRuntimeProjection =
+  | {
+      transport: 'app-server';
+      startTime: string;
+      providerMeta: {
+        provider: string;
+        leaseState: 'waiting';
+      };
+    }
+  | {
+      transport: 'app-server';
+      startTime: string;
+      providerMeta: {
+        provider: string;
+        leaseState: 'acquired';
+        hostRef: HostRef;
+      };
+    };
 
 type JobInternalRuntimeProjection = {
   transport: 'internal';
@@ -102,10 +75,16 @@ type JobInternalRuntimeProjection = {
   startTime: string;
 };
 
+type JobWorkflowRuntimeProjection = {
+  transport: 'workflow';
+  startTime: string;
+};
+
 type JobRuntimeProjection =
   | JobCliRuntimeProjection
   | JobAppServerRuntimeProjection
   | JobInternalRuntimeProjection
+  | JobWorkflowRuntimeProjection
   | null;
 
 type JobExitProjection = {
@@ -114,28 +93,11 @@ type JobExitProjection = {
   durationMs: number;
   diagnostics: JobDiagnostics;
   endTime: string;
-  continuity?: JobContinuitySnapshot | null;
 };
 
-type ProjectionRow = {
-  job_id: string;
-  phase: string;
-  terminal: string | null;
-  diagnostics: string | null;
-  session_id: string | null;
-  provider: string | null;
-  project_root: string;
-  backend_namespace: string;
-  bundle_hash: string | null;
-  job_kind: JobKind;
-  parent_workflow_job_id: string | null;
-  workflow_slot: string | null;
-  created_at: string;
-  last_seq: number;
-};
+type ProjectionRow = ProjectionJobStoredRow;
 
-type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'body_version' | 'body'> & { refs?: EventsRow['refs'] };
-type LatestJobEventProjection = EventRow & { stream_id: string };
+type EventRow = Pick<EventsRow, 'seq' | 'ts' | 'type' | 'stream_kind' | 'body'> & { refs?: EventsRow['refs'] };
 type ProjectionStatusEventType = 'job.launch.rejected' | 'job.runtime.started' | 'job.terminal.recorded';
 type JobStatusEventsByType = {
   rejected: EventRow | null;
@@ -145,10 +107,7 @@ type JobStatusEventsByType = {
 type DecodedTerminalRow = {
   record: JobTerminal;
   diagnostics: JobTerminalDiagnostics;
-  continuity: JobContinuitySnapshot | null;
 };
-
-const LIVE_JOB_PHASES = ['queued', 'launching', 'running'] as const;
 
 export type JobsListFilters = {
   projectRoot?: string;
@@ -173,16 +132,14 @@ function emptyJobProjectionDetail(): JobProjectionDetail {
 }
 
 function readProjectionRow(db: Database, jobId: string): ProjectionRow | null {
-  const row = prepareCached<[string], ProjectionRow | undefined>(
+  const row = prepareCached<[string], unknown>(
     db,
-    `SELECT job_id, phase, terminal, diagnostics,
-            session_id, provider, project_root, backend_namespace, bundle_hash,
-            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+    `SELECT ${PROJECTION_JOB_COLUMNS}
        FROM projection_jobs
       WHERE job_id = ?`,
   ).get(jobId);
 
-  return row ?? null;
+  return row === undefined ? null : decodeProjectionJobStoredRow(row);
 }
 
 function readProjectionRows(db: Database, jobIds: string[]): Map<string, ProjectionRow> {
@@ -190,59 +147,42 @@ function readProjectionRows(db: Database, jobIds: string[]): Map<string, Project
     return new Map();
   }
 
-  const rows = prepareCached<unknown[], ProjectionRow>(
+  const rows = prepareCached<unknown[], unknown>(
     db,
-    `SELECT job_id, phase, terminal, diagnostics,
-            session_id, provider, project_root, backend_namespace, bundle_hash,
-            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+    `SELECT ${PROJECTION_JOB_COLUMNS}
        FROM projection_jobs
       WHERE job_id IN (${sqlPlaceholders(jobIds.length)})`,
   ).all(...jobIds);
 
   const projectionsByJob = new Map<string, ProjectionRow>();
   for (const row of rows) {
-    projectionsByJob.set(row.job_id, row);
+    const decoded = decodeProjectionJobStoredRow(row);
+    projectionsByJob.set(decoded.job_id, decoded);
   }
   return projectionsByJob;
 }
 
 function readOrderedProjectionRows(db: Database, filters?: JobsListFilters): ProjectionRow[] {
-  const clauses: string[] = [];
-  const params: unknown[] = [];
-
-  if (filters?.namespace !== undefined) {
-    clauses.push('backend_namespace = ?');
-    params.push(filters.namespace);
-  }
-  if (filters && filters.all !== true) {
-    clauses.push(`phase IN (${sqlPlaceholders(LIVE_JOB_PHASES.length)})`);
-    params.push(...LIVE_JOB_PHASES);
-  }
-  if (filters?.projectRoot !== undefined) {
-    // KB jobs belong to no single project — they run against the shared corpus,
-    // so they stay visible and abortable from every project's view regardless of cwd.
-    clauses.push("(project_root = ? OR job_kind = 'kb')");
-    params.push(filters.projectRoot);
-  }
-  if (filters?.phase !== undefined) {
-    clauses.push('phase = ?');
-    params.push(filters.phase);
-  }
-  if (filters?.provider !== undefined) {
-    clauses.push('provider = ?');
-    params.push(filters.provider);
-  }
-
-  const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-  return prepareCached<unknown[], ProjectionRow>(
+  const rows = prepareCached<[], unknown>(
     db,
-    `SELECT job_id, phase, terminal, diagnostics,
-            session_id, provider, project_root, backend_namespace, bundle_hash,
-            job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
+    `SELECT ${PROJECTION_JOB_COLUMNS}
        FROM projection_jobs
-      ${whereClause}
       ORDER BY job_id ASC`,
-  ).all(...params);
+  )
+    .all()
+    .map(decodeProjectionJobStoredRow);
+
+  return rows.filter((row) => {
+    if (filters?.namespace !== undefined && row.backend_namespace !== filters.namespace) return false;
+    if (filters && filters.all !== true && !isLivePhase(row.phase)) return false;
+    // KB jobs belong to no single project and remain visible from every project.
+    if (filters?.projectRoot !== undefined && row.project_root !== filters.projectRoot && row.job_kind !== 'kb') {
+      return false;
+    }
+    if (filters?.phase !== undefined && row.phase !== filters.phase) return false;
+    if (filters?.provider !== undefined && row.provider !== filters.provider) return false;
+    return true;
+  });
 }
 
 function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): Map<string, EventRow> {
@@ -250,18 +190,18 @@ function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): 
     return new Map();
   }
 
-  const rows = prepareCached<unknown[], LatestJobEventProjection>(
+  const rows = prepareCached<unknown[], EventsRow>(
     db,
-    `SELECT stream_id, seq, ts, type, refs, body_version, body
+    `SELECT *
        FROM events
-      WHERE stream_kind = 'job'
-        AND type = ?
+      WHERE type = ?
         AND stream_id IN (${sqlPlaceholders(jobIds.length)})
       ORDER BY stream_id ASC, seq DESC`,
   ).all(type, ...jobIds);
 
   const eventsByJob = new Map<string, EventRow>();
   for (const row of rows) {
+    rowToCoralEvent(row, null);
     if (eventsByJob.has(row.stream_id)) {
       continue;
     }
@@ -270,8 +210,8 @@ function readLatestEventsForJobs(db: Database, jobIds: string[], type: string): 
       seq: row.seq,
       ts: row.ts,
       type: row.type,
+      stream_kind: row.stream_kind,
       refs: row.refs,
-      body_version: row.body_version,
       body: row.body,
     });
   }
@@ -285,21 +225,22 @@ function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<s
     return eventsByJob;
   }
 
-  const rows = prepareCached<unknown[], LatestJobEventProjection & { type: ProjectionStatusEventType }>(
+  const rows = prepareCached<unknown[], EventsRow & { type: ProjectionStatusEventType }>(
     db,
-    `SELECT stream_id, type, seq, ts, refs, body_version, body
+    `SELECT seq, ts, type, stream_kind, stream_id, namespace, project,
+            correlation_id, causation_seq, refs, body
        FROM (
-         SELECT stream_id, type, seq, ts, refs, body_version, body,
+         SELECT *,
                 ROW_NUMBER() OVER (PARTITION BY stream_id, type ORDER BY seq DESC) AS row_number
            FROM events
-          WHERE stream_kind = 'job'
-            AND type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
+          WHERE type IN ('job.launch.rejected', 'job.runtime.started', 'job.terminal.recorded')
             AND stream_id IN (${sqlPlaceholders(jobIds.length)})
        )
       WHERE row_number = 1`,
   ).all(...jobIds);
 
   for (const row of rows) {
+    rowToCoralEvent(row, null);
     const current = eventsByJob.get(row.stream_id) ?? {
       rejected: null,
       runtime: null,
@@ -320,15 +261,15 @@ function readLatestProjectionStatusEvents(db: Database, jobIds: string[]): Map<s
   return eventsByJob;
 }
 
-function decodeLaunchRefs(row: EventRow): Pick<JobLaunchProjection, 'parentWorkflowJobId' | 'workflowSlotId'> {
+function decodeLaunchRefs(row: EventRow): { parentWorkflowJobId?: string; workflowSlotId?: string } {
   if (row.refs === undefined || row.refs === null) {
     return {};
   }
 
-  const refs = decodeEventJson(row.refs, { seq: row.seq, column: 'refs' }) as Record<string, unknown>;
+  const refs = decodeEventRefs({ seq: row.seq, refs: row.refs });
   return {
-    ...(typeof refs.parentJobId === 'string' ? { parentWorkflowJobId: refs.parentJobId } : {}),
-    ...(typeof refs.workflowSlotId === 'string' ? { workflowSlotId: refs.workflowSlotId } : {}),
+    ...(refs?.parentJobId === undefined ? {} : { parentWorkflowJobId: refs.parentJobId }),
+    ...(refs?.workflowSlotId === undefined ? {} : { workflowSlotId: refs.workflowSlotId }),
   };
 }
 
@@ -340,16 +281,9 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
   const body = decodeBody(row, jobLaunchRequestBodySchema, ctx);
   const refs = decodeLaunchRefs(row);
   if (body.jobKind === 'kb') {
-    const request =
-      body.operation === 'kb.source_import'
-        ? {
-            filePath: body.request.filePath,
-            ...(body.request.slug === undefined ? {} : { slug: body.request.slug }),
-            readiness: body.request.readiness,
-          }
-        : {};
-    return {
+    const common = {
       jobId,
+      owner: body.owner,
       sessionId: null,
       provider: null,
       projectRoot: body.projectRoot,
@@ -358,15 +292,51 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       jobKind: body.jobKind,
       pool: body.pool,
       enqueueSequence: body.enqueueSequence,
-      operation: body.operation,
-      request,
-      ...refs,
+      createdAt: body.createdAt,
+    } as const;
+    if (body.operation === 'kb.source_import') {
+      return {
+        ...common,
+        operation: body.operation,
+        request: {
+          filePath: body.request.filePath,
+          ...(body.request.slug === undefined ? {} : { slug: body.request.slug }),
+          readiness: body.request.readiness,
+        },
+      };
+    }
+    if (body.operation === 'kb.reindex') {
+      return { ...common, operation: body.operation, request: {} };
+    }
+    return { ...common, operation: body.operation, request: {} };
+  }
+
+  if (body.jobKind === 'workflow') {
+    return {
+      jobId,
+      owner: body.owner,
+      sessionId: null,
+      provider: null,
+      projectRoot: body.projectRoot,
+      backendNamespace: body.backendNamespace,
+      bundleHash: body.bundleHash,
+      jobKind: body.jobKind,
+      pool: body.pool,
+      enqueueSequence: body.enqueueSequence,
+      request: {
+        prompt: body.request.prompt,
+        cwd: body.request.cwd,
+        bypassPermissions: body.request.bypassPermissions,
+        coralEnv: { ...body.request.coralEnv },
+      },
       createdAt: body.createdAt,
     };
   }
 
   return {
     jobId,
+    owner: body.owner,
+    ...(body.discussionRun === undefined ? {} : { discussionRun: body.discussionRun }),
     sessionId: body.sessionId,
     provider: body.provider,
     projectRoot: body.projectRoot,
@@ -376,6 +346,8 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
     pool: body.pool,
     enqueueSequence: body.enqueueSequence,
     providerAction: body.providerAction,
+    workflowSlotGeneration: body.workflowSlotGeneration,
+    replacesWorkflowJobId: body.replacesWorkflowJobId,
     request: {
       prompt: body.request.prompt,
       name: body.request.name,
@@ -384,11 +356,9 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
       effort: body.request.effort,
       bypassPermissions: body.request.bypassPermissions,
       systemPrompt: body.request.systemPrompt,
-      conversationRef: body.request.conversationRef,
       instruction: body.request.instruction,
       retention: body.request.retention,
       coralEnv: { ...body.request.coralEnv },
-      ...(body.jobKind === 'workflow' ? { providerCredentials: body.request.providerCredentials } : {}),
     },
     ...refs,
     createdAt: body.createdAt,
@@ -398,29 +368,23 @@ function decodeLaunch(jobId: string, row: EventRow | null, ctx: StoreReadContext
 function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRuntimeProjection {
   const parsed = decodeBody(row, jobRuntimeStartedBodySchema, ctx);
   if (parsed.transport === 'app-server') {
-    const providerMeta = parsed.providerMeta;
-    const provider = typeof providerMeta?.provider === 'string' ? providerMeta.provider : '';
-    const leaseState = providerMeta?.leaseState === 'acquired' ? 'acquired' : 'waiting';
-    const serverGeneration =
-      typeof providerMeta?.serverGeneration === 'number' ? providerMeta.serverGeneration : undefined;
-    const providerContinuity = providerMeta?.providerContinuity;
-    const conversationRef =
-      typeof providerMeta?.conversationRef === 'string' ? providerMeta.conversationRef : undefined;
-    const claudeTransport =
-      typeof providerMeta?.claudeTransport === 'string' ? providerMeta.claudeTransport : undefined;
+    if (parsed.providerMeta.leaseState === 'waiting') {
+      return {
+        transport: 'app-server',
+        startTime: parsed.startedAt,
+        providerMeta: {
+          provider: parsed.providerMeta.provider,
+          leaseState: 'waiting',
+        },
+      };
+    }
     return {
       transport: 'app-server',
       startTime: parsed.startedAt,
       providerMeta: {
-        provider,
-        leaseState,
-        serverGeneration,
-        providerContinuity:
-          providerContinuity && typeof providerContinuity === 'object'
-            ? (providerContinuity as Record<string, unknown>)
-            : undefined,
-        ...(conversationRef === undefined ? {} : { conversationRef }),
-        ...(claudeTransport === undefined ? {} : { claudeTransport }),
+        provider: parsed.providerMeta.provider,
+        leaseState: 'acquired',
+        hostRef: parsed.providerMeta.hostRef,
       },
     };
   }
@@ -441,13 +405,19 @@ function jobRuntimeBodyFromEvent(row: EventRow, ctx: StoreReadContext): JobRunti
     };
   }
 
+  if (parsed.transport === 'workflow') {
+    return {
+      transport: 'workflow',
+      startTime: parsed.startedAt,
+    };
+  }
+
   return {
-    transport: parsed.transport === 'durable-cli' ? 'durable-cli' : undefined,
-    pid: parsed.pid ?? 0,
-    stdoutPath: parsed.stdoutPath ?? '',
-    stderrPath: parsed.stderrPath ?? '',
+    transport: 'durable-cli',
+    pid: parsed.pid,
+    stdoutPath: parsed.stdoutPath,
+    stderrPath: parsed.stderrPath,
     startTime: parsed.startedAt,
-    providerMeta: parsed.providerMeta,
     tailWatermark: parsed.tailWatermark,
   };
 }
@@ -467,7 +437,7 @@ function mergeDiagnostics(base: JobDiagnostics, patch: JobTerminalDiagnostics): 
 }
 
 function decodeProjectionDiagnostics(projection: ProjectionRow | null): JobDiagnostics {
-  if (projection?.diagnostics === null || projection?.diagnostics === undefined) {
+  if (projection === null) {
     return emptyJobDiagnostics();
   }
   return jobDiagnosticsSchema.parse(JSON.parse(projection.diagnostics));
@@ -482,7 +452,6 @@ function decodeTerminalRecord(row: EventRow | null, ctx: StoreReadContext): Deco
   return {
     record: normalizeJobTerminal(body.terminal),
     diagnostics: body.diagnostics ?? {},
-    continuity: body.continuity ?? null,
   };
 }
 
@@ -493,9 +462,8 @@ function toJobExitProjection(
 ): JobExitProjection {
   return {
     ...terminal.record,
-    durationMs: terminal.record.durationMs ?? 0,
+    durationMs: terminal.record.durationMs,
     diagnostics,
-    continuity: terminal.continuity,
     endTime: row.ts,
   };
 }
@@ -523,13 +491,14 @@ function projectionRowToStatus(
 
   return {
     jobId,
+    owner: decodeProjectionJobExecutionOwner(projection),
     sessionId: projection.session_id,
     provider: projection.provider,
     projectRoot: projection.project_root,
     backendNamespace: projection.backend_namespace,
     ...(projection.bundle_hash === null ? {} : { bundleHash: projection.bundle_hash }),
     jobKind: projection.job_kind,
-    phase: projection.phase as JobPhase,
+    phase: projection.phase,
     updatedAt: terminal?.ts ?? runtime?.ts ?? rejected?.ts ?? requested?.ts ?? projection.created_at,
     lastSeq: projection.last_seq,
     ...(terminalRecord ? { result: terminalRecord.record } : {}),
@@ -571,10 +540,10 @@ function hydrateJobProjectionDetail(
 
 export function loadJobProjectionDetail(db: Database, jobId: string, ctx: StoreReadContext): JobProjectionDetail {
   const projection = readProjectionRow(db, jobId);
-  const requested = readLatestEvent(db, 'job', jobId, 'job.launch.requested');
-  const rejected = readLatestEvent(db, 'job', jobId, 'job.launch.rejected');
-  const runtime = readLatestEvent(db, 'job', jobId, 'job.runtime.started');
-  const terminal = readLatestEvent(db, 'job', jobId, 'job.terminal.recorded');
+  const requested = readLatestEvent(db, jobId, 'job.launch.requested');
+  const rejected = readLatestEvent(db, jobId, 'job.launch.rejected');
+  const runtime = readLatestEvent(db, jobId, 'job.runtime.started');
+  const terminal = readLatestEvent(db, jobId, 'job.terminal.recorded');
   const workflowUsage = isWorkflowJobKind(projection?.job_kind) ? aggregateWorkflowUsage(db, jobId) : undefined;
   return hydrateJobProjectionDetail(jobId, projection, requested, rejected, runtime, terminal, ctx, workflowUsage);
 }
@@ -694,41 +663,20 @@ export function loadJobDetail(
 }
 
 export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext): JobEvent[] {
-  const rows = prepareCached<
-    [string],
-    {
-      seq: number;
-      ts: string;
-      type: string;
-      body_version: number;
-      body: Uint8Array | Buffer;
-    }
-  >(
+  const rows = prepareCached<[string], EventsRow>(
     db,
-    `SELECT
-       seq,
-       ts,
-       type,
-       body_version,
-       body
-     FROM events
-     WHERE stream_kind = 'job'
-       AND stream_id = ?
+    `SELECT * FROM events
+     WHERE stream_id = ?
        AND type IN ('job.progress.emitted', 'job.terminal.recorded')
      ORDER BY seq ASC`,
-  ).all(jobId) as Array<{
-    seq: number;
-    ts: string;
-    type: string;
-    body_version: number;
-    body: Uint8Array | Buffer;
-  }>;
+  ).all(jobId);
 
   const projection = readProjectionRow(db, jobId);
   const sessionId = projection?.session_id ?? null;
 
   const events: JobEvent[] = [];
   for (const row of rows) {
+    rowToCoralEvent(row, null);
     if (row.type === 'job.progress.emitted') {
       const body = decodeBody(row, jobProgressBodySchema, ctx);
       if (body.kind !== 'message') {
@@ -752,15 +700,18 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
         seq: row.seq,
         ts: row.ts,
         type: row.type,
-        body_version: row.body_version,
+        stream_kind: row.stream_kind,
         body: row.body,
       },
       ctx,
     );
+    if (terminal === null) {
+      throw new Error(`Terminal event ${row.seq} for job ${jobId} has no terminal record.`);
+    }
 
     const usage = isWorkflowJobKind(projection?.job_kind)
       ? aggregateWorkflowUsage(db, jobId)
-      : terminal?.diagnostics.usage;
+      : terminal.diagnostics.usage;
 
     events.push({
       jobId,
@@ -768,8 +719,7 @@ export function readJobEvents(db: Database, jobId: string, ctx: StoreReadContext
       seq: row.seq,
       type: 'terminal',
       ts: row.ts,
-      result: terminal?.record ?? { content: '', outcome: { kind: 'completed' }, durationMs: 0 },
-      continuity: terminal?.continuity ?? null,
+      result: terminal.record,
       ...(usage === undefined ? {} : { usage }),
     });
   }

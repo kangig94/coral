@@ -19,7 +19,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
     const appended = commit(progressStore.getDb(), cb, {
       now: () => new Date(runtime.time.now()),
       reducers,
-      upcasters: progressStore.upcasters,
+      bodyCodec: progressStore.bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     if (appended.length > 0) {

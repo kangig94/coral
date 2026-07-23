@@ -1,6 +1,6 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
-import type { JobLaunchRequest, LaunchDecision } from '../../jobs/launch.js';
+import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
 import type { JobPhase } from '../../jobs/phase.js';
 import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
@@ -25,7 +25,7 @@ export type WorkflowPortInput = {
 };
 
 type WorkflowPortResult =
-  | { kind: 'decision'; decision: LaunchDecision }
+  | { kind: 'decision'; decision: WorkflowLaunchDecision }
   | { kind: 'invalid_request'; message: string; detail?: unknown };
 
 export type ScopeCheckResult = {
@@ -42,7 +42,7 @@ export type JobListFilters = {
 };
 
 interface SessionRequestPort {
-  start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<LaunchDecision>;
+  start(providerName: string, input: SessionStartInput, ctx: InvocationContext): Promise<ProviderSessionLaunchDecision>;
 }
 
 interface JobsRequestPort {

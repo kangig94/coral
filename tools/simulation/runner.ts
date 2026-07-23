@@ -311,34 +311,33 @@ async function executeStep(
 
       case 'launch': {
         const decision = await world.launchJob(step);
-        const detail =
-          decision.status === 'rejected'
-            ? { decision }
-            : {
-                decision,
-                jobId: decision.job,
-                sessionId: decision.session,
-              };
-
-        if (decision.status === 'running' || decision.status === 'queued') {
-          cursor.currentJobId = decision.job;
-          cursor.launchedJobIds.add(decision.job);
+        if (decision.status === 'rejected') {
           return buildStepResult(world, step, stepIndex, startedAt, {
-            ok: true,
-            detail,
-            actual: detail,
+            ok: false,
+            actual: decision,
+            detail: {
+              failureKind: 'launch_rejected',
+              message: decision.message,
+              actual: decision,
+              decision,
+            },
           });
         }
+        if (decision.kind !== 'provider-session') {
+          throw new Error(`Simulation launch step unexpectedly created a ${decision.kind} launch.`);
+        }
 
+        const detail = {
+          decision,
+          jobId: decision.jobId,
+          sessionId: decision.sessionId,
+        };
+        cursor.currentJobId = decision.jobId;
+        cursor.launchedJobIds.add(decision.jobId);
         return buildStepResult(world, step, stepIndex, startedAt, {
-          ok: false,
-          actual: decision,
-          detail: {
-            failureKind: 'launch_rejected',
-            message: decision.message,
-            actual: decision,
-            decision,
-          },
+          ok: true,
+          detail,
+          actual: detail,
         });
       }
 

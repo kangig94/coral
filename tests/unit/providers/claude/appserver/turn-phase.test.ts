@@ -55,6 +55,8 @@ async function startController(
     cwd: '/workspace',
     projectsRoot,
     systemPromptHash: 'sha256:test',
+
+    bootstrapConfigHash: 'sha256:test-bootstrap',
     permissionMode: 'default',
   });
   await controller.turnStart({ brokerTurnId: 'turn-1', prompt });

@@ -5,10 +5,12 @@ import type { BackendDefaultsPlan } from '#src/coordinator/composition/defaults.
 import { CoralSetupError } from '#src/runtime/errors.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const REMOTE_BIND_OPT_IN_ENV = 'CORAL_BACKEND_ALLOW_REMOTE';
 const REMOTE_BIND_ADDRESS_ALLOWLIST_ENV = 'CORAL_BACKEND_REMOTE_ADDR_ALLOWLIST';
 const REMOTE_BIND_UNRESTRICTED_ENV = 'CORAL_BACKEND_REMOTE_UNRESTRICTED';
+const SYSTEM_PROVIDER_SCOPE_ENV = 'CORAL_SYSTEM_PROVIDER_SCOPE';
 
 function envSnapshot(env: Readonly<Record<string, string | undefined>>): Readonly<Record<string, string>> {
   const snapshot: Record<string, string> = {};
@@ -26,7 +28,6 @@ function createRuntime(env: Readonly<Record<string, string | undefined>>): Runti
     env: {
       get: (key: string) => env[key],
       homedir: () => '/tmp',
-      claudeConfigDir: () => '/tmp/.claude',
       tmpdir: () => '/tmp',
       pid: () => 4242,
       platform: () => 'linux',
@@ -80,6 +81,7 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
   return createCoordinatorWorld(
     {
       runtime,
+      storeFormat: currentCoralStoreFormat(),
       bootSnapshot: {
         version: 'world-test-version',
         bundleHash: 'world-test-bundle',
@@ -96,10 +98,10 @@ function createWorld(env: Readonly<Record<string, string | undefined>>): ReturnT
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       launchCoordinator: {} as never,
       providerHostManager: {
-        acquireServer: async () => {
-          throw new Error('acquireServer was not expected');
+        openSession: async () => {
+          throw new Error('openSession was not expected');
         },
-        borrowLiveServer: async () => null,
+        attachSession: async () => null,
         drainForHandoff: async () => undefined,
         shutdown: async () => undefined,
       } as never,
@@ -203,5 +205,34 @@ describe('createCoordinatorWorld bind host guard', () => {
     expect(thrown).toBeInstanceOf(CoralSetupError);
     const setupError = thrown as CoralSetupError;
     expect(setupError.code).toBe('backend_remote_bind_invalid_allowlist');
+  });
+});
+
+describe('createCoordinatorWorld system provider scope', () => {
+  const systemScope = {
+    origin: 'system',
+    name: 'automation',
+    profiles: [
+      {
+        provider: 'codex',
+        profile: { canonicalLocation: '/accounts/codex-system', routing: { kind: 'home' } },
+      },
+    ],
+  } as const;
+
+  it('loads a strict named system scope from daemon boot configuration', () => {
+    const world = createWorld({ [SYSTEM_PROVIDER_SCOPE_ENV]: JSON.stringify(systemScope) });
+
+    expect(world.systemProviderScope).toEqual(systemScope);
+  });
+
+  it.each([
+    ['caller origin', { ...systemScope, origin: 'caller', name: undefined }],
+    ['missing name', { origin: 'system', profiles: systemScope.profiles }],
+    ['unknown field', { ...systemScope, ambient: true }],
+  ])('rejects %s before coordinator composition', (_name, value) => {
+    expect(() => createWorld({ [SYSTEM_PROVIDER_SCOPE_ENV]: JSON.stringify(value) })).toThrowError(
+      expect.objectContaining({ code: 'system_provider_scope_invalid' }),
+    );
   });
 });

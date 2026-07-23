@@ -38,12 +38,7 @@ export type StaleCommunity = { slug: string; level: number };
 export type CommunitySummaryInput = { slug: string; level: number; kind: 'leaf' | 'parent'; input: string };
 export type CommunitySummaryReadRuntime = Pick<
   KbRuntime,
-  | 'generatedCommunityProjectionStore'
-  | 'communityPath'
-  | 'notePath'
-  | 'sourcePath'
-  | 'storagePort'
-  | 'readIndexOrEmpty'
+  'generatedCommunityProjectionStore' | 'communityPath' | 'notePath' | 'sourcePath' | 'storagePort' | 'readIndexOrEmpty'
 >;
 
 function bySlug(generated: ExistingGeneratedCommunity[]): Map<string, ExistingGeneratedCommunity> {

@@ -1,7 +1,6 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
-import type { IdPort } from '../runtime/ports.js';
 import type { PipelineAST } from './ast.js';
 import {
   WorkflowExecutionError,
@@ -15,6 +14,7 @@ import {
 import { formatStepOutput } from './command.js';
 import { handleStepLaunchFailure, launchCompiledStepAtoms } from './launch.js';
 import { workflowDrainEnteredEvent, workflowPlanDeclaredEvent } from './events.js';
+import { providerScopeSchema } from '../infra/provider-scope.js';
 import {
   DEFAULT_DRAIN_DEADLINE_MS,
   DEFAULT_STALE_CHECK_INTERVAL_MS,
@@ -112,6 +112,7 @@ async function awaitLaunchedStepResults(
     completedStepDetails: StepDetail[];
     workflowJobId?: string;
     journal?: WorkflowJournal;
+    declaredPlan?: WorkflowPlan;
   },
 ): Promise<Map<string, string>> {
   try {
@@ -270,10 +271,10 @@ export async function executePipeline(
     staleCheckIntervalMs?: number;
     staleAbortTimeoutMs?: number;
     drainDeadlineMs?: number;
-    workflowJobId?: string;
+    workflowJobId: string;
     journal?: WorkflowJournal;
+    declaredPlan?: WorkflowPlan;
     time: Pick<TimePort, 'now'>;
-    ids: Pick<IdPort, 'uuid'>;
   },
 ): Promise<PipelineResult> {
   const onProgress = options.onProgress ?? (() => {});
@@ -282,15 +283,17 @@ export async function executePipeline(
   const staleCheckIntervalMs = options.staleCheckIntervalMs ?? DEFAULT_STALE_CHECK_INTERVAL_MS;
   const staleAbortTimeoutMs = options.staleAbortTimeoutMs ?? DEFAULT_STALE_ABORT_TIMEOUT_MS;
   const drainDeadlineMs = options.drainDeadlineMs ?? DEFAULT_DRAIN_DEADLINE_MS;
-  const workflowId = options.workflowJobId ?? options.ids.uuid();
-  const plan = buildWorkflowPlan(workflowId, ast, {
-    defaultProvider: defaultProviderName,
-  });
+  const workflowId = options.workflowJobId;
+  const plan =
+    options.declaredPlan ??
+    buildWorkflowPlan(workflowId, ast, {
+      defaultProvider: defaultProviderName,
+    });
 
-  if (options.workflowJobId && options.journal) {
+  if (options.journal && options.declaredPlan === undefined) {
     const workflowJobId = options.workflowJobId;
     options.journal.commit((c) => {
-      c.append(workflowPlanDeclaredEvent(workflowJobId, plan));
+      c.append(workflowPlanDeclaredEvent(workflowJobId, plan, providerScopeSchema.parse(ctx.providerScope)));
       return undefined;
     });
   }
@@ -305,7 +308,7 @@ export async function executePipeline(
     staleCheckIntervalMs,
     staleAbortTimeoutMs,
     drainDeadlineMs,
-    workflowJobId: options.workflowJobId,
+    workflowJobId: workflowId,
     journal: options.journal,
   });
   return {

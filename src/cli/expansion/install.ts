@@ -11,6 +11,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { openWritableStoreDbNoReset } from '../../store/db.js';
+import { currentCoralStoreFormat } from '../../store-format.js';
 import {
   installErrorSchema,
   installResponseSchema,
@@ -83,7 +84,7 @@ async function applyPostInstallCatalogActions(
     return result;
   }
 
-  const db = openWritableStoreDbNoReset(runtime);
+  const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
   try {
     const catalog = createExpansionManifestCatalog({ db });
     for (const action of structuredActions) {

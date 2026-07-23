@@ -15,14 +15,13 @@ import {
 } from './events.js';
 import type { TranscriptEntry } from './session-types.js';
 import { discussStateSchema } from './session-types.js';
-import { providerCredentialSetSchema } from '../runtime/provider-credentials.js';
+import { providerScopeSchema } from '../infra/provider-scope.js';
 
-const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot> = z
+export const persistedDiscussSnapshotSchema: z.ZodType<PersistedDiscussSnapshot> = z
   .object({
-    schemaVersion: z.literal(3),
-    providerCredentials: providerCredentialSetSchema,
+    providerScope: providerScopeSchema,
     sessionId: z.string(),
-    projectRoot: z.string(),
+    projectRoot: z.string().min(1),
     updatedAt: z.string(),
     lastAppliedSeq: z.number().int().nonnegative(),
     state: discussStateSchema,
@@ -108,11 +107,18 @@ function toDiscussDomainEvent(
   if (kind === null) {
     throw new Error(`Unknown discuss event type '${event.type}'.`);
   }
+  const projectRoot = previous?.projectRoot ?? event.project;
+  if (projectRoot === undefined || projectRoot.length === 0) {
+    throw new Error(`Discussion '${event.stream.id}' has no durable project scope.`);
+  }
+  if (event.project !== undefined && event.project !== projectRoot) {
+    throw new Error(`Discussion '${event.stream.id}' cannot change its durable project scope.`);
+  }
 
   return {
     v: 1,
     sessionId: event.stream.id,
-    projectRoot: event.project ?? previous?.projectRoot ?? '',
+    projectRoot,
     topic: topicForEvent(event, previous),
     seq: sourceSeq,
     kind,

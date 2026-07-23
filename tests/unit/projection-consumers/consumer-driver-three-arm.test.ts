@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 // Phase 7 of apply-contract-reform plan.
 //
 // Hardens the cross-arm narrowing introduced by AC3:
@@ -22,7 +23,7 @@ import type { KbCorpusSnapshot } from '#src/kb/contract.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 

@@ -1,19 +1,69 @@
-import type { ProviderSpec } from './contract.js';
+import type { ProviderDefinition } from './registry.js';
+import type {
+  ProviderBindingFailure,
+  ProviderBindingResult,
+  ProviderBindingRuntime,
+  ProviderBindingUse,
+} from './contracts/binding.js';
+import type { BoundProvider } from './bound-provider-contract.js';
+import type { ProviderScope } from '../infra/provider-scope.js';
 
 /** Read-only view of the provider registry. */
 export interface ProviderCatalog {
-  get(name: string): ProviderSpec | undefined;
-  getAll(): ProviderSpec[];
+  get(name: string): ProviderDefinition | undefined;
+  getAll(): ProviderDefinition[];
+}
+
+/** Provider lookup plus the opaque binding operations used outside provider modules. */
+export interface ProviderBindingCatalog extends ProviderCatalog {
+  decodeScope(rawScope: unknown): ProviderBindingResult<ProviderScope>;
+  decodeCompleteScope(rawScope: unknown, requiredProviders: readonly string[]): ProviderBindingResult<ProviderScope>;
+  bindFromScope(
+    rawScope: unknown,
+    providerName: string,
+    use: ProviderBindingUse,
+    runtime: ProviderBindingRuntime,
+  ): Promise<ProviderBindingResult<BoundProvider>>;
+  bindProfile(
+    providerName: string,
+    rawProfileEnvelope: unknown,
+    runtime: ProviderBindingRuntime,
+  ): Promise<ProviderBindingResult<BoundProvider>>;
+  rehydrateBinding(rawEnvelope: unknown): ProviderBindingResult<BoundProvider>;
+  renderBindingFailure(failure: ProviderBindingFailure): string;
 }
 
 /** Narrow provider lookup used by synchronous append-time validators. */
 export interface ProviderLookupPort {
   hasProvider(name: string): boolean;
+  validatePersistedBinding(
+    rawEnvelope: unknown,
+  ): { readonly ok: true } | { readonly ok: false; readonly message: string };
+  validatePersistedScope(
+    rawScope: unknown,
+    requiredProviders: readonly string[],
+  ): { readonly ok: true } | { readonly ok: false; readonly message: string };
 }
 
-export function providerLookupPortFromCatalog(catalog: ProviderCatalog): ProviderLookupPort {
+export function providerLookupPortFromCatalog(catalog: ProviderBindingCatalog): ProviderLookupPort {
   return {
     hasProvider: (name) => catalog.get(name) !== undefined,
+    validatePersistedBinding(rawEnvelope) {
+      const result = catalog.rehydrateBinding(rawEnvelope);
+      return result.ok ? { ok: true } : { ok: false, message: catalog.renderBindingFailure(result.failure) };
+    },
+    validatePersistedScope(rawScope, requiredProviders) {
+      const result = catalog.decodeScope(rawScope);
+      if (!result.ok) return { ok: false, message: catalog.renderBindingFailure(result.failure) };
+      const required = new Set(requiredProviders);
+      const present = new Set(result.value.profiles.map((profile) => profile.provider));
+      const missing = [...required].find((provider) => !present.has(provider));
+      if (missing !== undefined) return { ok: false, message: `Provider scope is missing profile '${missing}'.` };
+      const unexpected = [...present].find((provider) => !required.has(provider));
+      return unexpected === undefined
+        ? { ok: true }
+        : { ok: false, message: `Provider scope contains undeclared profile '${unexpected}'.` };
+    },
   };
 }
 
@@ -27,4 +77,6 @@ export function providerLookupPortFromCatalog(catalog: ProviderCatalog): Provide
  */
 export const noProviderLookupPort: ProviderLookupPort = {
   hasProvider: () => false,
+  validatePersistedBinding: () => ({ ok: false, message: 'No provider binding codecs are registered.' }),
+  validatePersistedScope: () => ({ ok: false, message: 'No provider profile codecs are registered.' }),
 };

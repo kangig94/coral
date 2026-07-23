@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -8,12 +9,14 @@ describe('applyBundledStoreSchema', () => {
     const db = newRawDatabase(':memory:');
 
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
 
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'").get()).toEqual({
         name: 'events',
       });
-      expect(db.prepare<[], { user_version: number }>('PRAGMA user_version').get()?.user_version).not.toBe(0);
+      expect(
+        db.prepare<[], { value: string }>("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get()?.value,
+      ).toBe(currentCoralStoreFormat().fingerprint);
     } finally {
       db.close();
     }

@@ -1,14 +1,16 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commit, type AppendContext } from '#src/store/append.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 // S5: `ts` is informational only; producers (notably discuss restoration) may
 // emit `tsOverride` values earlier than MAX(ts). `seq` remains strictly
@@ -18,7 +20,7 @@ const NOW = new Date('2026-04-19T00:00:00.000Z');
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -26,16 +28,15 @@ function ctx(): AppendContext {
   return {
     now: () => NOW,
     reducers: composeReducers(sessionsRegistry),
-    upcasters: createDefaultUpcasterRegistry(),
+    bodyCodec: createEventBodyCodec(),
     providers: permissiveProviderLookupPort,
   };
 }
 
-function sessionEntry(sessionId: string): SessionEntry {
+function sessionEntry(sessionId: string): ProviderSession {
   return {
     sessionId,
-    provider: 'codex',
-    sessionAuthority: { kind: 'orchestration' },
+    binding: TEST_CODEX_BINDING,
     name: sessionId,
     state: 'pending',
     retention: 'retain',
@@ -64,11 +65,9 @@ describe('ts non-monotone policy (S5)', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-live' },
             refs: { sessionId: 'session-live' },
-            bodyVersion: 1,
             body: {
               entry: sessionEntry('session-live'),
               controller: 'default',
-              provider: 'codex',
               scope_key: 'tests',
             },
           });
@@ -78,12 +77,10 @@ describe('ts non-monotone policy (S5)', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-archived' },
             refs: { sessionId: 'session-archived' },
-            bodyVersion: 1,
             tsOverride: past,
             body: {
               entry: sessionEntry('session-archived'),
               controller: 'default',
-              provider: 'codex',
               scope_key: 'tests',
             },
           });

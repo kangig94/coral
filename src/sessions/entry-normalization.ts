@@ -1,6 +1,6 @@
-import type { SessionEntry } from './entry.js';
+import type { ProviderSession } from './entry.js';
 
-export function normalizeSessionEntry(entry: SessionEntry): SessionEntry {
+export function normalizeProviderSession(entry: ProviderSession): ProviderSession {
   const {
     activeJobId,
     conversationRef,

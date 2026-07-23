@@ -319,7 +319,10 @@ Make the contract explicit first.
     expect(wikiRecord?.body).toContain('## Understanding');
     expect(parseWikiBody(wikiRecord?.body ?? '').understanding).toContain('Wakeful retrieval keeps the session');
 
-    const snapshotStore = new OramaSnapshotStore({ files: kb.projectionArtifacts.files }, kb.projectionArtifacts.runtimeDir);
+    const snapshotStore = new OramaSnapshotStore(
+      { files: kb.projectionArtifacts.files },
+      kb.projectionArtifacts.runtimeDir,
+    );
     const projection = createOramaBaseProjection(kb, snapshotStore);
     const preparedProjection = await projection.prepareFullSnapshot(projectionInput);
     await projection.installFullSnapshot(kb.captureCorpusSnapshot(), preparedProjection);

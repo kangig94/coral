@@ -262,8 +262,7 @@ export function buildKbIndex(
   const entries: KbIndex['entries'] = {};
   const entityGraph = scan.entityGraph?.graph ?? null;
   const generatedCommunityDocuments = options.generatedCommunityDocuments ?? [];
-  const generatedCommunityFreshness =
-    options.generatedCommunityFreshness ?? EMPTY_GENERATED_COMMUNITY_FRESHNESS;
+  const generatedCommunityFreshness = options.generatedCommunityFreshness ?? EMPTY_GENERATED_COMMUNITY_FRESHNESS;
   const generatedCommunitySlugs = new Set(generatedCommunityDocuments.map((document) => document.slug));
   const structuralKey = createCorpusStructuralKeyFromRawSurfaces({
     entityGraphRaw: scan.entityGraph?.graph === null ? null : (scan.entityGraph?.content ?? null),

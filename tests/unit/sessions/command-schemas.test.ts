@@ -17,7 +17,7 @@ describe('session wire schemas', () => {
       'projectRoot',
       'prompt',
       'provider',
-      'providerCredentials',
+      'providerScope',
       'retention',
       'systemPrompt',
       'workDir',

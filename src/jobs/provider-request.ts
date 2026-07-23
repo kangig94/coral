@@ -2,23 +2,23 @@ import type { ProviderRequest } from '../providers/contract.js';
 import { resolveEffort } from '../providers/request-policy.js';
 import type { JobLaunch } from './records.js';
 
-export function toProviderRequest(launchRecord: JobLaunch): ProviderRequest {
-  const { providerAction, request, sessionId, projectRoot } = launchRecord;
-  if (launchRecord.jobKind === 'kb' || sessionId === null || launchRecord.provider === null) {
+export function toProviderRequest(launchRecord: JobLaunch, conversationRef: string | undefined): ProviderRequest {
+  if (launchRecord.jobKind !== 'provider') {
     throw new Error(`Job ${launchRecord.jobId} does not have a provider request.`);
   }
+  const { providerAction, request, sessionId } = launchRecord;
   return {
-    action: providerAction ?? 'exec',
+    action: providerAction,
     sessionId,
     name: request.name,
-    prompt: request.prompt ?? '',
-    conversationRef: request.conversationRef,
+    prompt: request.prompt,
+    conversationRef,
     model: request.model,
-    cwd: request.cwd ?? projectRoot,
+    cwd: request.cwd,
     effort: resolveEffort(request.effort),
-    bypassPermissions: request.bypassPermissions ?? false,
+    bypassPermissions: request.bypassPermissions,
     systemPrompt: request.systemPrompt,
     instruction: request.instruction,
-    coralEnv: request.coralEnv ?? {},
+    coralEnv: request.coralEnv,
   };
 }

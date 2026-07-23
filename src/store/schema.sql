@@ -17,11 +17,10 @@ CREATE TABLE IF NOT EXISTS events (
   project        TEXT,
   correlation_id TEXT,
   causation_seq  INTEGER,                            -- FK to events(seq), loose
-  refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... }
-  body_version   INTEGER NOT NULL DEFAULT 1,         -- per-type schema version
-  body           BLOB    NOT NULL                    -- JSON payload
+  refs           TEXT,                               -- JSON: { jobId?, sessionId?, parentJobId?, ... } @persisted-codec store.events.refs
+  body           BLOB    NOT NULL                    -- JSON payload @persisted-codec store.events.body
 );
-CREATE INDEX IF NOT EXISTS events_stream ON events(stream_kind, stream_id, seq);
+CREATE INDEX IF NOT EXISTS events_logical_stream ON events(type, stream_id, seq);
 CREATE INDEX IF NOT EXISTS events_type ON events(type, seq);
 CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.parentJobId'), seq);
 
@@ -32,9 +31,10 @@ CREATE INDEX IF NOT EXISTS events_refs_parent ON events(json_extract(refs, '$.pa
 -- authoritative; projection is derived via reducer + rebuildProjections.
 CREATE TABLE IF NOT EXISTS projection_jobs (
   job_id                  TEXT PRIMARY KEY,
+  execution_owner         TEXT NOT NULL,       -- JSON ExecutionOwner @persisted-codec store.projection_jobs.execution_owner
   phase                   TEXT NOT NULL,
-  terminal                TEXT,            -- JSON { outcome, durationMs } or NULL
-  diagnostics             TEXT,
+  terminal                TEXT,            -- JSON { outcome, durationMs } or NULL @persisted-codec store.projection_jobs.terminal
+  diagnostics             TEXT NOT NULL,   -- JSON @persisted-codec store.projection_jobs.diagnostics
   session_id              TEXT,
   provider                TEXT,
   project_root            TEXT NOT NULL,
@@ -42,34 +42,40 @@ CREATE TABLE IF NOT EXISTS projection_jobs (
   bundle_hash             TEXT,
   job_kind                TEXT NOT NULL,
   parent_workflow_job_id  TEXT,             -- workflow-slot parent (jobs launched by a workflow plan)
-  workflow_slot           TEXT,             -- slotId on parent's plan
+  workflow_slot           TEXT,             -- slotId on the parent workflow plan
+  workflow_slot_generation INTEGER,
+  replaces_workflow_job_id TEXT,
   created_at              TEXT NOT NULL,
   last_seq                INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS projection_jobs_phase_namespace ON projection_jobs(phase, backend_namespace);
 CREATE INDEX IF NOT EXISTS projection_jobs_session ON projection_jobs(session_id);
 CREATE INDEX IF NOT EXISTS projection_jobs_parent ON projection_jobs(parent_workflow_job_id);
+CREATE UNIQUE INDEX IF NOT EXISTS projection_jobs_workflow_slot_generation
+  ON projection_jobs(parent_workflow_job_id, workflow_slot, workflow_slot_generation)
+  WHERE parent_workflow_job_id IS NOT NULL AND workflow_slot IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS projection_sessions (
   session_id       TEXT PRIMARY KEY,
   controller       TEXT NOT NULL,
-  provider         TEXT NOT NULL,
   resumable        INTEGER NOT NULL,
   conversation_ref TEXT,
   scope_key        TEXT NOT NULL,
-  entry            TEXT NOT NULL,
+  entry            TEXT NOT NULL,          -- JSON @persisted-codec store.projection_sessions.entry
   last_seq         INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS projection_discuss (
   discuss_id TEXT PRIMARY KEY,
-  state      TEXT NOT NULL,        -- JSON (reducer output)
+  state      TEXT NOT NULL,        -- JSON (reducer output) @persisted-codec store.projection_discuss.state
   last_seq   INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS projection_workflows (
   workflow_id TEXT PRIMARY KEY,
-  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] }
+  plan        TEXT NOT NULL,       -- JSON: { slots: [{slotId, provider, instruction, agent?, dependencies}] } @persisted-codec store.projection_workflows.plan
+  provider_scope TEXT NOT NULL,    -- JSON ProviderScope @persisted-codec store.projection_workflows.provider_scope
+  lifecycle   TEXT NOT NULL,
                                    -- labels are derived at render time from `slot.agent`;
                                    -- workflowId is event.stream.id, not stored in body.
   last_seq    INTEGER NOT NULL
@@ -80,7 +86,7 @@ CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
--- Rows: journal_version, coordinator_id, created_ts
+-- Rows: store_format_fingerprint, coordinator_id, created_ts
 
 -- Corpus version state (owned by KB authority).
 -- Single row. contentSeq/metadataSeq are monotonic counters on the Corpus.
@@ -94,14 +100,8 @@ CREATE TABLE IF NOT EXISTS kb_corpus_state (
   last_mutation          TEXT    NOT NULL    -- ISO 8601
 );
 
-CREATE TABLE IF NOT EXISTS kb_corpus_authority_baseline (
-  entry_id      TEXT PRIMARY KEY,
-  content_hash  TEXT NOT NULL,
-  metadata_hash TEXT NOT NULL
-);
-
 -- Consumer cursor table — tracks every registered consumer (default and expansion-owned) per authority.
--- Cursor interpretation depends on the consumer's authority:
+-- Cursor interpretation depends on consumer authority:
 -- - Journal consumers: cursor is events.seq
 -- - Corpus consumers: snapshot_id + seq/hash fields reflect the last applied snapshot
 -- §6.4: one Orama consumer (`orama-base`), not split into FTS/vector. Splitting would force
@@ -140,8 +140,8 @@ CREATE TABLE IF NOT EXISTS kb_curate_scheduler (
   processed_through_seq      INTEGER,
   processed_through_entry_id TEXT,
   processed_through_entry_kind TEXT,
-  discovery_high_seq         INTEGER,
-  discovery_offset           INTEGER,
+  discovery_high_seq         INTEGER NOT NULL,
+  discovery_offset           INTEGER NOT NULL,
   last_run_day               TEXT,
   last_attempted_through_seq INTEGER,
   last_attempted_through_entry_id TEXT,
@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS kb_curate_retry_queue (
   observed_content_hash      TEXT,
   locus                      TEXT,
   canonical_incident         TEXT,
-  signals_json               TEXT,
+  signals_json               TEXT,            -- JSON @persisted-codec store.kb_curate_retry_queue.signals
   repair_hint                TEXT,
   retry_not_before           TEXT NOT NULL,
   retry_count                INTEGER NOT NULL DEFAULT 0
@@ -184,7 +184,7 @@ CREATE INDEX IF NOT EXISTS kb_curate_retry_by_time ON kb_curate_retry_queue(retr
 -- Entries quarantined after a non-auto-resolvable git body conflict.
 -- The local commits are preserved on recovery_ref before the daemon resets
 -- the worktree to origin; this table prevents the curator from recreating
--- the same conflicting commit until the entry's tracked fingerprint is current.
+-- the same conflicting commit until the tracked entry fingerprint is current.
 CREATE TABLE IF NOT EXISTS kb_curate_conflict_quarantine (
   entry_id                   TEXT PRIMARY KEY,
   entry_kind                 TEXT NOT NULL,
@@ -212,7 +212,6 @@ CREATE TABLE IF NOT EXISTS kb_curate_discovery_backlog_notes (
 );
 
 INSERT OR IGNORE INTO meta (key, value) VALUES
-  ('journal_version', '2'), -- provider credential-authority store epoch
   ('coordinator_id', lower(hex(randomblob(16)))),
   ('created_ts', strftime('%Y-%m-%dT%H:%M:%fZ','now'));
 
@@ -246,10 +245,10 @@ INSERT OR IGNORE INTO kb_curate_scheduler (
   community_summary_topology_hash,
   initialized
 ) VALUES
-  (1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 0);
+  (1, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 0);
 
 CREATE TABLE IF NOT EXISTS expansion_manifest_catalog (
   id            TEXT PRIMARY KEY,
-  manifest_json TEXT NOT NULL,
+  manifest_json TEXT NOT NULL, -- JSON @persisted-codec store.expansion_manifest_catalog.manifest
   updated_at    TEXT NOT NULL
 );

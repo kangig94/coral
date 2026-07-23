@@ -3,9 +3,12 @@ import type { CauseRef } from '../causality/cause-ref.js';
 import { errorMessage } from '../infra/error-format.js';
 import type { TimePort, TimerHandle } from '../infra/port-types.js';
 import type { ArtifactCleanupRuntime } from '../providers/contract.js';
-import type { ProviderDefinition } from '../providers/define.js';
+import type { ProviderBindingCatalog } from '../providers/catalog.js';
+import type { BoundProvider } from '../providers/bound-provider-contract.js';
 import type { AppendedEvent, CommitEventsFn, PostCommitObserver } from '../store/append.js';
 import type { ReadonlyDatabase } from '../store/read-port.js';
+import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
+import type { EventsRow } from '../store/schema.js';
 import { collectArtifactHandles } from './artifact-discard.js';
 import { sessionContinuationLeaseExpiredEvent } from './continuation-lease-events.js';
 import { archiveProviderArtifactsForJob } from './provider-artifact-archive.js';
@@ -23,7 +26,8 @@ import {
   type ExpiredContinuationLease,
   type PendingContinuationLease,
   type RetentionDiscardCompletedOutcome,
-  type SessionEntry,
+  type ProviderSession,
+  providerSessionProvider,
 } from './entry.js';
 import {
   readSessionRetentionWorkForEntries,
@@ -36,9 +40,8 @@ import {
 
 export type LifecycleReactorOptions = {
   readonly db: () => ReadonlyDatabase;
-  readonly providers: {
-    get(name: string): ProviderDefinition | undefined;
-  };
+  readonly readCtx: StoreReadContext;
+  readonly providers: ProviderBindingCatalog;
   readonly runtime: ArtifactCleanupRuntime;
   readonly time: Pick<TimePort, 'now' | 'setTimeout' | 'clearTimeout'>;
   readonly commitEvents: CommitEventsFn;
@@ -103,6 +106,29 @@ export class LifecycleReactor {
     this.options = options;
   }
 
+  private async readyBoundProvider(entry: ProviderSession, operation: string): Promise<BoundProvider | null> {
+    const providerName = providerSessionProvider(entry);
+    const binding = this.options.providers.rehydrateBinding(entry.binding);
+    if (!binding.ok || binding.value.name !== providerName) {
+      this.log(
+        `${operation} skipped for session ${entry.sessionId}: ${
+          binding.ok
+            ? `binding provider '${binding.value.name}' does not match session provider '${providerName}'`
+            : this.options.providers.renderBindingFailure(binding.failure)
+        }.`,
+      );
+      return null;
+    }
+    const readiness = await binding.value.readiness('recovery', this.options.runtime.storage);
+    if (!readiness.ok) {
+      this.log(
+        `${operation} skipped for session ${entry.sessionId}: ${this.options.providers.renderBindingFailure(readiness.failure)}`,
+      );
+      return null;
+    }
+    return binding.value;
+  }
+
   readonly observe: PostCommitObserver = (appended) => {
     const sessionIds = new Set<string>();
     let sawContinuationLeaseEvent = false;
@@ -120,7 +146,7 @@ export class LifecycleReactor {
       this.rescheduleContinuationLeaseTimer();
     }
     this.enqueueWork(
-      readSessionRetentionWorkForSessionIds(this.options.db(), [...sessionIds], {
+      readSessionRetentionWorkForSessionIds(this.options.db(), this.options.readCtx, [...sessionIds], {
         nowMs: this.options.time.now(),
       }),
     );
@@ -132,12 +158,12 @@ export class LifecycleReactor {
     const expiredSessionIds = this.expireOverdueContinuationLeases();
     this.rescheduleContinuationLeaseTimer();
     this.enqueueWork(
-      readSessionRetentionWorkForSessionIds(db, expiredSessionIds, {
+      readSessionRetentionWorkForSessionIds(db, this.options.readCtx, expiredSessionIds, {
         nowMs: this.options.time.now(),
       }),
     );
     this.enqueueWork(
-      readSessionRetentionWorkForEntries(db, listProjectionSessionEntries(db), {
+      readSessionRetentionWorkForEntries(db, this.options.readCtx, listProjectionSessionEntries(db), {
         nowMs: this.options.time.now(),
       }),
     );
@@ -165,22 +191,20 @@ export class LifecycleReactor {
   async discardSessionArtifacts(sessionId: string): Promise<void> {
     const entry = readProjectionSessionEntriesById(this.options.db(), [sessionId]).get(sessionId);
     if (!entry) return;
-    const provider = this.options.providers.get(entry.provider);
-    if (!provider) return;
-    if (provider.artifacts.kind !== 'managed') {
+    const bound = await this.readyBoundProvider(entry, 'On-demand artifact discard');
+    if (bound === null) return;
+    if (bound.artifacts.kind !== 'managed') {
       this.log(
-        `On-demand artifact discard skipped for session ${sessionId}: provider '${entry.provider}' declares no artifacts.`,
+        `On-demand artifact discard skipped for session ${sessionId}: provider '${providerSessionProvider(entry)}' declares no artifacts.`,
       );
       return;
     }
-    if (entry.sessionAuthority.kind !== 'provider') return;
-    const handles = collectArtifactHandles(entry, provider, this.options.runtime);
+    const handles = collectArtifactHandles(entry, bound, this.options.runtime);
     if (handles.length === 0) return;
     await this.archiveArtifactsBeforeDiscard(entry, handles);
     try {
-      await provider.artifacts.discardArtifacts({
+      await bound.artifacts.discardArtifacts({
         handles,
-        source: entry.sessionAuthority.source,
         runtime: this.options.runtime,
       });
     } catch (error: unknown) {
@@ -190,7 +214,7 @@ export class LifecycleReactor {
 
   async enforceRetention(work: SessionRetentionWork): Promise<void> {
     const { jobId, sessionId } = work;
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
+    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
       return;
     }
 
@@ -202,21 +226,11 @@ export class LifecycleReactor {
     if (entry.retention !== 'discard_provider_artifacts_on_terminal') {
       return;
     }
-    // Orchestration sessions own no provider-native artifact. Their child
-    // provider sessions enforce their own retention independently.
-    if (entry.sessionAuthority.kind !== 'provider') {
-      return;
-    }
-
-    const provider = this.options.providers.get(entry.provider);
-    if (provider === undefined) {
-      this.log(`Retention discard skipped for session ${sessionId}: unknown provider '${entry.provider}'.`);
-      return;
-    }
-
-    const recordedHandles = collectArtifactHandles(entry, provider, this.options.runtime, { jobId });
+    const bound = await this.readyBoundProvider(entry, 'Retention discard');
+    if (bound === null) return;
+    const recordedHandles = collectArtifactHandles(entry, bound, this.options.runtime, { jobId });
     const attemptFloor = this.attemptFloorBySession.get(sessionId) ?? 0;
-    const attempt = readNextRetentionDiscardAttempt(this.options.db(), sessionId, attemptFloor);
+    const attempt = readNextRetentionDiscardAttempt(this.options.db(), this.options.readCtx, sessionId, attemptFloor);
 
     try {
       const requested = appendRetentionDiscardRequested(this.options.commitEvents, {
@@ -236,21 +250,17 @@ export class LifecycleReactor {
       return;
     }
 
-    if (hasTerminalRetentionDiscardOutcome(this.options.db(), sessionId)) {
+    if (hasTerminalRetentionDiscardOutcome(this.options.db(), this.options.readCtx, sessionId)) {
       return;
     }
 
-    const preDeleteEntry = this.readFreshSessionEntry(sessionId);
-    if (
-      preDeleteEntry === null ||
-      preDeleteEntry.sessionAuthority.kind !== 'provider' ||
-      this.hasRetentionProtection(preDeleteEntry)
-    ) {
+    const preDeleteEntry = this.readFreshProviderSession(sessionId);
+    if (preDeleteEntry === null || this.hasRetentionProtection(preDeleteEntry)) {
       this.appendCompleted(sessionId, attempt, recordedHandles, 'skipped_protected');
       return;
     }
 
-    if (provider.artifacts.kind === 'none') {
+    if (bound.artifacts.kind === 'none') {
       this.appendCompleted(sessionId, attempt, recordedHandles, 'provider_declares_none');
       return;
     }
@@ -262,9 +272,8 @@ export class LifecycleReactor {
 
     try {
       await this.archiveArtifactsBeforeDiscard(preDeleteEntry, recordedHandles, jobId);
-      const outcome = await provider.artifacts.discardArtifacts({
+      const outcome = await bound.artifacts.discardArtifacts({
         handles: recordedHandles,
-        source: preDeleteEntry.sessionAuthority.source,
         runtime: this.options.runtime,
       });
       this.appendCompleted(sessionId, attempt, recordedHandles, outcome.kind);
@@ -280,7 +289,7 @@ export class LifecycleReactor {
   }
 
   private async archiveArtifactsBeforeDiscard(
-    entry: SessionEntry,
+    entry: ProviderSession,
     handles: readonly string[],
     jobId?: string,
   ): Promise<void> {
@@ -305,7 +314,6 @@ export class LifecycleReactor {
         await archiveProviderArtifactsForJob({
           runtime: this.options.runtime,
           entry,
-          provider: entry.provider,
           jobId: artifactJobId,
           handles: artifactHandles,
           archivedAt: new Date(this.options.time.now()).toISOString(),
@@ -318,12 +326,12 @@ export class LifecycleReactor {
     }
   }
 
-  private readFreshSessionEntry(sessionId: string): SessionEntry | null {
+  private readFreshProviderSession(sessionId: string): ProviderSession | null {
     return readProjectionSessionEntriesById(this.options.db(), [sessionId]).get(sessionId) ?? null;
   }
 
-  private readRetentionEntryForRequest(sessionId: string): SessionEntry | null {
-    const entry = this.readFreshSessionEntry(sessionId);
+  private readRetentionEntryForRequest(sessionId: string): ProviderSession | null {
+    const entry = this.readFreshProviderSession(sessionId);
     if (entry === null) {
       return null;
     }
@@ -337,7 +345,7 @@ export class LifecycleReactor {
     return entry;
   }
 
-  private hasRetentionProtection(entry: SessionEntry): boolean {
+  private hasRetentionProtection(entry: ProviderSession): boolean {
     return (
       entry.activeJobId !== undefined || isProtectiveContinuationLease(entry.continuationLease, this.options.time.now())
     );
@@ -346,11 +354,10 @@ export class LifecycleReactor {
   private readTerminalCauseRef(sessionId: string, jobId: string): CauseRef | undefined {
     const row = this.options
       .db()
-      .prepare<[string, string], { seq: number }>(
-        `SELECT seq
+      .prepare<[string, string], EventsRow>(
+        `SELECT *
            FROM events
           WHERE type = 'job.terminal.recorded'
-            AND stream_kind = 'job'
             AND stream_id = ?
             AND json_extract(refs, '$.sessionId') = ?
           ORDER BY seq ASC
@@ -360,6 +367,7 @@ export class LifecycleReactor {
     if (row === undefined) {
       return undefined;
     }
+    decodeStoredBody(row, this.options.readCtx);
     return {
       stream: { kind: 'job', id: jobId },
       seq: row.seq,
@@ -433,7 +441,7 @@ export class LifecycleReactor {
       if (pairs.length === 0) {
         return;
       }
-      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), pairs, {
+      const workByPair = readSessionRetentionWorkForPairs(this.options.db(), this.options.readCtx, pairs, {
         nowMs: this.options.time.now(),
       });
 
@@ -462,9 +470,9 @@ export class LifecycleReactor {
     }
   }
 
-  private pendingContinuationLeaseEntries(): Array<SessionEntry & { continuationLease: PendingContinuationLease }> {
+  private pendingContinuationLeaseEntries(): Array<ProviderSession & { continuationLease: PendingContinuationLease }> {
     return listProjectionSessionEntries(this.options.db()).filter(
-      (entry): entry is SessionEntry & { continuationLease: PendingContinuationLease } =>
+      (entry): entry is ProviderSession & { continuationLease: PendingContinuationLease } =>
         entry.continuationLease?.status === 'pending',
     );
   }
@@ -484,19 +492,22 @@ export class LifecycleReactor {
   }
 
   private appendContinuationLeaseExpired(
-    entry: SessionEntry & { continuationLease: PendingContinuationLease },
+    entry: ProviderSession & { continuationLease: PendingContinuationLease },
     nowMs: number,
   ): boolean {
     const expiredAt = new Date(nowMs).toISOString();
     const lease: ExpiredContinuationLease = {
       staleJobId: entry.continuationLease.staleJobId,
+      workflowId: entry.continuationLease.workflowId,
+      workflowSlotId: entry.continuationLease.workflowSlotId,
+      replacementGeneration: entry.continuationLease.replacementGeneration,
       reason: entry.continuationLease.reason,
       expiresAt: entry.continuationLease.expiresAt,
       recordedAt: entry.continuationLease.recordedAt,
       status: 'expired',
       expiredAt,
     };
-    const nextEntry: SessionEntry = {
+    const nextEntry: ProviderSession = {
       ...entry,
       continuationLease: lease,
       lastUsedAt: expiredAt,
@@ -550,7 +561,7 @@ export class LifecycleReactor {
         this.rescheduleContinuationLeaseTimer();
         if (expiredSessionIds.length > 0) {
           this.enqueueWork(
-            readSessionRetentionWorkForSessionIds(this.options.db(), expiredSessionIds, {
+            readSessionRetentionWorkForSessionIds(this.options.db(), this.options.readCtx, expiredSessionIds, {
               nowMs: this.options.time.now(),
             }),
           );

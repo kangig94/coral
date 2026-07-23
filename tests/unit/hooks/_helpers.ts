@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
-import { projectSlug } from '../../../clients/hooks/lib/plugin-paths.mjs';
+import { projectPathKey } from '../../../clients/hooks/lib/plugin-paths.mjs';
 
 // Hook entry points — absolute paths so tests are independent of cwd resolution.
 export const SESSION_START_HOOK = join(process.cwd(), 'clients', 'hooks', 'session-start.mjs');
@@ -77,14 +77,13 @@ export function createFixture(): HookFixture {
   const root = mkdtempSync(join(tmpdir(), 'coral-hooks-'));
   const tmpRoot = join(root, 'tmp-root');
   const projectRoot = join(root, 'project-root');
-  const projectSlug = projectRoot.replace(/\//g, '-');
   const fixture = {
     root,
     tmpRoot,
     jobsDir: join(tmpRoot, 'coral-jobs'),
     pluginRoot: join(root, 'plugin-root'),
     projectRoot,
-    snapshotDir: join(tmpRoot, 'coral', projectSlug),
+    snapshotDir: join(tmpRoot, 'coral', projectPathKey(projectRoot)),
     // Coral's sandbox-writable /tmp root. In tests it is the fixture's temp root;
     // runHook mirrors it into CORAL_WORK_ROOT_OVERRIDE for the hook subprocess, so
     // projectTmpDir (now nested under sandboxTmpDir) resolves back to snapshotDir.
@@ -101,7 +100,11 @@ export function createFixture(): HookFixture {
 // live-work-registry.mjs; pass fixture.workRoot as CORAL_WORK_ROOT_OVERRIDE to the
 // hook subprocess so it resolves sandboxTmpDir() to the same place.
 export function liveWorkSubagentsDir(fixture: HookFixture, sessionId: string): string {
-  return join(fixture.workRoot, 'coral-work', projectSlug(fixture.projectRoot), sessionId, 'subagents');
+  return join(fixture.workRoot, 'coral-work', projectPathKey(fixture.projectRoot), sessionId, 'subagents');
+}
+
+export function liveWorkBackgroundDir(fixture: HookFixture, sessionId: string): string {
+  return join(fixture.workRoot, 'coral-work', projectPathKey(fixture.projectRoot), sessionId, 'bg');
 }
 
 export async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<boolean> {

@@ -259,8 +259,7 @@ class KbRuntimeImpl implements KbRuntime {
           generatedCommunityDocs: options.generatedCommunityDocs ?? activeGenerated.records,
           generatedCommunityGeneration:
             options.generatedCommunityGeneration ?? activeGenerated.generatedCommunityGeneration,
-          generatedCommunityDocsHash:
-            options.generatedCommunityDocsHash ?? activeGenerated.generatedCommunityDocsHash,
+          generatedCommunityDocsHash: options.generatedCommunityDocsHash ?? activeGenerated.generatedCommunityDocsHash,
         });
       },
     };
@@ -475,11 +474,11 @@ class KbRuntimeImpl implements KbRuntime {
   }
 
   publishGeneratedCommunityProjection(publication: KbGeneratedCommunityPublication): void {
-    void Promise.resolve(this.generatedCommunityProjectionCallbacks?.notifyGeneratedCommunityProjection(publication)).catch(
-      (error: unknown) => {
-        backendLog.error('Generated community projection publication failed', error);
-      },
-    );
+    void Promise.resolve(
+      this.generatedCommunityProjectionCallbacks?.notifyGeneratedCommunityProjection(publication),
+    ).catch((error: unknown) => {
+      backendLog.error('Generated community projection publication failed', error);
+    });
   }
 
   recordMutationCommitted(lane: KbIndexMutationLane = 'both', reason?: string): KbIndexState {
@@ -591,8 +590,8 @@ class KbRuntimeImpl implements KbRuntime {
           startSeq: staged.candidate.startSeq,
           currentSeq,
           priorGeneratedGeneration: staged.candidate.priorGeneratedGeneration,
-          currentGeneratedGeneration: this.generatedCommunityProjectionStore.readActiveGeneration()
-            .generatedCommunityGeneration,
+          currentGeneratedGeneration:
+            this.generatedCommunityProjectionStore.readActiveGeneration().generatedCommunityGeneration,
         };
       }
 
@@ -827,7 +826,9 @@ class KbRuntimeImpl implements KbRuntime {
 
   private readCorpusProjectionCommitRecord(commitId: string): CorpusProjectionCommitRecord | null {
     try {
-      const parsed = JSON.parse(this.storagePort.readFileSync(this.corpusProjectionCommitRecordPath(commitId), 'utf-8')) as unknown;
+      const parsed = JSON.parse(
+        this.storagePort.readFileSync(this.corpusProjectionCommitRecordPath(commitId), 'utf-8'),
+      ) as unknown;
       return isCorpusProjectionCommitRecord(parsed) ? parsed : null;
     } catch (error: unknown) {
       if (isNoEntryError(error)) {

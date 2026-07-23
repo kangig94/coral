@@ -3,7 +3,8 @@
 // can copy-paste them into its Bash tool — so commands returned here are
 // already shell-quoted.
 
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { join, resolve } from 'node:path';
 
 import { coralStateRoot } from './hook-utils.mjs';
 
@@ -25,8 +26,14 @@ export function activeBridgeCommand(pluginRoot) {
   return `node "${activeBridgePath(pluginRoot)}"`;
 }
 
-export function projectSlug(projectDir) {
+/** Claude Code's external transcript-directory convention; never use as a Coral-owned path key. */
+export function claudeProjectSlug(projectDir) {
   return projectDir.replace(/\//g, '-');
+}
+
+/** Collision- and traversal-resistant key for every Coral-owned per-project path. */
+export function projectPathKey(projectDir) {
+  return createHash('sha256').update(resolve(projectDir)).digest('hex');
 }
 
 // Per-project Coral scratch dir for ephemeral hook state (ralph loop state, KB
@@ -34,7 +41,7 @@ export function projectSlug(projectDir) {
 // so ALL of Coral's /tmp state lives in one place that is writable both from
 // hooks (outside the sandbox) and from a wrapped command (inside it).
 export function projectTmpDir(projectDir) {
-  return join(sandboxTmpDir(), 'coral', projectSlug(projectDir));
+  return join(sandboxTmpDir(), 'coral', projectPathKey(projectDir));
 }
 
 // Sandbox-WRITABLE scratch root for everything Coral keeps in /tmp. Inside a
@@ -46,14 +53,13 @@ export function projectTmpDir(projectDir) {
 // canonical `/tmp/coral` is not), so a wrapper can record its own liveness here.
 // Tests set CORAL_WORK_ROOT_OVERRIDE to redirect it.
 export function sandboxTmpDir() {
-  return process.env.CORAL_WORK_ROOT_OVERRIDE
-    || join('/tmp', `claude-${process.getuid?.() ?? 0}`);
+  return process.env.CORAL_WORK_ROOT_OVERRIDE || join('/tmp', `claude-${process.getuid?.() ?? 0}`);
 }
 
 // Resolves the project directory for hooks that mutate per-project state.
 // CLAUDE_PROJECT_DIR is the primary source; hook payloads always carry `cwd`
 // as a fallback (per Claude Code common-input-fields contract); '.' is the
-// final escape hatch so downstream projectSlug/path calls don't see undefined.
+// final escape hatch so downstream project path calls don't see undefined.
 export function projectDirFromInput(input, fallback = '.') {
   return process.env.CLAUDE_PROJECT_DIR ?? input?.cwd ?? fallback;
 }

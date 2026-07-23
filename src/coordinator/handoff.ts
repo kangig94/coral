@@ -345,10 +345,7 @@ function resolveSignalPolicy(opts: HandoffOptions): HandoffSignalPolicy {
 
 async function sleepForHandoffPoll(opts: HandoffOptions, ms: number): Promise<void> {
   opts.signal?.throwIfAborted();
-  await opts.runtime.time.sleep(
-    Math.max(0, ms),
-    opts.signal === undefined ? undefined : { signal: opts.signal },
-  );
+  await opts.runtime.time.sleep(Math.max(0, ms), opts.signal === undefined ? undefined : { signal: opts.signal });
   opts.signal?.throwIfAborted();
 }
 

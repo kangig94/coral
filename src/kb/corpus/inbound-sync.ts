@@ -33,13 +33,7 @@ import { mergeMutationLane } from './lanes.js';
 
 type InboundSyncTarget = Pick<
   KbRuntime,
-  | 'entityGraphPath'
-  | 'notePath'
-  | 'wikiPath'
-  | 'sourcePath'
-  | 'communityPath'
-  | 'principlePath'
-  | 'storagePort'
+  'entityGraphPath' | 'notePath' | 'wikiPath' | 'sourcePath' | 'communityPath' | 'principlePath' | 'storagePort'
 > & {
   generatedCommunitySlugs?(): ReadonlySet<string>;
 };
@@ -240,10 +234,7 @@ function applyInboundSyncTrackedPathChange(
   mode: 'present' | 'deleted',
   mutation: InboundSyncMutationDiff,
 ): void {
-  if (
-    trackedPath.kind === 'community' &&
-    target.generatedCommunitySlugs?.().has(trackedPath.slug) === true
-  ) {
+  if (trackedPath.kind === 'community' && target.generatedCommunitySlugs?.().has(trackedPath.slug) === true) {
     return;
   }
 

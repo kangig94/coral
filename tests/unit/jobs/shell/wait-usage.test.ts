@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { Database } from '#src/store/db.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { JobTerminalEvent } from '#src/jobs/records.js';
@@ -7,7 +8,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { readJobEvents } from '#src/jobs/read-queries.js';
 import { publishJobEvents, subscribeJobEvents } from '#src/jobs/shell/event-subscription.js';
@@ -25,7 +26,7 @@ const usage = {
 
 function createDb(): Database {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   return db;
 }
 
@@ -50,7 +51,6 @@ function terminalAppendedEvent(jobId: string, options: { usage?: UsageSummary } 
     project: '/tmp/wait-usage-project',
     correlationId: 'wait-usage-correlation',
     refs: { sessionId: 'wait-usage-session' },
-    bodyVersion: 1,
     body: terminalBody(options),
   };
 }
@@ -66,8 +66,8 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
         project: '/tmp/wait-usage-project',
         correlationId: 'wait-usage-correlation',
         refs: { sessionId: 'wait-usage-session' },
-        bodyVersion: 1,
         body: {
+          owner: { kind: 'provider-session', id: 'wait-usage-session' },
           sessionId: 'wait-usage-session',
           provider: 'codex',
           providerAction: 'exec',
@@ -93,14 +93,13 @@ function commitRecordedTerminal(db: Database, jobId: string, options: { usage?: 
         project: '/tmp/wait-usage-project',
         correlationId: 'wait-usage-correlation',
         refs: { sessionId: 'wait-usage-session' },
-        bodyVersion: 1,
         body: terminalBody(options),
       },
     ],
     {
       now: () => new Date('2026-04-19T00:00:00.000Z'),
       reducers: composeReducers(jobsRegistry),
-      upcasters: createDefaultUpcasterRegistry(),
+      bodyCodec: createEventBodyCodec(),
       providers: permissiveProviderLookupPort,
     },
   );

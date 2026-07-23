@@ -12,6 +12,7 @@ import { kbRuntimeDir } from '../kb/paths.js';
 import { createKbRuntime } from '../kb/runtime.js';
 import { createCurateScheduler, type CurateHandle } from '../kb/curate/scheduler.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
 import { runCommunitySummaryAgent } from '../kb/curate/community/summary-agent.js';
 import { runPromoteRecovery } from '../kb/ops/promote-recovery.js';
 import { cleanupSourceImportRuntimeArtifacts } from '../kb/ops/source/import.js';
@@ -22,7 +23,7 @@ import type { KbDaemonKbReadHealth } from './protocol.js';
 import type { AppendedEvent } from '../store/append.js';
 import { JobStore } from '../jobs/store.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
-import { createDefaultUpcasterRegistry } from '../store/upcaster-registry.js';
+import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
 import {
   KbSourceImportService,
@@ -54,6 +55,7 @@ import {
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
 import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
 
 type KbDaemonWriteRuntimeOptions = {
@@ -65,6 +67,7 @@ type KbDaemonWriteRuntimeOptions = {
   version?: string;
   now?: () => number;
   curateAssistant?: CurateAssistantPort;
+  curateUsageBudget: CurateUsageBudgetPort;
   onJournalEvents?: (appended: readonly AppendedEvent[]) => void;
   onCorpusMutation?: (publication: KbCorpusPublication) => void;
   kiwiAnalyzer?: KiwiSearchAnalyzerPort;
@@ -299,7 +302,11 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     let daemonConsumerDriver: ConsumerDriver | null = null;
 
     try {
-      db = options.db ?? (openWritableStoreDbNoReset(runtime) as unknown as WritableDatabase);
+      db =
+        options.db ??
+        (openWritableStoreDbNoReset(runtime, {
+          storeFormat: currentCoralStoreFormat(),
+        }) as unknown as WritableDatabase);
       const activeDb = db;
       const flavor = readBuildFlavor(options.pluginRoot);
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
@@ -309,7 +316,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
-      const progressStore = new JobStore(backendNamespace, runtime, createDefaultUpcasterRegistry(), {
+      const progressStore = new JobStore(backendNamespace, runtime, createEventBodyCodec(), {
         db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
         providers: noProviderLookupPort,
         observer: (appended) => options.onJournalEvents?.(appended),
@@ -450,6 +457,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           processPort: runtime.process,
           storagePort: runtime.storage,
           envPort: runtime.env,
+          usageBudget: options.curateUsageBudget,
           runCommunitySummaryJob: (signal) => runCommunitySummaryAgent(kb, curateAssistant, signal),
         }),
       };

@@ -30,17 +30,17 @@ import { mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync 
 import { basename, dirname, join } from 'node:path';
 
 import { claudeConfigDir, isValidSessionId } from './hook-utils.mjs';
-import { projectSlug, sandboxTmpDir } from './plugin-paths.mjs';
+import { claudeProjectSlug, projectPathKey, sandboxTmpDir } from './plugin-paths.mjs';
 
 const WORK_DIR = 'coral-work';
 const SUBAGENTS_DIR = 'subagents';
 const BG_DIR = 'bg';
 const SUBAGENT_WINDOW_MS = 60 * 60_000; // 60 min without transcript activity ⇒ presumed dead
-const BG_MTIME_WINDOW_MS = 30_000;      // flock-absent fallback: no heartbeat within 30s ⇒ dead
-const BG_CLEANUP_TTL_MS = 60 * 60_000;  // prune terminal/dead bg entries older than this
+const BG_MTIME_WINDOW_MS = 30_000; // flock-absent fallback: no heartbeat within 30s ⇒ dead
+const BG_CLEANUP_TTL_MS = 60 * 60_000; // prune terminal/dead bg entries older than this
 
 function sessionRoot(projectDir, sessionId) {
-  return join(sandboxTmpDir(), WORK_DIR, projectSlug(projectDir), sessionId);
+  return join(sandboxTmpDir(), WORK_DIR, projectPathKey(projectDir), sessionId);
 }
 
 function subagentsPath(projectDir, sessionId) {
@@ -120,7 +120,7 @@ export function bgWrapperPreamble(bgDir, id) {
     'if true > "$__cbg/$__cid.lock" 2>/dev/null; then exec 9>>"$__cbg/$__cid.lock"; command -v flock >/dev/null 2>&1 && flock -x 9 || true; fi',
     'true > "$__cbg/$__cid.started" 2>/dev/null',
     '( while kill -0 $$ 2>/dev/null; do touch "$__cbg/$__cid.lock" 2>/dev/null || true; sleep 10; done ) & __chb=$!',
-    "trap '__cc=$?; kill \"$__chb\" 2>/dev/null; true > \"$__cbg/$__cid.exited.$__cc\" 2>/dev/null; exit $__cc' EXIT",
+    'trap \'__cc=$?; kill "$__chb" 2>/dev/null; true > "$__cbg/$__cid.exited.$__cc" 2>/dev/null; exit $__cc\' EXIT',
   ].join('; ');
 }
 
@@ -196,7 +196,7 @@ function resolveSubagentsDir(projectDir, sessionId, transcriptPath) {
   if (typeof transcriptPath === 'string' && transcriptPath) {
     return join(dirname(transcriptPath), basename(transcriptPath).replace(/\.jsonl$/, ''), 'subagents');
   }
-  return join(claudeConfigDir(), 'projects', projectSlug(projectDir), sessionId, 'subagents');
+  return join(claudeConfigDir(), 'projects', claudeProjectSlug(projectDir), sessionId, 'subagents');
 }
 
 // === Background-task liveness (reconcile) ===
@@ -242,7 +242,7 @@ function isBgTaskLive(dir, id, task, now) {
   if (task.exited) return false; // clean terminal record present
   if (task.lock) {
     const held = lockHeld(join(dir, `${id}.lock`));
-    if (held === true) return true;  // flock still held ⇒ process alive
+    if (held === true) return true; // flock still held ⇒ process alive
     if (held === false) return false; // flock free ⇒ process died/released
     // held === null ⇒ flock(1) unavailable ⇒ fall through to mtime window
   }

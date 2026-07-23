@@ -7,7 +7,7 @@ import {
   KB_DAEMON_PARENT_RESPONSE_MESSAGE,
   encodeKbDaemonMessage,
   isKbDaemonAbortResult,
-  isKbDaemonCurateAssistantCancelRequest,
+  isKbDaemonCurateRequestCancelRequest,
   isKbDaemonCurateAssistantCompleteRequest,
   isKbDaemonEventMessage,
   isKbDaemonExpansionResult,
@@ -88,6 +88,8 @@ export type KbDaemonCurateAssistantHandler = (
   options: { signal: AbortSignal },
 ) => Promise<string>;
 
+export type KbDaemonCurateUsageBudgetHandler = (options: { signal: AbortSignal }) => Promise<boolean>;
+
 type KbDaemonSupervisorOptions = {
   runtime: Runtime;
   pluginRoot: string;
@@ -101,6 +103,7 @@ type KbDaemonSupervisorOptions = {
   backendNamespace?: string;
   bundleHash?: string;
   curateAssistant?: KbDaemonCurateAssistantHandler;
+  curateUsageBudget?: KbDaemonCurateUsageBudgetHandler;
   onEvent?: (message: KbDaemonEventMessage) => void;
   log?: (message: string) => void;
 };
@@ -272,6 +275,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   const bundleHash = resolveDaemonBundleHash(pluginRoot, options.bundleHash);
   const forwardedKbDaemonEnv = collectForwardedKbDaemonEnv(runtime.env);
   const parentCurateAssistant = options.curateAssistant;
+  const parentCurateUsageBudget = options.curateUsageBudget;
   const log = options.log ?? (() => undefined);
 
   let phase: KbDaemonPhase = 'stopped';
@@ -454,6 +458,25 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     target: DaemonProcessLike,
     requestGeneration: number,
   ): void => {
+    const runActiveParentRequest = <Result>(handler: (signal: AbortSignal) => Promise<Result>): void => {
+      const controller = new AbortController();
+      const key = parentRequestKey(requestGeneration, request.id);
+      activeParentRequests.set(key, { generation: requestGeneration, controller });
+      void Promise.resolve()
+        .then(() => handler(controller.signal))
+        .then((result) => {
+          if (activeParentRequests.get(key)?.controller !== controller) return;
+          writeParentResponse(target, { id: request.id, ok: true, result });
+        })
+        .catch((error: unknown) => {
+          if (activeParentRequests.get(key)?.controller !== controller) return;
+          writeParentResponse(target, { id: request.id, ok: false, error: { message: errorMessage(error) } });
+        })
+        .finally(() => {
+          if (activeParentRequests.get(key)?.controller === controller) activeParentRequests.delete(key);
+        });
+    };
+
     switch (request.method) {
       case 'curate.assistant.complete': {
         if (!isKbDaemonCurateAssistantCompleteRequest(request.params)) {
@@ -473,36 +496,32 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           return;
         }
         const params = request.params;
-        const controller = new AbortController();
-        const key = parentRequestKey(requestGeneration, request.id);
-        activeParentRequests.set(key, { generation: requestGeneration, controller });
-        void Promise.resolve()
-          .then(() => parentCurateAssistant(params, { signal: controller.signal }))
-          .then((result) => {
-            if (activeParentRequests.get(key)?.controller !== controller) {
-              return;
-            }
-            writeParentResponse(target, { id: request.id, ok: true, result });
-          })
-          .catch((error: unknown) => {
-            if (activeParentRequests.get(key)?.controller !== controller) {
-              return;
-            }
-            writeParentResponse(target, { id: request.id, ok: false, error: { message: errorMessage(error) } });
-          })
-          .finally(() => {
-            if (activeParentRequests.get(key)?.controller === controller) {
-              activeParentRequests.delete(key);
-            }
-          });
+        runActiveParentRequest((signal) => parentCurateAssistant(params, { signal }));
         return;
       }
-      case 'curate.assistant.cancel': {
-        if (!isKbDaemonCurateAssistantCancelRequest(request.params)) {
+      case 'curate.usage-budget.exhausted': {
+        if (request.params !== undefined || parentCurateUsageBudget === undefined) {
           writeParentResponse(target, {
             id: request.id,
             ok: false,
-            error: { message: 'Malformed KB daemon curate assistant cancel request.' },
+            error: {
+              message:
+                request.params !== undefined
+                  ? 'Malformed KB daemon curate usage budget request.'
+                  : 'KB daemon curate usage budget parent handler is not configured.',
+            },
+          });
+          return;
+        }
+        runActiveParentRequest((signal) => parentCurateUsageBudget({ signal }));
+        return;
+      }
+      case 'curate.request.cancel': {
+        if (!isKbDaemonCurateRequestCancelRequest(request.params)) {
+          writeParentResponse(target, {
+            id: request.id,
+            ok: false,
+            error: { message: 'Malformed KB daemon curate request cancel.' },
           });
           return;
         }

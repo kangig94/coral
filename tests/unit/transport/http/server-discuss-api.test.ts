@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, request as httpRequest, type IncomingMessage as ClientIncomingMessage } from 'node:http';
 
@@ -181,6 +182,7 @@ describe('server discuss API', () => {
       }
       const effectiveRuntime = runtime ? { ...runtime, time: realTimePort() } : undefined;
       const core = createCoordinatorCore({
+        storeFormat: currentCoralStoreFormat(),
         runtime: effectiveRuntime as Runtime,
         resolveProjectSourceFn,
         bootSnapshot: {
@@ -505,7 +507,7 @@ describe('server discuss API', () => {
     const firstSnapshot = await appendPersistedEvents(firstHarness, 'shared-session', (current) => [
       makeEvent(
         current.sessionId,
-        secondHarness.projectRoot,
+        firstHarness.projectRoot,
         current.state.topic,
         current.lastAppliedSeq + 1,
         'bid.submitted',

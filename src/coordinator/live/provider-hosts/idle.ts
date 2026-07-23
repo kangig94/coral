@@ -1,7 +1,7 @@
 import type { ProviderServerHandle } from '../provider-server-transport.js';
 import type { TimePort } from '../../../infra/port-types.js';
 import type { Runtime } from '../../../runtime/ports.js';
-import { activeLeaseCount } from './lease.js';
+import { activePinCount } from './lease.js';
 import type { HostStatsState, ProviderHostEntry } from './state.js';
 
 const DEFAULT_BROKER_IDLE_MS = 300_000;
@@ -48,7 +48,11 @@ export function clearIdleTimer(entry: ProviderHostEntry, time: Pick<TimePort, 'c
 }
 
 function usesHostStats(entry: ProviderHostEntry): boolean {
-  return entry.spec.shared === true;
+  return entry.spec.leaseMode === 'shared' && entry.spec.idlePolicy === 'host-stats';
+}
+
+function hasDaemonLifetime(entry: ProviderHostEntry): boolean {
+  return entry.spec.leaseMode === 'shared' && entry.spec.idlePolicy === 'daemon';
 }
 
 function isHostIdleFromStats(entry: ProviderHostEntry): boolean {
@@ -60,7 +64,10 @@ function canCloseIdleHost(entry: ProviderHostEntry, entries: Map<string, Provide
   if (entry.closingError || entries.get(entry.hostKey) !== entry || !entry.handle) {
     return false;
   }
-  if (entry.waiters.length > 0 || activeLeaseCount(entry) > 0) {
+  if (activePinCount(entry) > 0) {
+    return false;
+  }
+  if (hasDaemonLifetime(entry)) {
     return false;
   }
   if (usesHostStats(entry)) {
@@ -81,7 +88,11 @@ export function maybeArmIdleTimer(
   if (!entry.handle || entry.closingError) {
     return;
   }
-  if (entry.waiters.length > 0 || activeLeaseCount(entry) > 0) {
+  if (activePinCount(entry) > 0) {
+    return;
+  }
+  if (hasDaemonLifetime(entry)) {
+    clearIdleTimer(entry, options.runtime.time);
     return;
   }
   if (usesHostStats(entry) && !isHostIdleFromStats(entry)) {
@@ -117,18 +128,14 @@ export function attachHostNotificationListener(
     return;
   }
 
-  entry.hostStats = {
-    liveControllers: 0,
-    activeTurns: 0,
-  };
+  // Unknown is not idle. A shared host becomes eligible only after it has
+  // explicitly reported a zero/zero snapshot.
+  entry.hostStats = null;
   entry.disposeHostNotifications = handle.onNotification((message) => {
     if (typeof message?.method !== 'string') {
       return;
     }
-    if (message.method !== 'host/stats') {
-      clearIdleTimer(entry, options.runtime.time);
-      return;
-    }
+    if (message.method !== 'host/stats') return;
 
     const stats = readHostStats(message.params);
     if (!stats) {

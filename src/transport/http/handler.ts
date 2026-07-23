@@ -89,7 +89,7 @@ const HTTP_BOOTSTRAP_LIVENESS_PRINCIPAL: Principal = {
   attenuatedCaps: new Set<Capability>(['liveness']),
 };
 type RestrictedRemoteTransportOption = {
-  option: 'bypassPermissions' | 'networkEnv' | 'coralEnv' | 'providerCredentials';
+  option: 'bypassPermissions' | 'networkEnv' | 'coralEnv' | 'providerScope';
   message: string;
 };
 const eventStreamQuerySchema = z
@@ -738,12 +738,13 @@ async function handleCatalogUnaryRoute(
 ): Promise<void> {
   if (
     isRecord(request) &&
-    Object.prototype.hasOwnProperty.call(request, 'providerCredentials') &&
-    request.providerCredentials !== undefined
+    Object.prototype.hasOwnProperty.call(request, 'providerScope') &&
+    request.providerScope !== undefined
   ) {
     sendJson(res, 400, {
       code: 'invalid_request',
-      message: '`providerCredentials` is selected by the HTTP daemon and cannot be supplied by clients',
+      message: 'Remove `providerScope` from the request; HTTP provider identity is selected by the daemon.',
+      remediation: 'Omit providerScope and retry; HTTP identity is daemon-owned.',
     });
     return;
   }

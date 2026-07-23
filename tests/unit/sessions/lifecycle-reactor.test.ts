@@ -13,34 +13,40 @@ import { RecoveryRegistry } from '#src/jobs/reconcile/registry.js';
 import { applyRecoveryAction } from '#src/coordinator/services/recovery/actions.js';
 import { RecoveryService } from '#src/coordinator/services/recovery/service.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { createWorkflowRecoveryFinalizer } from '#src/coordinator/services/workflow-recovery-finalizer.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
-import { defineProvider } from '#src/providers/define.js';
+import { defineProvider } from '#src/providers/registry.js';
 import { managed, none } from '#src/providers/capability.js';
 import { SessionManager } from '#src/sessions/shell.js';
-import { TEST_CODEX_SOURCE, TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec, type FixtureProviderAccess } from '#tests/helpers/provider-binding.js';
 import { createLifecycleReactor } from '#src/sessions/lifecycle-reactor.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import {
   appendRetentionDiscardCompleted,
   appendRetentionDiscardFailed,
   appendRetentionDiscardRequested,
 } from '#src/sessions/retention-outbox.js';
 import { createProjectionSessionLookup } from '#src/sessions/lookup.js';
-import { readProjectionSessionEntry } from '#src/sessions/projections.js';
+import { readProjectionProviderSession } from '#src/sessions/projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/append.js';
 import { decodeEventBody } from '#src/store/body-codec.js';
 import type { Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { ArtifactCleanupRuntime, DiscardOutcome } from '#src/providers/contract.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
+import {
+  prepareFixtureAppServerExecutionPlan,
+  prepareFixtureExecutionPlan,
+  prepareFixtureHost,
+  type FixtureExecutionPlan,
+} from '#tests/helpers/scripted-provider.js';
 import type { CauseRef } from '#src/causality/cause-ref.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
@@ -79,6 +85,7 @@ function createHarness(
     discardArtifacts?: (handles: readonly string[], runtime: ArtifactCleanupRuntime) => Promise<DiscardOutcome>;
     locateArtifact?: (conversationRef: string) => string | null;
     afterCommit?: (appended: readonly AppendedEvent[], commitEvents: CommitEventsFn) => void;
+    interruptedRecovery?: boolean;
   } = {},
 ): Harness {
   const artifactMode = options.artifactMode ?? 'managed';
@@ -91,8 +98,46 @@ function createHarness(
   const projectRoot = '/workspace/project';
   const providerRegistry = new ProviderRegistry();
   const discardCalls: Array<readonly string[]> = [];
+  const providerBuilder = options.interruptedRecovery
+    ? defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
+        name: 'codex',
+        transport: 'app-server',
+        run: noopProvider,
+        prepareExecutionPlan: prepareFixtureAppServerExecutionPlan,
+        appServer: {
+          name: 'codex',
+          planHost: (input) => {
+            if (input.purpose !== 'execution') throw new Error('Codex fixture has no curation host.');
+            return prepareFixtureHost(input, {
+              provider: 'codex',
+              command: 'codex',
+              args: [],
+              cwd: input.request.cwd,
+              env: {},
+              leaseMode: 'job-exclusive',
+            });
+          },
+          compileStableHost: (host: FixtureExecutionPlan['host']) => host.serverSpec,
+        },
+        recovery: {
+          finalizeInterrupted: (probeResult, _continuity, context) =>
+            probeResult.resumable && context.preservedConversationRef !== undefined
+              ? { kind: 'set_resumable' as const, conversationRef: context.preservedConversationRef }
+              : { kind: 'clear_non_resumable' as const },
+          finalizeFromArtifacts: async () => {
+            throw new Error('waiting recovery must not inspect artifacts');
+          },
+        },
+      })
+    : defineProvider<FixtureExecutionPlan, FixtureProviderAccess>({
+        name: 'codex',
+        transport: 'standalone',
+        run: noopProvider,
+        prepareExecutionPlan: prepareFixtureExecutionPlan,
+      });
   providerRegistry.register(
-    defineProvider({ name: 'codex', run: noopProvider })
+    providerBuilder
+      .binding(fixtureProviderBindingCodec('codex'))
       .artifacts(
         artifactMode === 'managed'
           ? managed({
@@ -113,14 +158,14 @@ function createHarness(
   );
 
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
   const logs: string[] = [];
   const appendedBatches: AppendedEvent[][] = [];
   const coordinatorCommit: CommitEventsFn = (cb) => {
     const appended = commit(db, cb, {
       now: () => new Date(runtime.time.now()),
       reducers,
-      upcasters,
+      bodyCodec,
       providers: permissiveProviderLookupPort,
     });
     appendedBatches.push(appended);
@@ -132,13 +177,14 @@ function createHarness(
   };
   const reactor = createLifecycleReactor({
     db: () => db,
+    readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
     providers: providerRegistry,
     runtime,
     time: runtime.time,
     commitEvents: coordinatorCommit,
     log: (message) => logs.push(message),
   });
-  const progressStore = new JobStore(namespace, runtime, upcasters, {
+  const progressStore = new JobStore(namespace, runtime, bodyCodec, {
     db,
     eventBus: new TypedEventBus(),
     reducers,
@@ -167,11 +213,9 @@ async function openClaimedSession(
   harness: Harness,
   jobId: string,
   retention: 'retain' | 'discard_provider_artifacts_on_terminal' = 'discard_provider_artifacts_on_terminal',
-  orchestration = false,
 ): Promise<string> {
   const entry = harness.sessionManager.allocate({
-    provider: 'codex',
-    sessionAuthority: orchestration ? { kind: 'orchestration' } : { kind: 'provider', source: TEST_CODEX_SOURCE },
+    binding: TEST_CODEX_BINDING,
     name: `session-${jobId}`,
     cwd: harness.projectRoot,
     projectRoot: harness.projectRoot,
@@ -192,7 +236,6 @@ async function recordArtifact(harness: Harness, sessionId: string, jobId: string
     harness.sessionManager.recordArtifactHandleAtomic(sessionId, {
       expectedActiveJobId: jobId,
       expectedVersion: current.version,
-      provider: 'codex',
       handle,
       identity: { kind: 'test-artifact', handle },
       sourceJobId: jobId,
@@ -209,6 +252,9 @@ function recordContinuationLease(
   harness.sessionManager.recordContinuationLease({
     sessionId,
     jobId: staleJobId,
+    workflowId: 'workflow-1',
+    workflowSlotId: 'workflow-1:0:0',
+    replacementGeneration: 1,
     reason: 'stale_recovery',
     expiresAt: new Date(expiresAtMs).toISOString(),
   });
@@ -216,18 +262,21 @@ function recordContinuationLease(
 
 function appendContinuationLeaseRecord(
   commitEvents: CommitEventsFn,
-  entry: SessionEntry,
+  entry: ProviderSession,
   staleJobId: string,
   expiresAtMs: number,
 ): void {
   const lease = {
     status: 'pending' as const,
     staleJobId,
+    workflowId: 'workflow-1',
+    workflowSlotId: 'workflow-1:0:0',
+    replacementGeneration: 1,
     reason: 'stale_recovery' as const,
     expiresAt: new Date(expiresAtMs).toISOString(),
     recordedAt: new Date(expiresAtMs - 1).toISOString(),
   };
-  const nextEntry: SessionEntry = {
+  const nextEntry: ProviderSession = {
     ...entry,
     continuationLease: lease,
     version: entry.version + 1,
@@ -237,7 +286,6 @@ function appendContinuationLeaseRecord(
       type: 'session.continuation_lease.recorded',
       stream: { kind: 'session', id: entry.sessionId },
       refs: { sessionId: entry.sessionId, jobId: staleJobId },
-      bodyVersion: 1,
       body: {
         entry: nextEntry,
         sessionId: entry.sessionId,
@@ -248,12 +296,7 @@ function appendContinuationLeaseRecord(
   });
 }
 
-function initRunningJob(
-  harness: Harness,
-  jobId: string,
-  sessionId: string,
-  jobKind: 'provider' | 'workflow' = 'provider',
-) {
+function initRunningJob(harness: Harness, jobId: string, sessionId: string) {
   const base = {
     jobId,
     sessionId,
@@ -262,17 +305,13 @@ function initRunningJob(
     backendNamespace: harness.namespace,
     initialPhase: 'running',
   } as const;
-  initTestJob(
-    harness.progressStore,
-    jobKind === 'workflow'
-      ? { ...base, jobKind, providerCredentials: TEST_PROVIDER_CREDENTIALS }
-      : { ...base, jobKind },
-  );
+  initTestJob(harness.progressStore, { ...base, jobKind: 'provider' });
 }
 
 function completeJob(harness: Harness, jobId: string, sessionId: string): number {
   return commitJobTerminal(harness.progressStore, jobId, sessionId, {
     content: 'done',
+    durationMs: 0,
     outcome: { kind: 'completed' },
   });
 }
@@ -287,9 +326,9 @@ function completeJobViaCoordinatorCommit(harness: Harness, jobId: string, sessio
         project: harness.projectRoot,
         terminal: {
           content: 'done',
+          durationMs: 0,
           outcome: { kind: 'completed' },
         },
-        continuity: null,
       });
       return undefined;
     }) ?? []
@@ -495,9 +534,24 @@ describe('LifecycleReactor retention enforcement', () => {
     if (afterStaleRelease === null) {
       throw new Error(`Expected session ${sessionId}`);
     }
-    await expect(
-      harness.sessionManager.claimForJobAtomic(sessionId, resumedJobId, afterStaleRelease.version),
-    ).resolves.toBe(true);
+    const claimedEntries: ProviderSession[] = [];
+    harness.coordinatorCommit((c) => {
+      claimedEntries.push(
+        harness.sessionManager.appendContinuationReplacementClaim(c, {
+          sessionId,
+          staleJobId,
+          resumedJobId,
+          workflowId: 'workflow-1',
+          workflowSlotId: 'workflow-1:0:0',
+          replacementGeneration: 1,
+          expectedVersion: afterStaleRelease.version,
+        }),
+      );
+      return undefined;
+    });
+    const claimedEntry = claimedEntries[0];
+    if (claimedEntry === undefined) throw new Error('Expected committed replacement claim');
+    harness.sessionManager.observeCommittedEntry(claimedEntry);
     await harness.reactor.waitForIdle();
 
     expect(readRetentionEvents(harness, sessionId)).toEqual([]);
@@ -564,7 +618,7 @@ describe('LifecycleReactor retention enforcement', () => {
         if (!appended.some((event) => event.type === 'session.retention.discard.requested')) {
           return;
         }
-        const entry = readProjectionSessionEntry(harness.db, protectedSessionId);
+        const entry = readProjectionProviderSession(harness.db, protectedSessionId);
         if (entry === null) {
           throw new Error(`Expected session ${protectedSessionId}`);
         }
@@ -600,8 +654,7 @@ describe('LifecycleReactor retention enforcement', () => {
   it('rejects contradictory completed and failed outcomes transactionally', async () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      binding: TEST_CODEX_BINDING,
       name: 'session-retention-validator',
       cwd: harness.projectRoot,
       projectRoot: harness.projectRoot,
@@ -639,8 +692,7 @@ describe('LifecycleReactor retention enforcement', () => {
   it('treats duplicate requested attempts as outbox no-ops before insertion', async () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({
-      provider: 'codex',
-      sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+      binding: TEST_CODEX_BINDING,
       name: 'session-retention-duplicate',
       cwd: harness.projectRoot,
       projectRoot: harness.projectRoot,
@@ -683,7 +735,7 @@ describe('LifecycleReactor retention enforcement', () => {
 
   it('ignores synthetic releases that have no matching terminal for the same job', async () => {
     const harness = createHarness();
-    const sourceClaimId = 'synthetic-source-claim';
+    const sourceClaimId = 'synthetic-access-claim';
     const sessionId = await openClaimedSession(harness, sourceClaimId);
 
     harness.sessionManager.releaseJob(sessionId, sourceClaimId);
@@ -740,7 +792,11 @@ describe('LifecycleReactor retention enforcement', () => {
     });
     const jobId = 'job-locate-fallback';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-fallback');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-fallback',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-fallback' },
+    });
     initRunningJob(harness, jobId, sessionId);
 
     completeJob(harness, jobId, sessionId);
@@ -766,7 +822,11 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness({ locateArtifact: () => null });
     const jobId = 'job-locate-miss';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-missing');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-missing',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-missing' },
+    });
     initRunningJob(harness, jobId, sessionId);
 
     completeJob(harness, jobId, sessionId);
@@ -789,7 +849,11 @@ describe('LifecycleReactor retention enforcement', () => {
     const harness = createHarness({ locateArtifact: locateSpy });
     const jobId = 'job-handle-precedence';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-precedence');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-precedence',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-precedence' },
+    });
     await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-recorded.jsonl');
     initRunningJob(harness, jobId, sessionId);
 
@@ -827,7 +891,11 @@ describe('LifecycleReactor retention enforcement', () => {
     });
     const jobId = 'job-ondemand-locate';
     const sessionId = await openClaimedSession(harness, jobId, 'retain');
-    harness.sessionManager.setConversationRef(sessionId, 'thread-ondemand');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-ondemand',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-ondemand' },
+    });
 
     await harness.reactor.discardSessionArtifacts(sessionId);
 
@@ -1049,7 +1117,7 @@ describe('LifecycleReactor retention enforcement', () => {
       throw new Error(`Expected status for ${jobId}`);
     }
 
-    applyRecoveryAction(
+    await applyRecoveryAction(
       { type: 'markError', jobId, status, fault: { kind: 'wrapper_lost' } },
       {
         progressStore: harness.progressStore,
@@ -1058,20 +1126,19 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
-        providerRegistry: harness.providerRegistry,
         createInvocationContext: (projectRoot) => ({
           projectRoot,
           pluginRoot: projectRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
         }),
-        getRecoveryService: () =>
-          ({
-            validateProviderRecoveryAuthority: () => true,
-          }) as never,
+        getRecoveryService: () => {
+          throw new Error('markError must not fabricate or capture provider recovery authority');
+        },
         sessionLookup: createProjectionSessionLookup(harness.db),
         emitSessionReleased: () => {},
         coordinatorCommit: harness.coordinatorCommit,
+        signal: new AbortController().signal,
       },
     );
 
@@ -1102,7 +1169,6 @@ describe('LifecycleReactor retention enforcement', () => {
         runningRecoverable: [],
         log: () => {},
         runtime: harness.runtime,
-        providerRegistry: harness.providerRegistry,
         createInvocationContext: (projectRoot) => ({
           projectRoot,
           pluginRoot: projectRoot,
@@ -1115,6 +1181,7 @@ describe('LifecycleReactor retention enforcement', () => {
         sessionLookup: createProjectionSessionLookup(harness.db),
         emitSessionReleased: () => {},
         coordinatorCommit: harness.coordinatorCommit,
+        signal: new AbortController().signal,
       },
     );
 
@@ -1130,14 +1197,19 @@ describe('LifecycleReactor retention enforcement', () => {
   });
 
   it('observes finalizeInterruptedAppServerJob releases emitted by finalizeJobContinuityAtomic', async () => {
-    const harness = createHarness();
+    const harness = createHarness({ interruptedRecovery: true });
     const jobId = 'job-finalize-interrupted';
     const sessionId = await openClaimedSession(harness, jobId);
-    harness.sessionManager.setConversationRef(sessionId, 'thread-finalize-interrupted');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-finalize-interrupted',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-finalize-interrupted' },
+    });
     initRunningJob(harness, jobId, sessionId);
 
     const launchRecord: JobLaunch = {
       jobId,
+      owner: { kind: 'provider-session', id: sessionId },
       sessionId,
       provider: 'codex',
       projectRoot: harness.projectRoot,
@@ -1151,7 +1223,6 @@ describe('LifecycleReactor retention enforcement', () => {
         cwd: harness.projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        conversationRef: 'thread-finalize-interrupted',
       },
       createdAt: '2026-04-19T00:00:00.000Z',
     };
@@ -1167,7 +1238,6 @@ describe('LifecycleReactor retention enforcement', () => {
       runtime: harness.runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(harness.runtime.ids),
       parentPrincipal: testProjectPrincipal(harness.projectRoot),
-      providerCredentialSourceAvailability: { isAvailable: () => true },
       sessionManager: harness.sessionManager,
       abortRegistry: {
         register: () => 'abort-key',
@@ -1180,12 +1250,6 @@ describe('LifecycleReactor retention enforcement', () => {
       backendNamespace: harness.namespace,
       bundleHash: 'test-bundle',
       progressStore: harness.progressStore,
-      providerHostManager: {
-        acquireServer: async () => {
-          throw new Error('unexpected acquireServer');
-        },
-        borrowLiveServer: async () => null,
-      },
       launchAdmission: {
         releaseLaunch: vi.fn(),
       },
@@ -1214,7 +1278,6 @@ describe('LifecycleReactor retention enforcement', () => {
               project: harness.projectRoot,
               terminal: result,
               diagnostics: options?.diagnostics,
-              continuity: options?.continuity ?? null,
             });
             return undefined;
           });
@@ -1222,7 +1285,13 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     });
 
-    await recoveryService.finalizeInterruptedAppServerJob(launchRecord, runtimeRecord, { reason: 'restart' });
+    const captured = await recoveryService.captureProviderRecoveryAuthority(launchRecord);
+    if (!captured.ok) throw new Error('Expected provider recovery authority.');
+    await recoveryService.finalizeInterruptedAppServerJob(captured.authority, runtimeRecord, {
+      reason: 'restart',
+      signal: new AbortController().signal,
+      onCommitStart: vi.fn(),
+    });
 
     await expectRetentionEvents(harness, sessionId, [
       { type: 'session.retention.discard.requested', attempt: 1, handles: [] },
@@ -1234,29 +1303,5 @@ describe('LifecycleReactor retention enforcement', () => {
       },
     ]);
   });
-
-  it('observes workflow recovery finalization session releases', async () => {
-    const harness = createHarness();
-    const workflowJobId = 'workflow-finalized';
-    const sessionId = await openClaimedSession(harness, workflowJobId, 'discard_provider_artifacts_on_terminal', true);
-    initRunningJob(harness, workflowJobId, sessionId, 'workflow');
-
-    const finalizer = createWorkflowRecoveryFinalizer({
-      runtime: harness.runtime,
-      progressStore: harness.progressStore,
-      coordinatorCommit: harness.coordinatorCommit,
-      emitSessionReleased: () => {},
-      log: () => {},
-    });
-
-    finalizer({
-      outcome: 'completed',
-      workflowJobId,
-      finalOutput: 'workflow done',
-      stepDetails: [],
-    });
-
-    await expectRetentionEvents(harness, sessionId, []);
-  });
 });
-import { initTestJob } from '#tests/helpers/session.js';
+import { checkpointClaimedTestContinuity, initTestJob } from '#tests/helpers/session.js';

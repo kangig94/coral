@@ -11,40 +11,38 @@ import type { ProviderTransportClose } from '../protocol.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import { providerSessionUnavailable } from '../fault.js';
 import { buildJobDiagnostics, buildJobTerminal } from '../terminal.js';
-import { isRecord } from '../../infra/json.js';
-
-/**
- * Copy only the provider-allowlisted keys out of a persisted continuity blob.
- * Lives in the providers layer (not sessions) so the runtime dependency stays
- * providers→sessions type-only; sessions never imports providers.
- */
-export function pickProviderContinuityKeys<const TKeys extends readonly string[]>(
-  value: ProviderContinuityBlob | undefined,
-  allowedKeys: TKeys,
-): Partial<Record<TKeys[number], unknown>> {
-  if (!isRecord(value)) {
-    return {};
-  }
-
-  const picked: Record<string, unknown> = {};
-  for (const key of allowedKeys) {
-    if (Object.prototype.hasOwnProperty.call(value, key)) {
-      picked[key] = value[key];
-    }
-  }
-  return picked as Partial<Record<TKeys[number], unknown>>;
-}
+import type { ProviderExecutionPlan } from '../execution-plan.js';
+import { attachContinuityCommit } from '../internal/continuity-commit.js';
 
 type ContinuitySnapshot = Pick<ProviderContinuityEventBody, 'conversationRef' | 'resumable' | 'providerContinuity'>;
 
 type ContinuityQueue = {
-  lastEmitted: ContinuitySnapshot;
-  pending: ContinuitySnapshot[];
+  lastQueued: ContinuitySnapshot;
+  lastQueuedCommit: Promise<void>;
+  pending: ContinuityQueueEntry[];
+  outstanding: Set<ContinuityQueueEntry>;
+  failure?: Error;
 };
 
 type ContinuityState<TState> = {
   current: TState;
-  pendingTransportClosed?: ProviderTransportClose;
+};
+
+type ContinuityQueueEntry = {
+  snapshot: ContinuitySnapshot;
+  settled: boolean;
+  resolve(): void;
+  rejectPromise(error: unknown): void;
+  commit: Readonly<{
+    commit(): void;
+    reject(error: unknown): void;
+  }>;
+};
+
+type WakeSignal = {
+  wake(): void;
+  version(): number;
+  waitAfter(version: number): Promise<void>;
 };
 
 type BridgeLifecycle = {
@@ -68,59 +66,86 @@ function buildSessionUnavailableFailureCause(provider: string, reason: string) {
   return providerSessionUnavailable({ provider, reason });
 }
 
-export function sessionContinuity<TState>(contract: SessionContinuityContract<TState>): ProviderMiddleware;
-export function sessionContinuity<TState>(
-  providerName: string,
-  contract: SessionContinuityContract<TState>,
-): ProviderMiddleware;
-export function sessionContinuity<TState>(
-  providerNameOrContract: string | SessionContinuityContract<TState>,
-  maybeContract?: SessionContinuityContract<TState>,
-): ProviderMiddleware {
-  const providerName = typeof providerNameOrContract === 'string' ? providerNameOrContract : undefined;
-  const contract = typeof providerNameOrContract === 'string' ? maybeContract : providerNameOrContract;
-  if (!contract) {
-    throw new Error('sessionContinuity requires a contract.');
-  }
-
+export function sessionContinuity<
+  TState,
+  Plan extends ProviderExecutionPlan,
+  ExecutionRuntime extends ProviderRuntime<Plan> = ProviderRuntime<Plan>,
+>(providerName: string, contract: SessionContinuityContract<TState>): ProviderMiddleware<Plan, ExecutionRuntime> {
   return (next) =>
     async function* sessionContinuityProvider(request, runtime) {
+      const startedAt = runtime.time.now();
       const { providerState, opening } = contract.read(runtime.persistedContinuity, request);
       const queue: ContinuityQueue = {
-        lastEmitted: normalizeSnapshot(opening),
+        lastQueued: normalizeSnapshot(opening),
+        lastQueuedCommit: Promise.resolve(),
         pending: [],
+        outstanding: new Set(),
       };
       const state: ContinuityState<TState> = {
         current: providerState,
       };
       const devAssertions = runtime.env?.get('CORAL_DEV_ASSERTIONS') === '1';
       const bridgeLifecycle = createBridgeLifecycle(devAssertions);
-      const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue, devAssertions);
+      const wake = createWakeSignal();
+      const continuityBridge = createContinuityBridge(bridgeLifecycle, contract, state, queue, wake, devAssertions);
 
-      const wrappedRuntime: ProviderRuntime = {
+      const wrappedRuntime: ExecutionRuntime = {
         ...runtime,
         signal: createAbortAwareSignal(runtime.signal),
         continuityBridge,
-      };
+      } as ExecutionRuntime;
 
+      const iterator = next(request, wrappedRuntime)[Symbol.asyncIterator]();
+      let downstreamSettled = false;
+      let transportClosed = false;
+      let downstream = iterator.next().then((step) => ({ kind: 'downstream' as const, step }));
+      let wakePending = wake.waitAfter(wake.version()).then(() => ({ kind: 'wake' as const }));
+      const transportClosePending =
+        runtime.transport === 'app-server'
+          ? runtime.appServerSession.closed.then((error) => ({
+              kind: 'transport_closed' as const,
+              closed: { kind: 'transport_closed' as const, error: error ?? null },
+            }))
+          : null;
       try {
-        for await (const event of next(request, wrappedRuntime)) {
+        for (;;) {
           yield* drainContinuity(queue.pending);
 
-          if (event.kind !== 'terminal') {
-            yield event;
+          const outcome = await Promise.race(
+            transportClosed || transportClosePending === null
+              ? [downstream, wakePending]
+              : [downstream, wakePending, transportClosePending],
+          );
+          if (outcome.kind === 'wake') {
+            wakePending = wake.waitAfter(wake.version()).then(() => ({ kind: 'wake' as const }));
+            continue;
+          }
+          if (outcome.kind === 'transport_closed') {
+            transportClosed = true;
+            continuityBridge.transportClosed(outcome.closed);
+            continue;
+          }
+
+          const event = outcome.step;
+          if (event.done) {
+            downstreamSettled = true;
+            queueFinalContinuityIfDelta(contract, state, queue);
+            yield* drainContinuity(queue.pending);
+            return;
+          }
+
+          if (event.value.kind !== 'terminal') {
+            yield event.value;
+            downstream = iterator.next().then((step) => ({ kind: 'downstream' as const, step }));
             continue;
           }
 
           queueFinalContinuityIfDelta(contract, state, queue);
           yield* drainContinuity(queue.pending);
 
-          yield event;
+          yield event.value;
           return;
         }
-
-        queueFinalContinuityIfDelta(contract, state, queue);
-        yield* drainContinuity(queue.pending);
       } catch (err) {
         if (!contract.isSessionUnavailable(err)) {
           throw err;
@@ -139,23 +164,31 @@ export function sessionContinuity<TState>(
           kind: 'terminal',
           terminal: buildJobTerminal({
             content: '',
+            durationMs: Math.max(0, runtime.time.now() - startedAt),
             outcome: { kind: 'failed' },
           }),
           diagnostics: buildJobDiagnostics({}),
-          failureCause: buildSessionUnavailableFailureCause(providerName ?? 'unknown', errorReason(err)),
+          failureCause: buildSessionUnavailableFailureCause(providerName, errorReason(err)),
         };
         return;
       } finally {
         deactivateBridge(bridgeLifecycle, devAssertions);
+        rejectContinuityQueue(queue, new Error('Continuity stream closed before checkpoint commit.'));
+        if (!downstreamSettled && typeof iterator.return === 'function') {
+          await iterator.return().catch(() => undefined);
+        }
       }
     };
 }
 
-function continuityEvent(snapshot: ContinuitySnapshot): ProviderContinuityEventBody {
-  return {
-    kind: 'continuity',
-    ...snapshot,
-  };
+function continuityEvent(entry: ContinuityQueueEntry): ProviderContinuityEventBody {
+  return attachContinuityCommit(
+    {
+      kind: 'continuity',
+      ...entry.snapshot,
+    },
+    entry.commit,
+  );
 }
 
 function normalizeSnapshot(snapshot: ContinuitySnapshot): ContinuitySnapshot {
@@ -185,6 +218,7 @@ function createContinuityBridge<TState>(
   contract: SessionContinuityContract<TState>,
   state: ContinuityState<TState>,
   queue: ContinuityQueue,
+  wake: WakeSignal,
   devAssertions: boolean,
 ): ProviderRuntime['continuityBridge'] {
   return {
@@ -194,14 +228,44 @@ function createContinuityBridge<TState>(
       }
 
       state.current = contract.applyUpdate(state.current, update);
-      queueContinuityIfDelta(queue, contract.snapshot(state.current));
+      const acknowledged = queueContinuityIfDelta(queue, contract.snapshot(state.current));
+      wake.wake();
+      return acknowledged;
     },
     transportClosed(closed) {
       if (!assertBridgeActive(lifecycle, 'transportClosed', devAssertions)) {
         return;
       }
 
-      state.pendingTransportClosed = closed;
+      if (contract.applyTransportClosed) {
+        state.current = contract.applyTransportClosed(state.current, closed);
+      }
+      void queueContinuityIfDelta(queue, contract.snapshot(state.current));
+      wake.wake();
+    },
+  };
+}
+
+function createWakeSignal(): WakeSignal {
+  let version = 0;
+  let resolvePulse!: () => void;
+  let pulse = new Promise<void>((resolve) => {
+    resolvePulse = resolve;
+  });
+  return {
+    wake() {
+      version += 1;
+      const resolve = resolvePulse;
+      pulse = new Promise<void>((nextResolve) => {
+        resolvePulse = nextResolve;
+      });
+      resolve();
+    },
+    version() {
+      return version;
+    },
+    waitAfter(observedVersion) {
+      return version === observedVersion ? pulse : Promise.resolve();
     },
   };
 }
@@ -239,23 +303,63 @@ function notifyAbortListener(signal: AbortSignal, listener: AbortSignalListener)
   listener.handleEvent(event);
 }
 
-function queueContinuityIfDelta(queue: ContinuityQueue, snapshot: ContinuitySnapshot): void {
-  queue.lastEmitted = emitFinalContinuityIfDelta(queue.lastEmitted, snapshot, (nextSnapshot) => {
-    queue.pending.push(nextSnapshot);
+function queueContinuityIfDelta(queue: ContinuityQueue, snapshot: ContinuitySnapshot): Promise<void> {
+  if (queue.failure !== undefined) {
+    const rejected = Promise.reject(queue.failure);
+    void rejected.catch(() => undefined);
+    return rejected;
+  }
+
+  const normalized = normalizeSnapshot(snapshot);
+  if (isDeepStrictEqual(queue.lastQueued, normalized)) {
+    return queue.lastQueuedCommit;
+  }
+
+  let resolveCommit!: () => void;
+  let rejectCommit!: (error: unknown) => void;
+  const committed = new Promise<void>((resolve, reject) => {
+    resolveCommit = resolve;
+    rejectCommit = reject;
   });
+  void committed.catch(() => undefined);
+  const entry: ContinuityQueueEntry = {
+    snapshot: normalized,
+    settled: false,
+    resolve: resolveCommit,
+    rejectPromise: rejectCommit,
+    commit: Object.freeze({
+      commit() {
+        settleContinuityEntry(queue, entry);
+      },
+      reject(error: unknown) {
+        rejectContinuityQueue(queue, error);
+      },
+    }),
+  };
+  queue.lastQueued = normalized;
+  queue.lastQueuedCommit = committed;
+  queue.pending.push(entry);
+  queue.outstanding.add(entry);
+  return committed;
 }
 
-function applyPendingTransportClosed<TState>(
-  contract: SessionContinuityContract<TState>,
-  state: ContinuityState<TState>,
-): void {
-  if (state.pendingTransportClosed === undefined) {
-    return;
+function settleContinuityEntry(queue: ContinuityQueue, entry: ContinuityQueueEntry): void {
+  if (entry.settled) return;
+  entry.settled = true;
+  queue.outstanding.delete(entry);
+  entry.resolve();
+}
+
+function rejectContinuityQueue(queue: ContinuityQueue, error: unknown): void {
+  queue.failure ??= error instanceof Error ? error : new Error(String(error));
+  const failure = queue.failure;
+  for (const entry of queue.outstanding) {
+    if (entry.settled) continue;
+    entry.settled = true;
+    entry.rejectPromise(failure);
   }
-  if (contract.applyTransportClosed) {
-    state.current = contract.applyTransportClosed(state.current, state.pendingTransportClosed);
-  }
-  state.pendingTransportClosed = undefined;
+  queue.outstanding.clear();
+  queue.pending.length = 0;
 }
 
 function queueFinalContinuityIfDelta<TState>(
@@ -263,32 +367,17 @@ function queueFinalContinuityIfDelta<TState>(
   state: ContinuityState<TState>,
   queue: ContinuityQueue,
 ): void {
-  applyPendingTransportClosed(contract, state);
-  queueContinuityIfDelta(queue, contract.snapshot(state.current));
+  void queueContinuityIfDelta(queue, contract.snapshot(state.current));
 }
 
-function emitFinalContinuityIfDelta(
-  lastEmitted: ContinuitySnapshot,
-  current: ContinuitySnapshot,
-  emit: (snapshot: ContinuitySnapshot) => void,
-): ContinuitySnapshot {
-  const normalized = normalizeSnapshot(current);
-  if (isDeepStrictEqual(lastEmitted, normalized)) {
-    return lastEmitted;
-  }
-
-  emit(normalized);
-  return normalized;
-}
-
-function* drainContinuity(pending: ContinuitySnapshot[]): Generator<ProviderContinuityEventBody> {
+function* drainContinuity(pending: ContinuityQueueEntry[]): Generator<ProviderContinuityEventBody> {
   let consumed = 0;
   try {
     while (consumed < pending.length) {
-      const snapshot = pending[consumed];
+      const entry = pending[consumed];
       consumed += 1;
-      if (snapshot !== undefined) {
-        yield continuityEvent(snapshot);
+      if (entry !== undefined) {
+        yield continuityEvent(entry);
       }
     }
   } finally {

@@ -13,6 +13,7 @@ import {
   resolveCoordinatorDefaults,
 } from '#src/coordinator/composition/defaults.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
 
 const mockState = vi.hoisted(() => ({
   tmpHome: '',
@@ -46,6 +47,7 @@ function createHarness() {
   const defaultsPlan = resolveCoordinatorDefaults(
     {
       runtime,
+      storeFormat: currentCoralStoreFormat(),
       runStartupRecoveryFn: async () => [],
       getConsumerStuck: () => [],
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),

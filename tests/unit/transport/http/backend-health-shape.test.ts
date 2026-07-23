@@ -33,6 +33,21 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
+  it('accepts only a redacted named system provider scope', () => {
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        systemProviderScope: { name: 'maintenance', providers: ['claude', 'codex'] },
+      }),
+    ).toBe(true);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        systemProviderScope: { name: '', providers: ['/private/profile'] },
+      }),
+    ).toBe(false);
+  });
+
   it('accepts an initializing component with attempt count', () => {
     const initializing: BackendHealth = {
       ...HEALTHY_BASE,

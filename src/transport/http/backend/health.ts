@@ -102,6 +102,8 @@ export interface BackendHealth {
     fdCount?: number;
   };
   components: TransportRuntimeComponentStatus[];
+  /** Redacted daemon-owned provider routing: scope name and provider names only. */
+  systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   diagnostics?: {
     mutationBlocked?: { owner: string; ageMs: number; signaledAtMs: number };
@@ -335,6 +337,16 @@ function isResources(value: unknown): value is NonNullable<BackendHealth['resour
   return value.fdCount === undefined || Number.isInteger(value.fdCount);
 }
 
+function isSystemProviderScope(value: unknown): value is NonNullable<BackendHealth['systemProviderScope']> {
+  return (
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    value.name.length > 0 &&
+    Array.isArray(value.providers) &&
+    value.providers.every((provider) => typeof provider === 'string' && provider.length > 0)
+  );
+}
+
 export function isBackendHealth(value: unknown): value is BackendHealth {
   return (
     isRecord(value) &&
@@ -355,6 +367,7 @@ export function isBackendHealth(value: unknown): value is BackendHealth {
     (value.resources === undefined || isResources(value.resources)) &&
     Array.isArray(value.components) &&
     value.components.every(isRuntimeComponentStatus) &&
+    (value.systemProviderScope === undefined || isSystemProviderScope(value.systemProviderScope)) &&
     (value.kbDaemon === undefined || isKbDaemonHealth(value.kbDaemon)) &&
     (value.diagnostics === undefined || isDiagnostics(value.diagnostics))
   );

@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
@@ -5,7 +6,7 @@ import { KbJobRecorder } from '#src/jobs/kb/recorder.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { JobStore } from '#src/jobs/store.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { SimulationRuntime } from '#tools/simulation/runtime.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 function createRecorder(): {
@@ -14,9 +15,9 @@ function createRecorder(): {
   progressStore: JobStore;
 } {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const runtime = new SimulationRuntime();
-  const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+  const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
     db,
     providers: permissiveProviderLookupPort,
   });
@@ -93,9 +94,9 @@ describe('KbJobRecorder.startInternalJob', () => {
 
   it('persists the configured internal job owner in the runtime record', () => {
     const db = newRawDatabase(':memory:');
-    applyBundledStoreSchema(db);
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
     const runtime = new SimulationRuntime();
-    const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
+    const progressStore = new JobStore('test-ns', runtime, createEventBodyCodec(), {
       db,
       providers: permissiveProviderLookupPort,
     });

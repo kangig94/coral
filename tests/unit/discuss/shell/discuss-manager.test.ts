@@ -26,7 +26,7 @@ import {
   type DiscussHarness,
 } from '#tests/unit/discuss/shell/discuss-test-helpers.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE, TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
 
 afterEach(() => {
   cleanupDiscussHarnesses();
@@ -44,7 +44,7 @@ async function recoverSessions(harness: DiscussHarness) {
       pluginRoot: harness.ctx.pluginRoot,
       coralEnv: {},
       principal: testProjectPrincipal(snapshot.projectRoot),
-      providerCredentials: snapshot.providerCredentials ?? TEST_PROVIDER_CREDENTIALS,
+      providerScope: snapshot.providerScope ?? TEST_PROVIDER_SCOPE,
     }),
   );
 }
@@ -136,12 +136,41 @@ describe('Discuss context registry', () => {
   });
 });
 
+describe('Discuss provider scope', () => {
+  it('rejects an incomplete mixed-provider scope before durable discussion allocation', async () => {
+    const harness = createDiscussHarness();
+
+    await expect(
+      startDiscussSession(
+        harness.context,
+        'incomplete-provider-scope',
+        DEFAULT_TOPIC,
+        [
+          { name: 'alpha', persona: '# Alpha', provider: 'codex' },
+          { name: 'beta', persona: '# Beta', provider: 'claude' },
+        ],
+        {},
+        { ...harness.ctx, providerScope: TEST_CODEX_SCOPE },
+      ),
+    ).rejects.toMatchObject({
+      code: 'provider_binding_missing_profile',
+      detail: { message: expect.stringContaining('Claude credential profile') },
+    });
+
+    expect(harness.store.load('incomplete-provider-scope')).toBeNull();
+    expect(harness.service.start).not.toHaveBeenCalled();
+
+    harness.cleanup();
+  });
+});
+
 describe('Discuss executor and operations', () => {
   it('starts a first turn, binds the execution session, and records the finished attempt', async () => {
     const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
       status: 'running',
-      job: 'job-1',
-      session: 'exec-session-1',
+      jobId: 'job-1',
+      sessionId: 'exec-session-1',
     });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'bid result',
@@ -170,6 +199,8 @@ describe('Discuss executor and operations', () => {
         pool: 'discuss',
         cwd: '/repo',
         bypassPermissions: true,
+        owner: { kind: 'discussion', id: 'discuss-1' },
+        discussionRun: { agent: 'alpha', purpose: 'bid', attempt: 1 },
         instruction: {
           channel: 'system',
           content: 'System turn contract',
@@ -227,9 +258,10 @@ describe('Discuss executor and operations', () => {
 
   it('resumes existing runs with the persisted execution session id', async () => {
     const resume = vi.fn().mockResolvedValue({
+      kind: 'provider-session',
       status: 'running',
-      job: 'job-2',
-      session: 'exec-session-1',
+      jobId: 'job-2',
+      sessionId: 'exec-session-1',
     });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: 'speech result',
@@ -249,14 +281,32 @@ describe('Discuss executor and operations', () => {
           '2026-03-10T00:01:00.000Z',
           { agent: 'alpha', executionSessionId: 'exec-session-1' },
         ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 2,
+          'agent.job.started',
+          '2026-03-10T00:01:01.000Z',
+          { agent: 'alpha', jobId: 'prior-job', purpose: 'bid', attempt: 1 },
+        ),
+        makeEvent(
+          snapshot.sessionId,
+          harness.projectRoot,
+          snapshot.state.topic,
+          snapshot.lastAppliedSeq + 3,
+          'agent.job.finished',
+          '2026-03-10T00:01:02.000Z',
+          { agent: 'alpha', jobId: 'prior-job', outcome: 'completed', attempt: 1 },
+        ),
       ],
     });
 
     const result = await runPlainTurn(harness.context, {
       agentName: 'alpha',
       sessionId: 'discuss-1',
-      provider: 'claude',
-      model: 'sonnet',
+      provider: 'codex',
+      model: 'gpt-5',
       prompt: 'Speak now',
       instruction: 'Resume turn contract',
       cwd: '/repo',
@@ -265,14 +315,16 @@ describe('Discuss executor and operations', () => {
     });
 
     expect(resume).toHaveBeenCalledWith(
-      'claude',
+      'codex',
       {
         sessionId: 'exec-session-1',
         prompt: 'Resume turn contract\n\n---\n\nSpeak now',
-        model: 'sonnet',
+        model: 'gpt-5',
         pool: 'discuss',
         cwd: '/repo',
         bypassPermissions: true,
+        owner: { kind: 'discussion', id: 'discuss-1' },
+        discussionRun: { agent: 'alpha', purpose: 'speech', attempt: 1 },
       },
       harness.ctx,
     );
@@ -293,8 +345,8 @@ describe('Discuss executor and operations', () => {
   it('schedules the loop after start completes initial bid collection', async () => {
     const start = vi
       .fn()
-      .mockResolvedValueOnce({ status: 'running', job: 'job-1', session: 'exec-alpha' })
-      .mockResolvedValueOnce({ status: 'running', job: 'job-2', session: 'exec-beta' });
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' })
+      .mockResolvedValueOnce({ kind: 'provider-session', status: 'running', jobId: 'job-2', sessionId: 'exec-beta' });
     const waitStreamOnce = vi
       .fn()
       .mockResolvedValueOnce({ content: '{"score": 61, "thought": "alpha"}', continuity: null })
@@ -305,7 +357,7 @@ describe('Discuss executor and operations', () => {
       harness.context,
       'discuss-1',
       DEFAULT_TOPIC,
-      defaultAgents().map((agent) => ({ ...agent, provider: 'codex' })),
+      defaultAgents().map((agent) => ({ ...agent, provider: 'codex', model: 'gpt-5' })),
       {},
       harness.ctx,
     );
@@ -319,7 +371,9 @@ describe('Discuss executor and operations', () => {
   });
 
   it('passes configured quota_per_epoch into session creation', async () => {
-    const start = vi.fn().mockResolvedValue({ status: 'running', job: 'job-1', session: 'exec-alpha' });
+    const start = vi
+      .fn()
+      .mockResolvedValue({ kind: 'provider-session', status: 'running', jobId: 'job-1', sessionId: 'exec-alpha' });
     const waitStreamOnce = vi.fn().mockResolvedValue({
       content: '{"score": 61, "thought": "alpha"}',
       continuity: null,
@@ -335,7 +389,7 @@ describe('Discuss executor and operations', () => {
       'discuss-quota',
       DEFAULT_TOPIC,
       [
-        { name: 'alpha', persona: '# Alpha', participation: 'required' },
+        { name: 'alpha', persona: '# Alpha', participation: 'required', provider: 'codex', model: 'gpt-5' },
         { name: 'user', persona: '# User', participation: 'observer' },
       ],
       config,

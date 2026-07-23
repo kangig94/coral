@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseAgentRef, resolveAgent } from '#src/jobs/agent-resolution.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { TypedEventBus } from '#src/coordinator/event-bus.js';
-import { createProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -14,13 +13,13 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import type { ProviderInstruction, ProviderRequest } from '#src/providers/contract.js';
 import { managed } from '#src/providers/capability.js';
-import { toProviderSpec, type Provider } from '#tests/helpers/scripted-provider.js';
+import { toProviderDefinition, type Provider } from '#tests/helpers/scripted-provider.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_SCOPE } from '#tests/helpers/provider-credentials.js';
 import { streamProviderEvents, streamProviderTerminal } from '#src/providers/stream.js';
 import { workflowCompiler } from '#src/workflow/compile.js';
 import { workflowCommands } from '#src/workflow/dispatch.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -102,18 +101,42 @@ describe('pipe executor coral cascade invariant', () => {
         name: 'codex',
         execute: (request) => {
           capturedLaunches.push(cloneProviderRequest(request));
-          return streamProviderTerminal({ content: 'stub-provider-result', outcome: { kind: 'completed' } });
+          return streamProviderTerminal({
+            content: 'stub-provider-result',
+            durationMs: 0,
+            outcome: { kind: 'completed' },
+          });
         },
       };
 
       const providerRegistry = new ProviderRegistry();
-      providerRegistry.register(toProviderSpec(stubProvider)!);
+      providerRegistry.register(toProviderDefinition(stubProvider)!);
 
       const eventBus = new TypedEventBus();
-      const progressStore = new JobStore('test-ns', runtime, createDefaultUpcasterRegistry(), {
-        db: openTestStoreDb(runtime),
+      const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
+      const bodyCodec = createEventBodyCodec();
+      const db = openTestStoreDb(runtime);
+      const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
+      const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
+        db,
         eventBus,
+        reducers,
         providers: permissiveProviderLookupPort,
+        observer: (appended) => {
+          if (reactorRef.current === undefined) {
+            throw new Error('Lifecycle reactor observed events before initialization');
+          }
+          reactorRef.current.observe(appended);
+        },
+      });
+      const coordinatorCommit: CommitEventsFn = (cb) => progressStore.commit(cb);
+      reactorRef.current = createLifecycleReactor({
+        db: () => db,
+        readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
+        providers: providerRegistry,
+        runtime,
+        time: runtime.time,
+        commitEvents: coordinatorCommit,
       });
       const executionSvc = new ExecutionService(
         {
@@ -121,26 +144,20 @@ describe('pipe executor coral cascade invariant', () => {
           pluginRoot: coralPluginRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_CODEX_SCOPE,
         },
         {
           childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-          providerCredentialSourceAvailability: { isAvailable: () => true },
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-cascade-test',
           backendNamespace: pluginRootNamespace(coralPluginRoot),
-          providerHostManager: createProviderHostManager({
-            runtime,
-            spawnProviderServer: async () => {
-              throw new Error('Provider host manager should not be used in pipe executor cascade test');
-            },
-          }),
           launchCoordinator: new LaunchCoordinator({ runtime }),
           eventBus,
           providerRegistry,
           pluginRegistry: { discoverPluginRoot: () => null },
           ...createTestJobJournalDeps(progressStore, runtime),
+          coordinatorCommit,
         },
       );
 
@@ -149,7 +166,7 @@ describe('pipe executor coral cascade invariant', () => {
         pluginRoot: coralPluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_CODEX_SCOPE,
       };
       const compiled = workflowCompiler.compile(
         {
@@ -169,7 +186,7 @@ describe('pipe executor coral cascade invariant', () => {
       if (decision.status === 'rejected') {
         throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
       }
-      await executionSvc.waitForJobTerminal(decision.job, 1_000);
+      await executionSvc.waitForJobTerminal(decision.jobId, 1_000);
       expect(capturedLaunches).toHaveLength(1);
 
       const [launch] = capturedLaunches;
@@ -220,7 +237,7 @@ describe('pipe executor coral cascade invariant', () => {
             });
             emit({
               kind: 'terminal',
-              terminal: { content: 'artifact-cleaned', outcome: { kind: 'completed' } },
+              terminal: { content: 'artifact-cleaned', durationMs: 0, outcome: { kind: 'completed' } },
               diagnostics: {},
             });
           }),
@@ -233,14 +250,14 @@ describe('pipe executor coral cascade invariant', () => {
           },
         }),
       };
-      providerRegistry.register(toProviderSpec(stubProvider)!);
+      providerRegistry.register(toProviderDefinition(stubProvider)!);
 
       const eventBus = new TypedEventBus();
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const db = openTestStoreDb(runtime);
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
-      const progressStore = new JobStore('test-ns', runtime, upcasters, {
+      const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
         eventBus,
         reducers,
@@ -255,6 +272,7 @@ describe('pipe executor coral cascade invariant', () => {
       const coordinatorCommit: CommitEventsFn = (cb) => progressStore.commit(cb);
       const reactor = createLifecycleReactor({
         db: () => db,
+        readCtx: { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec },
         providers: providerRegistry,
         runtime,
         time: runtime.time,
@@ -267,21 +285,14 @@ describe('pipe executor coral cascade invariant', () => {
           pluginRoot: coralPluginRoot,
           coralEnv: {},
           principal: testProjectPrincipal(projectRoot),
-          providerCredentials: TEST_PROVIDER_CREDENTIALS,
+          providerScope: TEST_CODEX_SCOPE,
         },
         {
           childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-          providerCredentialSourceAvailability: { isAvailable: () => true },
           runtime,
           progressStore,
           bundleHash: 'pipe-executor-retention-test',
           backendNamespace: pluginRootNamespace(coralPluginRoot),
-          providerHostManager: createProviderHostManager({
-            runtime,
-            spawnProviderServer: async () => {
-              throw new Error('Provider host manager should not be used in pipe executor retention test');
-            },
-          }),
           launchCoordinator: new LaunchCoordinator({ runtime }),
           eventBus,
           providerRegistry,
@@ -296,7 +307,7 @@ describe('pipe executor coral cascade invariant', () => {
         pluginRoot: coralPluginRoot,
         coralEnv: {},
         principal: testProjectPrincipal(projectRoot),
-        providerCredentials: TEST_PROVIDER_CREDENTIALS,
+        providerScope: TEST_CODEX_SCOPE,
       };
       const compiled = workflowCompiler.compile(
         {
@@ -316,7 +327,7 @@ describe('pipe executor coral cascade invariant', () => {
       if (decision.status === 'rejected') {
         throw new Error(`expected workflow launch to succeed, got ${decision.message}`);
       }
-      await executionSvc.waitForJobTerminal(decision.job, 1_000);
+      await executionSvc.waitForJobTerminal(decision.jobId, 1_000);
 
       await vi.waitFor(
         async () => {

@@ -2,8 +2,8 @@ declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
 
 import { join } from 'node:path';
+import { z } from 'zod';
 
-import { isRecord } from '../../infra/json.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { IdPort } from '../../runtime/ports.js';
 import type { ProviderRequest, ProviderServerSpec } from '../contract.js';
@@ -11,16 +11,41 @@ import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
 import type { SessionEnsureParams, TurnInterruptParams, TurnStartParams } from './appserver/protocol.js';
 import {
   hashSortedEnv,
+  hashClaudeBootstrapConfiguration,
   normalizeControllerEnv,
-  readBootstrapSignature,
+  claudeBootstrapSignatureSchema,
   type ClaudeBootstrapSignature,
   type PermissionMode,
 } from './request-prep.js';
-import { claudeTransportEnv, resolveClaudeTransportMode } from './transport-mode.js';
+import { zodPersistedParser } from '../binding-parser.js';
+import type { resolveClaudeTransportMode } from './transport-mode.js';
 
 export interface ClaudePersistedContinuity extends ProviderContinuityBlob {
   bootstrapSignature?: ClaudeBootstrapSignature;
+  brokerSessionKey?: string;
+  brokerTurnId?: string;
 }
+
+const claudePersistedContinuitySchema = z.union([
+  z
+    .object({
+      bootstrapSignature: claudeBootstrapSignatureSchema.optional(),
+      brokerSessionKey: z.string().min(1),
+      brokerTurnId: z.string().min(1),
+    })
+    .strict(),
+  z.object({ bootstrapSignature: claudeBootstrapSignatureSchema }).strict(),
+]);
+
+export const claudePersistedContinuityParser = zodPersistedParser(() => claudePersistedContinuitySchema);
+
+export type ClaudeBrokerHostPlan = Readonly<{
+  command: string;
+  args: readonly string[];
+  cwd: string;
+  environment: Readonly<Record<string, string>>;
+  transportMode: ReturnType<typeof resolveClaudeTransportMode>;
+}>;
 
 let envHashCache: {
   controllerEnv: Record<string, string> | undefined;
@@ -31,39 +56,41 @@ let envHashCache: {
 export function readClaudePersistedContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
 ): ClaudePersistedContinuity {
-  if (!isRecord(persistedContinuity)) {
-    return {};
-  }
-
-  const bootstrapSignature = readBootstrapSignature(persistedContinuity.bootstrapSignature);
-  return bootstrapSignature === undefined ? {} : { bootstrapSignature };
+  if (persistedContinuity === undefined) return {};
+  const parsed = claudePersistedContinuityParser.parse(persistedContinuity);
+  if (!parsed.success) throw new TypeError('Invalid persisted Claude continuity.');
+  return parsed.data;
 }
 
 export function buildClaudeBootstrapSignature(
   request: Pick<ProviderRequest, 'cwd'> & { bypassPermissions?: boolean; permissionMode?: PermissionMode },
   ids: Pick<IdPort, 'sha256'>,
-  derivedSystemPrompt?: string,
+  options: {
+    derivedSystemPrompt?: string;
+    conversationRef?: string;
+    resumeExisting?: boolean;
+    projectsRoot: string;
+    model?: string;
+    effort?: ProviderRequest['effort'];
+  },
 ): ClaudeBootstrapSignature {
   return {
     cwd: request.cwd,
-    systemPromptHash: buildSystemPromptSignature(ids, derivedSystemPrompt),
+    systemPromptHash: buildSystemPromptSignature(ids, options.derivedSystemPrompt),
     permissionMode: request.permissionMode ?? resolveClaudePermissionMode(request.bypassPermissions ?? false),
+    bootstrapConfigHash: hashClaudeBootstrapConfiguration(options),
   };
 }
 
-export function buildClaudeProviderServerSpec(
-  request: Pick<ProviderRequest, 'cwd'> & { coralEnv?: Record<string, string> },
-  storage: Pick<StoragePort, 'existsSync'>,
-  brokerEnv: Readonly<Record<string, string>> = {},
-): ProviderServerSpec {
-  const transportMode = resolveClaudeTransportMode(request.coralEnv);
+export function buildClaudeProviderServerSpec(host: ClaudeBrokerHostPlan): ProviderServerSpec {
   return {
     provider: 'claude',
-    command: process.execPath,
-    args: [resolveClaudeBrokerEntrypoint(storage)],
-    cwd: request.cwd,
-    env: { ...brokerEnv, ...claudeTransportEnv(transportMode) },
-    shared: true,
+    command: host.command,
+    args: [...host.args],
+    cwd: host.cwd,
+    env: { ...host.environment },
+    leaseMode: 'shared',
+    idlePolicy: 'host-stats',
     shutdownCapability: {
       method: 'broker/shutdown',
       timeoutMs: 3_000,
@@ -83,12 +110,21 @@ export function mapSessionEnsureParams(
     projectsRoot: string;
   },
 ): SessionEnsureParams {
-  const bootstrapSignature = buildClaudeBootstrapSignature(request, ids, options.derivedSystemPrompt);
+  const conversationRef = claudeConversationRef(request);
+  const resumeExisting = request.action === 'resume';
+  const bootstrapSignature = buildClaudeBootstrapSignature(request, ids, {
+    derivedSystemPrompt: options.derivedSystemPrompt,
+    conversationRef,
+    resumeExisting,
+    projectsRoot: options.projectsRoot,
+    model: request.model,
+    effort: request.effort,
+  });
   return {
     ...bootstrapSignature,
     brokerSessionKey: undefined,
-    conversationRef: claudeConversationRef(request),
-    resumeExisting: request.action === 'resume',
+    conversationRef,
+    resumeExisting,
     controllerEnv: normalizeControllerEnv(options.controllerEnv),
     projectsRoot: options.projectsRoot,
     systemPrompt: options.derivedSystemPrompt,
@@ -115,28 +151,56 @@ export function mapTurnStartParams(
   };
 }
 
-export function mapInterruptParams(brokerSessionKey: string, brokerTurnId?: string): TurnInterruptParams {
-  return brokerTurnId ? { brokerSessionKey, brokerTurnId } : { brokerSessionKey };
+export function mapInterruptParams(brokerSessionKey: string, brokerTurnId: string): TurnInterruptParams {
+  return { brokerSessionKey, brokerTurnId };
 }
 
 export function buildClaudeContinuity(update: {
   bootstrapSignature: ClaudeBootstrapSignature;
+  brokerSessionKey?: string;
+  brokerTurnId?: string;
 }): ClaudePersistedContinuity {
-  return { bootstrapSignature: update.bootstrapSignature };
+  return {
+    bootstrapSignature: update.bootstrapSignature,
+    ...(update.brokerSessionKey === undefined || update.brokerTurnId === undefined
+      ? {}
+      : { brokerSessionKey: update.brokerSessionKey, brokerTurnId: update.brokerTurnId }),
+  };
+}
+
+export function snapshotClaudePersistedContinuity(state: {
+  bootstrapSignature?: ClaudeBootstrapSignature;
+  brokerSessionKey?: string;
+  brokerTurnId?: string;
+}): ClaudePersistedContinuity | null {
+  const candidate = {
+    ...(state.bootstrapSignature === undefined ? {} : { bootstrapSignature: state.bootstrapSignature }),
+    ...(state.brokerSessionKey === undefined || state.brokerTurnId === undefined
+      ? {}
+      : { brokerSessionKey: state.brokerSessionKey, brokerTurnId: state.brokerTurnId }),
+  };
+  return Object.keys(candidate).length === 0 ? null : readClaudePersistedContinuity(candidate);
 }
 
 export function withClaudeContinuity(
   persistedContinuity: ProviderContinuityBlob | undefined,
   update: {
     bootstrapSignature?: ClaudeBootstrapSignature;
+    brokerSessionKey?: string;
+    brokerTurnId?: string;
   },
 ): ClaudePersistedContinuity {
   const continuity = readClaudePersistedContinuity(persistedContinuity);
   const bootstrapSignature = update.bootstrapSignature ?? continuity.bootstrapSignature;
-  return bootstrapSignature === undefined ? {} : { bootstrapSignature };
+  return {
+    ...(bootstrapSignature === undefined ? {} : { bootstrapSignature }),
+    ...(update.brokerSessionKey === undefined || update.brokerTurnId === undefined
+      ? {}
+      : { brokerSessionKey: update.brokerSessionKey, brokerTurnId: update.brokerTurnId }),
+  };
 }
 
-function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
+export function resolveClaudeBrokerEntrypoint(storage: Pick<StoragePort, 'existsSync'>): string {
   if (typeof __PLUGIN_ROOT__ !== 'string') {
     throw new Error('Claude broker entrypoint requires __PLUGIN_ROOT__ to be defined at build time.');
   }

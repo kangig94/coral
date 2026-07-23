@@ -14,8 +14,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
-import { TEST_PROVIDER_CREDENTIALS } from '#tests/helpers/provider-credentials.js';
-import { initTestJob } from '#tests/helpers/session.js';
+import { TEST_PROVIDER_SCOPE } from '#tests/helpers/provider-credentials.js';
+import { seedTestJobSession } from '#tests/helpers/session.js';
 import { commitWorkflowEvents } from '#src/workflow/projections.js';
 import { loadJobProjectionDetails } from '#src/jobs/read-queries.js';
 import { workflowRecover } from '#src/workflow/recover.js';
@@ -36,7 +36,7 @@ function workflowPlanForTest() {
 }
 
 function terminalEvent(jobId: string, content: string): WaitStreamEvent {
-  const result: JobTerminal = { content, outcome: { kind: 'completed' } };
+  const result: JobTerminal = { content, durationMs: 0, outcome: { kind: 'completed' } };
   return {
     type: 'terminal',
     jobId,
@@ -73,53 +73,90 @@ describe('workflow handoff (cross-domain integration)', () => {
     commitWorkflowEvents(
       harness.db,
       (c) => {
-        c.append(workflowPlanDeclaredEvent(WORKFLOW_ID, plan));
+        c.append(workflowPlanDeclaredEvent(WORKFLOW_ID, plan, TEST_PROVIDER_SCOPE));
         return undefined;
       },
       harness.runtime.time,
       permissiveProviderLookupPort,
     );
     const progressStore = incumbent.core.storeServicesRef.get().progressStore;
-    initTestJob(progressStore, {
+    progressStore.appendLaunchRequested(WORKFLOW_ID, {
       jobId: WORKFLOW_ID,
-      sessionId: 'workflow-session-1',
-      provider: 'codex',
+      owner: { kind: 'workflow', id: WORKFLOW_ID },
+      sessionId: null,
+      provider: null,
       projectRoot: PROJECT_ROOT,
       backendNamespace: incumbent.core.identity.namespace,
       jobKind: 'workflow',
-      providerCredentials: TEST_PROVIDER_CREDENTIALS,
-      initialPhase: 'running',
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      request: {
+        prompt: '',
+        cwd: PROJECT_ROOT,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date(harness.runtime.time.now()).toISOString(),
     });
-    initTestJob(progressStore, {
+    progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: WORKFLOW_ID },
+        namespace: incumbent.core.identity.namespace,
+        project: PROJECT_ROOT,
+        refs: { jobId: WORKFLOW_ID, workflowId: WORKFLOW_ID },
+        body: { transport: 'workflow', startedAt: new Date(harness.runtime.time.now()).toISOString() },
+      });
+      return undefined;
+    });
+    seedTestJobSession(progressStore, {
       jobId: slotJobId,
       sessionId: 'session-slot-1',
       provider: 'codex',
       projectRoot: PROJECT_ROOT,
       backendNamespace: incumbent.core.identity.namespace,
-      initialPhase: 'running',
     });
-    harness.db
-      .prepare(
-        `INSERT INTO projection_jobs (
-           job_id, phase, session_id, provider, project_root, backend_namespace,
-           job_kind, parent_workflow_job_id, workflow_slot, created_at, last_seq
-         )
-         VALUES (?, 'running', ?, ?, ?, ?, 'provider', ?, ?, '2026-04-27T00:00:00.000Z', 17)
-         ON CONFLICT(job_id) DO UPDATE SET
-           phase = excluded.phase,
-           parent_workflow_job_id = excluded.parent_workflow_job_id,
-           workflow_slot = excluded.workflow_slot,
-           last_seq = excluded.last_seq`,
-      )
-      .run(
-        slotJobId,
-        'session-slot-1',
-        'codex',
-        PROJECT_ROOT,
-        incumbent.core.identity.namespace,
-        WORKFLOW_ID,
-        slotJobId,
-      );
+    progressStore.appendLaunchRequested(slotJobId, {
+      jobId: slotJobId,
+      owner: { kind: 'workflow', id: WORKFLOW_ID },
+      sessionId: 'session-slot-1',
+      provider: 'codex',
+      projectRoot: PROJECT_ROOT,
+      backendNamespace: incumbent.core.identity.namespace,
+      jobKind: 'provider',
+      parentWorkflowJobId: WORKFLOW_ID,
+      workflowSlotId: slotJobId,
+      workflowSlotGeneration: 0,
+      pool: 'default',
+      enqueueSequence: progressStore.nextEnqueueSequence(),
+      providerAction: 'exec',
+      request: {
+        prompt: '',
+        cwd: PROJECT_ROOT,
+        bypassPermissions: false,
+        coralEnv: {},
+      },
+      createdAt: new Date(harness.runtime.time.now()).toISOString(),
+    });
+    progressStore.commit((c) => {
+      c.append({
+        type: 'job.runtime.started',
+        stream: { kind: 'job', id: slotJobId },
+        namespace: incumbent.core.identity.namespace,
+        project: PROJECT_ROOT,
+        refs: {
+          jobId: slotJobId,
+          sessionId: 'session-slot-1',
+          parentJobId: WORKFLOW_ID,
+          workflowId: WORKFLOW_ID,
+          workflowSlotId: slotJobId,
+        },
+        body: { transport: 'workflow', startedAt: new Date(harness.runtime.time.now()).toISOString() },
+      });
+      return undefined;
+    });
+    const expectedCursor = progressStore.readStatus(slotJobId)?.lastSeq;
+    expect(expectedCursor).toBeTypeOf('number');
 
     await incumbent.shutdown('replaced');
     expect(incumbent.core.runtimeState.getLifecycle()).toBe('stopped');
@@ -149,9 +186,10 @@ describe('workflow handoff (cross-domain integration)', () => {
 
         const stubExecution: WorkflowExecutionPort = {
           coralDispatch: vi.fn(async () => ({
+            kind: 'provider-session' as const,
             status: 'running' as const,
-            job: 'should-not-relaunch',
-            session: 'should-not-relaunch',
+            jobId: 'should-not-relaunch',
+            sessionId: 'should-not-relaunch',
           })),
           resume: vi.fn(),
           abort: vi.fn(() => ({ aborted: [], notFound: [] })),
@@ -186,7 +224,7 @@ describe('workflow handoff (cross-domain integration)', () => {
     expect(waitRequests).toHaveLength(1);
     expect(waitRequests[0]).toMatchObject({
       jobIds: [slotJobId],
-      cursor: { afterSeq: 17 },
+      cursor: { afterSeq: expectedCursor },
     });
     expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
 

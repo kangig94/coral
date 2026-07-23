@@ -9,10 +9,11 @@ import { resolveInput } from '../flags.js';
 
 export function registerProviderCommands(program: Command, providerRegistry: ProviderRegistry): void {
   for (const providerName of getProviderNames(providerRegistry)) {
-    const selector = providerName === 'codex' ? 'CODEX_HOME' : 'CLAUDE_CONFIG_DIR';
     const provider = program
       .command(providerName)
-      .description(`Run via ${providerName}; captures ${selector} and binds the session to that account`);
+      .description(
+        `Run via ${providerName}; Coral captures and binds the provider profile selected in the invoking shell (built-ins: CODEX_HOME, default ~/.codex; CLAUDE_CONFIG_DIR, default ~/.claude).`,
+      );
     markProviderCommand(provider);
     provider
       .argument('[agent]', 'Agent name (optional; omit for a raw prompt run)')

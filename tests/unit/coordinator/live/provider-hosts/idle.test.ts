@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  acquireSharedProviderServerLease,
-  releaseSharedProviderServerLease,
-} from '#src/coordinator/live/provider-hosts/lease.js';
+import { acquireProviderHostPin, releaseProviderHostPin } from '#src/coordinator/live/provider-hosts/lease.js';
 import { maybeArmIdleTimer } from '#src/coordinator/live/provider-hosts/idle.js';
 import {
   createEntry,
@@ -30,7 +27,7 @@ describe('provider host idle properties', () => {
           idleTimeoutMs: 5,
           entries,
           closeProviderServerEntry: async () => {
-            if (entry.sharedLeaseCount > 0) {
+            if (entry.pinCount > 0) {
               evictedWhileHeld = true;
             }
           },
@@ -39,10 +36,15 @@ describe('provider host idle properties', () => {
       for (const step of randomSequence(seed)) {
         switch (step % 4) {
           case 0:
-            acquireSharedProviderServerLease(entry);
+            acquireProviderHostPin(entry);
             break;
           case 1:
-            releaseSharedProviderServerLease(entry, () => arm());
+            if (entry.pinCount === 0) {
+              acquireProviderHostPin(entry);
+            } else {
+              releaseProviderHostPin(entry);
+            }
+            arm();
             break;
           case 2:
             arm();
@@ -57,7 +59,7 @@ describe('provider host idle properties', () => {
             break;
         }
 
-        if (entry.sharedLeaseCount > 0) {
+        if (entry.pinCount > 0) {
           await vi.advanceTimersByTimeAsync(5);
           expect(evictedWhileHeld).toBe(false);
         }

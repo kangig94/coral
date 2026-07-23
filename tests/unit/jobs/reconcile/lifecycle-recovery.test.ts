@@ -1,30 +1,36 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
-import { TEST_PROVIDER_CREDENTIALS } from '../../../helpers/provider-credentials.js';
+import { TEST_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import type { JobLaunch } from '#src/jobs/records.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { LaunchPool } from '#src/jobs/contracts/admission.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
+import { SessionManager } from '#src/sessions/shell.js';
 import { reduceSessionOpened } from '#src/sessions/projections.js';
 import type { CoralEvent } from '#src/store/envelope.js';
 import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
-import type { ProviderRecoveryContract } from '#src/providers/contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { commitJobInput } from '#tests/helpers/job-commits.js';
 import { createTestJobJournalDeps } from '#tests/helpers/job-journal-deps.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import type { RunStartupRecoveryFn } from '#src/coordinator/lifecycle.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
+import { fixtureProviderBindingCodec } from '#tests/helpers/provider-binding.js';
+import { none } from '#src/providers/capability.js';
+import { workflowPlanDeclaredEvent } from '#src/workflow/events.js';
+import { prepareFixtureExecutionPlan } from '#tests/helpers/scripted-provider.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -61,6 +67,9 @@ async function loadModules() {
     recoveryActionsModule,
     transportDispatchModule,
     rpcCatalogModule,
+    workflowEventsModule,
+    jobsEventsModule,
+    reducersModule,
   ] = await Promise.all([
     import('#src/jobs/store.js'),
     import('#src/sessions/shell.js'),
@@ -75,6 +84,9 @@ async function loadModules() {
     import('#src/coordinator/services/recovery/actions.js'),
     import('#src/transport/dispatch.js'),
     import('#src/transport/rpc/catalog.js'),
+    import('#src/workflow/events.js'),
+    import('#src/jobs/events.js'),
+    import('#src/store/reducers.js'),
   ]);
 
   return {
@@ -91,7 +103,27 @@ async function loadModules() {
     recoveryActionsModule,
     transportDispatchModule,
     rpcCatalogModule,
+    workflowEventsModule,
+    jobsEventsModule,
+    reducersModule,
   };
+}
+
+function createRecoveryProviderRegistry(modules: LoadedModules) {
+  const registry = new modules.providerRegistryModule.ProviderRegistry();
+  registry.register(
+    modules.providerRegistryModule
+      .defineProvider({
+        name: 'codex',
+        transport: 'standalone',
+        run: async function* noopProvider() {},
+        prepareExecutionPlan: prepareFixtureExecutionPlan,
+      })
+      .binding(fixtureProviderBindingCodec('codex'))
+      .artifacts(none('recovery fixture owns no provider artifacts'))
+      .build(),
+  );
+  return registry;
 }
 
 function createProjectRoot(name: string): string {
@@ -142,8 +174,8 @@ function createLaunchCoordinator(
 
 function createFakeProviderHostManager() {
   return {
-    acquireServer: vi.fn(),
-    borrowLiveServer: vi.fn(),
+    openSession: vi.fn(),
+    attachSession: vi.fn(async () => null),
     drainForHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
   };
@@ -204,18 +236,28 @@ function createRuntimeStateMock() {
 function createFakeExecutionAndRecoveryService(overrides: Record<string, unknown> = {}) {
   return {
     start: vi.fn(async () => ({ status: 'running', job: 'started-job', session: 'started-session' })),
-    executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job', session: 'workflow-session' })),
+    executeWorkflow: vi.fn(async () => ({ status: 'running', job: 'workflow-job' })),
     abort: vi.fn((jobIds: string[]) => ({ aborted: jobIds, notFound: [] })),
     waitStream: vi.fn(async function* () {}),
     waitStreamOnce: vi.fn(async () => ({ type: 'waiting', waitingJobIds: [] })),
-    adoptRunningJob: vi.fn(() => ({ adopted: true, cleanup: vi.fn() })),
-    validateProviderRecoveryAuthority: vi.fn(() => true),
-    providerCredentialSourceForRecovery: vi.fn(() => TEST_CODEX_SOURCE),
-    recoverQueuedJob: vi.fn(() => 'recovered-job'),
+    adoptRunningJob: vi.fn(async () => ({ adopted: true, cleanup: vi.fn() })),
+    captureProviderRecoveryAuthority: vi.fn(
+      async (launchRecord: JobLaunch) =>
+        ({
+          ok: true,
+          authority: {
+            launchRecord,
+            session: { sessionId: launchRecord.sessionId },
+            boundProvider: { name: launchRecord.provider },
+          },
+        }) as never,
+    ),
+    finalizeProviderRecoveryBindingFailure: vi.fn(),
+    recoverQueuedJob: vi.fn(async () => 'recovered-job'),
     completeRecoveredJob: vi.fn(),
     finalizeInterruptedAppServerJob: vi.fn(async () => {}),
+    finalizeInterruptedDurableJob: vi.fn(async () => {}),
     interruptAppServerJob: vi.fn(async () => {}),
-    recordRecoveredArtifactHandles: vi.fn(async () => ({ ok: true as const, nextVersion: 1 })),
     ...overrides,
   };
 }
@@ -229,66 +271,113 @@ function stubLaunchRecord(
     projectRoot: string;
     backendNamespace: string;
     enqueueSequence?: number;
-    pool?: string;
+    pool?: LaunchPool;
     jobKind?: 'provider' | 'workflow';
   },
 ): void {
-  ensureTestSession(progressStore, {
-    sessionId: overrides.sessionId,
-    provider: overrides.provider,
-    projectRoot: overrides.projectRoot,
-    backendNamespace: overrides.backendNamespace,
-    orchestration: overrides.jobKind === 'workflow',
-  });
-  const record: JobLaunch = {
+  if (overrides.jobKind !== 'workflow') {
+    ensureTestSession(progressStore, {
+      jobId: overrides.jobId,
+      sessionId: overrides.sessionId,
+      provider: overrides.provider,
+      projectRoot: overrides.projectRoot,
+      backendNamespace: overrides.backendNamespace,
+    });
+  }
+  const workflow = overrides.jobKind === 'workflow';
+  if (workflow) {
+    progressStore.commit((c) => {
+      c.append(
+        workflowPlanDeclaredEvent(
+          overrides.jobId,
+          {
+            slots: [
+              {
+                slotId: `${overrides.jobId}:0:0`,
+                dependencies: [],
+                provider: overrides.provider,
+                instruction: 'recovery fixture',
+              },
+            ],
+          },
+          TEST_PROVIDER_SCOPE,
+        ),
+      );
+      return undefined;
+    });
+  }
+  const common = {
     jobId: overrides.jobId,
-    sessionId: overrides.sessionId,
-    provider: overrides.provider,
     projectRoot: overrides.projectRoot,
     backendNamespace: overrides.backendNamespace,
-    jobKind: overrides.jobKind === 'workflow' ? 'workflow' : 'provider',
     pool: overrides.pool ?? 'default',
     enqueueSequence: overrides.enqueueSequence ?? 0,
-    providerAction: 'exec',
-    request: {
-      prompt: '',
-      cwd: overrides.projectRoot,
-      bypassPermissions: false,
-      coralEnv: {},
-      ...(overrides.jobKind === 'workflow' ? { providerCredentials: TEST_PROVIDER_CREDENTIALS } : {}),
-    },
     createdAt: new Date().toISOString(),
+  } as const;
+  const request = {
+    prompt: '',
+    cwd: overrides.projectRoot,
+    bypassPermissions: false,
+    coralEnv: {},
   };
+  const record: JobLaunch = workflow
+    ? {
+        ...common,
+        owner: { kind: 'workflow', id: overrides.jobId },
+        sessionId: null,
+        provider: null,
+        jobKind: 'workflow',
+        request,
+      }
+    : {
+        ...common,
+        owner: { kind: 'provider-session', id: overrides.sessionId },
+        sessionId: overrides.sessionId,
+        provider: overrides.provider,
+        jobKind: 'provider',
+        providerAction: 'exec',
+        request,
+      };
   progressStore.appendLaunchRequested(overrides.jobId, record);
 }
 
 function ensureTestSession(
   progressStore: InstanceType<LoadedModules['progressStoreModule']['JobStore']>,
   options: {
+    jobId: string;
     sessionId: string;
     provider: string;
     projectRoot: string;
     backendNamespace: string;
-    orchestration?: boolean;
   },
 ): void {
   const exists = progressStore
     .getDb()
     .prepare<[string], { found: number }>('SELECT 1 AS found FROM projection_sessions WHERE session_id = ?')
     .get(options.sessionId);
-  if (exists !== undefined) return;
-  if (!options.orchestration && options.provider !== 'codex') {
+  if (exists !== undefined) {
+    const existing = new SessionManager(
+      options.projectRoot,
+      runtime,
+      undefined,
+      undefined,
+      progressStore.getDb(),
+      permissiveProviderLookupPort,
+    ).readById(options.sessionId, { forceFresh: true });
+    if (existing?.activeJobId !== options.jobId) {
+      throw new Error(`Test session '${options.sessionId}' is not claimed by '${options.jobId}'.`);
+    }
+    return;
+  }
+  if (options.provider !== 'codex') {
     throw new Error(`Test provider session '${options.provider}' has no credential source fixture.`);
   }
   const now = new Date().toISOString();
-  const entry: SessionEntry = {
+  const entry: ProviderSession = {
     sessionId: options.sessionId,
-    provider: options.provider,
-    sessionAuthority: options.orchestration
-      ? { kind: 'orchestration' }
-      : { kind: 'provider', source: TEST_CODEX_SOURCE },
+    binding: TEST_CODEX_BINDING,
     name: options.sessionId,
-    state: 'ready',
+    state: 'pending',
     retention: 'retain',
     artifactHandles: [],
     retentionDiscard: { attempts: [] },
@@ -303,7 +392,6 @@ function ensureTestSession(
   const body: SessionOpenedBody = {
     entry,
     controller: 'default',
-    provider: options.provider,
     scope_key: pluginRootNamespace(options.projectRoot),
   };
   const event: CoralEvent<SessionOpenedBody> = {
@@ -314,10 +402,20 @@ function ensureTestSession(
     namespace: options.backendNamespace,
     project: options.projectRoot,
     refs: { sessionId: options.sessionId },
-    bodyVersion: 1,
     body,
   };
   reduceSessionOpened(progressStore.getDb(), event);
+  const sessionManager = new SessionManager(
+    options.projectRoot,
+    runtime,
+    undefined,
+    undefined,
+    progressStore.getDb(),
+    permissiveProviderLookupPort,
+  );
+  if (!sessionManager.claimForJobSync(options.sessionId, options.jobId)) {
+    throw new Error(`Failed to claim test session '${options.sessionId}' for '${options.jobId}'.`);
+  }
 }
 
 function appendQueuedEvent(
@@ -334,7 +432,6 @@ function appendQueuedEvent(
     namespace: backendNamespace,
     project: projectRoot,
     refs: { jobId, sessionId },
-    bodyVersion: 1,
     body: {
       queuePosition,
       runningJobIds: [],
@@ -353,6 +450,7 @@ function stubRuntimeRecord(
   },
 ): void {
   progressStore.appendRuntimeStarted(overrides.jobId, {
+    transport: 'durable-cli',
     pid: overrides.pid ?? process.pid,
     stdoutPath: overrides.stdoutPath ?? join(progressStore.jobDir(overrides.jobId), 'stdout'),
     stderrPath: overrides.stderrPath ?? join(progressStore.jobDir(overrides.jobId), 'stderr'),
@@ -372,6 +470,12 @@ function stubAppServerRuntime(
     providerMeta: {
       provider,
       leaseState: 'acquired',
+      hostRef: {
+        provider: 'test',
+        fingerprint: '0'.repeat(64),
+        instanceId: 'instance-1',
+        leaseMode: 'shared',
+      },
     },
   });
 }
@@ -393,7 +497,6 @@ function commitTerminalEvent(
     namespace: overrides.backendNamespace,
     project: overrides.projectRoot,
     refs: { jobId: overrides.jobId, sessionId: overrides.sessionId },
-    bodyVersion: 1,
     body: {
       terminal: {
         outcome: overrides.outcome,
@@ -417,12 +520,13 @@ function createLifecycleHarness(
     getRecoveryService?: (ctx: { projectRoot: string }) => unknown;
     runStartupRecoveryFn?: RunStartupRecoveryFn;
     interruptedAppServerReason?: 'restart' | 'handoff';
+    runtime?: ReturnType<typeof createRealRuntime>;
   },
 ) {
   const namespace = modules.pathsModule.pluginRootNamespace(options.pluginRoot);
   const { runtimeState } = createRuntimeStateMock();
   const idleTimer = createFakeIdleTimer();
-  const providerRegistry = options.providerRegistry ?? new modules.providerRegistryModule.ProviderRegistry();
+  const providerRegistry = options.providerRegistry ?? createRecoveryProviderRegistry(modules);
   const launchCoordinator = options.launchCoordinator ?? createLaunchCoordinator(modules);
   const servicesByProjectRoot = options.servicesByProjectRoot ?? new Map<string, unknown>();
   const getExecutionService =
@@ -439,6 +543,7 @@ function createLifecycleHarness(
 
   const kbDaemonSupervisor = createMockKbDaemonSupervisor();
   const controller = modules.lifecycleModule.createLifecycle({
+    storeFormat: currentCoralStoreFormat(),
     identity: {
       pluginRoot: options.pluginRoot,
       namespace,
@@ -452,7 +557,7 @@ function createLifecycleHarness(
       now: () => 1,
       log: () => {},
     },
-    runtime: createRealRuntime('prod'),
+    runtime: options.runtime ?? createRealRuntime('prod'),
     backendPid: 1234,
     runtimeState: runtimeState as never,
     idleTimer: idleTimer as never,
@@ -463,6 +568,7 @@ function createLifecycleHarness(
     eventBus: options.eventBus,
     launchCoordinator,
     providerRegistry,
+    providerHostManager: createFakeProviderHostManager() as never,
     server: createServer(),
     getExecutionService: getExecutionService as never,
     getRecoveryService: getRecoveryService as never,
@@ -479,7 +585,6 @@ function createLifecycleHarness(
     cleanupStaleJobsFn: () => {},
     markJobsAsErrorFn: () => {},
     terminateAllFn: () => {},
-    providerHostManager: createFakeProviderHostManager() as never,
     kbDaemonSupervisor,
     handoffQuiescePorts: () => [],
     createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
@@ -491,7 +596,6 @@ function createLifecycleHarness(
         identity,
         runtime,
         progressStore,
-        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         recoveryCoordinator,
@@ -503,7 +607,6 @@ function createLifecycleHarness(
           bundleHash: identity.bundleHash,
           runtime,
           progressStore,
-          providerRegistry,
           getRecoveryService,
           createInvocationContext,
           signal,
@@ -552,11 +655,9 @@ function createActualRecoveryService(
     {
       runtime,
       childPrincipalRegistry: new ChildPrincipalRegistry(runtime.ids),
-      providerCredentialSourceAvailability: { isAvailable: () => true },
       progressStore: options.progressStore,
       bundleHash: 'testhash1234',
       backendNamespace: modules.pathsModule.pluginRootNamespace(options.pluginRoot),
-      providerHostManager: createFakeProviderHostManager() as never,
       launchCoordinator: options.launchCoordinator,
       eventBus: options.eventBus,
       providerRegistry: options.providerRegistry,
@@ -568,6 +669,7 @@ function createActualRecoveryService(
       aggregateWorkflowUsage: () => undefined,
       subscribeJobEvents: async function* () {} as never,
       getCurrentJournalSeq: () => 0,
+      coordinatorCommit: createTestJobJournalDeps(options.progressStore, runtime).coordinatorCommit,
     },
   );
 }
@@ -614,16 +716,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-kernel-ready-fence');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const sessionStart = vi.fn(async () => ({ status: 'running', job: 'live-job', session: 'live-session' }));
     const sessionsCreateSpec = modules.rpcCatalogModule.rpcCatalog.find((entry) => entry.name === 'sessions.create');
     if (!sessionsCreateSpec) {
@@ -693,27 +790,22 @@ describe('lifecycle recovery', () => {
     }
   });
 
-  it('records recovered provider artifact handles before recovered terminal completion even when cancellation was observed', async () => {
+  it('awaits the durable recovery pipeline with an immutable death observation', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-recovered-handles');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-recovered-handles');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const jobId = 'dead-recovered-handles';
     const sessionId = 'session-recovered-handles';
-    const callOrder: string[] = [];
     const launchRecord: JobLaunch = {
       jobId,
+      owner: { kind: 'provider-session', id: sessionId },
       sessionId,
       provider: 'codex',
       projectRoot,
@@ -727,57 +819,32 @@ describe('lifecycle recovery', () => {
         cwd: projectRoot,
         bypassPermissions: false,
         coralEnv: {},
-        conversationRef: 'fallback-thread',
       },
       createdAt: new Date().toISOString(),
     };
     const runtimeRecord = {
+      transport: 'durable-cli' as const,
       pid: 42,
       stdoutPath: '/tmp/recovered-stdout',
       stderrPath: '/tmp/recovered-stderr',
       startTime: '2026-04-12T00:00:00.000Z',
-      providerMeta: { threadId: 'thread-from-runtime-meta' },
     };
-    const finalizeFromArtifacts = vi.fn<ProviderRecoveryContract['finalizeFromArtifacts']>(async () => ({
-      terminal: {
-        kind: 'terminal',
-        terminal: {
-          content: 'recovered content',
-          outcome: { kind: 'completed' },
-        },
-        diagnostics: {},
-      },
-      artifactHandles: [
-        {
-          handle: '/tmp/provider-artifact.jsonl',
-          identity: { kind: 'test-artifact', path: '/tmp/provider-artifact.jsonl' },
-        },
-      ],
-      continuity: {
-        conversationRef: 'thread-from-runtime-meta',
-        resumable: true,
-      },
-    }));
-    const provider = {
-      finalizeFromArtifacts,
-    } as unknown as ProviderRecoveryContract;
+    let releaseFinalizer!: () => void;
+    const finalizerBlocked = new Promise<void>((resolve) => {
+      releaseFinalizer = resolve;
+    });
+    const finalizeInterruptedDurableJob = vi.fn(async () => finalizerBlocked);
     const service = createFakeExecutionAndRecoveryService({
-      recordRecoveredArtifactHandles: vi.fn(async () => {
-        expect(progressStore.readTerminalProjection(jobId)).toBeNull();
-        callOrder.push('handles');
-        return { ok: true as const, nextVersion: 2 };
-      }),
-      completeRecoveredJob: vi.fn(() => {
-        expect(progressStore.readTerminalProjection(jobId)).toMatchObject({
-          content: 'recovered content',
-          outcome: { kind: 'completed' },
-        });
-        callOrder.push('complete');
-      }),
-      validateProviderRecoveryAuthority: vi.fn(() => true),
+      finalizeInterruptedDurableJob,
     });
 
-    ensureTestSession(progressStore, { sessionId, provider: 'codex', projectRoot, backendNamespace: namespace });
+    ensureTestSession(progressStore, {
+      jobId,
+      sessionId,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
     progressStore.initJob({
       jobId,
       sessionId,
@@ -792,60 +859,52 @@ describe('lifecycle recovery', () => {
       endTime: '2026-04-12T00:01:00.000Z',
     });
 
-    modules.recoveryActionsModule.finalizeDeadAdoptedJob({
-      jobId,
-      launchRecord,
-      runtimeRecord,
-      service,
-      provider,
-      progressStore,
-      runtime,
-      sessionLookup: {
-        readSessionEntry: () => ({
-          sessionId,
-          provider: 'codex',
-          sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
-          name: 'alpha',
-          state: 'ready',
-          retention: 'retain',
-          artifactHandles: [],
-          retentionDiscard: { attempts: [] },
-          providerContinuity: null,
-          cwd: projectRoot,
-          projectRoot,
-          backendNamespace: namespace,
-          createdAt: new Date().toISOString(),
-          lastUsedAt: new Date().toISOString(),
-          version: 1,
-        }),
+    const authority = {
+      launchRecord: launchRecord as never,
+      session: {
+        sessionId,
+        artifactHandles: [],
+        conversationRef: 'fallback-thread',
+        providerContinuity: null,
+        projectRoot,
+        version: 1,
       },
-      cancelledJobIds: new Set([jobId]),
-      log: () => {},
-    });
+      boundProvider: { name: 'codex' },
+    } as never;
+    let settled = false;
+    const finalization = modules.recoveryActionsModule
+      .finalizeDeadAdoptedJob({
+        jobId,
+        runtimeRecord,
+        service,
+        authority,
+        progressStore,
+        cancelledJobIds: new Set([jobId]),
+        fence: { signal: new AbortController().signal, onCommitStart: vi.fn() },
+      })
+      .finally(() => {
+        settled = true;
+      });
 
-    await vi.waitFor(() => {
-      expect(service.completeRecoveredJob).toHaveBeenCalled();
-    });
-    expect(finalizeFromArtifacts).toHaveBeenCalledWith(
-      expect.objectContaining({
-        stdoutPath: '/tmp/recovered-stdout',
-        stderrPath: '/tmp/recovered-stderr',
-        providerMeta: { threadId: 'thread-from-runtime-meta' },
-        source: TEST_CODEX_SOURCE,
-        storage: runtime.storage,
-      }),
-    );
-    expect(service.recordRecoveredArtifactHandles).toHaveBeenCalledWith(sessionId, {
-      jobId,
-      provider: 'codex',
-      handles: [
-        {
-          handle: '/tmp/provider-artifact.jsonl',
-          identity: { kind: 'test-artifact', path: '/tmp/provider-artifact.jsonl' },
+    await vi.waitFor(() => expect(finalizeInterruptedDurableJob).toHaveBeenCalled());
+    expect(settled).toBe(false);
+    expect(finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+      authority,
+      runtimeRecord,
+      {
+        exit: {
+          exitCode: 0,
+          signal: null,
+          endTime: '2026-04-12T00:01:00.000Z',
         },
-      ],
-    });
-    expect(callOrder).toEqual(['handles', 'complete']);
+        terminal: null,
+        cancelled: true,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal), onCommitStart: expect.any(Function) }),
+    );
+    releaseFinalizer();
+    await finalization;
+    expect(settled).toBe(true);
   });
 
   it('1. queued recoverable jobs are restored in FIFO enqueueSequence order', async () => {
@@ -854,18 +913,13 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -907,7 +961,10 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      expect(recoverQueuedSpy.mock.calls.map(([record]) => record.jobId)).toEqual(['queued-low', 'queued-high']);
+      expect(recoverQueuedSpy.mock.calls.map(([authority]) => authority.launchRecord.jobId)).toEqual([
+        'queued-low',
+        'queued-high',
+      ]);
       expect(recoveredCoordinator.queuePosition('queued-low')).toBe(1);
       expect(recoveredCoordinator.queuePosition('queued-high')).toBe(2);
     } finally {
@@ -921,18 +978,13 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-queued-abort');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -966,7 +1018,6 @@ describe('lifecycle recovery', () => {
         identity,
         runtime,
         progressStore,
-        providerRegistry,
         getRecoveryService,
         createInvocationContext,
         recoveryCoordinator,
@@ -977,7 +1028,6 @@ describe('lifecycle recovery', () => {
           bundleHash: identity.bundleHash,
           runtime,
           progressStore,
-          providerRegistry,
           getRecoveryService,
           createInvocationContext,
           signal,
@@ -1011,18 +1061,13 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1058,7 +1103,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(adoptSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: 'running-live' }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'running-live' }) }),
         expect.objectContaining({ pid: process.pid }),
       );
       expect(launchCoordinator.getActiveJobIds()).toContain('running-live');
@@ -1082,18 +1127,13 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running-adopted-abort');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1171,16 +1211,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot(`project-ghost-${phase}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1225,16 +1260,11 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot(`project-foreign-${phase}`);
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
     const jobId = `foreign-${phase}-${durableRuntime ? 'durable' : appServerRuntime ? 'app' : 'none'}`;
     const foreignNamespace = 'foreign-namespace';
@@ -1287,16 +1317,15 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-workflow-parent');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+      reducers: modules.reducersModule.composeReducers(
+        modules.jobsEventsModule.jobsRegistry,
+        modules.workflowEventsModule.workflowRegistry,
+      ),
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
     const foreignNamespace = 'foreign-workflow-namespace';
 
@@ -1342,16 +1371,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-local-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1374,28 +1398,25 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(progressStore.readStatus('local-queued')).toMatchObject({ backendNamespace: namespace, phase: 'queued' });
-      expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'local-queued' }));
+      expect(fakeService.recoverQueuedJob).toHaveBeenCalledWith(
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'local-queued' }) }),
+      );
     } finally {
       await stopLifecycleController(controller);
     }
   });
 
-  it('11. same-namespace running jobs with dead pids finalize as wrapper_lost at planner time', async () => {
+  it('11. same-namespace provider jobs with dead pids use the BoundProvider durable finalizer', async () => {
     const modules = await loadModules();
     const pluginRoot = createProjectRoot('plugin-dead-running');
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-dead-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1419,16 +1440,58 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      // Planner detects the dead pid and emits markError(wrapper_lost) directly,
-      // so the runtime poll in finalizeDeadAdoptedJob never runs and
-      // adoptRunningJob is never invoked.
-      expect(progressStore.readStatus('dead-running')).toMatchObject({
-        backendNamespace: namespace,
-        phase: 'error',
-        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_lost' } } },
-      });
+      expect(fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledWith(
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'dead-running' }) }),
+        expect.objectContaining({ transport: 'durable-cli', pid: 999_999 }),
+        expect.objectContaining({ exit: null, terminal: null, cancelled: false }),
+        expect.objectContaining({ signal: expect.any(AbortSignal), onCommitStart: expect.any(Function) }),
+      );
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
       expect(fakeService.recoverQueuedJob).not.toHaveBeenCalled();
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('11b. dead-on-start durable finalization failure retains registry ownership and the launch fence', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-dead-finalizer-blocked');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-dead-finalizer-blocked');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'dead-finalizer-blocked-job';
+    const fakeService = createFakeExecutionAndRecoveryService({
+      finalizeInterruptedDurableJob: vi.fn(async () => {
+        throw new Error('exact session CAS went stale');
+      }),
+    });
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'dead-finalizer-blocked-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubRuntimeRecord(progressStore, { jobId, pid: 999_998 });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+    });
+
+    try {
+      await expect(controller.start()).rejects.toThrow(`Interrupted durable recovery remains incomplete for ${jobId}`);
+      expect(runtimeState.getLaunchFenceActive()).toBe(true);
+      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
+      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1441,26 +1504,31 @@ describe('lifecycle recovery', () => {
     const projectRoot = createProjectRoot('project-terminal-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const db = openTestStoreDb(runtime, ':memory:');
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db,
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const sessionManager = new modules.sessionManagerModule.SessionManager(
       projectRoot,
       runtime,
       undefined,
       undefined,
       db,
+      permissiveProviderLookupPort,
     );
-    const session = allocateTestSession(sessionManager, 'codex', 'alpha', undefined, projectRoot);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'alpha',
+      undefined,
+      projectRoot,
+      projectRoot,
+      namespace,
+    );
     const fakeService = createFakeExecutionAndRecoveryService();
 
+    expect(sessionManager.claimForJobSync(session.sessionId, 'terminal-job')).toBe(true);
     progressStore.initJob({
       jobId: 'terminal-job',
       sessionId: session.sessionId,
@@ -1476,8 +1544,6 @@ describe('lifecycle recovery', () => {
       projectRoot,
       outcome: { kind: 'completed' },
     });
-    sessionManager.claimForJobSync(session.sessionId, 'terminal-job');
-
     const { controller } = createLifecycleHarness(modules, {
       pluginRoot,
       progressStore,
@@ -1487,10 +1553,14 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(
-        new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db).get(
-          'codex',
-          session.sessionId,
-        )?.activeJobId,
+        new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        ).get('codex', session.sessionId)?.activeJobId,
       ).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
@@ -1504,22 +1574,18 @@ describe('lifecycle recovery', () => {
     const projectRoot = createProjectRoot('project-orphan-claim');
     const eventBus = new modules.eventBusModule.TypedEventBus();
     const db = openTestStoreDb(runtime, ':memory:');
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db,
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db,
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const sessionManager = new modules.sessionManagerModule.SessionManager(
       projectRoot,
       runtime,
       undefined,
       undefined,
       db,
+      permissiveProviderLookupPort,
     );
     const session = allocateTestSession(sessionManager, 'codex', 'alpha', undefined, projectRoot);
     const fakeService = createFakeExecutionAndRecoveryService();
@@ -1536,10 +1602,14 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(
-        new modules.sessionManagerModule.SessionManager(projectRoot, runtime, undefined, undefined, db).get(
-          'codex',
-          session.sessionId,
-        )?.activeJobId,
+        new modules.sessionManagerModule.SessionManager(
+          projectRoot,
+          runtime,
+          undefined,
+          undefined,
+          db,
+          permissiveProviderLookupPort,
+        ).get('codex', session.sessionId)?.activeJobId,
       ).toBeUndefined();
     } finally {
       await stopLifecycleController(controller);
@@ -1552,37 +1622,31 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
       jobId: 'app-server-job',
-      sessionId: 'app-server-session',
+      sessionId: 'recovered-provider-session',
       provider: 'codex',
       projectRoot,
       backendNamespace: namespace,
     });
-    // Inline runtime-record write (vs. the shared stubAppServerRuntime helper) is required
-    // here because the helper does not accept providerContinuity payload; this test verifies
-    // that the threadId field propagates through finalizeInterruptedAppServerJob.
     progressStore.appendRuntimeStarted('app-server-job', {
       transport: 'app-server',
       startTime: '2026-03-31T00:00:00.000Z',
       providerMeta: {
         provider: 'codex',
         leaseState: 'acquired',
-        providerContinuity: {
-          provider: 'codex',
-          threadId: 'thread-1',
+        hostRef: {
+          provider: 'test',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
         },
       },
     });
@@ -1597,14 +1661,16 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: 'app-server-job' }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'app-server-job' }) }),
         expect.objectContaining({
           transport: 'app-server',
-          providerMeta: expect.objectContaining({
-            providerContinuity: expect.objectContaining({ threadId: 'thread-1' }),
-          }),
+          providerMeta: expect.not.objectContaining({ providerContinuity: expect.anything() }),
         }),
-        { reason: 'restart' },
+        expect.objectContaining({
+          reason: 'restart',
+          signal: expect.any(AbortSignal),
+          onCommitStart: expect.any(Function),
+        }),
       );
       expect(fakeService.adoptRunningJob).not.toHaveBeenCalled();
     } finally {
@@ -1618,16 +1684,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-app-server-handoff');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1643,9 +1704,11 @@ describe('lifecycle recovery', () => {
       providerMeta: {
         provider: 'codex',
         leaseState: 'acquired',
-        providerContinuity: {
-          provider: 'codex',
-          threadId: 'handoff-thread-1',
+        hostRef: {
+          provider: 'test',
+          fingerprint: '0'.repeat(64),
+          instanceId: 'instance-1',
+          leaseMode: 'shared',
         },
       },
     });
@@ -1661,15 +1724,236 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledWith(
-        expect.objectContaining({ jobId: 'app-server-handoff-job' }),
+        expect.objectContaining({ launchRecord: expect.objectContaining({ jobId: 'app-server-handoff-job' }) }),
         expect.objectContaining({
           transport: 'app-server',
-          providerMeta: expect.objectContaining({
-            providerContinuity: expect.objectContaining({ threadId: 'handoff-thread-1' }),
-          }),
+          providerMeta: expect.not.objectContaining({ providerContinuity: expect.anything() }),
         }),
-        { reason: 'handoff' },
+        expect.objectContaining({
+          reason: 'handoff',
+          signal: expect.any(AbortSignal),
+          onCommitStart: expect.any(Function),
+        }),
       );
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('14c. interrupted app-server finalization failure retains the recovery registry and launch fence', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-app-server-blocked');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-app-server-blocked');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const fakeService = createFakeExecutionAndRecoveryService({
+      finalizeInterruptedAppServerJob: vi.fn(async () => {
+        throw new Error('session CAS became stale');
+      }),
+    });
+    const jobId = 'app-server-blocked-job';
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'app-server-blocked-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'app-server',
+      startTime: '2026-03-31T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'waiting',
+      },
+    });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await expect(controller.start()).rejects.toThrow(
+        `Interrupted app-server recovery remains incomplete for ${jobId}`,
+      );
+      expect(runtimeState.getLaunchFenceActive()).toBe(true);
+      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
+      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('14d. app-server binding failure retains preregistration and the launch fence without terminalizing', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-provider-authority-blocked');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-provider-authority-blocked');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'provider-authority-blocked-job';
+    const fakeService = createFakeExecutionAndRecoveryService({
+      captureProviderRecoveryAuthority: vi.fn(async () => ({
+        ok: false,
+        failure: { reason: 'subject-mismatch', provider: 'codex' },
+      })),
+    });
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'provider-authority-blocked-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    progressStore.appendRuntimeStarted(jobId, {
+      transport: 'app-server',
+      startTime: '2026-03-31T00:00:00.000Z',
+      providerMeta: {
+        provider: 'codex',
+        leaseState: 'waiting',
+      },
+    });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await expect(controller.start()).rejects.toThrow(`Recovery authority rejected for app-server job ${jobId}`);
+      expect(runtimeState.getLaunchFenceActive()).toBe(true);
+      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
+      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('14e. live durable binding failure requests process stop before retaining the recovery fence', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-durable-binding-blocked');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-durable-binding-blocked');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'durable-binding-blocked-job';
+    const pid = 73_737;
+    const kill = vi.spyOn(runtime.process, 'kill').mockReturnValue(true);
+    vi.spyOn(runtime.process, 'isAlive').mockImplementation((candidatePid) => candidatePid === pid);
+    const fakeService = createFakeExecutionAndRecoveryService({
+      captureProviderRecoveryAuthority: vi.fn(async () => ({
+        ok: false,
+        failure: { reason: 'subject-mismatch', provider: 'codex' },
+      })),
+    });
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'durable-binding-blocked-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubRuntimeRecord(progressStore, { jobId, pid });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      expect(progressStore.readRuntimeProjection(jobId)).toMatchObject({ transport: 'durable-cli', pid });
+      const startError = await controller.start().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1);
+      expect(runtime.process.isAlive).toHaveBeenCalledWith(pid);
+      expect(startError).toEqual(
+        expect.objectContaining({ message: expect.stringContaining(`live durable job ${jobId}`) }),
+      );
+      expect(kill).toHaveBeenCalledWith(pid, 'SIGTERM');
+      expect(fakeService.finalizeProviderRecoveryBindingFailure).not.toHaveBeenCalled();
+      expect(runtimeState.getLaunchFenceActive()).toBe(true);
+      expect(controller.getRecoveryRegistry()?.has(jobId)).toBe(true);
+      expect(progressStore.readStatus(jobId)?.phase).toBe('running');
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('14f. dead durable binding failure terminalizes only after liveness is disproved', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createProjectRoot('plugin-dead-durable-binding');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const projectRoot = createProjectRoot('project-dead-durable-binding');
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const jobId = 'dead-durable-binding-job';
+    const pid = 74_747;
+    const kill = vi.spyOn(runtime.process, 'kill');
+    vi.spyOn(runtime.process, 'isAlive').mockReturnValue(false);
+    const failure = { reason: 'subject-mismatch', provider: 'codex' } as const;
+    const fakeService = createFakeExecutionAndRecoveryService({
+      captureProviderRecoveryAuthority: vi.fn(async () => ({ ok: false, failure })),
+    });
+
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: 'dead-durable-binding-session',
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+    stubRuntimeRecord(progressStore, { jobId, pid });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      servicesByProjectRoot: new Map([[projectRoot, fakeService]]),
+      runtime,
+    });
+
+    try {
+      await controller.start();
+      expect(kill).not.toHaveBeenCalled();
+      expect(fakeService.finalizeProviderRecoveryBindingFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ jobId }),
+        failure,
+      );
+      expect(runtimeState.getLaunchFenceActive()).toBe(false);
+      expect(controller.getRecoveryRegistry()?.has(jobId) ?? false).toBe(false);
     } finally {
       await stopLifecycleController(controller);
     }
@@ -1681,18 +1965,13 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-running-stays-running');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const launchCoordinator = createLaunchCoordinator(modules);
-    const providerRegistry = new modules.providerRegistryModule.ProviderRegistry();
+    const providerRegistry = createRecoveryProviderRegistry(modules);
     const service = createActualRecoveryService(modules, {
       progressStore,
       eventBus,
@@ -1737,16 +2016,11 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-terminal');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1790,16 +2064,11 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-history');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1839,16 +2108,11 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-namespace-preserved');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1888,16 +2152,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-local-queued-stays-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1931,16 +2190,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-ghost-no-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -1972,16 +2226,11 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-no-queued');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -2021,16 +2270,11 @@ describe('lifecycle recovery', () => {
     const currentNamespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-foreign-no-adopt');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      currentNamespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(currentNamespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {
@@ -2066,16 +2310,11 @@ describe('lifecycle recovery', () => {
     const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
     const projectRoot = createProjectRoot('project-fence');
     const eventBus = new modules.eventBusModule.TypedEventBus();
-    const progressStore = new modules.progressStoreModule.JobStore(
-      namespace,
-      runtime,
-      createDefaultUpcasterRegistry(),
-      {
-        db: openTestStoreDb(runtime, ':memory:'),
-        eventBus,
-        providers: permissiveProviderLookupPort,
-      },
-    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
     const fakeService = createFakeExecutionAndRecoveryService();
 
     stubLaunchRecord(progressStore, {

@@ -13,10 +13,10 @@ import { errorMessage } from '../../infra/error-format.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { appendRuntimeEvents, loadAttachedOrPersistedSnapshot } from './persistence.js';
-import type { JobContinuitySnapshot } from '../../jobs/continuity.js';
+import type { ContinuitySnapshot } from '../../sessions/continuity.js';
 import type { AgentConfig, DiscussContext } from './types.js';
+import { discussAgentExecution } from '../execution-policy.js';
 
-export const DEFAULT_DISCUSS_PROVIDER = 'claude';
 const RETRYABLE_ATTEMPT_OUTCOMES = new Set<DiscussAgentJobOutcome>([
   'execution_error',
   'recovery_failed',
@@ -40,7 +40,7 @@ export type AttemptSuccess = {
   attempt: number;
   jobId: string;
   content: string;
-  continuity: JobContinuitySnapshot | null;
+  continuity: ContinuitySnapshot | null;
 };
 
 type AttemptFailure = {
@@ -140,19 +140,7 @@ export function normalizeModel(model: string | undefined): string | undefined {
 export function buildAgentExecutionConfig(agents: AgentConfig[]): Record<string, SessionCreatedAgentExecutionConfig> {
   const config: Record<string, SessionCreatedAgentExecutionConfig> = {};
   for (const agent of agents) {
-    const isManualObserver =
-      (agent.participation ?? 'required') === 'observer' && agent.provider === undefined && agent.model === undefined;
-
-    if (isManualObserver) {
-      config[agent.name] = { manual: true };
-      continue;
-    }
-
-    config[agent.name] = {
-      manual: false,
-      provider: agent.provider ?? DEFAULT_DISCUSS_PROVIDER,
-      model: agent.model ?? '',
-    };
+    config[agent.name] = discussAgentExecution(agent);
   }
   return config;
 }
@@ -309,12 +297,13 @@ export async function executeAgentAttempt(
         outcome: 'recovery_missing',
       });
     } else if (status.phase === 'completed') {
+      const result = await ctx.service.waitStreamOnce(activeJobId, timeoutMs);
       return {
         ok: true,
         attempt,
         jobId: activeJobId,
-        content: status.result?.content ?? '',
-        continuity: status.continuity ?? null,
+        content: result.content,
+        continuity: result.continuity,
       };
     } else if (!isLivePhase(status.phase)) {
       await recordJobFinished(ctx, {
@@ -382,6 +371,8 @@ export async function executeAgentAttempt(
                 pool: 'discuss',
                 cwd,
                 bypassPermissions: true,
+                owner: { kind: 'discussion', id: sessionId },
+                discussionRun: { agent: agentName, purpose, attempt },
                 instruction: {
                   channel: 'system',
                   content: instruction,
@@ -398,6 +389,8 @@ export async function executeAgentAttempt(
                 pool: 'discuss',
                 cwd,
                 bypassPermissions: true,
+                owner: { kind: 'discussion', id: sessionId },
+                discussionRun: { agent: agentName, purpose, attempt },
               },
               invocationCtx,
             );
@@ -419,12 +412,13 @@ export async function executeAgentAttempt(
       message: launch.message,
     };
   }
+  const providerSessionId = launch.sessionId;
 
   try {
     if (executionSessionId === undefined) {
       await appendRequiredRuntimeEvents(ctx, sessionId, 'agent run binding', (current) => {
         const latestRun = current.runtime.agentRuns[agentName];
-        if (latestRun?.executionSessionId === launch.session) {
+        if (latestRun?.executionSessionId === providerSessionId) {
           return [];
         }
         return [
@@ -437,7 +431,7 @@ export async function executeAgentAttempt(
             nowIsoString(ctx.runtime.time),
             {
               agent: agentName,
-              executionSessionId: launch.session,
+              executionSessionId: providerSessionId,
             },
           ),
         ];
@@ -447,7 +441,7 @@ export async function executeAgentAttempt(
     await appendRequiredRuntimeEvents(ctx, sessionId, 'agent job start', (current) => {
       const latestRun = current.runtime.agentRuns[agentName];
       if (
-        latestRun?.currentJobId === launch.job &&
+        latestRun?.currentJobId === launch.jobId &&
         latestRun.currentJobPurpose === purpose &&
         latestRun.currentAttempt === attempt
       ) {
@@ -464,7 +458,7 @@ export async function executeAgentAttempt(
           nowIsoString(ctx.runtime.time),
           {
             agent: agentName,
-            jobId: launch.job,
+            jobId: launch.jobId,
             purpose,
             attempt,
           },
@@ -481,11 +475,11 @@ export async function executeAgentAttempt(
   }
 
   try {
-    const result = await ctx.service.waitStreamOnce(launch.job, timeoutMs);
+    const result = await ctx.service.waitStreamOnce(launch.jobId, timeoutMs);
     return {
       ok: true,
       attempt,
-      jobId: launch.job,
+      jobId: launch.jobId,
       content: result.content,
       continuity: result.continuity,
     };
@@ -495,7 +489,7 @@ export async function executeAgentAttempt(
       sessionId,
       agentName,
       purpose,
-      jobId: launch.job,
+      jobId: launch.jobId,
       attempt,
       outcome: 'execution_error',
     });
@@ -511,7 +505,7 @@ export async function executeAgentAttempt(
 export async function runPlainTurn(
   ctx: DiscussContext,
   params: ExecuteAgentAttemptParams,
-): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
+): Promise<{ content: string; continuity: ContinuitySnapshot | null }> {
   const attempt = await executeAgentAttempt(ctx, params);
   if (!isAttemptSuccess(attempt)) {
     throw new Error(attempt.message);
@@ -535,7 +529,7 @@ export async function runPlainTurn(
 export async function runFacilitatorTurn(
   ctx: DiscussContext,
   params: RunFacilitatorTurnParams,
-): Promise<{ content: string; continuity: JobContinuitySnapshot | null }> {
+): Promise<{ content: string; continuity: ContinuitySnapshot | null }> {
   const snapshot = loadAttachedOrPersistedSnapshot(ctx, params.sessionId);
   if (!snapshot) {
     throw new Error(`Discuss session not found: ${params.sessionId}`);

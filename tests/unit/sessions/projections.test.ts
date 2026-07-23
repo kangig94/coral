@@ -1,3 +1,4 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { describe, expect, it } from 'vitest';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -6,27 +7,30 @@ import { commitInputs } from '#tests/helpers/commit-inputs.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import type { AppendedEvent } from '#src/store/append.js';
 import type { CoralEventInput } from '#src/store/envelope.js';
 import { CoralSetupError } from '#src/runtime/errors.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import type { ProviderSession } from '#src/sessions/entry.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import { TEST_CODEX_SOURCE } from '#tests/helpers/provider-credentials.js';
+import {
+  TEST_CLAUDE_BINDING,
+  TEST_CODEX_BINDING,
+  withTestBindingLocation,
+} from '#tests/helpers/provider-credentials.js';
 import {
   listProjectionSessionEntries,
   readProjectionSession,
   readProjectionSessionEntriesById,
-  readProjectionSessionEntry,
+  readProjectionProviderSession,
 } from '#src/sessions/projections.js';
 
 const NOW = new Date('2026-06-11T00:00:00.000Z');
 
-function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'sessionId'>): SessionEntry {
+function sessionEntry(overrides: Partial<ProviderSession> & Pick<ProviderSession, 'sessionId'>): ProviderSession {
   return {
     sessionId: overrides.sessionId,
-    provider: overrides.provider ?? 'codex',
-    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
+    binding: overrides.binding ?? TEST_CODEX_BINDING,
     name: overrides.name ?? overrides.sessionId,
     state: overrides.state ?? 'pending',
     retention: overrides.retention ?? 'retain',
@@ -53,13 +57,13 @@ type Harness = {
 
 function newHarness(): Harness {
   const db = newRawDatabase(':memory:');
-  applyBundledStoreSchema(db);
+  applyBundledStoreSchema(db, currentCoralStoreFormat());
   const reducers = composeReducers(sessionsRegistry);
-  const upcasters = createDefaultUpcasterRegistry();
+  const bodyCodec = createEventBodyCodec();
   return {
     db,
     commit: (inputs) =>
-      commitInputs(db, inputs, { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort }),
+      commitInputs(db, inputs, { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort }),
     close: () => db.close(),
   };
 }
@@ -68,25 +72,23 @@ function sessionStream(sessionId: string): CoralEventInput['stream'] {
   return { kind: 'session', id: sessionId };
 }
 
-function openedInput(entry: SessionEntry, scopeKey: string): CoralEventInput {
+function openedInput(entry: ProviderSession, scopeKey: string): CoralEventInput {
   return {
     type: 'session.opened',
     stream: sessionStream(entry.sessionId),
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
-    body: { entry, controller: 'default', provider: entry.provider, scope_key: scopeKey },
+    body: { entry, controller: 'default', scope_key: scopeKey },
   };
 }
 
 function checkpointedInput(
-  entry: SessionEntry,
+  entry: ProviderSession,
   snapshot: { conversationRef: string | null; resumable: boolean },
 ): CoralEventInput {
   return {
     type: 'session.continuity.checkpointed',
     stream: sessionStream(entry.sessionId),
     refs: { sessionId: entry.sessionId },
-    bodyVersion: 1,
     body: { entry, snapshot: { ...snapshot, providerContinuity: null } },
   };
 }
@@ -104,7 +106,6 @@ function discardEventInput(
     type,
     stream: sessionStream(sessionId),
     refs: { sessionId },
-    bodyVersion: 1,
     body: { sessionId, attempt, handles: ['/tmp/handle.jsonl'], ...extra },
   };
 }
@@ -143,19 +144,16 @@ describe('sessions projections', () => {
     }
   });
 
-  it('strips non-persistent Claude transport from stale controller profiles', () => {
+  it('rejects unknown controller profile fields instead of normalizing persisted data', () => {
     const h = newHarness();
     try {
       const entry = {
         ...sessionEntry({ sessionId: 'session-stale-transport' }),
         controllerProfile: { owner: 'team-a', claudeTransport: 'print' },
-      } as unknown as SessionEntry;
+      } as unknown as ProviderSession;
 
-      h.commit([openedInput(entry, 'scope-stale-transport')]);
-
-      expect(readProjectionSession(h.db, 'session-stale-transport')?.entry.controllerProfile).toEqual({
-        owner: 'team-a',
-      });
+      expect(() => h.commit([openedInput(entry, 'scope-stale-transport')])).toThrow();
+      expect(readProjectionSession(h.db, 'session-stale-transport')).toBeNull();
     } finally {
       h.close();
     }
@@ -189,30 +187,25 @@ describe('sessions projections', () => {
     }
   });
 
-  it('rejects a replay event that changes persisted provider authority', () => {
+  it('rejects a replay event that changes the persisted provider binding', () => {
     const h = newHarness();
     try {
       const opened = sessionEntry({
-        sessionId: 'session-authority-immutable',
-        sessionAuthority: { kind: 'provider', source: TEST_CODEX_SOURCE },
+        sessionId: 'session-binding-immutable',
+        binding: TEST_CODEX_BINDING,
       });
-      h.commit([openedInput(opened, 'scope-authority-immutable')]);
+      h.commit([openedInput(opened, 'scope-binding-immutable')]);
       const changed = sessionEntry({
         ...opened,
         version: 2,
-        sessionAuthority: {
-          kind: 'provider',
-          source: { ...TEST_CODEX_SOURCE, home: '/accounts/codex-b' },
-        },
+        binding: withTestBindingLocation(TEST_CODEX_BINDING, '/accounts/codex-b'),
       });
 
       expectSetupError(
         () => h.commit([checkpointedInput(changed, { conversationRef: null, resumable: false })]),
-        'provider_credential_source_mismatch',
+        'provider_session_binding_mismatch',
       );
-      expect(readProjectionSessionEntry(h.db, opened.sessionId)?.sessionAuthority).toEqual(
-        opened.sessionAuthority,
-      );
+      expect(readProjectionProviderSession(h.db, opened.sessionId)?.binding).toEqual(opened.binding);
     } finally {
       h.close();
     }
@@ -234,7 +227,6 @@ describe('sessions projections', () => {
           type: 'session.claimed',
           stream: sessionStream('session-claim'),
           refs: { sessionId: 'session-claim', jobId: 'job-1' },
-          bodyVersion: 1,
           body: { entry: claimed, jobId: 'job-1' },
         },
       ]);
@@ -249,7 +241,6 @@ describe('sessions projections', () => {
           type: 'session.claim.released',
           stream: sessionStream('session-claim'),
           refs: { sessionId: 'session-claim', jobId: 'job-1' },
-          bodyVersion: 1,
           body: { entry: released, jobId: 'job-1' },
         },
       ]);
@@ -274,7 +265,7 @@ describe('sessions projections', () => {
       h.commit([openedInput(entry, 'scope-discard')]);
       h.commit([discardEventInput('session.retention.discard.requested', 'session-discard', 1)]);
 
-      const afterFirstRequest = readProjectionSessionEntry(h.db, 'session-discard');
+      const afterFirstRequest = readProjectionProviderSession(h.db, 'session-discard');
       expect(afterFirstRequest?.version).toBe(entry.version + 1);
       expect(afterFirstRequest?.retentionDiscard.attempts).toEqual([
         { attempt: 1, handles: ['/tmp/handle.jsonl'], status: 'requested' },
@@ -291,7 +282,7 @@ describe('sessions projections', () => {
         }),
       ]);
 
-      expect(readProjectionSessionEntry(h.db, 'session-discard')?.retentionDiscard.attempts).toEqual([
+      expect(readProjectionProviderSession(h.db, 'session-discard')?.retentionDiscard.attempts).toEqual([
         { attempt: 1, handles: ['/tmp/handle.jsonl'], status: 'completed', outcome: 'discarded' },
         { attempt: 2, handles: ['/tmp/handle.jsonl'], status: 'failed', reason: 'provider unreachable', causeRef },
       ]);
@@ -306,7 +297,7 @@ describe('sessions projections', () => {
       const entry = sessionEntry({ sessionId: 'session-premature' });
       expectSetupError(
         () => h.commit([checkpointedInput(entry, { conversationRef: null, resumable: false })]),
-        'provider_credential_source_missing',
+        'provider_session_missing',
       );
       expectSetupError(
         () =>
@@ -315,7 +306,6 @@ describe('sessions projections', () => {
               type: 'session.provider_failed',
               stream: sessionStream('session-premature'),
               refs: { sessionId: 'session-premature' },
-              bodyVersion: 1,
               body: { provider: 'codex', reason: 'request_failed', message: 'transport reset' },
             },
           ]),
@@ -342,53 +332,50 @@ describe('sessions projections', () => {
               type: 'session.opened',
               stream: sessionStream('session-mismatch'),
               refs: { sessionId: 'session-mismatch' },
-              bodyVersion: 1,
-              body: { entry, controller: 'default', provider: 'codex', scope_key: 'scope-mismatch' },
+              body: { entry, controller: 'default', scope_key: 'scope-mismatch' },
             },
           ]),
-        'provider_credential_source_invalid',
+        'provider_session_stream_mismatch',
       );
     } finally {
       h.close();
     }
   });
 
-  it('should update only the provider column for provider_failed and adapter_unparseable faults', () => {
+  it('keeps the derived provider bound to ProviderSession.binding across fault events', () => {
     const h = newHarness();
     try {
-      const entry = sessionEntry({ sessionId: 'session-fault', provider: 'codex' });
+      const entry = sessionEntry({ sessionId: 'session-fault' });
       h.commit([openedInput(entry, 'scope-fault')]);
       h.commit([
         {
           type: 'session.provider_failed',
           stream: sessionStream('session-fault'),
           refs: { sessionId: 'session-fault' },
-          bodyVersion: 1,
           body: { provider: 'codex-alt', reason: 'session_unavailable', message: 'gone' },
         },
       ]);
 
       const afterFailed = readProjectionSession(h.db, 'session-fault');
-      expect(afterFailed?.provider).toBe('codex-alt');
-      expect(afterFailed?.entry.provider).toBe('codex');
+      expect(afterFailed?.provider).toBe('codex');
+      expect(afterFailed?.entry.binding.provider).toBe('codex');
 
       h.commit([
         {
           type: 'session.adapter_unparseable',
           stream: sessionStream('session-fault'),
           refs: { sessionId: 'session-fault' },
-          bodyVersion: 1,
           body: { provider: 'codex-raw', exitCode: null, stdout: '', stderr: '', parseError: 'unexpected EOF' },
         },
       ]);
 
-      expect(readProjectionSession(h.db, 'session-fault')?.provider).toBe('codex-raw');
+      expect(readProjectionSession(h.db, 'session-fault')?.provider).toBe('codex');
     } finally {
       h.close();
     }
   });
 
-  it('should keep the stored entry for bare session.interrupted faults and replace it for wrapped ones', () => {
+  it('should keep the stored entry for session.interrupted faults', () => {
     const h = newHarness();
     try {
       const entry = sessionEntry({ sessionId: 'session-interrupt' });
@@ -398,28 +385,11 @@ describe('sessions projections', () => {
           type: 'session.interrupted',
           stream: sessionStream('session-interrupt'),
           refs: { sessionId: 'session-interrupt' },
-          bodyVersion: 1,
           body: { trigger: 'handoff', continuity: 'pre_checkpoint_preserved' },
         },
       ]);
 
-      expect(readProjectionSessionEntry(h.db, 'session-interrupt')?.version).toBe(1);
-
-      const replacement = sessionEntry({ ...entry, state: 'non_resumable', version: 2 });
-      h.commit([
-        {
-          type: 'session.interrupted',
-          stream: sessionStream('session-interrupt'),
-          refs: { sessionId: 'session-interrupt' },
-          bodyVersion: 1,
-          body: { entry: replacement, fault: { trigger: 'restart', continuity: 'missing' } },
-        },
-      ]);
-
-      expect(readProjectionSessionEntry(h.db, 'session-interrupt')).toMatchObject({
-        state: 'non_resumable',
-        version: 2,
-      });
+      expect(readProjectionProviderSession(h.db, 'session-interrupt')?.version).toBe(1);
     } finally {
       h.close();
     }
@@ -429,7 +399,7 @@ describe('sessions projections', () => {
     const h = newHarness();
     try {
       expect(readProjectionSession(h.db, 'missing')).toBeNull();
-      expect(readProjectionSessionEntry(h.db, 'missing')).toBeNull();
+      expect(readProjectionProviderSession(h.db, 'missing')).toBeNull();
     } finally {
       h.close();
     }
@@ -440,15 +410,14 @@ describe('sessions projections', () => {
     try {
       const insert = h.db.prepare(
         `INSERT INTO projection_sessions (
-           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       );
-      insert.run('session-corrupt', 'default', 'codex', 0, null, 'scope', 'not json', 1);
-      insert.run('session-bad-shape', 'default', 'codex', 0, null, 'scope', '{}', 1);
+      insert.run('session-corrupt', 'default', 0, null, 'scope', 'not json', 1);
+      insert.run('session-bad-shape', 'default', 0, null, 'scope', '{}', 1);
       insert.run(
         'session-id-mismatch',
         'default',
-        'codex',
         0,
         null,
         'scope',
@@ -483,9 +452,9 @@ describe('sessions projections', () => {
     const h = newHarness();
     try {
       h.commit([
-        openedInput(sessionEntry({ sessionId: 'session-1', provider: 'codex' }), 'scope-x'),
-        openedInput(sessionEntry({ sessionId: 'session-2', provider: 'claude' }), 'scope-x'),
-        openedInput(sessionEntry({ sessionId: 'session-3', provider: 'codex' }), 'scope-y'),
+        openedInput(sessionEntry({ sessionId: 'session-1' }), 'scope-x'),
+        openedInput(sessionEntry({ sessionId: 'session-2', binding: TEST_CLAUDE_BINDING }), 'scope-x'),
+        openedInput(sessionEntry({ sessionId: 'session-3' }), 'scope-y'),
       ]);
 
       expect(listProjectionSessionEntries(h.db).map((entry) => entry.sessionId)).toEqual([

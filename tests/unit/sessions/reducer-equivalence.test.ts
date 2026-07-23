@@ -1,26 +1,28 @@
+import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createHash } from 'node:crypto';
 
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { describe, expect, it } from 'vitest';
 
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { createDefaultUpcasterRegistry } from '#src/store/upcaster-registry.js';
+import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { rebuildProjections } from '#tests/helpers/rebuild-projections.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
-import type { SessionEntry } from '#src/sessions/entry.js';
+import { providerSessionSchema, type ProviderSession } from '#src/sessions/entry.js';
+import { sessionArtifactHandleRecordedBodySchema } from '#src/sessions/event-bodies.js';
 import { providerArtifactIdentityKey } from '#src/providers/artifact-identity.js';
-import { readProjectionSessionEntry } from '#src/sessions/projections.js';
+import { readProjectionProviderSession } from '#src/sessions/projections.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { TEST_CLAUDE_BINDING, TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
-function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'sessionId' | 'provider'>): SessionEntry {
+function sessionEntry(overrides: Partial<ProviderSession> & Pick<ProviderSession, 'sessionId'>): ProviderSession {
   return {
     sessionId: overrides.sessionId,
-    provider: overrides.provider,
-    sessionAuthority: overrides.sessionAuthority ?? { kind: 'orchestration' },
+    binding: overrides.binding ?? TEST_CODEX_BINDING,
     name: overrides.name ?? overrides.sessionId,
     state: overrides.state ?? 'pending',
     retention: overrides.retention ?? 'retain',
@@ -45,15 +47,56 @@ function sessionEntry(overrides: Partial<SessionEntry> & Pick<SessionEntry, 'ses
 }
 
 describe('sessions reducer equivalence', () => {
+  it('requires artifact identity and job ownership to match the session binding exactly', () => {
+    const identity = { kind: 'codex-rollout' as const, threadId: 'thread-artifact' };
+    const identityKey = providerArtifactIdentityKey('codex', identity);
+    const entry = sessionEntry({
+      sessionId: 'session-artifact-authority',
+      artifactHandles: [
+        {
+          handle: '/tmp/codex/rollout.jsonl',
+          identity,
+          identityKey,
+          sourceJobId: 'job-artifact',
+          recordedAt: NOW.toISOString(),
+        },
+      ],
+    });
+
+    expect(() =>
+      providerSessionSchema.parse({
+        ...entry,
+        artifactHandles: [{ ...entry.artifactHandles[0], identityKey: 'not-derived-from-binding' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      sessionArtifactHandleRecordedBodySchema.parse({
+        entry,
+        provider: 'codex',
+        handle: '/tmp/codex/rollout.jsonl',
+        identity,
+        identityKey,
+        sourceJobId: 'job-artifact',
+      }),
+    ).toThrow();
+    expect(() =>
+      sessionArtifactHandleRecordedBodySchema.parse({
+        entry,
+        handle: '/tmp/codex/rollout.jsonl',
+        identity,
+        identityKey,
+      }),
+    ).toThrow();
+  });
+
   it('projects session.opened retention and recorded artifact handles through entry JSON', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
         sessionId: 'session-artifact',
-        provider: 'codex',
         retention: 'discard_provider_artifacts_on_terminal',
       });
       const artifactEntry = sessionEntry({
@@ -61,7 +104,6 @@ describe('sessions reducer equivalence', () => {
         version: 2,
         artifactHandles: [
           {
-            provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
             identity: { kind: 'codex-rollout', threadId: 'thread-artifact' },
             identityKey: providerArtifactIdentityKey('codex', {
@@ -81,11 +123,9 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-artifact' },
             refs: { sessionId: 'session-artifact' },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'default',
-              provider: 'codex',
               scope_key: 'scope-artifact',
             },
           },
@@ -93,16 +133,19 @@ describe('sessions reducer equivalence', () => {
             type: 'session.artifact.handle.recorded',
             stream: { kind: 'session', id: 'session-artifact' },
             refs: { sessionId: 'session-artifact', jobId: 'job-artifact' },
-            bodyVersion: 1,
             body: {
               entry: artifactEntry,
-              provider: 'codex',
               handle: '/tmp/codex/rollout.jsonl',
+              identity: { kind: 'codex-rollout', threadId: 'thread-artifact' },
+              identityKey: providerArtifactIdentityKey('codex', {
+                kind: 'codex-rollout',
+                threadId: 'thread-artifact',
+              }),
               sourceJobId: 'job-artifact',
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
       const row = db
@@ -116,14 +159,13 @@ describe('sessions reducer equivalence', () => {
       if (!row) {
         throw new Error('Expected session projection row');
       }
-      const projected = JSON.parse(row.entry) as SessionEntry;
+      const projected = JSON.parse(row.entry) as ProviderSession;
 
       expect(projected).toMatchObject({
         sessionId: 'session-artifact',
         retention: 'discard_provider_artifacts_on_terminal',
         artifactHandles: [
           {
-            provider: 'codex',
             handle: '/tmp/codex/rollout.jsonl',
             sourceJobId: 'job-artifact',
             recordedAt: NOW.toISOString(),
@@ -139,12 +181,11 @@ describe('sessions reducer equivalence', () => {
   it('projects retention discard outbox events through entry JSON and rebuilds the same state', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const openedEntry = sessionEntry({
         sessionId: 'session-retention-discard',
-        provider: 'codex',
         retention: 'discard_provider_artifacts_on_terminal',
       });
       const handles = ['/tmp/codex/rollout-retention.jsonl'];
@@ -156,11 +197,9 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: openedEntry.sessionId },
             refs: { sessionId: openedEntry.sessionId },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'default',
-              provider: 'codex',
               scope_key: 'scope-retention-discard',
             },
           },
@@ -168,7 +207,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.retention.discard.requested',
             stream: { kind: 'session', id: openedEntry.sessionId },
             refs: { sessionId: openedEntry.sessionId },
-            bodyVersion: 1,
             body: {
               sessionId: openedEntry.sessionId,
               attempt: 1,
@@ -179,7 +217,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.retention.discard.completed',
             stream: { kind: 'session', id: openedEntry.sessionId },
             refs: { sessionId: openedEntry.sessionId },
-            bodyVersion: 1,
             body: {
               sessionId: openedEntry.sessionId,
               attempt: 1,
@@ -188,10 +225,10 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
 
-      const before = readProjectionSessionEntry(db, openedEntry.sessionId);
+      const before = readProjectionProviderSession(db, openedEntry.sessionId);
       expect(before?.retentionDiscard).toEqual({
         attempts: [
           {
@@ -207,46 +244,12 @@ describe('sessions reducer equivalence', () => {
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
-      expect(readProjectionSessionEntry(db, openedEntry.sessionId)?.retentionDiscard).toEqual(before?.retentionDiscard);
-    } finally {
-      db.close();
-    }
-  });
-
-  it('parses pre-feature projection_sessions.entry JSON with retention defaults', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db);
-      const retiredEntry = {
-        sessionId: 'session-retired-row',
-        provider: 'codex',
-        sessionAuthority: { kind: 'orchestration' as const },
-        name: 'retired',
-        state: 'pending',
-        cwd: '/tmp/project',
-        projectRoot: '/tmp/project',
-        backendNamespace: 'ns-a',
-        providerContinuity: null,
-        createdAt: NOW.toISOString(),
-        lastUsedAt: NOW.toISOString(),
-        version: 1,
-      };
-
-      db.prepare(
-        `INSERT INTO projection_sessions (
-           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).run('session-retired-row', 'default', 'codex', 0, null, 'retired-scope', JSON.stringify(retiredEntry), 1);
-
-      expect(readProjectionSessionEntry(db, 'session-retired-row')).toMatchObject({
-        sessionId: 'session-retired-row',
-        retention: 'retain',
-        artifactHandles: [],
-        retentionDiscard: { attempts: [] },
-      });
+      expect(readProjectionProviderSession(db, openedEntry.sessionId)?.retentionDiscard).toEqual(
+        before?.retentionDiscard,
+      );
     } finally {
       db.close();
     }
@@ -255,11 +258,10 @@ describe('sessions reducer equivalence', () => {
   it('parses reducer-written projection_sessions.entry JSON with retention discard state', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const projectedEntry = {
         sessionId: 'session-reducer-written-row',
-        provider: 'codex',
-        sessionAuthority: { kind: 'orchestration' as const },
+        binding: TEST_CODEX_BINDING,
         name: 'reducer written',
         state: 'pending',
         retention: 'discard_provider_artifacts_on_terminal',
@@ -285,12 +287,11 @@ describe('sessions reducer equivalence', () => {
 
       db.prepare(
         `INSERT INTO projection_sessions (
-           session_id, controller, provider, resumable, conversation_ref, scope_key, entry, last_seq
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           session_id, controller, resumable, conversation_ref, scope_key, entry, last_seq
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         'session-reducer-written-row',
         'default',
-        'codex',
         0,
         null,
         'reducer-written-scope',
@@ -298,7 +299,7 @@ describe('sessions reducer equivalence', () => {
         1,
       );
 
-      expect(readProjectionSessionEntry(db, 'session-reducer-written-row')?.retentionDiscard).toEqual(
+      expect(readProjectionProviderSession(db, 'session-reducer-written-row')?.retentionDiscard).toEqual(
         projectedEntry.retentionDiscard,
       );
     } finally {
@@ -306,74 +307,15 @@ describe('sessions reducer equivalence', () => {
     }
   });
 
-  it('replays pre-feature session.opened events with retention defaults', () => {
+  it('rebuilds projection_sessions rows byte-identically from a canonical event sequence', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
-      const retiredEntry = {
-        sessionId: 'session-retired-opened',
-        provider: 'claude',
-        sessionAuthority: { kind: 'orchestration' as const },
-        name: 'retired opened',
-        state: 'pending',
-        cwd: '/tmp/project',
-        projectRoot: '/tmp/project',
-        backendNamespace: 'ns-a',
-        providerContinuity: null,
-        createdAt: NOW.toISOString(),
-        lastUsedAt: NOW.toISOString(),
-        version: 1,
-      };
-
-      const appended = commitInputs(
-        db,
-        [
-          {
-            type: 'session.opened',
-            stream: { kind: 'session', id: 'session-retired-opened' },
-            refs: { sessionId: 'session-retired-opened' },
-            bodyVersion: 1,
-            body: {
-              entry: retiredEntry,
-              controller: 'default',
-              provider: 'claude',
-              scope_key: 'retired-scope',
-            },
-          },
-        ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
-      );
-
-      rebuildProjections({
-        db,
-        cutoffSeq: appended.at(-1)?.seq ?? 0,
-        reducers,
-        upcasters,
-      });
-
-      expect(readProjectionSessionEntry(db, 'session-retired-opened')).toMatchObject({
-        sessionId: 'session-retired-opened',
-        retention: 'retain',
-        artifactHandles: [],
-        retentionDiscard: { attempts: [] },
-      });
-    } finally {
-      db.close();
-    }
-  });
-
-  it('rebuilds projection_sessions rows byte-identically from a historical event sequence', () => {
-    const db = newRawDatabase(':memory:');
-    try {
-      applyBundledStoreSchema(db);
-      const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const scopeKey = createHash('sha1').update('session-1').digest('hex').slice(0, 12);
       const openedEntry = sessionEntry({
         sessionId: 'session-1',
-        provider: 'codex',
         controllerProfile: { owner: 'team-a' },
       });
       const readyEntry = sessionEntry({
@@ -398,11 +340,9 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'team-a',
-              provider: 'codex',
               scope_key: scopeKey,
             },
           },
@@ -410,7 +350,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               entry: readyEntry,
               snapshot: {
@@ -424,7 +363,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.interrupted',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               trigger: 'handoff',
               continuity: 'pre_checkpoint_preserved',
@@ -434,7 +372,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.provider_failed',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               provider: 'codex',
               reason: 'request_failed',
@@ -445,7 +382,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.adapter_unparseable',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               provider: 'codex',
               exitCode: null,
@@ -458,7 +394,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: 'session-1' },
             refs: { sessionId: 'session-1' },
-            bodyVersion: 1,
             body: {
               entry: sealedEntry,
               snapshot: {
@@ -469,24 +404,12 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
-
-      const v1OpenEvent = db
-        .prepare(
-          `SELECT body_version
-           FROM events
-          WHERE stream_kind = 'session'
-            AND stream_id = ?
-            AND type = 'session.opened'
-          ORDER BY seq ASC
-          LIMIT 1`,
-        )
-        .get('session-1') as { body_version: number } | undefined;
 
       const before = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -496,24 +419,22 @@ describe('sessions reducer equivalence', () => {
       expect(before).toEqual({
         session_id: 'session-1',
         controller: 'team-a',
-        provider: 'codex',
         resumable: 0,
         conversation_ref: null,
         scope_key: scopeKey,
         last_seq: appended.at(-1)?.seq,
       });
-      expect(v1OpenEvent?.body_version).toBe(1);
 
       rebuildProjections({
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -526,16 +447,16 @@ describe('sessions reducer equivalence', () => {
     }
   });
 
-  it('round-trips canonical session.opened rows without rewriting scope_key or body_version', () => {
+  it('round-trips canonical session.opened rows without rewriting scope_key', () => {
     const db = newRawDatabase(':memory:');
     try {
-      applyBundledStoreSchema(db);
+      applyBundledStoreSchema(db, currentCoralStoreFormat());
       const reducers = composeReducers(sessionsRegistry);
-      const upcasters = createDefaultUpcasterRegistry();
+      const bodyCodec = createEventBodyCodec();
       const scopeKey = 'canonical-scope';
       const openedEntry = sessionEntry({
         sessionId: 'session-2',
-        provider: 'claude',
+        binding: TEST_CLAUDE_BINDING,
         controllerProfile: { owner: 'team-b' },
         backendNamespace: 'ns-b',
       });
@@ -553,11 +474,9 @@ describe('sessions reducer equivalence', () => {
             type: 'session.opened',
             stream: { kind: 'session', id: 'session-2' },
             refs: { sessionId: 'session-2' },
-            bodyVersion: 1,
             body: {
               entry: openedEntry,
               controller: 'team-b',
-              provider: 'claude',
               scope_key: scopeKey,
             },
           },
@@ -565,7 +484,6 @@ describe('sessions reducer equivalence', () => {
             type: 'session.continuity.checkpointed',
             stream: { kind: 'session', id: 'session-2' },
             refs: { sessionId: 'session-2' },
-            bodyVersion: 1,
             body: {
               entry: readyEntry,
               snapshot: {
@@ -576,24 +494,12 @@ describe('sessions reducer equivalence', () => {
             },
           },
         ],
-        { now: () => NOW, reducers, upcasters, providers: permissiveProviderLookupPort },
+        { now: () => NOW, reducers, bodyCodec, providers: permissiveProviderLookupPort },
       );
-
-      const openedEvent = db
-        .prepare(
-          `SELECT body_version
-           FROM events
-          WHERE stream_kind = 'session'
-            AND stream_id = ?
-            AND type = 'session.opened'
-          ORDER BY seq ASC
-          LIMIT 1`,
-        )
-        .get('session-2') as { body_version: number } | undefined;
 
       const before = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,
@@ -603,24 +509,22 @@ describe('sessions reducer equivalence', () => {
       expect(before).toEqual({
         session_id: 'session-2',
         controller: 'team-b',
-        provider: 'claude',
         resumable: 1,
         conversation_ref: 'thread-2',
         scope_key: scopeKey,
         last_seq: appended.at(-1)?.seq,
       });
-      expect(openedEvent?.body_version).toBe(1);
 
       rebuildProjections({
         db,
         cutoffSeq: appended.at(-1)?.seq ?? 0,
         reducers,
-        upcasters,
+        bodyCodec,
       });
 
       const after = db
         .prepare(
-          `SELECT session_id, controller, provider, resumable, conversation_ref, scope_key, last_seq
+          `SELECT session_id, controller, resumable, conversation_ref, scope_key, last_seq
            FROM projection_sessions
           WHERE session_id = ?
           LIMIT 1`,

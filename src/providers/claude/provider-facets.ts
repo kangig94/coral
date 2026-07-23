@@ -1,54 +1,70 @@
 import { dirname, join } from 'node:path';
 
-import { detectClaudeCli } from '../cli-detection.js';
+import { detectClaudeCli } from './cli-detection.js';
 import type {
+  AppServerTransport,
   ProviderPreflightRuntime,
-  ProviderAppServerContract,
+  ProviderAppServerCapability,
   ProviderRecoveryContract,
-  ProviderRequest,
 } from '../contract.js';
-import { readString } from '../../infra/json.js';
+import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
+import { isRecord, readString } from '../../infra/json.js';
+import { mapInterruptParams } from './request-mapping.js';
 import {
   buildClaudeContinuity,
   buildClaudeProviderServerSpec,
-  claudeConversationRef,
   readClaudePersistedContinuity,
 } from './request-mapping.js';
-import { providerRoutingEnv, UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS } from '../../runtime/provider-credentials.js';
+import {
+  buildClaudeHost,
+  claudeRoutingEnv,
+  compileClaudeBrokerHost,
+  type ClaudeProviderAccess,
+  type ClaudeExecutionPlan,
+} from './execution-plan.js';
+import { isClaudeCredentialEnvKey } from './credential-policy.js';
+import { resolveClaudeTransportMode } from './transport-mode.js';
 
-const UNSUPPORTED_CLAUDE_HELPER_SETTINGS = Object.freeze(
-  new Set(['apiKeyHelper', 'awsAuthRefresh', 'awsCredentialExport']),
-);
+const UNSUPPORTED_CLAUDE_HELPER_SETTINGS: ReadonlySet<string> = new Set([
+  'apiKeyHelper',
+  'awsAuthRefresh',
+  'awsCredentialExport',
+]);
 
-function claudeConfigRoot(runtime: ProviderPreflightRuntime): string {
-  if (runtime.credentialSource.provider !== 'claude') throw new Error('Claude credential source required.');
-  return runtime.credentialSource.kind === 'config-dir'
-    ? runtime.credentialSource.configDir
-    : runtime.credentialSource.configDirLocator;
+function claudeConfigRoot(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): string {
+  return runtime.access.configDir;
 }
 
-function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void {
-  const settingsPaths = new Set([join(claudeConfigRoot(runtime), 'settings.json')]);
+function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): void {
+  const settingsPaths = new Map<string, 'selected-profile' | 'project'>([
+    [join(claudeConfigRoot(runtime), 'settings.json'), 'selected-profile'],
+  ]);
   let directory = runtime.cwd;
   while (true) {
-    settingsPaths.add(join(directory, '.claude', 'settings.json'));
-    settingsPaths.add(join(directory, '.claude', 'settings.local.json'));
+    const projectSettings = join(directory, '.claude', 'settings.json');
+    const localProjectSettings = join(directory, '.claude', 'settings.local.json');
+    if (!settingsPaths.has(projectSettings)) settingsPaths.set(projectSettings, 'project');
+    if (!settingsPaths.has(localProjectSettings)) settingsPaths.set(localProjectSettings, 'project');
     const parent = dirname(directory);
     if (parent === directory) break;
     directory = parent;
   }
 
-  for (const settingsPath of settingsPaths) {
+  for (const [settingsPath, layer] of settingsPaths) {
     if (!runtime.storage.existsSync(settingsPath)) continue;
 
     let settings: unknown;
     try {
       settings = JSON.parse(runtime.storage.readFileSync(settingsPath, 'utf-8')) as unknown;
     } catch {
-      throw new Error(`Cannot validate Claude credential selectors in '${settingsPath}'. Fix the JSON and retry.`);
+      throw new Error(
+        `Cannot validate Claude credential selectors because the ${layer} settings contain invalid JSON. Repair or remove that settings file, then retry. See docs/configuration.md#multi-account-provider-routing.`,
+      );
     }
     if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
-      throw new Error(`Cannot validate Claude credential selectors in '${settingsPath}': expected a JSON object.`);
+      throw new Error(
+        `Cannot validate Claude credential selectors because the ${layer} settings are not a JSON object. Repair or remove that settings file, then retry. See docs/configuration.md#multi-account-provider-routing.`,
+      );
     }
 
     const record = settings as Record<string, unknown>;
@@ -59,9 +75,7 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void 
         record[helper] !== false &&
         record[helper] !== ''
       ) {
-        throw new Error(
-          `Unsupported Claude credential helper '${helper}' in '${settingsPath}'. Remove it or run Claude outside Coral.`,
-        );
+        throw new Error(`Unsupported Claude credential helper '${helper}'. Remove it or run Claude outside Coral.`);
       }
     }
 
@@ -70,22 +84,21 @@ function assertSupportedClaudeSettings(runtime: ProviderPreflightRuntime): void 
     for (const [key, value] of Object.entries(configuredEnv as Record<string, unknown>)) {
       const selectorKey = key.toUpperCase();
       if (
-        UNSUPPORTED_CLAUDE_SELECTOR_ENV_KEYS.has(selectorKey) &&
+        isClaudeCredentialEnvKey(selectorKey) &&
         ((typeof value === 'string' && value.trim().length > 0) ||
           (typeof value !== 'string' && value !== null && value !== undefined))
       ) {
         throw new Error(
-          `Unsupported Claude credential selector '${key}' in '${settingsPath}'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.`,
+          `Unsupported Claude credential selector '${key}'. Remove it and select an account with an absolute CLAUDE_CONFIG_DIR, or run Claude outside Coral.`,
         );
       }
     }
   }
 }
 
-export async function claudePreflight(runtime: ProviderPreflightRuntime): Promise<void> {
-  if (runtime.credentialSource.provider !== 'claude') throw new Error('Claude credential source required.');
+export async function claudePreflight(runtime: ProviderPreflightRuntime<ClaudeProviderAccess>): Promise<void> {
   assertSupportedClaudeSettings(runtime);
-  const routingEnv = providerRoutingEnv(runtime.credentialSource);
+  const routingEnv = claudeRoutingEnv(runtime.access);
   const cli = await detectClaudeCli(
     { exec: (command, args, options) => runtime.runExact(command, args, options) },
     { get: (key) => routingEnv[key] },
@@ -94,24 +107,41 @@ export async function claudePreflight(runtime: ProviderPreflightRuntime): Promis
     throw new Error(`Claude CLI not available: ${cli.error}`);
   }
   if (cli.authState === 'unauthenticated') {
-    throw new Error(`Claude CLI unauthenticated: ${cli.authError}`);
+    throw new Error(cli.authError);
   }
 }
 
-export const claudeAppServerLifecycle: ProviderAppServerContract = {
+export const claudeAppServerLifecycle: ProviderAppServerCapability<ClaudeExecutionPlan, ClaudeProviderAccess> = {
   name: 'claude',
-  subscriptionPhase: 'beforeInitialize',
-  buildServerSpec(request, _persistedContinuity, ports, providerContext) {
-    if (providerContext.provider !== 'claude') throw new Error('Claude provider context required.');
-    return buildClaudeProviderServerSpec(request, ports.storage, providerContext.brokerEnv);
+  planHost: (input) =>
+    buildClaudeHost({
+      access: input.access,
+      request:
+        input.purpose === 'execution'
+          ? input.request
+          : { cwd: input.request.cwd, coralEnv: { CORAL_CLAUDE_TRANSPORT: 'print' } },
+      baseEnv: input.baseEnv,
+      platform: input.platform,
+      storage: input.storage,
+      transportMode: input.purpose === 'curation' ? 'print' : resolveClaudeTransportMode(input.request.coralEnv),
+    }),
+  compileStableHost: (host) =>
+    buildClaudeProviderServerSpec(compileClaudeBrokerHost({ platform: host.platform, broker: host.broker })),
+  async interrupt(transport: AppServerTransport, continuity: ProviderContinuityBlob): Promise<boolean> {
+    const persistedContinuity = readClaudePersistedContinuity(continuity);
+    const brokerSessionKey = persistedContinuity.brokerSessionKey;
+    if (brokerSessionKey === undefined) return false;
+    const brokerTurnId = persistedContinuity.brokerTurnId;
+    if (brokerTurnId === undefined) return false;
+    const result = await transport.rpc<unknown>(
+      'turn/interrupt',
+      mapInterruptParams(brokerSessionKey, brokerTurnId) as unknown as Record<string, unknown>,
+    );
+    return isRecord(result) && result.interrupted === true && readString(result.brokerTurnId) === brokerTurnId;
   },
 };
 
 export const claudeRecoveryLifecycle = {
-  buildRecoveryMeta(request: ProviderRequest) {
-    const conversationRef = readString(claudeConversationRef(request));
-    return conversationRef !== undefined ? { conversationRef } : {};
-  },
   finalizeInterrupted(probeResult, continuity, context) {
     const persistedContinuity = readClaudePersistedContinuity(probeResult.updatedContinuity ?? continuity);
     const providerContinuity = persistedContinuity.bootstrapSignature
@@ -141,4 +171,4 @@ export const claudeRecoveryLifecycle = {
       ...(providerContinuity ? { providerContinuity } : {}),
     };
   },
-} satisfies Pick<ProviderRecoveryContract, 'buildRecoveryMeta' | 'finalizeInterrupted'>;
+} satisfies Pick<ProviderRecoveryContract, 'finalizeInterrupted'>;
