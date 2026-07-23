@@ -5894,6 +5894,7 @@ describe('execution backend server', () => {
           pluginRoot,
           namespace,
           version: '9.9.9',
+          buildSetId: '00000000-0000-4000-8000-000000000000',
           bundleHash: 'testhash1234',
           flavor: 'prod',
           instanceId: 'handoff-instance-1',

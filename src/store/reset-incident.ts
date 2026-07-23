@@ -71,6 +71,26 @@ export type StoreResetIncidentLocalReport = {
   };
 };
 
+export type StoreResetIncidentListEntry =
+  | {
+      readonly incidentId: string;
+      readonly state: 'ready';
+      readonly resetAt: string;
+      readonly reason: StoreResetReason;
+      readonly fileCount: number;
+    }
+  | {
+      readonly incidentId: string;
+      readonly state: 'malformed' | 'unsupported' | 'build_mismatch' | 'unsafe' | 'unavailable';
+      readonly resetAt: null;
+      readonly reason: null;
+      readonly fileCount: null;
+    };
+
+export type StoreResetIncidentListResult = {
+  readonly incidents: readonly StoreResetIncidentListEntry[];
+};
+
 const STORE_RESET_PUBLIC_REPORT_BRAND: unique symbol = Symbol('StoreResetPublicReport');
 
 export type StoreResetPublicReport = {

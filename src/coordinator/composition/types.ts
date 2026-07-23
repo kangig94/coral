@@ -33,6 +33,7 @@ import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 
 type CoordinatorBootSnapshot = {
   version?: string;
+  buildSetId?: string;
   bundleHash?: string;
   flavor?: 'prod' | 'dev';
   instanceId?: string;

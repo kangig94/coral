@@ -43,7 +43,8 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener } from '../transport/ipc/server.js';
-import { createBackendStoreResetAuthority, openOrResetBackendStoreDb, type Database } from '../store/db.js';
+import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '../store/backend-store-reset.js';
+import type { Database } from '../store/db.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
@@ -73,6 +74,7 @@ export interface CoordinatorIdentity {
   readonly pluginRoot: string;
   readonly namespace: string;
   readonly version: string;
+  readonly buildSetId: string;
   readonly bundleHash: string;
   readonly flavor: 'prod' | 'dev';
   readonly instanceId: string;
@@ -440,7 +442,7 @@ async function runLifecycleStartup({
     closeIpcServerFn,
     listenIpcFn,
   } = deps;
-  const { namespace, version, bundleHash, flavor, instanceId, now } = identity;
+  const { namespace, version, buildSetId, bundleHash, flavor, instanceId, now } = identity;
 
   if (state.started || runtimeState.getLifecycle() !== 'starting') {
     throw new Error('Backend server already started');
@@ -459,7 +461,7 @@ async function runLifecycleStartup({
     // immediate shutdown via that path.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
     let interruptedAppServerReason: InterruptedAppServerReason = 'restart';
-    let socketAuthorityAcquired = false;
+    let acquiredViaHandoff = false;
     if (ipcServer && listenIpcFn) {
       const handoff = await bindWithHandoff({
         socketPath,
@@ -520,8 +522,8 @@ async function runLifecycleStartup({
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
-      socketAuthorityAcquired = true;
       if (handoff.acquiredViaHandoff) {
+        acquiredViaHandoff = true;
         interruptedAppServerReason = 'handoff';
       }
     }
@@ -546,12 +548,20 @@ async function runLifecycleStartup({
 
     const resetAuthority = createBackendStoreResetAuthority(
       runtime,
-      { acquiredViaHandoff: socketAuthorityAcquired },
-      { bundleHash, namespace, storeFormat: deps.storeFormat },
+      { acquiredViaHandoff },
+      {
+        namespace,
+        storeFormat: deps.storeFormat,
+        build: {
+          version,
+          buildSetId,
+          bundleHash,
+          flavor,
+          storeFormatFingerprint: deps.storeFormat.fingerprint,
+        },
+      },
     );
     const storeDb = openOrResetBackendStoreDb(runtime, resetAuthority, {
-      bundleHash,
-      namespace,
       storeFormat: deps.storeFormat,
       startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
     });

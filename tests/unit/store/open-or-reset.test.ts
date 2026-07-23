@@ -26,16 +26,28 @@ import type { Runtime } from '#src/runtime/ports.js';
 import {
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
-  openWritableStoreDbNoReset,
   type BackendStoreResetAuthority,
-} from '#src/store/db.js';
+} from '#src/store/backend-store-reset.js';
+import { openWritableStoreDbNoReset } from '#src/store/db.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import { pragmaSimple } from '#tests/helpers/test-db.js';
 
 const REPO_ROOT = process.cwd();
-const BUNDLE_HASH = 'test-bundle';
+const VERSION = '0.9.16';
+const BUILD_SET_ID = '123e4567-e89b-42d3-a456-426614174000';
+const BUNDLE_HASH = '0123456789abcdef';
 const NAMESPACE = 'test-namespace';
 const STORE_FORMAT = currentCoralStoreFormat();
+
+function buildIdentity(bundleHash = BUNDLE_HASH) {
+  return {
+    version: VERSION,
+    buildSetId: BUILD_SET_ID,
+    bundleHash,
+    flavor: 'prod' as const,
+    storeFormatFingerprint: STORE_FORMAT.fingerprint,
+  };
+}
 
 const tempRoots: string[] = [];
 
@@ -115,7 +127,7 @@ function createMissingFingerprintStore(dbPath: string): void {
   }
 }
 
-function createMismatchStore(dbPath: string, fingerprint = 'sha256:obsolete'): void {
+function createMismatchStore(dbPath: string, fingerprint = `sha256:${'0'.repeat(64)}`): void {
   mkdirSync(dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   try {
@@ -145,9 +157,9 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
     { acquiredViaHandoff: true },
     {
       path: dbPath,
-      bundleHash: BUNDLE_HASH,
       namespace: NAMESPACE,
       storeFormat: STORE_FORMAT,
+      build: buildIdentity(),
     },
   );
 }
@@ -155,8 +167,6 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
 function openReset(runtime: Runtime, dbPath: string) {
   return openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
     path: dbPath,
-    bundleHash: BUNDLE_HASH,
-    namespace: NAMESPACE,
     storeFormat: STORE_FORMAT,
   });
 }
@@ -215,8 +225,6 @@ describe('openOrResetBackendStoreDb', () => {
 
     const db = openOrResetBackendStoreDb(runtime, authorityFor(runtime, dbPath), {
       path: dbPath,
-      bundleHash: BUNDLE_HASH,
-      namespace: NAMESPACE,
       storeFormat: STORE_FORMAT,
       startupBusyTimeoutMs: 1,
       steadyStateBusyTimeoutMs: 12_345,
@@ -263,7 +271,7 @@ describe('openOrResetBackendStoreDb', () => {
     >;
     expect(manifest).toMatchObject({ reason: 'missing', storedFingerprint: null });
     const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
-    expect(messages.some((message) => message.includes('will be unavailable'))).toBe(true);
+    expect(messages.some((message) => message.includes('is unavailable'))).toBe(true);
     expect(
       messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
     ).toBe(true);
@@ -320,37 +328,41 @@ describe('openOrResetBackendStoreDb', () => {
       reason?: unknown;
       storedFingerprint?: unknown;
       expectedFingerprint?: unknown;
-      dbFile?: unknown;
-      quarantineDir?: unknown;
+      incidentId?: unknown;
+      build?: unknown;
+      runtime?: unknown;
+      handoff?: unknown;
       files?: Array<{
         name?: unknown;
-        source?: unknown;
-        quarantinedPath?: unknown;
         sizeBytes?: unknown;
         sha256?: unknown;
       }>;
     };
     expect(manifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      incidentId: quarantineEntries[0],
       reason: 'mismatch',
-      storedFingerprint: 'sha256:obsolete',
+      storedFingerprint: `sha256:${'0'.repeat(64)}`,
       expectedFingerprint: STORE_FORMAT.fingerprint,
-      dbFile: dbPath,
-      quarantineDir,
+      build: {
+        version: VERSION,
+        buildSetId: BUILD_SET_ID,
+        backendBundleHash: BUNDLE_HASH,
+        flavor: 'prod',
+      },
+      handoff: { acquiredViaHandoff: true },
     });
+    expect(manifest).not.toHaveProperty('dbFile');
+    expect(manifest).not.toHaveProperty('quarantineDir');
     expect(manifest.files).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           name: 'store.db',
-          source: dbPath,
-          quarantinedPath: join(quarantineDir, 'store.db'),
           sizeBytes: originalDbBytes.length,
           sha256: sha256(originalDbBytes),
         }),
         expect.objectContaining({
           name: 'store.db-wal',
-          source: `${dbPath}-wal`,
-          quarantinedPath: join(quarantineDir, 'store.db-wal'),
           sizeBytes: 'dummy wal'.length,
           sha256: sha256('dummy wal'),
         }),
@@ -393,16 +405,14 @@ describe('openOrResetBackendStoreDb', () => {
       { acquiredViaHandoff: false },
       {
         path: dbPath,
-        bundleHash: BUNDLE_HASH,
         namespace: NAMESPACE,
         storeFormat: STORE_FORMAT,
+        build: buildIdentity(),
       },
     );
 
     const db = openOrResetBackendStoreDb(runtime, authority, {
       path: dbPath,
-      bundleHash: BUNDLE_HASH,
-      namespace: NAMESPACE,
       storeFormat: STORE_FORMAT,
     });
     db.close();
@@ -421,9 +431,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
     expect(
-      messages.some(
-        (message) => message.includes('resetting backend store') && message.includes('will be unavailable'),
-      ),
+      messages.some((message) => message.includes('resetting backend store') && message.includes('is unavailable')),
     ).toBe(true);
     expect(
       messages.some((message) => message.startsWith('audit ') && message.includes('"event":"store_reset_quarantine"')),
@@ -507,24 +515,21 @@ describe('openOrResetBackendStoreDb', () => {
     createMismatchStore(dbPath);
     const before = readFileSync(dbPath);
 
-    // Build an authority with a wrong bundleHash — represents a stale
-    // authority captured before a runtime/bundle change.
+    const differentPath = join(dbDir, 'different-store.db');
     const staleAuthority = createBackendStoreResetAuthority(
       runtime,
       { acquiredViaHandoff: true },
       {
-        path: dbPath,
-        bundleHash: 'stale-bundle-hash',
+        path: differentPath,
         namespace: NAMESPACE,
         storeFormat: STORE_FORMAT,
+        build: buildIdentity(),
       },
     );
 
     const error = captureError(() =>
       openOrResetBackendStoreDb(runtime, staleAuthority, {
         path: dbPath,
-        bundleHash: BUNDLE_HASH,
-        namespace: NAMESPACE,
         storeFormat: STORE_FORMAT,
       }),
     );
@@ -550,14 +555,17 @@ describe('openOrResetBackendStoreDb', () => {
     const authority = createBackendStoreResetAuthority(
       runtime,
       { acquiredViaHandoff: true },
-      { path: dbPath, bundleHash: BUNDLE_HASH, namespace: NAMESPACE, storeFormat: STORE_FORMAT },
+      {
+        path: dbPath,
+        namespace: NAMESPACE,
+        storeFormat: STORE_FORMAT,
+        build: buildIdentity(),
+      },
     );
 
     const error = captureError(() =>
       openOrResetBackendStoreDb(runtime, authority, {
         path: dbPath,
-        bundleHash: BUNDLE_HASH,
-        namespace: NAMESPACE,
         storeFormat: otherFormat,
       }),
     );

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
-const STORE_DB_PATH = 'src/store/db.ts';
+const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
 const READ_PORT_PATH = 'src/store/read-port.ts';
 
 type CallHit = {
@@ -162,11 +162,11 @@ describe('store reset discipline invariants', () => {
   });
 
   it('keeps store file quarantine in openOrResetBackendStoreDb behind BackendStoreResetAuthority', () => {
-    const resetFunction = findFunction(STORE_DB_PATH, 'openOrResetBackendStoreDb');
+    const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
-    const calls = collectCalls(STORE_DB_PATH);
+    const calls = collectCalls(BACKEND_STORE_RESET_PATH);
     const quarantineStoreFileCalls = calls
-      .filter((call) => call.callee === 'quarantineStoreFiles')
+      .filter((call) => call.callee === 'publishIncident')
       .map((call) => `${call.relativePath}:${call.line}:${call.enclosingFunctions[0] ?? '<top>'}`);
     const directStoreUnlinks = allSourcePaths()
       .flatMap((relativePath) =>
@@ -177,22 +177,22 @@ describe('store reset discipline invariants', () => {
       )
       .sort();
 
-    expect(authorityParam?.name.getText(sourceFile(STORE_DB_PATH))).toBe('authority');
-    expect(authorityParam?.type?.getText(sourceFile(STORE_DB_PATH))).toBe('BackendStoreResetAuthority');
+    expect(authorityParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('authority');
+    expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
     expect(quarantineStoreFileCalls).toEqual([
-      expect.stringMatching(/^src\/store\/db\.ts:\d+:openOrResetBackendStoreDb$/),
+      expect.stringMatching(/^src\/store\/backend-store-reset\.ts:\d+:openOrResetBackendStoreDb$/),
     ]);
     expect(directStoreUnlinks).toEqual([]);
   });
 
-  it('keeps quarantineStoreFiles ordered after reset-lock acquisition', () => {
-    const source = sourceFile(STORE_DB_PATH);
-    const resetFunction = findFunction(STORE_DB_PATH, 'openOrResetBackendStoreDb');
+  it('keeps publishIncident ordered after reset-lock acquisition', () => {
+    const source = sourceFile(BACKEND_STORE_RESET_PATH);
+    const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const body = resetFunction.body;
     expect(body).toBeDefined();
     const bodyText = body?.getText(source) ?? '';
     const lockIndex = bodyText.indexOf('acquireDirectoryLockSync(');
-    const quarantineIndex = bodyText.indexOf('quarantineStoreFiles(');
+    const quarantineIndex = bodyText.indexOf('publishIncident(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);
     expect(quarantineIndex).toBeGreaterThan(lockIndex);
