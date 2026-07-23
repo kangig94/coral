@@ -52,6 +52,56 @@ export type StoreResetIncidentManifestV2 = {
   readonly files: readonly StoreResetIncidentFile[];
 };
 
+export type StoreResetHashVerification = 'match' | 'mismatch' | 'missing' | 'unavailable_limit' | 'unavailable';
+
+export type StoreResetDiagnosticIntegrity = 'ok' | 'failed' | 'unavailable';
+export type StoreResetDiagnosticTermination = 'completed' | 'terminated' | 'termination_unconfirmed';
+export type StoreResetDiagnosticCleanup = 'removed' | 'cleanup_unavailable';
+
+export type StoreResetIncidentLocalReport = {
+  readonly manifest: StoreResetIncidentManifestV2;
+  readonly fileVerification: readonly {
+    readonly name: StoreResetEvidenceFileName;
+    readonly status: StoreResetHashVerification;
+  }[];
+  readonly diagnostic: {
+    readonly integrity: StoreResetDiagnosticIntegrity;
+    readonly termination: StoreResetDiagnosticTermination;
+    readonly cleanup: StoreResetDiagnosticCleanup;
+  };
+};
+
+const STORE_RESET_PUBLIC_REPORT_BRAND: unique symbol = Symbol('StoreResetPublicReport');
+
+export type StoreResetPublicReport = {
+  readonly incidentId: string;
+  readonly resetAt: string;
+  readonly reason: StoreResetReason;
+  readonly storedFingerprint: string | null;
+  readonly expectedFingerprint: string;
+  readonly build: {
+    readonly version: string;
+    readonly buildSetId: string;
+    readonly backendBundleHash: string;
+    readonly flavor: StoreResetBuildFlavor;
+  };
+  readonly handoff: {
+    readonly acquiredViaHandoff: boolean;
+  };
+  readonly files: readonly {
+    readonly name: StoreResetEvidenceFileName;
+    readonly sizeBytes: number;
+    readonly sha256: string;
+    readonly verification: StoreResetHashVerification;
+  }[];
+  readonly diagnostic: {
+    readonly integrity: StoreResetDiagnosticIntegrity;
+    readonly termination: StoreResetDiagnosticTermination;
+    readonly cleanup: StoreResetDiagnosticCleanup;
+  };
+  readonly [STORE_RESET_PUBLIC_REPORT_BRAND]: true;
+};
+
 export type StoreResetManifestDecodeErrorCode =
   | 'manifest_too_large'
   | 'manifest_invalid_utf8'
@@ -564,4 +614,41 @@ export function parseStoreResetIncidentManifest(bytes: Uint8Array): StoreResetIn
 export function serializeStoreResetIncidentManifest(manifest: StoreResetIncidentManifestV2): string {
   const validated = validateManifest(manifest);
   return `${JSON.stringify(validated, null, 2)}\n`;
+}
+
+export function projectStoreResetPublicReport(local: StoreResetIncidentLocalReport): StoreResetPublicReport {
+  const verificationByName = new Map(local.fileVerification.map((entry) => [entry.name, entry.status]));
+  const manifest = local.manifest;
+  return Object.freeze({
+    incidentId: manifest.incidentId,
+    resetAt: manifest.resetAt,
+    reason: manifest.reason,
+    storedFingerprint: manifest.storedFingerprint,
+    expectedFingerprint: manifest.expectedFingerprint,
+    build: Object.freeze({
+      version: manifest.build.version,
+      buildSetId: manifest.build.buildSetId,
+      backendBundleHash: manifest.build.backendBundleHash,
+      flavor: manifest.build.flavor,
+    }),
+    handoff: Object.freeze({
+      acquiredViaHandoff: manifest.handoff.acquiredViaHandoff,
+    }),
+    files: Object.freeze(
+      manifest.files.map((file) =>
+        Object.freeze({
+          name: file.name,
+          sizeBytes: file.sizeBytes,
+          sha256: file.sha256,
+          verification: verificationByName.get(file.name) ?? 'unavailable',
+        }),
+      ),
+    ),
+    diagnostic: Object.freeze({
+      integrity: local.diagnostic.integrity,
+      termination: local.diagnostic.termination,
+      cleanup: local.diagnostic.cleanup,
+    }),
+    [STORE_RESET_PUBLIC_REPORT_BRAND]: true as const,
+  });
 }

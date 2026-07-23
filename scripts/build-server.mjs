@@ -1,6 +1,6 @@
 import * as esbuild from 'esbuild';
 import { execFileSync } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -26,6 +26,7 @@ function parseArgs(argv) {
 }
 
 const { flavor, release } = parseArgs(process.argv.slice(2));
+const buildSetId = randomUUID();
 // Debug-only simulation must keep compiling against production source and must
 // stay sealed from concrete provider/bootstrap implementations.
 execFileSync('node', ['scripts/check-simulation.mjs'], { stdio: 'inherit' });
@@ -79,12 +80,15 @@ const sharedOpts = {
   minify: true,
   banner: {
     js:
+      `var __CORAL_BUILD_IDENTITY__=${JSON.stringify({ version, buildSetId, flavor })};` +
       'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
       'var __BUNDLE_DIR__=__dirname;' +
       'var __importMetaUrl=require("url").pathToFileURL(__filename).href;',
   },
   define: {
     __VERSION__: JSON.stringify(version),
+    __BUILD_SET_ID__: JSON.stringify(buildSetId),
+    __BUILD_FLAVOR__: JSON.stringify(flavor),
     // esbuild empties `import.meta` in CJS output, so `import.meta.url` would be
     // `undefined`; redirect it to a banner-injected file URL of the bundle file
     // so `createRequire(import.meta.url)` (e.g. engines/kiwi/paths.ts) resolves.
@@ -142,6 +146,8 @@ const manifestTmp = manifestPath + '.tmp';
 writeFileSync(
   manifestTmp,
   JSON.stringify({
+    version,
+    buildSetId,
     bundleHash: backendHash,
     flavor,
     storeFormatFingerprint,
