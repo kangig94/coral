@@ -1,16 +1,21 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import {
-  createStoreResetInspectionFs,
-  type StoreResetInspectionStat,
-} from '#src/store/reset-incident-inspection-fs.js';
+import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
+import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
+import { createStoreResetIncidentDiagnosticRunner } from '#src/store/reset-incident-diagnostic.js';
+import type { StoreResetInspectionStat } from '#src/store/reset-incident-inspection-fs.js';
 import { readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
-import { serializeStoreResetIncidentManifest, type StoreResetIncidentManifestV2 } from '#src/store/reset-incident.js';
+import {
+  parseStoreResetIncidentManifest,
+  serializeStoreResetIncidentManifest,
+  type StoreResetIncidentManifestV2,
+} from '#src/store/reset-incident.js';
 import { scriptedStoreResetInspectionFs } from '#tests/helpers/store-reset-inspection-fs.js';
 
 const BUILD: StrictBundleManifest = {
@@ -90,13 +95,13 @@ afterEach(() => {
 });
 
 describe('real store reset inspection filesystem', () => {
-  it('reads a contained incident through descriptor identity and bounded partial reads', () => {
+  it('reads a contained incident through descriptor identity and bounded partial reads', async () => {
     const paths = fixture();
     const fs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
       maxReadBytes: 1,
     });
 
-    const result = readStoreResetIncidentReport({
+    const result = await readStoreResetIncidentReport({
       fs,
       quarantineRoot: paths.quarantineRoot,
       incidentId: INCIDENT_ID,
@@ -112,7 +117,7 @@ describe('real store reset inspection filesystem', () => {
     });
   });
 
-  it('rejects incident links and unexpected directory entries', () => {
+  it('rejects incident links and unexpected directory entries', async () => {
     const base = root();
     const quarantineRoot = join(base, 'store-reset-quarantine');
     const outside = join(base, 'outside');
@@ -121,7 +126,7 @@ describe('real store reset inspection filesystem', () => {
     symlinkSync(outside, join(quarantineRoot, INCIDENT_ID), process.platform === 'win32' ? 'junction' : 'dir');
 
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: createStoreResetInspectionFs(),
         quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -133,7 +138,7 @@ describe('real store reset inspection filesystem', () => {
     const paths = fixture();
     writeFileSync(join(paths.incidentPath, 'unexpected.txt'), 'sentinel');
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: createStoreResetInspectionFs(),
         quarantineRoot: paths.quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -142,7 +147,7 @@ describe('real store reset inspection filesystem', () => {
     ).toEqual({ ok: false, state: 'unsafe' });
   });
 
-  it('detects ordinary manifest identity replacement and close failure without leaking errors', () => {
+  it('detects ordinary manifest identity replacement and close failure without leaking errors', async () => {
     const paths = fixture();
     let manifestStats = 0;
     const replacement = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
@@ -153,7 +158,7 @@ describe('real store reset inspection filesystem', () => {
       },
     });
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: replacement,
         quarantineRoot: paths.quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -165,7 +170,7 @@ describe('real store reset inspection filesystem', () => {
       failFileClose: true,
     });
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: closeFailure,
         quarantineRoot: paths.quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -174,11 +179,11 @@ describe('real store reset inspection filesystem', () => {
     ).toEqual({ ok: false, state: 'unavailable' });
   });
 
-  it('reports fixed mismatch, missing, and cumulative-budget states', () => {
+  it('reports fixed mismatch, missing, and cumulative-budget states', async () => {
     const tampered = fixture();
     writeFileSync(tampered.evidencePath, 'tampered bytes');
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: createStoreResetInspectionFs(),
         quarantineRoot: tampered.quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -191,7 +196,7 @@ describe('real store reset inspection filesystem', () => {
 
     rmSync(tampered.evidencePath);
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: createStoreResetInspectionFs(),
         quarantineRoot: tampered.quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -211,7 +216,7 @@ describe('real store reset inspection filesystem', () => {
       },
     });
     expect(
-      readStoreResetIncidentReport({
+      await readStoreResetIncidentReport({
         fs: oversized,
         quarantineRoot: limited.quarantineRoot,
         incidentId: INCIDENT_ID,
@@ -238,5 +243,59 @@ describe('real store reset inspection filesystem', () => {
     expect(expected?.kind).toBe('directory');
     expect(fs.removeTreeGuarded(staged, expected as StoreResetInspectionStat)).toBe(true);
     expect(fs.lstat(staged)).toBeNull();
+  });
+
+  it('diagnoses a real private SQLite copy without changing incident evidence', async () => {
+    const paths = fixture();
+    rmSync(paths.evidencePath);
+    const db = new DatabaseSync(paths.evidencePath);
+    db.exec("CREATE TABLE sample(value TEXT); INSERT INTO sample VALUES ('private sentinel');");
+    db.close();
+
+    const fs = createStoreResetInspectionFs();
+    const evidence = readFileSync(paths.evidencePath);
+    const evidenceStat = fs.lstat(paths.evidencePath);
+    if (evidenceStat === null) throw new Error('SQLite evidence missing');
+    const previous = parseStoreResetIncidentManifest(readFileSync(paths.manifestPath));
+    const manifest: StoreResetIncidentManifestV2 = {
+      ...previous,
+      files: [
+        {
+          name: 'store.db',
+          sizeBytes: evidence.length,
+          mtimeMs: Number(evidenceStat.mtimeNs) / 1_000_000,
+          sha256: sha256(evidence),
+        },
+      ],
+    };
+    writeFileSync(paths.manifestPath, serializeStoreResetIncidentManifest(manifest), { mode: 0o600 });
+    const diagnosticTempRoot = join(root(), 'diagnostics');
+    mkdirSync(diagnosticTempRoot, { mode: 0o700 });
+
+    const result = await readStoreResetIncidentReport({
+      fs,
+      quarantineRoot: paths.quarantineRoot,
+      incidentId: INCIDENT_ID,
+      expectedBuild: BUILD,
+      diagnose: createStoreResetIncidentDiagnosticRunner({
+        tempRoot: diagnosticTempRoot,
+        platform: process.platform,
+        executable: process.execPath,
+        supervisor: createNodeStoreResetDiagnosticSupervisor(),
+      }),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      report: {
+        diagnostic: {
+          integrity: 'ok',
+          termination: 'completed',
+          cleanup: 'removed',
+        },
+      },
+    });
+    expect(sha256(readFileSync(paths.evidencePath))).toBe(sha256(evidence));
+    expect(readdirSync(diagnosticTempRoot)).toEqual([]);
   });
 });

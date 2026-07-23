@@ -55,8 +55,8 @@ export type StoreResetIncidentManifestV2 = {
 export type StoreResetHashVerification = 'match' | 'mismatch' | 'missing' | 'unavailable_limit' | 'unavailable';
 
 export type StoreResetDiagnosticIntegrity = 'ok' | 'failed' | 'unavailable';
-export type StoreResetDiagnosticTermination = 'completed' | 'terminated' | 'termination_unconfirmed';
-export type StoreResetDiagnosticCleanup = 'removed' | 'cleanup_unavailable';
+export type StoreResetDiagnosticTermination = 'not_started' | 'completed' | 'terminated' | 'termination_unconfirmed';
+export type StoreResetDiagnosticCleanup = 'not_required' | 'removed' | 'cleanup_unavailable';
 
 export type StoreResetIncidentLocalReport = {
   readonly manifest: StoreResetIncidentManifestV2;
